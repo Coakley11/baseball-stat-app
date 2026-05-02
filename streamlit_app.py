@@ -161,7 +161,7 @@ st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
-        Historical stats, career totals, custom leaderboards, player comparisons, trend direction, and valuation insights
+        Historical analytics, career totals, leaderboards, scatterplots, trend heat maps, ML projections, fantasy sleepers/busts, FantasyPros/ADP market edge, and a Draft Assistant with roster heat maps, team category analysis, position scarcity, best-fit recommendations, and league-specific scoring.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -562,6 +562,81 @@ def _categorical_plot_columns(df):
             options.append(col)
     return options
 
+
+# Current-franchise helpers for scatterplot labels and colors
+CURRENT_MLB_TEAMS = set(team_id_to_name.values())
+AL_TEAM_NAMES = {team_id_to_name[t] for t in AL_TEAMS if t in team_id_to_name}
+NL_TEAM_NAMES = {team_id_to_name[t] for t in NL_TEAMS if t in team_id_to_name}
+AL_TEAM_NAMES.add("Athletics")
+
+TEAM_NAME_ALIASES = {
+    "OAK": "Athletics",
+    "ATH": "Athletics",
+    "Oakland Athletics": "Athletics",
+    "Philadelphia Athletics": "Athletics",
+    "Kansas City Athletics": "Athletics",
+    "LAD": "Los Angeles Dodgers",
+    "BRO": "Los Angeles Dodgers",
+    "LAN": "Los Angeles Dodgers",
+    "FLO": "Miami Marlins",
+    "MIA": "Miami Marlins",
+    "SLA": "Baltimore Orioles",
+    "BAL": "Baltimore Orioles",
+}
+
+def normalize_current_team_name(value):
+    """Return a current MLB franchise name when the value clearly maps to one; otherwise Unknown."""
+    if pd.isna(value):
+        return "Unknown"
+    s = str(value).strip()
+    if s == "":
+        return "Unknown"
+    if s in TEAM_NAME_ALIASES:
+        return TEAM_NAME_ALIASES[s]
+    if s in CURRENT_MLB_TEAMS:
+        return s
+    return "Unknown"
+
+def get_scatter_team_color_group(row):
+    """Modern 2025/2026 franchise used only for coloring scatterplot points."""
+    candidates = [
+        row.get("primaryTeamName", None),
+        row.get("teamName", None),
+        row.get("Team Color Group", None),
+        row.get("Franchise", None),
+    ]
+    for val in candidates:
+        team = normalize_current_team_name(val)
+        if team != "Unknown":
+            return team
+    return "Unknown"
+
+def get_scatter_team_display(row):
+    """Historical team label shown in tooltips/tables, but only if tied to a current franchise."""
+    franchise = get_scatter_team_color_group(row)
+    if franchise == "Unknown":
+        return "Unknown"
+    for key in ["primaryHistoricalTeamName", "teamHistoricalName", "displayTeam", "Team"]:
+        val = row.get(key, None)
+        if pd.notna(val) and str(val).strip() != "":
+            return str(val).strip()
+    return franchise
+
+def get_scatter_league_display(row):
+    """League used for scatterplots: current franchise league when known; otherwise raw AL/NL if explicit; else Unknown."""
+    franchise = get_scatter_team_color_group(row)
+    if franchise in AL_TEAM_NAMES:
+        return "American League"
+    if franchise in NL_TEAM_NAMES:
+        return "National League"
+
+    raw = str(row.get("teamLeague", row.get("primaryLeague", row.get("League", "")))).strip()
+    if raw in ["AL", "American League"]:
+        return "American League"
+    if raw in ["NL", "National League"]:
+        return "National League"
+    return "Unknown"
+
 def _prepare_historical_scatter_data(hist_df, team_col):
     """Build plot-ready data for Historical Explorer.
 
@@ -573,16 +648,12 @@ def _prepare_historical_scatter_data(hist_df, team_col):
     plot_df = hist_df.copy()
     plot_df["Player"] = plot_df.get("fullName", "")
     plot_df["Year"] = pd.to_numeric(plot_df.get("yearID"), errors="coerce")
-    plot_df["Team"] = plot_df.get(team_col, plot_df.get("teamHistoricalName", plot_df.get("primaryHistoricalTeamName", "")))
+    # Show historical team in tooltip, but color by current franchise group.
+    plot_df["Team Color Group"] = plot_df.apply(get_scatter_team_color_group, axis=1)
+    plot_df["Team"] = plot_df.apply(get_scatter_team_display, axis=1)
     plot_df["Primary Position"] = plot_df.get("displayPosition", plot_df.get("primaryPos", plot_df.get("careerPrimaryPos", "")))
     plot_df["Bats"] = plot_df.get("bats", "")
-    if "teamLeague" in plot_df.columns:
-        plot_df["League"] = plot_df["teamLeague"]
-    elif "primaryLeague" in plot_df.columns:
-        plot_df["League"] = plot_df["primaryLeague"]
-    else:
-        plot_df["League"] = "Unknown"
-    plot_df["League"] = plot_df["League"].replace({"AL": "American League", "NL": "National League", "Unknown League": "Unknown", "": "Unknown"}).fillna("Unknown")
+    plot_df["League"] = plot_df.apply(get_scatter_league_display, axis=1)
 
     if {"yearID", "birthYear"}.issubset(plot_df.columns):
         plot_df["Age"] = plot_df.apply(
@@ -609,26 +680,12 @@ def _prepare_career_scatter_data(career_df, filtered_source_df=None):
         return pd.DataFrame()
     plot_df = career_df.copy()
     plot_df["Player"] = plot_df.get("fullName", plot_df.get("Player", ""))
-    plot_df["Team"] = plot_df.get("displayTeam", plot_df.get("Team", plot_df.get("teamHistoricalName", plot_df.get("primaryHistoricalTeamName", ""))))
+    # Show historical team in tooltip, but color by current franchise group.
+    plot_df["Team Color Group"] = plot_df.apply(get_scatter_team_color_group, axis=1)
+    plot_df["Team"] = plot_df.apply(get_scatter_team_display, axis=1)
     plot_df["Primary Position"] = plot_df.get("displayPosition", plot_df.get("Primary Position", plot_df.get("careerPrimaryPos", plot_df.get("primaryPos", ""))))
     plot_df["Bats"] = plot_df.get("bats", plot_df.get("Bats", ""))
-    if "League" in plot_df.columns:
-        plot_df["League"] = plot_df["League"]
-    elif "primaryLeague" in plot_df.columns:
-        plot_df["League"] = plot_df["primaryLeague"]
-    elif "teamLeague" in plot_df.columns:
-        plot_df["League"] = plot_df["teamLeague"]
-    elif filtered_source_df is not None and "teamLeague" in filtered_source_df.columns and "playerID" in plot_df.columns:
-        league_mode = (
-            filtered_source_df.groupby(["playerID", "teamLeague"]).size().reset_index(name="count")
-            .sort_values(["playerID", "count"], ascending=[True, False])
-            .drop_duplicates("playerID")[["playerID", "teamLeague"]]
-            .rename(columns={"teamLeague": "League"})
-        )
-        plot_df = plot_df.merge(league_mode, on="playerID", how="left")
-    else:
-        plot_df["League"] = "Unknown"
-    plot_df["League"] = plot_df["League"].replace({"AL": "American League", "NL": "National League", "Unknown League": "Unknown", "": "Unknown"}).fillna("Unknown")
+    plot_df["League"] = plot_df.apply(get_scatter_league_display, axis=1)
     # Keep games labeled as G only. Do not create a duplicate "Games" field.
     if "G" in plot_df.columns:
         plot_df["G"] = pd.to_numeric(plot_df["G"], errors="coerce")
@@ -849,10 +906,9 @@ def _scatter_color_encoding(chart_df, color_col):
         )
 
     if color_col == "Team":
-        # Team scatter colors: approximate MLB primary colors.
-        # AL teams use darker shades; NL teams use lighter shades.
+        # Team color uses current 2025/2026 MLB franchise group, while tooltip can still show the historical team.
         TEAM_SCATTER_COLORS = {
-            # American League — darker
+            # American League — darker primary shades
             "Baltimore Orioles": "#df4601",
             "Boston Red Sox": "#8b1e2d",
             "New York Yankees": "#0c2340",
@@ -860,54 +916,43 @@ def _scatter_color_encoding(chart_df, color_col):
             "Toronto Blue Jays": "#134a8e",
             "Chicago White Sox": "#000000",
             "Cleveland Guardians": "#8b0000",
-            "Cleveland Indians": "#8b0000",
             "Detroit Tigers": "#0c2340",
             "Kansas City Royals": "#004687",
             "Minnesota Twins": "#002b5c",
             "Houston Astros": "#002d62",
             "Los Angeles Angels": "#8b0000",
             "Athletics": "#003831",
-            "Oakland Athletics": "#003831",
-            "Philadelphia Athletics": "#003831",
-            "Kansas City Athletics": "#003831",
             "Seattle Mariners": "#005c5c",
             "Texas Rangers": "#003278",
 
-            # National League — lighter
+            # National League — lighter primary shades
             "Arizona Diamondbacks": "#c86b75",
             "Atlanta Braves": "#ce6b75",
             "Chicago Cubs": "#6baed6",
             "Cincinnati Reds": "#fb6a4a",
             "Colorado Rockies": "#b39ddb",
             "Los Angeles Dodgers": "#6baed6",
-            "Brooklyn Dodgers": "#6baed6",
             "Miami Marlins": "#66c2a5",
-            "Florida Marlins": "#66c2a5",
             "Milwaukee Brewers": "#f2c94c",
-            "Seattle Pilots": "#f2c94c",
             "New York Mets": "#74a9cf",
             "Philadelphia Phillies": "#fb6a4a",
             "Pittsburgh Pirates": "#f2c94c",
             "San Diego Padres": "#c2a477",
             "San Francisco Giants": "#fdae6b",
-            "New York Giants": "#fdae6b",
             "St. Louis Cardinals": "#fb6a4a",
             "Washington Nationals": "#fb6a4a",
-            "Montreal Expos": "#fb6a4a",
-            "Milwaukee Braves": "#ce6b75",
-            "Boston Braves": "#ce6b75",
             "Unknown": "#bdbdbd",
-            "": "#bdbdbd",
         }
 
-        chart_df[color_col] = chart_df[color_col].replace({"": "Unknown", None: "Unknown"}).fillna("Unknown")
-        teams = [t for t in sorted(chart_df[color_col].dropna().astype(str).unique()) if t]
+        color_field = "Team Color Group" if "Team Color Group" in chart_df.columns else color_col
+        chart_df[color_field] = chart_df[color_field].apply(normalize_current_team_name).fillna("Unknown")
+        teams = [t for t in sorted(chart_df[color_field].dropna().astype(str).unique()) if t]
         colors = [TEAM_SCATTER_COLORS.get(t, "#bdbdbd") for t in teams]
         return alt.Color(
-            f"{color_col}:N",
-            title=color_col,
+            f"{color_field}:N",
+            title="Team",
             scale=alt.Scale(domain=teams, range=colors),
-            legend=alt.Legend(title=color_col)
+            legend=alt.Legend(title="Team")
         )
 
     return alt.Color(f"{color_col}:N", title=color_col, legend=alt.Legend(title=color_col))
@@ -2800,7 +2845,8 @@ if active_page == "Draft Assistant Simulator":
     )
     st.info(
         "**Expected Fantasy Value** estimates how valuable the player should be going forward. "
-        "**Draft Fit Score** combines expected value, Fantasy Edge, your roster needs, category needs and risk. "
+        "**Position Scarcity Score** measures how much better a player is than replacement-level options at the same position. "
+        "**Draft Fit Score** combines expected value, Fantasy Edge, position needs, position scarcity, category needs and risk. "
         "The page removes players you mark as already drafted; it no longer hides players just because their market rank is earlier than the current pick."
     )
 
@@ -2905,11 +2951,59 @@ if active_page == "Draft Assistant Simulator":
 
         available["Risk Penalty"] = normalize_series(pd.to_numeric(available.get("Expert Std Dev", 0), errors="coerce").fillna(0)) * 0.08
         available["Expected Fantasy Value"] = available["Projected Production Score"]
+
+        # Position Scarcity Model: value over replacement by position among remaining players.
+        # This rewards players who are substantially better than the replacement-level option at their position.
+        replacement_depths = {
+            "C": 12,
+            "1B": 12,
+            "2B": 12,
+            "3B": 12,
+            "SS": 12,
+            "OF": 36,
+            "DH": 12,
+            "P": 12,
+        }
+
+        position_summary_rows = []
+        replacement_values = {}
+        for pos, pos_group in available.groupby("Primary Position"):
+            pos_group = pos_group.copy().sort_values("Expected Fantasy Value", ascending=False)
+            depth = replacement_depths.get(pos, 12)
+            if pos_group.empty:
+                continue
+            if len(pos_group) >= depth:
+                replacement_value = pd.to_numeric(pos_group.iloc[depth - 1]["Expected Fantasy Value"], errors="coerce")
+            else:
+                replacement_value = pd.to_numeric(pos_group["Expected Fantasy Value"], errors="coerce").min()
+            replacement_values[pos] = replacement_value
+            top_row = pos_group.iloc[0]
+            top_value = pd.to_numeric(top_row.get("Expected Fantasy Value", np.nan), errors="coerce")
+            position_summary_rows.append({
+                "Position": pos,
+                "Available Players": len(pos_group),
+                "Replacement Depth": depth,
+                "Replacement Value": replacement_value,
+                "Top Available": top_row.get("fullName", ""),
+                "Top Available Value": top_value,
+                "Scarcity Dropoff": top_value - replacement_value if pd.notna(top_value) and pd.notna(replacement_value) else np.nan,
+            })
+
+        available["Position Replacement Value"] = available["Primary Position"].map(replacement_values).fillna(available["Expected Fantasy Value"].median())
+        available["Position Scarcity Score"] = (
+            pd.to_numeric(available["Expected Fantasy Value"], errors="coerce") -
+            pd.to_numeric(available["Position Replacement Value"], errors="coerce")
+        ).clip(lower=0)
+        available["Position Scarcity Bonus"] = normalize_series(available["Position Scarcity Score"]) * 0.12
+        # If the position is also a user-selected need, scarcity should matter a bit more.
+        available.loc[available["Primary Position"].isin(needed_positions), "Position Scarcity Bonus"] *= 1.25
+
         available["Availability Probability"] = 1 / (1 + np.exp(-(pd.to_numeric(available.get("Market Rank"), errors="coerce").fillna(current_pick) - float(current_pick)) / 35))
         available["Draft Fit Score"] = (
-            available["Expected Fantasy Value"] * 0.55 +
-            normalize_series(available["Fantasy Edge"].fillna(0)) * 0.25 +
+            available["Expected Fantasy Value"] * 0.50 +
+            normalize_series(available["Fantasy Edge"].fillna(0)) * 0.22 +
             available["Position Need Bonus"] +
+            available["Position Scarcity Bonus"] +
             available["Category Need Bonus"] -
             available["Risk Penalty"]
         )
@@ -2925,6 +3019,8 @@ if active_page == "Draft Assistant Simulator":
                 pieces.append("market is higher than your model, so this is less of a value pick")
             if r.get("Primary Position") in needed_positions:
                 pieces.append(f"fills a needed {r.get('Primary Position')} slot")
+            if r.get("Position Scarcity Bonus", 0) > 0.05:
+                pieces.append(f"has strong value over replacement at {r.get('Primary Position')}")
             if r.get("Category Need Bonus", 0) > 0:
                 pieces.append("helps your selected category needs")
             if r.get("Risk Penalty", 0) > 0.04:
@@ -2934,6 +3030,31 @@ if active_page == "Draft Assistant Simulator":
             return "Recommended because " + ", ".join(pieces) + "."
 
         available["Reason"] = available.apply(make_draft_reason, axis=1)
+
+        # Position Scarcity Model display
+        st.subheader("Position Scarcity Model")
+        st.caption(
+            "This compares each position's top available players to replacement-level players at the same position. "
+            "A larger scarcity dropoff means the best remaining option at that position is much better than the replacement-level option."
+        )
+        position_scarcity_df = pd.DataFrame(position_summary_rows)
+        if position_scarcity_df.empty:
+            st.info("Position scarcity could not be calculated yet.")
+        else:
+            position_scarcity_df = position_scarcity_df.sort_values("Scarcity Dropoff", ascending=False)
+            position_scarcity_display = position_scarcity_df[[
+                "Position", "Available Players", "Replacement Depth", "Replacement Value",
+                "Top Available", "Top Available Value", "Scarcity Dropoff"
+            ]].copy()
+            for col in ["Replacement Value", "Top Available Value", "Scarcity Dropoff"]:
+                position_scarcity_display[col] = pd.to_numeric(position_scarcity_display[col], errors="coerce").round(4)
+            render_output_table(
+                position_scarcity_display,
+                key="draft_position_scarcity",
+                file_name="draft_position_scarcity.csv",
+                display_rows=20,
+                style_cols=["Scarcity Dropoff"]
+            )
 
         # Team Category Strength Analyzer / Roster Construction Heatmap
         st.subheader("Roster Construction Heatmap")
@@ -2994,14 +3115,14 @@ if active_page == "Draft Assistant Simulator":
                 bv = best_value.iloc[0]
                 st.info(f"Best Raw Value: {bv['fullName']} — Expected Fantasy Value {fmt_rate_4(bv.get('Expected Fantasy Value'))}. This is the strongest available player by projected value before roster-fit bonuses.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "Current Production Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "Current Production Score", "Expected Fantasy Value", "Position Scarcity Score", "Position Scarcity Bonus", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.subheader("Recommended Picks")
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge"])
 
         st.subheader("Dynamic Draft Board")
-        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "Expected Fantasy Value", "Draft Fit Score"]
+        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "Expected Fantasy Value", "Position Scarcity Score", "Draft Fit Score"]
         drafted_board = draft_df[draft_df["fullName"].isin(set(drafted_players))].copy()
         available_board = available.sort_values("Market Rank", na_position="last").head(25).copy()
         bcol1, bcol2 = st.columns(2)
