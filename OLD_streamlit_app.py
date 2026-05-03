@@ -11,14 +11,6 @@ import unicodedata
 
 BASE_DIR = Path(__file__).resolve().parent
 
-POSITION_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
-
-def ordered_positions_from_series(series):
-    vals = {str(x).strip() for x in series.dropna().unique() if str(x).strip() and str(x).strip() not in ["PH", "PR"]}
-    ordered = [p for p in POSITION_ORDER if p in vals]
-    extras = sorted([p for p in vals if p not in POSITION_ORDER])
-    return ordered + extras
-
 def read_required_csv(filename):
     path = BASE_DIR / filename
     if not path.exists():
@@ -907,8 +899,8 @@ def _scatter_color_encoding(chart_df, color_col):
             f"{color_col}:N",
             title=color_col,
             scale=alt.Scale(
-                domain=["C", "1B", "2B", "3B", "SS", "OF", "DH", "P", "Unknown"],
-                range=["#000000", "#08306b", "#8c510a", "#ffd92f", "#238b45", "#e31a1c", "#756bb1", "#bdbdbd", "#ffffff"]
+                domain=["1B", "2B", "SS", "3B", "OF", "DH", "C", "P", "Unknown"],
+                range=["#08306b", "#8c510a", "#238b45", "#ffd92f", "#e31a1c", "#756bb1", "#000000", "#bdbdbd", "#ffffff"]
             ),
             legend=alt.Legend(title=color_col)
         )
@@ -965,142 +957,33 @@ def _scatter_color_encoding(chart_df, color_col):
 
     return alt.Color(f"{color_col}:N", title=color_col, legend=alt.Legend(title=color_col))
 
-def _safe_r2(y_true, y_pred):
-    try:
-        y_true = np.asarray(y_true, dtype=float)
-        y_pred = np.asarray(y_pred, dtype=float)
-        mask = np.isfinite(y_true) & np.isfinite(y_pred)
-        y_true, y_pred = y_true[mask], y_pred[mask]
-        if len(y_true) < 3 or np.nanvar(y_true) == 0:
-            return np.nan
-        ss_res = np.sum((y_true - y_pred) ** 2)
-        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-        return float(1 - ss_res / ss_tot) if ss_tot != 0 else np.nan
-    except Exception:
-        return np.nan
-
-
-def _poly_equation(coeffs, x_col, y_col):
-    coeffs = list(coeffs)
-    degree = len(coeffs) - 1
-    terms = []
-    for i, c in enumerate(coeffs):
-        power = degree - i
-        sign = " + " if c >= 0 else " - "
-        mag = _format_equation_number(abs(c))
-        if power == 0:
-            term = mag
-        elif power == 1:
-            term = f"{mag}×{x_col}"
-        else:
-            term = f"{mag}×{x_col}^{power}"
-        if not terms:
-            terms.append(term if c >= 0 else f"-{term}")
-        else:
-            terms.append(sign + term)
-    return f"{y_col} = {''.join(terms)}"
-
-
-def _fit_model_for_scatter(fit_df, x_col, y_col, model_type):
-    x = pd.to_numeric(fit_df[x_col], errors="coerce").to_numpy(dtype=float)
-    y = pd.to_numeric(fit_df[y_col], errors="coerce").to_numpy(dtype=float)
-    mask = np.isfinite(x) & np.isfinite(y)
-    x, y = x[mask], y[mask]
-    if len(x) < 4 or len(np.unique(x)) < 2 or len(np.unique(y)) < 2:
-        return None
-
-    # Sort for clean line plotting
-    order = np.argsort(x)
-    x_sorted, y_sorted = x[order], y[order]
-    x_line = np.linspace(float(np.nanmin(x_sorted)), float(np.nanmax(x_sorted)), 200)
-
-    try:
-        if model_type == "Linear":
-            coeffs = np.polyfit(x_sorted, y_sorted, 1)
-            y_hat = np.polyval(coeffs, x_sorted)
-            y_line = np.polyval(coeffs, x_line)
-            equation = _poly_equation(coeffs, x_col, y_col)
-
-        elif model_type == "Polynomial (2nd Order)":
-            if len(np.unique(x_sorted)) < 3:
-                return None
-            coeffs = np.polyfit(x_sorted, y_sorted, 2)
-            y_hat = np.polyval(coeffs, x_sorted)
-            y_line = np.polyval(coeffs, x_line)
-            equation = _poly_equation(coeffs, x_col, y_col)
-
-        elif model_type == "Polynomial (3rd Order)":
-            if len(np.unique(x_sorted)) < 4:
-                return None
-            coeffs = np.polyfit(x_sorted, y_sorted, 3)
-            y_hat = np.polyval(coeffs, x_sorted)
-            y_line = np.polyval(coeffs, x_line)
-            equation = _poly_equation(coeffs, x_col, y_col)
-
-        elif model_type == "Logarithmic":
-            mask2 = x_sorted > 0
-            if mask2.sum() < 4 or len(np.unique(x_sorted[mask2])) < 2:
-                return None
-            x2, y2 = x_sorted[mask2], y_sorted[mask2]
-            coeffs = np.polyfit(np.log(x2), y2, 1)
-            y_hat = coeffs[0] * np.log(x2) + coeffs[1]
-            x_line = np.linspace(float(np.nanmin(x2)), float(np.nanmax(x2)), 200)
-            y_line = coeffs[0] * np.log(x_line) + coeffs[1]
-            x_sorted, y_sorted = x2, y2
-            equation = f"{y_col} = {_format_equation_number(coeffs[0])}×ln({x_col}) + {_format_equation_number(coeffs[1])}"
-
-        elif model_type == "Exponential":
-            mask2 = y_sorted > 0
-            if mask2.sum() < 4 or len(np.unique(x_sorted[mask2])) < 2:
-                return None
-            x2, y2 = x_sorted[mask2], y_sorted[mask2]
-            coeffs = np.polyfit(x2, np.log(y2), 1)
-            a = float(np.exp(coeffs[1])); b = float(coeffs[0])
-            y_hat = a * np.exp(b * x2)
-            x_line = np.linspace(float(np.nanmin(x2)), float(np.nanmax(x2)), 200)
-            y_line = a * np.exp(b * x_line)
-            x_sorted, y_sorted = x2, y2
-            equation = f"{y_col} = {_format_equation_number(a)}×e^({_format_equation_number(b)}×{x_col})"
-        else:
-            return None
-
-        r2 = _safe_r2(y_sorted, y_hat)
-        corr = float(np.corrcoef(x_sorted, y_sorted)[0, 1]) if len(x_sorted) > 2 else np.nan
-        line_df = pd.DataFrame({x_col: x_line, y_col: y_line})
-        return {
-            "model_type": model_type,
-            "corr": corr,
-            "r2": r2,
-            "line_df": line_df,
-            "n": len(x_sorted),
-            "equation": equation,
-        }
-    except Exception:
-        return None
-
-
-def _best_fit_stats(chart_df, x_col, y_col, model_type="Linear"):
-    """Compute selected scatterplot fit statistics and line data."""
+def _best_fit_stats(chart_df, x_col, y_col):
+    """Compute linear best-fit statistics for the selected scatterplot axes."""
     fit_df = chart_df[[x_col, y_col]].copy()
     fit_df[x_col] = pd.to_numeric(fit_df[x_col], errors="coerce")
     fit_df[y_col] = pd.to_numeric(fit_df[y_col], errors="coerce")
     fit_df = fit_df.dropna()
     fit_df = fit_df[np.isfinite(fit_df[x_col]) & np.isfinite(fit_df[y_col])]
-    if len(fit_df) < 4 or fit_df[x_col].nunique() < 2 or fit_df[y_col].nunique() < 2:
+    if len(fit_df) < 3 or fit_df[x_col].nunique() < 2 or fit_df[y_col].nunique() < 2:
         return None
-
-    if model_type == "Auto Best Fit":
-        candidates = ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential"]
-        fits = []
-        for m in candidates:
-            f = _fit_model_for_scatter(fit_df, x_col, y_col, m)
-            if f is not None and np.isfinite(f.get("r2", np.nan)):
-                fits.append(f)
-        if not fits:
-            return None
-        return max(fits, key=lambda f: f["r2"])
-
-    return _fit_model_for_scatter(fit_df, x_col, y_col, model_type)
+    x = fit_df[x_col].to_numpy(dtype=float)
+    y = fit_df[y_col].to_numpy(dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    corr = float(np.corrcoef(x, y)[0, 1])
+    r2 = corr ** 2 if np.isfinite(corr) else np.nan
+    x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
+    line_df = pd.DataFrame({
+        x_col: [x_min, x_max],
+        y_col: [slope * x_min + intercept, slope * x_max + intercept]
+    })
+    return {
+        "slope": slope,
+        "intercept": intercept,
+        "corr": corr,
+        "r2": r2,
+        "line_df": line_df,
+        "n": len(fit_df)
+    }
 
 
 def _format_equation_number(value):
@@ -1162,14 +1045,6 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         horizontal=True,
         key=f"{key_prefix}_scatter_view_mode",
         help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every outlier."
-    )
-
-    trendline_type = st.selectbox(
-        "Trendline Type",
-        ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
-        index=0,
-        key=f"{key_prefix}_scatter_trendline_type",
-        help="Choose a linear, polynomial, logarithmic, exponential, or automatic best-fit curve for the selected X/Y relationship."
     )
 
     chart_df = plot_df.copy()
@@ -1250,7 +1125,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         .encode(**enc)
     )
 
-    fit = _best_fit_stats(chart_df, x_col, y_col, trendline_type)
+    fit = _best_fit_stats(chart_df, x_col, y_col)
     chart = points
     if fit is not None:
         fit_line = (
@@ -1267,14 +1142,15 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     st.altair_chart(chart, width="stretch")
 
     if fit is not None:
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Fit Type", fit.get("model_type", trendline_type))
-        m2.metric("Correlation (r)", f"{fit['corr']:.3f}" if np.isfinite(fit.get('corr', np.nan)) else "N/A")
-        m3.metric("R²", f"{fit['r2']:.3f}" if np.isfinite(fit.get('r2', np.nan)) else "N/A")
-        m4.metric("Rows Used", f"{fit['n']:,}")
-        st.caption(f"Best-fit equation: {fit.get('equation', '')}")
+        sign = "+" if fit["intercept"] >= 0 else "-"
+        equation = f"{y_col} = {_format_equation_number(fit['slope'])} × {x_col} {sign} {_format_equation_number(abs(fit['intercept']))}"
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Correlation (r)", f"{fit['corr']:.3f}")
+        m2.metric("R²", f"{fit['r2']:.3f}")
+        m3.metric("Rows Used", f"{fit['n']:,}")
+        st.caption(f"Best-fit line: {equation}")
     else:
-        st.caption("Best-fit curve unavailable because there are not enough valid numeric points, one axis has no variation, or the selected model requires positive values.")
+        st.caption("Best-fit line unavailable because there are not enough valid numeric points or one axis has no variation.")
 
 def clean_feature_name(feature):
     """Make model feature names readable for the UI."""
@@ -2226,7 +2102,7 @@ if active_page == "Historical Explorer":
         )
     hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
     with c3:
-        pos_options = ordered_positions_from_series(batting_df[hist_position_source_col])
+        pos_options = sorted([x for x in batting_df[hist_position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
         hist_pos = st.multiselect("Primary Position", pos_options, default=pos_options, key="hist_pos")
     with c4:
         actual_team_names = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
@@ -2357,7 +2233,7 @@ if active_page == "Career Totals":
         )
     with c4:
         position_source_col = "careerPrimaryPos" if position_filter_mode == "Career Primary Position" else "primaryPos"
-        pos_options_career = ordered_positions_from_series(batting_df[position_source_col])
+        pos_options_career = sorted([x for x in batting_df[position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
         pos_filter_career = st.multiselect("Position", pos_options_career, default=pos_options_career, key="career_pos")
     with c5:
         actual_team_names_career = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
