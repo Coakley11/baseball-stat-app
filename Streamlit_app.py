@@ -957,33 +957,141 @@ def _scatter_color_encoding(chart_df, color_col):
 
     return alt.Color(f"{color_col}:N", title=color_col, legend=alt.Legend(title=color_col))
 
-def _best_fit_stats(chart_df, x_col, y_col):
-    """Compute linear best-fit statistics for the selected scatterplot axes."""
+def _safe_r2(y_true, y_pred):
+    try:
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        mask = np.isfinite(y_true) & np.isfinite(y_pred)
+        y_true, y_pred = y_true[mask], y_pred[mask]
+        if len(y_true) < 3 or np.nanvar(y_true) == 0:
+            return np.nan
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+        return float(1 - ss_res / ss_tot) if ss_tot != 0 else np.nan
+    except Exception:
+        return np.nan
+
+
+def _poly_equation(coeffs, x_col, y_col):
+    coeffs = list(coeffs)
+    degree = len(coeffs) - 1
+    terms = []
+    for i, c in enumerate(coeffs):
+        power = degree - i
+        sign = " + " if c >= 0 else " - "
+        mag = _format_equation_number(abs(c))
+        if power == 0:
+            term = mag
+        elif power == 1:
+            term = f"{mag}×{x_col}"
+        else:
+            term = f"{mag}×{x_col}^{power}"
+        if not terms:
+            terms.append(term if c >= 0 else f"-{term}")
+        else:
+            terms.append(sign + term)
+    return f"{y_col} = {''.join(terms)}"
+
+
+def _fit_model_for_scatter(fit_df, x_col, y_col, model_type):
+    x = pd.to_numeric(fit_df[x_col], errors="coerce").to_numpy(dtype=float)
+    y = pd.to_numeric(fit_df[y_col], errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+    if len(x) < 4 or len(np.unique(x)) < 2 or len(np.unique(y)) < 2:
+        return None
+
+    order = np.argsort(x)
+    x_sorted, y_sorted = x[order], y[order]
+    x_line = np.linspace(float(np.nanmin(x_sorted)), float(np.nanmax(x_sorted)), 200)
+
+    try:
+        if model_type == "Linear":
+            coeffs = np.polyfit(x_sorted, y_sorted, 1)
+            y_hat = np.polyval(coeffs, x_sorted)
+            y_line = np.polyval(coeffs, x_line)
+            equation = _poly_equation(coeffs, x_col, y_col)
+
+        elif model_type == "Polynomial (2nd Order)":
+            if len(np.unique(x_sorted)) < 3:
+                return None
+            coeffs = np.polyfit(x_sorted, y_sorted, 2)
+            y_hat = np.polyval(coeffs, x_sorted)
+            y_line = np.polyval(coeffs, x_line)
+            equation = _poly_equation(coeffs, x_col, y_col)
+
+        elif model_type == "Polynomial (3rd Order)":
+            if len(np.unique(x_sorted)) < 4:
+                return None
+            coeffs = np.polyfit(x_sorted, y_sorted, 3)
+            y_hat = np.polyval(coeffs, x_sorted)
+            y_line = np.polyval(coeffs, x_line)
+            equation = _poly_equation(coeffs, x_col, y_col)
+
+        elif model_type == "Logarithmic":
+            mask2 = x_sorted > 0
+            if mask2.sum() < 4 or len(np.unique(x_sorted[mask2])) < 2:
+                return None
+            x2, y2 = x_sorted[mask2], y_sorted[mask2]
+            coeffs = np.polyfit(np.log(x2), y2, 1)
+            y_hat = coeffs[0] * np.log(x2) + coeffs[1]
+            x_line = np.linspace(float(np.nanmin(x2)), float(np.nanmax(x2)), 200)
+            y_line = coeffs[0] * np.log(x_line) + coeffs[1]
+            x_sorted, y_sorted = x2, y2
+            equation = f"{y_col} = {_format_equation_number(coeffs[0])}×ln({x_col}) + {_format_equation_number(coeffs[1])}"
+
+        elif model_type == "Exponential":
+            mask2 = y_sorted > 0
+            if mask2.sum() < 4 or len(np.unique(x_sorted[mask2])) < 2:
+                return None
+            x2, y2 = x_sorted[mask2], y_sorted[mask2]
+            coeffs = np.polyfit(x2, np.log(y2), 1)
+            a = float(np.exp(coeffs[1])); b = float(coeffs[0])
+            y_hat = a * np.exp(b * x2)
+            x_line = np.linspace(float(np.nanmin(x2)), float(np.nanmax(x2)), 200)
+            y_line = a * np.exp(b * x_line)
+            x_sorted, y_sorted = x2, y2
+            equation = f"{y_col} = {_format_equation_number(a)}×e^({_format_equation_number(b)}×{x_col})"
+        else:
+            return None
+
+        r2 = _safe_r2(y_sorted, y_hat)
+        corr = float(np.corrcoef(x_sorted, y_sorted)[0, 1]) if len(x_sorted) > 2 else np.nan
+        line_df = pd.DataFrame({x_col: x_line, y_col: y_line})
+        return {
+            "model_type": model_type,
+            "corr": corr,
+            "r2": r2,
+            "line_df": line_df,
+            "n": len(x_sorted),
+            "equation": equation,
+        }
+    except Exception:
+        return None
+
+
+def _best_fit_stats(chart_df, x_col, y_col, model_type="Linear"):
+    """Compute selected scatterplot fit statistics and line data."""
     fit_df = chart_df[[x_col, y_col]].copy()
     fit_df[x_col] = pd.to_numeric(fit_df[x_col], errors="coerce")
     fit_df[y_col] = pd.to_numeric(fit_df[y_col], errors="coerce")
     fit_df = fit_df.dropna()
     fit_df = fit_df[np.isfinite(fit_df[x_col]) & np.isfinite(fit_df[y_col])]
-    if len(fit_df) < 3 or fit_df[x_col].nunique() < 2 or fit_df[y_col].nunique() < 2:
+    if len(fit_df) < 4 or fit_df[x_col].nunique() < 2 or fit_df[y_col].nunique() < 2:
         return None
-    x = fit_df[x_col].to_numpy(dtype=float)
-    y = fit_df[y_col].to_numpy(dtype=float)
-    slope, intercept = np.polyfit(x, y, 1)
-    corr = float(np.corrcoef(x, y)[0, 1])
-    r2 = corr ** 2 if np.isfinite(corr) else np.nan
-    x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
-    line_df = pd.DataFrame({
-        x_col: [x_min, x_max],
-        y_col: [slope * x_min + intercept, slope * x_max + intercept]
-    })
-    return {
-        "slope": slope,
-        "intercept": intercept,
-        "corr": corr,
-        "r2": r2,
-        "line_df": line_df,
-        "n": len(fit_df)
-    }
+
+    if model_type == "Auto Best Fit":
+        candidates = ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential"]
+        fits = []
+        for m in candidates:
+            f = _fit_model_for_scatter(fit_df, x_col, y_col, m)
+            if f is not None and np.isfinite(f.get("r2", np.nan)):
+                fits.append(f)
+        if not fits:
+            return None
+        return max(fits, key=lambda f: f["r2"])
+
+    return _fit_model_for_scatter(fit_df, x_col, y_col, model_type)
 
 
 def _format_equation_number(value):
@@ -1047,6 +1155,14 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every outlier."
     )
 
+    trendline_type = st.selectbox(
+        "Trendline Type",
+        ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
+        index=0,
+        key=f"{key_prefix}_scatter_trendline_type",
+        help="Choose a linear, polynomial, logarithmic, exponential, or automatic best-fit curve for the selected X/Y relationship."
+    )
+
     chart_df = plot_df.copy()
     chart_df[x_col] = pd.to_numeric(chart_df[x_col], errors="coerce")
     chart_df[y_col] = pd.to_numeric(chart_df[y_col], errors="coerce")
@@ -1055,13 +1171,10 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         st.info("No rows have valid values for both selected axes.")
         return
 
-    # Keep a full copy for axis domains so Full Outlier View truly includes the
-    # entire filtered result set, even if we limit plotted points for speed.
     domain_df = chart_df.copy()
 
     if len(chart_df) > max_points:
         if view_mode == "Full Outlier View":
-            # Preserve extreme x/y values before filling the rest with a broad sample.
             extreme_idx = set()
             for _col in [x_col, y_col]:
                 extreme_idx.update(chart_df.nlargest(min(25, len(chart_df)), _col).index.tolist())
@@ -1092,12 +1205,9 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     tooltip_cols = list(dict.fromkeys(tooltip_cols))
 
     if view_mode == "Full Outlier View":
-        # Full range: include every visible point/outlier on both axes.
-        # This helper avoids passing format=None into Altair, which can break the chart.
         x_scale, x_axis = _full_axis_config_for_column(x_col, domain_df[x_col])
         y_scale, y_axis = _full_axis_config_for_column(y_col, domain_df[y_col])
     else:
-        # Focused View: zooms to the dense middle of the data.
         x_scale, x_axis = _axis_config_for_column(x_col, chart_df[x_col])
         y_scale, y_axis = _axis_config_for_column(y_col, chart_df[y_col])
 
@@ -1119,13 +1229,9 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     if size_encoding is None:
         mark_kwargs["size"] = 85
 
-    points = (
-        alt.Chart(chart_df)
-        .mark_circle(**mark_kwargs)
-        .encode(**enc)
-    )
+    points = alt.Chart(chart_df).mark_circle(**mark_kwargs).encode(**enc)
 
-    fit = _best_fit_stats(chart_df, x_col, y_col)
+    fit = _best_fit_stats(chart_df, x_col, y_col, trendline_type)
     chart = points
     if fit is not None:
         fit_line = (
@@ -1142,15 +1248,14 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     st.altair_chart(chart, width="stretch")
 
     if fit is not None:
-        sign = "+" if fit["intercept"] >= 0 else "-"
-        equation = f"{y_col} = {_format_equation_number(fit['slope'])} × {x_col} {sign} {_format_equation_number(abs(fit['intercept']))}"
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Correlation (r)", f"{fit['corr']:.3f}")
-        m2.metric("R²", f"{fit['r2']:.3f}")
-        m3.metric("Rows Used", f"{fit['n']:,}")
-        st.caption(f"Best-fit line: {equation}")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Fit Type", fit.get("model_type", trendline_type))
+        m2.metric("Correlation (r)", f"{fit['corr']:.3f}" if np.isfinite(fit.get('corr', np.nan)) else "N/A")
+        m3.metric("R²", f"{fit['r2']:.3f}" if np.isfinite(fit.get('r2', np.nan)) else "N/A")
+        m4.metric("Rows Used", f"{fit['n']:,}")
+        st.caption(f"Best-fit equation: {fit.get('equation', '')}")
     else:
-        st.caption("Best-fit line unavailable because there are not enough valid numeric points or one axis has no variation.")
+        st.caption("Best-fit curve unavailable because there are not enough valid numeric points, one axis has no variation, or the selected model requires positive values.")
 
 def clean_feature_name(feature):
     """Make model feature names readable for the UI."""
@@ -2056,27 +2161,10 @@ PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Compari
 # Stable widget keys plus radio-style page navigation preserve filters and charts
 # when moving between pages during the same session.
 
-# Keep widget values even when their page is not rendered.
-# Streamlit normally cleans up widget state for widgets that disappear when switching pages.
-# This safe self-assignment interrupts that cleanup, while skipping button/download keys
-# because Streamlit forbids programmatic assignment for those widgets.
-for _state_key in list(st.session_state.keys()):
-    _key_text = str(_state_key).lower()
-    if (
-        _key_text.startswith("download")
-        or _key_text.startswith("export")
-        or _key_text.startswith("button")
-        or _key_text.startswith("form_submit")
-        or _key_text.endswith("_button")
-        or "_button" in _key_text
-        or "download" in _key_text
-        or "export_csv" in _key_text
-    ):
-        continue
-    try:
-        st.session_state[_state_key] = st.session_state[_state_key]
-    except Exception:
-        pass
+# Page navigation is handled by one stable sidebar radio key.
+# The earlier version tried to preserve every hidden widget by manually reassigning
+# st.session_state values. That can break Streamlit page switching and buttons,
+# especially the ML prediction button, so this version avoids that risky pattern.
 
 st.session_state.setdefault("active_page", "Historical Explorer")
 active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
@@ -2757,6 +2845,14 @@ if active_page == "Fantasy Sleepers & Busts":
             help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every player/outlier."
         )
 
+        fantasy_trendline_type = st.selectbox(
+            "Market Edge Trendline Type",
+            ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
+            index=5,
+            key="fantasy_market_edge_trendline_type",
+            help="Auto Best Fit tests linear, polynomial, logarithmic, and exponential curves, then chooses the curve with the highest R². The curve estimates the typical model rank for a given market rank."
+        )
+
         required_plot_cols = ["Market Rank", "Model Rank"]
         missing_plot_cols = [col for col in required_plot_cols if col not in fantasy_plot_df.columns]
         if missing_plot_cols:
@@ -2802,7 +2898,70 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_rank = 300
                 diagonal_df = pd.DataFrame({"Market Rank": [1, max_rank], "Model Rank": [1, max_rank]})
                 diagonal = alt.Chart(diagonal_df).mark_line(color="#111111", strokeDash=[6, 4]).encode(x="Market Rank:Q", y="Model Rank:Q")
-                st.altair_chart((points + diagonal).interactive().properties(height=540), width="stretch")
+
+                edge_fit = _best_fit_stats(chart_source, "Market Rank", "Model Rank", fantasy_trendline_type)
+                chart_layers = points + diagonal
+
+                if edge_fit is not None:
+                    fit_line = (
+                        alt.Chart(edge_fit["line_df"])
+                        .mark_line(color="#b00020", strokeWidth=3, strokeDash=[10, 4])
+                        .encode(
+                            x=alt.X("Market Rank:Q", scale=x_scale),
+                            y=alt.Y("Model Rank:Q", scale=y_scale),
+                        )
+                    )
+                    chart_layers = chart_layers + fit_line
+
+                st.altair_chart(chart_layers.interactive().properties(height=540), width="stretch")
+
+                if edge_fit is not None:
+                    e1, e2, e3, e4 = st.columns(4)
+                    e1.metric("Best Curve", edge_fit.get("model_type", fantasy_trendline_type))
+                    e2.metric("Correlation (r)", f"{edge_fit['corr']:.3f}" if np.isfinite(edge_fit.get("corr", np.nan)) else "N/A")
+                    e3.metric("R²", f"{edge_fit['r2']:.3f}" if np.isfinite(edge_fit.get("r2", np.nan)) else "N/A")
+                    e4.metric("Rows Used", f"{edge_fit['n']:,}")
+                    st.caption(
+                        "Red curve = expected model rank at each market rank. "
+                        "A player far ABOVE the diagonal is a basic Fantasy Edge sleeper. "
+                        "A player far ABOVE the red curve is even more interesting because your model ranks him better than the model/market relationship would normally predict. "
+                        f"Curve equation: {edge_fit.get('equation', '')}"
+                    )
+
+                    # Curve-adjusted edge: expected model rank from market rank minus actual model rank.
+                    # Positive means your model is better/lower than the curve expectation for that market rank.
+                    curve_df = chart_source.copy()
+                    fit_curve = edge_fit["line_df"].sort_values("Market Rank")
+                    curve_df["Curve Expected Model Rank"] = np.interp(
+                        pd.to_numeric(curve_df["Market Rank"], errors="coerce"),
+                        pd.to_numeric(fit_curve["Market Rank"], errors="coerce"),
+                        pd.to_numeric(fit_curve["Model Rank"], errors="coerce")
+                    )
+                    curve_df["Curve Edge"] = curve_df["Curve Expected Model Rank"] - pd.to_numeric(curve_df["Model Rank"], errors="coerce")
+                    curve_df["Curve Edge Rank"] = curve_df["Curve Edge"].rank(ascending=False, method="min")
+                    curve_cols = [
+                        "Player", "Team", "Primary Position", "Age", "Market Rank", "Model Rank",
+                        "Fantasy Edge", "Curve Expected Model Rank", "Curve Edge", "Curve Edge Rank",
+                        "Projected Production Score", "Current Production Score"
+                    ]
+                    curve_display = curve_df[[c for c in curve_cols if c in curve_df.columns]].sort_values("Curve Edge", ascending=False).head(15).copy()
+                    for c in ["Curve Expected Model Rank", "Curve Edge", "Curve Edge Rank"]:
+                        if c in curve_display.columns:
+                            curve_display[c] = pd.to_numeric(curve_display[c], errors="coerce").round(1)
+                    st.subheader("Curve-Adjusted Sleepers")
+                    st.caption(
+                        "This table finds players whose model rank is better than expected after accounting for the overall market-vs-model curve. "
+                        "It helps separate ordinary market disagreement from stronger model-driven edges."
+                    )
+                    render_output_table(
+                        format_fantasy_table(clean_ui_columns(curve_display)),
+                        key="fantasy_curve_adjusted_sleepers",
+                        file_name="fantasy_curve_adjusted_sleepers.csv",
+                        display_rows=15,
+                        style_cols=["Fantasy Edge", "Curve Edge"]
+                    )
+                else:
+                    st.caption("Advanced market-edge curve unavailable because the selected model needs more valid rows or positive values.")
 
         sleepers = fantasy_df.sort_values("Fantasy Edge", ascending=False).head(fantasy_top_n).copy()
         busts = fantasy_df.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
