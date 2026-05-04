@@ -353,9 +353,9 @@ def format_fantasy_table(df):
     score_cols = [
         "Current Production Score", "Projected Production Score", "Expected Fantasy Value",
         "Recommendation Score", "Draft Fit Score", "Sleeper Score", "Bust Risk Score",
-        "Player Value Component", "Market Edge Component", "Roster Need Component",
+        "Player Value Component", "ML Projection Component", "Market Edge Component", "Roster Need Component",
         "Scarcity Component", "Category Fit Component", "Availability Urgency Component",
-        "Risk Component"
+        "Risk Component", "ML Projection Score", "Blended Projection Score"
     ]
     edge_cols = ["Fantasy Edge"]
     rate_cols = ["BA", "OBP", "SLG", "OPS", "Projected BA", "Projected OBP", "Projected SLG", "Projected OPS"]
@@ -3058,6 +3058,32 @@ if active_page == "Draft Assistant Simulator":
         with d4:
             draft_top_n = st.slider("Recommendations to Show", 5, 30, 10, key="draft_top_n")
 
+        st.subheader("ML Blend Settings")
+        mlb1, mlb2, mlb3 = st.columns(3)
+        with mlb1:
+            use_ml_in_draft = st.checkbox(
+                "Blend ML projection signal into Draft Fit Score",
+                value=True,
+                key="draft_use_ml_blend",
+                help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score."
+            )
+        with mlb2:
+            ml_blend_weight = st.slider(
+                "ML Signal Weight",
+                0.00, 0.30, 0.12, 0.01,
+                key="draft_ml_blend_weight",
+                help="Higher values make the Draft Assistant trust the ML projection signal more."
+            )
+        with mlb3:
+            ml_min_games_for_signal = st.number_input(
+                "ML Signal Min Recent Games",
+                min_value=0,
+                max_value=500,
+                value=50,
+                step=10,
+                key="draft_ml_min_games_signal"
+            )
+
         max_year_draft = int(yearly_df["yearID"].max())
         draft_years = list(range(max_year_draft - draft_window + 1, max_year_draft + 1))
         recent_draft = yearly_df[yearly_df["yearID"].isin(draft_years)].copy().sort_values(["playerID", "yearID"])
@@ -3103,7 +3129,57 @@ if active_page == "Draft Assistant Simulator":
             draft_df["Current Production Score"] = normalize_series(draft_df["HR"] * 4 + draft_df["RBI"] + draft_df["R"] + draft_df["SB"] * 2 + draft_df["BB"] + draft_df["OPS"] * 20)
             draft_df["Projected Production Score"] = normalize_series(draft_df["proj_HR"] * 4 + draft_df["proj_RBI"] + draft_df["proj_R"] + draft_df["proj_SB"] * 2 + draft_df["proj_BB"] + draft_df["proj_OPS"] * 20)
 
-        draft_df["Model Rank"] = draft_df["Projected Production Score"].rank(ascending=False, method="min")
+        # Lightweight ML projection signal for the Draft Assistant.
+        # This is intentionally faster and more stable than running the full ML page inside the draft board.
+        # It uses recent projection stats, trend slopes, age, playing time, and regression-to-mean style stability.
+        draft_df["ML Signal Eligible"] = pd.to_numeric(draft_df.get("G", 0), errors="coerce").fillna(0) >= ml_min_games_for_signal
+        if draft_format == "5x5 Roto":
+            ml_raw_signal = (
+                normalize_series(draft_df["proj_R"]) * 0.16 +
+                normalize_series(draft_df["proj_HR"]) * 0.18 +
+                normalize_series(draft_df["proj_RBI"]) * 0.18 +
+                normalize_series(draft_df["proj_SB"]) * 0.16 +
+                normalize_series(draft_df["proj_BA"]) * 0.12 +
+                normalize_series(draft_df["proj_OPS"]) * 0.10 +
+                normalize_series(draft_df["HR_trend"].fillna(0)) * 0.05 +
+                normalize_series(draft_df["OPS_trend"].fillna(0)) * 0.05
+            )
+        else:
+            ml_raw_signal = normalize_series(
+                draft_df["proj_HR"] * 4 +
+                draft_df["proj_RBI"] +
+                draft_df["proj_R"] +
+                draft_df["proj_SB"] * 2 +
+                draft_df["proj_BB"] +
+                draft_df["proj_OPS"] * 25 +
+                draft_df["HR_trend"].fillna(0) * 2 +
+                draft_df["OPS_trend"].fillna(0) * 50
+            )
+
+        # Age curve adjustment: reward prime years, lightly penalize older decline-risk profiles.
+        age_num = pd.to_numeric(draft_df.get("Age", np.nan), errors="coerce")
+        age_curve = 1 - (abs(age_num.fillna(29) - 28) / 18)
+        age_curve = age_curve.clip(lower=0.55, upper=1.05)
+
+        # Playing time stability adjustment: more recent games means less uncertainty.
+        playing_time_stability = normalize_series(pd.to_numeric(draft_df.get("G", 0), errors="coerce").fillna(0))
+        draft_df["ML Projection Score"] = normalize_series(
+            ml_raw_signal * 0.78 +
+            normalize_series(age_curve) * 0.10 +
+            playing_time_stability * 0.12
+        )
+        draft_df.loc[~draft_df["ML Signal Eligible"], "ML Projection Score"] *= 0.75
+
+        # Blended model score: combines the original projection score with the ML projection signal.
+        if use_ml_in_draft and ml_blend_weight > 0:
+            draft_df["Blended Projection Score"] = (
+                (1 - ml_blend_weight) * pd.to_numeric(draft_df["Projected Production Score"], errors="coerce").fillna(0) +
+                ml_blend_weight * pd.to_numeric(draft_df["ML Projection Score"], errors="coerce").fillna(0)
+            )
+        else:
+            draft_df["Blended Projection Score"] = draft_df["Projected Production Score"]
+
+        draft_df["Model Rank"] = draft_df["Blended Projection Score"].rank(ascending=False, method="min")
         draft_df["Fantasy Edge"] = draft_df["Market Rank"] - draft_df["Model Rank"]
 
         st.subheader("Roster / Draft Controls")
@@ -3141,7 +3217,8 @@ if active_page == "Draft Assistant Simulator":
             available["Category Need Bonus"] = cat_bonus
 
         available["Risk Penalty"] = normalize_series(pd.to_numeric(available.get("Expert Std Dev", 0), errors="coerce").fillna(0)) * 0.08
-        available["Expected Fantasy Value"] = available["Projected Production Score"]
+        available["Expected Fantasy Value"] = available["Blended Projection Score"]
+        available["ML Component"] = normalize_series(available["ML Projection Score"].fillna(0)) * ml_blend_weight if use_ml_in_draft else 0.0
 
         # Position Scarcity Model: value over replacement by position among remaining players.
         # This rewards players who are substantially better than the replacement-level option at their position.
@@ -3201,7 +3278,9 @@ if active_page == "Draft Assistant Simulator":
         #   7. Risk Penalty = expert disagreement / uncertainty.
         #
         # Higher score = better pick for your team right now.
-        available["Player Value Component"] = normalize_series(available["Expected Fantasy Value"]) * 0.38
+        base_value_weight = 0.38 - (ml_blend_weight * 0.25 if use_ml_in_draft else 0.0)
+        available["Player Value Component"] = normalize_series(available["Expected Fantasy Value"]) * max(base_value_weight, 0.28)
+        available["ML Projection Component"] = available["ML Component"]
         available["Market Edge Component"] = normalize_series(available["Fantasy Edge"].fillna(0)) * 0.22
         available["Roster Need Component"] = normalize_series(available["Position Need Bonus"].fillna(0)) * 0.14
         available["Scarcity Component"] = normalize_series(available["Position Scarcity Bonus"].fillna(0)) * 0.12
@@ -3218,6 +3297,7 @@ if active_page == "Draft Assistant Simulator":
 
         available["Draft Fit Score"] = (
             available["Player Value Component"] +
+            available["ML Projection Component"] +
             available["Market Edge Component"] +
             available["Roster Need Component"] +
             available["Scarcity Component"] +
@@ -3238,6 +3318,8 @@ if active_page == "Draft Assistant Simulator":
                 pieces.append("market is higher than your model, so this is less of a value pick")
             if r.get("Primary Position") in needed_positions:
                 pieces.append(f"fills a needed {r.get('Primary Position')} slot")
+            if r.get("ML Projection Component", 0) > 0.02:
+                pieces.append("gets a boost from the ML projection signal")
             if r.get("Position Scarcity Bonus", 0) > 0.05:
                 pieces.append(f"has strong value over replacement at {r.get('Primary Position')}")
             if r.get("Category Need Bonus", 0) > 0:
@@ -3334,18 +3416,20 @@ if active_page == "Draft Assistant Simulator":
                 bv = best_value.iloc[0]
                 st.info(f"Best Raw Value: {bv['fullName']} — Expected Fantasy Value {fmt_rate_4(bv.get('Expected Fantasy Value'))}. This is the strongest available player by projected value before roster-fit bonuses.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "Current Production Score", "Expected Fantasy Value", "Player Value Component", "Market Edge Component", "Roster Need Component", "Scarcity Component", "Category Fit Component", "Availability Urgency Component", "Risk Component", "Position Scarcity Score", "Position Scarcity Bonus", "Draft Fit Score", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "Current Production Score", "Projected Production Score", "ML Projection Score", "Expected Fantasy Value", "Player Value Component", "ML Projection Component", "Market Edge Component", "Roster Need Component", "Scarcity Component", "Category Fit Component", "Availability Urgency Component", "Risk Component", "Position Scarcity Score", "Position Scarcity Bonus", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.subheader("Recommended Picks")
         st.caption(
-            "Draft Fit Score now combines projected value, your model's market edge, roster need, position scarcity, category fit, availability urgency, and risk. "
+            "Draft Fit Score now combines projected value, a lightweight ML projection signal, your model's market edge, roster need, position scarcity, category fit, availability urgency, and risk. "
             "The component columns show why a player is being recommended."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
 
         st.subheader("Dynamic Draft Board")
-        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "Expected Fantasy Value", "Market Edge Component", "Scarcity Component", "Roster Need Component", "Draft Fit Score"]
+        # Clean draft-board view: keep only the columns a user needs while making a pick.
+        # Detailed scoring components remain in Recommended Picks.
+        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Draft Fit Score"]
         drafted_board = draft_df[draft_df["fullName"].isin(set(drafted_players))].copy()
         available_board = available.sort_values("Market Rank", na_position="last").head(25).copy()
         bcol1, bcol2 = st.columns(2)
@@ -3357,7 +3441,7 @@ if active_page == "Draft Assistant Simulator":
                 drafted_display = drafted_board[[c for c in board_cols if c in drafted_board.columns]].rename(columns={"fullName": "Player"})
                 render_output_table(format_fantasy_table(clean_ui_columns(drafted_display)), key="draft_board_drafted", file_name="drafted_players.csv")
         with bcol2:
-            st.caption("Top Available by Market Rank")
+            st.caption("Top Available by Market Rank — a clean draft-board view of the best remaining players by public/market value.")
             available_display = available_board[[c for c in board_cols if c in available_board.columns]].rename(columns={"fullName": "Player"})
             render_output_table(format_fantasy_table(clean_ui_columns(available_display)), key="draft_board_available", file_name="available_players.csv", style_cols=["Fantasy Edge"])
 
