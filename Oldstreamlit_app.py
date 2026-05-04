@@ -352,10 +352,7 @@ def format_fantasy_table(df):
     rank_cols = ["Market Rank", "Model Rank", "Current Rank", "FantasyPros Rank", "ADP Rank", "Recommendation Rank", "Draft Fit Rank", "RK", "BEST", "WORST"]
     score_cols = [
         "Current Production Score", "Projected Production Score", "Expected Fantasy Value",
-        "Recommendation Score", "Draft Fit Score", "Sleeper Score", "Bust Risk Score",
-        "Player Value Component", "Market Edge Component", "Roster Need Component",
-        "Scarcity Component", "Category Fit Component", "Availability Urgency Component",
-        "Risk Component"
+        "Recommendation Score", "Draft Fit Score", "Sleeper Score", "Bust Risk Score"
     ]
     edge_cols = ["Fantasy Edge"]
     rate_cols = ["BA", "OBP", "SLG", "OPS", "Projected BA", "Projected OBP", "Projected SLG", "Projected OPS"]
@@ -2165,29 +2162,9 @@ PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Compari
 # when moving between pages during the same session.
 
 # Page navigation is handled by one stable sidebar radio key.
-# Streamlit may clean up widget values from pages that are not currently rendered.
-# This safe keep-alive loop preserves filters/settings from previously visited pages
-# while avoiding button/download/form-submit keys, which Streamlit does not allow
-# to be reassigned programmatically.
-for _state_key in list(st.session_state.keys()):
-    _key_text = str(_state_key).lower()
-    if (
-        _key_text == "active_page"
-        or _key_text.startswith("download")
-        or _key_text.startswith("export")
-        or _key_text.startswith("button")
-        or _key_text.startswith("form_submit")
-        or _key_text.endswith("_button")
-        or "_button" in _key_text
-        or "download" in _key_text
-        or "export_csv" in _key_text
-        or "form_submit" in _key_text
-    ):
-        continue
-    try:
-        st.session_state[_state_key] = st.session_state[_state_key]
-    except Exception:
-        pass
+# The earlier version tried to preserve every hidden widget by manually reassigning
+# st.session_state values. That can break Streamlit page switching and buttons,
+# especially the ML prediction button, so this version avoids that risky pattern.
 
 st.session_state.setdefault("active_page", "Historical Explorer")
 active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
@@ -2875,10 +2852,6 @@ if active_page == "Fantasy Sleepers & Busts":
             key="fantasy_market_edge_trendline_type",
             help="Auto Best Fit tests linear, polynomial, logarithmic, and exponential curves, then chooses the curve with the highest R². The curve estimates the typical model rank for a given market rank."
         )
-        st.caption(
-            "Model being fitted: Market Rank → Model Rank. The black dotted diagonal is equal ranking. "
-            "The red curve estimates the model rank normally expected at each market rank."
-        )
 
         required_plot_cols = ["Market Rank", "Model Rank"]
         missing_plot_cols = [col for col in required_plot_cols if col not in fantasy_plot_df.columns]
@@ -2909,7 +2882,7 @@ if active_page == "Fantasy Sleepers & Busts":
 
                 enc = {
                     "x": alt.X("Market Rank:Q", title="Market Rank", scale=x_scale),
-                    "y": alt.Y("Model Rank:Q", title="Model Rank", scale=y_scale),
+                    "y": alt.Y("Model Rank:Q", title="Your Model Rank", scale=y_scale),
                     "tooltip": tooltip_cols
                 }
                 color_encoding = _scatter_color_encoding(chart_source, fantasy_color_col)
@@ -2949,10 +2922,9 @@ if active_page == "Fantasy Sleepers & Busts":
                     e3.metric("R²", f"{edge_fit['r2']:.3f}" if np.isfinite(edge_fit.get("r2", np.nan)) else "N/A")
                     e4.metric("Rows Used", f"{edge_fit['n']:,}")
                     st.caption(
-                        f"Fitted model: {edge_fit.get('model_type', fantasy_trendline_type)} curve using Market Rank as X and Model Rank as Y. "
-                        "The black dotted diagonal means Market Rank = Model Rank. "
-                        "The red curve is the expected Model Rank for each Market Rank. "
-                        "Because lower rank is better, players whose actual Model Rank is much lower/better than the red curve are stronger curve-adjusted sleepers. "
+                        "Red curve = expected model rank at each market rank. "
+                        "A player far ABOVE the diagonal is a basic Fantasy Edge sleeper. "
+                        "A player far ABOVE the red curve is even more interesting because your model ranks him better than the model/market relationship would normally predict. "
                         f"Curve equation: {edge_fit.get('equation', '')}"
                     )
 
@@ -2973,15 +2945,13 @@ if active_page == "Fantasy Sleepers & Busts":
                         "Projected Production Score", "Current Production Score"
                     ]
                     curve_display = curve_df[[c for c in curve_cols if c in curve_df.columns]].sort_values("Curve Edge", ascending=False).head(15).copy()
-                    for c in ["Curve Expected Model Rank", "Curve Edge"]:
+                    for c in ["Curve Expected Model Rank", "Curve Edge", "Curve Edge Rank"]:
                         if c in curve_display.columns:
-                            curve_display[c] = pd.to_numeric(curve_display[c], errors="coerce").map(lambda v: "" if pd.isna(v) else f"{v:.1f}")
-                    if "Curve Edge Rank" in curve_display.columns:
-                        curve_display["Curve Edge Rank"] = pd.to_numeric(curve_display["Curve Edge Rank"], errors="coerce").round(0).astype("Int64")
+                            curve_display[c] = pd.to_numeric(curve_display[c], errors="coerce").round(1)
                     st.subheader("Curve-Adjusted Sleepers")
                     st.caption(
-                        "Curve Expected Model Rank is the rank predicted by the red curve for that player's Market Rank. "
-                        "Curve Edge = Curve Expected Model Rank − actual Model Rank. Positive Curve Edge means your model ranks the player better than expected after accounting for the market/model curve."
+                        "This table finds players whose model rank is better than expected after accounting for the overall market-vs-model curve. "
+                        "It helps separate ordinary market disagreement from stronger model-driven edges."
                     )
                     render_output_table(
                         format_fantasy_table(clean_ui_columns(curve_display)),
@@ -3190,42 +3160,14 @@ if active_page == "Draft Assistant Simulator":
         available.loc[available["Primary Position"].isin(needed_positions), "Position Scarcity Bonus"] *= 1.25
 
         available["Availability Probability"] = 1 / (1 + np.exp(-(pd.to_numeric(available.get("Market Rank"), errors="coerce").fillna(current_pick) - float(current_pick)) / 35))
-        # Improved Draft Fit Score
-        # This score is designed to behave more like a draft-decision model:
-        #   1. Expected Fantasy Value = player quality / projected production.
-        #   2. Fantasy Edge = where your model disagrees positively with the market.
-        #   3. Position Need Bonus = whether this player fills an open roster need.
-        #   4. Position Scarcity Bonus = whether this position is drying up quickly.
-        #   5. Category Need Bonus = whether the player helps categories you selected.
-        #   6. Availability Probability = how likely the player is to still be around later.
-        #   7. Risk Penalty = expert disagreement / uncertainty.
-        #
-        # Higher score = better pick for your team right now.
-        available["Player Value Component"] = normalize_series(available["Expected Fantasy Value"]) * 0.38
-        available["Market Edge Component"] = normalize_series(available["Fantasy Edge"].fillna(0)) * 0.22
-        available["Roster Need Component"] = normalize_series(available["Position Need Bonus"].fillna(0)) * 0.14
-        available["Scarcity Component"] = normalize_series(available["Position Scarcity Bonus"].fillna(0)) * 0.12
-        available["Category Fit Component"] = normalize_series(available["Category Need Bonus"].fillna(0)) * 0.08
-
-        # Availability urgency: if a strong player is unlikely to last until your next pick,
-        # he gets a small urgency boost. If he is very likely to be available later,
-        # the app is less aggressive about recommending him now.
-        available["Availability Urgency Component"] = (
-            1 - pd.to_numeric(available["Availability Probability"], errors="coerce").fillna(0.50)
-        ) * 0.06
-
-        available["Risk Component"] = normalize_series(available["Risk Penalty"].fillna(0)) * 0.08
-
         available["Draft Fit Score"] = (
-            available["Player Value Component"] +
-            available["Market Edge Component"] +
-            available["Roster Need Component"] +
-            available["Scarcity Component"] +
-            available["Category Fit Component"] +
-            available["Availability Urgency Component"] -
-            available["Risk Component"]
+            available["Expected Fantasy Value"] * 0.50 +
+            normalize_series(available["Fantasy Edge"].fillna(0)) * 0.22 +
+            available["Position Need Bonus"] +
+            available["Position Scarcity Bonus"] +
+            available["Category Need Bonus"] -
+            available["Risk Penalty"]
         )
-
         available["Recommendation Score"] = available["Draft Fit Score"]
         available["Draft Fit Rank"] = available["Draft Fit Score"].rank(ascending=False, method="min")
         available["Recommendation Rank"] = available["Draft Fit Rank"]
@@ -3334,18 +3276,14 @@ if active_page == "Draft Assistant Simulator":
                 bv = best_value.iloc[0]
                 st.info(f"Best Raw Value: {bv['fullName']} — Expected Fantasy Value {fmt_rate_4(bv.get('Expected Fantasy Value'))}. This is the strongest available player by projected value before roster-fit bonuses.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "Current Production Score", "Expected Fantasy Value", "Player Value Component", "Market Edge Component", "Roster Need Component", "Scarcity Component", "Category Fit Component", "Availability Urgency Component", "Risk Component", "Position Scarcity Score", "Position Scarcity Bonus", "Draft Fit Score", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "Current Production Score", "Expected Fantasy Value", "Position Scarcity Score", "Position Scarcity Bonus", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.subheader("Recommended Picks")
-        st.caption(
-            "Draft Fit Score now combines projected value, your model's market edge, roster need, position scarcity, category fit, availability urgency, and risk. "
-            "The component columns show why a player is being recommended."
-        )
-        render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+        render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge"])
 
         st.subheader("Dynamic Draft Board")
-        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "Expected Fantasy Value", "Market Edge Component", "Scarcity Component", "Roster Need Component", "Draft Fit Score"]
+        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "Expected Fantasy Value", "Position Scarcity Score", "Draft Fit Score"]
         drafted_board = draft_df[draft_df["fullName"].isin(set(drafted_players))].copy()
         available_board = available.sort_values("Market Rank", na_position="last").head(25).copy()
         bcol1, bcol2 = st.columns(2)
