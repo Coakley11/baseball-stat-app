@@ -2576,6 +2576,68 @@ if active_page == "Leaderboards":
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])
     render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv")
 
+
+
+# ----------------------------
+# Comparison Tool statistical tests
+# ----------------------------
+def _normal_two_sided_p_from_z(z):
+    """Approximate two-sided p-value using the standard normal distribution."""
+    try:
+        import math
+        return float(math.erfc(abs(float(z)) / math.sqrt(2)))
+    except Exception:
+        return np.nan
+
+
+def _welch_test_summary(a, b):
+    """Return Welch-style difference test using a normal approximation for p-value."""
+    a = pd.to_numeric(pd.Series(a), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    b = pd.to_numeric(pd.Series(b), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    n1, n2 = len(a), len(b)
+    if n1 < 2 or n2 < 2:
+        return {"n1": n1, "n2": n2, "mean1": np.nan, "mean2": np.nan, "difference": np.nan,
+                "stat": np.nan, "p_value": np.nan, "ci_low": np.nan, "ci_high": np.nan, "enough_data": False}
+    mean1, mean2 = float(a.mean()), float(b.mean())
+    var1 = float(a.var(ddof=1))
+    var2 = float(b.var(ddof=1))
+    se = np.sqrt(var1 / n1 + var2 / n2)
+    if not np.isfinite(se) or se == 0:
+        return {"n1": n1, "n2": n2, "mean1": mean1, "mean2": mean2, "difference": mean1 - mean2,
+                "stat": np.nan, "p_value": np.nan, "ci_low": np.nan, "ci_high": np.nan, "enough_data": False}
+    stat = (mean1 - mean2) / se
+    p_value = _normal_two_sided_p_from_z(stat)
+    diff = mean1 - mean2
+    return {"n1": n1, "n2": n2, "mean1": mean1, "mean2": mean2, "difference": diff,
+            "stat": float(stat), "p_value": p_value, "ci_low": float(diff - 1.96 * se),
+            "ci_high": float(diff + 1.96 * se), "enough_data": True}
+
+
+def _interpret_significance(player_a, player_b, stat, diff, p_value, alpha):
+    if pd.isna(p_value):
+        return "Not enough usable data or no variation to test."
+    if p_value < alpha:
+        if diff > 0:
+            return f"{player_a} is significantly better at {stat}."
+        if diff < 0:
+            return f"{player_b} is significantly better at {stat}."
+    if diff > 0:
+        return f"{player_a} is higher at {stat}, but the difference is not statistically significant."
+    if diff < 0:
+        return f"{player_b} is higher at {stat}, but the difference is not statistically significant."
+    return f"No meaningful difference in {stat}."
+
+
+def _format_sig_table(df):
+    df = df.copy()
+    for c in ["Player A Avg", "Player B Avg", "Difference", "95% CI Low", "95% CI High", "Test Statistic"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").round(4)
+    if "p-value" in df.columns:
+        df["p-value"] = pd.to_numeric(df["p-value"], errors="coerce").round(4)
+    return df
+
+
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     label_map_compare = build_player_label_map(yearly_df)
@@ -2615,6 +2677,136 @@ if active_page == "Comparison Tool":
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
+
+
+    st.divider()
+    st.subheader("Statistical Significance Test")
+    st.caption(
+        "Compare two players over any chosen year ranges. The app tests whether Player A is significantly better than Player B "
+        "for selected stats. It also gives an overall standardized comparison across the selected stats."
+    )
+
+    sig_col1, sig_col2 = st.columns(2)
+    all_player_options_sig = list(label_map_compare.keys())
+    with sig_col1:
+        sig_player_a_label = st.selectbox("Player A", all_player_options_sig, key="sig_player_a")
+        a_min_year = int(yearly_df["yearID"].min())
+        a_max_year = int(yearly_df["yearID"].max())
+        sig_years_a = st.slider(
+            "Player A Year Range",
+            min_value=a_min_year,
+            max_value=a_max_year,
+            value=(max(a_min_year, a_max_year - 4), a_max_year),
+            key="sig_years_a"
+        )
+    with sig_col2:
+        default_b_index = 1 if len(all_player_options_sig) > 1 else 0
+        sig_player_b_label = st.selectbox("Player B", all_player_options_sig, index=default_b_index, key="sig_player_b")
+        b_min_year = int(yearly_df["yearID"].min())
+        b_max_year = int(yearly_df["yearID"].max())
+        sig_years_b = st.slider(
+            "Player B Year Range",
+            min_value=b_min_year,
+            max_value=b_max_year,
+            value=(max(b_min_year, b_max_year - 4), b_max_year),
+            key="sig_years_b"
+        )
+
+    sig_stats = st.multiselect(
+        "Stats to Test",
+        ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
+        default=["HR", "RBI", "SB", "OPS"],
+        key="sig_stats"
+    )
+    alpha = st.selectbox("Significance Level", [0.10, 0.05, 0.01], index=1, key="sig_alpha")
+
+    if sig_player_a_label and sig_player_b_label and sig_stats:
+        pid_a = label_map_compare[sig_player_a_label]
+        pid_b = label_map_compare[sig_player_b_label]
+        player_a_name = sig_player_a_label.split(" (")[0]
+        player_b_name = sig_player_b_label.split(" (")[0]
+
+        data_a = yearly_df[
+            (yearly_df["playerID"] == pid_a) &
+            (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_a[0]) &
+            (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_a[1])
+        ].copy()
+        data_b = yearly_df[
+            (yearly_df["playerID"] == pid_b) &
+            (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_b[0]) &
+            (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_b[1])
+        ].copy()
+
+        if data_a.empty or data_b.empty:
+            st.warning("One of the selected players has no data in the selected year range.")
+        else:
+            sig_rows = []
+            overall_z_values = []
+            for stat in sig_stats:
+                if stat not in data_a.columns or stat not in data_b.columns:
+                    continue
+                result = _welch_test_summary(data_a[stat], data_b[stat])
+                diff = result["difference"]
+                p_value = result["p_value"]
+                test_stat = result["stat"]
+                if pd.notna(test_stat) and np.isfinite(test_stat):
+                    overall_z_values.append(test_stat)
+                sig_rows.append({
+                    "Stat": stat,
+                    f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
+                    f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
+                    "Player A Avg": result["mean1"],
+                    "Player B Avg": result["mean2"],
+                    "Difference": diff,
+                    "Test Statistic": test_stat,
+                    "p-value": p_value,
+                    "95% CI Low": result["ci_low"],
+                    "95% CI High": result["ci_high"],
+                    "Winner": (
+                        player_a_name if pd.notna(p_value) and p_value < alpha and diff > 0 else
+                        player_b_name if pd.notna(p_value) and p_value < alpha and diff < 0 else
+                        "Not significant"
+                    ),
+                    "Interpretation": _interpret_significance(player_a_name, player_b_name, stat, diff, p_value, alpha)
+                })
+
+            sig_df = pd.DataFrame(sig_rows)
+            if sig_df.empty:
+                st.warning("No valid stats were available for testing.")
+            else:
+                render_output_table(
+                    _format_sig_table(clean_ui_columns(sig_df)),
+                    key="comparison_significance_tests",
+                    file_name="comparison_significance_tests.csv",
+                    display_rows=50,
+                    style_cols=["Difference", "Test Statistic"]
+                )
+
+                valid_z = [z for z in overall_z_values if pd.notna(z) and np.isfinite(z)]
+                if len(valid_z) >= 2:
+                    overall_score = float(np.mean(valid_z))
+                    overall_strength = abs(overall_score)
+                    if overall_strength >= 1.96:
+                        overall_winner = player_a_name if overall_score > 0 else player_b_name
+                        st.success(
+                            f"Overall result: {overall_winner} looks significantly better across the selected stats "
+                            f"(overall standardized score {overall_score:.2f})."
+                        )
+                    elif overall_strength >= 1.00:
+                        leading_player = player_a_name if overall_score > 0 else player_b_name
+                        st.info(
+                            f"Overall result: {leading_player} has the stronger combined profile, "
+                            f"but the overall edge is not strong enough to call statistically significant "
+                            f"(overall standardized score {overall_score:.2f})."
+                        )
+                    else:
+                        st.info(
+                            f"Overall result: no statistically meaningful overall difference across the selected stats "
+                            f"(overall standardized score {overall_score:.2f})."
+                        )
+                else:
+                    st.info("Overall result: not enough valid stat tests to make an overall comparison.")
+
 
 if active_page == "Trend Value":
     render_section_header("🔥 Trend Value", "Shows only trend numbers: which stats are rising or declining per year over the selected recent window.")
@@ -3421,10 +3613,92 @@ if active_page == "Draft Assistant Simulator":
                 pieces.append(f"your model is {fmt_int(r['Fantasy Edge'])} ranks ahead of the market")
             elif pd.notna(r.get("Fantasy Edge", np.nan)) and r.get("Fantasy Edge", 0) < 0:
                 pieces.append("market is higher than your model, so this is less of a value pick")
+
+            # Explain WHY the ML projection boosted the player.
+            ml_component = pd.to_numeric(r.get("ML Projection Component", 0), errors="coerce")
+            ml_score = pd.to_numeric(r.get("ML Projection Score", np.nan), errors="coerce")
+
+            proj_hr = pd.to_numeric(r.get("proj_HR", r.get("Projected HR", np.nan)), errors="coerce")
+            proj_rbi = pd.to_numeric(r.get("proj_RBI", r.get("Projected RBI", np.nan)), errors="coerce")
+            proj_r = pd.to_numeric(r.get("proj_R", r.get("Projected R", np.nan)), errors="coerce")
+            proj_sb = pd.to_numeric(r.get("proj_SB", r.get("Projected SB", np.nan)), errors="coerce")
+            proj_ba = pd.to_numeric(r.get("proj_BA", r.get("Projected BA", np.nan)), errors="coerce")
+            proj_ops = pd.to_numeric(r.get("proj_OPS", r.get("Projected OPS", np.nan)), errors="coerce")
+
+            hr_trend = pd.to_numeric(r.get("HR_trend", np.nan), errors="coerce")
+            ops_trend = pd.to_numeric(r.get("OPS_trend", np.nan), errors="coerce")
+            ba_trend = pd.to_numeric(r.get("BA_trend", np.nan), errors="coerce")
+            sb_trend = pd.to_numeric(r.get("SB_trend", np.nan), errors="coerce")
+
+            age = pd.to_numeric(r.get("Age", np.nan), errors="coerce")
+            games = pd.to_numeric(r.get("G", np.nan), errors="coerce")
+            ab = pd.to_numeric(r.get("AB", np.nan), errors="coerce")
+
+            if pd.notna(ml_component) and ml_component > 0.02:
+                ml_reasons = []
+
+                if pd.notna(proj_hr) and proj_hr >= 30:
+                    ml_reasons.append(f"major projected power ({fmt_count_1(proj_hr)} HR)")
+                elif pd.notna(proj_hr) and proj_hr >= 25:
+                    ml_reasons.append(f"strong projected power ({fmt_count_1(proj_hr)} HR)")
+
+                if pd.notna(proj_rbi) and proj_rbi >= 90:
+                    ml_reasons.append(f"high RBI projection ({fmt_count_1(proj_rbi)} RBI)")
+                elif pd.notna(proj_rbi) and proj_rbi >= 75:
+                    ml_reasons.append(f"useful run-production projection ({fmt_count_1(proj_rbi)} RBI)")
+
+                if pd.notna(proj_r) and proj_r >= 90:
+                    ml_reasons.append(f"strong run-scoring projection ({fmt_count_1(proj_r)} R)")
+
+                if pd.notna(proj_sb) and proj_sb >= 20:
+                    ml_reasons.append(f"plus speed projection ({fmt_count_1(proj_sb)} SB)")
+                elif pd.notna(proj_sb) and proj_sb >= 12:
+                    ml_reasons.append(f"some speed contribution ({fmt_count_1(proj_sb)} SB)")
+
+                if pd.notna(proj_ops) and proj_ops >= 0.850:
+                    ml_reasons.append(f"strong overall bat ({fmt_rate_3(proj_ops)} OPS)")
+                elif pd.notna(proj_ops) and proj_ops >= 0.800:
+                    ml_reasons.append(f"solid projected OPS ({fmt_rate_3(proj_ops)})")
+
+                if pd.notna(proj_ba) and proj_ba >= 0.275:
+                    ml_reasons.append(f"batting-average support ({fmt_rate_3(proj_ba)} BA)")
+
+                if pd.notna(hr_trend) and hr_trend > 2:
+                    ml_reasons.append("improving power trend")
+                if pd.notna(ops_trend) and ops_trend > 0.020:
+                    ml_reasons.append("improving OPS trend")
+                if pd.notna(ba_trend) and ba_trend > 0.010:
+                    ml_reasons.append("improving batting-average trend")
+                if pd.notna(sb_trend) and sb_trend > 2:
+                    ml_reasons.append("improving stolen-base trend")
+
+                if pd.notna(age) and 26 <= age <= 30:
+                    ml_reasons.append("prime-age profile")
+                elif pd.notna(age) and 23 <= age <= 25:
+                    ml_reasons.append("young growth/upside profile")
+
+                if pd.notna(games) and games >= 140:
+                    ml_reasons.append("stable playing time")
+                elif pd.notna(ab) and ab >= 500:
+                    ml_reasons.append("strong recent volume")
+
+                if pd.notna(ml_score):
+                    if ml_score >= 0.80:
+                        ml_prefix = "strong ML projection boost"
+                    elif ml_score >= 0.65:
+                        ml_prefix = "moderate ML projection boost"
+                    else:
+                        ml_prefix = "ML projection boost"
+                else:
+                    ml_prefix = "ML projection boost"
+
+                if ml_reasons:
+                    pieces.append(f"{ml_prefix} driven by " + ", ".join(ml_reasons[:4]))
+                else:
+                    pieces.append(f"{ml_prefix} based on the blended projection, trend, age, and playing-time signal")
+
             if r.get("Primary Position") in needed_positions:
                 pieces.append(f"fills a needed {r.get('Primary Position')} slot")
-            if r.get(0) > 0.02:
-                pieces.append("gets a boost from the ML projection signal")
             if r.get("Position Scarcity Bonus", 0) > 0.05:
                 pieces.append(f"has strong value over replacement at {r.get('Primary Position')}")
             if r.get("Category Need Bonus", 0) > 0:
