@@ -138,6 +138,19 @@ def historical_team_name(team_id_original, year=None):
 COUNT_STATS = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "G"]
 RATE_STATS = ["BA", "OBP", "SLG", "OPS"]
 TREND_COUNT_COLS = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ"]
+
+POSITION_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
+
+def sort_positions_custom(pos_list):
+    """Sort baseball positions in consistent fantasy order."""
+    cleaned = [str(p).upper() for p in pos_list if pd.notna(p)]
+    unique_positions = list(dict.fromkeys(cleaned))
+    return sorted(
+        unique_positions,
+        key=lambda x: POSITION_ORDER.index(x) if x in POSITION_ORDER else 999
+    )
+
+
 TREND_RATE_COLS = ["BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
 ML_TARGET_STATS = ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
 ML_BASE_FEATURE_STATS = ["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "BA", "OBP", "SLG", "OPS"]
@@ -547,7 +560,26 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
         if green_cols:
             styled_df = styled_df.map(color_positive_green, subset=green_cols)
 
-        st.dataframe(styled_df, width="stretch", hide_index=True)
+        # Make long explanation/reason columns readable instead of truncated.
+        try:
+            st.dataframe(
+                styled_df,
+                width="stretch",
+                hide_index=True,
+                row_height=42,
+                column_config={
+                    "Reason": st.column_config.TextColumn(
+                        "Reason",
+                        width="large"
+                    ),
+                    "Interpretation": st.column_config.TextColumn(
+                        "Interpretation",
+                        width="large"
+                    )
+                }
+            )
+        except Exception:
+            st.dataframe(styled_df, width="stretch", hide_index=True)
     else:
         st.dataframe(display_df, width="stretch", hide_index=True)
 
