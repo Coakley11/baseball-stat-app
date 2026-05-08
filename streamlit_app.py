@@ -290,14 +290,50 @@ def color_trend(val):
         num = pd.to_numeric(str(val).replace(",", ""), errors="coerce")
         if pd.isna(num):
             return ""
+
+        # Stronger/darker colors for highly significant values.
+        if num >= 1.96:
+            return "color: darkgreen; font-weight: 900;"
         if num > 0:
             return "color: green; font-weight: bold;"
+
+        if num <= -1.96:
+            return "color: darkred; font-weight: 900;"
         if num < 0:
             return "color: red; font-weight: bold;"
+
         return "color: gray;"
     except Exception:
         return ""
 
+
+
+
+def color_p_value(val):
+    """Use darker colors for highly significant p-values."""
+    try:
+        if pd.isna(val):
+            return ""
+
+        num = pd.to_numeric(str(val).replace(",", ""), errors="coerce")
+        if pd.isna(num):
+            return ""
+
+        # Extremely significant
+        if num < 0.01:
+            return "color: darkgreen; font-weight: 900;"
+
+        # Statistically significant
+        if num < 0.05:
+            return "color: green; font-weight: bold;"
+
+        # Weak/non-significant
+        if num > 0.10:
+            return "color: darkred; font-weight: bold;"
+
+        return "color: #cc5500; font-weight: bold;"
+    except Exception:
+        return ""
 
 def color_positive_green(val):
     """Display positive/valuable scores in green."""
@@ -559,6 +595,10 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
             styled_df = styled_df.map(color_trend, subset=red_green_cols)
         if green_cols:
             styled_df = styled_df.map(color_positive_green, subset=green_cols)
+
+        # Dark-highlight statistically significant p-values.
+        if "p-value" in display_df.columns:
+            styled_df = styled_df.map(color_p_value, subset=["p-value"])
 
         # Make long explanation/reason columns readable instead of truncated.
         try:
@@ -2818,26 +2858,58 @@ if active_page == "Comparison Tool":
                 if len(valid_z) >= 2:
                     overall_score = float(np.mean(valid_z))
                     overall_strength = abs(overall_score)
+
                     if overall_strength >= 1.96:
                         overall_winner = player_a_name if overall_score > 0 else player_b_name
-                        st.success(
-                            f"Overall result: {overall_winner} looks significantly better across the selected stats "
-                            f"(overall standardized score {overall_score:.2f})."
+                        overall_interpretation = (
+                            f"{overall_winner} looks significantly better overall across the selected stats."
                         )
                     elif overall_strength >= 1.00:
-                        leading_player = player_a_name if overall_score > 0 else player_b_name
-                        st.info(
-                            f"Overall result: {leading_player} has the stronger combined profile, "
-                            f"but the overall edge is not strong enough to call statistically significant "
-                            f"(overall standardized score {overall_score:.2f})."
+                        overall_winner = player_a_name if overall_score > 0 else player_b_name
+                        overall_interpretation = (
+                            f"{overall_winner} has the stronger overall profile, but the edge is not statistically significant."
                         )
                     else:
-                        st.info(
-                            f"Overall result: no statistically meaningful overall difference across the selected stats "
-                            f"(overall standardized score {overall_score:.2f})."
+                        overall_winner = "Not significant"
+                        overall_interpretation = (
+                            "No statistically meaningful overall difference across the selected stats."
                         )
+
+                    # Add an OVERALL row directly into the significance-test table.
+                    overall_row = {
+                        "Stat": "OVERALL",
+                        f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
+                        f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
+                        "Player A Avg": np.nan,
+                        "Player B Avg": np.nan,
+                        "Difference": overall_score,
+                        "Test Statistic": overall_score,
+                        "p-value": _normal_two_sided_p_from_z(overall_score),
+                        "95% CI Low": np.nan,
+                        "95% CI High": np.nan,
+                        "Winner": overall_winner,
+                        "Interpretation": overall_interpretation
+                    }
+
+                    sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
+
                 else:
-                    st.info("Overall result: not enough valid stat tests to make an overall comparison.")
+                    overall_row = {
+                        "Stat": "OVERALL",
+                        f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
+                        f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
+                        "Player A Avg": np.nan,
+                        "Player B Avg": np.nan,
+                        "Difference": np.nan,
+                        "Test Statistic": np.nan,
+                        "p-value": np.nan,
+                        "95% CI Low": np.nan,
+                        "95% CI High": np.nan,
+                        "Winner": "Not enough data",
+                        "Interpretation": "Not enough valid stat tests to make an overall comparison."
+                    }
+
+                    sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
 
 
 if active_page == "Trend Value":
