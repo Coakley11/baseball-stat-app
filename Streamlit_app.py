@@ -335,6 +335,37 @@ def color_p_value(val):
     except Exception:
         return ""
 
+
+def style_significance_row(row):
+    """Synchronize Difference, Test Statistic, and p-value colors using p-value as the master signal."""
+    styles = pd.Series("", index=row.index)
+    try:
+        p = pd.to_numeric(row.get("p-value", np.nan), errors="coerce")
+        diff = pd.to_numeric(row.get("Difference", np.nan), errors="coerce")
+    except Exception:
+        return styles
+
+    target_cols = [c for c in ["Difference", "Test Statistic", "p-value"] if c in row.index]
+    if pd.isna(p) or pd.isna(diff):
+        return styles
+
+    if p < 0.01:
+        color = "darkgreen" if diff > 0 else "darkred"
+        weight = "900"
+    elif p < 0.05:
+        color = "green" if diff > 0 else "red"
+        weight = "bold"
+    elif p < 0.10:
+        color = "#cc5500"
+        weight = "bold"
+    else:
+        color = "gray"
+        weight = "normal"
+
+    for c in target_cols:
+        styles[c] = f"color: {color}; font-weight: {weight};"
+    return styles
+
 def color_positive_green(val):
     """Display positive/valuable scores in green."""
     try:
@@ -596,9 +627,13 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
         if green_cols:
             styled_df = styled_df.map(color_positive_green, subset=green_cols)
 
-        # Dark-highlight statistically significant p-values.
+        # Synchronize Difference, Test Statistic, and p-value colors using p-value as the master signal.
+        # This prevents cases where the p-value looks significant but the test statistic/difference use a weaker shade.
         if "p-value" in display_df.columns:
-            styled_df = styled_df.map(color_p_value, subset=["p-value"])
+            try:
+                styled_df = styled_df.apply(style_significance_row, axis=1)
+            except Exception:
+                styled_df = styled_df.map(color_p_value, subset=["p-value"])
 
         # Make long explanation/reason columns readable instead of truncated.
         try:
@@ -2846,14 +2881,8 @@ if active_page == "Comparison Tool":
             if sig_df.empty:
                 st.warning("No valid stats were available for testing.")
             else:
-                render_output_table(
-                    _format_sig_table(clean_ui_columns(sig_df)),
-                    key="comparison_significance_tests",
-                    file_name="comparison_significance_tests.csv",
-                    display_rows=50,
-                    style_cols=["Difference", "Test Statistic"]
-                )
-
+                # Calculate and append the OVERALL row BEFORE rendering the table,
+                # so the user actually sees it inside the displayed output.
                 valid_z = [z for z in overall_z_values if pd.notna(z) and np.isfinite(z)]
                 if len(valid_z) >= 2:
                     overall_score = float(np.mean(valid_z))
@@ -2875,7 +2904,6 @@ if active_page == "Comparison Tool":
                             "No statistically meaningful overall difference across the selected stats."
                         )
 
-                    # Add an OVERALL row directly into the significance-test table.
                     overall_row = {
                         "Stat": "OVERALL",
                         f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
@@ -2890,9 +2918,6 @@ if active_page == "Comparison Tool":
                         "Winner": overall_winner,
                         "Interpretation": overall_interpretation
                     }
-
-                    sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
-
                 else:
                     overall_row = {
                         "Stat": "OVERALL",
@@ -2909,7 +2934,15 @@ if active_page == "Comparison Tool":
                         "Interpretation": "Not enough valid stat tests to make an overall comparison."
                     }
 
-                    sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
+                sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
+
+                render_output_table(
+                    _format_sig_table(clean_ui_columns(sig_df)),
+                    key="comparison_significance_tests",
+                    file_name="comparison_significance_tests.csv",
+                    display_rows=50,
+                    style_cols=["Difference", "Test Statistic"]
+                )
 
 
 if active_page == "Trend Value":
