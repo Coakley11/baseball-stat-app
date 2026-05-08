@@ -2439,6 +2439,8 @@ for _state_key in list(st.session_state.keys()):
         or "download" in _key_text
         or "export_csv" in _key_text
         or "form_submit" in _key_text
+        or "data_editor" in _key_text
+        or "draft_room_editor" in _key_text
     ):
         continue
     try:
@@ -3709,7 +3711,7 @@ if active_page == "Draft Assistant Simulator":
         with r1:
             needed_positions = st.multiselect(
                 "Positions You Still Need",
-                ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"],
+                POSITION_ORDER,
                 default=["C", "1B", "2B", "3B", "SS", "OF", "DH"],
                 key="draft_need_positions",
                 help="Include DH if your league has a utility/DH-style hitter slot or if you want another bat regardless of defensive position."
@@ -3948,10 +3950,9 @@ if active_page == "Draft Assistant Simulator":
         if position_scarcity_df.empty:
             st.info("Position scarcity could not be calculated yet.")
         else:
-            position_order = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
             position_scarcity_df["Position"] = pd.Categorical(
                 position_scarcity_df["Position"],
-                categories=position_order,
+                categories=POSITION_ORDER,
                 ordered=True
             )
             position_scarcity_df = position_scarcity_df.sort_values("Position")
@@ -4234,9 +4235,12 @@ if active_page == "Draft Room Simulator":
     st.subheader("Live Draft Spreadsheet")
     st.caption("Enter each drafted player in the Player column. The app will automatically attach the model, market, edge, ML, expected value, and draft-fit numbers below.")
 
+    # Keep the saved draft table in the non-widget key "draft_room_table".
+    # Do not use a data_editor widget key here, because Streamlit can throw
+    # StreamlitValueAssignmentNotAllowedError when a keyed widget is also given
+    # a default value from session_state.
     edited_draft = st.data_editor(
         st.session_state["draft_room_table"],
-        key="draft_room_editor",
         num_rows="fixed",
         use_container_width=True,
         column_config={
