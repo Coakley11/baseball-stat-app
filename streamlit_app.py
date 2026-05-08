@@ -78,7 +78,7 @@ team_id_to_historical_name = {
     "SDN": "San Diego Padres", "SEA": "Seattle Mariners", "SFG": "San Francisco Giants",
     "SFN": "San Francisco Giants", "NY1": "New York Giants", "STL": "St. Louis Cardinals",
     "SLN": "St. Louis Cardinals", "SLA": "St. Louis Browns", "TBR": "Tampa Bay Rays",
-    "TBA": "Tampa Bay Devil Rays", "TEX": "Texas Rangers", "WS2": "Washington Senators",
+    "TBA": "Tampa Bay Rays", "TEX": "Texas Rangers", "WS2": "Washington Senators",
     "TOR": "Toronto Blue Jays", "WAS": "Washington Nationals", "MON": "Montreal Expos",
     "ML1": "Milwaukee Braves", "BSN": "Boston Braves"
 }
@@ -134,6 +134,74 @@ def historical_team_name(team_id_original, year=None):
     if tid == "CLE" and yr is not None:
         return "Cleveland Indians" if yr <= 2021 else "Cleveland Guardians"
     return team_id_to_historical_name.get(original, team_id_to_historical_name.get(tid, original))
+
+def current_franchise_name(team_id_or_name):
+    """Return the current MLB franchise name for draft/fantasy pages.
+
+    Draft pages are forward-looking, so historical names like Tampa Bay Devil Rays,
+    Florida Marlins, Montreal Expos, Cleveland Indians, etc. should display as
+    current franchise names.
+    """
+    if pd.isna(team_id_or_name):
+        return "Unknown"
+    val = str(team_id_or_name).strip()
+    if val == "":
+        return "Unknown"
+
+    name_aliases = {
+        "Tampa Bay Rays": "Tampa Bay Rays",
+        "TBA": "Tampa Bay Rays",
+        "TBR": "Tampa Bay Rays",
+        "Cleveland Indians": "Cleveland Guardians",
+        "CLE": "Cleveland Guardians",
+        "Florida Marlins": "Miami Marlins",
+        "FLO": "Miami Marlins",
+        "MIA": "Miami Marlins",
+        "Montreal Expos": "Washington Nationals",
+        "MON": "Washington Nationals",
+        "WAS": "Washington Nationals",
+        "Brooklyn Dodgers": "Los Angeles Dodgers",
+        "BRO": "Los Angeles Dodgers",
+        "LAN": "Los Angeles Dodgers",
+        "LAD": "Los Angeles Dodgers",
+        "St. Louis Browns": "Baltimore Orioles",
+        "SLA": "Baltimore Orioles",
+        "BAL": "Baltimore Orioles",
+        "California Angels": "Los Angeles Angels",
+        "Anaheim Angels": "Los Angeles Angels",
+        "CAL": "Los Angeles Angels",
+        "ANA": "Los Angeles Angels",
+        "LAA": "Los Angeles Angels",
+        "Oakland Athletics": "Athletics",
+        "Philadelphia Athletics": "Athletics",
+        "Kansas City Athletics": "Athletics",
+        "OAK": "Athletics",
+        "ATH": "Athletics",
+        "PHA": "Athletics",
+        "KC1": "Athletics",
+        "Washington Senators": "Texas Rangers",
+        "WS2": "Texas Rangers",
+        "TEX": "Texas Rangers",
+        "Seattle Pilots": "Milwaukee Brewers",
+        "SE1": "Milwaukee Brewers",
+        "ML4": "Milwaukee Brewers",
+        "MIL": "Milwaukee Brewers",
+        "New York Giants": "San Francisco Giants",
+        "NY1": "San Francisco Giants",
+        "SFN": "San Francisco Giants",
+        "SFG": "San Francisco Giants",
+        "Boston Braves": "Atlanta Braves",
+        "Milwaukee Braves": "Atlanta Braves",
+        "BSN": "Atlanta Braves",
+        "ML1": "Atlanta Braves",
+        "ATL": "Atlanta Braves",
+    }
+    if val in name_aliases:
+        return name_aliases[val]
+
+    normalized = normalize_team_id(val)
+    return team_id_to_name.get(normalized, name_aliases.get(normalized, val))
+
 
 COUNT_STATS = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "G"]
 RATE_STATS = ["BA", "OBP", "SLG", "OPS"]
@@ -2345,7 +2413,7 @@ year_max = int(max(all_years))
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
-PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Valuation", "ML Predictions"]
+PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Valuation", "ML Predictions"]
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -3458,14 +3526,12 @@ if active_page == "Draft Assistant Simulator":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
     else:
-        d1, d2, d3, d4 = st.columns(4)
+        d1, d2, d3 = st.columns(3)
         with d1:
             draft_window = st.selectbox("Projection Window", [3, 4, 5], index=0, key="draft_window")
         with d2:
             draft_format = st.selectbox("League Format", ["5x5 Roto", "Points League"], index=0, key="draft_format")
         with d3:
-            current_pick = st.number_input("Current Pick Number", min_value=1, max_value=500, value=100, step=1, key="draft_pick_number")
-        with d4:
             draft_top_n = st.slider("Recommendations to Show", 5, 30, 10, key="draft_top_n")
 
         st.subheader("ML Blend Settings")
@@ -3520,8 +3586,8 @@ if active_page == "Draft Assistant Simulator":
             axis=1
         )
         draft_df = draft_df.merge(latest_context, on="playerID", how="left")
-        draft_df["Team"] = draft_df.get("primaryHistoricalTeamName", "").fillna(draft_df.get("primaryTeamName", ""))
-        draft_df["Team"] = draft_df["Team"].replace({"ATH": "Athletics", "OAK": "Athletics"}).fillna("Unknown")
+        draft_df["Team"] = draft_df.get("primaryTeamName", "").fillna(draft_df.get("primaryHistoricalTeamName", ""))
+        draft_df["Team"] = draft_df["Team"].apply(current_franchise_name)
         draft_df["Primary Position"] = draft_df.get("careerPrimaryPos", draft_df.get("primaryPos", "DH")).fillna(draft_df.get("primaryPos", "DH")).fillna("DH")
         draft_df["Primary Position"] = draft_df["Primary Position"].replace({"": "DH", "PH": "DH", "PR": "DH"}).fillna("DH")
         draft_df["Bats"] = draft_df.get("bats", "Unknown").replace({"": "Unknown"}).fillna("Unknown")
@@ -3599,12 +3665,12 @@ if active_page == "Draft Assistant Simulator":
         draft_control_left, draft_control_right = st.columns(2)
         with draft_control_left:
             drafted_players = st.multiselect(
-                "Players Already Drafted / Remove from Board",
+                "Players On Other Rosters / Remove from Board",
                 all_player_names,
                 key="draft_already_drafted",
-                help="Select players who are already off the board. They will be removed from recommendations and the available-player board."
+                help="Select players drafted by other teams. They will be removed from recommendations and the available-player board."
             )
-            st.caption(f"{len(drafted_players)} player(s) removed from the board.")
+            st.caption(f"{len(drafted_players)} player(s) on other rosters / removed from the board.")
         with draft_control_right:
             my_roster = st.multiselect(
                 "Players On My Roster",
@@ -3613,6 +3679,30 @@ if active_page == "Draft Assistant Simulator":
                 help="Select the players you drafted. This helps you think about roster construction and remaining needs."
             )
             st.caption(f"{len(my_roster)} player(s) currently on your roster.")
+
+        total_players_picked = len(set(drafted_players).union(set(my_roster)))
+        auto_current_pick = total_players_picked + 1
+
+        pick_col1, pick_col2, pick_col3 = st.columns([1, 1, 2])
+        with pick_col1:
+            pick_adjustment = st.number_input(
+                "Manual Pick Adjustment",
+                min_value=-50,
+                max_value=50,
+                value=0,
+                step=1,
+                key="draft_pick_adjustment",
+                help="Usually leave this at 0. Use + or - only if your draft board is temporarily out of sync."
+            )
+        current_pick = max(1, int(auto_current_pick + pick_adjustment))
+        with pick_col2:
+            st.metric("Auto Current Pick", current_pick)
+        with pick_col3:
+            st.caption(
+                f"Calculated as {total_players_picked} total selected player(s) "
+                f"({len(drafted_players)} on other rosters + {len(my_roster)} on my roster) + 1"
+                + (f" plus adjustment {pick_adjustment}." if pick_adjustment else ".")
+            )
 
         st.markdown("#### Team Needs")
         r1, r2 = st.columns(2)
@@ -3980,6 +4070,281 @@ if active_page == "Draft Assistant Simulator":
                 f"Model Rank {fmt_int(best.get('Model Rank'))}, Fantasy Edge {fmt_int(best.get('Fantasy Edge'))}. "
                 f"{best['Reason']}"
             )
+
+
+if active_page == "Draft Room Simulator":
+    render_section_header(
+        "🧾 Draft Room Simulator",
+        "Run a fantasy draft with multiple teams. Enter picks in a spreadsheet, automatically attach market/model values, get next-pick recommendations, and grade rosters after the draft."
+    )
+
+    st.info(
+        "Use this as the live draft room. Enter each pick as it happens. The app removes drafted players from the available board, recommends the next best pick, "
+        "and scores every team's roster using the same type of projection, market-edge, ML, and draft-fit logic used in the Draft Assistant."
+    )
+
+    market_df = load_fantasypros_market_data()
+
+    dr1, dr2, dr3, dr4 = st.columns(4)
+    with dr1:
+        room_team_count = st.number_input("Number of Teams", min_value=2, max_value=16, value=2, step=1, key="room_team_count")
+    with dr2:
+        room_rounds = st.number_input("Rounds", min_value=1, max_value=40, value=20, step=1, key="room_rounds")
+    with dr3:
+        room_format = st.selectbox("Scoring Format", ["5x5 Roto", "Points League"], index=0, key="room_format")
+    with dr4:
+        room_window = st.selectbox("Projection Window", [3, 4, 5], index=0, key="room_window")
+
+    default_names = ["Daniel"] + [f"Team {i}" for i in range(2, int(room_team_count) + 1)]
+    team_name_text = st.text_area(
+        "Team Names, one per line",
+        value="\n".join(default_names),
+        key="room_team_names",
+        help="Put each fantasy team on its own line. The draft table will use these names."
+    )
+    room_team_names = [x.strip() for x in team_name_text.splitlines() if x.strip()]
+    if len(room_team_names) < int(room_team_count):
+        room_team_names += [f"Team {i}" for i in range(len(room_team_names) + 1, int(room_team_count) + 1)]
+    room_team_names = room_team_names[:int(room_team_count)]
+
+    your_team = st.selectbox("Your Team", room_team_names, index=0, key="room_your_team")
+    total_picks = int(room_team_count) * int(room_rounds)
+
+    max_year_room = int(yearly_df["yearID"].max())
+    room_years = list(range(max_year_room - int(room_window) + 1, max_year_room + 1))
+    recent_room = yearly_df[yearly_df["yearID"].isin(room_years)].copy().sort_values(["playerID", "yearID"])
+
+    agg_room = recent_room.groupby(["playerID", "fullName", "bats"], as_index=False)[
+        ["G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]
+    ].sum()
+    agg_room = add_rate_stats(agg_room)
+    agg_room = agg_room[(agg_room["G"] >= 30) & (agg_room["AB"] >= 75)].copy()
+
+    room_trends = recent_room.groupby("playerID").apply(lambda g: pd.Series({
+        "R_trend": compute_trend_slope(g, "R"), "HR_trend": compute_trend_slope(g, "HR"),
+        "RBI_trend": compute_trend_slope(g, "RBI"), "SB_trend": compute_trend_slope(g, "SB"),
+        "BA_trend": compute_trend_slope(g, "BA"), "OPS_trend": compute_trend_slope(g, "OPS"),
+        "BB_trend": compute_trend_slope(g, "BB")
+    })).reset_index()
+
+    room_df = agg_room.merge(room_trends, on="playerID", how="left")
+    room_df = add_latest_and_projection_columns(room_df, recent_room)
+
+    latest_cols_room = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
+    latest_context_room = recent_room.sort_values(["playerID", "yearID"]).groupby("playerID").tail(1)[[c for c in latest_cols_room if c in recent_room.columns]].copy()
+    latest_context_room["Age"] = latest_context_room.apply(
+        lambda r: baseball_age_for_season(r.get("yearID"), r.get("birthYear"), r.get("birthMonth", np.nan), r.get("birthDay", np.nan)),
+        axis=1
+    )
+    room_df = room_df.merge(latest_context_room, on="playerID", how="left")
+    room_df["Team"] = room_df.get("primaryTeamName", "").fillna(room_df.get("primaryHistoricalTeamName", ""))
+    room_df["Team"] = room_df["Team"].apply(current_franchise_name)
+    room_df["Primary Position"] = room_df.get("careerPrimaryPos", room_df.get("primaryPos", "DH")).fillna(room_df.get("primaryPos", "DH")).fillna("DH")
+    room_df["Primary Position"] = room_df["Primary Position"].replace({"": "DH", "PH": "DH", "PR": "DH"}).fillna("DH")
+    room_df["Bats"] = room_df.get("bats", "Unknown").replace({"": "Unknown"}).fillna("Unknown")
+    room_df["Player Key"] = room_df["fullName"].apply(normalize_player_name_for_merge)
+
+    if not market_df.empty:
+        market_cols_room = [c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"] if c in market_df.columns]
+        room_df = room_df.merge(market_df[market_cols_room], on="Player Key", how="left")
+    else:
+        room_df["Market Rank"] = np.nan
+
+    room_df["Market Rank"] = pd.to_numeric(room_df.get("Market Rank"), errors="coerce")
+
+    if room_format == "5x5 Roto":
+        room_df["Projected Production Score"] = (
+            normalize_series(room_df["proj_R"]) * 0.20 +
+            normalize_series(room_df["proj_HR"]) * 0.20 +
+            normalize_series(room_df["proj_RBI"]) * 0.20 +
+            normalize_series(room_df["proj_SB"]) * 0.20 +
+            normalize_series(room_df["proj_BA"]) * 0.20
+        )
+    else:
+        room_df["Projected Production Score"] = normalize_series(
+            room_df["proj_HR"] * 4 +
+            room_df["proj_RBI"] +
+            room_df["proj_R"] +
+            room_df["proj_SB"] * 2 +
+            room_df["proj_BB"] +
+            room_df["proj_OPS"] * 20
+        )
+
+    # Lightweight ML signal for draft room: projection + trends + age + playing-time stability.
+    room_age = pd.to_numeric(room_df.get("Age", np.nan), errors="coerce")
+    room_age_curve = 1 - (abs(room_age.fillna(29) - 28) / 18)
+    room_age_curve = room_age_curve.clip(lower=0.55, upper=1.05)
+
+    if room_format == "5x5 Roto":
+        room_ml_raw = (
+            normalize_series(room_df["proj_R"]) * 0.16 +
+            normalize_series(room_df["proj_HR"]) * 0.18 +
+            normalize_series(room_df["proj_RBI"]) * 0.18 +
+            normalize_series(room_df["proj_SB"]) * 0.16 +
+            normalize_series(room_df["proj_BA"]) * 0.12 +
+            normalize_series(room_df["proj_OPS"]) * 0.10 +
+            normalize_series(room_df["HR_trend"].fillna(0)) * 0.05 +
+            normalize_series(room_df["OPS_trend"].fillna(0)) * 0.05
+        )
+    else:
+        room_ml_raw = normalize_series(
+            room_df["proj_HR"] * 4 +
+            room_df["proj_RBI"] +
+            room_df["proj_R"] +
+            room_df["proj_SB"] * 2 +
+            room_df["proj_BB"] +
+            room_df["proj_OPS"] * 25 +
+            room_df["HR_trend"].fillna(0) * 2 +
+            room_df["OPS_trend"].fillna(0) * 50
+        )
+
+    room_df["ML Projection Score"] = normalize_series(
+        room_ml_raw * 0.78 +
+        normalize_series(room_age_curve) * 0.10 +
+        normalize_series(pd.to_numeric(room_df.get("G", 0), errors="coerce").fillna(0)) * 0.12
+    )
+    room_df["Expected Fantasy Value"] = (
+        room_df["Projected Production Score"] * 0.82 +
+        room_df["ML Projection Score"] * 0.18
+    )
+    room_df["Model Rank"] = room_df["Expected Fantasy Value"].rank(ascending=False, method="min")
+    room_df["Fantasy Edge"] = room_df["Market Rank"] - room_df["Model Rank"]
+
+    # Available-player draft fit uses global value + edge. Team-specific need is displayed via roster grades after picks.
+    room_df["Draft Fit Score"] = (
+        normalize_series(room_df["Expected Fantasy Value"]) * 0.55 +
+        normalize_series(room_df["Fantasy Edge"].fillna(0)) * 0.25 +
+        normalize_series(room_df["ML Projection Score"].fillna(0)) * 0.20
+    )
+
+    player_options_room = [""] + sorted(room_df["fullName"].dropna().unique().tolist())
+
+    if "draft_room_table" not in st.session_state or len(st.session_state["draft_room_table"]) != total_picks:
+        pick_rows = []
+        for pick in range(1, total_picks + 1):
+            rnd = ((pick - 1) // int(room_team_count)) + 1
+            within_round = (pick - 1) % int(room_team_count)
+            if rnd % 2 == 1:
+                team = room_team_names[within_round]
+            else:
+                team = room_team_names[::-1][within_round]
+            pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
+        st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
+
+    st.subheader("Live Draft Spreadsheet")
+    st.caption("Enter each drafted player in the Player column. The app will automatically attach the model, market, edge, ML, expected value, and draft-fit numbers below.")
+
+    edited_draft = st.data_editor(
+        st.session_state["draft_room_table"],
+        key="draft_room_editor",
+        num_rows="fixed",
+        use_container_width=True,
+        column_config={
+            "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
+            "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
+        }
+    )
+    st.session_state["draft_room_table"] = edited_draft.copy()
+
+    drafted_names_room = [p for p in edited_draft["Player"].dropna().astype(str).tolist() if p.strip()]
+    drafted_set_room = set(drafted_names_room)
+    pick_info = room_df[[
+        "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
+        "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
+        "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
+    ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
+
+    draft_results = edited_draft.merge(pick_info, on="Player", how="left")
+    st.subheader("Draft Results With Model Scores")
+    result_cols = [
+        "Round", "Pick", "Team", "Player", "Primary Position", "MLB Team",
+        "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score",
+        "ML Projection Score", "Expected Fantasy Value"
+    ]
+    render_output_table(
+        format_fantasy_table(clean_ui_columns(draft_results[[c for c in result_cols if c in draft_results.columns]])),
+        key="draft_room_results",
+        file_name="draft_room_results.csv",
+        display_rows=200,
+        style_cols=["Fantasy Edge", "Draft Fit Score"]
+    )
+
+    available_room = room_df[~room_df["fullName"].isin(drafted_set_room)].copy()
+    available_room = available_room.sort_values("Draft Fit Score", ascending=False)
+
+    st.subheader("Recommended Next Pick")
+    if available_room.empty:
+        st.success("Draft complete. No available players remain in the model pool.")
+    else:
+        best_next = available_room.iloc[0]
+        st.success(
+            f"Recommended pick for {your_team}: {best_next['fullName']} ({best_next.get('Primary Position', '')}, {best_next.get('Team', '')}) — "
+            f"Draft Fit Score {fmt_rate_4(best_next.get('Draft Fit Score'))}, "
+            f"Model Rank {fmt_int(best_next.get('Model Rank'))}, Market Rank {fmt_int(best_next.get('Market Rank'))}, "
+            f"Fantasy Edge {fmt_int(best_next.get('Fantasy Edge'))}."
+        )
+
+        top_available_cols = [
+            "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
+            "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value"
+        ]
+        top_available_display = available_room[top_available_cols].head(25).rename(columns={"fullName": "Player", "Team": "MLB Team"})
+        st.caption("Top available players by Draft Fit Score.")
+        render_output_table(
+            format_fantasy_table(clean_ui_columns(top_available_display)),
+            key="draft_room_top_available",
+            file_name="draft_room_top_available.csv",
+            display_rows=25,
+            style_cols=["Fantasy Edge", "Draft Fit Score"]
+        )
+
+    st.subheader("Post-Draft Roster Grades")
+    completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
+    if completed_picks.empty:
+        st.info("Enter draft picks above to generate team grades.")
+    else:
+        grade_rows = []
+        for team_name, team_df in completed_picks.groupby("Team"):
+            grade_rows.append({
+                "Fantasy Team": team_name,
+                "Players Drafted": len(team_df),
+                "Total Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").sum(),
+                "Average Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").mean(),
+                "Average Draft Fit Score": pd.to_numeric(team_df["Draft Fit Score"], errors="coerce").mean(),
+                "Average Fantasy Edge": pd.to_numeric(team_df["Fantasy Edge"], errors="coerce").mean(),
+                "Total HR Projection": pd.to_numeric(team_df["proj_HR"], errors="coerce").sum(),
+                "Total RBI Projection": pd.to_numeric(team_df["proj_RBI"], errors="coerce").sum(),
+                "Total R Projection": pd.to_numeric(team_df["proj_R"], errors="coerce").sum(),
+                "Total SB Projection": pd.to_numeric(team_df["proj_SB"], errors="coerce").sum(),
+                "Average OPS Projection": pd.to_numeric(team_df["proj_OPS"], errors="coerce").mean(),
+            })
+        grades_df = pd.DataFrame(grade_rows)
+        grades_df["Overall Draft Grade Score"] = (
+            normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
+            normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
+            normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
+            normalize_series(grades_df["Total HR Projection"]) * 0.05 +
+            normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
+            normalize_series(grades_df["Total SB Projection"]) * 0.05
+        )
+        grades_df["Draft Room Rank"] = grades_df["Overall Draft Grade Score"].rank(ascending=False, method="min")
+        grades_df = grades_df.sort_values("Draft Room Rank")
+
+        render_output_table(
+            format_fantasy_table(clean_ui_columns(grades_df)),
+            key="draft_room_roster_grades",
+            file_name="draft_room_roster_grades.csv",
+            display_rows=30,
+            style_cols=["Average Fantasy Edge", "Overall Draft Grade Score"]
+        )
+
+        if your_team in grades_df["Fantasy Team"].values:
+            your_row = grades_df[grades_df["Fantasy Team"] == your_team].iloc[0]
+            st.info(
+                f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
+                f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
+            )
+
 
 if active_page == "Valuation":
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
