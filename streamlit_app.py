@@ -2678,7 +2678,7 @@ def compute_team_aware_draft_room_fit(
 
         roster_balance.append(bal)
 
-    out["Roster Balance Score"] = normalize_series(roster_balance)
+    out["Roster Balance Score"] = normalize_series(pd.Series(roster_balance, index=out.index))
 
     out["Team Need Score"] = normalize_series(
         out["Category Fit Score"] * 0.50 +
@@ -2992,6 +2992,80 @@ def read_imported_draft_file(uploaded_file):
     return pd.read_excel(uploaded_file)
 
 
+
+
+@st.cache_data(ttl=60 * 60 * 6)
+def fetch_mlb_api_hitter_stats(season=2026):
+    """Fetch current-season MLB hitter stats from the public MLB Stats API.
+
+    Uses MLB's public stats endpoint. Returns a normalized dataframe with:
+    Player, HR, RBI, R, SB, BA, OBP, SLG, OPS, AB, H, BB.
+    """
+    import requests
+
+    url = "https://statsapi.mlb.com/api/v1/stats"
+    params = {
+        "stats": "season",
+        "group": "hitting",
+        "playerPool": "ALL",
+        "season": int(season),
+        "sportIds": 1,
+        "limit": 5000,
+        "hydrate": "person"
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        raise RuntimeError(f"Could not fetch MLB API stats: {e}")
+
+    rows = []
+    for split in payload.get("stats", [{}])[0].get("splits", []):
+        player = split.get("player", {}) or {}
+        stat = split.get("stat", {}) or {}
+        rows.append({
+            "Player": player.get("fullName", ""),
+            "Player Key": normalize_player_name_for_merge(player.get("fullName", "")),
+            "MLBAM ID": player.get("id", None),
+            "MLB Team": (split.get("team", {}) or {}).get("name", ""),
+            "Primary Position": (player.get("primaryPosition", {}) or {}).get("abbreviation", ""),
+            "G": stat.get("gamesPlayed", np.nan),
+            "AB": stat.get("atBats", np.nan),
+            "H": stat.get("hits", np.nan),
+            "2B": stat.get("doubles", np.nan),
+            "3B": stat.get("triples", np.nan),
+            "HR": stat.get("homeRuns", np.nan),
+            "RBI": stat.get("rbi", np.nan),
+            "R": stat.get("runs", np.nan),
+            "SB": stat.get("stolenBases", np.nan),
+            "BB": stat.get("baseOnBalls", np.nan),
+            "BA": stat.get("avg", np.nan),
+            "OBP": stat.get("obp", np.nan),
+            "SLG": stat.get("slg", np.nan),
+            "OPS": stat.get("ops", np.nan),
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    for c in ["G", "AB", "H", "2B", "3B", "HR", "RBI", "R", "SB", "BB", "BA", "OBP", "SLG", "OPS"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Map MLB position abbreviations for fantasy pages.
+    if "Primary Position" in df.columns:
+        df["Primary Position"] = df["Primary Position"].replace({
+            "LF": "OF", "CF": "OF", "RF": "OF",
+            "RF/LF": "OF", "OF": "OF",
+            "TWP": "DH", "PH": "DH", "PR": "DH"
+        }).fillna("DH")
+
+    return df
+
+
 batting_df, yearly_df, people_df = load_data()
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
@@ -3028,6 +3102,7 @@ for _state_key in list(st.session_state.keys()):
         or "file_uploader" in _key_text
         or "export_csv" in _key_text
         or "form_submit" in _key_text
+        or "draft_assistant_import" in _key_text
         or "button" in _key_text
         or "generate_roster_view" in _key_text
         or "load_uploaded" in _key_text
@@ -4274,6 +4349,92 @@ if active_page == "Draft Assistant Simulator":
         st.subheader("Roster / Draft Controls")
         all_player_names = sorted(draft_df["fullName"].dropna().unique())
 
+        st.markdown("#### Import Existing Draft Into Draft Assistant")
+        st.caption(
+            "Upload a CSV or Excel file with Team/Owner and Player columns. Choose your team, then the app will place your players into "
+            "Players On My Roster and everyone else's players into Players On Other Rosters."
+        )
+
+        assistant_import_file = st.file_uploader(
+            "Upload draft board for Draft Assistant",
+            type=["csv", "xlsx", "xls"]
+        )
+
+        if assistant_import_file is not None:
+            try:
+                assistant_import_raw = read_imported_draft_file(assistant_import_file)
+                assistant_import_df = normalize_imported_draft_columns(assistant_import_raw)
+
+                if assistant_import_df.empty:
+                    st.warning("The uploaded file was read, but no usable Team/Player rows were found.")
+                else:
+                    import_teams = sorted(assistant_import_df["Team"].dropna().astype(str).unique().tolist())
+                    import_my_team = st.selectbox(
+                        "Which team is yours?",
+                        import_teams,
+                        index=0,
+                        key="draft_assistant_import_my_team"
+                    )
+
+                    # Match uploaded player names to the app's player-name options.
+                    app_name_map = {
+                        normalize_player_name_for_merge(name): name
+                        for name in all_player_names
+                    }
+
+                    imported_my_roster = []
+                    imported_other_rosters = []
+                    unmatched_import_names = []
+
+                    for _, _row in assistant_import_df.iterrows():
+                        raw_player = str(_row.get("Player", "")).strip()
+                        matched_player = app_name_map.get(normalize_player_name_for_merge(raw_player))
+
+                        if matched_player is None:
+                            unmatched_import_names.append(raw_player)
+                            continue
+
+                        if str(_row.get("Team", "")).strip() == import_my_team:
+                            imported_my_roster.append(matched_player)
+                        else:
+                            imported_other_rosters.append(matched_player)
+
+                    imported_my_roster = sorted(list(dict.fromkeys(imported_my_roster)))
+                    imported_other_rosters = sorted(list(dict.fromkeys(imported_other_rosters)))
+
+                    cimp1, cimp2, cimp3 = st.columns(3)
+                    with cimp1:
+                        st.metric("Matched My Players", len(imported_my_roster))
+                    with cimp2:
+                        st.metric("Matched Other Players", len(imported_other_rosters))
+                    with cimp3:
+                        st.metric("Unmatched Names", len(unmatched_import_names))
+
+                    st.caption("Import preview:")
+                    render_output_table(
+                        clean_ui_columns(assistant_import_df.head(50)),
+                        key="draft_assistant_import_preview",
+                        file_name="draft_assistant_import_preview.csv",
+                        display_rows=50
+                    )
+
+                    if unmatched_import_names:
+                        with st.expander("Unmatched uploaded player names"):
+                            st.write(unmatched_import_names[:100])
+
+                    if st.button("Apply Uploaded Draft To Draft Assistant"):
+                        # These assignments happen before the multiselect widgets below are created on this run.
+                        # That avoids Streamlit's widget-state assignment error.
+                        st.session_state["draft_my_roster"] = imported_my_roster
+                        st.session_state["draft_already_drafted"] = imported_other_rosters
+                        st.success(
+                            f"Loaded {len(imported_my_roster)} player(s) to Players On My Roster and "
+                            f"{len(imported_other_rosters)} player(s) to Players On Other Rosters."
+                        )
+
+            except Exception as e:
+                st.error(f"Could not import draft board into Draft Assistant: {e}")
+
         st.markdown("#### Draft Board Setup")
         draft_control_left, draft_control_right = st.columns(2)
         with draft_control_left:
@@ -5094,10 +5255,31 @@ if active_page == "Fantasy Standings Tracker":
     # Do not use a session_state key on file_uploader here.
     # Keyed upload widgets can trigger StreamlitValueAssignmentNotAllowedError
     # when combined with page-state preservation logic.
-    stats_file = st.file_uploader(
-        "Upload current-season hitter stats CSV",
-        type=["csv"]
+    stats_source = st.radio(
+        "Current Stats Source",
+        ["MLB API Auto-Fetch", "Upload CSV"],
+        index=0,
+        horizontal=True,
+        key="standings_stats_source"
     )
+
+    api_season = st.number_input(
+        "MLB API Season",
+        min_value=2020,
+        max_value=2035,
+        value=2026,
+        step=1,
+        key="standings_api_season"
+    )
+
+    stats_file = None
+    current_stats = pd.DataFrame()
+
+    if stats_source == "Upload CSV":
+        stats_file = st.file_uploader(
+            "Upload current-season hitter stats CSV",
+            type=["csv"]
+        )
 
     draft_import_for_standings = st.file_uploader(
         "Optional: Upload draft board CSV/Excel if Draft Room is empty",
@@ -5113,9 +5295,22 @@ if active_page == "Fantasy Standings Tracker":
         except Exception as e:
             st.error(f"Could not read draft board upload: {e}")
 
-    if stats_file is not None:
+    if stats_source == "MLB API Auto-Fetch":
+        try:
+            current_stats = fetch_mlb_api_hitter_stats(api_season)
+            if current_stats.empty:
+                st.warning("MLB API returned no hitter stats for the selected season. Try uploading a CSV instead.")
+            else:
+                st.success(f"Loaded {len(current_stats)} hitter stat rows from the MLB Stats API for {api_season}.")
+        except Exception as e:
+            st.error(f"MLB API fetch failed: {e}")
+            st.info("You can still use this page by switching Current Stats Source to Upload CSV.")
+
+    elif stats_file is not None:
         current_stats = pd.read_csv(stats_file)
         current_stats = normalize_uploaded_stat_columns(current_stats)
+
+    if not current_stats.empty:
         st.subheader("Uploaded Current Stats Preview")
         render_output_table(
             clean_ui_columns(current_stats.head(25)),
@@ -5158,7 +5353,7 @@ if active_page == "Fantasy Standings Tracker":
             st.session_state["fantasy_current_roster_stats"] = roster_stats
             st.session_state["fantasy_current_standings"] = standings
     else:
-        st.warning("Upload a current-season stats CSV to calculate standings.")
+        st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
 
 if active_page == "Trade Analyzer":
