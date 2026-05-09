@@ -2574,6 +2574,380 @@ def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto"):
     return out
 
 
+
+
+def compute_team_aware_draft_room_fit(
+    available_df,
+    my_team_df,
+    fantasy_format="5x5 Roto"
+):
+    """Team-aware recommendation engine for Draft Room Simulator."""
+
+    out = available_df.copy()
+
+    if my_team_df is None or len(my_team_df) == 0:
+        out["Team Need Score"] = 0.50
+        out["Position Need Score"] = 0.50
+        out["Category Fit Score"] = 0.50
+        out["Roster Balance Score"] = 0.50
+        out["Team Aware Draft Fit"] = normalize_series(
+            pd.to_numeric(out["Draft Fit Score"], errors="coerce").fillna(0)
+        )
+        return out
+
+    roster = my_team_df.copy()
+
+    needed_positions = {
+        "C": 1,
+        "1B": 1,
+        "2B": 1,
+        "3B": 1,
+        "SS": 1,
+        "OF": 3,
+        "DH": 1,
+    }
+
+    current_pos_counts = (
+        roster["Primary Position"]
+        .fillna("DH")
+        .astype(str)
+        .value_counts()
+        .to_dict()
+    )
+
+    def calc_position_need(pos):
+        pos = str(pos)
+        needed = needed_positions.get(pos, 1)
+        current = current_pos_counts.get(pos, 0)
+
+        if current < needed:
+            return 1.00
+        elif current == needed:
+            return 0.60
+        elif current == needed + 1:
+            return 0.35
+        else:
+            return 0.15
+
+    out["Position Need Score"] = out["Primary Position"].apply(calc_position_need)
+
+    roster_hr = pd.to_numeric(roster.get("proj_HR", 0), errors="coerce").fillna(0).mean()
+    roster_sb = pd.to_numeric(roster.get("proj_SB", 0), errors="coerce").fillna(0).mean()
+    roster_ba = pd.to_numeric(roster.get("proj_BA", 0), errors="coerce").fillna(0).mean()
+    roster_r = pd.to_numeric(roster.get("proj_R", 0), errors="coerce").fillna(0).mean()
+    roster_rbi = pd.to_numeric(roster.get("proj_RBI", 0), errors="coerce").fillna(0).mean()
+
+    league_hr = pd.to_numeric(out.get("proj_HR", 0), errors="coerce").fillna(0).median()
+    league_sb = pd.to_numeric(out.get("proj_SB", 0), errors="coerce").fillna(0).median()
+    league_ba = pd.to_numeric(out.get("proj_BA", 0), errors="coerce").fillna(0).median()
+    league_r = pd.to_numeric(out.get("proj_R", 0), errors="coerce").fillna(0).median()
+    league_rbi = pd.to_numeric(out.get("proj_RBI", 0), errors="coerce").fillna(0).median()
+
+    power_need = max(0, league_hr - roster_hr)
+    speed_need = max(0, league_sb - roster_sb)
+    avg_need = max(0, league_ba - roster_ba)
+    runs_need = max(0, league_r - roster_r)
+    rbi_need = max(0, league_rbi - roster_rbi)
+
+    out["Category Fit Score"] = normalize_series(
+        normalize_series(out["proj_HR"]) * (0.15 + power_need * 0.20) +
+        normalize_series(out["proj_SB"]) * (0.15 + speed_need * 0.20) +
+        normalize_series(out["proj_BA"]) * (0.15 + avg_need * 4.0) +
+        normalize_series(out["proj_R"]) * (0.15 + runs_need * 0.12) +
+        normalize_series(out["proj_RBI"]) * (0.15 + rbi_need * 0.12)
+    )
+
+    power_heavy = roster_hr > (league_hr * 1.30)
+    speed_heavy = roster_sb > (league_sb * 1.30)
+
+    roster_balance = []
+    for _, r in out.iterrows():
+        bal = 0.50
+
+        if power_heavy and r.get("proj_HR", 0) < league_hr:
+            bal += 0.20
+
+        if speed_heavy and r.get("proj_SB", 0) < league_sb:
+            bal += 0.20
+
+        if not power_heavy and r.get("proj_HR", 0) > league_hr:
+            bal += 0.15
+
+        if not speed_heavy and r.get("proj_SB", 0) > league_sb:
+            bal += 0.15
+
+        roster_balance.append(bal)
+
+    out["Roster Balance Score"] = normalize_series(roster_balance)
+
+    out["Team Need Score"] = normalize_series(
+        out["Category Fit Score"] * 0.50 +
+        out["Position Need Score"] * 0.30 +
+        out["Roster Balance Score"] * 0.20
+    )
+
+    out["Team Aware Draft Fit"] = normalize_series(
+        normalize_series(pd.to_numeric(out["Draft Fit Score"], errors="coerce").fillna(0)) * 0.55 +
+        normalize_series(pd.to_numeric(out["Expected Fantasy Value"], errors="coerce").fillna(0)) * 0.20 +
+        normalize_series(out["Team Need Score"]) * 0.25
+    )
+
+    return out
+
+
+
+
+def build_draft_room_roster_view(draft_results, fantasy_team):
+    """Create a lineup-style roster view for a selected fantasy team in Draft Room."""
+    if draft_results is None or draft_results.empty:
+        return pd.DataFrame()
+
+    team_df = draft_results[
+        (draft_results["Team"] == fantasy_team) &
+        (draft_results["Player"].astype(str).str.strip() != "")
+    ].copy()
+
+    if team_df.empty:
+        return pd.DataFrame()
+
+    slot_counts = {}
+    roster_rows = []
+    for _, r in team_df.sort_values(["Primary Position", "Pick"]).iterrows():
+        pos = str(r.get("Primary Position", "DH"))
+        slot_counts[pos] = slot_counts.get(pos, 0) + 1
+        slot = f"{pos}{slot_counts[pos]}"
+
+        roster_rows.append({
+            "Roster Slot": slot,
+            "Player": r.get("Player", ""),
+            "Primary Position": pos,
+            "MLB Team": r.get("MLB Team", ""),
+            "Pick": r.get("Pick", np.nan),
+            "Market Rank": r.get("Market Rank", np.nan),
+            "Model Rank": r.get("Model Rank", np.nan),
+            "Fantasy Edge": r.get("Fantasy Edge", np.nan),
+            "Draft Fit Score": r.get("Draft Fit Score", np.nan),
+            "ML Projection Score": r.get("ML Projection Score", np.nan),
+            "Expected Fantasy Value": r.get("Expected Fantasy Value", np.nan),
+            "Projected HR": r.get("proj_HR", np.nan),
+            "Projected RBI": r.get("proj_RBI", np.nan),
+            "Projected R": r.get("proj_R", np.nan),
+            "Projected SB": r.get("proj_SB", np.nan),
+            "Projected BA": r.get("proj_BA", np.nan),
+            "Projected OPS": r.get("proj_OPS", np.nan),
+        })
+
+    roster_view = pd.DataFrame(roster_rows)
+
+    if "Roster Slot" in roster_view.columns:
+        def slot_sort_key(slot):
+            s = str(slot)
+            pos = "".join([ch for ch in s if not ch.isdigit()])
+            num = "".join([ch for ch in s if ch.isdigit()])
+            base = POSITION_ORDER.index(pos) if pos in POSITION_ORDER else 999
+            return base * 100 + (int(num) if num else 0)
+
+        roster_view["_slot_sort"] = roster_view["Roster Slot"].apply(slot_sort_key)
+        roster_view = roster_view.sort_values("_slot_sort").drop(columns=["_slot_sort"])
+
+    return roster_view
+
+
+
+
+def normalize_uploaded_stat_columns(df):
+    """Normalize common uploaded 2026 stat column names for fantasy standings/trades."""
+    out = df.copy()
+    rename_map = {}
+    for c in out.columns:
+        lc = str(c).strip().lower()
+        if lc in ["name", "player name", "player_name", "full name", "fullname"]:
+            rename_map[c] = "Player"
+        elif lc in ["team", "mlb team", "tm"]:
+            rename_map[c] = "MLB Team"
+        elif lc in ["pos", "position", "primary position", "primary_position"]:
+            rename_map[c] = "Primary Position"
+        elif lc in ["hr", "home runs", "homeruns", "home_runs"]:
+            rename_map[c] = "HR"
+        elif lc in ["rbi", "rbis"]:
+            rename_map[c] = "RBI"
+        elif lc in ["r", "runs", "run"]:
+            rename_map[c] = "R"
+        elif lc in ["sb", "stolen bases", "stolen_bases"]:
+            rename_map[c] = "SB"
+        elif lc in ["ba", "avg", "batting average", "batting_average"]:
+            rename_map[c] = "BA"
+        elif lc in ["obp"]:
+            rename_map[c] = "OBP"
+        elif lc in ["slg"]:
+            rename_map[c] = "SLG"
+        elif lc in ["ops"]:
+            rename_map[c] = "OPS"
+        elif lc in ["ab", "at bats", "at_bats"]:
+            rename_map[c] = "AB"
+        elif lc in ["h", "hits"]:
+            rename_map[c] = "H"
+        elif lc in ["bb", "walks"]:
+            rename_map[c] = "BB"
+    out = out.rename(columns=rename_map)
+    if "Player" not in out.columns and "fullName" in out.columns:
+        out = out.rename(columns={"fullName": "Player"})
+    if "Player" in out.columns:
+        out["Player Key"] = out["Player"].apply(normalize_player_name_for_merge)
+    for c in ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "AB", "H", "BB"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
+
+
+def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
+    """Score drafted teams using uploaded/current stats."""
+    df = roster_df.copy()
+    for c in ["HR", "RBI", "R", "SB", "BA", "OPS", "OBP", "SLG"]:
+        if c not in df.columns:
+            df[c] = np.nan
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    team_rows = []
+    for team, g in df.groupby("Team"):
+        row = {
+            "Fantasy Team": team,
+            "Players": g["Player"].nunique(),
+            "Total HR": g["HR"].sum(),
+            "Total RBI": g["RBI"].sum(),
+            "Total R": g["R"].sum(),
+            "Total SB": g["SB"].sum(),
+            "Average BA": g["BA"].mean(),
+            "Average OPS": g["OPS"].mean(),
+        }
+        team_rows.append(row)
+
+    standings = pd.DataFrame(team_rows)
+    if standings.empty:
+        return standings
+
+    if scoring_format == "5x5 Roto":
+        categories = ["Total HR", "Total RBI", "Total R", "Total SB", "Average BA"]
+        for cat in categories:
+            standings[f"{cat} Points"] = standings[cat].rank(ascending=True, method="min")
+        standings["Total Roto Points"] = standings[[f"{c} Points" for c in categories]].sum(axis=1)
+        standings["League Rank"] = standings["Total Roto Points"].rank(ascending=False, method="min")
+        standings = standings.sort_values(["League Rank", "Fantasy Team"])
+    else:
+        standings["Estimated Points"] = (
+            standings["Total HR"] * 4 +
+            standings["Total RBI"] +
+            standings["Total R"] +
+            standings["Total SB"] * 2 +
+            standings["Average OPS"].fillna(0) * 25
+        )
+        standings["League Rank"] = standings["Estimated Points"].rank(ascending=False, method="min")
+        standings = standings.sort_values(["League Rank", "Fantasy Team"])
+
+    return standings
+
+
+def summarize_team_category_needs(standings, team_name):
+    if standings is None or standings.empty or team_name not in standings["Fantasy Team"].values:
+        return {}
+    row = standings[standings["Fantasy Team"] == team_name].iloc[0]
+    needs = {}
+    category_map = {
+        "HR": "Total HR",
+        "RBI": "Total RBI",
+        "R": "Total R",
+        "SB": "Total SB",
+        "BA": "Average BA",
+        "OPS": "Average OPS",
+    }
+    for label, col in category_map.items():
+        if col in standings.columns:
+            rank = standings[col].rank(ascending=False, method="min")[row.name]
+            if rank > max(1, len(standings) / 2):
+                needs[label] = True
+    return needs
+
+
+def evaluate_trade(my_give, my_get, my_roster, all_rosters, standings, my_team):
+    """Evaluate a proposed fantasy trade from the user's perspective."""
+    give_df = all_rosters[all_rosters["Player"].isin(my_give)].copy()
+    get_df = all_rosters[all_rosters["Player"].isin(my_get)].copy()
+
+    cats = ["HR", "RBI", "R", "SB", "BA", "OPS"]
+    rows = []
+    for cat in cats:
+        give_val = pd.to_numeric(give_df.get(cat, pd.Series(dtype=float)), errors="coerce").mean() if cat in ["BA", "OPS"] else pd.to_numeric(give_df.get(cat, pd.Series(dtype=float)), errors="coerce").sum()
+        get_val = pd.to_numeric(get_df.get(cat, pd.Series(dtype=float)), errors="coerce").mean() if cat in ["BA", "OPS"] else pd.to_numeric(get_df.get(cat, pd.Series(dtype=float)), errors="coerce").sum()
+        rows.append({"Category": cat, "Give Away": give_val, "Receive": get_val, "Net Gain": get_val - give_val})
+
+    trade_df = pd.DataFrame(rows)
+    needs = summarize_team_category_needs(standings, my_team)
+    weighted_gain = 0
+    for _, r in trade_df.iterrows():
+        weight = 1.5 if needs.get(r["Category"], False) else 1.0
+        weighted_gain += r["Net Gain"] * weight
+
+    verdict = "Neutral"
+    if weighted_gain > 2:
+        verdict = "Good for your team"
+    elif weighted_gain < -2:
+        verdict = "Bad for your team"
+
+    return trade_df, verdict, weighted_gain
+
+
+def suggest_trade_targets(my_team, target_team, all_rosters, standings):
+    """Suggest simple one-for-one trades that address the user's weak categories."""
+    if all_rosters.empty:
+        return pd.DataFrame()
+
+    needs = summarize_team_category_needs(standings, my_team)
+    my_players = all_rosters[all_rosters["Team"] == my_team].copy()
+    other_players = all_rosters[all_rosters["Team"] == target_team].copy()
+
+    if my_players.empty or other_players.empty:
+        return pd.DataFrame()
+
+    suggestions = []
+    for _, mine in my_players.iterrows():
+        for _, theirs in other_players.iterrows():
+            fit_gain = 0
+            reason_parts = []
+            for cat in ["HR", "RBI", "R", "SB", "BA", "OPS"]:
+                mv = pd.to_numeric(mine.get(cat), errors="coerce")
+                tv = pd.to_numeric(theirs.get(cat), errors="coerce")
+                if pd.isna(mv) or pd.isna(tv):
+                    continue
+                diff = tv - mv
+                if needs.get(cat, False) and diff > 0:
+                    fit_gain += diff * (5 if cat in ["BA", "OPS"] else 1)
+                    reason_parts.append(f"helps {cat}")
+                elif diff < 0:
+                    fit_gain += diff * 0.25
+
+            # fairness proxy: projected/current fantasy value, if available
+            mine_val = pd.to_numeric(mine.get("Expected Fantasy Value", np.nan), errors="coerce")
+            theirs_val = pd.to_numeric(theirs.get("Expected Fantasy Value", np.nan), errors="coerce")
+            fairness_gap = theirs_val - mine_val if pd.notna(mine_val) and pd.notna(theirs_val) else np.nan
+            if pd.notna(fairness_gap):
+                fit_gain -= abs(fairness_gap) * 0.15
+
+            if fit_gain > 0:
+                suggestions.append({
+                    "Give": mine.get("Player"),
+                    "Receive": theirs.get("Player"),
+                    "Other Team": target_team,
+                    "Trade Fit Score": fit_gain,
+                    "Fairness Gap": fairness_gap,
+                    "Why It Helps": ", ".join(reason_parts[:4]) if reason_parts else "improves category balance"
+                })
+
+    out = pd.DataFrame(suggestions)
+    if not out.empty:
+        out = out.sort_values("Trade Fit Score", ascending=False).head(20)
+    return out
+
+
 batting_df, yearly_df, people_df = load_data()
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
@@ -2581,7 +2955,7 @@ year_max = int(max(all_years))
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
-PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Valuation", "ML Predictions"]
+PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Fantasy Standings Tracker", "Trade Analyzer", "Valuation", "ML Predictions"]
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -2975,7 +3349,7 @@ def _interpret_significance(player_a, player_b, stat, diff, p_value, alpha):
 
 def _format_sig_table(df):
     df = df.copy()
-    for c in ["Player A Avg", "Player B Avg", "Difference", "95% CI Low", "95% CI High", "Test Statistic"]:
+    for c in ["Player A Avg", "Player B Avg", "Difference", " Low", " High", "Test Statistic"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").round(4)
     if "p-value" in df.columns:
@@ -3105,8 +3479,8 @@ if active_page == "Comparison Tool":
                     "Difference": diff,
                     "Test Statistic": test_stat,
                     "p-value": p_value,
-                    "95% CI Low": result["ci_low"],
-                    "95% CI High": result["ci_high"],
+                    " Low": result["ci_low"],
+                    " High": result["ci_high"],
                     "Winner": (
                         player_a_name if pd.notna(p_value) and p_value < alpha and diff > 0 else
                         player_b_name if pd.notna(p_value) and p_value < alpha and diff < 0 else
@@ -3151,8 +3525,8 @@ if active_page == "Comparison Tool":
                         "Difference": overall_score,
                         "Test Statistic": overall_score,
                         "p-value": _normal_two_sided_p_from_z(overall_score),
-                        "95% CI Low": np.nan,
-                        "95% CI High": np.nan,
+                        " Low": np.nan,
+                        " High": np.nan,
                         "Winner": overall_winner,
                         "Interpretation": overall_interpretation
                     }
@@ -3166,8 +3540,8 @@ if active_page == "Comparison Tool":
                         "Difference": np.nan,
                         "Test Statistic": np.nan,
                         "p-value": np.nan,
-                        "95% CI Low": np.nan,
-                        "95% CI High": np.nan,
+                        " Low": np.nan,
+                        " High": np.nan,
                         "Winner": "Not enough data",
                         "Interpretation": "Not enough valid stat tests to make an overall comparison."
                     }
@@ -4361,7 +4735,7 @@ if active_page == "Draft Room Simulator":
     drafted_set_room = set(drafted_names_room)
     pick_info = room_df[[
         "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
-        "Draft Fit Score", "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value",
+        "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
         "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
     ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
 
@@ -4370,7 +4744,7 @@ if active_page == "Draft Room Simulator":
     result_cols = [
         "Round", "Pick", "Team", "Player", "Primary Position", "MLB Team",
         "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score",
-        "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value"
+        "ML Projection Score", "Expected Fantasy Value"
     ]
     render_output_table(
         format_fantasy_table(clean_ui_columns(draft_results[[c for c in result_cols if c in draft_results.columns]])),
@@ -4380,10 +4754,105 @@ if active_page == "Draft Room Simulator":
         style_cols=["Fantasy Edge", "Draft Fit Score"]
     )
 
+    st.subheader("Roster Lineup Views")
+    st.caption(
+        "Generate lineup-style roster tables for your team or any other fantasy team in the draft room. "
+        "These views show each drafted player by position with projected HR, RBI, Runs, SB, BA, OPS, plus model/market/fantasy scores."
+    )
+
+    view_col1, view_col2 = st.columns([1, 2])
+    with view_col1:
+        roster_team_to_view = st.selectbox(
+            "Team to View",
+            room_team_names,
+            index=room_team_names.index(your_team) if your_team in room_team_names else 0,
+            key="draft_room_roster_team_to_view"
+        )
+    with view_col2:
+        show_all_rosters = st.checkbox(
+            "Show all team rosters",
+            value=False,
+            key="draft_room_show_all_rosters"
+        )
+
+    if st.button("Generate Roster View", key="draft_room_generate_roster_view"):
+        st.session_state["draft_room_roster_view_requested"] = True
+
+    if st.session_state.get("draft_room_roster_view_requested", False):
+        if show_all_rosters:
+            for _team_name in room_team_names:
+                _roster_view = build_draft_room_roster_view(draft_results, _team_name)
+                st.markdown(f"#### {_team_name} Roster")
+                if _roster_view.empty:
+                    st.info(f"No drafted players entered yet for {_team_name}.")
+                else:
+                    render_output_table(
+                        format_fantasy_table(clean_ui_columns(_roster_view)),
+                        key=f"draft_room_roster_view_{_team_name}".replace(" ", "_").replace("/", "_"),
+                        file_name=f"draft_room_roster_view_{_team_name}.csv".replace(" ", "_").replace("/", "_"),
+                        display_rows=100,
+                        style_cols=["Fantasy Edge", "Draft Fit Score"]
+                    )
+        else:
+            roster_view = build_draft_room_roster_view(draft_results, roster_team_to_view)
+            st.markdown(f"#### {roster_team_to_view} Roster")
+            if roster_view.empty:
+                st.info(f"No drafted players entered yet for {roster_team_to_view}.")
+            else:
+                render_output_table(
+                    format_fantasy_table(clean_ui_columns(roster_view)),
+                    key="draft_room_selected_roster_view",
+                    file_name="draft_room_selected_roster_view.csv",
+                    display_rows=100,
+                    style_cols=["Fantasy Edge", "Draft Fit Score"]
+                )
+
+                summary = {}
+                for _col in ["Projected HR", "Projected RBI", "Projected R", "Projected SB"]:
+                    if _col in roster_view.columns:
+                        summary[_col.replace("Projected ", "Total Projected ")] = pd.to_numeric(roster_view[_col], errors="coerce").sum()
+                if "Projected BA" in roster_view.columns:
+                    summary["Average Projected BA"] = pd.to_numeric(roster_view["Projected BA"], errors="coerce").mean()
+                if "Projected OPS" in roster_view.columns:
+                    summary["Average Projected OPS"] = pd.to_numeric(roster_view["Projected OPS"], errors="coerce").mean()
+
+                if summary:
+                    st.markdown("##### Roster Projection Summary")
+                    summary_df = pd.DataFrame([summary])
+                    render_output_table(
+                        format_fantasy_table(clean_ui_columns(summary_df)),
+                        key="draft_room_roster_projection_summary",
+                        file_name="draft_room_roster_projection_summary.csv",
+                        display_rows=5
+                    )
+
     available_room = room_df[~room_df["fullName"].isin(drafted_set_room)].copy()
-    available_room = available_room.sort_values("Draft Fit Score", ascending=False)
+
+    my_team_current = draft_results[
+        (draft_results["Team"] == your_team) &
+        (draft_results["Player"].astype(str).str.strip() != "")
+    ].copy()
+
+    available_room = compute_team_aware_draft_room_fit(
+        available_room,
+        my_team_current,
+        room_format
+    )
+
+    # Keep output simple: Draft Fit Score now represents the team-aware recommendation score.
+    available_room["Draft Fit Score"] = available_room["Team Aware Draft Fit"]
+
+    available_room = available_room.sort_values(
+        "Draft Fit Score",
+        ascending=False
+    )
 
     st.subheader("Recommended Next Pick")
+    st.caption(
+        "Draft Fit Score is team-aware here: it accounts for your selected team's roster construction, "
+        "position needs, category fit, roster balance, scarcity, expected fantasy value, ML projection context, "
+        "breakout probability, and risk — while keeping the table clean."
+    )
     if available_room.empty:
         st.success("Draft complete. No available players remain in the model pool.")
     else:
@@ -4397,10 +4866,10 @@ if active_page == "Draft Room Simulator":
 
         top_available_cols = [
             "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
-            "Draft Fit Score", "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value"
+            "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value"
         ]
         top_available_display = available_room[top_available_cols].head(25).rename(columns={"fullName": "Player", "Team": "MLB Team"})
-        st.caption("Top available players by Draft Fit Score.")
+        st.caption("Top available players are ranked by the team-aware Draft Fit Score. The table keeps only the main columns users need during a draft.")
         render_output_table(
             format_fantasy_table(clean_ui_columns(top_available_display)),
             key="draft_room_top_available",
@@ -4455,6 +4924,146 @@ if active_page == "Draft Room Simulator":
                 f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
                 f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
             )
+
+
+
+if active_page == "Fantasy Standings Tracker":
+    render_section_header(
+        "🏆 Fantasy Standings Tracker",
+        "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
+    )
+
+    st.info(
+        "Upload a CSV of current 2026 hitter stats with player names and stats such as HR, RBI, R, SB, BA, OPS. "
+        "The page matches those stats to the Draft Room results and ranks every fantasy team."
+    )
+
+    scoring_format_tracker = st.selectbox(
+        "Scoring Format",
+        ["5x5 Roto", "Points League"],
+        index=0,
+        key="standings_scoring_format"
+    )
+
+    stats_file = st.file_uploader(
+        "Upload current-season hitter stats CSV",
+        type=["csv"],
+        key="standings_stats_upload"
+    )
+
+    if stats_file is not None:
+        current_stats = pd.read_csv(stats_file)
+        current_stats = normalize_uploaded_stat_columns(current_stats)
+        st.subheader("Uploaded Current Stats Preview")
+        render_output_table(
+            clean_ui_columns(current_stats.head(25)),
+            key="standings_uploaded_preview",
+            file_name="uploaded_current_stats_preview.csv",
+            display_rows=25
+        )
+
+        draft_table = st.session_state.get("draft_room_table", pd.DataFrame())
+        if draft_table.empty:
+            st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
+        else:
+            drafted = draft_table[draft_table["Player"].astype(str).str.strip() != ""].copy()
+            drafted["Player Key"] = drafted["Player"].apply(normalize_player_name_for_merge)
+            roster_stats = drafted.merge(current_stats, on="Player Key", how="left", suffixes=("", "_stats"))
+
+            # Prefer uploaded player names/stats, keep draft ownership.
+            if "Player_stats" in roster_stats.columns:
+                roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
+
+            st.subheader("Drafted Rosters With Current Stats")
+            show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
+            render_output_table(
+                format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]])),
+                key="standings_roster_current_stats",
+                file_name="fantasy_rosters_current_stats.csv",
+                display_rows=300
+            )
+
+            standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
+            st.subheader("Live Fantasy Standings")
+            render_output_table(
+                format_fantasy_table(clean_ui_columns(standings)),
+                key="fantasy_live_standings",
+                file_name="fantasy_live_standings.csv",
+                display_rows=50,
+                style_cols=["Total Roto Points", "Estimated Points"]
+            )
+
+            st.session_state["fantasy_current_roster_stats"] = roster_stats
+            st.session_state["fantasy_current_standings"] = standings
+    else:
+        st.warning("Upload a current-season stats CSV to calculate standings.")
+
+
+if active_page == "Trade Analyzer":
+    render_section_header(
+        "🔁 Trade Analyzer",
+        "Evaluate proposed trades and generate trade ideas based on your roster needs, current stats, projections, and category balance."
+    )
+
+    roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame())
+    standings = st.session_state.get("fantasy_current_standings", pd.DataFrame())
+
+    if roster_stats.empty:
+        st.info(
+            "First use the Fantasy Standings Tracker page and upload current-season stats. "
+            "Then this page can evaluate trades using those live/current stats."
+        )
+    else:
+        teams = sorted(roster_stats["Team"].dropna().astype(str).unique())
+        my_team_trade = st.selectbox("Your Team", teams, index=0, key="trade_my_team")
+        other_teams = [t for t in teams if t != my_team_trade]
+        other_team_trade = st.selectbox("Other Team", other_teams, index=0 if other_teams else None, key="trade_other_team")
+
+        my_players = sorted(roster_stats[roster_stats["Team"] == my_team_trade]["Player"].dropna().astype(str).unique())
+        other_players = sorted(roster_stats[roster_stats["Team"] == other_team_trade]["Player"].dropna().astype(str).unique()) if other_teams else []
+
+        st.subheader("Analyze a Proposed Trade")
+        give_players = st.multiselect("Players You Give Up", my_players, key="trade_give_players")
+        get_players = st.multiselect("Players You Receive", other_players, key="trade_get_players")
+
+        if give_players and get_players:
+            trade_eval, verdict, weighted_gain = evaluate_trade(
+                give_players,
+                get_players,
+                roster_stats,
+                roster_stats,
+                standings,
+                my_team_trade
+            )
+            st.metric("Trade Verdict", verdict)
+            st.caption(f"Team-need weighted trade score: {weighted_gain:.2f}")
+            render_output_table(
+                format_fantasy_table(clean_ui_columns(trade_eval)),
+                key="trade_eval_table",
+                file_name="trade_evaluation.csv",
+                display_rows=20,
+                style_cols=["Net Gain"]
+            )
+
+        st.divider()
+        st.subheader("Generate Trade Ideas")
+        st.caption(
+            "The app looks for trades that are somewhat fair while improving your weak categories. "
+            "For example, if you are low in batting average but strong in power, it may suggest trading power for AVG/OPS."
+        )
+
+        if other_teams and st.button("Suggest Trades For My Team", key="suggest_trade_button"):
+            suggestions = suggest_trade_targets(my_team_trade, other_team_trade, roster_stats, standings)
+            if suggestions.empty:
+                st.info("No clear trade suggestions found from the current roster/stat data.")
+            else:
+                render_output_table(
+                    format_fantasy_table(clean_ui_columns(suggestions)),
+                    key="trade_suggestions",
+                    file_name="trade_suggestions.csv",
+                    display_rows=20,
+                    style_cols=["Trade Fit Score", "Fairness Gap"]
+                )
 
 
 if active_page == "Valuation":
