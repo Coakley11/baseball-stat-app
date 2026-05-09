@@ -2948,6 +2948,50 @@ def suggest_trade_targets(my_team, target_team, all_rosters, standings):
     return out
 
 
+
+
+def normalize_imported_draft_columns(df):
+    """Normalize uploaded draft board columns into Round/Pick/Team/Player."""
+    out = df.copy()
+    rename_map = {}
+    for c in out.columns:
+        lc = str(c).strip().lower()
+        if lc in ["team", "owner", "fantasy team", "fantasy_team", "manager"]:
+            rename_map[c] = "Team"
+        elif lc in ["player", "name", "player name", "player_name", "full name", "fullname"]:
+            rename_map[c] = "Player"
+        elif lc in ["round", "rd"]:
+            rename_map[c] = "Round"
+        elif lc in ["pick", "pick number", "pick_number", "overall pick", "overall_pick"]:
+            rename_map[c] = "Pick"
+    out = out.rename(columns=rename_map)
+    if "Team" not in out.columns:
+        out["Team"] = ""
+    if "Player" not in out.columns:
+        out["Player"] = ""
+    out["Team"] = out["Team"].astype(str).str.strip()
+    out["Player"] = out["Player"].astype(str).str.strip()
+    out = out[(out["Team"] != "") & (out["Player"] != "")].copy()
+    if "Pick" not in out.columns:
+        out["Pick"] = range(1, len(out) + 1)
+    out["Pick"] = pd.to_numeric(out["Pick"], errors="coerce")
+    out = out.sort_values("Pick", na_position="last").reset_index(drop=True)
+    out["Pick"] = range(1, len(out) + 1)
+    if "Round" not in out.columns:
+        team_count = max(1, out["Team"].nunique())
+        out["Round"] = ((out["Pick"] - 1) // team_count) + 1
+    out["Round"] = pd.to_numeric(out["Round"], errors="coerce").fillna(1).astype(int)
+    return out[["Round", "Pick", "Team", "Player"]]
+
+
+def read_imported_draft_file(uploaded_file):
+    """Read uploaded draft CSV or Excel."""
+    name = str(getattr(uploaded_file, "name", "")).lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    return pd.read_excel(uploaded_file)
+
+
 batting_df, yearly_df, people_df = load_data()
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
@@ -2979,8 +3023,13 @@ for _state_key in list(st.session_state.keys()):
         or _key_text.endswith("_button")
         or "_button" in _key_text
         or "download" in _key_text
+        or "upload" in _key_text
+        or "uploader" in _key_text
+        or "file_uploader" in _key_text
         or "export_csv" in _key_text
         or "form_submit" in _key_text
+        or "data_editor" in _key_text
+        or "draft_room_editor" in _key_text
         or "data_editor" in _key_text
         or "draft_room_editor" in _key_text
     ):
@@ -4625,6 +4674,35 @@ if active_page == "Draft Room Simulator":
     your_team = st.selectbox("Your Team", room_team_names, index=0, key="room_your_team")
     total_picks = int(room_team_count) * int(room_rounds)
 
+    st.subheader("Import Existing Draft")
+    st.caption(
+        "Upload a CSV or Excel file with Team/Owner and Player columns. "
+        "The Draft Room will load the picks and then automatically attach Market Rank, Model Rank, Fantasy Edge, Draft Fit Score, ML Projection Score, and Expected Fantasy Value."
+    )
+    imported_draft_file = st.file_uploader(
+        "Upload existing draft board CSV or Excel",
+        type=["csv", "xlsx", "xls"]
+    )
+    if imported_draft_file is not None:
+        try:
+            imported_raw = read_imported_draft_file(imported_draft_file)
+            imported_draft = normalize_imported_draft_columns(imported_raw)
+            if imported_draft.empty:
+                st.warning("No usable Team/Player rows were found in the uploaded draft.")
+            else:
+                if st.button("Load Uploaded Draft Into Draft Room", key="load_uploaded_draft_room"):
+                    st.session_state["draft_room_table"] = imported_draft.copy()
+                    st.success(f"Loaded {len(imported_draft)} drafted players into the Draft Room.")
+                st.caption("Uploaded draft preview:")
+                render_output_table(
+                    clean_ui_columns(imported_draft.head(50)),
+                    key="uploaded_draft_preview",
+                    file_name="uploaded_draft_preview.csv",
+                    display_rows=50
+                )
+        except Exception as e:
+            st.error(f"Could not read uploaded draft file: {e}")
+
     max_year_room = int(yearly_df["yearID"].max())
     room_years = list(range(max_year_room - int(room_window) + 1, max_year_room + 1))
     recent_room = yearly_df[yearly_df["yearID"].isin(room_years)].copy().sort_values(["playerID", "yearID"])
@@ -4701,7 +4779,25 @@ if active_page == "Draft Room Simulator":
 
     player_options_room = [""] + sorted(room_df["fullName"].dropna().unique().tolist())
 
-    if "draft_room_table" not in st.session_state or len(st.session_state["draft_room_table"]) != total_picks:
+    if "draft_room_table" not in st.session_state:
+        pick_rows = []
+        for pick in range(1, total_picks + 1):
+            rnd = ((pick - 1) // int(room_team_count)) + 1
+            within_round = (pick - 1) % int(room_team_count)
+            if rnd % 2 == 1:
+                team = room_team_names[within_round]
+            else:
+                team = room_team_names[::-1][within_round]
+            pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
+        st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
+
+    current_table = st.session_state.get("draft_room_table", pd.DataFrame())
+    has_real_picks = (
+        not current_table.empty
+        and "Player" in current_table.columns
+        and current_table["Player"].astype(str).str.strip().ne("").any()
+    )
+    if (not has_real_picks) and len(current_table) != total_picks:
         pick_rows = []
         for pick in range(1, total_picks + 1):
             rnd = ((pick - 1) // int(room_team_count)) + 1
@@ -4945,11 +5041,27 @@ if active_page == "Fantasy Standings Tracker":
         key="standings_scoring_format"
     )
 
+    # Do not use a session_state key on file_uploader here.
+    # Keyed upload widgets can trigger StreamlitValueAssignmentNotAllowedError
+    # when combined with page-state preservation logic.
     stats_file = st.file_uploader(
         "Upload current-season hitter stats CSV",
-        type=["csv"],
-        key="standings_stats_upload"
+        type=["csv"]
     )
+
+    draft_import_for_standings = st.file_uploader(
+        "Optional: Upload draft board CSV/Excel if Draft Room is empty",
+        type=["csv", "xlsx", "xls"]
+    )
+    if draft_import_for_standings is not None:
+        try:
+            draft_import_raw = read_imported_draft_file(draft_import_for_standings)
+            draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
+            if st.button("Use Uploaded Draft Board For Standings", key="use_uploaded_draft_for_standings"):
+                st.session_state["draft_room_table"] = draft_import_norm.copy()
+                st.success(f"Loaded {len(draft_import_norm)} picks for standings/trade analysis.")
+        except Exception as e:
+            st.error(f"Could not read draft board upload: {e}")
 
     if stats_file is not None:
         current_stats = pd.read_csv(stats_file)
