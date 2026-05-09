@@ -2406,6 +2406,174 @@ def load_data():
 
     return batting, yearly, people
 
+
+
+def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto"):
+    """Build a more realistic ML-style adjustment for draft pages.
+
+    Philosophy:
+    - Base fantasy projection remains the main signal.
+    - ML is only a modest adjustment for breakout/risk/context.
+    - Reduces multicollinearity by using category dimensions instead of repeatedly
+      counting correlated HR/RBI/OPS/trend features.
+    - Applies regression-to-mean, capped trends, age curve, playing-time stability,
+      and simple similar-player anchoring.
+    """
+    out = df.copy()
+
+    # Safe numeric helpers
+    for c in [
+        "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS", "proj_BB",
+        "R_trend", "HR_trend", "RBI_trend", "SB_trend", "BA_trend", "OPS_trend",
+        "Age", "G", "AB"
+    ]:
+        if c not in out.columns:
+            out[c] = np.nan
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    # League/category anchors for regression-to-mean.
+    med = {}
+    for c in ["proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS", "proj_BB"]:
+        med[c] = out[c].replace([np.inf, -np.inf], np.nan).median()
+        if pd.isna(med[c]):
+            med[c] = 0
+
+    age = out["Age"].fillna(29)
+    games = out["G"].fillna(0)
+    ab = out["AB"].fillna(0)
+
+    # Stability: high playing time means we trust the projection more.
+    stability = (games / 150).clip(lower=0.20, upper=1.00)
+    # Young players and low-playing-time players should be regressed more.
+    regression_strength = (0.35 - stability * 0.18).clip(lower=0.10, upper=0.35)
+    regression_strength = regression_strength + np.where(age < 24, 0.05, 0)
+    regression_strength = pd.Series(regression_strength, index=out.index).clip(lower=0.10, upper=0.42)
+
+    # Regression-to-mean category projections.
+    for c in ["proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS", "proj_BB"]:
+        out[f"rtm_{c}"] = out[c] * (1 - regression_strength) + med[c] * regression_strength
+
+    # Capped trend signals avoid runaway projections.
+    out["Power Trend Signal"] = normalize_series(out["HR_trend"].clip(-5, 5).fillna(0))
+    out["Speed Trend Signal"] = normalize_series(out["SB_trend"].clip(-5, 5).fillna(0))
+    out["Plate Skill Trend Signal"] = normalize_series(out["OPS_trend"].clip(-0.060, 0.060).fillna(0))
+    out["Average Trend Signal"] = normalize_series(out["BA_trend"].clip(-0.030, 0.030).fillna(0))
+
+    # Category dimensions reduce multicollinearity:
+    # HR/RBI/OPS are not all allowed to stack as separate full-strength power features.
+    power_dim = normalize_series(
+        normalize_series(out["rtm_proj_HR"]) * 0.60 +
+        normalize_series(out["rtm_proj_RBI"]) * 0.25 +
+        normalize_series(out["rtm_proj_OPS"]) * 0.15
+    )
+    speed_dim = normalize_series(out["rtm_proj_SB"])
+    run_context_dim = normalize_series(
+        normalize_series(out["rtm_proj_R"]) * 0.55 +
+        normalize_series(out["rtm_proj_RBI"]) * 0.25 +
+        normalize_series(out["rtm_proj_OPS"]) * 0.20
+    )
+    bat_quality_dim = normalize_series(
+        normalize_series(out["rtm_proj_BA"]) * 0.50 +
+        normalize_series(out["rtm_proj_OPS"]) * 0.50
+    )
+
+    # Age curve / breakout and decline context.
+    age_curve = 1 - (abs(age - 28) / 18)
+    age_curve = pd.Series(age_curve, index=out.index).clip(lower=0.55, upper=1.05)
+    prime_age_signal = normalize_series(age_curve)
+
+    young_breakout_signal = (
+        ((age >= 22) & (age <= 25)).astype(float) * 0.50 +
+        (out["Power Trend Signal"] * 0.25) +
+        (out["Plate Skill Trend Signal"] * 0.25)
+    )
+    young_breakout_signal = normalize_series(young_breakout_signal)
+
+    decline_risk_signal = (
+        ((age >= 33).astype(float) * 0.45) +
+        ((games < 100).astype(float) * 0.25) +
+        normalize_series((-out["Plate Skill Trend Signal"]).clip(lower=0)) * 0.30
+    )
+    decline_risk_signal = normalize_series(decline_risk_signal)
+
+    playing_time_signal = normalize_series(games.fillna(0))
+
+    # Similar-player anchor: group players by age band and position; partially pull toward
+    # similar-player expected value rather than letting raw categories explode.
+    pos = out.get("Primary Position", pd.Series("DH", index=out.index)).fillna("DH").astype(str)
+    age_band = pd.cut(age.fillna(29), bins=[0, 24, 27, 30, 33, 60], labels=["Young", "Growth", "Prime", "LatePrime", "Veteran"])
+    out["_sim_group"] = pos + "_" + age_band.astype(str)
+
+    if fantasy_format == "5x5 Roto":
+        base_category_score = normalize_series(
+            normalize_series(out["rtm_proj_R"]) * 0.20 +
+            normalize_series(out["rtm_proj_HR"]) * 0.20 +
+            normalize_series(out["rtm_proj_RBI"]) * 0.20 +
+            normalize_series(out["rtm_proj_SB"]) * 0.20 +
+            normalize_series(out["rtm_proj_BA"]) * 0.20
+        )
+    else:
+        base_category_score = normalize_series(
+            out["rtm_proj_HR"] * 4 +
+            out["rtm_proj_RBI"] +
+            out["rtm_proj_R"] +
+            out["rtm_proj_SB"] * 2 +
+            out["rtm_proj_BB"] +
+            out["rtm_proj_OPS"] * 20
+        )
+
+    group_anchor = out.assign(_base_category_score=base_category_score).groupby("_sim_group")["_base_category_score"].transform("median")
+    group_anchor = group_anchor.fillna(base_category_score.median())
+
+    # Similar-player adjusted baseline: mostly player projection, modest similar-player pull.
+    similar_player_adjusted = normalize_series(base_category_score * 0.84 + group_anchor * 0.16)
+
+    # ML is now contextual adjustment, not the whole projection.
+    # Trend/breakout/risk are deliberately modest so power does not get counted 4 times.
+    breakout_probability = normalize_series(
+        young_breakout_signal * 0.35 +
+        out["Power Trend Signal"] * 0.20 +
+        out["Speed Trend Signal"] * 0.15 +
+        out["Plate Skill Trend Signal"] * 0.20 +
+        playing_time_signal * 0.10
+    )
+    risk_score = normalize_series(
+        decline_risk_signal * 0.45 +
+        (1 - playing_time_signal) * 0.30 +
+        (1 - prime_age_signal) * 0.25
+    )
+
+    category_balance = normalize_series(
+        power_dim * 0.25 +
+        speed_dim * 0.25 +
+        run_context_dim * 0.25 +
+        bat_quality_dim * 0.25
+    )
+
+    contextual_ml_score = normalize_series(
+        similar_player_adjusted * 0.70 +
+        category_balance * 0.15 +
+        breakout_probability * 0.10 -
+        risk_score * 0.05
+    )
+
+    # ML adjustment is intentionally small: roughly -6% to +6%.
+    raw_adjustment = (contextual_ml_score - similar_player_adjusted).clip(-0.10, 0.10)
+    out["ML Adjustment"] = raw_adjustment.clip(-0.06, 0.06)
+    out["Breakout Probability"] = breakout_probability
+    out["Risk Score"] = risk_score
+    out["Similar Player Anchor"] = group_anchor
+    out["ML Projection Score"] = normalize_series(contextual_ml_score)
+
+    # Final expected value: realistic baseline first, small ML boost/downgrade second.
+    out["Realistic Base Projection Score"] = similar_player_adjusted
+    out["Expected Fantasy Value"] = normalize_series(
+        similar_player_adjusted * (1 + out["ML Adjustment"])
+    )
+
+    return out
+
+
 batting_df, yearly_df, people_df = load_data()
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
@@ -3607,55 +3775,25 @@ if active_page == "Draft Assistant Simulator":
             draft_df["Current Production Score"] = normalize_series(draft_df["HR"] * 4 + draft_df["RBI"] + draft_df["R"] + draft_df["SB"] * 2 + draft_df["BB"] + draft_df["OPS"] * 20)
             draft_df["Projected Production Score"] = normalize_series(draft_df["proj_HR"] * 4 + draft_df["proj_RBI"] + draft_df["proj_R"] + draft_df["proj_SB"] * 2 + draft_df["proj_BB"] + draft_df["proj_OPS"] * 20)
 
-        # Lightweight ML projection signal for the Draft Assistant.
-        # This is intentionally faster and more stable than running the full ML page inside the draft board.
-        # It uses recent projection stats, trend slopes, age, playing time, and regression-to-mean style stability.
+        # Realistic projection + modest ML adjustment for the Draft Assistant.
+        # Base projection uses regression-to-mean, age context, similar-player anchoring,
+        # capped trends, and category-balanced scoring. ML now acts as a small contextual
+        # boost/downgrade rather than fully driving the projection.
+        draft_df = build_realistic_draft_ml_adjustments(draft_df, draft_format)
         draft_df["ML Signal Eligible"] = pd.to_numeric(draft_df.get("G", 0), errors="coerce").fillna(0) >= ml_min_games_for_signal
-        if draft_format == "5x5 Roto":
-            ml_raw_signal = (
-                normalize_series(draft_df["proj_R"]) * 0.16 +
-                normalize_series(draft_df["proj_HR"]) * 0.18 +
-                normalize_series(draft_df["proj_RBI"]) * 0.18 +
-                normalize_series(draft_df["proj_SB"]) * 0.16 +
-                normalize_series(draft_df["proj_BA"]) * 0.12 +
-                normalize_series(draft_df["proj_OPS"]) * 0.10 +
-                normalize_series(draft_df["HR_trend"].fillna(0)) * 0.05 +
-                normalize_series(draft_df["OPS_trend"].fillna(0)) * 0.05
-            )
-        else:
-            ml_raw_signal = normalize_series(
-                draft_df["proj_HR"] * 4 +
-                draft_df["proj_RBI"] +
-                draft_df["proj_R"] +
-                draft_df["proj_SB"] * 2 +
-                draft_df["proj_BB"] +
-                draft_df["proj_OPS"] * 25 +
-                draft_df["HR_trend"].fillna(0) * 2 +
-                draft_df["OPS_trend"].fillna(0) * 50
-            )
-
-        # Age curve adjustment: reward prime years, lightly penalize older decline-risk profiles.
-        age_num = pd.to_numeric(draft_df.get("Age", np.nan), errors="coerce")
-        age_curve = 1 - (abs(age_num.fillna(29) - 28) / 18)
-        age_curve = age_curve.clip(lower=0.55, upper=1.05)
-
-        # Playing time stability adjustment: more recent games means less uncertainty.
-        playing_time_stability = normalize_series(pd.to_numeric(draft_df.get("G", 0), errors="coerce").fillna(0))
-        draft_df["ML Projection Score"] = normalize_series(
-            ml_raw_signal * 0.78 +
-            normalize_series(age_curve) * 0.10 +
-            playing_time_stability * 0.12
+        draft_df.loc[~draft_df["ML Signal Eligible"], "ML Projection Score"] *= 0.90
+        draft_df.loc[~draft_df["ML Signal Eligible"], "Expected Fantasy Value"] = (
+            pd.to_numeric(draft_df.loc[~draft_df["ML Signal Eligible"], "Expected Fantasy Value"], errors="coerce") * 0.96
         )
-        draft_df.loc[~draft_df["ML Signal Eligible"], "ML Projection Score"] *= 0.75
 
-        # Blended model score: combines the original projection score with the ML projection signal.
+        # Blended model score: user controls how much of the modest ML adjustment is used.
         if use_ml_in_draft and ml_blend_weight > 0:
-            draft_df["Blended Projection Score"] = (
-                (1 - ml_blend_weight) * pd.to_numeric(draft_df["Projected Production Score"], errors="coerce").fillna(0) +
-                ml_blend_weight * pd.to_numeric(draft_df["ML Projection Score"], errors="coerce").fillna(0)
+            draft_df["Blended Projection Score"] = normalize_series(
+                pd.to_numeric(draft_df["Realistic Base Projection Score"], errors="coerce").fillna(0) * (1 - ml_blend_weight) +
+                pd.to_numeric(draft_df["Expected Fantasy Value"], errors="coerce").fillna(0) * ml_blend_weight
             )
         else:
-            draft_df["Blended Projection Score"] = draft_df["Projected Production Score"]
+            draft_df["Blended Projection Score"] = draft_df["Realistic Base Projection Score"]
 
         draft_df["Model Rank"] = draft_df["Blended Projection Score"].rank(ascending=False, method="min")
         draft_df["Fantasy Edge"] = draft_df["Market Rank"] - draft_df["Model Rank"]
@@ -3744,7 +3882,9 @@ if active_page == "Draft Assistant Simulator":
 
         available["Risk Penalty"] = normalize_series(pd.to_numeric(available.get("Expert Std Dev", 0), errors="coerce").fillna(0)) * 0.08
         available["Expected Fantasy Value"] = available["Blended Projection Score"]
-        available["ML Component"] = normalize_series(available["ML Projection Score"].fillna(0)) * ml_blend_weight if use_ml_in_draft else 0.0
+        # ML component is now a small contextual boost/downgrade based on breakout probability,
+        # risk, similar-player anchor, and capped trends.
+        available["ML Component"] = normalize_series(available["ML Adjustment"].fillna(0).clip(lower=0)) * ml_blend_weight if use_ml_in_draft else 0.0
 
         # Position Scarcity Model: value over replacement by position among remaining players.
         # This rewards players who are substantially better than the replacement-level option at their position.
@@ -4030,7 +4170,7 @@ if active_page == "Draft Assistant Simulator":
                 bv = best_value.iloc[0]
                 st.info(f"Best Raw Value: {bv['fullName']} — Expected Fantasy Value {fmt_rate_4(bv.get('Expected Fantasy Value'))}. This is the strongest available player by projected value before roster-fit bonuses.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.subheader("Recommended Picks")
@@ -4171,43 +4311,10 @@ if active_page == "Draft Room Simulator":
             room_df["proj_OPS"] * 20
         )
 
-    # Lightweight ML signal for draft room: projection + trends + age + playing-time stability.
-    room_age = pd.to_numeric(room_df.get("Age", np.nan), errors="coerce")
-    room_age_curve = 1 - (abs(room_age.fillna(29) - 28) / 18)
-    room_age_curve = room_age_curve.clip(lower=0.55, upper=1.05)
-
-    if room_format == "5x5 Roto":
-        room_ml_raw = (
-            normalize_series(room_df["proj_R"]) * 0.16 +
-            normalize_series(room_df["proj_HR"]) * 0.18 +
-            normalize_series(room_df["proj_RBI"]) * 0.18 +
-            normalize_series(room_df["proj_SB"]) * 0.16 +
-            normalize_series(room_df["proj_BA"]) * 0.12 +
-            normalize_series(room_df["proj_OPS"]) * 0.10 +
-            normalize_series(room_df["HR_trend"].fillna(0)) * 0.05 +
-            normalize_series(room_df["OPS_trend"].fillna(0)) * 0.05
-        )
-    else:
-        room_ml_raw = normalize_series(
-            room_df["proj_HR"] * 4 +
-            room_df["proj_RBI"] +
-            room_df["proj_R"] +
-            room_df["proj_SB"] * 2 +
-            room_df["proj_BB"] +
-            room_df["proj_OPS"] * 25 +
-            room_df["HR_trend"].fillna(0) * 2 +
-            room_df["OPS_trend"].fillna(0) * 50
-        )
-
-    room_df["ML Projection Score"] = normalize_series(
-        room_ml_raw * 0.78 +
-        normalize_series(room_age_curve) * 0.10 +
-        normalize_series(pd.to_numeric(room_df.get("G", 0), errors="coerce").fillna(0)) * 0.12
-    )
-    room_df["Expected Fantasy Value"] = (
-        room_df["Projected Production Score"] * 0.82 +
-        room_df["ML Projection Score"] * 0.18
-    )
+    # Realistic projection + modest ML adjustment for draft room.
+    # Uses regression-to-mean, similar-player anchoring, capped trends, age curve,
+    # breakout probability, and risk assessment to avoid overinflating HR/RBI/OPS-heavy profiles.
+    room_df = build_realistic_draft_ml_adjustments(room_df, room_format)
     room_df["Model Rank"] = room_df["Expected Fantasy Value"].rank(ascending=False, method="min")
     room_df["Fantasy Edge"] = room_df["Market Rank"] - room_df["Model Rank"]
 
@@ -4254,7 +4361,7 @@ if active_page == "Draft Room Simulator":
     drafted_set_room = set(drafted_names_room)
     pick_info = room_df[[
         "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
-        "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
+        "Draft Fit Score", "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value",
         "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
     ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
 
@@ -4263,7 +4370,7 @@ if active_page == "Draft Room Simulator":
     result_cols = [
         "Round", "Pick", "Team", "Player", "Primary Position", "MLB Team",
         "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score",
-        "ML Projection Score", "Expected Fantasy Value"
+        "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value"
     ]
     render_output_table(
         format_fantasy_table(clean_ui_columns(draft_results[[c for c in result_cols if c in draft_results.columns]])),
@@ -4290,7 +4397,7 @@ if active_page == "Draft Room Simulator":
 
         top_available_cols = [
             "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
-            "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value"
+            "Draft Fit Score", "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value"
         ]
         top_available_display = available_room[top_available_cols].head(25).rename(columns={"fullName": "Player", "Team": "MLB Team"})
         st.caption("Top available players by Draft Fit Score.")
