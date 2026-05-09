@@ -517,7 +517,7 @@ def format_fantasy_table(df):
     df = df.copy()
     rank_cols = ["Market Rank", "Model Rank", "Current Rank", "FantasyPros Rank", "ADP Rank", "Recommendation Rank", "Draft Fit Rank", "RK", "BEST", "WORST"]
     score_cols = [
-        "Projected Production Score", "Expected Fantasy Value",
+        "Expected Fantasy Value", "Expected Fantasy Value",
         "Recommendation Score", "Draft Fit Score", "Sleeper Score", "Bust Risk Score",
         "Player Value Component", "Market Edge Component", "Roster Need Component",
         "Scarcity Component", "Category Fit Component", "Availability Urgency Component",
@@ -2957,6 +2957,39 @@ def summarize_team_category_needs(standings, team_name):
     return needs
 
 
+
+
+def format_trade_eval_table(df):
+    """Format Trade Analyzer category comparison."""
+    out = df.copy()
+
+    def fmt_trim(v, decimals):
+        try:
+            if pd.isna(v):
+                return ""
+            s = f"{float(v):.{decimals}f}".rstrip("0").rstrip(".")
+            if s == "-0":
+                s = "0"
+            if s.startswith("."):
+                s = "0" + s
+            if s.startswith("-."):
+                s = s.replace("-.", "-0.", 1)
+            return s
+        except Exception:
+            return v
+
+    if "Category" not in out.columns:
+        return out
+
+    for col in ["Give Away", "Receive", "Net Gain"]:
+        if col in out.columns:
+            out[col] = out.apply(
+                lambda r: fmt_trim(r[col], 4) if str(r["Category"]).upper() in ["BA", "OPS", "OBP", "SLG"] else fmt_trim(r[col], 1),
+                axis=1
+            )
+    return out
+
+
 def evaluate_trade(my_give, my_get, my_roster, all_rosters, standings, my_team):
     """Evaluate a proposed fantasy trade from the user's perspective."""
     give_df = all_rosters[all_rosters["Player"].isin(my_give)].copy()
@@ -3978,7 +4011,7 @@ if active_page == "Fantasy Sleepers & Busts":
     with sf2:
         sleeper_max_model_rank = st.number_input("Worst Model Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_model_rank")
     with sf3:
-        sleeper_min_proj_hr = st.number_input("Minimum Projected HR", 0.0, 80.0, 0.0, step=1.0, key="sleeper_min_proj_hr")
+        sleeper_min_proj_hr = st.number_input("Minimum Projected HR", min_value=0, max_value=80, value=0, step=1, key="sleeper_min_proj_hr")
     with sf4:
         sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
 
@@ -4027,6 +4060,14 @@ if active_page == "Fantasy Sleepers & Busts":
     else:
         fantasy_df["League"] = "Unknown"
 
+    # Safety fix for Athletics/A's franchise color grouping on fantasy scatterplots.
+    if "Team" in fantasy_df.columns:
+        athletics_mask = fantasy_df["Team"].astype(str).isin(["Athletics", "Oakland Athletics", "OAK", "ATH"])
+        fantasy_df.loc[athletics_mask, "League"] = "American League"
+    if "primaryTeamName" in fantasy_df.columns:
+        athletics_mask2 = fantasy_df["primaryTeamName"].astype(str).isin(["Athletics", "Oakland Athletics", "OAK", "ATH"])
+        fantasy_df.loc[athletics_mask2, "League"] = "American League"
+
     if fantasy_format == "5x5 Roto":
         # Roto rewards balanced category value: R, HR, RBI, SB, BA.
         fantasy_df["Current Production Score"] = (
@@ -4062,6 +4103,7 @@ if active_page == "Fantasy Sleepers & Busts":
         fantasy_df["Current Production Score"] = normalize_score(fantasy_df["Current Points Proxy"])
         fantasy_df["Projected Production Score"] = normalize_score(fantasy_df["Projected Points Proxy"])
 
+    fantasy_df["Expected Fantasy Value"] = fantasy_df["Projected Production Score"]
     fantasy_df["Model Rank"] = fantasy_df["Projected Production Score"].rank(method="min", ascending=False)
     fantasy_df["Current Rank"] = fantasy_df["Current Production Score"].rank(method="min", ascending=False)
     fantasy_df["Player Key"] = fantasy_df["fullName"].apply(normalize_player_name_for_merge)
@@ -4097,7 +4139,7 @@ if active_page == "Fantasy Sleepers & Busts":
         max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
         fantasy_age_range = st.slider("Age Range", 18, max(45, max_age_fantasy), (18, max(45, max_age_fantasy)), key="fantasy_market_age_range")
     with f3:
-        require_market_match = st.checkbox("Require FantasyPros/ADP Match", value=True, key="fantasy_require_market_match")
+        st.caption("FantasyPros/ADP matching is optional. Players without market ranks can stay in the pool, but rank-based charts use matched rows.")
     with f4:
         fantasy_top_n = st.slider("Show Top N", 5, 50, 15, key="fantasy_market_top_n")
 
@@ -4107,11 +4149,27 @@ if active_page == "Fantasy Sleepers & Busts":
         (pd.to_numeric(fantasy_df["Age"], errors="coerce") >= fantasy_age_range[0]) &
         (pd.to_numeric(fantasy_df["Age"], errors="coerce") <= fantasy_age_range[1])
     ].copy()
-    if require_market_match:
-        fantasy_df = fantasy_df[fantasy_df["Market Rank"].notna()].copy()
+
+    # Apply sleeper/bust relevance filters to the scatterplot AND output tables.
+    if "Market Rank" in fantasy_df.columns:
+        fantasy_df = fantasy_df[
+            pd.to_numeric(fantasy_df["Market Rank"], errors="coerce").fillna(9999) <= sleeper_max_market_rank
+        ].copy()
+    if "Model Rank" in fantasy_df.columns:
+        fantasy_df = fantasy_df[
+            pd.to_numeric(fantasy_df["Model Rank"], errors="coerce").fillna(9999) <= sleeper_max_model_rank
+        ].copy()
+    if "proj_HR" in fantasy_df.columns:
+        fantasy_df = fantasy_df[
+            pd.to_numeric(fantasy_df["proj_HR"], errors="coerce").fillna(0) >= sleeper_min_proj_hr
+        ].copy()
+    if "Projected Production Score" in fantasy_df.columns:
+        fantasy_df = fantasy_df[
+            pd.to_numeric(fantasy_df["Projected Production Score"], errors="coerce").fillna(0) >= sleeper_min_expected_value
+        ].copy()
 
     if fantasy_df.empty:
-        st.warning("No players met the fantasy filters. Try lowering minimum AB/G, expanding age/position filters, or turning off the FantasyPros/ADP match requirement.")
+        st.warning("No players met the fantasy filters. Try lowering minimum AB/G, expanding age/position filters, or loosening the sleeper/bust relevance filters.")
     else:
         top_sleeper = fantasy_df.sort_values("Fantasy Edge", ascending=False).iloc[0]
         top_bust = fantasy_df.sort_values("Fantasy Edge", ascending=True).iloc[0]
@@ -4127,7 +4185,7 @@ if active_page == "Fantasy Sleepers & Busts":
         fantasy_plot_cols = [
             "fullName", "Player", "Team", "Primary Position", "Bats", "League", "Age",
             "Market Rank", "Model Rank", "Fantasy Edge",
-            "Projected Production Score",
+            "Expected Fantasy Value",
             "ADP", "FantasyPros Rank", "Expert Std Dev",
             "Projected OPS", "Projected HR", "Projected RBI", "Projected SB"
         ]
@@ -4142,7 +4200,7 @@ if active_page == "Fantasy Sleepers & Busts":
         for _col in ["Team", "Primary Position", "Bats", "League"]:
             if _col not in fantasy_plot_df.columns:
                 fantasy_plot_df[_col] = "Unknown"
-        for _col in ["Age", "Fantasy Edge", "Projected Production Score", "ADP", "FantasyPros Rank", "Expert Std Dev", "Projected OPS", "Projected HR", "Projected RBI", "Projected SB"]:
+        for _col in ["Age", "Fantasy Edge", "Expected Fantasy Value", "ADP", "FantasyPros Rank", "Expert Std Dev", "Projected OPS", "Projected HR", "Projected RBI", "Projected SB"]:
             if _col not in fantasy_plot_df.columns:
                 fantasy_plot_df[_col] = np.nan
         fantasy_plot_df = format_fantasy_table(fantasy_plot_df)
@@ -4153,7 +4211,7 @@ if active_page == "Fantasy Sleepers & Busts":
             index=1,
             key="fantasy_market_scatter_color"
         )
-        fantasy_size_options = [c for c in ["Fantasy Edge", "Projected Production Score", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
+        fantasy_size_options = [c for c in ["Fantasy Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
         fantasy_size_col = st.selectbox(
             "Size by",
             fantasy_size_options,
@@ -4187,7 +4245,7 @@ if active_page == "Fantasy Sleepers & Busts":
         else:
             chart_source = fantasy_plot_df.dropna(subset=["Market Rank", "Model Rank"]).copy()
             if chart_source.empty:
-                st.info("No matched FantasyPros/ADP rows are available for the current filters. Try turning off the market match requirement or lowering minimum AB/G.")
+                st.info("No matched FantasyPros/ADP rows are available for the current filters. Try loosening the rank filters or lowering minimum AB/G.")
             else:
                 base = alt.Chart(chart_source).mark_circle(
                     opacity=0.74, stroke="#333333", strokeWidth=0.45
@@ -4195,7 +4253,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 tooltip_cols = [c for c in [
                     "Player", "Age", "Team", "Primary Position", "Bats",
                     "Market Rank", "Model Rank", "Fantasy Edge",
-                    "Projected Production Score"
+                    "Expected Fantasy Value"
                 ] if c in chart_source.columns]
 
                 if fantasy_view_mode == "Full Outlier View":
@@ -4292,25 +4350,8 @@ if active_page == "Fantasy Sleepers & Busts":
                 else:
                     st.caption("Advanced market-edge curve unavailable because the selected model needs more valid rows or positive values.")
 
-        # Focus sleeper/bust outputs on draft-relevant players.
+        # fantasy_df has already been filtered for draft relevance above.
         fantasy_output_pool = fantasy_df.copy()
-        if "Market Rank" in fantasy_output_pool.columns:
-            fantasy_output_pool = fantasy_output_pool[
-                pd.to_numeric(fantasy_output_pool["Market Rank"], errors="coerce").fillna(9999) <= sleeper_max_market_rank
-            ]
-        if "Model Rank" in fantasy_output_pool.columns:
-            fantasy_output_pool = fantasy_output_pool[
-                pd.to_numeric(fantasy_output_pool["Model Rank"], errors="coerce").fillna(9999) <= sleeper_max_model_rank
-            ]
-        if "proj_HR" in fantasy_output_pool.columns:
-            fantasy_output_pool = fantasy_output_pool[
-                pd.to_numeric(fantasy_output_pool["proj_HR"], errors="coerce").fillna(0) >= sleeper_min_proj_hr
-            ]
-        if "Projected Production Score" in fantasy_output_pool.columns:
-            fantasy_output_pool = fantasy_output_pool[
-                pd.to_numeric(fantasy_output_pool["Projected Production Score"], errors="coerce").fillna(0) >= sleeper_min_expected_value
-            ]
-
         sleepers = fantasy_output_pool.sort_values("Fantasy Edge", ascending=False).head(fantasy_top_n).copy()
         busts = fantasy_output_pool.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
         sleepers["Reason"] = sleepers.apply(lambda r: make_fantasy_market_reason(r, "sleeper"), axis=1)
@@ -4318,9 +4359,9 @@ if active_page == "Fantasy Sleepers & Busts":
 
         display_cols = [
             "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
-            "Projected Production Score", "Reason"
+            "Expected Fantasy Value", "Reason"
         ]
-        display_rename = {"fullName": "Player", "Projected Production Score": "Expected Fantasy Value"}
+        display_rename = {"fullName": "Player"}
         sleepers_display = sleepers[[c for c in display_cols if c in sleepers.columns]].rename(columns=display_rename)
         busts_display = busts[[c for c in display_cols if c in busts.columns]].rename(columns=display_rename)
         sleepers_display = format_fantasy_table(clean_ui_columns(sleepers_display))
@@ -5519,7 +5560,7 @@ if active_page == "Trade Analyzer":
             st.metric("Trade Verdict", verdict)
             st.caption(f"Team-need weighted trade score: {weighted_gain:.2f}")
             render_output_table(
-                format_fantasy_table(clean_ui_columns(trade_eval)),
+                format_trade_eval_table(clean_ui_columns(trade_eval)),
                 key="trade_eval_table",
                 file_name="trade_evaluation.csv",
                 display_rows=20,
@@ -5533,10 +5574,42 @@ if active_page == "Trade Analyzer":
             "For example, if you are low in batting average but strong in power, it may suggest trading power for AVG/OPS."
         )
 
+        trade_mode = st.radio(
+            "Trade Idea Mode",
+            [
+                "General ideas",
+                "I want to trade away specific player(s)",
+                "I want to acquire specific player(s)"
+            ],
+            horizontal=False,
+            key="trade_idea_mode"
+        )
+
+        forced_give = []
+        forced_get = []
+        if trade_mode == "I want to trade away specific player(s)":
+            forced_give = st.multiselect(
+                "Player(s) on my team I want to trade away",
+                my_players,
+                key="trade_ideas_forced_give"
+            )
+        elif trade_mode == "I want to acquire specific player(s)":
+            forced_get = st.multiselect(
+                "Player(s) on the other team I want to acquire",
+                other_players,
+                key="trade_ideas_forced_get"
+            )
+
         if other_teams and st.button("Suggest Trades For My Team"):
             suggestions = suggest_trade_targets(my_team_trade, other_team_trade, roster_stats, standings)
+
+            if forced_give and not suggestions.empty:
+                suggestions = suggestions[suggestions["Give"].isin(forced_give)].copy()
+            if forced_get and not suggestions.empty:
+                suggestions = suggestions[suggestions["Receive"].isin(forced_get)].copy()
+
             if suggestions.empty:
-                st.info("No clear trade suggestions found from the current roster/stat data.")
+                st.info("No clear trade suggestions found for those constraints. Try choosing fewer specific players or a different other team.")
             else:
                 render_output_table(
                     format_fantasy_table(clean_ui_columns(suggestions)),
