@@ -3028,6 +3028,10 @@ for _state_key in list(st.session_state.keys()):
         or "file_uploader" in _key_text
         or "export_csv" in _key_text
         or "form_submit" in _key_text
+        or "upload" in _key_text
+        or "uploader" in _key_text
+        or "file_uploader" in _key_text
+        or "standings_stats_upload" in _key_text
         or "data_editor" in _key_text
         or "draft_room_editor" in _key_text
         or "data_editor" in _key_text
