@@ -3028,6 +3028,10 @@ for _state_key in list(st.session_state.keys()):
         or "file_uploader" in _key_text
         or "export_csv" in _key_text
         or "form_submit" in _key_text
+        or "button" in _key_text
+        or "generate_roster_view" in _key_text
+        or "load_uploaded" in _key_text
+        or "suggest_trade" in _key_text
         or "upload" in _key_text
         or "uploader" in _key_text
         or "file_uploader" in _key_text
@@ -3401,12 +3405,54 @@ def _interpret_significance(player_a, player_b, stat, diff, p_value, alpha):
 
 
 def _format_sig_table(df):
+    """Format the displayed significance-test table.
+
+    Counting stats display to 1 decimal place.
+    Rate stats display up to 4 decimals, with trailing zeros removed.
+    Confidence interval columns are removed from the output.
+    """
     df = df.copy()
-    for c in ["Player A Avg", "Player B Avg", "Difference", " Low", " High", "Test Statistic"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").round(4)
+
+    # Remove confidence interval columns entirely from the displayed table.
+    for ci_col in ["95% CI Low", "95% CI High", "CI Low", "CI High", " Low", " High"]:
+        if ci_col in df.columns:
+            df = df.drop(columns=[ci_col])
+
+    counting_stats = {"R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "AB", "G"}
+    rate_stats = {"BA", "OBP", "SLG", "OPS"}
+
+    def fmt_by_stat(stat, value):
+        if pd.isna(value):
+            return ""
+        stat = str(stat).upper()
+        try:
+            v = float(value)
+        except Exception:
+            return value
+
+        if stat in rate_stats:
+            s = f"{v:.4f}".rstrip("0").rstrip(".")
+            if s.startswith("."):
+                s = "0" + s
+            if s.startswith("-."):
+                s = s.replace("-.", "-0.", 1)
+            return s
+
+        if stat in counting_stats:
+            return f"{v:.1f}"
+
+        return f"{v:.4f}".rstrip("0").rstrip(".")
+
+    for c in ["Player A Avg", "Player B Avg", "Difference"]:
+        if c in df.columns and "Stat" in df.columns:
+            df[c] = df.apply(lambda r: fmt_by_stat(r["Stat"], r[c]), axis=1)
+
+    if "Test Statistic" in df.columns:
+        df["Test Statistic"] = pd.to_numeric(df["Test Statistic"], errors="coerce").round(4)
+
     if "p-value" in df.columns:
         df["p-value"] = pd.to_numeric(df["p-value"], errors="coerce").round(4)
+
     return df
 
 
@@ -3556,17 +3602,17 @@ if active_page == "Comparison Tool":
                     if overall_strength >= 1.96:
                         overall_winner = player_a_name if overall_score > 0 else player_b_name
                         overall_interpretation = (
-                            f"{overall_winner} looks significantly better overall across the selected stats."
+                            f"{overall_winner} has the stronger overall profile across the selected stats, and the combined result is statistically significant."
                         )
                     elif overall_strength >= 1.00:
                         overall_winner = player_a_name if overall_score > 0 else player_b_name
                         overall_interpretation = (
-                            f"{overall_winner} has the stronger overall profile, but the edge is not statistically significant."
+                            f"{overall_winner} has the better overall profile across the selected stats, but the combined edge is not statistically significant."
                         )
                     else:
                         overall_winner = "Not significant"
                         overall_interpretation = (
-                            "No statistically meaningful overall difference across the selected stats."
+                            "Overall result: no statistically meaningful difference across the selected stats."
                         )
 
                     overall_row = {
@@ -4694,7 +4740,7 @@ if active_page == "Draft Room Simulator":
             if imported_draft.empty:
                 st.warning("No usable Team/Player rows were found in the uploaded draft.")
             else:
-                if st.button("Load Uploaded Draft Into Draft Room", key="load_uploaded_draft_room"):
+                if st.button("Load Uploaded Draft Into Draft Room"):
                     st.session_state["draft_room_table"] = imported_draft.copy()
                     st.success(f"Loaded {len(imported_draft)} drafted players into the Draft Room.")
                 st.caption("Uploaded draft preview:")
@@ -4875,7 +4921,7 @@ if active_page == "Draft Room Simulator":
             key="draft_room_show_all_rosters"
         )
 
-    if st.button("Generate Roster View", key="draft_room_generate_roster_view"):
+    if st.button("Generate Roster View"):
         st.session_state["draft_room_roster_view_requested"] = True
 
     if st.session_state.get("draft_room_roster_view_requested", False):
@@ -5061,7 +5107,7 @@ if active_page == "Fantasy Standings Tracker":
         try:
             draft_import_raw = read_imported_draft_file(draft_import_for_standings)
             draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
-            if st.button("Use Uploaded Draft Board For Standings", key="use_uploaded_draft_for_standings"):
+            if st.button("Use Uploaded Draft Board For Standings"):
                 st.session_state["draft_room_table"] = draft_import_norm.copy()
                 st.success(f"Loaded {len(draft_import_norm)} picks for standings/trade analysis.")
         except Exception as e:
@@ -5168,7 +5214,7 @@ if active_page == "Trade Analyzer":
             "For example, if you are low in batting average but strong in power, it may suggest trading power for AVG/OPS."
         )
 
-        if other_teams and st.button("Suggest Trades For My Team", key="suggest_trade_button"):
+        if other_teams and st.button("Suggest Trades For My Team"):
             suggestions = suggest_trade_targets(my_team_trade, other_team_trade, roster_stats, standings)
             if suggestions.empty:
                 st.info("No clear trade suggestions found from the current roster/stat data.")
