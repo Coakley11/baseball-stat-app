@@ -242,7 +242,10 @@ st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
-        Historical analytics, career totals, leaderboards, scatterplots, trend heat maps, ML projections, fantasy sleepers/busts, FantasyPros/ADP market edge, and a Draft Assistant with roster heat maps, team category analysis, position scarcity, best-fit recommendations, and league-specific scoring.
+        A full baseball and fantasy analytics platform: historical explorer, career totals, leaderboards, comparison tools,
+        significance testing, scatterplots, trend analysis, ML projections, FantasyPros/ADP market sleepers and bust risks,
+        Draft Assistant recommendations, Draft Room Simulator, roster construction views, live Fantasy Standings Tracker,
+        current-season MLB API stat scoring, and Trade Analyzer tools for evaluating and proposing fantasy trades.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -775,6 +778,7 @@ CURRENT_MLB_TEAMS = set(team_id_to_name.values())
 AL_TEAM_NAMES = {team_id_to_name[t] for t in AL_TEAMS if t in team_id_to_name}
 NL_TEAM_NAMES = {team_id_to_name[t] for t in NL_TEAMS if t in team_id_to_name}
 AL_TEAM_NAMES.add("Athletics")
+AL_TEAM_NAMES.add("Oakland Athletics")
 
 TEAM_NAME_ALIASES = {
     "OAK": "Athletics",
@@ -2800,6 +2804,91 @@ def normalize_uploaded_stat_columns(df):
     return out
 
 
+
+
+
+
+def format_post_draft_roster_grades(df):
+    """Format Draft Room post-draft roster grades cleanly."""
+    out = df.copy()
+
+    def fmt_trim(v, decimals):
+        try:
+            if pd.isna(v):
+                return ""
+            s = f"{float(v):.{decimals}f}".rstrip("0").rstrip(".")
+            if s == "-0":
+                s = "0"
+            if s.startswith("."):
+                s = "0" + s
+            if s.startswith("-."):
+                s = s.replace("-.", "-0.", 1)
+            return s
+        except Exception:
+            return v
+
+    # Projection totals: one decimal, no trailing zeros.
+    for c in ["Total HR Projection", "Total RBI Projection", "Total R Projection", "Total SB Projection"]:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda v: fmt_trim(v, 1))
+
+    # Rate stats: four decimals, no trailing zeros.
+    for c in ["Average OPS Projection", "Average BA Projection"]:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda v: fmt_trim(v, 4))
+
+    # Average fantasy edge: two decimals, no trailing zeros.
+    if "Average Fantasy Edge" in out.columns:
+        out["Average Fantasy Edge"] = out["Average Fantasy Edge"].apply(lambda v: fmt_trim(v, 2))
+
+    # Overall score and rank as integers.
+    for c in ["Overall Draft Grade Score", "Draft Room Rank", "Players Drafted"]:
+        if c in out.columns:
+            try:
+                out[c] = pd.to_numeric(out[c], errors="coerce").round(0).astype("Int64")
+            except Exception:
+                out[c] = out[c].apply(lambda v: fmt_trim(v, 0))
+
+    return out
+
+
+def format_fantasy_standings_table(df):
+    """Format Fantasy Standings Tracker output cleanly."""
+    out = df.copy()
+
+    # Four decimals for rate stats, remove trailing zeros.
+    for c in ["Average BA", "Average OPS", "BA", "OPS", "OBP", "SLG"]:
+        if c in out.columns:
+            def _fmt_rate(v):
+                try:
+                    if pd.isna(v):
+                        return ""
+                    s = f"{float(v):.4f}".rstrip("0").rstrip(".")
+                    if s.startswith("."):
+                        s = "0" + s
+                    if s.startswith("-."):
+                        s = s.replace("-.", "-0.", 1)
+                    return s
+                except Exception:
+                    return v
+            out[c] = out[c].apply(_fmt_rate)
+
+    # Integer columns: totals, roto points, estimated points, league rank.
+    for c in out.columns:
+        c_text = str(c)
+        if (
+            c_text.startswith("Total ")
+            or c_text.endswith(" Points")
+            or c_text in ["League Rank", "Players", "Estimated Points"]
+        ):
+            try:
+                out[c] = pd.to_numeric(out[c], errors="coerce").round(0).astype("Int64")
+            except Exception:
+                pass
+
+    return out
+
+
 def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
     """Score drafted teams using uploaded/current stats."""
     df = roster_df.copy()
@@ -3879,6 +3968,20 @@ if active_page == "Fantasy Sleepers & Busts":
     with c4:
         fantasy_min_ab = st.number_input("Minimum AB", 0, 2500, 150, key="fantasy_market_min_ab")
 
+    st.markdown("#### Sleeper/Bust Table Filters")
+    st.caption(
+        "Use these filters to keep the sleeper and bust tables focused on draft-relevant players instead of fringe players who are unlikely to be selected."
+    )
+    sf1, sf2, sf3, sf4 = st.columns(4)
+    with sf1:
+        sleeper_max_market_rank = st.number_input("Worst Market Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_market_rank")
+    with sf2:
+        sleeper_max_model_rank = st.number_input("Worst Model Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_model_rank")
+    with sf3:
+        sleeper_min_proj_hr = st.number_input("Minimum Projected HR", 0.0, 80.0, 0.0, step=1.0, key="sleeper_min_proj_hr")
+    with sf4:
+        sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
+
     max_year_fantasy = int(yearly_df["yearID"].max())
     fantasy_years = list(range(max_year_fantasy - fantasy_window + 1, max_year_fantasy + 1))
     st.write(f"Analyzing seasons: **{fantasy_years[0]}–{fantasy_years[-1]}**")
@@ -4189,8 +4292,27 @@ if active_page == "Fantasy Sleepers & Busts":
                 else:
                     st.caption("Advanced market-edge curve unavailable because the selected model needs more valid rows or positive values.")
 
-        sleepers = fantasy_df.sort_values("Fantasy Edge", ascending=False).head(fantasy_top_n).copy()
-        busts = fantasy_df.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
+        # Focus sleeper/bust outputs on draft-relevant players.
+        fantasy_output_pool = fantasy_df.copy()
+        if "Market Rank" in fantasy_output_pool.columns:
+            fantasy_output_pool = fantasy_output_pool[
+                pd.to_numeric(fantasy_output_pool["Market Rank"], errors="coerce").fillna(9999) <= sleeper_max_market_rank
+            ]
+        if "Model Rank" in fantasy_output_pool.columns:
+            fantasy_output_pool = fantasy_output_pool[
+                pd.to_numeric(fantasy_output_pool["Model Rank"], errors="coerce").fillna(9999) <= sleeper_max_model_rank
+            ]
+        if "proj_HR" in fantasy_output_pool.columns:
+            fantasy_output_pool = fantasy_output_pool[
+                pd.to_numeric(fantasy_output_pool["proj_HR"], errors="coerce").fillna(0) >= sleeper_min_proj_hr
+            ]
+        if "Projected Production Score" in fantasy_output_pool.columns:
+            fantasy_output_pool = fantasy_output_pool[
+                pd.to_numeric(fantasy_output_pool["Projected Production Score"], errors="coerce").fillna(0) >= sleeper_min_expected_value
+            ]
+
+        sleepers = fantasy_output_pool.sort_values("Fantasy Edge", ascending=False).head(fantasy_top_n).copy()
+        busts = fantasy_output_pool.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
         sleepers["Reason"] = sleepers.apply(lambda r: make_fantasy_market_reason(r, "sleeper"), axis=1)
         busts["Reason"] = busts.apply(lambda r: make_fantasy_market_reason(r, "bust"), axis=1)
 
@@ -4203,6 +4325,8 @@ if active_page == "Fantasy Sleepers & Busts":
         busts_display = busts[[c for c in display_cols if c in busts.columns]].rename(columns=display_rename)
         sleepers_display = format_fantasy_table(clean_ui_columns(sleepers_display))
         busts_display = format_fantasy_table(clean_ui_columns(busts_display))
+
+        st.caption("Sleepers and bust risks are filtered by market rank, model rank, projected HR, and expected fantasy value so the output focuses on draftable players rather than fringe names.")
 
         c8, c9 = st.columns(2)
         with c8:
@@ -4442,7 +4566,7 @@ if active_page == "Draft Assistant Simulator":
                 "Players On Other Rosters / Remove from Board",
                 all_player_names,
                 key="draft_already_drafted",
-                help="Select players drafted by other teams. They will be removed from recommendations and the available-player board."
+                help="Select players drafted by other teams. They will be removed from recommendations, scarcity calculations, and the available-player board."
             )
             st.caption(f"{len(drafted_players)} player(s) on other rosters / removed from the board.")
         with draft_control_right:
@@ -4450,7 +4574,7 @@ if active_page == "Draft Assistant Simulator":
                 "Players On My Roster",
                 all_player_names,
                 key="draft_my_roster",
-                help="Select the players you drafted. This helps you think about roster construction and remaining needs."
+                help="Select the players you drafted. They will be removed from recommendations while still being used for roster construction and team needs."
             )
             st.caption(f"{len(my_roster)} player(s) currently on your roster.")
 
@@ -4494,7 +4618,11 @@ if active_page == "Draft Assistant Simulator":
             else:
                 category_needs = st.multiselect("Skill Types to Strengthen", ["Power", "Run Production", "Speed", "Walks/OPS", "Volume"], default=["Power", "Run Production"], key="draft_category_needs")
 
-        available = draft_df[~draft_df["fullName"].isin(set(drafted_players))].copy()
+        # Remove every player who is already off the board:
+        # players on other rosters + players on my roster.
+        drafted_or_owned_players = set(drafted_players).union(set(my_roster))
+        available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
+
 
         available["Position Need Bonus"] = available["Primary Position"].apply(lambda p: 0.08 if p in needed_positions else 0.0)
         if draft_format == "5x5 Roto":
@@ -4789,6 +4917,8 @@ if active_page == "Draft Assistant Simulator":
                 hide_index=True
             )
 
+        # Safety filter: recommendations must never include already drafted/owned players.
+        available = available[~available["fullName"].isin(drafted_or_owned_players)].copy()
         recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
@@ -4804,7 +4934,7 @@ if active_page == "Draft Assistant Simulator":
                 bv = best_value.iloc[0]
                 st.info(f"Best Raw Value: {bv['fullName']} — Expected Fantasy Value {fmt_rate_4(bv.get('Expected Fantasy Value'))}. This is the strongest available player by projected value before roster-fit bonuses.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Breakout Probability", "Risk Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.subheader("Recommended Picks")
@@ -4818,11 +4948,13 @@ if active_page == "Draft Assistant Simulator":
         # Clean draft-board view: keep only the columns a user needs while making a pick.
         # Detailed scoring components remain in Recommended Picks.
         board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Draft Fit Score"]
-        drafted_board = draft_df[draft_df["fullName"].isin(set(drafted_players))].copy()
+        drafted_board = draft_df[draft_df["fullName"].isin(drafted_or_owned_players)].copy()
+        # Safety filter: top available board must never include already drafted/owned players.
+        available = available[~available["fullName"].isin(drafted_or_owned_players)].copy()
         available_board = available.sort_values("Market Rank", na_position="last").head(25).copy()
         bcol1, bcol2 = st.columns(2)
         with bcol1:
-            st.caption("Drafted / Removed Players")
+            st.caption("Drafted / Removed Players — includes other rosters and your roster")
             if drafted_board.empty:
                 st.write("No drafted players selected yet.")
             else:
@@ -5218,7 +5350,7 @@ if active_page == "Draft Room Simulator":
         grades_df = grades_df.sort_values("Draft Room Rank")
 
         render_output_table(
-            format_fantasy_table(clean_ui_columns(grades_df)),
+            format_post_draft_roster_grades(format_fantasy_table(clean_ui_columns(grades_df))),
             key="draft_room_roster_grades",
             file_name="draft_room_roster_grades.csv",
             display_rows=30,
@@ -5311,14 +5443,6 @@ if active_page == "Fantasy Standings Tracker":
         current_stats = normalize_uploaded_stat_columns(current_stats)
 
     if not current_stats.empty:
-        st.subheader("Uploaded Current Stats Preview")
-        render_output_table(
-            clean_ui_columns(current_stats.head(25)),
-            key="standings_uploaded_preview",
-            file_name="uploaded_current_stats_preview.csv",
-            display_rows=25
-        )
-
         draft_table = st.session_state.get("draft_room_table", pd.DataFrame())
         if draft_table.empty:
             st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
@@ -5334,7 +5458,7 @@ if active_page == "Fantasy Standings Tracker":
             st.subheader("Drafted Rosters With Current Stats")
             show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
             render_output_table(
-                format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]])),
+                format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))),
                 key="standings_roster_current_stats",
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300
@@ -5343,7 +5467,7 @@ if active_page == "Fantasy Standings Tracker":
             standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
             st.subheader("Live Fantasy Standings")
             render_output_table(
-                format_fantasy_table(clean_ui_columns(standings)),
+                format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
                 key="fantasy_live_standings",
                 file_name="fantasy_live_standings.csv",
                 display_rows=50,
