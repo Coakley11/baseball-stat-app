@@ -365,6 +365,186 @@ def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", 
         ax.plot(subset["yearID"], y_plot, marker="o", label=label)
 
 
+
+
+def _trend_numeric_series(df, stat_col):
+    if df is None or df.empty or stat_col not in df.columns:
+        return pd.Series(dtype=float), pd.Series(dtype=float)
+    d = df.sort_values("yearID").copy()
+    x = pd.to_numeric(d["yearID"], errors="coerce")
+    y = pd.to_numeric(d[stat_col], errors="coerce")
+    mask = x.notna() & y.notna()
+    return x[mask], y[mask]
+
+
+def _trend_slope_r2(x, y):
+    if len(x) < 2 or len(y) < 2:
+        return np.nan, np.nan
+    try:
+        coef = np.polyfit(x.astype(float), y.astype(float), 1)
+        pred = coef[0] * x.astype(float) + coef[1]
+        ss_res = float(((y.astype(float) - pred) ** 2).sum())
+        ss_tot = float(((y.astype(float) - y.astype(float).mean()) ** 2).sum())
+        r2 = np.nan if ss_tot == 0 else 1 - ss_res / ss_tot
+        return float(coef[0]), float(r2)
+    except Exception:
+        return np.nan, np.nan
+
+
+def classify_player_trend_from_series(x, y, stat_col):
+    """Classify a player trend using slope, recent slope, volatility, and direction."""
+    if len(y) < 3:
+        return {
+            "Trend Direction": "Not enough data",
+            "Slope": np.nan,
+            "Recent Slope": np.nan,
+            "Volatility": np.nan,
+            "Consistency Rating": "Unknown",
+            "R²": np.nan,
+            "Fantasy Signal": "Not enough recent seasons to classify."
+        }
+
+    slope, r2 = _trend_slope_r2(x, y)
+    recent_x = x.tail(min(3, len(x)))
+    recent_y = y.tail(min(3, len(y)))
+    recent_slope, _ = _trend_slope_r2(recent_x, recent_y)
+
+    volatility = float(y.std()) if len(y) > 1 else np.nan
+    mean_abs = float(abs(y.mean())) if pd.notna(y.mean()) else np.nan
+    cv = volatility / mean_abs if mean_abs and mean_abs != 0 else np.nan
+
+    if pd.isna(cv):
+        consistency = "Unknown"
+    elif cv < 0.12:
+        consistency = "Very consistent"
+    elif cv < 0.25:
+        consistency = "Moderately consistent"
+    elif cv < 0.45:
+        consistency = "Volatile"
+    else:
+        consistency = "Very volatile"
+
+    # Stat-aware thresholds: rate stats need smaller slope cutoffs than counting stats.
+    rate_stats = {"BA", "AVG", "OBP", "SLG", "OPS", "BB%", "K%", "Strikeout Rate", "Walk Rate"}
+    if str(stat_col).upper() in {s.upper() for s in rate_stats}:
+        strong = 0.015
+        mild = 0.005
+    else:
+        strong = 4.0
+        mild = 1.0
+
+    if pd.isna(slope):
+        direction = "Not enough data"
+    elif slope >= strong:
+        direction = "Accelerating upward" if pd.notna(recent_slope) and recent_slope > slope * 1.20 else "Improving"
+    elif slope >= mild:
+        direction = "Slightly improving"
+    elif slope <= -strong:
+        direction = "Accelerating downward" if pd.notna(recent_slope) and recent_slope < slope * 1.20 else "Declining"
+    elif slope <= -mild:
+        direction = "Slightly declining"
+    else:
+        direction = "Stable"
+
+    fantasy_signal = "Stable profile."
+    if direction in ["Improving", "Accelerating upward"] and consistency in ["Very consistent", "Moderately consistent"]:
+        fantasy_signal = "Positive fantasy momentum with relatively reliable year-to-year growth."
+    elif direction in ["Improving", "Accelerating upward"] and consistency in ["Volatile", "Very volatile"]:
+        fantasy_signal = "Upside signal, but volatility means the breakout may carry risk."
+    elif direction in ["Declining", "Accelerating downward"]:
+        fantasy_signal = "Possible decline or bust-risk signal."
+    elif consistency in ["Very consistent", "Moderately consistent"]:
+        fantasy_signal = "Consistency may be useful even without a major breakout trend."
+    elif consistency in ["Volatile", "Very volatile"]:
+        fantasy_signal = "High volatility; treat recent spikes carefully."
+
+    return {
+        "Trend Direction": direction,
+        "Slope": slope,
+        "Recent Slope": recent_slope,
+        "Volatility": volatility,
+        "Consistency Rating": consistency,
+        "R²": r2,
+        "Fantasy Signal": fantasy_signal
+    }
+
+
+def build_advanced_trend_intelligence(df, player_ids, stat_col):
+    rows = []
+    for pid in player_ids:
+        sub = df[df["playerID"] == pid].sort_values("yearID").copy()
+        if sub.empty:
+            continue
+        player = sub["fullName"].iloc[0] if "fullName" in sub.columns else str(pid)
+        x, y = _trend_numeric_series(sub, stat_col)
+        info = classify_player_trend_from_series(x, y, stat_col)
+        last_val = y.iloc[-1] if len(y) else np.nan
+        first_val = y.iloc[0] if len(y) else np.nan
+        info.update({
+            "Player": player,
+            "Stat": stat_col,
+            "First Value": first_val,
+            "Latest Value": last_val,
+            "Net Change": last_val - first_val if pd.notna(last_val) and pd.notna(first_val) else np.nan,
+            "Years Used": len(y)
+        })
+        rows.append(info)
+    out = pd.DataFrame(rows)
+    if not out.empty and "Slope" in out.columns:
+        out = out.sort_values("Slope", ascending=False)
+    return out
+
+
+def make_advanced_trend_commentary(intel_df, stat_col):
+    if intel_df is None or intel_df.empty:
+        return "Not enough data to generate trend intelligence."
+
+    lines = []
+    best = intel_df.sort_values("Slope", ascending=False).iloc[0]
+    worst = intel_df.sort_values("Slope", ascending=True).iloc[0]
+
+    if pd.notna(best.get("Slope")):
+        lines.append(
+            f"{best['Player']} shows the strongest {stat_col} growth trend in this comparison "
+            f"(slope {best['Slope']:.3f} per season, {best.get('Trend Direction', 'trend unclear').lower()})."
+        )
+
+    if len(intel_df) > 1 and pd.notna(worst.get("Slope")) and worst["Player"] != best["Player"]:
+        lines.append(
+            f"{worst['Player']} has the weakest {stat_col} trend here "
+            f"(slope {worst['Slope']:.3f} per season, {worst.get('Trend Direction', 'trend unclear').lower()})."
+        )
+
+    volatile = intel_df[intel_df["Consistency Rating"].astype(str).str.contains("volatile", case=False, na=False)]
+    if not volatile.empty:
+        v = volatile.iloc[0]
+        lines.append(
+            f"{v['Player']} has a higher volatility profile, so recent spikes should be treated more cautiously."
+        )
+
+    consistent = intel_df[intel_df["Consistency Rating"].astype(str).str.contains("consistent", case=False, na=False)]
+    if not consistent.empty:
+        c = consistent.iloc[0]
+        lines.append(
+            f"{c['Player']} grades as {str(c['Consistency Rating']).lower()}, which is useful for fantasy managers who prefer stable production."
+        )
+
+    if not lines:
+        lines.append("The selected players have similar or unclear trend patterns.")
+
+    return " ".join(lines)
+
+
+def format_advanced_trend_table(df):
+    out = df.copy()
+    for c in ["Slope", "Recent Slope", "Volatility", "R²", "First Value", "Latest Value", "Net Change"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
+    if "Years Used" in out.columns:
+        out["Years Used"] = pd.to_numeric(out["Years Used"], errors="coerce").round(0).astype("Int64")
+    return out
+
+
 def compute_trend_slope(group, stat_col):
     group = group.sort_values("yearID")
     x = pd.to_numeric(group["yearID"], errors="coerce").values
@@ -3022,6 +3202,156 @@ def summarize_team_category_needs(standings, team_name):
 
 
 
+
+
+
+
+def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode="Actual Values", smooth_window=3):
+    """Create separate trend charts for one player across multiple stats."""
+    player_df = player_df.sort_values("yearID").copy()
+    player_df = safe_round_rate_stats(player_df)
+
+    for stat in stats:
+        if stat not in player_df.columns:
+            continue
+
+        y = pd.to_numeric(player_df[stat], errors="coerce")
+        if y.notna().sum() == 0:
+            continue
+
+        if mode == "Smoothed Moving Average":
+            y_plot = y.rolling(window=int(smooth_window), min_periods=1).mean()
+        else:
+            y_plot = y
+
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.plot(player_df["yearID"], y_plot, marker="o", label=f"{stat} — {mode}")
+        trend_years = sorted(pd.to_numeric(player_df["yearID"], errors="coerce").dropna().astype(int).unique())
+        ax.set_xticks(trend_years)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xlabel("Year")
+        ax.set_ylabel(stat)
+        ax.set_title(f"{player_name} — {stat} Trend")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+
+
+def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custom_weights=None):
+    """Create start/sit style scores from current roster stats.
+
+    Uses current-season stat columns when available. If the Fantasy Standings Tracker
+    has already loaded MLB API/current stats, this page reuses that data.
+    """
+    df = roster_stats.copy()
+    if df.empty:
+        return df
+
+    for c in ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "AB", "H", "BB", "G"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Core current production signals.
+    if scoring_format == "Points League":
+        if custom_weights is None:
+            custom_weights = {"R": 1.0, "RBI": 1.0, "HR": 4.0, "SB": 2.0, "H": 1.0, "BB": 1.0, "OPS": 10.0}
+        raw_score = pd.Series(0.0, index=df.index)
+        for stat, weight in custom_weights.items():
+            if stat in df.columns:
+                raw_score += pd.to_numeric(df[stat], errors="coerce").fillna(0) * float(weight)
+        df["Current Fantasy Score"] = normalize_series(raw_score)
+    else:
+        parts = []
+        for c in ["R", "HR", "RBI", "SB", "BA", "OPS"]:
+            if c in df.columns:
+                parts.append(normalize_series(pd.to_numeric(df[c], errors="coerce")))
+        df["Current Fantasy Score"] = sum(parts) / len(parts) if parts else 0.0
+
+    # Momentum proxy: current rates + power/speed blend. This is a season-to-date proxy,
+    # not true last-7-day game logs unless such data is uploaded later.
+    momentum_parts = []
+    for c, w in [("OPS", 0.35), ("HR", 0.20), ("RBI", 0.15), ("R", 0.15), ("SB", 0.10), ("BA", 0.05)]:
+        if c in df.columns:
+            momentum_parts.append(normalize_series(pd.to_numeric(df[c], errors="coerce")) * w)
+    df["Momentum Score"] = sum(momentum_parts) if momentum_parts else df["Current Fantasy Score"]
+
+    # Consistency proxy: rate stability and playing-time volume.
+    volume = normalize_series(pd.to_numeric(df.get("AB", 0), errors="coerce")) if "AB" in df.columns else pd.Series(0.5, index=df.index)
+    rate_floor = normalize_series(pd.to_numeric(df.get("OPS", df.get("BA", 0)), errors="coerce"))
+    df["Consistency Score"] = normalize_series(volume * 0.55 + rate_floor * 0.45)
+
+    # Volatility proxy: power/speed profiles can win weeks but are less stable than contact/volume.
+    power_speed = pd.Series(0.0, index=df.index)
+    if "HR" in df.columns:
+        power_speed += normalize_series(df["HR"]) * 0.55
+    if "SB" in df.columns:
+        power_speed += normalize_series(df["SB"]) * 0.35
+    if "BA" in df.columns:
+        power_speed -= normalize_series(df["BA"]) * 0.10
+    df["Volatility Meter"] = normalize_series(power_speed)
+
+    df["Lineup Confidence"] = normalize_series(
+        df["Current Fantasy Score"] * 0.45 +
+        df["Momentum Score"] * 0.30 +
+        df["Consistency Score"] * 0.25
+    )
+
+    def classify_action(row):
+        conf = pd.to_numeric(row.get("Lineup Confidence", np.nan), errors="coerce")
+        mom = pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce")
+        vol = pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce")
+        if pd.isna(conf):
+            return "Watch"
+        if conf >= 0.72:
+            return "Start"
+        if conf >= 0.55 and mom >= 0.55:
+            return "Lean Start"
+        if conf < 0.35 and vol >= 0.55:
+            return "Bench / Risk"
+        if conf < 0.40:
+            return "Sit"
+        return "Matchup Dependent"
+
+    def make_lineup_reason(row):
+        name = row.get("Player", row.get("fullName", "This player"))
+        action = row.get("Start/Sit Recommendation", "Watch")
+        reasons = []
+        if pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce") >= 0.70:
+            reasons.append("strong current momentum")
+        if pd.to_numeric(row.get("Consistency Score", np.nan), errors="coerce") >= 0.70:
+            reasons.append("stable volume/rate profile")
+        if pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce") >= 0.70:
+            reasons.append("higher volatility/upside profile")
+        if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.800:
+            reasons.append("strong OPS foundation")
+        if "HR" in row and pd.to_numeric(row.get("HR"), errors="coerce") >= 10:
+            reasons.append("useful power production")
+        if "SB" in row and pd.to_numeric(row.get("SB"), errors="coerce") >= 8:
+            reasons.append("speed contribution")
+        if not reasons:
+            reasons.append("middle-tier current profile")
+        return f"{action}: {name} is rated this way because of " + ", ".join(reasons[:3]) + "."
+
+    df["Start/Sit Recommendation"] = df.apply(classify_action, axis=1)
+    df["Lineup Reason"] = df.apply(make_lineup_reason, axis=1)
+
+    return df
+
+
+def format_lineup_assistant_table(df):
+    out = df.copy()
+    for c in ["Current Fantasy Score", "Momentum Score", "Consistency Score", "Volatility Meter", "Lineup Confidence"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
+    for c in ["BA", "OBP", "SLG", "OPS"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").map(lambda v: "" if pd.isna(v) else f"{v:.4f}".rstrip("0").rstrip("."))
+    for c in ["HR", "RBI", "R", "SB", "AB", "H", "BB", "G"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(0).astype("Int64")
+    return out
+
+
 def format_trade_eval_table(df):
     """Format Trade Analyzer category comparison."""
     out = df.copy()
@@ -3253,6 +3583,50 @@ def fetch_mlb_api_hitter_stats(season=2026):
 
 
 
+
+
+def add_player_to_next_draft_room_pick(player_name, team_name):
+    """Add selected player to the next open Draft Room row for the selected team.
+
+    If the selected team's next row is unavailable, use the next open row.
+    Returns a message string.
+    """
+    if "draft_room_table" not in st.session_state:
+        return "No Draft Room table exists yet. Open Draft Room Simulator first."
+
+    table = st.session_state["draft_room_table"].copy()
+    if table.empty or "Player" not in table.columns or "Team" not in table.columns:
+        return "Draft Room table is missing Team/Player columns."
+
+    player_name = str(player_name).strip()
+    team_name = str(team_name).strip()
+
+    if not player_name:
+        return "No player selected."
+
+    # Do not draft the same player twice.
+    existing_players = table["Player"].dropna().astype(str).str.strip().tolist()
+    if player_name in existing_players:
+        return f"{player_name} is already drafted."
+
+    open_mask = table["Player"].fillna("").astype(str).str.strip().eq("")
+    team_open_idx = table.index[open_mask & table["Team"].astype(str).eq(team_name)].tolist()
+
+    if team_open_idx:
+        idx = team_open_idx[0]
+    else:
+        any_open_idx = table.index[open_mask].tolist()
+        if not any_open_idx:
+            return "Draft Room is full. No open pick rows remain."
+        idx = any_open_idx[0]
+        table.loc[idx, "Team"] = team_name
+
+    table.loc[idx, "Player"] = player_name
+    st.session_state["draft_room_table"] = table
+    pick_num = table.loc[idx, "Pick"] if "Pick" in table.columns else idx + 1
+    return f"Drafted {player_name} to {team_name} at pick {pick_num}."
+
+
 def build_draft_room_table_from_assistant(my_roster, other_rosters, my_team_name="My Team", other_team_name="Other Rosters"):
     rows = []
     pick = 1
@@ -3286,7 +3660,7 @@ year_max = int(max(all_years))
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
-PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Fantasy Standings Tracker", "Trade Analyzer"]
+PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -3744,6 +4118,36 @@ def _format_sig_table(df):
     return df
 
 
+
+
+def sync_compare_to_sig_players():
+    """When the top comparison selector changes, use its first two players as Player A/B."""
+    selected = st.session_state.get("compare_players", [])
+    if isinstance(selected, list) and len(selected) >= 1:
+        st.session_state["sig_player_a_clean"] = selected[0]
+    if isinstance(selected, list) and len(selected) >= 2:
+        st.session_state["sig_player_b_clean"] = selected[1]
+
+
+def sync_sig_players_to_compare():
+    """When Player A/B changes, make sure those players are included in the top comparison selector."""
+    current = st.session_state.get("compare_players", [])
+    if not isinstance(current, list):
+        current = []
+
+    new_order = []
+    for key in ["sig_player_a_clean", "sig_player_b_clean"]:
+        val = st.session_state.get(key)
+        if val and val not in new_order:
+            new_order.append(val)
+
+    for val in current:
+        if val not in new_order and len(new_order) < 3:
+            new_order.append(val)
+
+    st.session_state["compare_players"] = new_order[:3]
+
+
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     clean_label_map_compare = build_clean_player_label_map(yearly_df)
@@ -3763,10 +4167,11 @@ if active_page == "Comparison Tool":
         options=compare_player_options,
         default=default_compare_labels[:3],
         max_selections=3,
-        key="compare_players"
+        key="compare_players",
+        on_change=sync_compare_to_sig_players
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
-    stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS"], index=0, key="compare_stat")
+    stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
     compare_trend_mode = st.radio(
         "Comparison Chart Mode",
         ["Actual Values", "Smoothed Moving Average"],
@@ -3814,29 +4219,62 @@ if active_page == "Comparison Tool":
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
+        st.subheader("Advanced Trend Intelligence")
+        compare_intel = build_advanced_trend_intelligence(compare, selected_ids_compare, stat_choice_compare)
+        if compare_intel.empty:
+            st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
+        else:
+            st.info(make_advanced_trend_commentary(compare_intel, stat_choice_compare))
+            render_output_table(
+                format_advanced_trend_table(clean_ui_columns(compare_intel)),
+                key="comparison_advanced_trend_intelligence",
+                file_name="comparison_advanced_trend_intelligence.csv",
+                display_rows=10,
+                style_cols=["Slope", "Recent Slope", "Net Change"]
+            )
+
 
     st.divider()
     st.subheader("Statistical Significance Test")
     st.caption(
         "Compare two players over any chosen year ranges. The app tests whether Player A is significantly better than Player B "
         "for selected stats. It also gives an overall standardized comparison across the selected stats. "
-        "The first two players selected at the top automatically become Player A and Player B here; choosing Player A/B here also prefills the top selector when you return to this page."
+        "The Player A/B dropdowns prioritize the players selected at the top. You can pick any two from the top-selected group or choose a different player; Player A/B choices are also synced back into the top comparison selector."
     )
 
     sig_col1, sig_col2 = st.columns(2)
     clean_label_map_sig = build_clean_player_label_map(yearly_df)
     all_player_options_sig = list(clean_label_map_sig.keys())
 
-    # Sync bottom significance players from the first two players selected above.
+    # Bottom Player A/B dropdowns show the top-selected comparison players first,
+    # but still allow any player in the database.
+    sig_priority_options = [p for p in selected_labels_compare if p in all_player_options_sig]
+    sig_dropdown_options = sig_priority_options + [p for p in all_player_options_sig if p not in sig_priority_options]
+
     sig_default_a_index = 0
-    sig_default_b_index = 1 if len(all_player_options_sig) > 1 else 0
-    if len(selected_labels_compare) >= 1 and selected_labels_compare[0] in all_player_options_sig:
-        sig_default_a_index = all_player_options_sig.index(selected_labels_compare[0])
-    if len(selected_labels_compare) >= 2 and selected_labels_compare[1] in all_player_options_sig:
-        sig_default_b_index = all_player_options_sig.index(selected_labels_compare[1])
+    sig_default_b_index = 1 if len(sig_dropdown_options) > 1 else 0
+
+    saved_a = st.session_state.get("sig_player_a_clean")
+    saved_b = st.session_state.get("sig_player_b_clean")
+
+    if saved_a in sig_dropdown_options:
+        sig_default_a_index = sig_dropdown_options.index(saved_a)
+    elif len(selected_labels_compare) >= 1 and selected_labels_compare[0] in sig_dropdown_options:
+        sig_default_a_index = sig_dropdown_options.index(selected_labels_compare[0])
+
+    if saved_b in sig_dropdown_options:
+        sig_default_b_index = sig_dropdown_options.index(saved_b)
+    elif len(selected_labels_compare) >= 2 and selected_labels_compare[1] in sig_dropdown_options:
+        sig_default_b_index = sig_dropdown_options.index(selected_labels_compare[1])
 
     with sig_col1:
-        sig_player_a_label = st.selectbox("Player A", all_player_options_sig, index=sig_default_a_index, key="sig_player_a_clean")
+        sig_player_a_label = st.selectbox(
+            "Player A",
+            sig_dropdown_options,
+            index=sig_default_a_index,
+            key="sig_player_a_clean",
+            on_change=sync_sig_players_to_compare
+        )
         pid_a_preview = clean_label_map_sig[sig_player_a_label]
         a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
         st.caption(f"Career span: {a_min_year}–{a_max_year}")
@@ -3849,7 +4287,13 @@ if active_page == "Comparison Tool":
         )
 
     with sig_col2:
-        sig_player_b_label = st.selectbox("Player B", all_player_options_sig, index=sig_default_b_index, key="sig_player_b_clean")
+        sig_player_b_label = st.selectbox(
+            "Player B",
+            sig_dropdown_options,
+            index=sig_default_b_index,
+            key="sig_player_b_clean",
+            on_change=sync_sig_players_to_compare
+        )
         pid_b_preview = clean_label_map_sig[sig_player_b_label]
         b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
         st.caption(f"Career span: {b_min_year}–{b_max_year}")
@@ -3860,6 +4304,12 @@ if active_page == "Comparison Tool":
             value=(b_min_year, b_max_year),
             key=f"sig_years_b_{pid_b_preview}"
         )
+
+    if len(selected_labels_compare) >= 2:
+        if st.button("Use first two top-selected players for Player A/B"):
+            st.session_state["sig_player_a_clean"] = selected_labels_compare[0]
+            st.session_state["sig_player_b_clean"] = selected_labels_compare[1]
+            st.success("Player A and Player B were updated from the first two players selected at the top. The page will reflect this on the next rerun.")
 
     sig_stats = st.multiselect(
         "Stats to Test",
@@ -3995,7 +4445,7 @@ if active_page == "Comparison Tool":
 
 
 if active_page == "Trend Value":
-    render_section_header("🔥 Trend Value", "Shows only trend numbers: which stats are rising or declining per year over the selected recent window.")
+    render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
     c1, c2 = st.columns(2)
     with c1:
         lag_trend = st.selectbox("Trend Window (Years)", [3, 4, 5], index=0, key="trend_lag")
@@ -4088,6 +4538,100 @@ if active_page == "Trend Value":
     if not top_breakout_row.empty: st.success(make_trend_insight_summary(top_breakout_row.iloc[0]))
     if not top_decline_row.empty: st.error(make_trend_insight_summary(top_decline_row.iloc[0]))
 
+    st.subheader("Single-Player Trend Dashboard")
+    st.caption(
+        "Pick one player from the trend table list to see several stat trends at once. "
+        "This is the one-player dashboard view; the section below still lets you compare up to three players for one stat."
+    )
+
+    trend_player_options_df = trend_value_df[["playerID", "fullName"]].drop_duplicates().sort_values("fullName")
+    trend_player_label_map = {
+        f"{row.fullName} ({row.playerID})": row.playerID
+        for row in trend_player_options_df.itertuples()
+    }
+
+    single_trend_label = st.selectbox(
+        "Select Player From Trend Table",
+        list(trend_player_label_map.keys()),
+        key="single_trend_dashboard_player"
+    )
+    single_trend_id = trend_player_label_map[single_trend_label]
+    single_player_name = single_trend_label.split(" (")[0]
+
+    dashboard_stat_options = ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "H", "BB"]
+    default_dashboard_stats = ["HR", "RBI", "R", "SB", "OPS"]
+    dashboard_stats = st.multiselect(
+        "Stats to graph for selected player",
+        dashboard_stat_options,
+        default=default_dashboard_stats,
+        key="single_trend_dashboard_stats"
+    )
+
+    dash_mode_col1, dash_mode_col2 = st.columns(2)
+    with dash_mode_col1:
+        single_dashboard_mode = st.radio(
+            "Single-Player Dashboard Mode",
+            ["Actual Values", "Smoothed Moving Average"],
+            horizontal=True,
+            key="single_trend_dashboard_mode"
+        )
+    with dash_mode_col2:
+        single_dashboard_smooth_window = 3
+        if single_dashboard_mode == "Smoothed Moving Average":
+            single_dashboard_smooth_window = st.slider(
+                "Single-Player Smoothing Window",
+                2, 7, 3,
+                key="single_trend_dashboard_smooth_window"
+            )
+
+    selected_player_history = recent_data_trend[recent_data_trend["playerID"] == single_trend_id].copy()
+    if selected_player_history.empty:
+        st.info("No trend history available for that player in the selected window.")
+    else:
+        selected_player_summary = trend_value_df[trend_value_df["playerID"] == single_trend_id]
+        if not selected_player_summary.empty:
+            st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
+
+            trend_snapshot_cols = [
+                "fullName", "R_trend", "HR_trend", "RBI_trend", "SB_trend",
+                "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend"
+            ]
+            trend_snapshot = selected_player_summary[[c for c in trend_snapshot_cols if c in selected_player_summary.columns]].rename(columns={
+                "fullName": "Player",
+                "R_trend": "R Δ",
+                "HR_trend": "HR Δ",
+                "RBI_trend": "RBI Δ",
+                "SB_trend": "SB Δ",
+                "BA_trend": "BA Δ",
+                "OBP_trend": "OBP Δ",
+                "SLG_trend": "SLG Δ",
+                "OPS_trend": "OPS Δ",
+            })
+            render_output_table(
+                format_display_table(
+                    clean_ui_columns(trend_snapshot),
+                    count_cols=["R Δ", "HR Δ", "RBI Δ", "SB Δ"],
+                    rate_cols=["BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"],
+                    count_decimals=1,
+                    rate_decimals=4
+                ),
+                key="single_player_trend_snapshot",
+                file_name="single_player_trend_snapshot.csv",
+                display_rows=3,
+                style_cols=[c for c in trend_snapshot.columns if "Δ" in c]
+            )
+
+        if dashboard_stats:
+            plot_single_player_multi_stat_dashboard(
+                selected_player_history,
+                single_player_name,
+                dashboard_stats,
+                mode=single_dashboard_mode,
+                smooth_window=single_dashboard_smooth_window
+            )
+        else:
+            st.info("Choose at least one stat to graph for the selected player.")
+
     st.subheader("Player Trend Visualization")
     label_map_trend = build_player_label_map(recent_data_trend)
     selected_labels_trend = st.multiselect(
@@ -4131,6 +4675,21 @@ if active_page == "Trend Value":
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
+        st.subheader("Advanced Trend Intelligence")
+        trend_intel = build_advanced_trend_intelligence(player_trend, selected_ids_trend, stat_choice_trend)
+        if trend_intel.empty:
+            st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
+        else:
+            st.info(make_advanced_trend_commentary(trend_intel, stat_choice_trend))
+            render_output_table(
+                format_advanced_trend_table(clean_ui_columns(trend_intel)),
+                key="trend_advanced_intelligence",
+                file_name="trend_advanced_intelligence.csv",
+                display_rows=10,
+                style_cols=["Slope", "Recent Slope", "Net Change"]
+            )
+
+        st.subheader("Fantasy-Style Player Notes")
         for selected_id_trend in selected_ids_trend:
             player_summary_row = trend_value_df[trend_value_df["playerID"] == selected_id_trend]
             if not player_summary_row.empty:
@@ -4182,6 +4741,48 @@ if active_page == "Fantasy Sleepers & Busts":
         sleeper_min_proj_hr = st.number_input("Minimum Projected HR", min_value=0, max_value=80, value=0, step=1, key="sleeper_min_proj_hr")
     with sf4:
         sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
+
+    st.markdown("#### Draft-Room-Aware Sleeper Filter")
+    st.caption(
+        "Optional: connect this page to your Draft Room so the sleeper map focuses on available players who fit your current roster needs."
+    )
+    sleeper_sync_enabled = st.checkbox(
+        "Use Draft Room needs and remove already drafted players",
+        value=False,
+        key="sleeper_use_draft_room_needs"
+    )
+    sleeper_team_name = None
+    sleeper_synced_roster = []
+    sleeper_synced_drafted = []
+    sleeper_auto_positions = []
+
+    if sleeper_sync_enabled:
+        draft_room_for_sleepers = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+        if draft_room_for_sleepers.empty or "Player" not in draft_room_for_sleepers.columns or "Team" not in draft_room_for_sleepers.columns:
+            st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
+        else:
+            draft_room_for_sleepers = draft_room_for_sleepers[
+                draft_room_for_sleepers["Player"].astype(str).str.strip() != ""
+            ].copy()
+            sleeper_team_options = sorted(draft_room_for_sleepers["Team"].dropna().astype(str).unique().tolist())
+            if sleeper_team_options:
+                sleeper_default_team = st.session_state.get("room_your_team", sleeper_team_options[0])
+                sleeper_default_idx = sleeper_team_options.index(sleeper_default_team) if sleeper_default_team in sleeper_team_options else 0
+                sleeper_team_name = st.selectbox(
+                    "My Draft Room Team",
+                    sleeper_team_options,
+                    index=sleeper_default_idx,
+                    key="sleeper_sync_team"
+                )
+                sleeper_synced_roster = draft_room_for_sleepers[
+                    draft_room_for_sleepers["Team"].astype(str) == str(sleeper_team_name)
+                ]["Player"].dropna().astype(str).tolist()
+                sleeper_synced_drafted = draft_room_for_sleepers["Player"].dropna().astype(str).tolist()
+
+                st.caption(
+                    f"Synced {len(sleeper_synced_roster)} players on your roster and "
+                    f"{len(sleeper_synced_drafted)} total drafted players from Draft Room."
+                )
 
     max_year_fantasy = int(yearly_df["yearID"].max())
     fantasy_years = list(range(max_year_fantasy - fantasy_window + 1, max_year_fantasy + 1))
@@ -4335,6 +4936,36 @@ if active_page == "Fantasy Sleepers & Busts":
         fantasy_df = fantasy_df[
             pd.to_numeric(fantasy_df["Projected Production Score"], errors="coerce").fillna(0) >= sleeper_min_expected_value
         ].copy()
+
+    if sleeper_sync_enabled:
+        if sleeper_synced_drafted:
+            fantasy_df = fantasy_df[~fantasy_df["fullName"].astype(str).isin(set(sleeper_synced_drafted))].copy()
+
+        if sleeper_synced_roster and "Primary Position" in fantasy_df.columns:
+            sleeper_roster_df = fantasy_df.iloc[0:0].copy()
+            # Use the larger pre-filter draft pool if possible by matching names before drafted-player removal.
+            # This keeps the position need logic simple and robust.
+            roster_names_set = set(sleeper_synced_roster)
+            # Derive current roster positions from yearly/fantasy data still available in memory.
+            # If not found, skip position narrowing rather than crashing.
+            try:
+                roster_pos_counts = fantasy_df[fantasy_df["fullName"].isin(roster_names_set)]["Primary Position"].value_counts().to_dict()
+            except Exception:
+                roster_pos_counts = {}
+
+            target_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1}
+            sleeper_auto_positions = [
+                pos for pos, target in target_counts.items()
+                if int(roster_pos_counts.get(pos, 0)) < target
+            ]
+            if sleeper_auto_positions:
+                use_pos_filter = st.checkbox(
+                    f"Focus sleeper page on needed positions: {', '.join(sleeper_auto_positions)}",
+                    value=True,
+                    key="sleeper_focus_needed_positions"
+                )
+                if use_pos_filter:
+                    fantasy_df = fantasy_df[fantasy_df["Primary Position"].isin(sleeper_auto_positions)].copy()
 
     if fantasy_df.empty:
         st.warning("No players met the fantasy filters. Try lowering minimum AB/G, expanding age/position filters, or loosening the sleeper/bust relevance filters.")
@@ -4545,6 +5176,21 @@ if active_page == "Fantasy Sleepers & Busts":
             st.subheader("⚠️ Market Bust Risks")
             render_output_table(busts_display, key="fantasy_market_busts", file_name="fantasy_market_busts.csv", style_cols=["Fantasy Edge"])
 
+        if sleeper_sync_enabled and sleeper_team_name:
+            st.markdown("#### Draft a Sleeper Into Draft Room")
+            sleeper_pick_options = sleepers["fullName"].dropna().astype(str).head(50).tolist()
+            if sleeper_pick_options:
+                selected_sleeper_to_draft = st.selectbox(
+                    "Select sleeper to draft into your next Draft Room pick",
+                    sleeper_pick_options,
+                    key="sleeper_player_to_draft"
+                )
+                if st.button("Draft Selected Sleeper To My Next Pick"):
+                    msg = add_player_to_next_draft_room_pick(selected_sleeper_to_draft, sleeper_team_name)
+                    st.success(msg)
+            else:
+                st.info("No sleeper candidates available to draft from the current filters.")
+
         st.subheader("Fantasy Market Insight Summary")
         st.success(
             f"Top sleeper: {top_sleeper['fullName']} has a Fantasy Edge of {fmt_int(top_sleeper['Fantasy Edge'])}. "
@@ -4565,7 +5211,7 @@ if active_page == "Draft Assistant Simulator":
     )
     st.info(
         "Use this page when you are deciding **who to draft next**. "
-        "Draft Assistant is focused on recommendations, team needs, position scarcity, category fit, and top available players. "
+        "Draft Assistant is focused on recommendations, auto-detected team needs, position scarcity, category fit, and top available players. "
         "Use Draft Room Simulator for the full live draft spreadsheet, roster views, and post-draft roster grades."
     )
 
@@ -4678,146 +5324,68 @@ if active_page == "Draft Assistant Simulator":
         draft_df["Model Rank"] = draft_df["Blended Projection Score"].rank(ascending=False, method="min")
         draft_df["Fantasy Edge"] = draft_df["Market Rank"] - draft_df["Model Rank"]
 
-        st.subheader("Roster / Draft Controls")
-        all_player_names = sorted(draft_df["fullName"].dropna().unique())
-
-        st.markdown("#### Import Existing Draft Into Draft Assistant")
+        st.subheader("Draft Room Sync / Team Needs")
         st.caption(
-            "Upload a CSV or Excel file with Team/Owner and Player columns. Choose your team, then the app will place your players into "
-            "Players On My Roster and everyone else's players into Players On Other Rosters."
+            "Draft Assistant now uses Draft Room as the source of truth. "
+            "Enter picks only in Draft Room Simulator; this page reads those picks, identifies your roster and other drafted players, "
+            "then automatically estimates your position and category needs."
         )
 
-        assistant_import_file = st.file_uploader(
-            "Upload draft board for Draft Assistant",
-            type=["csv", "xlsx", "xls"]
+        draft_room_table_for_assistant = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+
+        if draft_room_table_for_assistant.empty or "Player" not in draft_room_table_for_assistant.columns:
+            st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first, then return here for recommendations.")
+            drafted_players = []
+            my_roster = []
+            assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+        else:
+            draft_room_table_for_assistant = draft_room_table_for_assistant[
+                draft_room_table_for_assistant["Player"].astype(str).str.strip() != ""
+            ].copy()
+            assistant_team_names = sorted(draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist())
+            if not assistant_team_names:
+                assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+
+        default_team_name = st.session_state.get("room_your_team", assistant_team_names[0])
+        default_team_index = assistant_team_names.index(default_team_name) if default_team_name in assistant_team_names else 0
+
+        assistant_my_team_name = st.selectbox(
+            "Which Draft Room team is yours?",
+            assistant_team_names,
+            index=default_team_index,
+            key="draft_assistant_synced_team"
         )
 
-        if assistant_import_file is not None:
-            try:
-                assistant_import_raw = read_imported_draft_file(assistant_import_file)
-                assistant_import_df = normalize_imported_draft_columns(assistant_import_raw)
-
-                if assistant_import_df.empty:
-                    st.warning("The uploaded file was read, but no usable Team/Player rows were found.")
-                else:
-                    import_teams = sorted(assistant_import_df["Team"].dropna().astype(str).unique().tolist())
-                    import_my_team = st.selectbox(
-                        "Which team is yours?",
-                        import_teams,
-                        index=0,
-                        key="draft_assistant_import_my_team"
-                    )
-
-                    # Match uploaded player names to the app's player-name options.
-                    app_name_map = {
-                        normalize_player_name_for_merge(name): name
-                        for name in all_player_names
-                    }
-
-                    imported_my_roster = []
-                    imported_other_rosters = []
-                    unmatched_import_names = []
-
-                    for _, _row in assistant_import_df.iterrows():
-                        raw_player = str(_row.get("Player", "")).strip()
-                        matched_player = app_name_map.get(normalize_player_name_for_merge(raw_player))
-
-                        if matched_player is None:
-                            unmatched_import_names.append(raw_player)
-                            continue
-
-                        if str(_row.get("Team", "")).strip() == import_my_team:
-                            imported_my_roster.append(matched_player)
-                        else:
-                            imported_other_rosters.append(matched_player)
-
-                    imported_my_roster = sorted(list(dict.fromkeys(imported_my_roster)))
-                    imported_other_rosters = sorted(list(dict.fromkeys(imported_other_rosters)))
-
-                    cimp1, cimp2, cimp3 = st.columns(3)
-                    with cimp1:
-                        st.metric("Matched My Players", len(imported_my_roster))
-                    with cimp2:
-                        st.metric("Matched Other Players", len(imported_other_rosters))
-                    with cimp3:
-                        st.metric("Unmatched Names", len(unmatched_import_names))
-
-                    st.caption("Import preview:")
-                    render_output_table(
-                        clean_ui_columns(assistant_import_df.head(50)),
-                        key="draft_assistant_import_preview",
-                        file_name="draft_assistant_import_preview.csv",
-                        display_rows=50
-                    )
-
-                    if unmatched_import_names:
-                        with st.expander("Unmatched uploaded player names"):
-                            st.write(unmatched_import_names[:100])
-
-                    if st.button("Apply Uploaded Draft To Draft Assistant"):
-                        # These assignments happen before the multiselect widgets below are created on this run.
-                        # That avoids Streamlit's widget-state assignment error.
-                        st.session_state["draft_my_roster"] = imported_my_roster
-                        st.session_state["draft_already_drafted"] = imported_other_rosters
-                        st.success(
-                            f"Loaded {len(imported_my_roster)} player(s) to Players On My Roster and "
-                            f"{len(imported_other_rosters)} player(s) to Players On Other Rosters."
-                        )
-
-            except Exception as e:
-                st.error(f"Could not import draft board into Draft Assistant: {e}")
-
-        st.markdown("#### Draft Board Setup")
-        draft_control_left, draft_control_right = st.columns(2)
-        with draft_control_left:
-            drafted_players = st.multiselect(
-                "Players On Other Rosters / Remove from Board",
-                all_player_names,
-                key="draft_already_drafted",
-                help="Select players drafted by other teams. They will be removed from recommendations, scarcity calculations, and the available-player board."
+        if draft_room_table_for_assistant.empty:
+            my_roster = []
+            drafted_players = []
+        else:
+            my_roster = (
+                draft_room_table_for_assistant[
+                    draft_room_table_for_assistant["Team"].astype(str) == str(assistant_my_team_name)
+                ]["Player"].dropna().astype(str).tolist()
             )
-            st.caption(f"{len(drafted_players)} player(s) on other rosters / removed from the board.")
-        with draft_control_right:
-            my_roster = st.multiselect(
-                "Players On My Roster",
-                all_player_names,
-                key="draft_my_roster",
-                help="Select the players you drafted. They will be removed from recommendations while still being used for roster construction and team needs."
-            )
-            st.caption(f"{len(my_roster)} player(s) currently on your roster.")
-
-        st.markdown("#### Sync With Draft Room")
-        sync_col1, sync_col2 = st.columns(2)
-        with sync_col1:
-            assistant_my_team_name = st.text_input(
-                "My Team Name for Draft Room Sync",
-                value=st.session_state.get("room_your_team", "My Team"),
-                key="assistant_sync_my_team_name"
-            )
-        with sync_col2:
-            assistant_other_team_name = st.text_input(
-                "Other Rosters Team Name",
-                value="Other Rosters",
-                key="assistant_sync_other_team_name"
+            drafted_players = (
+                draft_room_table_for_assistant[
+                    draft_room_table_for_assistant["Team"].astype(str) != str(assistant_my_team_name)
+                ]["Player"].dropna().astype(str).tolist()
             )
 
-        if st.button("Send These Rosters To Draft Room"):
-            st.session_state["draft_room_table"] = build_draft_room_table_from_assistant(
-                my_roster,
-                drafted_players,
-                assistant_my_team_name,
-                assistant_other_team_name
-            )
-            st.success(f"Sent {len(my_roster)} of your players and {len(drafted_players)} other-roster players to Draft Room.")
+        my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
+        drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
+        drafted_or_owned_players = set(drafted_players).union(set(my_roster))
 
-        if st.button("Load Draft Room Picks Into Draft Assistant"):
-            room_table_for_sync = st.session_state.get("draft_room_table", pd.DataFrame())
-            synced_my, synced_others = sync_draft_room_to_assistant_from_table(room_table_for_sync, assistant_my_team_name)
-            st.session_state["draft_my_roster"] = synced_my
-            st.session_state["draft_already_drafted"] = synced_others
-            st.success(f"Loaded {len(synced_my)} player(s) into My Roster and {len(synced_others)} into Other Rosters. Switch pages and come back if the multiselect display does not refresh immediately.")
+        s1, s2, s3 = st.columns(3)
+        s1.metric("My Roster", len(my_roster))
+        s2.metric("Other Rosters", len(drafted_players))
+        s3.metric("Current Pick", len(drafted_or_owned_players) + 1)
 
-        total_players_picked = len(set(drafted_players).union(set(my_roster)))
+        st.caption(
+            "Roster data is synced silently from Draft Room. "
+            "The recommendation tables below automatically exclude already drafted players."
+        )
+
+        total_players_picked = len(drafted_or_owned_players)
         auto_current_pick = total_players_picked + 1
 
         pick_col1, pick_col2, pick_col3 = st.columns([1, 1, 2])
@@ -4836,30 +5404,76 @@ if active_page == "Draft Assistant Simulator":
             st.metric("Auto Current Pick", current_pick)
         with pick_col3:
             st.caption(
-                f"Calculated as {total_players_picked} total selected player(s) "
+                f"Calculated from Draft Room: {total_players_picked} total drafted player(s) "
                 f"({len(drafted_players)} on other rosters + {len(my_roster)} on my roster) + 1"
                 + (f" plus adjustment {pick_adjustment}." if pick_adjustment else ".")
             )
 
-        st.markdown("#### Team Needs")
+        # Automatically infer position needs from your synced roster.
+        roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
+        target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
+        current_position_counts = (
+            roster_df_auto["Primary Position"].value_counts().to_dict()
+            if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
+            else {}
+        )
+
+        auto_needed_positions = []
+        for pos in POSITION_ORDER:
+            target = target_position_counts.get(pos, 1)
+            current = int(current_position_counts.get(pos, 0))
+            if target > 0 and current < target:
+                auto_needed_positions.append(pos)
+
+        if not auto_needed_positions:
+            auto_needed_positions = ["OF", "DH"]
+
+        # Automatically infer category needs from your roster averages compared with the draft pool.
+        if draft_format == "5x5 Roto":
+            cat_defs_auto = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
+            default_cat_fallback = ["HR", "RBI"]
+        else:
+            cat_defs_auto = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
+            default_cat_fallback = ["Power", "Run Production"]
+
+        auto_category_needs = []
+        if not roster_df_auto.empty:
+            for label, col in cat_defs_auto.items():
+                if col not in roster_df_auto.columns or col not in draft_df.columns:
+                    continue
+                roster_val = pd.to_numeric(roster_df_auto[col], errors="coerce").mean()
+                pool_val = pd.to_numeric(draft_df[col], errors="coerce").mean()
+                if pd.notna(roster_val) and pd.notna(pool_val) and roster_val < pool_val:
+                    auto_category_needs.append(label)
+
+        if not auto_category_needs:
+            auto_category_needs = default_cat_fallback
+
+        st.markdown("#### Auto-Detected Team Needs")
+        st.caption(
+            "These are calculated from your Draft Room roster. You can override them if you want the assistant to prioritize a different roster build."
+        )
         r1, r2 = st.columns(2)
         with r1:
             needed_positions = st.multiselect(
-                "Positions You Still Need",
+                "Positions to Prioritize",
                 POSITION_ORDER,
-                default=["C", "1B", "2B", "3B", "SS", "OF", "DH"],
-                key="draft_need_positions",
-                help="Include DH if your league has a utility/DH-style hitter slot or if you want another bat regardless of defensive position."
+                default=auto_needed_positions,
+                key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(auto_needed_positions)}",
+                help="Auto-filled from your Draft Room roster. You can manually add/remove positions."
             )
         with r2:
-            if draft_format == "5x5 Roto":
-                category_needs = st.multiselect("Categories to Strengthen", ["R", "HR", "RBI", "SB", "BA"], default=["HR", "RBI"], key="draft_category_needs")
-            else:
-                category_needs = st.multiselect("Skill Types to Strengthen", ["Power", "Run Production", "Speed", "Walks/OPS", "Volume"], default=["Power", "Run Production"], key="draft_category_needs")
+            category_options_auto = list(cat_defs_auto.keys())
+            category_needs = st.multiselect(
+                "Categories / Skills to Strengthen",
+                category_options_auto,
+                default=[c for c in auto_category_needs if c in category_options_auto],
+                key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
+                help="Auto-filled by comparing your roster to the draft pool. You can manually change it."
+            )
 
         # Remove every player who is already off the board:
         # players on other rosters + players on my roster.
-        drafted_or_owned_players = set(drafted_players).union(set(my_roster))
         available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
 
 
@@ -5202,6 +5816,24 @@ if active_page == "Draft Assistant Simulator":
             "For the full live draft spreadsheet, use Draft Room Simulator."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+
+        st.markdown("#### Draft a Recommended Player")
+        st.caption(
+            "Pick a player from the recommendation list and send him directly to your next open Draft Room slot. "
+            "After drafting, he will disappear from Draft Assistant recommendations because Draft Room becomes updated."
+        )
+        if recs.empty:
+            st.info("No recommended players are currently available.")
+        else:
+            recommended_player_options = recs["fullName"].dropna().astype(str).head(50).tolist()
+            selected_recommended_player = st.selectbox(
+                "Select player to draft into Draft Room",
+                recommended_player_options,
+                key="draft_assistant_player_to_draft"
+            )
+            if st.button("Draft Selected Player To My Next Pick"):
+                msg = add_player_to_next_draft_room_pick(selected_recommended_player, assistant_my_team_name)
+                st.success(msg)
 
         st.subheader("Top Available / Draft Board")
         st.caption(
@@ -5709,103 +6341,252 @@ if active_page == "Fantasy Standings Tracker":
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
 
-if active_page == "Trade Analyzer":
+
+
+if active_page == "Fantasy Lineup Assistant":
     render_section_header(
-        "🔁 Trade Analyzer",
-        "Evaluate proposed trades and generate trade ideas based on your roster needs, current stats, projections, and category balance."
+        "🧠 Fantasy Lineup Assistant / Start-Sit AI",
+        "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch."
     )
 
-    roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame())
-    standings = st.session_state.get("fantasy_current_standings", pd.DataFrame())
+    st.info(
+        "This page uses your Draft Room roster plus current-season stats loaded in Fantasy Standings Tracker. "
+        "For now, momentum is based on current season-to-date production because true last-7-day game logs, injuries, matchups, and ballparks would need deeper live data feeds."
+    )
+
+    roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
 
     if roster_stats.empty:
-        st.info(
-            "First use the Fantasy Standings Tracker page and upload current-season stats. "
-            "Then this page can evaluate trades using those live/current stats."
+        st.warning(
+            "No current roster stats found yet. First go to Fantasy Standings Tracker, load stats from MLB API or upload a CSV, "
+            "and make sure Draft Room has your roster entered."
         )
     else:
-        teams = sorted(roster_stats["Team"].dropna().astype(str).unique())
-        my_team_trade = st.selectbox("Your Team", teams, index=0, key="trade_my_team")
-        other_teams = [t for t in teams if t != my_team_trade]
-        other_team_trade = st.selectbox("Other Team", other_teams, index=0 if other_teams else None, key="trade_other_team")
+        lineup_teams = sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
+        default_lineup_team = st.session_state.get("room_your_team", lineup_teams[0] if lineup_teams else "")
+        default_lineup_idx = lineup_teams.index(default_lineup_team) if default_lineup_team in lineup_teams else 0
 
-        my_players = sorted(roster_stats[roster_stats["Team"] == my_team_trade]["Player"].dropna().astype(str).unique())
-        other_players = sorted(roster_stats[roster_stats["Team"] == other_team_trade]["Player"].dropna().astype(str).unique()) if other_teams else []
-
-        st.subheader("Analyze a Proposed Trade")
-        give_players = st.multiselect("Players You Give Up", my_players, key="trade_give_players")
-        get_players = st.multiselect("Players You Receive", other_players, key="trade_get_players")
-
-        if give_players and get_players:
-            trade_eval, verdict, weighted_gain = evaluate_trade(
-                give_players,
-                get_players,
-                roster_stats,
-                roster_stats,
-                standings,
-                my_team_trade
+        l1, l2, l3 = st.columns(3)
+        with l1:
+            lineup_team = st.selectbox("Fantasy Team", lineup_teams, index=default_lineup_idx, key="lineup_team")
+        with l2:
+            lineup_format = st.selectbox(
+                "Lineup Scoring Mode",
+                ["5x5 Roto", "Points League", "Head-to-Head Categories"],
+                index=0,
+                key="lineup_format"
             )
-            st.metric("Trade Verdict", verdict)
-            st.caption(f"Team-need weighted trade score: {weighted_gain:.2f}")
+        with l3:
+            starters_to_show = st.slider("Recommended Starters to Show", 3, 15, 9, key="lineup_starters_to_show")
+
+        custom_weights = None
+        if lineup_format == "Points League":
+            with st.expander("Custom Points Scoring"):
+                pw1, pw2, pw3, pw4 = st.columns(4)
+                with pw1:
+                    w_r = st.number_input("Run Pts", value=1.0, step=0.5, key="lineup_pts_r")
+                    w_rbi = st.number_input("RBI Pts", value=1.0, step=0.5, key="lineup_pts_rbi")
+                with pw2:
+                    w_hr = st.number_input("HR Pts", value=4.0, step=0.5, key="lineup_pts_hr")
+                    w_sb = st.number_input("SB Pts", value=2.0, step=0.5, key="lineup_pts_sb")
+                with pw3:
+                    w_h = st.number_input("Hit Pts", value=1.0, step=0.5, key="lineup_pts_h")
+                    w_bb = st.number_input("Walk Pts", value=1.0, step=0.5, key="lineup_pts_bb")
+                with pw4:
+                    w_ops = st.number_input("OPS Weight", value=10.0, step=1.0, key="lineup_pts_ops")
+                custom_weights = {"R": w_r, "RBI": w_rbi, "HR": w_hr, "SB": w_sb, "H": w_h, "BB": w_bb, "OPS": w_ops}
+
+        team_roster = roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)].copy()
+        if team_roster.empty:
+            st.warning("No players found for the selected team.")
+        else:
+            scored = build_lineup_assistant_scores(team_roster, lineup_format, custom_weights)
+            scored = scored.sort_values("Lineup Confidence", ascending=False)
+
+            st.subheader("Recommended Starters")
+            starter_cols = [
+                "Player", "Primary Position", "MLB Team", "Start/Sit Recommendation",
+                "Lineup Confidence", "Momentum Score", "Consistency Score", "Volatility Meter",
+                "HR", "RBI", "R", "SB", "BA", "OPS", "Lineup Reason"
+            ]
+            starters = scored.head(starters_to_show).copy()
             render_output_table(
-                format_trade_eval_table(clean_ui_columns(trade_eval)),
-                key="trade_eval_table",
-                file_name="trade_evaluation.csv",
-                display_rows=20,
-                style_cols=["Net Gain"]
+                format_lineup_assistant_table(clean_ui_columns(starters[[c for c in starter_cols if c in starters.columns]])),
+                key="lineup_recommended_starters",
+                file_name="lineup_recommended_starters.csv",
+                display_rows=starters_to_show,
+                style_cols=["Lineup Confidence", "Momentum Score", "Consistency Score"]
             )
 
-        st.divider()
-        st.subheader("Generate Trade Ideas")
-        st.caption(
-            "The app looks for trades that are somewhat fair while improving your weak categories. "
-            "For example, if you are low in batting average but strong in power, it may suggest trading power for AVG/OPS."
-        )
-
-        trade_mode = st.radio(
-            "Trade Idea Mode",
-            [
-                "General ideas",
-                "I want to trade away specific player(s)",
-                "I want to acquire specific player(s)"
-            ],
-            horizontal=False,
-            key="trade_idea_mode"
-        )
-
-        forced_give = []
-        forced_get = []
-        if trade_mode == "I want to trade away specific player(s)":
-            forced_give = st.multiselect(
-                "Player(s) on my team I want to trade away",
-                my_players,
-                key="trade_ideas_forced_give"
-            )
-        elif trade_mode == "I want to acquire specific player(s)":
-            forced_get = st.multiselect(
-                "Player(s) on the other team I want to acquire",
-                other_players,
-                key="trade_ideas_forced_get"
+            st.subheader("Bench / Sit / Watch List")
+            bench = scored.tail(max(1, min(10, len(scored)))).sort_values("Lineup Confidence", ascending=True).copy()
+            render_output_table(
+                format_lineup_assistant_table(clean_ui_columns(bench[[c for c in starter_cols if c in bench.columns]])),
+                key="lineup_bench_watch",
+                file_name="lineup_bench_watch.csv",
+                display_rows=10,
+                style_cols=["Volatility Meter", "Lineup Confidence"]
             )
 
-        if other_teams and st.button("Suggest Trades For My Team"):
-            suggestions = suggest_trade_targets(my_team_trade, other_team_trade, roster_stats, standings)
+            st.subheader("Lineup Intelligence Summary")
+            best_row = scored.iloc[0]
+            weakest_row = scored.iloc[-1]
+            st.success(
+                f"Best start candidate: {best_row.get('Player', 'Unknown')} — "
+                f"{best_row.get('Lineup Reason', '')}"
+            )
+            st.warning(
+                f"Most questionable option: {weakest_row.get('Player', 'Unknown')} — "
+                f"{weakest_row.get('Lineup Reason', '')}"
+            )
 
-            if forced_give and not suggestions.empty:
-                suggestions = suggestions[suggestions["Give"].isin(forced_give)].copy()
-            if forced_get and not suggestions.empty:
-                suggestions = suggestions[suggestions["Receive"].isin(forced_get)].copy()
+            st.subheader("Roster Alerts")
+            alert_rows = []
+            for _, r in scored.iterrows():
+                player = r.get("Player", "")
+                rec = r.get("Start/Sit Recommendation", "")
+                mom = pd.to_numeric(r.get("Momentum Score", np.nan), errors="coerce")
+                conf = pd.to_numeric(r.get("Lineup Confidence", np.nan), errors="coerce")
+                vol = pd.to_numeric(r.get("Volatility Meter", np.nan), errors="coerce")
+                if rec in ["Start", "Lean Start"]:
+                    alert_rows.append({"Player": player, "Alert Type": "Start Signal", "Alert": "Strong lineup option based on current production and confidence score."})
+                elif rec in ["Sit", "Bench / Risk"]:
+                    alert_rows.append({"Player": player, "Alert Type": "Sit / Risk Signal", "Alert": "Lower confidence profile; consider benching unless matchup context is favorable."})
+                if pd.notna(mom) and mom >= 0.75 and pd.notna(conf) and conf < 0.60:
+                    alert_rows.append({"Player": player, "Alert Type": "High-Upside Volatile", "Alert": "Momentum is interesting, but overall confidence is not elite."})
+                if pd.notna(vol) and vol >= 0.75:
+                    alert_rows.append({"Player": player, "Alert Type": "Volatility Meter", "Alert": "Higher boom/bust profile; useful in upside-seeking lineup decisions."})
 
-            if suggestions.empty:
-                st.info("No clear trade suggestions found for those constraints. Try choosing fewer specific players or a different other team.")
+            alerts_df = pd.DataFrame(alert_rows)
+            if alerts_df.empty:
+                st.info("No major lineup alerts were detected.")
             else:
                 render_output_table(
-                    format_fantasy_table(clean_ui_columns(suggestions)),
-                    key="trade_suggestions",
-                    file_name="trade_suggestions.csv",
-                    display_rows=20,
-                    style_cols=["Trade Fit Score", "Fairness Gap"]
+                    clean_ui_columns(alerts_df),
+                    key="lineup_alerts",
+                    file_name="lineup_alerts.csv",
+                    display_rows=30
                 )
+
+
+            st.divider()
+            st.subheader("🔁 Trade Analyzer / Roster Move Assistant")
+            st.caption(
+                "Use this section after reviewing start/sit recommendations. It evaluates proposed trades and suggests roster moves using current stats, standings, and category needs."
+            )
+
+            lineup_trade_roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame())
+            lineup_trade_standings = st.session_state.get("fantasy_current_standings", pd.DataFrame())
+
+            if lineup_trade_roster_stats.empty:
+                st.info(
+                    "First use the Fantasy Standings Tracker page and load current-season stats. "
+                    "Then this trade section can evaluate deals using those live/current stats."
+                )
+            else:
+                trade_teams = sorted(lineup_trade_roster_stats["Team"].dropna().astype(str).unique())
+                default_trade_idx = trade_teams.index(lineup_team) if lineup_team in trade_teams else 0
+                my_team_trade = st.selectbox("Trade Analyzer: Your Team", trade_teams, index=default_trade_idx, key="lineup_trade_my_team")
+                other_trade_teams = [t for t in trade_teams if t != my_team_trade]
+
+                if not other_trade_teams:
+                    st.info("Need at least two fantasy teams in Draft Room/current stats to analyze trades.")
+                else:
+                    other_team_trade = st.selectbox("Other Team", other_trade_teams, index=0, key="lineup_trade_other_team")
+
+                    my_trade_players = sorted(
+                        lineup_trade_roster_stats[lineup_trade_roster_stats["Team"] == my_team_trade]["Player"]
+                        .dropna().astype(str).unique()
+                    )
+                    other_trade_players = sorted(
+                        lineup_trade_roster_stats[lineup_trade_roster_stats["Team"] == other_team_trade]["Player"]
+                        .dropna().astype(str).unique()
+                    )
+
+                    st.markdown("##### Analyze a Proposed Trade")
+                    give_players = st.multiselect("Players You Give Up", my_trade_players, key="lineup_trade_give_players")
+                    get_players = st.multiselect("Players You Receive", other_trade_players, key="lineup_trade_get_players")
+
+                    if give_players and get_players:
+                        trade_eval, verdict, weighted_gain = evaluate_trade(
+                            give_players,
+                            get_players,
+                            lineup_trade_roster_stats,
+                            lineup_trade_roster_stats,
+                            lineup_trade_standings,
+                            my_team_trade
+                        )
+                        st.metric("Trade Verdict", verdict)
+                        st.caption(f"Team-need weighted trade score: {weighted_gain:.2f}")
+                        render_output_table(
+                            format_trade_eval_table(clean_ui_columns(trade_eval)),
+                            key="lineup_trade_eval_table",
+                            file_name="lineup_trade_evaluation.csv",
+                            display_rows=20,
+                            style_cols=["Net Gain"]
+                        )
+
+                    st.markdown("##### Generate Trade Ideas")
+                    st.caption(
+                        "The app looks for trades that are somewhat fair while improving your weak categories. "
+                        "For example, if you are low in batting average but strong in power, it may suggest trading power for AVG/OPS."
+                    )
+
+                    trade_mode = st.radio(
+                        "Trade Idea Mode",
+                        [
+                            "General ideas",
+                            "I want to trade away specific player(s)",
+                            "I want to acquire specific player(s)"
+                        ],
+                        horizontal=False,
+                        key="lineup_trade_idea_mode"
+                    )
+
+                    forced_give = []
+                    forced_get = []
+                    if trade_mode == "I want to trade away specific player(s)":
+                        forced_give = st.multiselect(
+                            "Player(s) on my team I want to trade away",
+                            my_trade_players,
+                            key="lineup_trade_ideas_forced_give"
+                        )
+                    elif trade_mode == "I want to acquire specific player(s)":
+                        forced_get = st.multiselect(
+                            "Player(s) on the other team I want to acquire",
+                            other_trade_players,
+                            key="lineup_trade_ideas_forced_get"
+                        )
+
+                    if st.button("Suggest Trades For My Team", key="lineup_suggest_trades_button"):
+                        suggestions = suggest_trade_targets(
+                            my_team_trade,
+                            other_team_trade,
+                            lineup_trade_roster_stats,
+                            lineup_trade_standings
+                        )
+
+                        if forced_give and not suggestions.empty:
+                            suggestions = suggestions[suggestions["Give"].isin(forced_give)].copy()
+                        if forced_get and not suggestions.empty:
+                            suggestions = suggestions[suggestions["Receive"].isin(forced_get)].copy()
+
+                        if suggestions.empty:
+                            st.info("No clear trade suggestions found for those constraints. Try choosing fewer specific players or a different other team.")
+                        else:
+                            render_output_table(
+                                format_fantasy_table(clean_ui_columns(suggestions)),
+                                key="lineup_trade_suggestions",
+                                file_name="lineup_trade_suggestions.csv",
+                                display_rows=20,
+                                style_cols=["Trade Fit Score", "Fairness Gap"]
+                            )
+
+            st.caption(
+                "Future upgrade path: connect MLB game logs, probable pitchers, handedness splits, park factors, injury feeds, and weekly schedules "
+                "to make this a true daily start/sit and trade-decision optimizer."
+            )
+
 
 
 if active_page == "Valuation":
