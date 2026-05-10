@@ -3585,6 +3585,32 @@ def fetch_mlb_api_hitter_stats(season=2026):
 
 
 
+
+
+def build_clean_player_label_map_from_ids(df):
+    """Clean name-only labels for player dropdowns; duplicates get career span, not playerID."""
+    base = df[["playerID", "fullName", "yearID"]].dropna(subset=["playerID", "fullName"]).copy()
+    base["yearID"] = pd.to_numeric(base["yearID"], errors="coerce")
+    spans = base.groupby(["playerID", "fullName"], as_index=False)["yearID"].agg(["min", "max"]).reset_index()
+    counts = spans["fullName"].value_counts().to_dict()
+    label_map = {}
+    for _, r in spans.sort_values(["fullName", "min"]).iterrows():
+        name = str(r["fullName"])
+        if counts.get(name, 0) > 1 and pd.notna(r["min"]) and pd.notna(r["max"]):
+            label = f"{name} ({int(r['min'])}-{int(r['max'])})"
+        else:
+            label = name
+        label_map[label] = r["playerID"]
+    return label_map
+
+
+def get_draft_room_team_options():
+    table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+    if table.empty or "Team" not in table.columns:
+        return []
+    return sorted(table["Team"].dropna().astype(str).unique().tolist())
+
+
 def add_player_to_next_draft_room_pick(player_name, team_name):
     """Add selected player to the next open Draft Room row for the selected team.
 
@@ -4120,34 +4146,6 @@ def _format_sig_table(df):
 
 
 
-def sync_compare_to_sig_players():
-    """When the top comparison selector changes, use its first two players as Player A/B."""
-    selected = st.session_state.get("compare_players", [])
-    if isinstance(selected, list) and len(selected) >= 1:
-        st.session_state["sig_player_a_clean"] = selected[0]
-    if isinstance(selected, list) and len(selected) >= 2:
-        st.session_state["sig_player_b_clean"] = selected[1]
-
-
-def sync_sig_players_to_compare():
-    """When Player A/B changes, make sure those players are included in the top comparison selector."""
-    current = st.session_state.get("compare_players", [])
-    if not isinstance(current, list):
-        current = []
-
-    new_order = []
-    for key in ["sig_player_a_clean", "sig_player_b_clean"]:
-        val = st.session_state.get(key)
-        if val and val not in new_order:
-            new_order.append(val)
-
-    for val in current:
-        if val not in new_order and len(new_order) < 3:
-            new_order.append(val)
-
-    st.session_state["compare_players"] = new_order[:3]
-
-
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     clean_label_map_compare = build_clean_player_label_map(yearly_df)
@@ -4167,11 +4165,19 @@ if active_page == "Comparison Tool":
         options=compare_player_options,
         default=default_compare_labels[:3],
         max_selections=3,
-        key="compare_players",
-        on_change=sync_compare_to_sig_players
+        key="compare_players"
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
+    compare_x_axis_mode = st.radio(
+        "Comparison X-Axis",
+        ["Season Year", "Player Age"],
+        horizontal=True,
+        key="compare_x_axis_mode"
+    )
+    compare_age_range = (20, 40)
+    if compare_x_axis_mode == "Player Age":
+        compare_age_range = st.slider("Age Range to Compare", 16, 50, (22, 30), key="compare_age_range")
     compare_trend_mode = st.radio(
         "Comparison Chart Mode",
         ["Actual Values", "Smoothed Moving Average"],
@@ -4201,20 +4207,57 @@ if active_page == "Comparison Tool":
 
         st.subheader(f"{stat_choice_compare} Trends")
         fig, ax = plt.subplots(figsize=(10, 5))
-        plot_player_stat_trends(
-            ax,
-            compare,
-            selected_ids_compare,
-            stat_choice_compare,
-            mode=compare_trend_mode,
-            smooth_window=compare_smooth_window
-        )
-        all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
-        ax.set_xticks(all_compare_years)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlabel("Year")
+
+        if compare_x_axis_mode == "Player Age":
+            compare_age_df = compare.copy()
+            if "Age" not in compare_age_df.columns:
+                compare_age_df["Age"] = compare_age_df.apply(
+                    lambda r: baseball_age_for_season(
+                        r.get("yearID"),
+                        r.get("birthYear", np.nan),
+                        r.get("birthMonth", np.nan),
+                        r.get("birthDay", np.nan)
+                    ),
+                    axis=1
+                )
+            compare_age_df["Age"] = pd.to_numeric(compare_age_df["Age"], errors="coerce")
+            compare_age_df = compare_age_df[
+                (compare_age_df["Age"] >= compare_age_range[0]) &
+                (compare_age_df["Age"] <= compare_age_range[1])
+            ].copy()
+
+            for pid in selected_ids_compare:
+                subset = compare_age_df[compare_age_df["playerID"] == pid].sort_values("Age").copy()
+                if subset.empty or stat_choice_compare not in subset.columns:
+                    continue
+                player_name = subset["fullName"].iloc[0]
+                y = pd.to_numeric(subset[stat_choice_compare], errors="coerce")
+                if compare_trend_mode == "Smoothed Moving Average":
+                    y = y.rolling(window=int(compare_smooth_window), min_periods=1).mean()
+                    label = f"{player_name} — smoothed"
+                else:
+                    label = player_name
+                ax.plot(subset["Age"], y, marker="o", label=label)
+
+            ax.set_xlabel("Player Age")
+            ax.set_title(f"{stat_choice_compare} by Player Age — {compare_age_range[0]} to {compare_age_range[1]}")
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        else:
+            plot_player_stat_trends(
+                ax,
+                compare,
+                selected_ids_compare,
+                stat_choice_compare,
+                mode=compare_trend_mode,
+                smooth_window=compare_smooth_window
+            )
+            all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
+            ax.set_xticks(all_compare_years)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.set_xlabel("Year")
+            ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
+
         ax.set_ylabel(stat_choice_compare)
-        ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
@@ -4239,7 +4282,7 @@ if active_page == "Comparison Tool":
     st.caption(
         "Compare two players over any chosen year ranges. The app tests whether Player A is significantly better than Player B "
         "for selected stats. It also gives an overall standardized comparison across the selected stats. "
-        "The Player A/B dropdowns prioritize the players selected at the top. You can pick any two from the top-selected group or choose a different player; Player A/B choices are also synced back into the top comparison selector."
+        "The Player A/B dropdowns prioritize the players selected at the top. You can pick any two from the top-selected group or choose a different player."
     )
 
     sig_col1, sig_col2 = st.columns(2)
@@ -4272,8 +4315,7 @@ if active_page == "Comparison Tool":
             "Player A",
             sig_dropdown_options,
             index=sig_default_a_index,
-            key="sig_player_a_clean",
-            on_change=sync_sig_players_to_compare
+            key="sig_player_a_clean"
         )
         pid_a_preview = clean_label_map_sig[sig_player_a_label]
         a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
@@ -4291,8 +4333,7 @@ if active_page == "Comparison Tool":
             "Player B",
             sig_dropdown_options,
             index=sig_default_b_index,
-            key="sig_player_b_clean",
-            on_change=sync_sig_players_to_compare
+            key="sig_player_b_clean"
         )
         pid_b_preview = clean_label_map_sig[sig_player_b_label]
         b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
@@ -4304,12 +4345,6 @@ if active_page == "Comparison Tool":
             value=(b_min_year, b_max_year),
             key=f"sig_years_b_{pid_b_preview}"
         )
-
-    if len(selected_labels_compare) >= 2:
-        if st.button("Use first two top-selected players for Player A/B"):
-            st.session_state["sig_player_a_clean"] = selected_labels_compare[0]
-            st.session_state["sig_player_b_clean"] = selected_labels_compare[1]
-            st.success("Player A and Player B were updated from the first two players selected at the top. The page will reflect this on the next rerun.")
 
     sig_stats = st.multiselect(
         "Stats to Test",
@@ -4545,10 +4580,7 @@ if active_page == "Trend Value":
     )
 
     trend_player_options_df = trend_value_df[["playerID", "fullName"]].drop_duplicates().sort_values("fullName")
-    trend_player_label_map = {
-        f"{row.fullName} ({row.playerID})": row.playerID
-        for row in trend_player_options_df.itertuples()
-    }
+    trend_player_label_map = build_clean_player_label_map_from_ids(recent_data_trend)
 
     single_trend_label = st.selectbox(
         "Select Player From Trend Table",
@@ -4556,7 +4588,7 @@ if active_page == "Trend Value":
         key="single_trend_dashboard_player"
     )
     single_trend_id = trend_player_label_map[single_trend_label]
-    single_player_name = single_trend_label.split(" (")[0]
+    single_player_name = recent_data_trend.loc[recent_data_trend["playerID"] == single_trend_id, "fullName"].dropna().iloc[0] if not recent_data_trend.loc[recent_data_trend["playerID"] == single_trend_id, "fullName"].dropna().empty else single_trend_label
 
     dashboard_stat_options = ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "H", "BB"]
     default_dashboard_stats = ["HR", "RBI", "R", "SB", "OPS"]
@@ -4632,8 +4664,23 @@ if active_page == "Trend Value":
         else:
             st.info("Choose at least one stat to graph for the selected player.")
 
+        trend_draft_teams = get_draft_room_team_options()
+        if trend_draft_teams:
+            st.markdown("#### Draft This Trend Player")
+            default_trend_team = st.session_state.get("room_your_team", trend_draft_teams[0])
+            default_trend_idx = trend_draft_teams.index(default_trend_team) if default_trend_team in trend_draft_teams else 0
+            trend_draft_team = st.selectbox(
+                "Draft Room team for this pick",
+                trend_draft_teams,
+                index=default_trend_idx,
+                key="trend_draft_team"
+            )
+            if st.button("Draft Selected Trend Player To Next Pick"):
+                msg = add_player_to_next_draft_room_pick(single_player_name, trend_draft_team)
+                st.success(msg)
+
     st.subheader("Player Trend Visualization")
-    label_map_trend = build_player_label_map(recent_data_trend)
+    label_map_trend = build_clean_player_label_map_from_ids(recent_data_trend)
     selected_labels_trend = st.multiselect(
         "Select up to 3 Players to View Trend",
         list(label_map_trend.keys()),
@@ -4690,10 +4737,32 @@ if active_page == "Trend Value":
             )
 
         st.subheader("Fantasy-Style Player Notes")
+        trend_multi_names = []
         for selected_id_trend in selected_ids_trend:
             player_summary_row = trend_value_df[trend_value_df["playerID"] == selected_id_trend]
             if not player_summary_row.empty:
+                trend_multi_names.append(player_summary_row.iloc[0].get("fullName", ""))
                 st.info(make_trend_insight_summary(player_summary_row.iloc[0]))
+
+        trend_multi_teams = get_draft_room_team_options()
+        if trend_multi_names and trend_multi_teams:
+            st.markdown("#### Draft From Trend Comparison")
+            trend_pick_player = st.selectbox(
+                "Select one of these trend-comparison players to draft",
+                [p for p in trend_multi_names if str(p).strip()],
+                key="trend_multi_player_to_draft"
+            )
+            default_multi_team = st.session_state.get("room_your_team", trend_multi_teams[0])
+            default_multi_idx = trend_multi_teams.index(default_multi_team) if default_multi_team in trend_multi_teams else 0
+            trend_pick_team = st.selectbox(
+                "Draft Room team",
+                trend_multi_teams,
+                index=default_multi_idx,
+                key="trend_multi_draft_team"
+            )
+            if st.button("Draft Trend Comparison Player To Next Pick"):
+                msg = add_player_to_next_draft_room_pick(trend_pick_player, trend_pick_team)
+                st.success(msg)
     else:
         st.info("Select one to three players to view trend charts.")
 
@@ -5177,11 +5246,11 @@ if active_page == "Fantasy Sleepers & Busts":
             render_output_table(busts_display, key="fantasy_market_busts", file_name="fantasy_market_busts.csv", style_cols=["Fantasy Edge"])
 
         if sleeper_sync_enabled and sleeper_team_name:
-            st.markdown("#### Draft a Sleeper Into Draft Room")
-            sleeper_pick_options = sleepers["fullName"].dropna().astype(str).head(50).tolist()
+            st.markdown("#### Draft From Sleeper Page")
+            sleeper_pick_options = pd.concat([sleepers["fullName"], busts["fullName"]], ignore_index=True).dropna().astype(str).drop_duplicates().head(100).tolist()
             if sleeper_pick_options:
                 selected_sleeper_to_draft = st.selectbox(
-                    "Select sleeper to draft into your next Draft Room pick",
+                    "Select player from sleeper/bust tables to draft into your next Draft Room pick",
                     sleeper_pick_options,
                     key="sleeper_player_to_draft"
                 )
