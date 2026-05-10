@@ -297,9 +297,73 @@ def safe_round_rate_stats(df):
             df[col] = pd.to_numeric(df[col], errors="coerce").round(3)
     return df
 
+
+
+def build_clean_player_label_map(df):
+    """Build clean player dropdown labels without Lahman/playerID text.
+
+    If names are duplicated, append a short career span rather than the internal ID.
+    """
+    base = (
+        df[["playerID", "fullName", "yearID"]]
+        .dropna(subset=["playerID", "fullName"])
+        .copy()
+    )
+    base["yearID"] = pd.to_numeric(base["yearID"], errors="coerce")
+    spans = base.groupby(["playerID", "fullName"], as_index=False)["yearID"].agg(["min", "max"]).reset_index()
+    name_counts = spans["fullName"].value_counts().to_dict()
+
+    label_map = {}
+    for _, row in spans.sort_values(["fullName", "min", "max"]).iterrows():
+        name = str(row["fullName"])
+        if name_counts.get(name, 0) > 1:
+            label = f"{name} ({int(row['min'])}-{int(row['max'])})"
+        else:
+            label = name
+        label_map[label] = row["playerID"]
+    return label_map
+
+
+def get_player_career_span(df, player_id):
+    player_years = pd.to_numeric(df.loc[df["playerID"] == player_id, "yearID"], errors="coerce").dropna()
+    if player_years.empty:
+        all_years = pd.to_numeric(df["yearID"], errors="coerce").dropna()
+        return int(all_years.min()), int(all_years.max())
+    return int(player_years.min()), int(player_years.max())
+
+
+
+
+def build_pid_to_clean_label_map(df):
+    label_map = build_clean_player_label_map(df)
+    return {pid: label for label, pid in label_map.items()}
+
+
 def build_player_label_map(df):
     options = df[["playerID", "fullName"]].drop_duplicates().sort_values(["fullName", "playerID"])
     return {f"{row.fullName} ({row.playerID})": row.playerID for row in options.itertuples()}
+
+
+
+def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", smooth_window=3):
+    """Plot one stat for multiple players using actual values or a moving-average smooth."""
+    for pid in player_ids:
+        subset = df[df["playerID"] == pid].sort_values("yearID").copy()
+        if subset.empty or stat_col not in subset.columns:
+            continue
+
+        player_name = subset["fullName"].iloc[0] if "fullName" in subset.columns else str(pid)
+        y = pd.to_numeric(subset[stat_col], errors="coerce")
+
+        if mode == "Smoothed Moving Average":
+            y_plot = y.rolling(window=int(smooth_window), min_periods=1).mean()
+            label = f"{player_name} — smoothed"
+        else:
+            y_plot = y
+            label = player_name
+
+        ax.plot(subset["yearID"], y_plot, marker="o", label=label)
+
 
 def compute_trend_slope(group, stat_col):
     group = group.sort_values("yearID")
@@ -426,10 +490,9 @@ def style_significance_row(row):
     elif p < 0.05:
         color = "green" if diff > 0 else "red"
         weight = "bold"
-    elif p < 0.10:
-        color = "#cc5500"
-        weight = "bold"
     else:
+        # Not statistically significant at the selected alpha level.
+        # Keep it neutral so it doesn't look like a real win/loss.
         color = "gray"
         weight = "normal"
 
@@ -3188,6 +3251,34 @@ def fetch_mlb_api_hitter_stats(season=2026):
     return df
 
 
+
+
+def build_draft_room_table_from_assistant(my_roster, other_rosters, my_team_name="My Team", other_team_name="Other Rosters"):
+    rows = []
+    pick = 1
+    for p in list(my_roster or []):
+        if str(p).strip():
+            rows.append({"Round": pick, "Pick": pick, "Team": my_team_name, "Player": str(p).strip()})
+            pick += 1
+    for p in list(other_rosters or []):
+        if str(p).strip():
+            rows.append({"Round": pick, "Pick": pick, "Team": other_team_name, "Player": str(p).strip()})
+            pick += 1
+    return pd.DataFrame(rows, columns=["Round", "Pick", "Team", "Player"])
+
+
+def sync_draft_room_to_assistant_from_table(draft_room_table, my_team_name):
+    if draft_room_table is None or len(draft_room_table) == 0:
+        return [], []
+    df = draft_room_table.copy()
+    if "Player" not in df.columns or "Team" not in df.columns:
+        return [], []
+    df = df[df["Player"].astype(str).str.strip() != ""].copy()
+    my_roster = df[df["Team"].astype(str) == str(my_team_name)]["Player"].dropna().astype(str).tolist()
+    other_rosters = df[df["Team"].astype(str) != str(my_team_name)]["Player"].dropna().astype(str).tolist()
+    return sorted(list(dict.fromkeys(my_roster))), sorted(list(dict.fromkeys(other_rosters)))
+
+
 batting_df, yearly_df, people_df = load_data()
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
@@ -3195,7 +3286,7 @@ year_max = int(max(all_years))
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
-PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Fantasy Standings Tracker", "Trade Analyzer", "Valuation", "ML Predictions"]
+PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Fantasy Standings Tracker", "Trade Analyzer"]
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -3655,10 +3746,36 @@ def _format_sig_table(df):
 
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
-    label_map_compare = build_player_label_map(yearly_df)
-    selected_labels_compare = st.multiselect("Select up to 3 players", options=list(label_map_compare.keys()), max_selections=3, key="compare_players")
-    selected_ids_compare = [label_map_compare[label] for label in selected_labels_compare]
+    clean_label_map_compare = build_clean_player_label_map(yearly_df)
+    pid_to_clean_label_compare = build_pid_to_clean_label_map(yearly_df)
+    compare_player_options = list(clean_label_map_compare.keys())
+
+    # Sync top comparison player selector with bottom significance-test selectors.
+    # When Player A/B are already selected below, prefill the top selector with them.
+    default_compare_labels = []
+    for _sig_key in ["sig_player_a_clean", "sig_player_b_clean"]:
+        _lbl = st.session_state.get(_sig_key)
+        if _lbl in compare_player_options and _lbl not in default_compare_labels:
+            default_compare_labels.append(_lbl)
+
+    selected_labels_compare = st.multiselect(
+        "Select up to 3 players",
+        options=compare_player_options,
+        default=default_compare_labels[:3],
+        max_selections=3,
+        key="compare_players"
+    )
+    selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS"], index=0, key="compare_stat")
+    compare_trend_mode = st.radio(
+        "Comparison Chart Mode",
+        ["Actual Values", "Smoothed Moving Average"],
+        horizontal=True,
+        key="compare_trend_mode"
+    )
+    compare_smooth_window = 3
+    if compare_trend_mode == "Smoothed Moving Average":
+        compare_smooth_window = st.slider("Comparison Smoothing Window", 2, 7, 3, key="compare_smooth_window")
 
     if selected_ids_compare:
         compare = yearly_df[yearly_df["playerID"].isin(selected_ids_compare)].copy()
@@ -3679,16 +3796,20 @@ if active_page == "Comparison Tool":
 
         st.subheader(f"{stat_choice_compare} Trends")
         fig, ax = plt.subplots(figsize=(10, 5))
-        for pid in selected_ids_compare:
-            subset = compare[compare["playerID"] == pid].sort_values("yearID")
-            if not subset.empty:
-                ax.plot(subset["yearID"], subset[stat_choice_compare], marker="o", label=subset["fullName"].iloc[0])
+        plot_player_stat_trends(
+            ax,
+            compare,
+            selected_ids_compare,
+            stat_choice_compare,
+            mode=compare_trend_mode,
+            smooth_window=compare_smooth_window
+        )
         all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
         ax.set_xticks(all_compare_years)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.set_xlabel("Year")
         ax.set_ylabel(stat_choice_compare)
-        ax.set_title(f"{stat_choice_compare} Trends")
+        ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
@@ -3698,33 +3819,46 @@ if active_page == "Comparison Tool":
     st.subheader("Statistical Significance Test")
     st.caption(
         "Compare two players over any chosen year ranges. The app tests whether Player A is significantly better than Player B "
-        "for selected stats. It also gives an overall standardized comparison across the selected stats."
+        "for selected stats. It also gives an overall standardized comparison across the selected stats. "
+        "The first two players selected at the top automatically become Player A and Player B here; choosing Player A/B here also prefills the top selector when you return to this page."
     )
 
     sig_col1, sig_col2 = st.columns(2)
-    all_player_options_sig = list(label_map_compare.keys())
+    clean_label_map_sig = build_clean_player_label_map(yearly_df)
+    all_player_options_sig = list(clean_label_map_sig.keys())
+
+    # Sync bottom significance players from the first two players selected above.
+    sig_default_a_index = 0
+    sig_default_b_index = 1 if len(all_player_options_sig) > 1 else 0
+    if len(selected_labels_compare) >= 1 and selected_labels_compare[0] in all_player_options_sig:
+        sig_default_a_index = all_player_options_sig.index(selected_labels_compare[0])
+    if len(selected_labels_compare) >= 2 and selected_labels_compare[1] in all_player_options_sig:
+        sig_default_b_index = all_player_options_sig.index(selected_labels_compare[1])
+
     with sig_col1:
-        sig_player_a_label = st.selectbox("Player A", all_player_options_sig, key="sig_player_a")
-        a_min_year = int(yearly_df["yearID"].min())
-        a_max_year = int(yearly_df["yearID"].max())
+        sig_player_a_label = st.selectbox("Player A", all_player_options_sig, index=sig_default_a_index, key="sig_player_a_clean")
+        pid_a_preview = clean_label_map_sig[sig_player_a_label]
+        a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
+        st.caption(f"Career span: {a_min_year}–{a_max_year}")
         sig_years_a = st.slider(
             "Player A Year Range",
             min_value=a_min_year,
             max_value=a_max_year,
-            value=(max(a_min_year, a_max_year - 4), a_max_year),
-            key="sig_years_a"
+            value=(a_min_year, a_max_year),
+            key=f"sig_years_a_{pid_a_preview}"
         )
+
     with sig_col2:
-        default_b_index = 1 if len(all_player_options_sig) > 1 else 0
-        sig_player_b_label = st.selectbox("Player B", all_player_options_sig, index=default_b_index, key="sig_player_b")
-        b_min_year = int(yearly_df["yearID"].min())
-        b_max_year = int(yearly_df["yearID"].max())
+        sig_player_b_label = st.selectbox("Player B", all_player_options_sig, index=sig_default_b_index, key="sig_player_b_clean")
+        pid_b_preview = clean_label_map_sig[sig_player_b_label]
+        b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
+        st.caption(f"Career span: {b_min_year}–{b_max_year}")
         sig_years_b = st.slider(
             "Player B Year Range",
             min_value=b_min_year,
             max_value=b_max_year,
-            value=(max(b_min_year, b_max_year - 4), b_max_year),
-            key="sig_years_b"
+            value=(b_min_year, b_max_year),
+            key=f"sig_years_b_{pid_b_preview}"
         )
 
     sig_stats = st.multiselect(
@@ -3736,10 +3870,10 @@ if active_page == "Comparison Tool":
     alpha = st.selectbox("Significance Level", [0.10, 0.05, 0.01], index=1, key="sig_alpha")
 
     if sig_player_a_label and sig_player_b_label and sig_stats:
-        pid_a = label_map_compare[sig_player_a_label]
-        pid_b = label_map_compare[sig_player_b_label]
-        player_a_name = sig_player_a_label.split(" (")[0]
-        player_b_name = sig_player_b_label.split(" (")[0]
+        pid_a = clean_label_map_sig[sig_player_a_label]
+        pid_b = clean_label_map_sig[sig_player_b_label]
+        player_a_name = yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().empty else sig_player_a_label
+        player_b_name = yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().empty else sig_player_b_label
 
         data_a = yearly_df[
             (yearly_df["playerID"] == pid_a) &
@@ -3775,11 +3909,14 @@ if active_page == "Comparison Tool":
                     "Difference": diff,
                     "Test Statistic": test_stat,
                     "p-value": p_value,
-                    " Low": result["ci_low"],
-                    " High": result["ci_high"],
                     "Winner": (
-                        player_a_name if pd.notna(p_value) and p_value < alpha and diff > 0 else
-                        player_b_name if pd.notna(p_value) and p_value < alpha and diff < 0 else
+                        player_a_name if pd.notna(diff) and diff > 0 else
+                        player_b_name if pd.notna(diff) and diff < 0 else
+                        "Tie"
+                    ),
+                    "Significance Result": (
+                        "Significant" if pd.notna(p_value) and p_value < alpha else
+                        "Borderline" if pd.notna(p_value) and p_value < 0.10 else
                         "Not significant"
                     ),
                     "Interpretation": _interpret_significance(player_a_name, player_b_name, stat, diff, p_value, alpha)
@@ -3821,9 +3958,8 @@ if active_page == "Comparison Tool":
                         "Difference": overall_score,
                         "Test Statistic": overall_score,
                         "p-value": _normal_two_sided_p_from_z(overall_score),
-                        " Low": np.nan,
-                        " High": np.nan,
                         "Winner": overall_winner,
+                        "Significance Result": ("Significant" if _normal_two_sided_p_from_z(overall_score) < alpha else "Not significant"),
                         "Interpretation": overall_interpretation
                     }
                 else:
@@ -3836,13 +3972,18 @@ if active_page == "Comparison Tool":
                         "Difference": np.nan,
                         "Test Statistic": np.nan,
                         "p-value": np.nan,
-                        " Low": np.nan,
-                        " High": np.nan,
                         "Winner": "Not enough data",
+                        "Significance Result": "Not enough data",
                         "Interpretation": "Not enough valid stat tests to make an overall comparison."
                     }
 
                 sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
+
+                st.caption(
+                    "Color guide: Difference/Test Statistic/p-value are green when Player A is significantly higher, "
+                    "red when Player B is significantly higher, and gray when the result is not statistically significant. "
+                    "The Winner column shows who had the higher average stat, while Significance Result tells whether that difference is statistically meaningful."
+                )
 
                 render_output_table(
                     _format_sig_table(clean_ui_columns(sig_df)),
@@ -3949,26 +4090,53 @@ if active_page == "Trend Value":
 
     st.subheader("Player Trend Visualization")
     label_map_trend = build_player_label_map(recent_data_trend)
-    selected_label_trend = st.selectbox("Select Player to View Trend", list(label_map_trend.keys()), key="trend_player")
-    selected_id_trend = label_map_trend[selected_label_trend]
+    selected_labels_trend = st.multiselect(
+        "Select up to 3 Players to View Trend",
+        list(label_map_trend.keys()),
+        max_selections=3,
+        key="trend_players_multi"
+    )
+    selected_ids_trend = [label_map_trend[label] for label in selected_labels_trend]
     stat_choice_trend = st.selectbox("Choose Trend Stat to Plot", ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"], key="trend_plot_stat")
-    player_trend = recent_data_trend[recent_data_trend["playerID"] == selected_id_trend].sort_values("yearID")
-    player_trend = safe_round_rate_stats(player_trend)
-    player_name = player_trend["fullName"].iloc[0]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(player_trend["yearID"], player_trend[stat_choice_trend], marker="o", label=stat_choice_trend)
-    trend_years = sorted(pd.to_numeric(player_trend["yearID"], errors="coerce").dropna().astype(int).unique())
-    ax.set_xticks(trend_years)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax.set_xlabel("Year")
-    ax.set_ylabel(stat_choice_trend)
-    ax.set_title(f"{player_name} – {stat_choice_trend} over {lag_trend} Years")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    st.pyplot(fig)
-    player_summary_row = trend_value_df[trend_value_df["playerID"] == selected_id_trend]
-    if not player_summary_row.empty:
-        st.info(make_trend_insight_summary(player_summary_row.iloc[0]))
+    trend_chart_mode = st.radio(
+        "Trend Chart Mode",
+        ["Actual Values", "Smoothed Moving Average"],
+        horizontal=True,
+        key="trend_chart_mode"
+    )
+    trend_smooth_window = 3
+    if trend_chart_mode == "Smoothed Moving Average":
+        trend_smooth_window = st.slider("Trend Smoothing Window", 2, 7, 3, key="trend_smooth_window")
+
+    if selected_ids_trend:
+        player_trend = recent_data_trend[recent_data_trend["playerID"].isin(selected_ids_trend)].sort_values(["fullName", "yearID"])
+        player_trend = safe_round_rate_stats(player_trend)
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        plot_player_stat_trends(
+            ax,
+            player_trend,
+            selected_ids_trend,
+            stat_choice_trend,
+            mode=trend_chart_mode,
+            smooth_window=trend_smooth_window
+        )
+        trend_years = sorted(pd.to_numeric(player_trend["yearID"], errors="coerce").dropna().astype(int).unique())
+        ax.set_xticks(trend_years)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xlabel("Year")
+        ax.set_ylabel(stat_choice_trend)
+        ax.set_title(f"{stat_choice_trend} Trend Comparison over {lag_trend} Years — {trend_chart_mode}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+
+        for selected_id_trend in selected_ids_trend:
+            player_summary_row = trend_value_df[trend_value_df["playerID"] == selected_id_trend]
+            if not player_summary_row.empty:
+                st.info(make_trend_insight_summary(player_summary_row.iloc[0]))
+    else:
+        st.info("Select one to three players to view trend charts.")
 
 
 if active_page == "Fantasy Sleepers & Busts":
@@ -4393,13 +4561,12 @@ if active_page == "Fantasy Sleepers & Busts":
 if active_page == "Draft Assistant Simulator":
     render_section_header(
         "🧩 Draft Assistant Simulator",
-        "Use market rank, model rank, fantasy edge, roster needs, and league format to recommend the next fantasy pick."
+        "Decision page: use market rank, model rank, fantasy edge, roster needs, position scarcity, and category fit to choose your next pick."
     )
     st.info(
-        "**Expected Fantasy Value** estimates how valuable the player should be going forward. "
-        "**Position Scarcity Score** measures how much better a player is than replacement-level options at the same position. "
-        "**Draft Fit Score** combines expected value, Fantasy Edge, position needs, position scarcity, category needs and risk. "
-        "The page removes players you mark as already drafted; it no longer hides players just because their market rank is earlier than the current pick."
+        "Use this page when you are deciding **who to draft next**. "
+        "Draft Assistant is focused on recommendations, team needs, position scarcity, category fit, and top available players. "
+        "Use Draft Room Simulator for the full live draft spreadsheet, roster views, and post-draft roster grades."
     )
 
     market_df = load_fantasypros_market_data()
@@ -4618,6 +4785,37 @@ if active_page == "Draft Assistant Simulator":
                 help="Select the players you drafted. They will be removed from recommendations while still being used for roster construction and team needs."
             )
             st.caption(f"{len(my_roster)} player(s) currently on your roster.")
+
+        st.markdown("#### Sync With Draft Room")
+        sync_col1, sync_col2 = st.columns(2)
+        with sync_col1:
+            assistant_my_team_name = st.text_input(
+                "My Team Name for Draft Room Sync",
+                value=st.session_state.get("room_your_team", "My Team"),
+                key="assistant_sync_my_team_name"
+            )
+        with sync_col2:
+            assistant_other_team_name = st.text_input(
+                "Other Rosters Team Name",
+                value="Other Rosters",
+                key="assistant_sync_other_team_name"
+            )
+
+        if st.button("Send These Rosters To Draft Room"):
+            st.session_state["draft_room_table"] = build_draft_room_table_from_assistant(
+                my_roster,
+                drafted_players,
+                assistant_my_team_name,
+                assistant_other_team_name
+            )
+            st.success(f"Sent {len(my_roster)} of your players and {len(drafted_players)} other-roster players to Draft Room.")
+
+        if st.button("Load Draft Room Picks Into Draft Assistant"):
+            room_table_for_sync = st.session_state.get("draft_room_table", pd.DataFrame())
+            synced_my, synced_others = sync_draft_room_to_assistant_from_table(room_table_for_sync, assistant_my_team_name)
+            st.session_state["draft_my_roster"] = synced_my
+            st.session_state["draft_already_drafted"] = synced_others
+            st.success(f"Loaded {len(synced_my)} player(s) into My Roster and {len(synced_others)} into Other Rosters. Switch pages and come back if the multiselect display does not refresh immediately.")
 
         total_players_picked = len(set(drafted_players).union(set(my_roster)))
         auto_current_pick = total_players_picked + 1
@@ -4890,6 +5088,25 @@ if active_page == "Draft Assistant Simulator":
             "A larger scarcity dropoff means the best remaining option at that position is much better than the replacement-level option."
         )
         position_scarcity_df = pd.DataFrame(position_summary_rows)
+
+        if not position_scarcity_df.empty and "DH" not in position_scarcity_df["Position"].astype(str).tolist():
+            dh_group = available[available["Primary Position"].astype(str).eq("DH")].copy() if "Primary Position" in available.columns else pd.DataFrame()
+            if not dh_group.empty:
+                dh_group = dh_group.sort_values("Expected Fantasy Value", ascending=False)
+                dh_depth = replacement_depths.get("DH", 12)
+                dh_replacement = pd.to_numeric(dh_group.iloc[min(len(dh_group), dh_depth) - 1]["Expected Fantasy Value"], errors="coerce")
+                dh_top = dh_group.iloc[0]
+                dh_top_value = pd.to_numeric(dh_top.get("Expected Fantasy Value", np.nan), errors="coerce")
+                position_scarcity_df = pd.concat([position_scarcity_df, pd.DataFrame([{
+                    "Position": "DH",
+                    "Available Players": len(dh_group),
+                    "Replacement Depth": dh_depth,
+                    "Replacement Value": dh_replacement,
+                    "Top Available": dh_top.get("fullName", ""),
+                    "Top Available Value": dh_top_value,
+                    "Scarcity Dropoff": dh_top_value - dh_replacement if pd.notna(dh_replacement) and pd.notna(dh_top_value) else np.nan,
+                }])], ignore_index=True)
+
         if position_scarcity_df.empty:
             st.info("Position scarcity could not be calculated yet.")
         else:
@@ -4980,12 +5197,17 @@ if active_page == "Draft Assistant Simulator":
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.subheader("Recommended Picks")
         st.caption(
-            "Draft Fit Score combines projected value, the ML projection signal, Fantasy Edge, roster needs, position scarcity, category fit, availability urgency, and risk. "
-            "The table is kept clean for draft-day use; the Reason column explains why each player is recommended."
+            "This is the main Draft Assistant output: use it to decide the next pick. "
+            "Draft Fit Score combines projected value, ML projection signal, Fantasy Edge, roster needs, position scarcity, category fit, availability urgency, and risk. "
+            "For the full live draft spreadsheet, use Draft Room Simulator."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
 
-        st.subheader("Dynamic Draft Board")
+        st.subheader("Top Available / Draft Board")
+        st.caption(
+            "This section is limited to decision support: drafted/removed players and the best remaining players by market rank. "
+            "The full live draft spreadsheet and roster grades are handled in Draft Room Simulator."
+        )
         # Clean draft-board view: keep only the columns a user needs while making a pick.
         # Detailed scoring components remain in Recommended Picks.
         board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Draft Fit Score"]
@@ -5023,12 +5245,12 @@ if active_page == "Draft Assistant Simulator":
 if active_page == "Draft Room Simulator":
     render_section_header(
         "🧾 Draft Room Simulator",
-        "Run a fantasy draft with multiple teams. Enter picks in a spreadsheet, automatically attach market/model values, get next-pick recommendations, and grade rosters after the draft."
+        "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft."
     )
 
     st.info(
-        "Use this as the live draft room. Enter each pick as it happens. The app removes drafted players from the available board, recommends the next best pick, "
-        "and scores every team's roster using the same type of projection, market-edge, ML, and draft-fit logic used in the Draft Assistant."
+        "Use this page to manage the actual draft board and league-wide roster state. "
+        "For next-pick recommendations, position scarcity, and team-aware draft advice, use the Draft Assistant Simulator."
     )
 
     market_df = load_fantasypros_market_data()
@@ -5194,7 +5416,10 @@ if active_page == "Draft Room Simulator":
         st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
 
     st.subheader("Live Draft Spreadsheet")
-    st.caption("Enter each drafted player in the Player column. The app will automatically attach the model, market, edge, ML, expected value, and draft-fit numbers below.")
+    st.caption(
+        "This is the main Draft Room output. Enter picks here; the model scores attach below. "
+        "Next-pick recommendations live in Draft Assistant."
+    )
 
     # Keep the saved draft table in the non-widget key "draft_room_table".
     # Do not use a data_editor widget key here, because Streamlit can throw
@@ -5210,6 +5435,16 @@ if active_page == "Draft Room Simulator":
         }
     )
     st.session_state["draft_room_table"] = edited_draft.copy()
+
+    sda1, sda2 = st.columns([2, 1])
+    with sda1:
+        st.caption("Draft Room picks are saved for Fantasy Standings Tracker and can also sync into Draft Assistant.")
+    with sda2:
+        if st.button("Sync Picks To Draft Assistant"):
+            synced_my, synced_others = sync_draft_room_to_assistant_from_table(st.session_state["draft_room_table"], your_team)
+            st.session_state["draft_my_roster"] = synced_my
+            st.session_state["draft_already_drafted"] = synced_others
+            st.success(f"Synced {len(synced_my)} of your players and {len(synced_others)} other drafted players.")
 
     drafted_names_room = [p for p in edited_draft["Player"].dropna().astype(str).tolist() if p.strip()]
     drafted_set_room = set(drafted_names_room)
@@ -5306,57 +5541,10 @@ if active_page == "Draft Room Simulator":
                         display_rows=5
                     )
 
-    available_room = room_df[~room_df["fullName"].isin(drafted_set_room)].copy()
-
-    my_team_current = draft_results[
-        (draft_results["Team"] == your_team) &
-        (draft_results["Player"].astype(str).str.strip() != "")
-    ].copy()
-
-    available_room = compute_team_aware_draft_room_fit(
-        available_room,
-        my_team_current,
-        room_format
-    )
-
-    # Keep output simple: Draft Fit Score now represents the team-aware recommendation score.
-    available_room["Draft Fit Score"] = available_room["Team Aware Draft Fit"]
-
-    available_room = available_room.sort_values(
-        "Draft Fit Score",
-        ascending=False
-    )
-
-    st.subheader("Recommended Next Pick")
     st.caption(
-        "Draft Fit Score is team-aware here: it accounts for your selected team's roster construction, "
-        "position needs, category fit, roster balance, scarcity, expected fantasy value, ML projection context, "
-        "breakout probability, and risk — while keeping the table clean."
+        "Draft Room is intentionally focused on the live draft board, roster views, and roster grades. "
+        "Use Draft Assistant Simulator for next-pick recommendations and top-available-player analysis."
     )
-    if available_room.empty:
-        st.success("Draft complete. No available players remain in the model pool.")
-    else:
-        best_next = available_room.iloc[0]
-        st.success(
-            f"Recommended pick for {your_team}: {best_next['fullName']} ({best_next.get('Primary Position', '')}, {best_next.get('Team', '')}) — "
-            f"Draft Fit Score {fmt_rate_4(best_next.get('Draft Fit Score'))}, "
-            f"Model Rank {fmt_int(best_next.get('Model Rank'))}, Market Rank {fmt_int(best_next.get('Market Rank'))}, "
-            f"Fantasy Edge {fmt_int(best_next.get('Fantasy Edge'))}."
-        )
-
-        top_available_cols = [
-            "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
-            "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value"
-        ]
-        top_available_display = available_room[top_available_cols].head(25).rename(columns={"fullName": "Player", "Team": "MLB Team"})
-        st.caption("Top available players are ranked by the team-aware Draft Fit Score. The table keeps only the main columns users need during a draft.")
-        render_output_table(
-            format_fantasy_table(clean_ui_columns(top_available_display)),
-            key="draft_room_top_available",
-            file_name="draft_room_top_available.csv",
-            display_rows=25,
-            style_cols=["Fantasy Edge", "Draft Fit Score"]
-        )
 
     st.subheader("Post-Draft Roster Grades")
     completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
