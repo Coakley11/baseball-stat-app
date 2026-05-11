@@ -427,7 +427,7 @@ def register_players_sent_to_trend_page(full_name, label_map):
 
 
 def append_compare_player_ordered(full_name, label_map):
-    """Send to Comparison Tool: Player A = first sent, B = second, C = third (stable order)."""
+    """Send to Comparison Tool reliably using pending widget values."""
     lbl = resolve_fullname_to_clean_label(full_name, label_map)
     if not lbl:
         return False
@@ -442,14 +442,10 @@ def append_compare_player_ordered(full_name, label_map):
 
     current = current[:3]
     st.session_state["pending_compare_players"] = current
-    # Safe when Comparison page is not currently rendering; pending key is the main route.
-    st.session_state["compare_players"] = current
-
     if len(current) >= 1:
         st.session_state["pending_sig_player_a"] = current[0]
     if len(current) >= 2:
         st.session_state["pending_sig_player_b"] = current[1]
-
     return True
 
 
@@ -600,7 +596,7 @@ def build_advanced_trend_intelligence(df, player_ids, stat_col):
             "First Value": first_val,
             "Latest Value": last_val,
             "Net Change": last_val - first_val if pd.notna(last_val) and pd.notna(first_val) else np.nan,
-            "Years Used": len(y)
+            "Years Used": (float(x.iloc[-1]) - float(x.iloc[0])) if len(x) >= 2 else 0
         })
         rows.append(info)
     out = pd.DataFrame(rows)
@@ -4187,6 +4183,10 @@ for _state_key in list(st.session_state.keys()):
         or _key_text == "trend_clear_send_queue"
         or "draft_assistant_import" in _key_text
         or "button" in _key_text
+        or "dismiss" in _key_text
+        or "highlight" in _key_text
+        or "reset" in _key_text
+        or "clear" in _key_text
         or "generate_roster_view" in _key_text
         or "load_uploaded" in _key_text
         or "suggest_trade" in _key_text
@@ -6966,6 +6966,48 @@ if active_page == "Fantasy Standings Tracker":
 
 
 
+
+
+def build_trade_verdict_text(trade_eval, weighted_gain):
+    """Plain-English trade verdict for Fantasy Lineup Assistant."""
+    try:
+        wg = float(weighted_gain)
+    except Exception:
+        wg = 0.0
+
+    if wg >= 5:
+        verdict = "Strong accept"
+        reason = "The trade appears to improve your roster in important need areas."
+    elif wg >= 1:
+        verdict = "Slight accept"
+        reason = "The trade looks modestly helpful, especially if it addresses a weak category or roster need."
+    elif wg > -1:
+        verdict = "Fair / neutral"
+        reason = "The trade is close enough that team context, injury risk, and category needs should decide it."
+    elif wg > -5:
+        verdict = "Slight decline"
+        reason = "The trade appears slightly unfavorable unless it solves a specific roster problem."
+    else:
+        verdict = "Decline"
+        reason = "The trade appears to cost too much projected value or category balance."
+
+    return f"{verdict}: {reason} Team-need weighted score: {wg:.2f}."
+
+
+def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None, forced_get=None):
+    """Filter trade suggestions using optional user-desired give/acquire players."""
+    if suggestions is None or suggestions.empty:
+        return suggestions
+    out = suggestions.copy()
+    forced_give = [str(x) for x in (forced_give or []) if str(x).strip()]
+    forced_get = [str(x) for x in (forced_get or []) if str(x).strip()]
+    if forced_give and "Give" in out.columns:
+        out = out[out["Give"].astype(str).isin(forced_give)]
+    if forced_get and "Receive" in out.columns:
+        out = out[out["Receive"].astype(str).isin(forced_get)]
+    return out
+
+
 if active_page == "Fantasy Lineup Assistant":
     render_section_header(
         "🧠 Fantasy Lineup Assistant / Start-Sit AI",
@@ -7140,7 +7182,7 @@ if active_page == "Fantasy Lineup Assistant":
                             my_team_trade
                         )
                         st.metric("Trade Verdict", verdict)
-                        st.caption(f"Team-need weighted trade score: {weighted_gain:.2f}")
+                        st.caption(build_trade_verdict_text(trade_eval, weighted_gain))
                         render_output_table(
                             format_trade_eval_table(clean_ui_columns(trade_eval)),
                             key="lineup_trade_eval_table",
@@ -7158,9 +7200,10 @@ if active_page == "Fantasy Lineup Assistant":
                     trade_mode = st.radio(
                         "Trade Idea Mode",
                         [
-                            "General ideas",
+                            "General fair-but-helpful ideas",
                             "I want to trade away specific player(s)",
-                            "I want to acquire specific player(s)"
+                            "I want to acquire specific player(s)",
+                            "I want to choose both trade-away and acquire targets"
                         ],
                         horizontal=False,
                         key="lineup_trade_idea_mode"
@@ -7168,13 +7211,13 @@ if active_page == "Fantasy Lineup Assistant":
 
                     forced_give = []
                     forced_get = []
-                    if trade_mode == "I want to trade away specific player(s)":
+                    if trade_mode in ["I want to trade away specific player(s)", "I want to choose both trade-away and acquire targets"]:
                         forced_give = st.multiselect(
-                            "Player(s) on my team I want to trade away",
+                            "Player(s) on my team I am willing to trade away",
                             my_trade_players,
                             key="lineup_trade_ideas_forced_give"
                         )
-                    elif trade_mode == "I want to acquire specific player(s)":
+                    if trade_mode in ["I want to acquire specific player(s)", "I want to choose both trade-away and acquire targets"]:
                         forced_get = st.multiselect(
                             "Player(s) on the other team I want to acquire",
                             other_trade_players,
@@ -7189,10 +7232,11 @@ if active_page == "Fantasy Lineup Assistant":
                             lineup_trade_standings
                         )
 
-                        if forced_give and not suggestions.empty:
-                            suggestions = suggestions[suggestions["Give"].isin(forced_give)].copy()
-                        if forced_get and not suggestions.empty:
-                            suggestions = suggestions[suggestions["Receive"].isin(forced_get)].copy()
+                        suggestions = filter_trade_suggestions_by_requested_players(
+                            suggestions,
+                            forced_give=forced_give,
+                            forced_get=forced_get
+                        )
 
                         if suggestions.empty:
                             st.info("No clear trade suggestions found for those constraints. Try choosing fewer specific players or a different other team.")
