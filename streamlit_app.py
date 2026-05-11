@@ -3769,7 +3769,13 @@ def execute_player_action_once(selected_player, action, team_name, user_draft_te
 
     if action == "Send to Draft Assistant":
         st.session_state["pending_draft_assistant_player"] = sp
-        return "Set Draft Assistant highlight banner for this player (open that page to see it)."
+        focus = st.session_state.get("draft_assistant_focus_players", [])
+        if not isinstance(focus, list):
+            focus = []
+        if sp not in focus:
+            focus.append(sp)
+        st.session_state["draft_assistant_focus_players"] = focus[-10:]
+        return "Added to Draft Assistant focus/watch list."
 
     if action == "Add as trade target to acquire":
         acquire = st.session_state.get("pending_trade_acquire_players", [])
@@ -3796,7 +3802,7 @@ def execute_player_action_once(selected_player, action, team_name, user_draft_te
 
 
 def _run_player_action(selected_players, action, key, default_team=None, user_draft_team=None):
-    """Widgets for team (when needed) + run button; executes *action* for each name in *selected_players* in order."""
+    """Execute an action for one or more selected players."""
     if isinstance(selected_players, str):
         selected_players = [selected_players]
     selected_players = [str(p).strip() for p in (selected_players or []) if str(p).strip()]
@@ -3817,23 +3823,25 @@ def _run_player_action(selected_players, action, key, default_team=None, user_dr
         else:
             st.info("Open Draft Room Simulator first so the app knows the fantasy teams.")
 
-    if st.button("Run action on selected", key=f"{inner_root}_gobtn"):
+    if st.button("Run Action", key=f"{inner_root}_gobtn"):
         if not selected_players:
-            st.warning("Select one or more players in the table above, then run the action again.")
+            st.warning("Select one or more players first, then run the action again.")
             return
+
         result_lines = []
         last_sim_table = None
+
         for sp in selected_players:
             msg = execute_player_action_once(sp, action, team_name, user_draft_team, label_map_compare)
             result_lines.append(f"**{sp}** — {msg}")
             if action == "Simulate drafting this player":
                 last_sim_table = st.session_state.get("simulated_draft_room_table")
 
-        st.markdown("#### Completed")
+        st.markdown("#### Action Completed")
         st.markdown("\n\n".join(f"- {line}" for line in result_lines))
 
         if action == "Simulate drafting this player" and last_sim_table is not None and not last_sim_table.empty:
-            st.caption("Latest simulated draft board (after last player in the batch):")
+            st.caption("Latest simulated draft board after the last selected player:")
             st.dataframe(last_sim_table, use_container_width=True, hide_index=True)
 
 
@@ -3843,7 +3851,11 @@ def player_action_menu(player_options, key, default_team=None, source_label="thi
 
 
 def compact_player_action_center(player_options, key, default_team=None, label="Player Action Center", user_draft_team=None):
-    """Select players **from this page's list only** (scrollable table, multi-row), pick an action, run once per selection in order."""
+    """Current-page player action center.
+
+    Keeps the original styled tables unchanged. The user can select one or more
+    players from the current page's player list, choose an action, and run it.
+    """
     ctx = [str(p).strip() for p in list(player_options or []) if str(p).strip()]
     ctx = list(dict.fromkeys(ctx))
 
@@ -3852,34 +3864,46 @@ def compact_player_action_center(player_options, key, default_team=None, label="
         st.info("No players in this section to run actions on.")
         return None
 
-    st.caption("Select one or more rows (hold Ctrl/Cmd for multiple). Choose an action, then **Run action on selected** — you can repeat with another action or selection.")
-
-    action_df = pd.DataFrame({"#": range(1, len(ctx) + 1), "Player": ctx})
-    table_height = int(min(420, max(140, 36 + len(ctx) * 28)))
-
-    _df_kw = dict(
-        use_container_width=True,
-        hide_index=True,
-        selection_mode="multi-row",
-        on_select="rerun",
-        key=f"{key}_cpa_selgrid",
+    st.caption(
+        "Select one or more players from this page, choose an action, then run it. "
+        "You can repeat with a different player or a different action."
     )
-    try:
-        action_event = st.dataframe(action_df, height=table_height, **_df_kw)
-    except TypeError:
-        action_event = st.dataframe(action_df, **_df_kw)
+
+    action_df = pd.DataFrame({"Select From This Page": ctx})
+    table_height = int(min(360, max(120, 36 + len(ctx) * 28)))
 
     selected_players = []
+
+    # Preferred selection method: Streamlit row selection.
     try:
+        action_event = st.dataframe(
+            action_df,
+            use_container_width=True,
+            hide_index=True,
+            selection_mode="multi-row",
+            on_select="rerun",
+            key=f"{key}_cpa_selgrid",
+            height=table_height,
+        )
         selected_rows = sorted(action_event.selection.rows)
         for ri in selected_rows:
             if 0 <= ri < len(action_df):
-                selected_players.append(str(action_df.iloc[ri]["Player"]).strip())
+                selected_players.append(str(action_df.iloc[ri]["Select From This Page"]).strip())
     except Exception:
         selected_players = []
 
+    # Reliable fallback/manual selector. This also makes it obvious how to choose
+    # multiple players one at a time without needing keyboard shortcuts.
+    manual_selected = st.multiselect(
+        "Selected player(s) from this page",
+        ctx,
+        default=selected_players,
+        key=f"{key}_cpa_manual_players",
+        help="Use this if row selection is awkward. You can choose one or more players from the current page."
+    )
+    selected_players = [p for p in manual_selected if str(p).strip()]
+
     action_choices = [
-        "Draft player to next pick",
         "Queue player",
         "Send to Comparison Tool",
         "Send to Trend Page",
@@ -3888,16 +3912,32 @@ def compact_player_action_center(player_options, key, default_team=None, label="
         "Add as player to trade away",
         "Simulate drafting this player",
     ]
-    if not is_users_draft_turn(user_draft_team):
-        action_choices = [a for a in action_choices if a != "Draft player to next pick"]
-        st.caption("Not your pick on the Draft Room board — **Draft to board** is hidden; queue, simulate, or route to other pages.")
+
+    if is_users_draft_turn(user_draft_team):
+        action_choices.insert(0, "Draft player to next pick")
+    else:
+        st.caption("Not your pick on the Draft Room board — draft-to-board is hidden. You can still queue, simulate, compare, trend, or trade-route players.")
 
     action = st.selectbox("Action", action_choices, key=f"{key}_cpa_actionpick")
-    _run_player_action(selected_players, action, key=f"{key}_cpa_submit", default_team=default_team, user_draft_team=user_draft_team)
+
+    if action == "Queue player":
+        st.caption("Queue saves the player to your draft queue/watch list. It does not draft him.")
+    elif action == "Send to Draft Assistant":
+        st.caption("This marks the player for Draft Assistant review/highlight. It does not draft him.")
+    elif action == "Send to Trend Page":
+        st.caption("This sends the player into the single-player trend dashboard and up to the 3-player trend visualization.")
+
+    _run_player_action(
+        selected_players,
+        action,
+        key=f"{key}_cpa_submit",
+        default_team=default_team,
+        user_draft_team=user_draft_team
+    )
 
     q = st.session_state.get("draft_queue", [])
     if q:
-        with st.expander("Current Draft Queue"):
+        with st.expander("Current Draft Queue / Watch List"):
             st.write(q)
 
     return selected_players[0] if selected_players else None
@@ -4082,6 +4122,12 @@ for _state_key in list(st.session_state.keys()):
         or "run_player_action" in _key_text
         or "player_action" in _key_text
         or "draft_button" in _key_text
+        or "gobtn" in _key_text
+        or "_gobtn" in _key_text
+        or "run_action" in _key_text
+        or "_run_action" in _key_text
+        or "cpa_submit" in _key_text
+        or "cpa_selgrid" in _key_text
         or "draft_assistant_import" in _key_text
         or "button" in _key_text
         or "generate_roster_view" in _key_text
@@ -6335,6 +6381,12 @@ if active_page == "Draft Assistant Simulator":
         rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
+        focus_players = st.session_state.get("draft_assistant_focus_players", [])
+        if focus_players:
+            with st.expander("Draft Assistant Focus / Watch List", expanded=False):
+                st.caption("Players sent here from other pages for draft review.")
+                st.write(focus_players)
+
         st.subheader("Recommended Picks")
         st.caption(
             "This is the main Draft Assistant output: use it to decide the next pick. "
