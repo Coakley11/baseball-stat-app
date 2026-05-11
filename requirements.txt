@@ -4,5 +4,10 @@ numpy
 plotly
 scikit-learn
 statsmodels
-streamlit-aggrid
+scipy
+matplotlib
+requests
+pybaseball
+openpyxl
+xlsxwriter
 

@@ -3739,6 +3739,104 @@ def player_action_menu(player_options, key, default_team=None, source_label="thi
     return selected_player
 
 
+
+
+def compact_player_action_center(player_options, key, default_team=None, label="Player Action Center"):
+    """Compact action menu that keeps the original styled tables unchanged."""
+    player_options = [str(p).strip() for p in list(player_options or []) if str(p).strip()]
+    player_options = list(dict.fromkeys(player_options))
+    if not player_options:
+        return None
+
+    with st.expander(label, expanded=False):
+        st.caption(
+            "The table above keeps its original colors and formatting. "
+            "Use this compact menu to run an action on one of those players."
+        )
+
+        cpa1, cpa2 = st.columns(2)
+        with cpa1:
+            selected_player = st.selectbox("Player", player_options, key=f"{key}_compact_player")
+        with cpa2:
+            action = st.selectbox(
+                "Action",
+                [
+                    "Draft player to next pick",
+                    "Queue player",
+                    "Send to Comparison Tool",
+                    "Send to Trend Page",
+                    "Send to Draft Assistant",
+                    "Add as trade target to acquire",
+                    "Add as player to trade away",
+                    "Simulate drafting this player"
+                ],
+                key=f"{key}_compact_action"
+            )
+
+        teams = get_draft_room_team_options()
+        team_name = default_team
+
+        if action in ["Draft player to next pick", "Simulate drafting this player"]:
+            if teams:
+                if team_name not in teams:
+                    default = st.session_state.get("room_your_team", teams[0])
+                    default_idx = teams.index(default) if default in teams else 0
+                    team_name = st.selectbox("Draft Room team", teams, index=default_idx, key=f"{key}_compact_team")
+                else:
+                    st.caption(f"Drafting/simulating for: {team_name}")
+            else:
+                st.info("Open Draft Room Simulator first so the app knows the fantasy teams.")
+
+        if st.button("Run Action", key=f"{key}_compact_run_action"):
+            if action == "Draft player to next pick":
+                if not teams:
+                    st.warning("No Draft Room teams found.")
+                else:
+                    st.success(add_player_to_next_draft_room_pick(selected_player, team_name))
+
+            elif action == "Queue player":
+                st.success(add_player_to_queue(selected_player))
+
+            elif action == "Send to Comparison Tool":
+                current = st.session_state.get("compare_players", [])
+                if not isinstance(current, list):
+                    current = []
+                st.session_state["compare_players"] = ([selected_player] + [p for p in current if p != selected_player])[:3]
+                st.success(f"Sent {selected_player} to Comparison Tool.")
+
+            elif action == "Send to Trend Page":
+                st.session_state["pending_trend_player"] = selected_player
+                st.success(f"Marked {selected_player} for Trend page lookup.")
+
+            elif action == "Send to Draft Assistant":
+                st.session_state["pending_draft_assistant_player"] = selected_player
+                st.success(f"Marked {selected_player} for Draft Assistant review.")
+
+            elif action == "Add as trade target to acquire":
+                acquire = st.session_state.get("pending_trade_acquire_players", [])
+                if selected_player not in acquire:
+                    acquire.append(selected_player)
+                st.session_state["pending_trade_acquire_players"] = acquire
+                st.success(f"Added {selected_player} as a trade target to acquire.")
+
+            elif action == "Add as player to trade away":
+                give = st.session_state.get("pending_trade_away_players", [])
+                if selected_player not in give:
+                    give.append(selected_player)
+                st.session_state["pending_trade_away_players"] = give
+                st.success(f"Added {selected_player} as a player to trade away.")
+
+            elif action == "Simulate drafting this player":
+                sim_table, msg = simulate_drafting_player(selected_player, team_name)
+                st.session_state["simulated_draft_room_table"] = sim_table
+                st.success(msg)
+                if not sim_table.empty:
+                    st.caption("Temporary simulated draft board:")
+                    st.dataframe(sim_table, use_container_width=True, hide_index=True)
+
+    return None
+
+
 def clickable_player_draft_table(df, player_col="Player", team_name=None, key="clickable_draft_table", title="Clickable Draft Table"):
     """Interactive player table: select one row and draft that player to the next Draft Room pick.
 
@@ -3906,6 +4004,9 @@ for _state_key in list(st.session_state.keys()):
         or "file_uploader" in _key_text
         or "export_csv" in _key_text
         or "form_submit" in _key_text
+        or "compact_run_action" in _key_text
+        or "compact_action" in _key_text
+        or "compact_player" in _key_text
         or "run_player_action" in _key_text
         or "player_action" in _key_text
         or "draft_button" in _key_text
@@ -4340,16 +4441,47 @@ def _format_sig_table(df):
 
 
 
+
+
+def compare_top_changed():
+    selected = st.session_state.get("compare_players", [])
+    if isinstance(selected, list):
+        if len(selected) >= 1:
+            st.session_state["pending_sig_player_a"] = selected[0]
+        if len(selected) >= 2:
+            st.session_state["pending_sig_player_b"] = selected[1]
+
+
+def sig_players_changed():
+    a = st.session_state.get("sig_player_a_clean")
+    b = st.session_state.get("sig_player_b_clean")
+    selected = []
+    if a:
+        selected.append(a)
+    if b and b not in selected:
+        selected.append(b)
+    current = st.session_state.get("compare_players", [])
+    if isinstance(current, list):
+        for p in current:
+            if p not in selected and len(selected) < 3:
+                selected.append(p)
+    st.session_state["pending_compare_players"] = selected[:3]
+
+
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     clean_label_map_compare = build_clean_player_label_map(yearly_df)
     pid_to_clean_label_compare = build_pid_to_clean_label_map(yearly_df)
     compare_player_options = list(clean_label_map_compare.keys())
 
-    # Sync top comparison player selector with bottom significance-test selectors.
-    # When Player A/B are already selected below, prefill the top selector with them.
+    # Safe two-way sync setup.
+    # Apply pending Player A/B changes to the top selector BEFORE the widget is created.
+    pending_compare = st.session_state.pop("pending_compare_players", None)
+    if isinstance(pending_compare, list):
+        st.session_state["compare_players"] = [p for p in pending_compare if p in compare_player_options][:3]
+
     default_compare_labels = []
-    for _sig_key in ["sig_player_a_clean", "sig_player_b_clean"]:
+    for _sig_key in ["pending_sig_player_a", "pending_sig_player_b", "sig_player_a_clean", "sig_player_b_clean"]:
         _lbl = st.session_state.get(_sig_key)
         if _lbl in compare_player_options and _lbl not in default_compare_labels:
             default_compare_labels.append(_lbl)
@@ -4359,7 +4491,8 @@ if active_page == "Comparison Tool":
         options=compare_player_options,
         default=default_compare_labels[:3],
         max_selections=3,
-        key="compare_players"
+        key="compare_players",
+        on_change=compare_top_changed
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
@@ -4476,12 +4609,20 @@ if active_page == "Comparison Tool":
     st.caption(
         "Compare two players over any chosen year ranges. The app tests whether Player A is significantly better than Player B "
         "for selected stats. It also gives an overall standardized comparison across the selected stats. "
-        "The Player A/B dropdowns prioritize the players selected at the top. You can pick any two from the top-selected group or choose a different player."
+        "The top comparison selector and Player A/B significance selectors now sync through pending values: changing one updates the other on the next rerun without unsafe Streamlit state errors."
     )
 
     sig_col1, sig_col2 = st.columns(2)
     clean_label_map_sig = build_clean_player_label_map(yearly_df)
     all_player_options_sig = list(clean_label_map_sig.keys())
+
+    # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
+    pending_a = st.session_state.pop("pending_sig_player_a", None)
+    pending_b = st.session_state.pop("pending_sig_player_b", None)
+    if pending_a in all_player_options_sig:
+        st.session_state["sig_player_a_clean"] = pending_a
+    if pending_b in all_player_options_sig:
+        st.session_state["sig_player_b_clean"] = pending_b
 
     # Bottom Player A/B dropdowns show the top-selected comparison players first,
     # but still allow any player in the database.
@@ -4509,7 +4650,8 @@ if active_page == "Comparison Tool":
             "Player A",
             sig_dropdown_options,
             index=sig_default_a_index,
-            key="sig_player_a_clean"
+            key="sig_player_a_clean",
+            on_change=sig_players_changed
         )
         pid_a_preview = clean_label_map_sig[sig_player_a_label]
         a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
@@ -4531,7 +4673,8 @@ if active_page == "Comparison Tool":
             "Player B",
             sig_dropdown_options,
             index=sig_default_b_index,
-            key="sig_player_b_clean"
+            key="sig_player_b_clean",
+            on_change=sig_players_changed
         )
         pid_b_preview = clean_label_map_sig[sig_player_b_label]
         b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
@@ -4780,6 +4923,13 @@ if active_page == "Trend Value":
         mime="text/csv",
         width="content",
     )
+    if trend_sync_enabled and trend_sync_team:
+        compact_player_action_center(
+            trend_sorted_display["Player"].dropna().astype(str).tolist(),
+            key="trend_table_actions_final",
+            default_team=trend_sync_team,
+            label="Actions for Trend Table Players"
+        )
 
     breakout_df = trend_value_df[["fullName", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]].copy()
     top_breakouts = breakout_df.sort_values("OPS_trend", ascending=False).head(10)
@@ -4798,6 +4948,19 @@ if active_page == "Trend Value":
         st.subheader("❄️ Biggest Declines")
         declines_table = format_display_table(biggest_declines_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=1, rate_decimals=4)
         render_output_table(declines_table, key="biggest_declines", file_name="biggest_declines.csv", style_cols=[c for c in declines_table.columns if "Δ" in c])
+
+    if trend_sync_enabled and trend_sync_team:
+        breakout_decline_players = []
+        if "Player" in top_breakouts_display.columns:
+            breakout_decline_players += top_breakouts_display["Player"].dropna().astype(str).tolist()
+        if "Player" in biggest_declines_display.columns:
+            breakout_decline_players += biggest_declines_display["Player"].dropna().astype(str).tolist()
+        compact_player_action_center(
+            breakout_decline_players,
+            key="trend_breakout_decline_actions_final",
+            default_team=trend_sync_team,
+            label="Actions for Breakout / Decline Players"
+        )
 
     st.subheader("Insight Summaries")
     top_breakout_row = trend_value_df.sort_values("OPS_trend", ascending=False).head(1)
@@ -4896,15 +5059,6 @@ if active_page == "Trend Value":
         else:
             st.info("Choose at least one stat to graph for the selected player.")
 
-        trend_draft_teams = get_draft_room_team_options()
-        if trend_draft_teams and trend_sync_enabled:
-            st.markdown("#### Draft This Trend Player")
-            trend_draft_team = trend_sync_team or st.session_state.get("room_your_team", trend_draft_teams[0])
-            st.caption(f"Drafting to: {trend_draft_team}")
-            if st.button("Draft Selected Trend Player To Next Pick"):
-                msg = add_player_to_next_draft_room_pick(single_player_name, trend_draft_team)
-                st.success(msg)
-
     st.subheader("Player Trend Visualization")
     label_map_trend = build_clean_player_label_map_from_ids(recent_data_trend)
     selected_labels_trend = st.multiselect(
@@ -4969,26 +5123,6 @@ if active_page == "Trend Value":
             if not player_summary_row.empty:
                 trend_multi_names.append(player_summary_row.iloc[0].get("fullName", ""))
                 st.info(make_trend_insight_summary(player_summary_row.iloc[0]))
-
-        trend_multi_teams = get_draft_room_team_options()
-        if trend_multi_names and trend_multi_teams:
-            st.markdown("#### Draft From Trend Comparison")
-            trend_pick_player = st.selectbox(
-                "Select one of these trend-comparison players to draft",
-                [p for p in trend_multi_names if str(p).strip()],
-                key="trend_multi_player_to_draft"
-            )
-            default_multi_team = st.session_state.get("room_your_team", trend_multi_teams[0])
-            default_multi_idx = trend_multi_teams.index(default_multi_team) if default_multi_team in trend_multi_teams else 0
-            trend_pick_team = st.selectbox(
-                "Draft Room team",
-                trend_multi_teams,
-                index=default_multi_idx,
-                key="trend_multi_draft_team"
-            )
-            if st.button("Draft Trend Comparison Player To Next Pick"):
-                msg = add_player_to_next_draft_room_pick(trend_pick_player, trend_pick_team)
-                st.success(msg)
     else:
         st.info("Select one to three players to view trend charts.")
 
@@ -5481,38 +5615,17 @@ if active_page == "Fantasy Sleepers & Busts":
             cc1, cc2 = st.columns(2)
             with cc1:
                 st.markdown("##### Clickable Sleepers")
-                clickable_player_draft_table(
-                    sleepers_display,
-                    player_col="Player",
-                    team_name=sleeper_team_name,
-                    key="sleeper_clickable_sleepers",
-                    title="Clickable Sleepers"
-                )
             with cc2:
                 st.markdown("##### Clickable Bust/Risk Table")
-                clickable_player_draft_table(
-                    busts_display,
-                    player_col="Player",
-                    team_name=sleeper_team_name,
-                    key="sleeper_clickable_busts",
-                    title="Clickable Busts"
-                )
+
 
         if sleeper_sync_enabled and sleeper_team_name:
-            st.markdown("#### Draft From Sleeper Page")
-            st.caption("Streamlit's static scatterplot does not support direct dot-click drafting here, so this dropdown contains the same sleeper/bust/scatter candidate names for one-click drafting into Draft Room.")
-            sleeper_pick_options = pd.concat([sleepers["fullName"], busts["fullName"]], ignore_index=True).dropna().astype(str).drop_duplicates().head(100).tolist()
-            if sleeper_pick_options:
-                selected_sleeper_to_draft = st.selectbox(
-                    "Select player from sleeper/bust tables or scatterplot candidates to draft into your next Draft Room pick",
-                    sleeper_pick_options,
-                    key="sleeper_player_to_draft"
-                )
-                if st.button("Draft Selected Sleeper To My Next Pick"):
-                    msg = add_player_to_next_draft_room_pick(selected_sleeper_to_draft, sleeper_team_name)
-                    st.success(msg)
-            else:
-                st.info("No sleeper candidates available to draft from the current filters.")
+            compact_player_action_center(
+                pd.concat([sleepers["fullName"], busts["fullName"]], ignore_index=True).dropna().astype(str).drop_duplicates().tolist(),
+                key="sleeper_bust_actions_final",
+                default_team=sleeper_team_name,
+                label="Actions for Sleeper / Bust Players"
+            )
 
         st.subheader("Fantasy Market Insight Summary")
         st.success(
@@ -6139,34 +6252,12 @@ if active_page == "Draft Assistant Simulator":
             "For the full live draft spreadsheet, use Draft Room Simulator."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
-        with st.expander("Player actions for recommended picks", expanded=False):
-            st.caption("The table above keeps its original formatting. Use this compact menu only if you want to run an action on one of those players.")
-            compact_player_action_center(
-                recs_display["Player"].dropna().astype(str).tolist(),
-                key="draft_assistant_recs_clean_actions",
-                default_team=assistant_my_team_name,
-                label="Recommended Pick Actions"
-            )
-
-
-        st.markdown("#### Draft a Recommended Player")
-        st.caption(
-            "Pick a player from the recommendation list and send him directly to your next open Draft Room slot. "
-            "After drafting, he will disappear from Draft Assistant recommendations because Draft Room becomes updated."
+        compact_player_action_center(
+            recs_display["Player"].dropna().astype(str).tolist(),
+            key="draft_assistant_recs_actions_final",
+            default_team=assistant_my_team_name,
+            label="Actions for Recommended Picks"
         )
-        if recs.empty:
-            st.info("No recommended players are currently available.")
-        else:
-            recommended_player_options = recs["fullName"].dropna().astype(str).head(50).tolist()
-            selected_recommended_player = st.selectbox(
-                "Select player to draft into Draft Room",
-                recommended_player_options,
-                key="draft_assistant_player_to_draft"
-            )
-            if st.button("Draft Selected Player To My Next Pick"):
-                msg = add_player_to_next_draft_room_pick(selected_recommended_player, assistant_my_team_name)
-                st.success(msg)
-
         st.subheader("Top Available / Draft Board")
         st.caption(
             "This section is limited to decision support: drafted/removed players and the best remaining players by market rank. "
@@ -7023,19 +7114,14 @@ if active_page == "Valuation":
     })
     valuation_table = format_display_table(clean_ui_columns(valuation_display), count_cols=["R", "H", "2B", "3B", "HR", "RBI", "SB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Trend Score", "Current Score", "Valuation Score"])
     render_output_table(valuation_table, key="valuation", file_name="valuation.csv")
-
-
-    if value_sync_enabled and value_sync_team and not valuation_df.empty:
-        st.markdown("#### Draft From Valuation Page")
-        value_pick_options = valuation_df.sort_values("Valuation_Score", ascending=False)["fullName"].dropna().astype(str).head(100).tolist()
-        selected_value_player = st.selectbox(
-            "Select valuation player to draft into your next Draft Room pick",
-            value_pick_options,
-            key="value_player_to_draft"
+    if value_sync_enabled and value_sync_team and not valuation_table.empty:
+        compact_player_action_center(
+            valuation_table["Player"].dropna().astype(str).tolist(),
+            key="valuation_actions_final",
+            default_team=value_sync_team,
+            label="Actions for Valuation Table Players"
         )
-        if st.button("Draft Selected Valuation Player To Next Pick"):
-            msg = add_player_to_next_draft_room_pick(selected_value_player, value_sync_team)
-            st.success(msg)
+
 
     st.subheader("Valuation Insight Summaries")
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
