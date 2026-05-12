@@ -1032,7 +1032,11 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
     ax.set_title(title)
     ax.set_xlabel(value_col)
     ax.invert_yaxis()
-    st.pyplot(fig)
+    try:
+        st.pyplot(fig, clear_figure=True)
+    except TypeError:
+        st.pyplot(fig)
+    plt.close(fig)
 
 def format_display_table(df, count_cols=None, rate_cols=None, score_cols=None, count_decimals=0, rate_decimals=3):
     """Return a plain DataFrame for maximum Streamlit Cloud stability.
@@ -2716,7 +2720,7 @@ def add_primary_team_for_career(grouped_df, source_df):
         .merge(career_pos_basis, on="playerID", how="left")
     )
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_data():
     people = read_required_csv("People.csv")
     batting = read_required_csv("Batting.csv")
@@ -3398,7 +3402,11 @@ def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode=
         ax.set_title(f"{player_name} — {stat} Trend")
         ax.legend()
         ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+        try:
+            st.pyplot(fig, clear_figure=True)
+        except TypeError:
+            st.pyplot(fig)
+        plt.close(fig)
 
 
 def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custom_weights=None):
@@ -4077,7 +4085,7 @@ def player_quick_actions_popover(
     if not ctx:
         return
 
-    label_map = build_clean_player_label_map(yearly_df)
+        label_map = get_clean_player_label_map_yearly(yearly_df)
     teams = get_draft_room_team_options()
     team_for_draft = default_team or user_draft_team or st.session_state.get("room_your_team")
     if teams and team_for_draft not in teams:
@@ -4298,6 +4306,41 @@ def sync_draft_room_to_assistant_from_table(draft_room_table, my_team_name):
 
 
 batting_df, yearly_df, people_df = load_data()
+
+
+def get_clean_player_label_map_yearly(yl_df):
+    """Session cache for Lahman label map (same ``yearly_df`` ref from ``load_data`` across reruns)."""
+    vid = id(yl_df)
+    if st.session_state.get("_clean_label_map_vid") != vid:
+        st.session_state["_clean_label_map_vid"] = vid
+        st.session_state["_clean_label_map"] = build_clean_player_label_map(yl_df)
+    return st.session_state["_clean_label_map"]
+
+
+def get_pid_to_clean_label_map_yearly(yl_df):
+    lm = get_clean_player_label_map_yearly(yl_df)
+    return {pid: lbl for lbl, pid in lm.items()}
+
+
+def _hist_explorer_pos_options(source_col):
+    cache = st.session_state.setdefault("_hist_explorer_pos_cache", {})
+    if source_col not in cache:
+        s = batting_df[source_col]
+        cache[source_col] = sorted(
+            x for x in s.dropna().unique() if str(x).strip() != "" and x not in ("PH", "PR")
+        )
+    return cache[source_col]
+
+
+def _hist_explorer_franchise_names_for_teams():
+    cache = st.session_state.setdefault("_hist_explorer_team_cache", {})
+    if "franchise" not in cache:
+        cache["franchise"] = sorted(
+            set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values()))
+        )
+    return cache["franchise"]
+
+
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
 year_max = int(max(all_years))
@@ -4487,10 +4530,10 @@ if active_page == "Historical Explorer":
         )
     hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
     with c3:
-        pos_options = sorted([x for x in batting_df[hist_position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
+        pos_options = _hist_explorer_pos_options(hist_position_source_col)
         hist_pos = st.multiselect("Primary Position", pos_options, default=pos_options, key="hist_pos")
     with c4:
-        actual_team_names = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
+        actual_team_names = _hist_explorer_franchise_names_for_teams()
         hist_team_options = ["All Teams", "American League", "National League"] + actual_team_names
         hist_teams = st.multiselect("Franchise / League", hist_team_options, default=["All Teams"], key="hist_team")
 
@@ -4902,8 +4945,8 @@ def sig_players_changed():
 
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
-    clean_label_map_compare = build_clean_player_label_map(yearly_df)
-    pid_to_clean_label_compare = build_pid_to_clean_label_map(yearly_df)
+    clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
+    pid_to_clean_label_compare = get_pid_to_clean_label_map_yearly(yearly_df)
     compare_player_options = list(clean_label_map_compare.keys())
 
     # Safe two-way sync setup.
@@ -5032,7 +5075,11 @@ if active_page == "Comparison Tool":
         ax.set_ylabel(stat_choice_compare)
         ax.legend()
         ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+        try:
+            st.pyplot(fig, clear_figure=True)
+        except TypeError:
+            st.pyplot(fig)
+        plt.close(fig)
 
         st.subheader("Advanced Trend Intelligence")
         compare_intel = build_advanced_trend_intelligence(compare, selected_ids_compare, stat_choice_compare)
@@ -5058,7 +5105,7 @@ if active_page == "Comparison Tool":
     )
 
     sig_col1, sig_col2 = st.columns(2)
-    clean_label_map_sig = build_clean_player_label_map(yearly_df)
+    clean_label_map_sig = get_clean_player_label_map_yearly(yearly_df)
     all_player_options_sig = list(clean_label_map_sig.keys())
 
     # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
@@ -5446,7 +5493,7 @@ if active_page == "Trend Value":
             st.session_state.pop("trend_players_multi", None)
             st.rerun()
 
-    full_trend_label_map = build_clean_player_label_map(yearly_df)
+    full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
     full_trend_labels = sorted(full_trend_label_map.keys())
 
     # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
@@ -5599,7 +5646,11 @@ if active_page == "Trend Value":
         ax.set_title(f"{stat_choice_trend} Trend Comparison over {lag_trend} Years — {trend_chart_mode}")
         ax.legend()
         ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+        try:
+            st.pyplot(fig, clear_figure=True)
+        except TypeError:
+            st.pyplot(fig)
+        plt.close(fig)
 
         st.subheader("Advanced Trend Intelligence")
         trend_intel = build_advanced_trend_intelligence(player_trend, selected_ids_trend, stat_choice_trend)
