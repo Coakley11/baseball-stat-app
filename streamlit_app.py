@@ -3799,19 +3799,6 @@ def player_on_fantasy_team(player_name, fantasy_team):
     return str(player_name).strip() in team_rows["Player"].dropna().astype(str).str.strip().tolist()
 
 
-def selected_players_team_status(selected_players, fantasy_team):
-    """Classify selected players relative to user's fantasy team."""
-    selected_players = [str(p).strip() for p in (selected_players or []) if str(p).strip()]
-    if not selected_players or not fantasy_team:
-        return "unknown"
-    statuses = [player_on_fantasy_team(p, fantasy_team) for p in selected_players]
-    if all(statuses):
-        return "all_on_my_team"
-    if not any(statuses):
-        return "all_not_on_my_team"
-    return "mixed"
-
-
 def execute_player_action_once(selected_player, action, team_name, user_draft_team, label_map_compare):
     """Apply one action for one player. No Streamlit widgets. Returns a single-line result message."""
     sp = str(selected_player).strip()
@@ -3873,150 +3860,74 @@ def execute_player_action_once(selected_player, action, team_name, user_draft_te
     return f"Unknown action: {action}"
 
 
-def _run_player_action(selected_players, action, key, default_team=None, user_draft_team=None):
-    """Execute an action for one or more selected players."""
-    if isinstance(selected_players, str):
-        selected_players = [selected_players]
-    selected_players = [str(p).strip() for p in (selected_players or []) if str(p).strip()]
-
-    teams = get_draft_room_team_options()
-    team_name = default_team or user_draft_team
-    label_map_compare = build_clean_player_label_map(yearly_df)
-    inner_root = "pact_" + hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:20]
-
-    if action in ["Draft player to next pick", "Simulate drafting this player"]:
-        if teams:
-            if team_name not in teams:
-                default = st.session_state.get("room_your_team", teams[0])
-                default_idx = teams.index(default) if default in teams else 0
-                team_name = st.selectbox("Draft Room team", teams, index=default_idx, key=f"{inner_root}_teamsel")
-            else:
-                st.caption(f"Drafting/simulating for: {team_name}")
-        else:
-            st.info("Open Draft Room Simulator first so the app knows the fantasy teams.")
-
-    if st.button("Run Action", key=f"{inner_root}_gobtn"):
-        if not selected_players:
-            st.warning("Select one or more players first, then run the action again.")
-            return
-
-        result_lines = []
-        last_sim_table = None
-
-        for sp in selected_players:
-            msg = execute_player_action_once(sp, action, team_name, user_draft_team, label_map_compare)
-            result_lines.append(f"**{sp}** — {msg}")
-            if action == "Simulate drafting this player":
-                last_sim_table = st.session_state.get("simulated_draft_room_table")
-
-        st.session_state[f"{key}_action_completed"] = True
-
-        st.markdown("#### Action Completed")
-        st.markdown("\n\n".join(f"- {line}" for line in result_lines))
-
-        if action == "Simulate drafting this player" and last_sim_table is not None and not last_sim_table.empty:
-            st.caption("Latest simulated draft board after the last selected player:")
-            st.dataframe(last_sim_table, use_container_width=True, hide_index=True)
-
-
-def player_action_menu(player_options, key, default_team=None, source_label="this table", user_draft_team=None):
+def player_action_menu(
+    player_options,
+    key,
+    default_team=None,
+    source_label="this table",
+    user_draft_team=None,
+    projection_lookup_df=None,
+    projection_lookup_name_col="fullName",
+    help_text=None,
+):
     """Delegate to the same page-only player action UI as compact_player_action_center."""
-    return compact_player_action_center(player_options, key, default_team=default_team, label="Player actions", user_draft_team=user_draft_team)
+    return compact_player_action_center(
+        player_options,
+        key,
+        default_team=default_team,
+        label="Player actions",
+        user_draft_team=user_draft_team,
+        projection_lookup_df=projection_lookup_df,
+        projection_lookup_name_col=projection_lookup_name_col,
+        help_text=help_text,
+    )
 
 
-def compact_player_action_center(player_options, key, default_team=None, label="Player Action Center", user_draft_team=None):
-    """Dropdown-only current-page player action center.
+def compact_player_action_center(
+    player_options,
+    key,
+    default_team=None,
+    label="Player Action Center",
+    user_draft_team=None,
+    projection_lookup_df=None,
+    projection_lookup_name_col="fullName",
+    help_text=None,
+):
+    """Primary player workflow: one popover with per-action buttons (no duplicate menus).
 
-    Keeps original tables unchanged. Trade acquire/away choices depend on whether
-    selected players are already on the user's fantasy team.
+    Replaces the legacy multiselect + action dropdown + Run Action control. Trade
+    routing still follows roster (inside the popover). Batch multi-select is gone;
+    run an action per player inside the popover for the same outcomes.
     """
     ctx = [str(p).strip() for p in list(player_options or []) if str(p).strip()]
     ctx = list(dict.fromkeys(ctx))
 
-    st.markdown(f"##### {label}")
     if not ctx:
-        st.info("No players in this section to run actions on.")
+        st.info("No players in this section for actions.")
         return None
 
-    # Clear previous selections after a successful action, before the widget is created.
-    if st.session_state.pop(f"{key}_clear_selected_after_action", False):
-        st.session_state.pop(f"{key}_cpa_manual_players", None)
-
-    st.caption("Choose one or more players from this page, then choose an action.")
-
-    selected_players = st.multiselect(
-        "Selected player(s) from this page",
+    st.caption(
+        "Use the **popover** below — Streamlit cannot attach hover menus to table cells. "
+        "All former actions are here: queue, comparison, trend, assistant, trades, draft (on your turn), simulate, projection breakdown."
+    )
+    player_quick_actions_popover(
         ctx,
-        key=f"{key}_cpa_manual_players",
-        help="Choose one or more players from this current page/section."
-    )
-    selected_players = [str(p).strip() for p in selected_players if str(p).strip()]
-
-    teams = get_draft_room_team_options()
-    selected_team = user_draft_team or default_team or st.session_state.get("room_your_team")
-    if teams and selected_team not in teams:
-        selected_team = st.session_state.get("room_your_team", teams[0])
-        if selected_team not in teams:
-            selected_team = teams[0]
-
-    team_status = selected_players_team_status(selected_players, selected_team)
-
-    action_choices = [
-        "Queue player",
-        "Send to Comparison Tool",
-        "Send to Trend Page",
-        "Send to Draft Assistant",
-        "Simulate drafting this player",
-    ]
-
-    # Trade choices depend on roster ownership.
-    if selected_players:
-        if team_status == "all_on_my_team":
-            action_choices.append("Add as player to trade away")
-        elif team_status == "all_not_on_my_team":
-            action_choices.append("Add as trade target to acquire")
-        elif team_status == "mixed":
-            st.info("Trade acquire/trade-away actions are hidden for mixed selections. Select only your players to trade away, or only other-team/free players to acquire.")
-    else:
-        action_choices.extend(["Add as trade target to acquire", "Add as player to trade away"])
-
-    if is_users_draft_turn(user_draft_team):
-        action_choices.insert(0, "Draft player to next pick")
-    else:
-        st.caption("Not your pick on the Draft Room board — draft-to-board is hidden.")
-
-    action = st.selectbox("Action", action_choices, key=f"{key}_cpa_actionpick")
-
-    if action == "Queue player":
-        st.caption("Queue saves the player to your draft queue/watch list. It does not draft him.")
-    elif action == "Send to Draft Assistant":
-        st.caption("This adds the player to the Draft Assistant focus/watch list. It does not draft him.")
-    elif action == "Send to Trend Page":
-        st.caption("First sent player becomes the single-player dashboard; up to three sent players appear in Player Trend Visualization.")
-    elif action == "Add as player to trade away":
-        st.caption("This appears only for players on your selected fantasy team.")
-    elif action == "Add as trade target to acquire":
-        st.caption("This appears only for players not on your selected fantasy team.")
-
-    _run_player_action(
-        selected_players,
-        action,
-        key=f"{key}_cpa_submit",
+        key=key,
+        user_draft_team=user_draft_team,
         default_team=default_team,
-        user_draft_team=user_draft_team
+        projection_lookup_df=projection_lookup_df,
+        projection_lookup_name_col=projection_lookup_name_col,
+        label=label or "Player actions",
+        help_text=help_text
+        or "Pick a player in the popover, then tap the action once (no separate Run button).",
     )
-
-    # If the run button executed, _run_player_action sets this flag.
-    if st.session_state.pop(f"{key}_cpa_submit_action_completed", False):
-        st.session_state[f"{key}_clear_selected_after_action"] = True
-        st.rerun()
 
     q = st.session_state.get("draft_queue", [])
     if q:
-        with st.expander("Current Draft Queue / Watch List"):
+        with st.expander("Current Draft Queue / Watch List", expanded=False):
             st.write(q)
 
-    return selected_players[0] if selected_players else None
+    return ctx[0] if ctx else None
 
 
 def _qa_key_suffix(text):
@@ -4200,6 +4111,10 @@ def player_quick_actions_popover(
             if st.button("Simulate draft fit", key=f"{key}_qa_sim_{sfx}"):
                 msg = execute_player_action_once(pick, "Simulate drafting this player", team_for_draft, user_draft_team, label_map)
                 st.success(msg)
+                last_sim = st.session_state.get("simulated_draft_room_table")
+                if last_sim is not None and not getattr(last_sim, "empty", True):
+                    st.caption("Latest simulated board after this pick:")
+                    st.dataframe(last_sim, use_container_width=True, hide_index=True)
         with b9:
             if st.button("Projection breakdown", key=f"{key}_qa_proj_{sfx}"):
                 row = None
@@ -5346,12 +5261,6 @@ if active_page == "Trend Value":
         default_team=trend_sync_team,
         label="Actions for Trend Table Players",
         user_draft_team=trend_sync_team,
-    )
-    player_quick_actions_popover(
-        trend_sorted_display["Player"].dropna().astype(str).tolist(),
-        key="trend_main_table_qa",
-        user_draft_team=trend_sync_team,
-        default_team=trend_sync_team,
         projection_lookup_df=trend_value_df,
         projection_lookup_name_col="fullName",
         help_text="Trend leaderboard — send players to Comparison, Draft Assistant, or the draft queue without retyping names.",
@@ -5381,20 +5290,14 @@ if active_page == "Trend Value":
     if "Player" in biggest_declines_display.columns:
         breakout_decline_players += biggest_declines_display["Player"].dropna().astype(str).tolist()
     compact_player_action_center(
-        breakout_decline_players,
+        list(dict.fromkeys(breakout_decline_players)),
         key="trend_breakout_decline_actions_final",
         default_team=trend_sync_team,
         label="Actions for Breakout / Decline Players",
         user_draft_team=trend_sync_team,
-    )
-    player_quick_actions_popover(
-        list(dict.fromkeys(breakout_decline_players)),
-        key="trend_breakout_decline_qa",
-        user_draft_team=trend_sync_team,
-        default_team=trend_sync_team,
         projection_lookup_df=trend_value_df,
         projection_lookup_name_col="fullName",
-        help_text="Breakout / decline callouts — same quick actions as the main trend table.",
+        help_text="Breakout / decline callouts — same actions as the main trend table.",
     )
 
     st.subheader("Insight Summaries")
@@ -6043,11 +5946,12 @@ if active_page == "Fantasy Sleepers & Busts":
                         style_cols=["Fantasy Edge", "Curve Edge"]
                     )
                     if "Player" in curve_display.columns:
-                        player_quick_actions_popover(
+                        compact_player_action_center(
                             curve_display["Player"].dropna().astype(str).tolist(),
-                            key="fantasy_curve_qa",
-                            user_draft_team=sleeper_team_name,
+                            key="fantasy_curve_actions_final",
                             default_team=sleeper_team_name,
+                            label="Actions for curve-adjusted sleepers",
+                            user_draft_team=sleeper_team_name,
                             projection_lookup_df=fantasy_df,
                             projection_lookup_name_col="fullName",
                             help_text="Curve-adjusted sleeper short list.",
@@ -6088,18 +5992,9 @@ if active_page == "Fantasy Sleepers & Busts":
             default_team=sleeper_team_name,
             label="Actions for Sleeper / Bust Players",
             user_draft_team=sleeper_team_name,
-        )
-        fantasy_qa_players = list(dict.fromkeys(
-            list(sleepers_display["Player"].dropna().astype(str)) + list(busts_display["Player"].dropna().astype(str))
-        ))
-        player_quick_actions_popover(
-            fantasy_qa_players,
-            key="fantasy_sleeper_bust_qa",
-            user_draft_team=sleeper_team_name,
-            default_team=sleeper_team_name,
             projection_lookup_df=fantasy_output_pool,
             projection_lookup_name_col="fullName",
-            help_text="Covers sleepers and busts in this section — same actions as the legacy multiselect block below.",
+            help_text="Sleepers and busts in this section — projection breakdown uses fantasy pool rows.",
         )
 
         st.subheader("Fantasy Market Insight Summary")
@@ -6651,21 +6546,15 @@ if active_page == "Draft Assistant Simulator":
             "The live pick grid stays in Draft Room."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
-        player_quick_actions_popover(
-            recs_display["Player"].dropna().astype(str).tolist(),
-            key="draft_asst_recs_qa",
-            user_draft_team=assistant_my_team_name,
-            default_team=assistant_my_team_name,
-            projection_lookup_df=draft_df,
-            projection_lookup_name_col="fullName",
-            help_text="Pick a name from the recommendation table, then send it to another tool in one click.",
-        )
         compact_player_action_center(
             recs_display["Player"].dropna().astype(str).tolist(),
             key="draft_assistant_recs_actions_final",
             default_team=assistant_my_team_name,
             label="Actions for recommended picks",
             user_draft_team=assistant_my_team_name,
+            projection_lookup_df=draft_df,
+            projection_lookup_name_col="fullName",
+            help_text="Pick a name from the recommendation table, then send it to another tool in one click.",
         )
 
         with st.expander("Position scarcity & roster category heatmap", expanded=False):
@@ -7626,12 +7515,6 @@ if active_page == "Valuation":
             default_team=value_sync_team,
             label="Actions for Valuation Table Players",
             user_draft_team=value_sync_team,
-        )
-        player_quick_actions_popover(
-            valuation_table["Player"].dropna().astype(str).tolist(),
-            key="valuation_table_qa",
-            user_draft_team=value_sync_team,
-            default_team=value_sync_team,
             projection_lookup_df=valuation_df,
             projection_lookup_name_col="fullName",
             help_text="Valuation table — projection breakdown uses window stats + trends (not full fantasy market ranks unless merged on this page).",
