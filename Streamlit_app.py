@@ -4085,7 +4085,7 @@ def player_quick_actions_popover(
     if not ctx:
         return
 
-        label_map = get_clean_player_label_map_yearly(yearly_df)
+    label_map = get_clean_player_label_map_yearly(yearly_df)
     teams = get_draft_room_team_options()
     team_for_draft = default_team or user_draft_team or st.session_state.get("room_your_team")
     if teams and team_for_draft not in teams:
