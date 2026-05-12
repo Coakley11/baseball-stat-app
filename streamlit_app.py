@@ -4135,7 +4135,7 @@ year_max = int(max(all_years))
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
-PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Assistant Simulator", "Draft Room Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
+PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -5826,13 +5826,15 @@ if active_page == "Fantasy Sleepers & Busts":
 if active_page == "Draft Assistant Simulator":
     render_section_header(
         "🧩 Draft Assistant Simulator",
-        "Decision page: use market rank, model rank, fantasy edge, roster needs, position scarcity, and category fit to choose your next pick."
+        "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board."
     )
-    st.info(
-        "Use this page when you are deciding **who to draft next**. "
-        "Draft Assistant is focused on recommendations, auto-detected team needs, position scarcity, category fit, and top available players. "
-        "Use Draft Room Simulator for the full live draft spreadsheet, roster views, and post-draft roster grades."
-    )
+    wf1, wf2 = st.columns([2, 1])
+    with wf1:
+        st.caption(
+            "Enter and edit picks in **Draft Room Simulator**; this page reads them automatically and excludes drafted players from recommendations."
+        )
+    with wf2:
+        st.caption("Workflow: Draft Room → Draft Assistant → back to Draft Room to log the pick.")
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -5849,31 +5851,31 @@ if active_page == "Draft Assistant Simulator":
         with d3:
             draft_top_n = st.slider("Recommendations to Show", 5, 30, 10, key="draft_top_n")
 
-        st.subheader("ML Blend Settings")
-        mlb1, mlb2, mlb3 = st.columns(3)
-        with mlb1:
-            use_ml_in_draft = st.checkbox(
-                "Blend ML projection signal into Draft Fit Score",
-                value=True,
-                key="draft_use_ml_blend",
-                help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score."
-            )
-        with mlb2:
-            ml_blend_weight = st.slider(
-                "ML Signal Weight",
-                0.00, 0.30, 0.12, 0.01,
-                key="draft_ml_blend_weight",
-                help="Higher values make the Draft Assistant trust the ML projection signal more."
-            )
-        with mlb3:
-            ml_min_games_for_signal = st.number_input(
-                "ML Signal Min Recent Games",
-                min_value=0,
-                max_value=500,
-                value=50,
-                step=10,
-                key="draft_ml_min_games_signal"
-            )
+        with st.expander("ML blend settings (optional)", expanded=False):
+            mlb1, mlb2, mlb3 = st.columns(3)
+            with mlb1:
+                use_ml_in_draft = st.checkbox(
+                    "Blend ML projection signal into Draft Fit Score",
+                    value=True,
+                    key="draft_use_ml_blend",
+                    help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score."
+                )
+            with mlb2:
+                ml_blend_weight = st.slider(
+                    "ML Signal Weight",
+                    0.00, 0.30, 0.12, 0.01,
+                    key="draft_ml_blend_weight",
+                    help="Higher values make the Draft Assistant trust the ML projection signal more."
+                )
+            with mlb3:
+                ml_min_games_for_signal = st.number_input(
+                    "ML Signal Min Recent Games",
+                    min_value=0,
+                    max_value=500,
+                    value=50,
+                    step=10,
+                    key="draft_ml_min_games_signal"
+                )
 
         max_year_draft = int(yearly_df["yearID"].max())
         draft_years = list(range(max_year_draft - draft_window + 1, max_year_draft + 1))
@@ -5943,100 +5945,94 @@ if active_page == "Draft Assistant Simulator":
         draft_df["Model Rank"] = draft_df["Blended Projection Score"].rank(ascending=False, method="min")
         draft_df["Fantasy Edge"] = draft_df["Market Rank"] - draft_df["Model Rank"]
 
-        st.subheader("Draft Room Sync / Team Needs")
-        st.caption(
-            "Draft Assistant now uses Draft Room as the source of truth. "
-            "Enter picks only in Draft Room Simulator; this page reads those picks, identifies your roster and other drafted players, "
-            "then automatically estimates your position and category needs."
-        )
-
-        draft_room_table_for_assistant = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
-
-        if draft_room_table_for_assistant.empty or "Player" not in draft_room_table_for_assistant.columns:
-            st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first, then return here for recommendations.")
-            drafted_players = []
-            my_roster = []
-            assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
-        else:
-            draft_room_table_for_assistant = draft_room_table_for_assistant[
-                draft_room_table_for_assistant["Player"].astype(str).str.strip() != ""
-            ].copy()
-            assistant_team_names = sorted(draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist())
-            if not assistant_team_names:
-                assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
-
-        default_team_name = st.session_state.get("room_your_team", assistant_team_names[0])
-        default_team_index = assistant_team_names.index(default_team_name) if default_team_name in assistant_team_names else 0
-
-        assistant_my_team_name = st.selectbox(
-            "Which Draft Room team is yours?",
-            assistant_team_names,
-            index=default_team_index,
-            key="draft_assistant_synced_team"
-        )
-
-        _da_highlight = st.session_state.get("pending_draft_assistant_player")
-        if _da_highlight:
-            st.info(
-                f"**Highlighted player (from another page):** {_da_highlight}. "
-                "This banner is informational only — it does **not** change Draft Fit scores, recommend that player for the next pick, or write picks to the Draft Room."
-            )
-            if st.button("Dismiss highlight", key="dismiss_draft_assistant_highlight"):
-                st.session_state.pop("pending_draft_assistant_player", None)
-                st.rerun()
-
-        if draft_room_table_for_assistant.empty:
-            my_roster = []
-            drafted_players = []
-        else:
-            my_roster = (
-                draft_room_table_for_assistant[
-                    draft_room_table_for_assistant["Team"].astype(str) == str(assistant_my_team_name)
-                ]["Player"].dropna().astype(str).tolist()
-            )
-            drafted_players = (
-                draft_room_table_for_assistant[
-                    draft_room_table_for_assistant["Team"].astype(str) != str(assistant_my_team_name)
-                ]["Player"].dropna().astype(str).tolist()
-            )
-
-        my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
-        drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
-        drafted_or_owned_players = set(drafted_players).union(set(my_roster))
-
-        s1, s2, s3 = st.columns(3)
-        s1.metric("My Roster", len(my_roster))
-        s2.metric("Other Rosters", len(drafted_players))
-        s3.metric("Current Pick", len(drafted_or_owned_players) + 1)
-
-        st.caption(
-            "Roster data is synced silently from Draft Room. "
-            "The recommendation tables below automatically exclude already drafted players."
-        )
-
-        total_players_picked = len(drafted_or_owned_players)
-        auto_current_pick = total_players_picked + 1
-
-        pick_col1, pick_col2, pick_col3 = st.columns([1, 1, 2])
-        with pick_col1:
-            pick_adjustment = st.number_input(
-                "Manual Pick Adjustment",
-                min_value=-50,
-                max_value=50,
-                value=0,
-                step=1,
-                key="draft_pick_adjustment",
-                help="Usually leave this at 0. Use + or - only if your draft board is temporarily out of sync."
-            )
-        current_pick = max(1, int(auto_current_pick + pick_adjustment))
-        with pick_col2:
-            st.metric("Auto Current Pick", current_pick)
-        with pick_col3:
+        with st.expander("Draft Room connection & pick number", expanded=True):
             st.caption(
-                f"Calculated from Draft Room: {total_players_picked} total drafted player(s) "
-                f"({len(drafted_players)} on other rosters + {len(my_roster)} on my roster) + 1"
-                + (f" plus adjustment {pick_adjustment}." if pick_adjustment else ".")
+                "Picks come from **Draft Room Simulator** (`draft_room_table`). "
+                "Choose your fantasy team name so needs and availability match your roster."
             )
+
+            draft_room_table_for_assistant = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+
+            if draft_room_table_for_assistant.empty or "Player" not in draft_room_table_for_assistant.columns:
+                st.warning("No Draft Room picks yet. Add picks in Draft Room Simulator, then return here.")
+                drafted_players = []
+                my_roster = []
+                assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+            else:
+                draft_room_table_for_assistant = draft_room_table_for_assistant[
+                    draft_room_table_for_assistant["Player"].astype(str).str.strip() != ""
+                ].copy()
+                assistant_team_names = sorted(draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist())
+                if not assistant_team_names:
+                    assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+
+            default_team_name = st.session_state.get("room_your_team", assistant_team_names[0])
+            default_team_index = assistant_team_names.index(default_team_name) if default_team_name in assistant_team_names else 0
+
+            assistant_my_team_name = st.selectbox(
+                "Which Draft Room team is yours?",
+                assistant_team_names,
+                index=default_team_index,
+                key="draft_assistant_synced_team"
+            )
+
+            _da_highlight = st.session_state.get("pending_draft_assistant_player")
+            if _da_highlight:
+                st.info(
+                    f"**Highlighted player (from another page):** {_da_highlight}. "
+                    "Informational only — does not change scores or write picks."
+                )
+                if st.button("Dismiss highlight", key="dismiss_draft_assistant_highlight"):
+                    st.session_state.pop("pending_draft_assistant_player", None)
+                    st.rerun()
+
+            if draft_room_table_for_assistant.empty:
+                my_roster = []
+                drafted_players = []
+            else:
+                my_roster = (
+                    draft_room_table_for_assistant[
+                        draft_room_table_for_assistant["Team"].astype(str) == str(assistant_my_team_name)
+                    ]["Player"].dropna().astype(str).tolist()
+                )
+                drafted_players = (
+                    draft_room_table_for_assistant[
+                        draft_room_table_for_assistant["Team"].astype(str) != str(assistant_my_team_name)
+                    ]["Player"].dropna().astype(str).tolist()
+                )
+
+            my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
+            drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
+            drafted_or_owned_players = set(drafted_players).union(set(my_roster))
+
+            s1, s2, s3 = st.columns(3)
+            s1.metric("My roster", len(my_roster))
+            s2.metric("Other rosters", len(drafted_players))
+            s3.metric("League pick #", len(drafted_or_owned_players) + 1)
+
+            total_players_picked = len(drafted_or_owned_players)
+            auto_current_pick = total_players_picked + 1
+
+            pick_col1, pick_col2, pick_col3 = st.columns([1, 1, 2])
+            with pick_col1:
+                pick_adjustment = st.number_input(
+                    "Manual pick adjustment",
+                    min_value=-50,
+                    max_value=50,
+                    value=0,
+                    step=1,
+                    key="draft_pick_adjustment",
+                    help="Usually 0. Adjust only if the board and this page disagree on pick number."
+                )
+            current_pick = max(1, int(auto_current_pick + pick_adjustment))
+            with pick_col2:
+                st.metric("Pick # for model", current_pick)
+            with pick_col3:
+                st.caption(
+                    f"From Draft Room: {total_players_picked} drafted "
+                    f"({len(drafted_players)} others + {len(my_roster)} yours) + 1"
+                    + (f"; adjustment {pick_adjustment:+d}." if pick_adjustment else ".")
+                )
 
         # Automatically infer position needs from your synced roster.
         roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
@@ -6078,28 +6074,27 @@ if active_page == "Draft Assistant Simulator":
         if not auto_category_needs:
             auto_category_needs = default_cat_fallback
 
-        st.markdown("#### Auto-Detected Team Needs")
-        st.caption(
-            "These are calculated from your Draft Room roster. You can override them if you want the assistant to prioritize a different roster build."
-        )
-        r1, r2 = st.columns(2)
-        with r1:
-            needed_positions = st.multiselect(
-                "Positions to Prioritize",
-                POSITION_ORDER,
-                default=auto_needed_positions,
-                key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(auto_needed_positions)}",
-                help="Auto-filled from your Draft Room roster. You can manually add/remove positions."
-            )
-        with r2:
-            category_options_auto = list(cat_defs_auto.keys())
-            category_needs = st.multiselect(
-                "Categories / Skills to Strengthen",
-                category_options_auto,
-                default=[c for c in auto_category_needs if c in category_options_auto],
-                key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
-                help="Auto-filled by comparing your roster to the draft pool. You can manually change it."
-            )
+        with st.expander("Position & category priorities (auto-filled; override if needed)", expanded=False):
+            st.markdown("#### Auto-detected team needs")
+            st.caption("Derived from your Draft Room roster. Change only if you want a different build.")
+            r1, r2 = st.columns(2)
+            with r1:
+                needed_positions = st.multiselect(
+                    "Positions to prioritize",
+                    POSITION_ORDER,
+                    default=auto_needed_positions,
+                    key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(auto_needed_positions)}",
+                    help="Auto-filled from your Draft Room roster."
+                )
+            with r2:
+                category_options_auto = list(cat_defs_auto.keys())
+                category_needs = st.multiselect(
+                    "Categories / skills to strengthen",
+                    category_options_auto,
+                    default=[c for c in auto_category_needs if c in category_options_auto],
+                    key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
+                    help="Auto-filled vs draft pool averages."
+                )
 
         # Remove every player who is already off the board:
         # players on other rosters + players on my roster.
@@ -6324,177 +6319,145 @@ if active_page == "Draft Assistant Simulator":
 
         available["Reason"] = available.apply(make_draft_reason, axis=1)
 
-        # Position Scarcity Model display
-        st.subheader("Position Scarcity Model")
-        st.caption(
-            "This compares each position's top available players to replacement-level players at the same position. "
-            "A larger scarcity dropoff means the best remaining option at that position is much better than the replacement-level option."
-        )
-        position_scarcity_df = pd.DataFrame(position_summary_rows)
-
-        if not position_scarcity_df.empty and "DH" not in position_scarcity_df["Position"].astype(str).tolist():
-            dh_group = available[available["Primary Position"].astype(str).eq("DH")].copy() if "Primary Position" in available.columns else pd.DataFrame()
-            if not dh_group.empty:
-                dh_group = dh_group.sort_values("Expected Fantasy Value", ascending=False)
-                dh_depth = replacement_depths.get("DH", 12)
-                dh_replacement = pd.to_numeric(dh_group.iloc[min(len(dh_group), dh_depth) - 1]["Expected Fantasy Value"], errors="coerce")
-                dh_top = dh_group.iloc[0]
-                dh_top_value = pd.to_numeric(dh_top.get("Expected Fantasy Value", np.nan), errors="coerce")
-                position_scarcity_df = pd.concat([position_scarcity_df, pd.DataFrame([{
-                    "Position": "DH",
-                    "Available Players": len(dh_group),
-                    "Replacement Depth": dh_depth,
-                    "Replacement Value": dh_replacement,
-                    "Top Available": dh_top.get("fullName", ""),
-                    "Top Available Value": dh_top_value,
-                    "Scarcity Dropoff": dh_top_value - dh_replacement if pd.notna(dh_replacement) and pd.notna(dh_top_value) else np.nan,
-                }])], ignore_index=True)
-
-        if position_scarcity_df.empty:
-            st.info("Position scarcity could not be calculated yet.")
-        else:
-            position_scarcity_df["Position"] = pd.Categorical(
-                position_scarcity_df["Position"],
-                categories=POSITION_ORDER,
-                ordered=True
-            )
-            position_scarcity_df = position_scarcity_df.sort_values("Position")
-            position_scarcity_display = position_scarcity_df[[
-                "Position", "Available Players", "Replacement Depth", "Replacement Value",
-                "Top Available", "Top Available Value", "Scarcity Dropoff"
-            ]].copy()
-            position_scarcity_display["Position"] = position_scarcity_display["Position"].astype(str)
-            for col in ["Replacement Value", "Top Available Value", "Scarcity Dropoff"]:
-                position_scarcity_display[col] = pd.to_numeric(position_scarcity_display[col], errors="coerce").round(4)
-            render_output_table(
-                position_scarcity_display,
-                key="draft_position_scarcity",
-                file_name="draft_position_scarcity.csv",
-                display_rows=20,
-                style_cols=["Scarcity Dropoff"]
-            )
-
-        # Team Category Strength Analyzer / Roster Construction Heatmap
-        st.subheader("Roster Construction Heatmap")
-        roster_df = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
-        if roster_df.empty:
-            st.info("Add players to 'Players On My Roster' to see your team category strengths and weaknesses.")
-        else:
-            if draft_format == "5x5 Roto":
-                cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
-            else:
-                cat_defs = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
-            heat_rows = []
-            for label, col in cat_defs.items():
-                roster_val = pd.to_numeric(roster_df.get(col, 0), errors="coerce").sum() if col != "proj_BA" else pd.to_numeric(roster_df.get(col, np.nan), errors="coerce").mean()
-                pool_avg = pd.to_numeric(draft_df.get(col, 0), errors="coerce").mean()
-                pool_std = pd.to_numeric(draft_df.get(col, 0), errors="coerce").std()
-                z = 0 if pd.isna(pool_std) or pool_std == 0 else (roster_val / max(len(roster_df), 1) - pool_avg) / pool_std
-                if z >= 0.75:
-                    strength = "Strong"
-                elif z <= -0.75:
-                    strength = "Weak"
-                else:
-                    strength = "Average"
-                heat_rows.append({"Category": label, "Team Strength": strength, "Strength Score": z})
-            heat_df = pd.DataFrame(heat_rows)
-            def roster_heat_style(val):
-                try:
-                    v = float(val)
-                    if v >= 0.75:
-                        return "background-color:#006400; color:white; font-weight:bold;"
-                    if v > 0:
-                        return "background-color:#c6efce; color:#006100;"
-                    if v <= -0.75:
-                        return "background-color:#8b0000; color:white; font-weight:bold;"
-                    if v < 0:
-                        return "background-color:#ffc7ce; color:#9c0006;"
-                except Exception:
-                    return ""
-                return ""
-            st.dataframe(
-                heat_df.style.map(roster_heat_style, subset=["Strength Score"]).format({"Strength Score": "{:.2f}"}),
-                use_container_width=True,
-                hide_index=True
-            )
-
-        # Safety filter: recommendations must never include already drafted/owned players.
-        available = available[~available["fullName"].isin(drafted_or_owned_players)].copy()
         recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 
-        st.subheader("Best Pick vs Best Value")
+        st.subheader("Next pick recommendations")
         bv1, bv2 = st.columns(2)
         with bv1:
             if not best_fit.empty:
                 bf = best_fit.iloc[0]
-                st.success(f"Best Team Fit: {bf['fullName']} — Draft Fit Score {fmt_rate_4(bf.get('Draft Fit Score'))}. {bf['Reason']}")
+                st.success(
+                    f"**Primary recommendation:** {bf['fullName']} — Draft Fit {fmt_rate_4(bf.get('Draft Fit Score'))}. "
+                    f"Market {fmt_int(bf.get('Market Rank'))}, model {fmt_int(bf.get('Model Rank'))}, edge {fmt_int(bf.get('Fantasy Edge'))}. "
+                    f"{bf['Reason']}"
+                )
         with bv2:
             if not best_value.empty:
                 bv = best_value.iloc[0]
-                st.info(f"Best Raw Value: {bv['fullName']} — Expected Fantasy Value {fmt_rate_4(bv.get('Expected Fantasy Value'))}. This is the strongest available player by projected value before roster-fit bonuses.")
+                alt = not best_fit.empty and best_fit.iloc[0]["fullName"] != bv["fullName"]
+                if alt:
+                    st.info(
+                        f"**Highest raw value:** {bv['fullName']} — EFV {fmt_rate_4(bv.get('Expected Fantasy Value'))} "
+                        f"(before roster-fit bonuses)."
+                    )
+                else:
+                    st.caption("Best team fit and best raw value align on the same player.")
 
         rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         focus_players = st.session_state.get("draft_assistant_focus_players", [])
         if focus_players:
-            with st.expander("Draft Assistant Focus / Watch List", expanded=False):
+            with st.expander("Draft Assistant focus / watch list", expanded=False):
                 st.caption("Players sent here from other pages for draft review.")
                 st.write(focus_players)
 
-        st.subheader("Recommended Picks")
         st.caption(
-            "This is the main Draft Assistant output: use it to decide the next pick. "
-            "Draft Fit Score combines projected value, ML projection signal, Fantasy Edge, roster needs, position scarcity, category fit, availability urgency, and risk. "
-            "For the full live draft spreadsheet, use Draft Room Simulator."
+            "Single recommendation table — same rankings as above, sortable export. "
+            "The live pick grid stays in Draft Room."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
         compact_player_action_center(
             recs_display["Player"].dropna().astype(str).tolist(),
             key="draft_assistant_recs_actions_final",
             default_team=assistant_my_team_name,
-            label="Actions for Recommended Picks",
+            label="Actions for recommended picks",
             user_draft_team=assistant_my_team_name,
         )
-        st.subheader("Top Available / Draft Board")
-        st.caption(
-            "This section is limited to decision support: drafted/removed players and the best remaining players by market rank. "
-            "The full live draft spreadsheet and roster grades are handled in Draft Room Simulator."
-        )
-        # Clean draft-board view: keep only the columns a user needs while making a pick.
-        # Detailed scoring components remain in Recommended Picks.
-        board_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Draft Fit Score"]
-        drafted_board = draft_df[draft_df["fullName"].isin(drafted_or_owned_players)].copy()
-        # Safety filter: top available board must never include already drafted/owned players.
-        available = available[~available["fullName"].isin(drafted_or_owned_players)].copy()
-        available_board = available.sort_values("Market Rank", na_position="last").head(25).copy()
-        bcol1, bcol2 = st.columns(2)
-        with bcol1:
-            st.caption("Drafted / Removed Players — includes other rosters and your roster")
-            if drafted_board.empty:
-                st.write("No drafted players selected yet.")
-            else:
-                drafted_display = drafted_board[[c for c in board_cols if c in drafted_board.columns]].rename(columns={"fullName": "Player"})
-                render_output_table(format_fantasy_table(clean_ui_columns(drafted_display)), key="draft_board_drafted", file_name="drafted_players.csv")
-        with bcol2:
-            st.caption("Top Available by Market Rank — a clean draft-board view of the best remaining players by public/market value.")
-            available_display = available_board[[c for c in board_cols if c in available_board.columns]].rename(columns={"fullName": "Player"})
-            render_output_table(
-                format_fantasy_table(clean_ui_columns(available_display)),
-                key="draft_board_available",
-                file_name="available_players.csv",
-                style_cols=["Fantasy Edge", "Draft Fit Score"]
-            )
 
-        if not recs.empty:
-            best = recs.iloc[0]
-            st.success(
-                f"Best pick available: {best['fullName']}. Market Rank {fmt_int(best.get('Market Rank'))}, "
-                f"Model Rank {fmt_int(best.get('Model Rank'))}, Fantasy Edge {fmt_int(best.get('Fantasy Edge'))}. "
-                f"{best['Reason']}"
+        with st.expander("Position scarcity & roster category heatmap", expanded=False):
+            st.subheader("Position scarcity")
+            st.caption(
+                "Top available vs replacement at each position. Larger dropoff = thinner position."
             )
+            position_scarcity_df = pd.DataFrame(position_summary_rows)
+
+            if not position_scarcity_df.empty and "DH" not in position_scarcity_df["Position"].astype(str).tolist():
+                dh_group = available[available["Primary Position"].astype(str).eq("DH")].copy() if "Primary Position" in available.columns else pd.DataFrame()
+                if not dh_group.empty:
+                    dh_group = dh_group.sort_values("Expected Fantasy Value", ascending=False)
+                    dh_depth = replacement_depths.get("DH", 12)
+                    dh_replacement = pd.to_numeric(dh_group.iloc[min(len(dh_group), dh_depth) - 1]["Expected Fantasy Value"], errors="coerce")
+                    dh_top = dh_group.iloc[0]
+                    dh_top_value = pd.to_numeric(dh_top.get("Expected Fantasy Value", np.nan), errors="coerce")
+                    position_scarcity_df = pd.concat([position_scarcity_df, pd.DataFrame([{
+                        "Position": "DH",
+                        "Available Players": len(dh_group),
+                        "Replacement Depth": dh_depth,
+                        "Replacement Value": dh_replacement,
+                        "Top Available": dh_top.get("fullName", ""),
+                        "Top Available Value": dh_top_value,
+                        "Scarcity Dropoff": dh_top_value - dh_replacement if pd.notna(dh_replacement) and pd.notna(dh_top_value) else np.nan,
+                    }])], ignore_index=True)
+
+            if position_scarcity_df.empty:
+                st.info("Position scarcity could not be calculated yet.")
+            else:
+                position_scarcity_df["Position"] = pd.Categorical(
+                    position_scarcity_df["Position"],
+                    categories=POSITION_ORDER,
+                    ordered=True
+                )
+                position_scarcity_df = position_scarcity_df.sort_values("Position")
+                position_scarcity_display = position_scarcity_df[[
+                    "Position", "Available Players", "Replacement Depth", "Replacement Value",
+                    "Top Available", "Top Available Value", "Scarcity Dropoff"
+                ]].copy()
+                position_scarcity_display["Position"] = position_scarcity_display["Position"].astype(str)
+                for col in ["Replacement Value", "Top Available Value", "Scarcity Dropoff"]:
+                    position_scarcity_display[col] = pd.to_numeric(position_scarcity_display[col], errors="coerce").round(4)
+                render_output_table(
+                    position_scarcity_display,
+                    key="draft_position_scarcity",
+                    file_name="draft_position_scarcity.csv",
+                    display_rows=20,
+                    style_cols=["Scarcity Dropoff"]
+                )
+
+            st.subheader("Roster construction heatmap")
+            roster_df = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
+            if roster_df.empty:
+                st.info("Draft players onto your team in Draft Room to see category strength vs the pool.")
+            else:
+                if draft_format == "5x5 Roto":
+                    cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
+                else:
+                    cat_defs = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
+                heat_rows = []
+                for label, col in cat_defs.items():
+                    roster_val = pd.to_numeric(roster_df.get(col, 0), errors="coerce").sum() if col != "proj_BA" else pd.to_numeric(roster_df.get(col, np.nan), errors="coerce").mean()
+                    pool_avg = pd.to_numeric(draft_df.get(col, 0), errors="coerce").mean()
+                    pool_std = pd.to_numeric(draft_df.get(col, 0), errors="coerce").std()
+                    z = 0 if pd.isna(pool_std) or pool_std == 0 else (roster_val / max(len(roster_df), 1) - pool_avg) / pool_std
+                    if z >= 0.75:
+                        strength = "Strong"
+                    elif z <= -0.75:
+                        strength = "Weak"
+                    else:
+                        strength = "Average"
+                    heat_rows.append({"Category": label, "Team Strength": strength, "Strength Score": z})
+                heat_df = pd.DataFrame(heat_rows)
+                def roster_heat_style(val):
+                    try:
+                        v = float(val)
+                        if v >= 0.75:
+                            return "background-color:#006400; color:white; font-weight:bold;"
+                        if v > 0:
+                            return "background-color:#c6efce; color:#006100;"
+                        if v <= -0.75:
+                            return "background-color:#8b0000; color:white; font-weight:bold;"
+                        if v < 0:
+                            return "background-color:#ffc7ce; color:#9c0006;"
+                    except Exception:
+                        return ""
+                    return ""
+                st.dataframe(
+                    heat_df.style.map(roster_heat_style, subset=["Strength Score"]).format({"Strength Score": "{:.2f}"}),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
 
 if active_page == "Draft Room Simulator":
@@ -6503,66 +6466,80 @@ if active_page == "Draft Room Simulator":
         "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft."
     )
 
-    st.info(
-        "Use this page to manage the actual draft board and league-wide roster state. "
-        "For next-pick recommendations, position scarcity, and team-aware draft advice, use the Draft Assistant Simulator."
-    )
+    dr_track1, dr_track2 = st.columns(2)
+    with dr_track1:
+        st.caption("**Operations center** — snake draft grid, exportable pick log, and roster views for every team.")
+    with dr_track2:
+        st.caption("**Draft Assistant** reads this board automatically for next-pick rankings.")
 
     market_df = load_fantasypros_market_data()
 
-    dr1, dr2, dr3, dr4 = st.columns(4)
-    with dr1:
-        room_team_count = st.number_input("Number of Teams", min_value=2, max_value=16, value=2, step=1, key="room_team_count")
-    with dr2:
-        room_rounds = st.number_input("Rounds", min_value=1, max_value=40, value=20, step=1, key="room_rounds")
-    with dr3:
-        room_format = st.selectbox("Scoring Format", ["5x5 Roto", "Points League"], index=0, key="room_format")
-    with dr4:
-        room_window = st.selectbox("Projection Window", [3, 4, 5], index=0, key="room_window")
+    dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup & import"])
 
-    default_names = ["Daniel"] + [f"Team {i}" for i in range(2, int(room_team_count) + 1)]
-    team_name_text = st.text_area(
-        "Team Names, one per line",
-        value="\n".join(default_names),
-        key="room_team_names",
-        help="Put each fantasy team on its own line. The draft table will use these names."
-    )
-    room_team_names = [x.strip() for x in team_name_text.splitlines() if x.strip()]
-    if len(room_team_names) < int(room_team_count):
-        room_team_names += [f"Team {i}" for i in range(len(room_team_names) + 1, int(room_team_count) + 1)]
-    room_team_names = room_team_names[:int(room_team_count)]
+    with dr_tab_setup:
+        dr1, dr2, dr3, dr4 = st.columns(4)
+        with dr1:
+            room_team_count = st.number_input("Number of Teams", min_value=2, max_value=16, value=2, step=1, key="room_team_count")
+        with dr2:
+            room_rounds = st.number_input("Rounds", min_value=1, max_value=40, value=20, step=1, key="room_rounds")
+        with dr3:
+            room_format = st.selectbox("Scoring Format", ["5x5 Roto", "Points League"], index=0, key="room_format")
+        with dr4:
+            room_window = st.selectbox("Projection Window", [3, 4, 5], index=0, key="room_window")
 
-    your_team = st.selectbox("Your Team", room_team_names, index=0, key="room_your_team")
-    total_picks = int(room_team_count) * int(room_rounds)
+        default_names = ["Daniel"] + [f"Team {i}" for i in range(2, int(room_team_count) + 1)]
+        team_name_text = st.text_area(
+            "Team Names, one per line",
+            value="\n".join(default_names),
+            key="room_team_names",
+            help="Put each fantasy team on its own line. The draft table will use these names."
+        )
+        room_team_names = [x.strip() for x in team_name_text.splitlines() if x.strip()]
+        if len(room_team_names) < int(room_team_count):
+            room_team_names += [f"Team {i}" for i in range(len(room_team_names) + 1, int(room_team_count) + 1)]
+        room_team_names = room_team_names[:int(room_team_count)]
 
-    st.subheader("Import Existing Draft")
-    st.caption(
-        "Upload a CSV or Excel file with Team/Owner and Player columns. "
-        "The Draft Room will load the picks and then automatically attach Market Rank, Model Rank, Fantasy Edge, Draft Fit Score, ML Projection Score, and Expected Fantasy Value."
-    )
-    imported_draft_file = st.file_uploader(
-        "Upload existing draft board CSV or Excel",
-        type=["csv", "xlsx", "xls"]
-    )
-    if imported_draft_file is not None:
-        try:
-            imported_raw = read_imported_draft_file(imported_draft_file)
-            imported_draft = normalize_imported_draft_columns(imported_raw)
-            if imported_draft.empty:
-                st.warning("No usable Team/Player rows were found in the uploaded draft.")
-            else:
-                if st.button("Load Uploaded Draft Into Draft Room"):
-                    st.session_state["draft_room_table"] = imported_draft.copy()
-                    st.success(f"Loaded {len(imported_draft)} drafted players into the Draft Room.")
-                st.caption("Uploaded draft preview:")
-                render_output_table(
-                    clean_ui_columns(imported_draft.head(50)),
-                    key="uploaded_draft_preview",
-                    file_name="uploaded_draft_preview.csv",
-                    display_rows=50
-                )
-        except Exception as e:
-            st.error(f"Could not read uploaded draft file: {e}")
+        your_team = st.selectbox("Your Team", room_team_names, index=0, key="room_your_team")
+
+        st.subheader("Import existing draft")
+        st.caption(
+            "CSV or Excel with Team/Owner and Player columns. Loads into the board below; model scores attach when you view the pick log or rosters."
+        )
+        imported_draft_file = st.file_uploader(
+            "Upload existing draft board CSV or Excel",
+            type=["csv", "xlsx", "xls"]
+        )
+        if imported_draft_file is not None:
+            try:
+                imported_raw = read_imported_draft_file(imported_draft_file)
+                imported_draft = normalize_imported_draft_columns(imported_raw)
+                if imported_draft.empty:
+                    st.warning("No usable Team/Player rows were found in the uploaded draft.")
+                else:
+                    if st.button("Load Uploaded Draft Into Draft Room"):
+                        st.session_state["draft_room_table"] = imported_draft.copy()
+                        st.success(f"Loaded {len(imported_draft)} drafted players into the Draft Room.")
+                    st.caption("Uploaded draft preview:")
+                    render_output_table(
+                        clean_ui_columns(imported_draft.head(50)),
+                        key="uploaded_draft_preview",
+                        file_name="uploaded_draft_preview.csv",
+                        display_rows=50
+                    )
+            except Exception as e:
+                st.error(f"Could not read uploaded draft file: {e}")
+
+    room_team_count = int(st.session_state.get("room_team_count", 2))
+    room_rounds = int(st.session_state.get("room_rounds", 20))
+    total_picks = room_team_count * room_rounds
+    room_format = st.session_state.get("room_format", "5x5 Roto")
+    room_window = int(st.session_state.get("room_window", 3))
+    _team_lines = st.session_state.get("room_team_names", "")
+    room_team_names = [x.strip() for x in str(_team_lines).splitlines() if x.strip()]
+    if len(room_team_names) < room_team_count:
+        room_team_names += [f"Team {i}" for i in range(len(room_team_names) + 1, room_team_count + 1)]
+    room_team_names = room_team_names[:room_team_count]
+    your_team = st.session_state.get("room_your_team", room_team_names[0] if room_team_names else "Team 1")
 
     max_year_room = int(yearly_df["yearID"].max())
     room_years = list(range(max_year_room - int(room_window) + 1, max_year_room + 1))
@@ -6670,183 +6647,166 @@ if active_page == "Draft Room Simulator":
             pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
         st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
 
-    st.subheader("Live Draft Spreadsheet")
-    st.caption(
-        "This is the main Draft Room output. Enter picks here; the model scores attach below. "
-        "Next-pick recommendations live in Draft Assistant."
-    )
+    with dr_tab_board:
+        st.subheader("Live draft board")
+        st.caption("Snake-draft grid. **Draft Assistant** reads this state automatically for next-pick rankings.")
 
-    # Keep the saved draft table in the non-widget key "draft_room_table".
-    # Do not use a data_editor widget key here, because Streamlit can throw
-    # StreamlitValueAssignmentNotAllowedError when a keyed widget is also given
-    # a default value from session_state.
-    edited_draft = st.data_editor(
-        st.session_state["draft_room_table"],
-        num_rows="fixed",
-        use_container_width=True,
-        column_config={
-            "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
-            "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
-        }
-    )
-    st.session_state["draft_room_table"] = edited_draft.copy()
-
-    sda1, sda2 = st.columns([2, 1])
-    with sda1:
-        st.caption("Draft Room picks are saved for Fantasy Standings Tracker and can also sync into Draft Assistant.")
-    with sda2:
-        if st.button("Sync Picks To Draft Assistant"):
-            synced_my, synced_others = sync_draft_room_to_assistant_from_table(st.session_state["draft_room_table"], your_team)
-            st.session_state["draft_my_roster"] = synced_my
-            st.session_state["draft_already_drafted"] = synced_others
-            st.success(f"Synced {len(synced_my)} of your players and {len(synced_others)} other drafted players.")
-
-    drafted_names_room = [p for p in edited_draft["Player"].dropna().astype(str).tolist() if p.strip()]
-    drafted_set_room = set(drafted_names_room)
-    pick_info = room_df[[
-        "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
-        "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
-        "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
-    ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
-
-    draft_results = edited_draft.merge(pick_info, on="Player", how="left")
-    st.subheader("Draft Results With Model Scores")
-    result_cols = [
-        "Round", "Pick", "Team", "Player", "Primary Position", "MLB Team",
-        "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score",
-        "ML Projection Score", "Expected Fantasy Value"
-    ]
-    render_output_table(
-        format_fantasy_table(clean_ui_columns(draft_results[[c for c in result_cols if c in draft_results.columns]])),
-        key="draft_room_results",
-        file_name="draft_room_results.csv",
-        display_rows=200,
-        style_cols=["Fantasy Edge", "Draft Fit Score"]
-    )
-
-    st.subheader("Roster Lineup Views")
-    st.caption(
-        "Generate lineup-style roster tables for your team or any other fantasy team in the draft room. "
-        "These views show each drafted player by position with projected HR, RBI, Runs, SB, BA, OPS, plus model/market/fantasy scores."
-    )
-
-    view_col1, view_col2 = st.columns([1, 2])
-    with view_col1:
-        roster_team_to_view = st.selectbox(
-            "Team to View",
-            room_team_names,
-            index=room_team_names.index(your_team) if your_team in room_team_names else 0,
-            key="draft_room_roster_team_to_view"
+        # Keep the saved draft table in the non-widget key "draft_room_table".
+        # Do not use a data_editor widget key here, because Streamlit can throw
+        # StreamlitValueAssignmentNotAllowedError when a keyed widget is also given
+        # a default value from session_state.
+        edited_draft = st.data_editor(
+            st.session_state["draft_room_table"],
+            num_rows="fixed",
+            use_container_width=True,
+            column_config={
+                "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
+                "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
+            }
         )
-    with view_col2:
-        show_all_rosters = st.checkbox(
-            "Show all team rosters",
-            value=False,
-            key="draft_room_show_all_rosters"
+        st.session_state["draft_room_table"] = edited_draft.copy()
+        st.caption("Same board is used by **Fantasy Standings Tracker** when you score this league.")
+
+        pick_info = room_df[[
+            "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
+            "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
+            "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
+        ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
+
+        draft_results = edited_draft.merge(pick_info, on="Player", how="left")
+        with st.expander("Pick log with model scores (export)", expanded=False):
+            st.caption("Same picks as the board, with market/model columns attached. Open when you need CSV export or a read-only review.")
+            result_cols = [
+                "Round", "Pick", "Team", "Player", "Primary Position", "MLB Team",
+                "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score",
+                "ML Projection Score", "Expected Fantasy Value"
+            ]
+            render_output_table(
+                format_fantasy_table(clean_ui_columns(draft_results[[c for c in result_cols if c in draft_results.columns]])),
+                key="draft_room_results",
+                file_name="draft_room_results.csv",
+                display_rows=200,
+                style_cols=["Fantasy Edge", "Draft Fit Score"]
+            )
+
+    with dr_tab_rosters:
+        st.subheader("Roster lineup views")
+        st.caption(
+            "Lineup-style tables by fantasy team: projections plus model/market scores."
         )
 
-    if st.button("Generate Roster View"):
-        st.session_state["draft_room_roster_view_requested"] = True
+        view_col1, view_col2 = st.columns([1, 2])
+        with view_col1:
+            roster_team_to_view = st.selectbox(
+                "Team to View",
+                room_team_names,
+                index=room_team_names.index(your_team) if your_team in room_team_names else 0,
+                key="draft_room_roster_team_to_view"
+            )
+        with view_col2:
+            show_all_rosters = st.checkbox(
+                "Show all team rosters",
+                value=False,
+                key="draft_room_show_all_rosters"
+            )
 
-    if st.session_state.get("draft_room_roster_view_requested", False):
-        if show_all_rosters:
-            for _team_name in room_team_names:
-                _roster_view = build_draft_room_roster_view(draft_results, _team_name)
-                st.markdown(f"#### {_team_name} Roster")
-                if _roster_view.empty:
-                    st.info(f"No drafted players entered yet for {_team_name}.")
+        if st.button("Generate Roster View"):
+            st.session_state["draft_room_roster_view_requested"] = True
+
+        if st.session_state.get("draft_room_roster_view_requested", False):
+            if show_all_rosters:
+                for _team_name in room_team_names:
+                    _roster_view = build_draft_room_roster_view(draft_results, _team_name)
+                    st.markdown(f"#### {_team_name} Roster")
+                    if _roster_view.empty:
+                        st.info(f"No drafted players entered yet for {_team_name}.")
+                    else:
+                        render_output_table(
+                            format_fantasy_table(clean_ui_columns(_roster_view)),
+                            key=f"draft_room_roster_view_{_team_name}".replace(" ", "_").replace("/", "_"),
+                            file_name=f"draft_room_roster_view_{_team_name}.csv".replace(" ", "_").replace("/", "_"),
+                            display_rows=100,
+                            style_cols=["Fantasy Edge", "Draft Fit Score"]
+                        )
+            else:
+                roster_view = build_draft_room_roster_view(draft_results, roster_team_to_view)
+                st.markdown(f"#### {roster_team_to_view} Roster")
+                if roster_view.empty:
+                    st.info(f"No drafted players entered yet for {roster_team_to_view}.")
                 else:
                     render_output_table(
-                        format_fantasy_table(clean_ui_columns(_roster_view)),
-                        key=f"draft_room_roster_view_{_team_name}".replace(" ", "_").replace("/", "_"),
-                        file_name=f"draft_room_roster_view_{_team_name}.csv".replace(" ", "_").replace("/", "_"),
+                        format_fantasy_table(clean_ui_columns(roster_view)),
+                        key="draft_room_selected_roster_view",
+                        file_name="draft_room_selected_roster_view.csv",
                         display_rows=100,
                         style_cols=["Fantasy Edge", "Draft Fit Score"]
                     )
+
+                    summary = {}
+                    for _col in ["Projected HR", "Projected RBI", "Projected R", "Projected SB"]:
+                        if _col in roster_view.columns:
+                            summary[_col.replace("Projected ", "Total Projected ")] = pd.to_numeric(roster_view[_col], errors="coerce").sum()
+                    if "Projected BA" in roster_view.columns:
+                        summary["Average Projected BA"] = pd.to_numeric(roster_view["Projected BA"], errors="coerce").mean()
+                    if "Projected OPS" in roster_view.columns:
+                        summary["Average Projected OPS"] = pd.to_numeric(roster_view["Projected OPS"], errors="coerce").mean()
+
+                    if summary:
+                        st.markdown("##### Roster Projection Summary")
+                        summary_df = pd.DataFrame([summary])
+                        render_output_table(
+                            format_fantasy_table(clean_ui_columns(summary_df)),
+                            key="draft_room_roster_projection_summary",
+                            file_name="draft_room_roster_projection_summary.csv",
+                            display_rows=5
+                        )
+
+        st.subheader("Post-draft roster grades")
+        completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
+        if completed_picks.empty:
+            st.info("Enter draft picks on the Board tab to generate team grades.")
         else:
-            roster_view = build_draft_room_roster_view(draft_results, roster_team_to_view)
-            st.markdown(f"#### {roster_team_to_view} Roster")
-            if roster_view.empty:
-                st.info(f"No drafted players entered yet for {roster_team_to_view}.")
-            else:
-                render_output_table(
-                    format_fantasy_table(clean_ui_columns(roster_view)),
-                    key="draft_room_selected_roster_view",
-                    file_name="draft_room_selected_roster_view.csv",
-                    display_rows=100,
-                    style_cols=["Fantasy Edge", "Draft Fit Score"]
-                )
-
-                summary = {}
-                for _col in ["Projected HR", "Projected RBI", "Projected R", "Projected SB"]:
-                    if _col in roster_view.columns:
-                        summary[_col.replace("Projected ", "Total Projected ")] = pd.to_numeric(roster_view[_col], errors="coerce").sum()
-                if "Projected BA" in roster_view.columns:
-                    summary["Average Projected BA"] = pd.to_numeric(roster_view["Projected BA"], errors="coerce").mean()
-                if "Projected OPS" in roster_view.columns:
-                    summary["Average Projected OPS"] = pd.to_numeric(roster_view["Projected OPS"], errors="coerce").mean()
-
-                if summary:
-                    st.markdown("##### Roster Projection Summary")
-                    summary_df = pd.DataFrame([summary])
-                    render_output_table(
-                        format_fantasy_table(clean_ui_columns(summary_df)),
-                        key="draft_room_roster_projection_summary",
-                        file_name="draft_room_roster_projection_summary.csv",
-                        display_rows=5
-                    )
-
-    st.caption(
-        "Draft Room is intentionally focused on the live draft board, roster views, and roster grades. "
-        "Use Draft Assistant Simulator for next-pick recommendations and top-available-player analysis."
-    )
-
-    st.subheader("Post-Draft Roster Grades")
-    completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
-    if completed_picks.empty:
-        st.info("Enter draft picks above to generate team grades.")
-    else:
-        grade_rows = []
-        for team_name, team_df in completed_picks.groupby("Team"):
-            grade_rows.append({
-                "Fantasy Team": team_name,
-                "Players Drafted": len(team_df),
-                "Total Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").sum(),
-                "Average Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").mean(),
-                "Average Draft Fit Score": pd.to_numeric(team_df["Draft Fit Score"], errors="coerce").mean(),
-                "Average Fantasy Edge": pd.to_numeric(team_df["Fantasy Edge"], errors="coerce").mean(),
-                "Total HR Projection": pd.to_numeric(team_df["proj_HR"], errors="coerce").sum(),
-                "Total RBI Projection": pd.to_numeric(team_df["proj_RBI"], errors="coerce").sum(),
-                "Total R Projection": pd.to_numeric(team_df["proj_R"], errors="coerce").sum(),
-                "Total SB Projection": pd.to_numeric(team_df["proj_SB"], errors="coerce").sum(),
-                "Average OPS Projection": pd.to_numeric(team_df["proj_OPS"], errors="coerce").mean(),
-            })
-        grades_df = pd.DataFrame(grade_rows)
-        grades_df["Overall Draft Grade Score"] = (
-            normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
-            normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
-            normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
-            normalize_series(grades_df["Total HR Projection"]) * 0.05 +
-            normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
-            normalize_series(grades_df["Total SB Projection"]) * 0.05
-        )
-        grades_df["Draft Room Rank"] = grades_df["Overall Draft Grade Score"].rank(ascending=False, method="min")
-        grades_df = grades_df.sort_values("Draft Room Rank")
-
-        render_output_table(
-            format_post_draft_roster_grades(format_fantasy_table(clean_ui_columns(grades_df))),
-            key="draft_room_roster_grades",
-            file_name="draft_room_roster_grades.csv",
-            display_rows=30,
-            style_cols=["Average Fantasy Edge", "Overall Draft Grade Score"]
-        )
-
-        if your_team in grades_df["Fantasy Team"].values:
-            your_row = grades_df[grades_df["Fantasy Team"] == your_team].iloc[0]
-            st.info(
-                f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
-                f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
+            grade_rows = []
+            for team_name, team_df in completed_picks.groupby("Team"):
+                grade_rows.append({
+                    "Fantasy Team": team_name,
+                    "Players Drafted": len(team_df),
+                    "Total Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").sum(),
+                    "Average Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").mean(),
+                    "Average Draft Fit Score": pd.to_numeric(team_df["Draft Fit Score"], errors="coerce").mean(),
+                    "Average Fantasy Edge": pd.to_numeric(team_df["Fantasy Edge"], errors="coerce").mean(),
+                    "Total HR Projection": pd.to_numeric(team_df["proj_HR"], errors="coerce").sum(),
+                    "Total RBI Projection": pd.to_numeric(team_df["proj_RBI"], errors="coerce").sum(),
+                    "Total R Projection": pd.to_numeric(team_df["proj_R"], errors="coerce").sum(),
+                    "Total SB Projection": pd.to_numeric(team_df["proj_SB"], errors="coerce").sum(),
+                    "Average OPS Projection": pd.to_numeric(team_df["proj_OPS"], errors="coerce").mean(),
+                })
+            grades_df = pd.DataFrame(grade_rows)
+            grades_df["Overall Draft Grade Score"] = (
+                normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
+                normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
+                normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
+                normalize_series(grades_df["Total HR Projection"]) * 0.05 +
+                normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
+                normalize_series(grades_df["Total SB Projection"]) * 0.05
             )
+            grades_df["Draft Room Rank"] = grades_df["Overall Draft Grade Score"].rank(ascending=False, method="min")
+            grades_df = grades_df.sort_values("Draft Room Rank")
+
+            render_output_table(
+                format_post_draft_roster_grades(format_fantasy_table(clean_ui_columns(grades_df))),
+                key="draft_room_roster_grades",
+                file_name="draft_room_roster_grades.csv",
+                display_rows=30,
+                style_cols=["Average Fantasy Edge", "Overall Draft Grade Score"]
+            )
+
+            if your_team in grades_df["Fantasy Team"].values:
+                your_row = grades_df[grades_df["Fantasy Team"] == your_team].iloc[0]
+                st.info(
+                    f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
+                    f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
+                )
 
 
 
