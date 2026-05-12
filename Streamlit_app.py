@@ -427,25 +427,53 @@ def register_players_sent_to_trend_page(full_name, label_map):
 
 
 def append_compare_player_ordered(full_name, label_map):
-    """Send to Comparison Tool reliably using pending widget values."""
+    """Queue one player for the Comparison Tool using Player A / Player B slots.
+
+    Rules:
+    - If Player A is empty, the sent player becomes Player A.
+    - If Player A is already set, the sent player becomes Player B (replacing any prior B).
+    - ``pending_compare_players`` is kept in sync so the top multiselect matches A/B.
+    """
     lbl = resolve_fullname_to_clean_label(full_name, label_map)
     if not lbl:
         return False
 
-    current = st.session_state.get("pending_compare_players", st.session_state.get("compare_players", []))
-    if not isinstance(current, list):
-        current = []
-    current = [x for x in current if isinstance(x, str) and x in label_map]
+    a = st.session_state.get("sig_player_a_clean")
+    b = st.session_state.get("sig_player_b_clean")
+    a = a if isinstance(a, str) and a in label_map else None
+    b = b if isinstance(b, str) and b in label_map else None
 
-    if lbl not in current:
-        current.append(lbl)
+    old_compare = [x for x in (st.session_state.get("compare_players") or []) if isinstance(x, str) and x in label_map]
 
-    current = current[:3]
-    st.session_state["pending_compare_players"] = current
-    if len(current) >= 1:
-        st.session_state["pending_sig_player_a"] = current[0]
-    if len(current) >= 2:
-        st.session_state["pending_sig_player_b"] = current[1]
+    if not a:
+        st.session_state["pending_sig_player_a"] = lbl
+        st.session_state["pending_compare_clear_player_b"] = True
+        tail = [x for x in old_compare if x != lbl]
+        st.session_state["pending_compare_players"] = ([lbl] + tail)[:3]
+        return True
+
+    if a == lbl:
+        tail = [x for x in old_compare if x != lbl]
+        st.session_state["pending_compare_players"] = ([lbl] + tail)[:3]
+        return True
+
+    if not b or b == lbl:
+        st.session_state["pending_sig_player_b"] = lbl
+        merged = [a, lbl]
+        for x in old_compare:
+            if x not in merged and len(merged) < 3:
+                merged.append(x)
+        st.session_state["pending_compare_players"] = merged[:3]
+        return True
+
+    # Both slots occupied by different players: new send replaces Player B.
+    st.session_state["pending_sig_player_a"] = a
+    st.session_state["pending_sig_player_b"] = lbl
+    merged = [a, lbl]
+    for x in old_compare:
+        if x not in merged and len(merged) < 3:
+            merged.append(x)
+    st.session_state["pending_compare_players"] = merged[:3]
     return True
 
 
@@ -3803,7 +3831,7 @@ def execute_player_action_once(selected_player, action, team_name, user_draft_te
 
     if action == "Send to Comparison Tool":
         if append_compare_player_ordered(sp, label_map_compare):
-            return "Sent to Comparison Tool (order: A → B → C for up to three players)."
+            return "Sent to Comparison Tool (fills Player A, then Player B; a new send with both filled replaces Player B)."
         return "Skipped — name could not be matched to the database for Comparison."
 
     if action == "Send to Trend Page":
@@ -3989,6 +4017,198 @@ def compact_player_action_center(player_options, key, default_team=None, label="
             st.write(q)
 
     return selected_players[0] if selected_players else None
+
+
+def _qa_key_suffix(text):
+    h = hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:10]
+    return h
+
+
+def build_projection_breakdown_markdown(player_display_name, draft_row=None, yearly_df_local=None):
+    """Narrative projection breakdown using existing model fields only (no new formulas)."""
+    lines = [f"### Projection breakdown: {player_display_name}", ""]
+    if draft_row is not None and hasattr(draft_row, "index"):
+        def _g(col):
+            try:
+                if col in draft_row.index:
+                    return draft_row[col]
+            except Exception:
+                return None
+            return None
+
+        pos = _g("Primary Position")
+        age = _g("Age")
+        g = _g("G")
+        ab = _g("AB")
+        if pos is not None or pd.notna(age):
+            lines.append(
+                f"- **Profile:** position `{pos}`, age `{fmt_int(age) if pd.notna(age) else 'n/a'}`, "
+                f"recent volume **G={fmt_int(g)}**, **AB={fmt_int(ab)}** (from the projection window inputs)."
+            )
+        mr = _g("Market Rank")
+        mdl = _g("Model Rank")
+        fe = _g("Fantasy Edge")
+        if any(pd.notna(x) for x in (mr, mdl, fe)):
+            lines.append(
+                f"- **Market vs model:** Market rank `{fmt_int(mr)}`, model rank `{fmt_int(mdl)}`, "
+                f"fantasy edge `{fmt_int(fe)}` (positive means your model is higher on the player than ADP/market)."
+            )
+        efv = _g("Expected Fantasy Value")
+        rbase = _g("Realistic Base Projection Score")
+        ml_adj = _g("ML Adjustment")
+        ml_score = _g("ML Projection Score")
+        if rbase is not None or efv is not None:
+            lines.append(
+                f"- **Value stack:** realistic base projection score `{fmt_rate_4(rbase)}` feeds expected fantasy value "
+                f"`{fmt_rate_4(efv)}` after the small ML/context layer."
+            )
+        if ml_adj is not None and pd.notna(ml_adj):
+            lines.append(
+                f"- **ML/context layer:** ML adjustment `{float(ml_adj):+.4f}` (capped in the model) with "
+                f"ML projection score `{fmt_rate_4(ml_score)}` — this nudges the baseline for breakout/risk/playing-time signals, not a full re-rank."
+            )
+        brk = _g("Breakout Probability")
+        risk = _g("Risk Score")
+        if brk is not None or risk is not None:
+            lines.append(
+                f"- **Shape signals:** breakout probability `{fmt_rate_4(brk)}`, risk score `{fmt_rate_4(risk)}` "
+                "(from capped trends, age curve, and similar-player anchoring inside the realistic projection builder)."
+            )
+        for tlab, tcol in [
+            ("HR trend", "HR_trend"),
+            ("OPS trend", "OPS_trend"),
+            ("SB trend", "SB_trend"),
+            ("BA trend", "BA_trend"),
+        ]:
+            tv = _g(tcol)
+            if tv is not None and pd.notna(tv):
+                lines.append(f"- **{tlab} (window slope):** `{float(tv):+.4f}` — used in capped form so one hot year does not dominate.")
+        lines.append("")
+        lines.append(
+            "*This text summarizes fields already computed by `build_realistic_draft_ml_adjustments` and related "
+            "draft scoring — it does not re-fit or change any formulas.*"
+        )
+        return "\n".join(lines)
+
+    if yearly_df_local is not None and "fullName" in yearly_df_local.columns:
+        base = str(player_display_name).split(" (")[0].strip()
+        sub = yearly_df_local[yearly_df_local["fullName"].astype(str).str.strip().eq(base)]
+        if sub.empty:
+            lines.append("No matching Lahman rows for this name — open Historical Explorer to verify spelling or duplicates.")
+        else:
+            last = sub.sort_values("yearID").tail(1).iloc[0]
+            yr = last.get("yearID")
+            lines.append(
+                f"- **Latest season on file ({yr}):** HR `{fmt_int(last.get('HR'))}`, RBI `{fmt_int(last.get('RBI'))}`, "
+                f"R `{fmt_int(last.get('R'))}`, SB `{fmt_int(last.get('SB'))}`, OPS `{fmt_rate_3(last.get('OPS'))}`."
+            )
+            lines.append("- Draft Assistant / fantasy pages add market + model layers on top of this history.")
+        return "\n".join(lines)
+
+    lines.append("No projection row available for this player on this page.")
+    return "\n".join(lines)
+
+
+@st.dialog("Projection breakdown")
+def _projection_breakdown_dialog(body_md: str):
+    st.markdown(body_md)
+
+
+def player_quick_actions_popover(
+    player_options,
+    *,
+    key,
+    user_draft_team=None,
+    default_team=None,
+    projection_lookup_df=None,
+    projection_lookup_name_col="fullName",
+    label="Player quick actions",
+    help_text="Pick a player from this table, then tap an action. Pages update on the next load when you navigate.",
+):
+    """Contextual one-click actions (Streamlit popover — no true per-cell hover)."""
+    ctx = [str(p).strip() for p in list(player_options or []) if str(p).strip()]
+    ctx = list(dict.fromkeys(ctx))
+    if not ctx:
+        return
+
+    label_map = build_clean_player_label_map(yearly_df)
+    teams = get_draft_room_team_options()
+    team_for_draft = default_team or user_draft_team or st.session_state.get("room_your_team")
+    if teams and team_for_draft not in teams:
+        team_for_draft = teams[0]
+
+    with st.popover(label):
+        if help_text:
+            st.caption(help_text)
+        pick = st.selectbox(
+            "Player",
+            ctx,
+            index=0,
+            key=f"{key}_qa_player_pick",
+        )
+        sfx = _qa_key_suffix(f"{key}|{pick}")
+        on_my = player_on_fantasy_team(pick, team_for_draft) if team_for_draft else False
+        can_draft = bool(user_draft_team) and is_users_draft_turn(user_draft_team)
+
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button("Add to Draft Queue", key=f"{key}_qa_queue_{sfx}"):
+                msg = execute_player_action_once(pick, "Queue player", team_for_draft, user_draft_team, label_map)
+                st.success(msg)
+        with b2:
+            if st.button("Send to Comparison", key=f"{key}_qa_cmp_{sfx}"):
+                msg = execute_player_action_once(pick, "Send to Comparison Tool", team_for_draft, user_draft_team, label_map)
+                st.success(msg)
+                st.session_state["active_page"] = "Comparison Tool"
+                st.rerun()
+        with b3:
+            if st.button("Send to Trend", key=f"{key}_qa_tr_{sfx}"):
+                msg = execute_player_action_once(pick, "Send to Trend Page", team_for_draft, user_draft_team, label_map)
+                st.success(msg)
+                st.session_state["active_page"] = "Trend Value"
+                st.rerun()
+
+        b4, b5, b6 = st.columns(3)
+        with b4:
+            if st.button("Send to Draft Assistant", key=f"{key}_qa_da_{sfx}"):
+                msg = execute_player_action_once(pick, "Send to Draft Assistant", team_for_draft, user_draft_team, label_map)
+                st.success(msg)
+        with b5:
+            if not on_my:
+                if st.button("Trade · Acquire", key=f"{key}_qa_tacq_{sfx}"):
+                    msg = execute_player_action_once(pick, "Add as trade target to acquire", team_for_draft, user_draft_team, label_map)
+                    st.success(msg)
+            else:
+                st.caption("On your roster — *Trade · Acquire* is hidden.")
+        with b6:
+            if on_my:
+                if st.button("Trade · Away", key=f"{key}_qa_taw_{sfx}"):
+                    msg = execute_player_action_once(pick, "Add as player to trade away", team_for_draft, user_draft_team, label_map)
+                    st.success(msg)
+            else:
+                st.caption("Not on your roster — *Trade · Away* is hidden.")
+
+        b7, b8, b9 = st.columns(3)
+        with b7:
+            if can_draft:
+                if st.button("Draft this player", key=f"{key}_qa_draft_{sfx}"):
+                    msg = execute_player_action_once(pick, "Draft player to next pick", team_for_draft, user_draft_team, label_map)
+                    st.success(msg)
+            else:
+                st.caption("Not your pick — *Draft this player* hidden.")
+        with b8:
+            if st.button("Simulate draft fit", key=f"{key}_qa_sim_{sfx}"):
+                msg = execute_player_action_once(pick, "Simulate drafting this player", team_for_draft, user_draft_team, label_map)
+                st.success(msg)
+        with b9:
+            if st.button("Projection breakdown", key=f"{key}_qa_proj_{sfx}"):
+                row = None
+                if projection_lookup_df is not None and projection_lookup_name_col in projection_lookup_df.columns:
+                    m = projection_lookup_df[projection_lookup_df[projection_lookup_name_col].astype(str).str.strip() == str(pick).strip()]
+                    if not m.empty:
+                        row = m.iloc[0]
+                md = build_projection_breakdown_markdown(pick, draft_row=row, yearly_df_local=yearly_df)
+                _projection_breakdown_dialog(md)
 
 
 def clickable_player_draft_table(df, player_col="Player", team_name=None, key="clickable_draft_table", title="Clickable Draft Table"):
@@ -4655,6 +4875,9 @@ if active_page == "Comparison Tool":
     if isinstance(pending_compare, list):
         st.session_state["compare_players"] = [p for p in pending_compare if p in compare_player_options][:3]
 
+    if st.session_state.pop("pending_compare_clear_player_b", False):
+        st.session_state.pop("sig_player_b_clean", None)
+
     default_compare_labels = []
     for _sig_key in ["pending_sig_player_a", "pending_sig_player_b", "sig_player_a_clean", "sig_player_b_clean"]:
         _lbl = st.session_state.get(_sig_key)
@@ -5105,6 +5328,15 @@ if active_page == "Trend Value":
         label="Actions for Trend Table Players",
         user_draft_team=trend_sync_team,
     )
+    player_quick_actions_popover(
+        trend_sorted_display["Player"].dropna().astype(str).tolist(),
+        key="trend_main_table_qa",
+        user_draft_team=trend_sync_team,
+        default_team=trend_sync_team,
+        projection_lookup_df=trend_value_df,
+        projection_lookup_name_col="fullName",
+        help_text="Trend leaderboard — send players to Comparison, Draft Assistant, or the draft queue without retyping names.",
+    )
 
     breakout_df = trend_value_df[["fullName", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]].copy()
     top_breakouts = breakout_df.sort_values("OPS_trend", ascending=False).head(10)
@@ -5135,6 +5367,15 @@ if active_page == "Trend Value":
         default_team=trend_sync_team,
         label="Actions for Breakout / Decline Players",
         user_draft_team=trend_sync_team,
+    )
+    player_quick_actions_popover(
+        list(dict.fromkeys(breakout_decline_players)),
+        key="trend_breakout_decline_qa",
+        user_draft_team=trend_sync_team,
+        default_team=trend_sync_team,
+        projection_lookup_df=trend_value_df,
+        projection_lookup_name_col="fullName",
+        help_text="Breakout / decline callouts — same quick actions as the main trend table.",
     )
 
     st.subheader("Insight Summaries")
@@ -5772,6 +6013,16 @@ if active_page == "Fantasy Sleepers & Busts":
                         display_rows=15,
                         style_cols=["Fantasy Edge", "Curve Edge"]
                     )
+                    if "Player" in curve_display.columns:
+                        player_quick_actions_popover(
+                            curve_display["Player"].dropna().astype(str).tolist(),
+                            key="fantasy_curve_qa",
+                            user_draft_team=sleeper_team_name,
+                            default_team=sleeper_team_name,
+                            projection_lookup_df=fantasy_df,
+                            projection_lookup_name_col="fullName",
+                            help_text="Curve-adjusted sleeper short list.",
+                        )
                 else:
                     st.caption("Advanced market-edge curve unavailable because the selected model needs more valid rows or positive values.")
 
@@ -5808,6 +6059,18 @@ if active_page == "Fantasy Sleepers & Busts":
             default_team=sleeper_team_name,
             label="Actions for Sleeper / Bust Players",
             user_draft_team=sleeper_team_name,
+        )
+        fantasy_qa_players = list(dict.fromkeys(
+            list(sleepers_display["Player"].dropna().astype(str)) + list(busts_display["Player"].dropna().astype(str))
+        ))
+        player_quick_actions_popover(
+            fantasy_qa_players,
+            key="fantasy_sleeper_bust_qa",
+            user_draft_team=sleeper_team_name,
+            default_team=sleeper_team_name,
+            projection_lookup_df=fantasy_output_pool,
+            projection_lookup_name_col="fullName",
+            help_text="Covers sleepers and busts in this section — same actions as the legacy multiselect block below.",
         )
 
         st.subheader("Fantasy Market Insight Summary")
@@ -6359,6 +6622,15 @@ if active_page == "Draft Assistant Simulator":
             "The live pick grid stays in Draft Room."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+        player_quick_actions_popover(
+            recs_display["Player"].dropna().astype(str).tolist(),
+            key="draft_asst_recs_qa",
+            user_draft_team=assistant_my_team_name,
+            default_team=assistant_my_team_name,
+            projection_lookup_df=draft_df,
+            projection_lookup_name_col="fullName",
+            help_text="Pick a name from the recommendation table, then send it to another tool in one click.",
+        )
         compact_player_action_center(
             recs_display["Player"].dropna().astype(str).tolist(),
             key="draft_assistant_recs_actions_final",
@@ -7325,6 +7597,15 @@ if active_page == "Valuation":
             default_team=value_sync_team,
             label="Actions for Valuation Table Players",
             user_draft_team=value_sync_team,
+        )
+        player_quick_actions_popover(
+            valuation_table["Player"].dropna().astype(str).tolist(),
+            key="valuation_table_qa",
+            user_draft_team=value_sync_team,
+            default_team=value_sync_team,
+            projection_lookup_df=valuation_df,
+            projection_lookup_name_col="fullName",
+            help_text="Valuation table — projection breakdown uses window stats + trends (not full fantasy market ranks unless merged on this page).",
         )
 
 
