@@ -342,13 +342,31 @@ def build_pid_to_clean_label_map(df):
 
 def resolve_fullname_to_clean_label(full_name, label_map):
     """Map a table/full name string to the app's canonical dropdown label (handles duplicate names with career spans)."""
-    fn = str(full_name).strip()
+    fn = " ".join(str(full_name).strip().split())
     if not fn:
         return None
     if fn in label_map:
         return fn
+    base = " ".join(fullname_base_from_label(fn).split())
+    if base in label_map:
+        return base
     candidates = sorted([lbl for lbl in label_map.keys() if lbl.startswith(fn + " (")])
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+    candidates = sorted([lbl for lbl in label_map.keys() if lbl.startswith(base + " (")])
+    if candidates:
+        return candidates[0]
+    base_matches = [lbl for lbl in label_map.keys() if fullname_base_from_label(lbl) == base]
+    if len(base_matches) == 1:
+        return base_matches[0]
+    if len(base_matches) > 1:
+        return sorted(base_matches)[0]
+    fl = fn.lower()
+    bl = base.lower()
+    ci = [lbl for lbl in label_map.keys() if str(lbl).lower() == fl or fullname_base_from_label(lbl).lower() == bl]
+    if len(ci) == 1:
+        return ci[0]
+    return None
 
 
 def fullname_base_from_label(label):
@@ -444,10 +462,16 @@ def append_compare_player_ordered(full_name, label_map):
     b = b if isinstance(b, str) and b in label_map else None
 
     old_compare = [x for x in (st.session_state.get("compare_players") or []) if isinstance(x, str) and x in label_map]
+    # When navigating from other pages, sig A/B session may be unset while compare_players still holds the last UI selection.
+    if a is None and old_compare:
+        a = old_compare[0]
+    if b is None and len(old_compare) > 1:
+        b = old_compare[1]
 
     if not a:
         st.session_state["pending_sig_player_a"] = lbl
         st.session_state["pending_compare_clear_player_b"] = True
+        st.session_state.pop("pending_sig_player_b", None)
         tail = [x for x in old_compare if x != lbl]
         st.session_state["pending_compare_players"] = ([lbl] + tail)[:3]
         return True
@@ -4962,8 +4986,18 @@ if active_page == "Comparison Tool":
     # Safe two-way sync setup.
     # Apply pending Player A/B changes to the top selector BEFORE the widget is created.
     pending_compare = st.session_state.pop("pending_compare_players", None)
-    if isinstance(pending_compare, list):
-        st.session_state["compare_players"] = [p for p in pending_compare if p in compare_player_options][:3]
+    if isinstance(pending_compare, list) and pending_compare:
+        opts_set = set(compare_player_options)
+        normalized = [p for p in pending_compare if p in opts_set][:3]
+        if not normalized:
+            st.warning(
+                "Send to Comparison: could not match those names to Lahman player labels. "
+                "Try the Comparison page dropdown if the table uses nicknames or extra text."
+            )
+        else:
+            # Drop stale multiselect session so navigation from other pages always applies the send.
+            st.session_state.pop("compare_players", None)
+            st.session_state["compare_players"] = normalized
 
     if st.session_state.pop("pending_compare_clear_player_b", False):
         st.session_state.pop("sig_player_b_clean", None)
