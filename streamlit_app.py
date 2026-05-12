@@ -5270,14 +5270,30 @@ if active_page == "Trend Value":
     agg_trend = agg_trend[agg_trend["G"] >= min_g_trend].copy()
     agg_trend = apply_stat_min_filters(agg_trend, "trend")
 
-    trend_table = recent_data_trend.groupby("playerID").apply(lambda g: pd.Series({
-        "R_trend": compute_trend_slope(g, "R"), "H_trend": compute_trend_slope(g, "H"),
-        "2B_trend": compute_trend_slope(g, "2B"), "3B_trend": compute_trend_slope(g, "3B"),
-        "HR_trend": compute_trend_slope(g, "HR"), "RBI_trend": compute_trend_slope(g, "RBI"),
-        "SB_trend": compute_trend_slope(g, "SB"), "BB_trend": compute_trend_slope(g, "BB"),
-        "BA_trend": compute_trend_slope(g, "BA"), "OBP_trend": compute_trend_slope(g, "OBP"),
-        "SLG_trend": compute_trend_slope(g, "SLG"), "OPS_trend": compute_trend_slope(g, "OPS")
-    })).reset_index()
+    _trend_slope_cols = [
+        "R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend",
+        "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend",
+    ]
+    if recent_data_trend.empty:
+        trend_table = pd.DataFrame(columns=["playerID"] + _trend_slope_cols)
+    else:
+        def _trend_slopes_for_player(g):
+            return pd.Series({
+                "R_trend": compute_trend_slope(g, "R"), "H_trend": compute_trend_slope(g, "H"),
+                "2B_trend": compute_trend_slope(g, "2B"), "3B_trend": compute_trend_slope(g, "3B"),
+                "HR_trend": compute_trend_slope(g, "HR"), "RBI_trend": compute_trend_slope(g, "RBI"),
+                "SB_trend": compute_trend_slope(g, "SB"), "BB_trend": compute_trend_slope(g, "BB"),
+                "BA_trend": compute_trend_slope(g, "BA"), "OBP_trend": compute_trend_slope(g, "OBP"),
+                "SLG_trend": compute_trend_slope(g, "SLG"), "OPS_trend": compute_trend_slope(g, "OPS"),
+            })
+
+        _gb = recent_data_trend.groupby("playerID", group_keys=False)
+        try:
+            trend_table = _gb.apply(_trend_slopes_for_player, include_groups=False).reset_index()
+        except TypeError:
+            trend_table = _gb.apply(_trend_slopes_for_player).reset_index()
+        if trend_table.columns.duplicated().any():
+            trend_table = trend_table.loc[:, ~trend_table.columns.duplicated()]
 
     trend_value_df = agg_trend.merge(trend_table, on="playerID", how="left")
     trend_value_df = add_latest_and_projection_columns(trend_value_df, recent_data_trend)
@@ -5397,6 +5413,16 @@ if active_page == "Trend Value":
 
     full_trend_label_map = build_clean_player_label_map(yearly_df)
     full_trend_labels = sorted(full_trend_label_map.keys())
+
+    # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
+    _stp = st.session_state.get("single_trend_dashboard_player")
+    if _stp is not None and full_trend_labels and _stp not in full_trend_labels:
+        st.session_state.pop("single_trend_dashboard_player", None)
+    _tmp_multi = st.session_state.get("trend_players_multi")
+    if isinstance(_tmp_multi, list) and full_trend_labels:
+        _filtered_multi = [x for x in _tmp_multi if x in full_trend_labels]
+        if _filtered_multi != _tmp_multi:
+            st.session_state["trend_players_multi"] = _filtered_multi
 
     if "trend_force_single_label" in st.session_state:
         _tsl = st.session_state.pop("trend_force_single_label")
