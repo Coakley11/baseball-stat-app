@@ -4105,14 +4105,12 @@ def player_quick_actions_popover(
             if st.button("Send to Comparison", key=f"{key}_qa_cmp_{sfx}"):
                 msg = execute_player_action_once(pick, "Send to Comparison Tool", team_for_draft, user_draft_team, label_map)
                 st.success(msg)
-                st.session_state["active_page"] = "Comparison Tool"
-                st.rerun()
+                request_sidebar_page("Comparison Tool")
         with b3:
             if st.button("Send to Trend", key=f"{key}_qa_tr_{sfx}"):
                 msg = execute_player_action_once(pick, "Send to Trend Page", team_for_draft, user_draft_team, label_map)
                 st.success(msg)
-                st.session_state["active_page"] = "Trend Value"
-                st.rerun()
+                request_sidebar_page("Trend Value")
 
         b4, b5, b6 = st.columns(3)
         with b4:
@@ -4328,10 +4326,11 @@ def _workflow_normalize_draft_queue():
 
 
 def render_persistent_workflow_sidebar(yearly_df_local):
-    """Compact fantasy workflow rail: queue, recents, comparison pairs, favorites."""
+    """Fantasy Workflow Center — visible in ``st.sidebar`` below page navigation."""
     _workflow_normalize_draft_queue()
     clean_map = build_clean_player_label_map(yearly_df_local)
     compare_opts = set(clean_map.keys())
+    dq = st.session_state.get("draft_queue", []) or []
 
     flash = st.session_state.pop("workflow_sidebar_flash", None)
     if flash:
@@ -4347,11 +4346,11 @@ def render_persistent_workflow_sidebar(yearly_df_local):
             f"No Lahman label match for «{str(pname)[:44]}». Open Trend Value after picking a player there."
         )
 
-    with st.sidebar.expander("Fantasy workflow", expanded=False):
-        st.caption("Session memory · rankings & formulas unchanged.")
+    st.sidebar.divider()
+    st.sidebar.markdown("### Fantasy Workflow Center")
+    st.sidebar.caption("Session lists persist while the app runs. Rankings, projections, and formulas are unchanged.")
 
-        st.markdown("##### Draft queue")
-        dq = st.session_state.get("draft_queue", []) or []
+    with st.sidebar.expander("1. Draft queue", expanded=bool(dq)):
         if not dq:
             st.caption("Empty — use **Add to Draft Queue** in player actions.")
         else:
@@ -4365,18 +4364,18 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                     if st.button("Cmp", key=f"wf_dq_cmp_{i}_{sfx}", help="Send to Comparison"):
                         if append_compare_player_ordered(pname, clean_map):
                             record_workflow_recent_player(pname)
-                            st.session_state["active_page"] = "Comparison Tool"
+                            request_sidebar_page("Comparison Tool")
                         else:
                             _flash_no_compare_match(pname)
-                        st.rerun()
+                            st.rerun()
                 with c1:
                     if st.button("Trd", key=f"wf_dq_tr_{i}_{sfx}", help="Send to Trend Value"):
                         if register_players_sent_to_trend_page(pname, clean_map):
                             record_workflow_recent_player(pname)
-                            st.session_state["active_page"] = "Trend Value"
+                            request_sidebar_page("Trend Value")
                         else:
                             _flash_no_trend_match(pname)
-                        st.rerun()
+                            st.rerun()
                 with c2:
                     if st.button("Asst", key=f"wf_dq_da_{i}_{sfx}", help="Draft Assistant focus"):
                         st.session_state["pending_draft_assistant_player"] = pname
@@ -4387,8 +4386,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                             fo.append(pname)
                         st.session_state["draft_assistant_focus_players"] = fo[-10:]
                         record_workflow_recent_player(pname)
-                        st.session_state["active_page"] = "Draft Assistant Simulator"
-                        st.rerun()
+                        request_sidebar_page("Draft Assistant Simulator")
                 with c3:
                     if st.button("Rm", key=f"wf_dq_rm_{i}_{sfx}", help="Remove from queue"):
                         st.session_state["draft_queue"] = [x for x in dq if str(x).strip() != str(pname).strip()]
@@ -4396,11 +4394,10 @@ def render_persistent_workflow_sidebar(yearly_df_local):
             if len(dq) > 8:
                 st.caption(f"+{len(dq) - 8} more in queue")
 
-        st.divider()
-        st.markdown("##### Recently viewed")
+    with st.sidebar.expander("2. Recently viewed players", expanded=False):
         rv = st.session_state.get("workflow_recently_viewed", [])
         if not isinstance(rv, list) or not rv:
-            st.caption("Updates when you analyze a player or use quick actions.")
+            st.caption("Updates when you select, send, or analyze a player.")
         else:
             tail = list(reversed(rv))[:8]
             for i, pname in enumerate(tail):
@@ -4416,18 +4413,18 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                     if st.button("Cmp", key=f"wf_rv_cmp_{i}_{sfx}", help="Comparison"):
                         if append_compare_player_ordered(pname, clean_map):
                             record_workflow_recent_player(pname)
-                            st.session_state["active_page"] = "Comparison Tool"
+                            request_sidebar_page("Comparison Tool")
                         else:
                             _flash_no_compare_match(pname)
-                        st.rerun()
+                            st.rerun()
                 with c1:
                     if st.button("Trd", key=f"wf_rv_tr_{i}_{sfx}", help="Trend Value"):
                         if register_players_sent_to_trend_page(pname, clean_map):
                             record_workflow_recent_player(pname)
-                            st.session_state["active_page"] = "Trend Value"
+                            request_sidebar_page("Trend Value")
                         else:
                             _flash_no_trend_match(pname)
-                        st.rerun()
+                            st.rerun()
                 with c2:
                     if st.button("Asst", key=f"wf_rv_da_{i}_{sfx}", help="Draft Assistant"):
                         st.session_state["pending_draft_assistant_player"] = pname
@@ -4438,8 +4435,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                             fo.append(pname)
                         st.session_state["draft_assistant_focus_players"] = fo[-10:]
                         record_workflow_recent_player(pname)
-                        st.session_state["active_page"] = "Draft Assistant Simulator"
-                        st.rerun()
+                        request_sidebar_page("Draft Assistant Simulator")
                 with c3:
                     if st.button("★" if not is_fav else "☆", key=f"wf_rv_fav_{i}_{sfx}", help="Favorite"):
                         st.session_state["workflow_favorite_targets"] = wf_sb.toggle_favorite(
@@ -4447,8 +4443,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                         )
                         st.rerun()
 
-        st.divider()
-        st.markdown("##### Recent comparisons")
+    with st.sidebar.expander("3. Recently compared players", expanded=False):
         rpairs = st.session_state.get("workflow_recent_compare_pairs", [])
         if not isinstance(rpairs, list) or not rpairs:
             st.caption("Pairs appear after Compare or **Send to Comparison**.")
@@ -4464,15 +4459,14 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                         st.session_state["workflow_sidebar_flash"] = (
                             "That pair no longer matches a Lahman label — pick from Comparison dropdowns."
                         )
+                        st.rerun()
                     else:
                         st.session_state["pending_compare_players"] = [a, b]
                         st.session_state["pending_sig_player_a"] = a
                         st.session_state["pending_sig_player_b"] = b
-                        st.session_state["active_page"] = "Comparison Tool"
-                    st.rerun()
+                        request_sidebar_page("Comparison Tool")
 
-        st.divider()
-        st.markdown("##### Favorite targets")
+    with st.sidebar.expander("4. Favorite targets", expanded=False):
         favs = st.session_state.get("workflow_favorite_targets", [])
         if not isinstance(favs, list) or not favs:
             st.caption("Use ★ on a recently viewed name.")
@@ -4486,18 +4480,18 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                     if st.button("Cmp", key=f"wf_fv_cmp_{i}_{sfx}", help="Comparison"):
                         if append_compare_player_ordered(pname, clean_map):
                             record_workflow_recent_player(pname)
-                            st.session_state["active_page"] = "Comparison Tool"
+                            request_sidebar_page("Comparison Tool")
                         else:
                             _flash_no_compare_match(pname)
-                        st.rerun()
+                            st.rerun()
                 with c1:
                     if st.button("Trd", key=f"wf_fv_tr_{i}_{sfx}", help="Trend Value"):
                         if register_players_sent_to_trend_page(pname, clean_map):
                             record_workflow_recent_player(pname)
-                            st.session_state["active_page"] = "Trend Value"
+                            request_sidebar_page("Trend Value")
                         else:
                             _flash_no_trend_match(pname)
-                        st.rerun()
+                            st.rerun()
                 with c2:
                     if st.button("Asst", key=f"wf_fv_da_{i}_{sfx}", help="Draft Assistant"):
                         st.session_state["pending_draft_assistant_player"] = pname
@@ -4508,8 +4502,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                             fo.append(pname)
                         st.session_state["draft_assistant_focus_players"] = fo[-10:]
                         record_workflow_recent_player(pname)
-                        st.session_state["active_page"] = "Draft Assistant Simulator"
-                        st.rerun()
+                        request_sidebar_page("Draft Assistant Simulator")
                 with c3:
                     if st.button("Rm", key=f"wf_fav_rm_{i}_{sfx}", help="Remove favorite"):
                         st.session_state["workflow_favorite_targets"] = wf_sb.remove_favorite(favs, pname)
@@ -4517,6 +4510,15 @@ def render_persistent_workflow_sidebar(yearly_df_local):
 
 
 PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
+_PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
+
+
+def request_sidebar_page(page: str):
+    """Defer page changes until before ``st.sidebar.radio`` — avoids StreamlitAPIException."""
+    p = str(page).strip()
+    if p in _PAGE_OPTION_SET:
+        st.session_state["_pending_active_page"] = p
+        st.rerun()
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -4535,6 +4537,7 @@ for _state_key in list(st.session_state.keys()):
     _key_text = str(_state_key).lower()
     if (
         _key_text == "active_page"
+        or _key_text == "_pending_active_page"
         or _key_text.startswith("download")
         or _key_text.startswith("export")
         or _key_text.startswith("button")
@@ -4589,6 +4592,10 @@ for _state_key in list(st.session_state.keys()):
         st.session_state[_state_key] = st.session_state[_state_key]
     except Exception:
         pass
+
+_pending_nav = st.session_state.pop("_pending_active_page", None)
+if _pending_nav and _pending_nav in _PAGE_OPTION_SET:
+    st.session_state["active_page"] = _pending_nav
 
 st.session_state.setdefault("active_page", "Historical Explorer")
 active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
