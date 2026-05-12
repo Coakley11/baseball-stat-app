@@ -11,6 +11,7 @@ import unicodedata
 import hashlib
 
 import workflow_sidebar as wf_sb
+from draft_team_fit import team_fit_summary_line
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -6441,6 +6442,19 @@ if active_page == "Draft Assistant Simulator":
         if not auto_category_needs:
             auto_category_needs = default_cat_fallback
 
+        roster_means = {}
+        pool_means = {}
+        _tf_cols = (
+            ["proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA"]
+            if draft_format == "5x5 Roto"
+            else ["proj_HR", "proj_RBI", "proj_SB", "proj_OPS", "proj_R", "AB"]
+        )
+        for _c in _tf_cols:
+            if _c in roster_df_auto.columns and not roster_df_auto.empty:
+                roster_means[_c] = pd.to_numeric(roster_df_auto[_c], errors="coerce").mean()
+            if _c in draft_df.columns:
+                pool_means[_c] = pd.to_numeric(draft_df[_c], errors="coerce").mean()
+
         with st.expander("Position & category priorities (auto-filled; override if needed)", expanded=False):
             st.markdown("#### Auto-detected team needs")
             st.caption("Derived from your Draft Room roster. Change only if you want a different build.")
@@ -6687,6 +6701,20 @@ if active_page == "Draft Assistant Simulator":
         available["Reason"] = available.apply(make_draft_reason, axis=1)
 
         recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
+
+        def _team_fit_for_row(r):
+            return team_fit_summary_line(
+                r,
+                draft_format=draft_format,
+                needed_positions=needed_positions,
+                category_needs=category_needs,
+                roster_means=roster_means,
+                pool_means=pool_means,
+                current_position_counts=dict(current_position_counts),
+                target_position_counts=target_position_counts,
+            )
+
+        recs["Team fit"] = recs.apply(_team_fit_for_row, axis=1)
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 
@@ -6712,7 +6740,7 @@ if active_page == "Draft Assistant Simulator":
                 else:
                     st.caption("Best team fit and best raw value align on the same player.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Team fit", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         focus_players = st.session_state.get("draft_assistant_focus_players", [])
@@ -6723,7 +6751,8 @@ if active_page == "Draft Assistant Simulator":
 
         st.caption(
             "Single recommendation table — same rankings as above, sortable export. "
-            "The live pick grid stays in Draft Room."
+            "The live pick grid stays in Draft Room. "
+            "**Team fit** is roster-context only (projections + your needs); it does not change scores."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
         compact_player_action_center(
