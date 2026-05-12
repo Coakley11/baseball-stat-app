@@ -4367,7 +4367,9 @@ PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Compari
 # Streamlit may clean up widget values from pages that are not currently rendered.
 # This safe keep-alive loop preserves filters/settings from previously visited pages
 # while avoiding button/download/form-submit keys, which Streamlit does not allow
-# to be reassigned programmatically.
+# to be reassigned programmatically. Also skip player_quick_actions_popover keys
+# (pattern …_qa_qa_…) — those include st.button keys; touching them triggers
+# StreamlitValueAssignmentNotAllowedError on the next render.
 for _state_key in list(st.session_state.keys()):
     _key_text = str(_state_key).lower()
     if (
@@ -4418,6 +4420,7 @@ for _state_key in list(st.session_state.keys()):
         or "draft_room_editor" in _key_text
         or "data_editor" in _key_text
         or "draft_room_editor" in _key_text
+        or "_qa_qa_" in _key_text
     ):
         continue
     try:
