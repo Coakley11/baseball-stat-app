@@ -4335,7 +4335,6 @@ def render_persistent_workflow_sidebar(yearly_df_local):
 
     flash = st.session_state.pop("workflow_sidebar_flash", None)
     if flash:
-        st.sidebar.caption("—")
         st.sidebar.warning(str(flash))
 
     def _flash_no_compare_match(pname):
@@ -4360,7 +4359,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
             for i, pname in enumerate(tail):
                 nm = pname[:30] + ("…" if len(pname) > 30 else "")
                 st.caption(nm)
-                c0, c1, c2, c3, c4 = st.columns([1, 1, 1, 1, 1])
+                c0, c1, c2, c3 = st.columns([1, 1, 1, 1])
                 sfx = abs(hash(pname)) % 1_000_003
                 with c0:
                     if st.button("Cmp", key=f"wf_dq_cmp_{i}_{sfx}", help="Send to Comparison"):
@@ -4394,8 +4393,6 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                     if st.button("Rm", key=f"wf_dq_rm_{i}_{sfx}", help="Remove from queue"):
                         st.session_state["draft_queue"] = [x for x in dq if str(x).strip() != str(pname).strip()]
                         st.rerun()
-                with c4:
-                    st.caption("")  # spacer
             if len(dq) > 8:
                 st.caption(f"+{len(dq) - 8} more in queue")
 
@@ -4409,7 +4406,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
             for i, pname in enumerate(tail):
                 nm = pname[:28] + ("…" if len(pname) > 28 else "")
                 st.caption(nm)
-                c0, c1, c2, c3, c4 = st.columns([1, 1, 1, 1, 1])
+                c0, c1, c2, c3 = st.columns([1, 1, 1, 1])
                 sfx = abs(hash(pname + "|rv")) % 1_000_003
                 favs = st.session_state.get("workflow_favorite_targets", [])
                 if not isinstance(favs, list):
@@ -4449,8 +4446,6 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                             favs, pname, wf_sb.FAVORITES_CAP
                         )
                         st.rerun()
-                with c4:
-                    st.caption("")
 
         st.divider()
         st.markdown("##### Recent comparisons")
@@ -4485,7 +4480,7 @@ def render_persistent_workflow_sidebar(yearly_df_local):
             for i, pname in enumerate(reversed(favs[-8:])):
                 nm = pname[:28] + ("…" if len(pname) > 28 else "")
                 st.caption(nm)
-                c0, c1, c2, c3, c4 = st.columns([1, 1, 1, 1, 1])
+                c0, c1, c2, c3 = st.columns([1, 1, 1, 1])
                 sfx = abs(hash(pname + "|fv")) % 1_000_003
                 with c0:
                     if st.button("Cmp", key=f"wf_fv_cmp_{i}_{sfx}", help="Comparison"):
@@ -4519,8 +4514,6 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                     if st.button("Rm", key=f"wf_fav_rm_{i}_{sfx}", help="Remove favorite"):
                         st.session_state["workflow_favorite_targets"] = wf_sb.remove_favorite(favs, pname)
                         st.rerun()
-                with c4:
-                    st.caption("")
 
 
 PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
