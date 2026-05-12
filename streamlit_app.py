@@ -10,6 +10,8 @@ import re
 import unicodedata
 import hashlib
 
+import workflow_sidebar as wf_sb
+
 BASE_DIR = Path(__file__).resolve().parent
 
 def read_required_csv(filename):
@@ -4304,114 +4306,80 @@ year_max = int(max(all_years))
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
-WORKFLOW_RECENT_VIEW_CAP = 12
-WORKFLOW_RECENT_COMPARE_CAP = 8
-WORKFLOW_FAVORITES_CAP = 20
-
-
 def record_workflow_recent_player(display_name):
     """MRU list of display names the user acted on (session only)."""
     name = str(display_name).strip()
     if not name:
         return
     lst = st.session_state.get("workflow_recently_viewed", [])
-    if not isinstance(lst, list):
-        lst = []
-    lst = [x for x in lst if str(x).strip() != name]
-    lst.append(name)
-    st.session_state["workflow_recently_viewed"] = lst[-WORKFLOW_RECENT_VIEW_CAP:]
+    st.session_state["workflow_recently_viewed"] = wf_sb.merge_mru(lst, name, wf_sb.RECENT_VIEW_CAP)
 
 
 def record_workflow_comparison_pair(label_a, label_b):
     """Store ordered A vs B pairs for one-click reload (deduped by unordered pair)."""
-    a = str(label_a).strip() if label_a else ""
-    b = str(label_b).strip() if label_b else ""
-    if not a or not b or a == b:
-        return
     pairs = st.session_state.get("workflow_recent_compare_pairs", [])
-    if not isinstance(pairs, list):
-        pairs = []
-    sig = tuple(sorted((a, b)))
-    pairs = [
-        p for p in pairs
-        if isinstance(p, (list, tuple)) and len(p) >= 2
-        and tuple(sorted((str(p[0]).strip(), str(p[1]).strip()))) != sig
-    ]
-    pairs.append([a, b])
-    st.session_state["workflow_recent_compare_pairs"] = pairs[-WORKFLOW_RECENT_COMPARE_CAP:]
+    st.session_state["workflow_recent_compare_pairs"] = wf_sb.merge_comparison_pairs(
+        pairs, label_a, label_b, wf_sb.RECENT_COMPARE_CAP
+    )
 
 
 def _workflow_normalize_draft_queue():
-    q = st.session_state.get("draft_queue", [])
-    if not isinstance(q, list):
-        q = []
-    seen = set()
-    out = []
-    for x in q:
-        s = str(x).strip()
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
-    st.session_state["draft_queue"] = out
+    st.session_state["draft_queue"] = wf_sb.normalize_dedupe_queue(st.session_state.get("draft_queue"))
 
 
 def render_persistent_workflow_sidebar(yearly_df_local):
-    """Compact cross-page memory: queue, recents, comparison pairs, favorites."""
+    """Compact fantasy workflow rail: queue, recents, comparison pairs, favorites."""
     _workflow_normalize_draft_queue()
     clean_map = build_clean_player_label_map(yearly_df_local)
     compare_opts = set(clean_map.keys())
 
-    with st.sidebar.expander("Workflow memory", expanded=False):
-        flash = st.session_state.pop("workflow_sidebar_flash", None)
-        if flash:
-            st.warning(str(flash))
+    flash = st.session_state.pop("workflow_sidebar_flash", None)
+    if flash:
+        st.sidebar.caption("—")
+        st.sidebar.warning(str(flash))
 
-        st.caption("Session shortcuts — rankings and formulas unchanged.")
+    def _flash_no_compare_match(pname):
+        st.session_state["workflow_sidebar_flash"] = (
+            f"No Lahman label match for «{str(pname)[:44]}». Open Comparison and pick from the dropdown."
+        )
 
-        st.markdown("**Draft queue**")
+    def _flash_no_trend_match(pname):
+        st.session_state["workflow_sidebar_flash"] = (
+            f"No Lahman label match for «{str(pname)[:44]}». Open Trend Value after picking a player there."
+        )
+
+    with st.sidebar.expander("Fantasy workflow", expanded=False):
+        st.caption("Session memory · rankings & formulas unchanged.")
+
+        st.markdown("##### Draft queue")
         dq = st.session_state.get("draft_queue", []) or []
         if not dq:
-            st.caption("(empty — queue from player actions)")
+            st.caption("Empty — use **Add to Draft Queue** in player actions.")
         else:
             tail = dq[-8:]
             for i, pname in enumerate(tail):
-                c1, c2 = st.columns([4, 1])
-                with c1:
-                    st.caption(pname[:44] + ("…" if len(pname) > 44 else ""))
-                with c2:
-                    sfx = abs(hash(pname)) % 1_000_003
-                    if st.button("✕", key=f"wf_dq_rm_{i}_{sfx}", help="Remove from queue"):
-                        st.session_state["draft_queue"] = [x for x in dq if str(x).strip() != str(pname).strip()]
-                        st.rerun()
-            if len(dq) > 8:
-                st.caption(f"+{len(dq) - 8} more")
-
-        st.divider()
-        st.markdown("**Recently viewed**")
-        rv = st.session_state.get("workflow_recently_viewed", [])
-        if not isinstance(rv, list) or not rv:
-            st.caption("(filled when you run player actions or projection breakdown)")
-        else:
-            tail = list(reversed(rv))[:8]
-            for i, pname in enumerate(tail):
-                c1, c2, c3 = st.columns([3, 1, 1])
-                with c1:
-                    st.caption(pname[:34] + ("…" if len(pname) > 34 else ""))
-                with c2:
-                    favs = st.session_state.get("workflow_favorite_targets", [])
-                    if not isinstance(favs, list):
-                        favs = []
-                    is_fav = pname in favs
-                    sfx = abs(hash(pname)) % 1_000_003
-                    if st.button("★" if not is_fav else "☆", key=f"wf_rv_fav_{i}_{sfx}", help="Toggle favorite"):
-                        if is_fav:
-                            st.session_state["workflow_favorite_targets"] = [f for f in favs if f != pname]
+                nm = pname[:30] + ("…" if len(pname) > 30 else "")
+                st.caption(nm)
+                c0, c1, c2, c3, c4 = st.columns([1, 1, 1, 1, 1])
+                sfx = abs(hash(pname)) % 1_000_003
+                with c0:
+                    if st.button("Cmp", key=f"wf_dq_cmp_{i}_{sfx}", help="Send to Comparison"):
+                        if append_compare_player_ordered(pname, clean_map):
+                            record_workflow_recent_player(pname)
+                            st.session_state["active_page"] = "Comparison Tool"
                         else:
-                            nf = favs + [pname]
-                            st.session_state["workflow_favorite_targets"] = nf[-WORKFLOW_FAVORITES_CAP:]
+                            _flash_no_compare_match(pname)
                         st.rerun()
-                with c3:
-                    if st.button("DA", key=f"wf_rv_da_{i}_{sfx}", help="Open Draft Assistant with this player"):
+                with c1:
+                    if st.button("Trd", key=f"wf_dq_tr_{i}_{sfx}", help="Send to Trend Value"):
+                        if register_players_sent_to_trend_page(pname, clean_map):
+                            record_workflow_recent_player(pname)
+                            st.session_state["active_page"] = "Trend Value"
+                        else:
+                            _flash_no_trend_match(pname)
+                        st.rerun()
+                with c2:
+                    if st.button("Asst", key=f"wf_dq_da_{i}_{sfx}", help="Draft Assistant focus"):
                         st.session_state["pending_draft_assistant_player"] = pname
                         fo = st.session_state.get("draft_assistant_focus_players", [])
                         if not isinstance(fo, list):
@@ -4419,25 +4387,87 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                         if pname not in fo:
                             fo.append(pname)
                         st.session_state["draft_assistant_focus_players"] = fo[-10:]
+                        record_workflow_recent_player(pname)
                         st.session_state["active_page"] = "Draft Assistant Simulator"
                         st.rerun()
+                with c3:
+                    if st.button("Rm", key=f"wf_dq_rm_{i}_{sfx}", help="Remove from queue"):
+                        st.session_state["draft_queue"] = [x for x in dq if str(x).strip() != str(pname).strip()]
+                        st.rerun()
+                with c4:
+                    st.caption("")  # spacer
+            if len(dq) > 8:
+                st.caption(f"+{len(dq) - 8} more in queue")
 
         st.divider()
-        st.markdown("**Recent comparisons**")
+        st.markdown("##### Recently viewed")
+        rv = st.session_state.get("workflow_recently_viewed", [])
+        if not isinstance(rv, list) or not rv:
+            st.caption("Updates when you analyze a player or use quick actions.")
+        else:
+            tail = list(reversed(rv))[:8]
+            for i, pname in enumerate(tail):
+                nm = pname[:28] + ("…" if len(pname) > 28 else "")
+                st.caption(nm)
+                c0, c1, c2, c3, c4 = st.columns([1, 1, 1, 1, 1])
+                sfx = abs(hash(pname + "|rv")) % 1_000_003
+                favs = st.session_state.get("workflow_favorite_targets", [])
+                if not isinstance(favs, list):
+                    favs = []
+                is_fav = pname in favs
+                with c0:
+                    if st.button("Cmp", key=f"wf_rv_cmp_{i}_{sfx}", help="Comparison"):
+                        if append_compare_player_ordered(pname, clean_map):
+                            record_workflow_recent_player(pname)
+                            st.session_state["active_page"] = "Comparison Tool"
+                        else:
+                            _flash_no_compare_match(pname)
+                        st.rerun()
+                with c1:
+                    if st.button("Trd", key=f"wf_rv_tr_{i}_{sfx}", help="Trend Value"):
+                        if register_players_sent_to_trend_page(pname, clean_map):
+                            record_workflow_recent_player(pname)
+                            st.session_state["active_page"] = "Trend Value"
+                        else:
+                            _flash_no_trend_match(pname)
+                        st.rerun()
+                with c2:
+                    if st.button("Asst", key=f"wf_rv_da_{i}_{sfx}", help="Draft Assistant"):
+                        st.session_state["pending_draft_assistant_player"] = pname
+                        fo = st.session_state.get("draft_assistant_focus_players", [])
+                        if not isinstance(fo, list):
+                            fo = []
+                        if pname not in fo:
+                            fo.append(pname)
+                        st.session_state["draft_assistant_focus_players"] = fo[-10:]
+                        record_workflow_recent_player(pname)
+                        st.session_state["active_page"] = "Draft Assistant Simulator"
+                        st.rerun()
+                with c3:
+                    if st.button("★" if not is_fav else "☆", key=f"wf_rv_fav_{i}_{sfx}", help="Favorite"):
+                        st.session_state["workflow_favorite_targets"] = wf_sb.toggle_favorite(
+                            favs, pname, wf_sb.FAVORITES_CAP
+                        )
+                        st.rerun()
+                with c4:
+                    st.caption("")
+
+        st.divider()
+        st.markdown("##### Recent comparisons")
         rpairs = st.session_state.get("workflow_recent_compare_pairs", [])
         if not isinstance(rpairs, list) or not rpairs:
-            st.caption("(after two players are set via Send to Comparison)")
+            st.caption("Pairs appear after Compare or **Send to Comparison**.")
         else:
             for i, pr in enumerate(reversed(rpairs[-8:])):
                 if not isinstance(pr, (list, tuple)) or len(pr) < 2:
                     continue
                 a, b = str(pr[0]), str(pr[1])
-                label = f"{a[:16]}… vs {b[:16]}…" if len(a) > 18 or len(b) > 18 else f"{a} vs {b}"
+                label = f"{a[:14]}… vs {b[:14]}…" if len(a) > 16 or len(b) > 16 else f"{a} vs {b}"
                 sfx = abs(hash(a + "|" + b)) % 1_000_003
-                if st.button(label, key=f"wf_cmp_{i}_{sfx}", help="Reload Comparison Tool with this pair"):
+                if st.button(label, key=f"wf_cmp_{i}_{sfx}", help="Open Comparison with this pair"):
                     if a not in compare_opts or b not in compare_opts:
                         st.session_state["workflow_sidebar_flash"] = (
-                            "That pair no longer matches a Lahman label — pick players from Comparison dropdowns."
+                            "That pair no longer matches a Lahman label — pick from Comparison dropdowns."
                         )
                     else:
                         st.session_state["pending_compare_players"] = [a, b]
@@ -4447,20 +4477,50 @@ def render_persistent_workflow_sidebar(yearly_df_local):
                     st.rerun()
 
         st.divider()
-        st.markdown("**Favorite targets**")
+        st.markdown("##### Favorite targets")
         favs = st.session_state.get("workflow_favorite_targets", [])
         if not isinstance(favs, list) or not favs:
-            st.caption("(toggle ★ on a recent name)")
+            st.caption("Use ★ on a recently viewed name.")
         else:
             for i, pname in enumerate(reversed(favs[-8:])):
-                c1, c2 = st.columns([4, 1])
-                with c1:
-                    st.caption(pname[:40] + ("…" if len(pname) > 40 else ""))
-                with c2:
-                    sfx = abs(hash(pname)) % 1_000_003
-                    if st.button("✕", key=f"wf_fav_rm_{i}_{sfx}", help="Remove favorite"):
-                        st.session_state["workflow_favorite_targets"] = [f for f in favs if f != pname]
+                nm = pname[:28] + ("…" if len(pname) > 28 else "")
+                st.caption(nm)
+                c0, c1, c2, c3, c4 = st.columns([1, 1, 1, 1, 1])
+                sfx = abs(hash(pname + "|fv")) % 1_000_003
+                with c0:
+                    if st.button("Cmp", key=f"wf_fv_cmp_{i}_{sfx}", help="Comparison"):
+                        if append_compare_player_ordered(pname, clean_map):
+                            record_workflow_recent_player(pname)
+                            st.session_state["active_page"] = "Comparison Tool"
+                        else:
+                            _flash_no_compare_match(pname)
                         st.rerun()
+                with c1:
+                    if st.button("Trd", key=f"wf_fv_tr_{i}_{sfx}", help="Trend Value"):
+                        if register_players_sent_to_trend_page(pname, clean_map):
+                            record_workflow_recent_player(pname)
+                            st.session_state["active_page"] = "Trend Value"
+                        else:
+                            _flash_no_trend_match(pname)
+                        st.rerun()
+                with c2:
+                    if st.button("Asst", key=f"wf_fv_da_{i}_{sfx}", help="Draft Assistant"):
+                        st.session_state["pending_draft_assistant_player"] = pname
+                        fo = st.session_state.get("draft_assistant_focus_players", [])
+                        if not isinstance(fo, list):
+                            fo = []
+                        if pname not in fo:
+                            fo.append(pname)
+                        st.session_state["draft_assistant_focus_players"] = fo[-10:]
+                        record_workflow_recent_player(pname)
+                        st.session_state["active_page"] = "Draft Assistant Simulator"
+                        st.rerun()
+                with c3:
+                    if st.button("Rm", key=f"wf_fav_rm_{i}_{sfx}", help="Remove favorite"):
+                        st.session_state["workflow_favorite_targets"] = wf_sb.remove_favorite(favs, pname)
+                        st.rerun()
+                with c4:
+                    st.caption("")
 
 
 PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
