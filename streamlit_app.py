@@ -11,6 +11,7 @@ import unicodedata
 import hashlib
 
 import workflow_sidebar as wf_sb
+from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -6740,6 +6741,42 @@ if active_page == "Draft Assistant Simulator":
             )
 
         recs["Team fit"] = recs.apply(_team_fit_for_row, axis=1)
+
+        position_dropoff_by_pos: dict = {}
+        _drop_vals: list[float] = []
+        for _row in position_summary_rows:
+            _p = str(_row.get("Position", "")).strip()
+            if not _p:
+                continue
+            _dv = _row.get("Scarcity Dropoff", np.nan)
+            position_dropoff_by_pos[_p] = _dv
+            if pd.notna(_dv):
+                try:
+                    _drop_vals.append(float(_dv))
+                except (TypeError, ValueError):
+                    pass
+        median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
+        _sb_floor = 12 if draft_format == "5x5 Roto" else 10
+        remaining_high_sb_count = (
+            int((pd.to_numeric(available["proj_SB"], errors="coerce") >= _sb_floor).sum())
+            if "proj_SB" in available.columns
+            else 0
+        )
+
+        def _strategy_for_row(r):
+            return draft_strategy_line(
+                r,
+                draft_format=draft_format,
+                current_pick=int(current_pick),
+                position_dropoff_by_pos=position_dropoff_by_pos,
+                median_scarcity_dropoff=median_scarcity_dropoff,
+                remaining_high_sb_count=remaining_high_sb_count,
+                category_needs=category_needs,
+                roster_means=roster_means,
+                pool_means=pool_means,
+            )
+
+        recs["Strategy"] = recs.apply(_strategy_for_row, axis=1)
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 
@@ -6765,7 +6802,7 @@ if active_page == "Draft Assistant Simulator":
                 else:
                     st.caption("Best team fit and best raw value align on the same player.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Team fit", "Reason"]
+        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Team fit", "Strategy", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         focus_players = st.session_state.get("draft_assistant_focus_players", [])
@@ -6777,7 +6814,8 @@ if active_page == "Draft Assistant Simulator":
         st.caption(
             "Single recommendation table — same rankings as above, sortable export. "
             "The live pick grid stays in Draft Room. "
-            "**Team fit** is one or two roster-aware sentences (synced roster projections vs the pool and your position targets); it does not change scores."
+            "**Team fit** is roster-aware sentences (synced roster vs pool projections). "
+            "**Strategy** reads the same board scarcity, availability probability, Fantasy Edge, and your category flags — also score-free."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
         compact_player_action_center(
@@ -7073,7 +7111,10 @@ if active_page == "Draft Room Simulator":
 
     with dr_tab_board:
         st.subheader("Live draft board")
-        st.caption("Snake-draft grid. **Draft Assistant** reads this state automatically for next-pick rankings.")
+        st.caption(
+            "Snake-draft grid. **Draft Assistant** reads this state automatically for next-pick rankings "
+            "(including **Strategy** hints on scarcity, timing, and value vs ADP — hitter pool only here)."
+        )
 
         # Keep the saved draft table in the non-widget key "draft_room_table".
         # Do not use a data_editor widget key here, because Streamlit can throw
