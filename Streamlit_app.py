@@ -6445,15 +6445,28 @@ if active_page == "Draft Assistant Simulator":
         roster_means = {}
         pool_means = {}
         _tf_cols = (
-            ["proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA"]
+            ["proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OBP", "proj_OPS"]
             if draft_format == "5x5 Roto"
-            else ["proj_HR", "proj_RBI", "proj_SB", "proj_OPS", "proj_R", "AB"]
+            else ["proj_HR", "proj_RBI", "proj_SB", "proj_OPS", "proj_R", "AB", "proj_OBP", "proj_BB"]
         )
         for _c in _tf_cols:
             if _c in roster_df_auto.columns and not roster_df_auto.empty:
                 roster_means[_c] = pd.to_numeric(roster_df_auto[_c], errors="coerce").mean()
             if _c in draft_df.columns:
                 pool_means[_c] = pd.to_numeric(draft_df[_c], errors="coerce").mean()
+
+        roster_expert_std_mean = None
+        pool_expert_std_mean = None
+        if "Expert Std Dev" in draft_df.columns:
+            _ps = pd.to_numeric(draft_df["Expert Std Dev"], errors="coerce").mean()
+            pool_expert_std_mean = float(_ps) if pd.notna(_ps) else None
+        if (
+            pool_expert_std_mean is not None
+            and not roster_df_auto.empty
+            and "Expert Std Dev" in roster_df_auto.columns
+        ):
+            _rs = pd.to_numeric(roster_df_auto["Expert Std Dev"], errors="coerce").mean()
+            roster_expert_std_mean = float(_rs) if pd.notna(_rs) else None
 
         with st.expander("Position & category priorities (auto-filled; override if needed)", expanded=False):
             st.markdown("#### Auto-detected team needs")
@@ -6712,6 +6725,8 @@ if active_page == "Draft Assistant Simulator":
                 pool_means=pool_means,
                 current_position_counts=dict(current_position_counts),
                 target_position_counts=target_position_counts,
+                roster_expert_std_mean=roster_expert_std_mean,
+                pool_expert_std_mean=pool_expert_std_mean,
             )
 
         recs["Team fit"] = recs.apply(_team_fit_for_row, axis=1)
@@ -6752,7 +6767,7 @@ if active_page == "Draft Assistant Simulator":
         st.caption(
             "Single recommendation table — same rankings as above, sortable export. "
             "The live pick grid stays in Draft Room. "
-            "**Team fit** is roster-context only (projections + your needs); it does not change scores."
+            "**Team fit** is one or two roster-aware sentences (synced roster projections vs the pool and your position targets); it does not change scores."
         )
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
         compact_player_action_center(
