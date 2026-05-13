@@ -752,18 +752,39 @@ def apply_stat_min_filters(df, prefix):
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    st.subheader("Minimum Stat Filters")
-    cols = st.columns(4)
-    mins = {}
-    for i, stat in enumerate(stat_columns):
-        with cols[i % 4]:
-            if stat in RATE_STATS:
-                mins[stat] = st.number_input(f"Min {stat}", min_value=0.0, value=0.0, step=0.001, format="%.3f", key=f"{prefix}_{stat}_min")
-            else:
-                mins[stat] = st.number_input(f"Min {stat}", min_value=0, value=0, step=1, key=f"{prefix}_{stat}_min")
+    with st.expander("Stat minimum filters", expanded=False):
+        count_tab, rate_tab = st.tabs(["Counting stats", "Rate stats"])
+        mins = {}
+        with count_tab:
+            cols = st.columns(4)
+            count_filter_cols = [c for c in stat_columns if c not in RATE_STATS]
+            for i, stat in enumerate(count_filter_cols):
+                with cols[i % 4]:
+                    mins[stat] = st.number_input(
+                        f"Min {stat}",
+                        min_value=0,
+                        value=0,
+                        step=1,
+                        key=f"{prefix}_{stat}_min",
+                    )
+        with rate_tab:
+            cols = st.columns(4)
+            for i, stat in enumerate([c for c in stat_columns if c in RATE_STATS]):
+                with cols[i % 4]:
+                    mins[stat] = st.number_input(
+                        f"Min {stat}",
+                        min_value=0.0,
+                        value=0.0,
+                        step=0.001,
+                        format="%.3f",
+                        key=f"{prefix}_{stat}_min",
+                    )
+
+    mask = pd.Series(True, index=df.index)
     for stat, min_val in mins.items():
-        df = df[df[stat] >= min_val]
-    return df
+        if min_val:
+            mask &= df[stat].fillna(-np.inf) >= min_val
+    return df.loc[mask].copy()
 
 def color_trend(val):
     try:
@@ -1077,7 +1098,7 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
     """Render a table quickly and add a CSV export button that opens cleanly in Excel."""
     table_df = df.copy()
     if len(table_df) > display_rows:
-        st.caption(f"Showing first {display_rows:,} rows for speed. Export downloads all {len(table_df):,} rows.")
+        st.caption(f"Showing first {display_rows:,} rows. Export downloads all {len(table_df):,} rows.")
         display_df = table_df.head(display_rows)
     else:
         display_df = table_df
@@ -1262,6 +1283,54 @@ def get_scatter_league_display(row):
         return "National League"
     return "Unknown"
 
+
+def _baseball_age_series(df):
+    def _num_col(col, default=np.nan):
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce")
+        return pd.Series(default, index=df.index)
+
+    season = _num_col("yearID")
+    birth_year = _num_col("birthYear")
+    birth_month = _num_col("birthMonth", 7).fillna(7)
+    birth_day = _num_col("birthDay", 1).fillna(1)
+    age = season - birth_year
+    age = age - ((birth_month > 7) | ((birth_month == 7) & (birth_day > 1))).astype(int)
+    return age.where(season.notna() & birth_year.notna(), np.nan)
+
+
+def _add_scatter_context_columns(plot_df):
+    """Add team, league, and display labels without row-wise dataframe apply."""
+    out = plot_df.copy()
+    team_group = pd.Series("Unknown", index=out.index, dtype="object")
+    for col in ["primaryTeamName", "teamName", "Team Color Group", "Franchise"]:
+        if col in out.columns:
+            normalized = out[col].map(normalize_current_team_name)
+            team_group = team_group.mask(team_group.eq("Unknown") & normalized.ne("Unknown"), normalized)
+
+    out["Team Color Group"] = team_group
+    out["Team"] = team_group
+    for col in ["primaryHistoricalTeamName", "teamHistoricalName", "displayTeam", "Team"]:
+        if col in out.columns:
+            vals = out[col].where(out[col].notna(), "").astype(str).str.strip()
+            out["Team"] = out["Team"].mask(team_group.ne("Unknown") & vals.ne(""), vals)
+    out.loc[team_group.eq("Unknown"), "Team"] = "Unknown"
+
+    league = pd.Series("Unknown", index=out.index, dtype="object")
+    league = league.mask(team_group.isin(AL_TEAM_NAMES), "American League")
+    league = league.mask(team_group.isin(NL_TEAM_NAMES), "National League")
+    raw_league = pd.Series("", index=out.index, dtype="object")
+    for col in ["teamLeague", "primaryLeague", "League"]:
+        if col in out.columns:
+            vals = out[col].where(out[col].notna(), "").astype(str).str.strip()
+            raw_league = raw_league.mask(raw_league.eq("") & vals.ne(""), vals)
+    league = league.mask(league.eq("Unknown") & raw_league.isin(["AL", "American League"]), "American League")
+    league = league.mask(league.eq("Unknown") & raw_league.isin(["NL", "National League"]), "National League")
+    out["League"] = league
+    return out
+
+
+@st.cache_data(show_spinner=False)
 def _prepare_historical_scatter_data(hist_df, team_col):
     """Build plot-ready data for Historical Explorer.
 
@@ -1273,28 +1342,18 @@ def _prepare_historical_scatter_data(hist_df, team_col):
     plot_df = hist_df.copy()
     plot_df["Player"] = plot_df.get("fullName", "")
     plot_df["Year"] = pd.to_numeric(plot_df.get("yearID"), errors="coerce")
-    # Show historical team in tooltip, but color by current franchise group.
-    plot_df["Team Color Group"] = plot_df.apply(get_scatter_team_color_group, axis=1)
-    plot_df["Team"] = plot_df.apply(get_scatter_team_display, axis=1)
+    plot_df = _add_scatter_context_columns(plot_df)
     plot_df["Primary Position"] = plot_df.get("displayPosition", plot_df.get("primaryPos", plot_df.get("careerPrimaryPos", "")))
     plot_df["Bats"] = plot_df.get("bats", "")
-    plot_df["League"] = plot_df.apply(get_scatter_league_display, axis=1)
 
     if {"yearID", "birthYear"}.issubset(plot_df.columns):
-        plot_df["Age"] = plot_df.apply(
-            lambda r: baseball_age_for_season(
-                r.get("yearID"),
-                r.get("birthYear"),
-                r.get("birthMonth", np.nan),
-                r.get("birthDay", np.nan)
-            ),
-            axis=1
-        )
+        plot_df["Age"] = _baseball_age_series(plot_df)
     # Keep games labeled as G only. Do not create a duplicate "Games" field.
     if "G" in plot_df.columns:
         plot_df["G"] = pd.to_numeric(plot_df["G"], errors="coerce")
     return plot_df
 
+@st.cache_data(show_spinner=False)
 def _prepare_career_scatter_data(career_df, filtered_source_df=None):
     """Build plot-ready data for Career Totals.
 
@@ -1305,12 +1364,9 @@ def _prepare_career_scatter_data(career_df, filtered_source_df=None):
         return pd.DataFrame()
     plot_df = career_df.copy()
     plot_df["Player"] = plot_df.get("fullName", plot_df.get("Player", ""))
-    # Show historical team in tooltip, but color by current franchise group.
-    plot_df["Team Color Group"] = plot_df.apply(get_scatter_team_color_group, axis=1)
-    plot_df["Team"] = plot_df.apply(get_scatter_team_display, axis=1)
+    plot_df = _add_scatter_context_columns(plot_df)
     plot_df["Primary Position"] = plot_df.get("displayPosition", plot_df.get("Primary Position", plot_df.get("careerPrimaryPos", plot_df.get("primaryPos", ""))))
     plot_df["Bats"] = plot_df.get("bats", plot_df.get("Bats", ""))
-    plot_df["League"] = plot_df.apply(get_scatter_league_display, axis=1)
     # Keep games labeled as G only. Do not create a duplicate "Games" field.
     if "G" in plot_df.columns:
         plot_df["G"] = pd.to_numeric(plot_df["G"], errors="coerce")
@@ -1318,15 +1374,7 @@ def _prepare_career_scatter_data(career_df, filtered_source_df=None):
     if filtered_source_df is not None and not filtered_source_df.empty and "playerID" in plot_df.columns:
         src = filtered_source_df.copy()
         if {"yearID", "birthYear"}.issubset(src.columns):
-            src["Season Age"] = src.apply(
-                lambda r: baseball_age_for_season(
-                    r.get("yearID"),
-                    r.get("birthYear"),
-                    r.get("birthMonth", np.nan),
-                    r.get("birthDay", np.nan)
-                ),
-                axis=1
-            )
+            src["Season Age"] = _baseball_age_series(src)
             weight_col = "AB" if "AB" in src.columns else ("G" if "G" in src.columns else None)
             if weight_col:
                 src["_age_weight"] = pd.to_numeric(src[weight_col], errors="coerce").fillna(0)
@@ -1742,51 +1790,51 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         return
 
     st.subheader(title)
-    st.caption(
-        "The scatterplot uses the current filtered results. It can also use internal chart fields "
-        "like Age and Games even when those fields are not shown in the output table."
-    )
 
     default_x = "HR" if "HR" in numeric_cols else numeric_cols[0]
     default_y = "SB" if "SB" in numeric_cols else ("OPS" if "OPS" in numeric_cols else numeric_cols[min(1, len(numeric_cols)-1)])
 
-    p1, p2, p3, p4 = st.columns([1, 1, 1, 1])
-    with p1:
-        x_col = st.selectbox("X-axis", numeric_cols, index=numeric_cols.index(default_x), key=f"{key_prefix}_scatter_x")
-    with p2:
-        y_col = st.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(default_y), key=f"{key_prefix}_scatter_y")
-    cat_options = ["None"] + _categorical_plot_columns(plot_df)
-    with p3:
-        color_col = st.selectbox("Color by", cat_options, index=0, key=f"{key_prefix}_scatter_color")
-    size_options = ["None"] + numeric_cols
-    with p4:
-        size_col = st.selectbox("Size by", size_options, index=0, key=f"{key_prefix}_scatter_size")
+    with st.expander("Scatterplot options", expanded=False):
+        p1, p2, p3, p4 = st.columns([1, 1, 1, 1])
+        with p1:
+            x_col = st.selectbox("X-axis", numeric_cols, index=numeric_cols.index(default_x), key=f"{key_prefix}_scatter_x")
+        with p2:
+            y_col = st.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(default_y), key=f"{key_prefix}_scatter_y")
+        cat_options = ["None"] + _categorical_plot_columns(plot_df)
+        with p3:
+            color_col = st.selectbox("Color by", cat_options, index=0, key=f"{key_prefix}_scatter_color")
+        size_options = ["None"] + numeric_cols
+        with p4:
+            size_col = st.selectbox("Size by", size_options, index=0, key=f"{key_prefix}_scatter_size")
 
-    max_points = st.slider(
-        "Maximum points to plot",
-        min_value=250,
-        max_value=5000,
-        value=min(1500, max(250, len(plot_df))),
-        step=250,
-        key=f"{key_prefix}_scatter_max_points",
-        help="Lower values make the chart faster when a filter returns a very large table."
-    )
+        max_points = st.slider(
+            "Maximum points to plot",
+            min_value=250,
+            max_value=5000,
+            value=min(1500, max(250, len(plot_df))),
+            step=250,
+            key=f"{key_prefix}_scatter_max_points",
+            help="Lower values make very large charts more responsive."
+        )
 
-    view_mode = st.radio(
-        "Scatterplot View",
-        ["Focused View", "Full Outlier View"],
-        horizontal=True,
-        key=f"{key_prefix}_scatter_view_mode",
-        help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every outlier."
-    )
+        view_mode = st.radio(
+            "Scatterplot view",
+            ["Focused View", "Full Outlier View"],
+            horizontal=True,
+            key=f"{key_prefix}_scatter_view_mode",
+            help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every outlier."
+        )
 
-    trendline_type = st.selectbox(
-        "Trendline Type",
-        ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
-        index=0,
-        key=f"{key_prefix}_scatter_trendline_type",
-        help="Choose a linear, polynomial, logarithmic, exponential, or automatic best-fit curve for the selected X/Y relationship."
-    )
+        show_trendline = st.checkbox("Show trendline", value=False, key=f"{key_prefix}_scatter_show_trendline")
+        trendline_type = "Linear"
+        if show_trendline:
+            trendline_type = st.selectbox(
+                "Trendline type",
+                ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
+                index=0,
+                key=f"{key_prefix}_scatter_trendline_type",
+                help="Choose a curve for the selected X/Y relationship."
+            )
 
     chart_df = plot_df.copy()
     chart_df[x_col] = pd.to_numeric(chart_df[x_col], errors="coerce")
@@ -1811,10 +1859,10 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
                 chart_df = pd.concat([chart_df.loc[list(extreme_idx)], sampled], axis=0)
             else:
                 chart_df = chart_df.loc[list(extreme_idx)].head(max_points)
-            st.caption(f"Showing {len(chart_df):,} plotted points for speed, with extreme outliers preserved. Export/narrow filters for all rows.")
+            st.caption(f"Showing {len(chart_df):,} plotted points with extreme outliers preserved. Export or narrow filters for all rows.")
         else:
             chart_df = chart_df.sort_values(y_col, ascending=False).head(max_points)
-            st.caption(f"Showing {max_points:,} plotted points for speed. Narrow filters for a complete visual.")
+            st.caption(f"Showing {max_points:,} plotted points. Narrow filters for a complete visual.")
 
     if key_prefix == "career":
         tooltip_order = [
@@ -1856,7 +1904,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
 
     points = alt.Chart(chart_df).mark_circle(**mark_kwargs).encode(**enc)
 
-    fit = _best_fit_stats(chart_df, x_col, y_col, trendline_type)
+    fit = _best_fit_stats(chart_df, x_col, y_col, trendline_type) if show_trendline else None
     chart = points
     if fit is not None:
         fit_line = (
@@ -1879,7 +1927,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         m3.metric("R²", f"{fit['r2']:.3f}" if np.isfinite(fit.get('r2', np.nan)) else "N/A")
         m4.metric("Rows Used", f"{fit['n']:,}")
         st.caption(f"Best-fit equation: {fit.get('equation', '')}")
-    else:
+    elif show_trendline:
         st.caption("Best-fit curve unavailable because there are not enough valid numeric points, one axis has no variation, or the selected model requires positive values.")
 
 def clean_feature_name(feature):
@@ -2112,7 +2160,7 @@ def make_fantasy_market_reason(row, kind="sleeper"):
             else:
                 gap_text = "the market gap is not large, so this is more of a watch-list value than a major sleeper"
         else:
-            gap_text = "market rank is missing, so this is based mostly on the internal projection"
+            gap_text = "market rank is missing, so this is based mostly on the projection"
 
         if strengths:
             return f"{player} is flagged because {gap_text}, and the projection shows " + "; ".join(strengths[:3]) + "."
@@ -2165,6 +2213,7 @@ def baseball_age_for_season(season_year, birth_year, birth_month=np.nan, birth_d
         age -= 1
     return age
 
+@st.cache_data(show_spinner=False)
 def add_latest_and_projection_columns(base_df, recent_data):
     """Add latest-season stats and simple next-season trend projections.
 
@@ -2696,6 +2745,7 @@ def make_ml_prediction_summary(row, sort_stat):
     )
 
 
+@st.cache_data(show_spinner=False)
 def aggregate_player_year_team(df):
     """One row per player-year-actual team. Used when Historical Explorer shows split seasons."""
     if df.empty:
@@ -2711,6 +2761,7 @@ def aggregate_player_year_team(df):
     return out
 
 
+@st.cache_data(show_spinner=False)
 def aggregate_player_year_primary_team(df):
     """One row per player-year, with stats combined and Team set to the primary team in the filtered data."""
     if df.empty:
@@ -2740,6 +2791,7 @@ def aggregate_player_year_primary_team(df):
     return out
 
 
+@st.cache_data(show_spinner=False)
 def add_primary_team_for_career(grouped_df, source_df):
     """Attach primary team/position to player-level career totals based on most games/AB in the filtered source."""
     if grouped_df.empty or source_df.empty:
@@ -4061,10 +4113,7 @@ def compact_player_action_center(
         st.info("No players in this section for actions.")
         return None
 
-    st.caption(
-        "Use the **popover** below — Streamlit cannot attach hover menus to table cells. "
-        "All former actions are here: queue, comparison, trend, assistant, trades, draft (on your turn), simulate, projection breakdown."
-    )
+    st.caption("Open Player Actions to queue, compare, trend, draft, simulate, trade, or view a projection breakdown.")
     player_quick_actions_popover(
         ctx,
         key=key,
@@ -4074,7 +4123,7 @@ def compact_player_action_center(
         projection_lookup_name_col=projection_lookup_name_col,
         label=label or "Player actions",
         help_text=help_text
-        or "Pick a player in the popover, then tap the action once (no separate Run button).",
+        or "Pick a player, then choose an action.",
     )
 
     _workflow_normalize_draft_queue()
@@ -4190,9 +4239,9 @@ def player_quick_actions_popover(
     projection_lookup_df=None,
     projection_lookup_name_col="fullName",
     label="Player quick actions",
-    help_text="Pick a player from this table, then tap an action. Pages update on the next load when you navigate.",
+    help_text="Pick a player, then choose an action.",
 ):
-    """Contextual one-click actions (Streamlit popover — no true per-cell hover)."""
+    """Contextual one-click player actions."""
     ctx = [str(p).strip() for p in list(player_options or []) if str(p).strip()]
     ctx = list(dict.fromkeys(ctx))
     if not ctx:
@@ -4625,8 +4674,7 @@ if _pending_nav and _pending_nav in _PAGE_OPTION_SET:
 
 st.session_state.setdefault("active_page", "Historical Explorer")
 active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
-st.sidebar.caption("Speed note: using page navigation instead of tabs prevents Streamlit from recalculating every page after each filter change.")
-st.sidebar.caption("Filters are remembered when you move between pages during the same app session.")
+st.sidebar.caption("Filters are remembered as you move between pages.")
 render_persistent_workflow_sidebar(yearly_df)
 
 if active_page == "Historical Explorer":
@@ -5536,7 +5584,7 @@ if active_page == "Trend Value":
 
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
-    st.caption("Showing the top 500 rows for speed. Use filters to narrow the table further. Green cells are improving trends; red cells are declining trends.")
+    st.caption("Showing the top 500 rows. Use filters to narrow the table further. Green cells are improving trends; red cells are declining trends.")
     trend_heat_cols = [c for c in TREND_COUNT_COLS + TREND_RATE_COLS if c in trend_sorted.columns]
     trend_sorted_display = trend_sorted.head(500).copy()
     for col in trend_heat_cols:
@@ -5803,7 +5851,7 @@ if active_page == "Trend Value":
 if active_page == "Fantasy Sleepers & Busts":
     render_section_header(
         "🧠 Fantasy Sleepers & Busts",
-        "Compare your internal projection model against FantasyPros rankings and ADP to find market sleepers and bust risks."
+        "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
     )
 
     market_df = load_fantasypros_market_data()
@@ -6134,10 +6182,7 @@ if active_page == "Fantasy Sleepers & Busts":
             key="fantasy_market_edge_trendline_type",
             help="Auto Best Fit tests linear, polynomial, logarithmic, and exponential curves, then chooses the curve with the highest R². The curve estimates the typical model rank for a given market rank."
         )
-        st.caption(
-            "Model being fitted: Market Rank → Model Rank. The black dotted diagonal is equal ranking. "
-            "The red curve estimates the model rank normally expected at each market rank."
-        )
+        st.caption("Black diagonal = equal ranking. Red curve = expected model rank at each market rank.")
 
         required_plot_cols = ["Market Rank", "Model Rank"]
         missing_plot_cols = [col for col in required_plot_cols if col not in fantasy_plot_df.columns]
@@ -6950,12 +6995,7 @@ if active_page == "Draft Assistant Simulator":
                 st.caption("Players sent here from other pages for draft review.")
                 st.write(focus_players)
 
-        st.caption(
-            "Single recommendation table — same rankings as above, sortable export. "
-            "The live pick grid stays in Draft Room. "
-            "**Team fit** is roster-aware sentences (synced roster vs pool projections). "
-            "**Strategy** uses your roster means, position counts, undrafted tier gaps, and pick-vs-ADP numbers — score-free, no filler labels."
-        )
+        st.caption("Recommendation table with roster fit, strategy context, and CSV export.")
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
         compact_player_action_center(
             recs_display["Player"].dropna().astype(str).tolist(),
@@ -7831,14 +7871,6 @@ if active_page == "Fantasy Lineup Assistant":
                                 style_cols=["Trade Fit Score", "Fairness Gap"]
                             )
 
-            with st.expander("Roadmap note", expanded=False):
-                st.caption(
-                    "Future upgrade path: connect MLB game logs, probable pitchers, handedness splits, park factors, injury feeds, and weekly schedules "
-                    "to make this a true daily start/sit and trade-decision optimizer."
-                )
-
-
-
 if active_page == "Valuation":
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
     c1, c2 = st.columns(2)
@@ -7992,10 +8024,7 @@ if active_page == "ML Predictions":
         )
 
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
-            st.caption(
-                "Feature pipeline includes age, position, bats, team/league, park factor, playing time, trend slopes, walk/K rates, and speed. "
-                "The **Predicted** table columns are the adjusted projections after these knobs."
-            )
+            st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
             a1, a2, a3, a4 = st.columns(4)
             with a1:
                 regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength")
@@ -8013,8 +8042,7 @@ if active_page == "ML Predictions":
 
         if not st.session_state.get("ml_predictions_have_run", False):
             st.info(
-                "Choose the lookback window and projection settings above, then click **Generate / Refresh ML Predictions**. "
-                "After it runs, scroll down to see the projection table, top prediction summary, and feature importance."
+                "Choose settings, then click **Generate / Refresh ML Predictions**."
             )
         else:
             run_sig = _ml_projection_run_signature(
@@ -8036,7 +8064,7 @@ if active_page == "ML Predictions":
                 age_curve_df = st.session_state["_ml_proj_age_curve_df"].copy()
                 comp_df = st.session_state["_ml_proj_comp_df"].copy()
             else:
-                with st.spinner("Building training rows and models (disk-cached when unchanged)..."):
+                with st.spinner("Building projections..."):
                     ml_training_df, ml_feature_cols, ml_models, current_rows, base_pred_df = build_base_ml_predictions(
                         yearly_df, ml_lookback, ml_min_games, max_player_pool=ml_max_players
                     )
@@ -8103,7 +8131,7 @@ if active_page == "ML Predictions":
                         "or click **Generate / Refresh** after changing scope."
                     )
                 else:
-                    st.success(f"Generated {len(pred_df):,} player projections. Scroll down to view the table.")
+                    st.success(f"Generated {len(pred_df):,} player projections.")
 
                     sort_col = f"Predicted {ml_sort_stat}"
                     if sort_col in pred_df.columns:
@@ -8138,8 +8166,8 @@ if active_page == "ML Predictions":
                         st.subheader("Top Prediction Summary")
                         st.success(make_ml_prediction_summary(ml_display.iloc[0], ml_sort_stat))
 
-                    with st.expander("Show age curve details"):
-                        st.write("The age curve estimates how players historically changed from their most recent season to the following season at each age. Similar-player comps are still used internally for the projection adjustment, but they are hidden from the main output to keep the page clean.")
+                    with st.expander("Show age curve details", expanded=False):
+                        st.write("The age curve estimates typical year-to-year changes by age.")
                         if not age_curve_df.empty:
                             age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
                             if age_stats:
@@ -8159,13 +8187,3 @@ if active_page == "ML Predictions":
                         with st.expander("Feature importance chart", expanded=False):
                             top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
 
-                    with st.expander("Interview / talking points (how this ML page is built)", expanded=False):
-                        st.markdown(
-                            "How to explain this in an interview: baseball history is framed as a supervised ML projection problem. "
-                            "For each player-season, inputs are the previous 3–5 years of production plus age/age², position, batting hand, team, league, "
-                            "park factor, playing time, walk/K rates, speed proxies, recent averages, weighted recent production, and trend slopes. "
-                            "The target is the next season. Random Forest handles nonlinear patterns; outputs are stabilized with regression-to-the-mean, "
-                            "a learned aging curve, and a similar-player nearest-neighbor blend."
-                        )
-
-st.caption("Built with Streamlit, Pandas, and Matplotlib using People.csv, Batting.csv, and Fielding.csv.")
