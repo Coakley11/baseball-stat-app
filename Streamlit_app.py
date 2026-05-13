@@ -2450,13 +2450,58 @@ def build_current_prediction_rows(yearly_source, lookback_years=3, min_games_per
     return out
 
 
-def get_target_baselines(ml_training_df, target_stats):
+@st.cache_data(show_spinner=False)
+def get_target_baselines(ml_training_df, target_stats_tuple=tuple(ML_TARGET_STATS)):
+    """Per-stat training-set means for regression-to-the-mean (cached on training frame + stat list)."""
+    target_stats = list(target_stats_tuple)
     baselines = {}
     for stat in target_stats:
         col = f"target_{stat}"
         if col in ml_training_df.columns:
             baselines[stat] = pd.to_numeric(ml_training_df[col], errors="coerce").mean()
     return baselines
+
+
+def _ml_year_pool_signature(yl_df):
+    """Cheap signature for whether the Lahman yearly pool changed (length + year span)."""
+    if yl_df is None or getattr(yl_df, "empty", True):
+        return (0, 0, 0)
+    ys = pd.to_numeric(yl_df["yearID"], errors="coerce").dropna()
+    if ys.empty:
+        return (len(yl_df), 0, 0)
+    return (len(yl_df), int(ys.min()), int(ys.max()))
+
+
+_ML_PROJ_SESSION_KEYS = (
+    "_ml_proj_sig",
+    "_ml_proj_pred_df",
+    "_ml_proj_age_curve_df",
+    "_ml_proj_comp_df",
+    "_ml_proj_training_df",
+    "_ml_proj_feature_cols",
+    "_ml_proj_models",
+    "_ml_proj_current_rows",
+)
+
+
+def _clear_ml_projection_session_cache():
+    for k in _ML_PROJ_SESSION_KEYS:
+        st.session_state.pop(k, None)
+
+
+def _ml_projection_run_signature(yl_df, lookback, min_games, max_players, reg, age_s, comp_w, k_nei, min_ab):
+    """Inputs that affect base ML + adjustment layer; used to skip redundant work on Streamlit reruns."""
+    return (
+        _ml_year_pool_signature(yl_df),
+        int(lookback),
+        int(min_games),
+        int(max_players),
+        float(reg),
+        float(age_s),
+        float(comp_w),
+        int(k_nei),
+        int(min_ab),
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -2598,7 +2643,7 @@ def apply_advanced_projection_adjustments(pred_df, current_rows, ml_training_df,
     if pred_df.empty:
         return pred_df, pd.DataFrame(), pd.DataFrame()
     adjusted = pred_df.copy()
-    baselines = get_target_baselines(ml_training_df, target_stats)
+    baselines = get_target_baselines(ml_training_df, tuple(target_stats))
     age_curve_df = get_age_curve_adjustments(ml_training_df, tuple(target_stats))
     if comp_weight and comp_weight > 0:
         comp_df = build_similar_player_predictions(current_rows, ml_training_df, tuple(feature_cols), tuple(target_stats), k_neighbors=k_neighbors)
@@ -7937,6 +7982,15 @@ if active_page == "ML Predictions":
         with c4top:
             ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=1, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud.")
 
+        ml_min_ab = st.number_input(
+            "Minimum Recent AB in Lookback Window",
+            0,
+            2500,
+            300,
+            key="ml_min_ab",
+            help="Filters players before similarity + aging adjustments so unused low-AB rows are not computed.",
+        )
+
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
             st.caption(
                 "Feature pipeline includes age, position, bats, team/league, park factor, playing time, trend slopes, walk/K rates, and speed. "
@@ -7955,6 +8009,7 @@ if active_page == "ML Predictions":
         run_ml_predictions = st.button("Generate / Refresh ML Predictions", type="primary", key="run_ml_predictions_button")
         if run_ml_predictions:
             st.session_state["ml_predictions_have_run"] = True
+            _clear_ml_projection_session_cache()
 
         if not st.session_state.get("ml_predictions_have_run", False):
             st.info(
@@ -7962,10 +8017,67 @@ if active_page == "ML Predictions":
                 "After it runs, scroll down to see the projection table, top prediction summary, and feature importance."
             )
         else:
-            with st.spinner("Generating cached fast projections..."):
-                ml_training_df, ml_feature_cols, ml_models, current_rows, base_pred_df = build_base_ml_predictions(
-                    yearly_df, ml_lookback, ml_min_games, max_player_pool=ml_max_players
-                )
+            run_sig = _ml_projection_run_signature(
+                yearly_df,
+                ml_lookback,
+                ml_min_games,
+                ml_max_players,
+                regression_strength,
+                age_strength,
+                comp_weight,
+                k_neighbors,
+                ml_min_ab,
+            )
+            if st.session_state.get("_ml_proj_sig") == run_sig and "_ml_proj_pred_df" in st.session_state:
+                ml_training_df = st.session_state["_ml_proj_training_df"]
+                ml_feature_cols = st.session_state["_ml_proj_feature_cols"]
+                ml_models = st.session_state["_ml_proj_models"]
+                pred_df = st.session_state["_ml_proj_pred_df"].copy()
+                age_curve_df = st.session_state["_ml_proj_age_curve_df"].copy()
+                comp_df = st.session_state["_ml_proj_comp_df"].copy()
+            else:
+                with st.spinner("Building training rows and models (disk-cached when unchanged)..."):
+                    ml_training_df, ml_feature_cols, ml_models, current_rows, base_pred_df = build_base_ml_predictions(
+                        yearly_df, ml_lookback, ml_min_games, max_player_pool=ml_max_players
+                    )
+                pred_df = pd.DataFrame()
+                age_curve_df = pd.DataFrame()
+                comp_df = pd.DataFrame()
+                if (
+                    not ml_training_df.empty
+                    and ml_feature_cols
+                    and not current_rows.empty
+                    and not base_pred_df.empty
+                ):
+                    ab_ok = pd.to_numeric(base_pred_df["hist_AB_total"], errors="coerce").fillna(0) >= float(ml_min_ab)
+                    base_f = base_pred_df.loc[ab_ok].reset_index(drop=True)
+                    pids = set(base_f["playerID"].astype(str))
+                    cur_f = current_rows[current_rows["playerID"].astype(str).isin(pids)].reset_index(drop=True)
+                    pred_df = base_f.copy()
+                    if not pred_df.empty and not cur_f.empty:
+                        with st.spinner("Applying aging, regression, and similarity..."):
+                            pred_df, age_curve_df, comp_df = apply_advanced_projection_adjustments(
+                                pred_df,
+                                cur_f,
+                                ml_training_df,
+                                ml_feature_cols,
+                                ML_TARGET_STATS,
+                                regression_strength=regression_strength,
+                                age_strength=age_strength,
+                                comp_weight=comp_weight,
+                                k_neighbors=k_neighbors,
+                            )
+                        if not pred_df.empty:
+                            st.session_state["_ml_proj_sig"] = run_sig
+                            st.session_state["_ml_proj_pred_df"] = pred_df.copy()
+                            st.session_state["_ml_proj_age_curve_df"] = age_curve_df.copy()
+                            st.session_state["_ml_proj_comp_df"] = (
+                                comp_df.copy() if comp_df is not None and not comp_df.empty else pd.DataFrame()
+                            )
+                            st.session_state["_ml_proj_training_df"] = ml_training_df
+                            st.session_state["_ml_proj_feature_cols"] = ml_feature_cols
+                            st.session_state["_ml_proj_models"] = ml_models
+
             if ml_training_df.empty or not ml_feature_cols:
                 st.warning("Not enough historical data to train the model with these settings. Lower the minimum games or use a shorter lookback window.")
             else:
@@ -7985,25 +8097,13 @@ if active_page == "ML Predictions":
                     metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
-                if current_rows.empty:
-                    st.warning("No current players met the minimum playing-time filter for prediction.")
-                else:
-                    pred_df = base_pred_df.copy()
-                    pred_df, age_curve_df, comp_df = apply_advanced_projection_adjustments(
-                        pred_df, current_rows, ml_training_df, ml_feature_cols, ML_TARGET_STATS,
-                        regression_strength=regression_strength,
-                        age_strength=age_strength,
-                        comp_weight=comp_weight,
-                        k_neighbors=k_neighbors,
+                if pred_df.empty:
+                    st.warning(
+                        "No player projections to display. Raise **Minimum Recent AB** or **Minimum Games**, "
+                        "or click **Generate / Refresh** after changing scope."
                     )
-
-                    min_pred_ab = st.number_input("Minimum Recent AB in Lookback Window", 0, 2500, 300, key="ml_min_ab")
-                    pred_df = pred_df[pd.to_numeric(pred_df["hist_AB_total"], errors="coerce") >= min_pred_ab].copy()
-
-                    if pred_df.empty:
-                        st.warning("No players met the Recent AB filter. Lower **Minimum Recent AB in Lookback Window** or lower **Minimum Games in Lookback Window** above, then generate again.")
-                    else:
-                        st.success(f"Generated {len(pred_df):,} player projections. Scroll down to view the table.")
+                else:
+                    st.success(f"Generated {len(pred_df):,} player projections. Scroll down to view the table.")
 
                     sort_col = f"Predicted {ml_sort_stat}"
                     if sort_col in pred_df.columns:
@@ -8056,7 +8156,8 @@ if active_page == "ML Predictions":
                         importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
                         importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
                         render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
-                        top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
+                        with st.expander("Feature importance chart", expanded=False):
+                            top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
 
                     with st.expander("Interview / talking points (how this ML page is built)", expanded=False):
                         st.markdown(
