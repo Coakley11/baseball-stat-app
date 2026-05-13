@@ -1783,6 +1783,53 @@ def _best_fit_stats(chart_df, x_col, y_col, model_type="Linear"):
     return _fit_model_for_scatter(fit_df, x_col, y_col, model_type)
 
 
+def fit_interpretation_markdown(fit, x_col, y_col):
+    """Plain-English guidance for a displayed scatterplot fit."""
+    if fit is None:
+        return ""
+
+    r2 = fit.get("r2", np.nan)
+    corr = fit.get("corr", np.nan)
+    n = int(fit.get("n", 0) or 0)
+    model_type = fit.get("model_type", "fit")
+
+    if not np.isfinite(r2):
+        return (
+            "**Fit interpretation:** Not enough stable variation to judge this fit. "
+            "Treat the line as a visual guide only."
+        )
+
+    abs_corr = abs(float(corr)) if np.isfinite(corr) else np.nan
+    if r2 >= 0.65:
+        fit_use = "The fit looks useful for summarizing the main pattern."
+        r2_text = "R-squared is strong, so the line explains a large share of the variation."
+        caution = "Predictions can be directional, but still check outliers and baseball context."
+    elif r2 >= 0.35:
+        fit_use = "The fit is moderately useful."
+        r2_text = "R-squared is moderate, so the line captures part of the relationship."
+        caution = "Use predictions cautiously and as rough ranges, not exact estimates."
+    elif r2 >= 0.15:
+        fit_use = "The fit shows a weak relationship."
+        r2_text = "R-squared is weak, so many points move away from the fitted line."
+        caution = "Use the line as a rough visual cue, not a reliable prediction."
+    else:
+        fit_use = "The fit is not very useful for prediction."
+        r2_text = "R-squared is very weak, so the line explains little of the variation."
+        caution = "Avoid reading precise predictions from this chart."
+
+    if np.isfinite(abs_corr) and abs_corr >= 0.65:
+        noise_text = "The relationship is fairly clear, though individual players can still differ."
+    elif np.isfinite(abs_corr) and abs_corr >= 0.35:
+        noise_text = "The relationship has visible noise around the line."
+    else:
+        noise_text = "The relationship appears noisy."
+
+    return (
+        f"**Fit interpretation ({x_col} vs {y_col}, {model_type}, {n:,} rows):** {fit_use} "
+        f"{r2_text} {noise_text} {caution}"
+    )
+
+
 def _format_equation_number(value):
     if not np.isfinite(value):
         return "nan"
@@ -1943,6 +1990,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         m3.metric("R²", f"{fit['r2']:.3f}" if np.isfinite(fit.get('r2', np.nan)) else "N/A")
         m4.metric("Rows Used", f"{fit['n']:,}")
         st.caption(f"Best-fit equation: {fit.get('equation', '')}")
+        st.info(fit_interpretation_markdown(fit, x_col, y_col))
     elif show_trendline:
         st.caption("Best-fit curve unavailable because there are not enough valid numeric points, one axis has no variation, or the selected model requires positive values.")
 
@@ -6281,13 +6329,8 @@ if active_page == "Fantasy Sleepers & Busts":
                     e2.metric("Correlation (r)", f"{edge_fit['corr']:.3f}" if np.isfinite(edge_fit.get("corr", np.nan)) else "N/A")
                     e3.metric("R²", f"{edge_fit['r2']:.3f}" if np.isfinite(edge_fit.get("r2", np.nan)) else "N/A")
                     e4.metric("Rows Used", f"{edge_fit['n']:,}")
-                    st.caption(
-                        f"Fitted model: {edge_fit.get('model_type', fantasy_trendline_type)} curve using Market Rank as X and Model Rank as Y. "
-                        "The black dotted diagonal means Market Rank = Model Rank. "
-                        "The red curve is the expected Model Rank for each Market Rank. "
-                        "Because lower rank is better, players whose actual Model Rank is much lower/better than the red curve are stronger curve-adjusted sleepers. "
-                        f"Curve equation: {edge_fit.get('equation', '')}"
-                    )
+                    st.caption(f"Curve equation: {edge_fit.get('equation', '')}")
+                    st.info(fit_interpretation_markdown(edge_fit, "Market Rank", "Model Rank"))
 
                     # Curve-adjusted edge: expected model rank from market rank minus actual model rank.
                     # Positive means your model is better/lower than the curve expectation for that market rank.
