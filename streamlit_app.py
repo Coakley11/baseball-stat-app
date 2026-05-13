@@ -4315,7 +4315,14 @@ def get_clean_player_label_map_yearly(yl_df):
     if st.session_state.get("_clean_label_map_vid") != vid:
         st.session_state["_clean_label_map_vid"] = vid
         st.session_state["_clean_label_map"] = build_clean_player_label_map(yl_df)
+        st.session_state["_clean_label_keys_sorted"] = sorted(st.session_state["_clean_label_map"].keys())
     return st.session_state["_clean_label_map"]
+
+
+def get_sorted_clean_player_label_keys(yl_df):
+    """Alphabetical label list for large dropdowns (built once per ``yearly_df`` identity)."""
+    get_clean_player_label_map_yearly(yl_df)
+    return st.session_state.get("_clean_label_keys_sorted", [])
 
 
 def get_pid_to_clean_label_map_yearly(yl_df):
@@ -4775,14 +4782,15 @@ if active_page == "Leaderboards":
     with c2:
         top_n_leaders = st.slider("Show Top N Players", 5, 100, 25, key="leaders_top_n")
 
-    st.subheader("Custom Stat Weights")
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
     weight_values = {}
-    weight_cols = st.columns(4)
-    for i, stat in enumerate(weight_stats):
-        with weight_cols[i % 4]:
-            weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}")
+    with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
+        st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
+        weight_cols = st.columns(4)
+        for i, stat in enumerate(weight_stats):
+            with weight_cols[i % 4]:
+                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}")
 
     filtered_leaders = yearly_df[(yearly_df["yearID"] >= range_leaders[0]) & (yearly_df["yearID"] <= range_leaders[1])].copy()
     leaderboard = filtered_leaders.groupby(["fullName", "bats"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
@@ -4947,7 +4955,7 @@ def sig_players_changed():
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
-    pid_to_clean_label_compare = get_pid_to_clean_label_map_yearly(yearly_df)
+    pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
 
     # Safe two-way sync setup.
@@ -4984,25 +4992,26 @@ if active_page == "Comparison Tool":
         on_change=compare_top_changed
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
-    stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
-    compare_x_axis_mode = st.radio(
-        "Comparison X-Axis",
-        ["Season Year", "Player Age"],
-        horizontal=True,
-        key="compare_x_axis_mode"
-    )
-    compare_age_range = (20, 40)
-    if compare_x_axis_mode == "Player Age":
-        compare_age_range = st.slider("Age Range to Compare", 16, 50, (22, 30), key="compare_age_range")
-    compare_trend_mode = st.radio(
-        "Comparison Chart Mode",
-        ["Actual Values", "Smoothed Moving Average"],
-        horizontal=True,
-        key="compare_trend_mode"
-    )
-    compare_smooth_window = 3
-    if compare_trend_mode == "Smoothed Moving Average":
-        compare_smooth_window = st.slider("Comparison Smoothing Window", 2, 7, 3, key="compare_smooth_window")
+    with st.expander("Chart options", expanded=False):
+        stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
+        compare_x_axis_mode = st.radio(
+            "Comparison X-Axis",
+            ["Season Year", "Player Age"],
+            horizontal=True,
+            key="compare_x_axis_mode"
+        )
+        compare_age_range = (20, 40)
+        if compare_x_axis_mode == "Player Age":
+            compare_age_range = st.slider("Age Range to Compare", 16, 50, (22, 30), key="compare_age_range")
+        compare_trend_mode = st.radio(
+            "Comparison Chart Mode",
+            ["Actual Values", "Smoothed Moving Average"],
+            horizontal=True,
+            key="compare_trend_mode"
+        )
+        compare_smooth_window = 3
+        if compare_trend_mode == "Smoothed Moving Average":
+            compare_smooth_window = st.slider("Comparison Smoothing Window", 2, 7, 3, key="compare_smooth_window")
 
     if selected_ids_compare:
         compare = yearly_df[yearly_df["playerID"].isin(selected_ids_compare)].copy()
@@ -5099,15 +5108,15 @@ if active_page == "Comparison Tool":
 
     st.divider()
     st.subheader("Statistical Significance Test")
-    st.caption(
-        "Compare two players over any chosen year ranges. The app tests whether Player A is significantly better than Player B "
-        "for selected stats. It also gives an overall standardized comparison across the selected stats. "
-        "The top comparison selector and Player A/B significance selectors now sync through pending values: changing one updates the other on the next rerun without unsafe Streamlit state errors."
-    )
+    with st.expander("How Player A/B sync works with the comparison list", expanded=False):
+        st.caption(
+            "Compare two players over chosen year ranges. The app tests whether averages differ meaningfully for selected stats, "
+            "plus one overall row. The top multiselect and Player A/B below stay in sync via session state on the next rerun."
+        )
 
     sig_col1, sig_col2 = st.columns(2)
-    clean_label_map_sig = get_clean_player_label_map_yearly(yearly_df)
-    all_player_options_sig = list(clean_label_map_sig.keys())
+    clean_label_map_sig = clean_label_map_compare
+    all_player_options_sig = compare_player_options
 
     # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
     pending_a = st.session_state.pop("pending_sig_player_a", None)
@@ -5329,7 +5338,8 @@ if active_page == "Trend Value":
     recent_years_trend = list(range(max_year_trend - lag_trend + 1, max_year_trend + 1))
     st.write(f"Analyzing seasons: **{recent_years_trend[0]}–{recent_years_trend[-1]}**")
     st.caption(f"Trend estimates are next-season estimates for **{max_year_trend + 1}**, calculated as the player's latest season value plus the yearly trend slope from the selected window.")
-    recent_data_trend = yearly_df[yearly_df["yearID"].isin(recent_years_trend)].copy().sort_values(["playerID", "yearID"])
+    recent_baseline_trend = yearly_df[yearly_df["yearID"].isin(recent_years_trend)].copy().sort_values(["playerID", "yearID"])
+    recent_data_trend = recent_baseline_trend.copy()
 
     st.markdown("#### Draft Room Sync")
     trend_sync_enabled = st.checkbox(
@@ -5495,7 +5505,7 @@ if active_page == "Trend Value":
             st.rerun()
 
     full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
-    full_trend_labels = sorted(full_trend_label_map.keys())
+    full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
 
     # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
     _stp = st.session_state.get("single_trend_dashboard_player")
@@ -5523,7 +5533,7 @@ if active_page == "Trend Value":
         "the **last three** sends populate **Player Trend Visualization** below."
     )
 
-    recent_span_df = yearly_df[yearly_df["yearID"].isin(recent_years_trend)].copy().sort_values(["playerID", "yearID"])
+    recent_span_df = recent_baseline_trend
 
     single_trend_label = st.selectbox(
         "Select Player (full database)",
@@ -5691,12 +5701,13 @@ if active_page == "Fantasy Sleepers & Busts":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
 
-    st.info(
-        "**How to read this page:** Current Production Score measures recent actual fantasy production from stats like R, HR, RBI, SB and BA/OPS. "
-        "Expected Fantasy Value estimates future value from the app's projection logic. Fantasy Edge = Market Rank − Model Rank; "
-        "positive edge means your model likes the player more than the fantasy market, while negative edge means possible bust risk. "
-        "Risk / Disagreement comes from expert ranking disagreement, so higher values mean more uncertainty."
-    )
+    with st.expander("How to read this page", expanded=False):
+        st.markdown(
+            "**Current Production Score** — recent actual fantasy production from R, HR, RBI, SB and BA/OPS. "
+            "**Expected Fantasy Value** — future value from the app’s projection logic. "
+            "**Fantasy Edge** = Market Rank − Model Rank; positive means your model likes the player more than the market, negative suggests bust risk. "
+            "**Risk / Disagreement** — expert rank spread; higher means more uncertainty."
+        )
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -5708,19 +5719,18 @@ if active_page == "Fantasy Sleepers & Busts":
     with c4:
         fantasy_min_ab = st.number_input("Minimum AB", 0, 2500, 150, key="fantasy_market_min_ab")
 
-    st.markdown("#### Sleeper/Bust Table Filters")
-    st.caption(
-        "Use these filters to keep the sleeper and bust tables focused on draft-relevant players instead of fringe players who are unlikely to be selected."
-    )
-    sf1, sf2, sf3, sf4 = st.columns(4)
-    with sf1:
-        sleeper_max_market_rank = st.number_input("Worst Market Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_market_rank")
-    with sf2:
-        sleeper_max_model_rank = st.number_input("Worst Model Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_model_rank")
-    with sf3:
-        sleeper_min_proj_hr = st.number_input("Minimum Projected HR", min_value=0, max_value=80, value=0, step=1, key="sleeper_min_proj_hr")
-    with sf4:
-        sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
+    st.markdown("#### Table filters")
+    with st.expander("Sleeper / bust relevance filters", expanded=False):
+        st.caption("Narrow draft-relevant players; loosen if tables look empty.")
+        sf1, sf2, sf3, sf4 = st.columns(4)
+        with sf1:
+            sleeper_max_market_rank = st.number_input("Worst Market Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_market_rank")
+        with sf2:
+            sleeper_max_model_rank = st.number_input("Worst Model Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_model_rank")
+        with sf3:
+            sleeper_min_proj_hr = st.number_input("Minimum Projected HR", min_value=0, max_value=80, value=0, step=1, key="sleeper_min_proj_hr")
+        with sf4:
+            sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
 
     st.markdown("#### Draft-Room-Aware Sleeper Filter")
     st.caption(
@@ -7230,10 +7240,11 @@ if active_page == "Fantasy Standings Tracker":
         "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
     )
 
-    st.info(
-        "Upload a CSV of current 2026 hitter stats with player names and stats such as HR, RBI, R, SB, BA, OPS. "
-        "The page matches those stats to the Draft Room results and ranks every fantasy team."
-    )
+    with st.expander("What to upload", expanded=False):
+        st.markdown(
+            "Upload a CSV of current-season hitter stats with player names and columns such as HR, RBI, R, SB, BA, OPS. "
+            "The page matches those stats to Draft Room picks and ranks every fantasy team."
+        )
 
     scoring_format_tracker = st.selectbox(
         "Scoring Format",
@@ -7623,10 +7634,11 @@ if active_page == "Fantasy Lineup Assistant":
                                 style_cols=["Trade Fit Score", "Fairness Gap"]
                             )
 
-            st.caption(
-                "Future upgrade path: connect MLB game logs, probable pitchers, handedness splits, park factors, injury feeds, and weekly schedules "
-                "to make this a true daily start/sit and trade-decision optimizer."
-            )
+            with st.expander("Roadmap note", expanded=False):
+                st.caption(
+                    "Future upgrade path: connect MLB game logs, probable pitchers, handedness splits, park factors, injury feeds, and weekly schedules "
+                    "to make this a true daily start/sit and trade-decision optimizer."
+                )
 
 
 
@@ -7689,12 +7701,13 @@ if active_page == "Valuation":
     valuation_df = agg_value.merge(trend_value, on="playerID", how="left")
     valuation_df = add_latest_and_projection_columns(valuation_df, recent_data_value)
 
-    st.subheader("Valuation Weights")
-    c5, c6 = st.columns(2)
-    with c5:
-        w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current")
-    with c6:
-        w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend")
+    with st.expander("Valuation blend weights", expanded=False):
+        st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
+        c5, c6 = st.columns(2)
+        with c5:
+            w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current")
+        with c6:
+            w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend")
 
     valuation_df["Trend_Score"] = (
         valuation_df["R_trend"].fillna(0) * 1.0 + valuation_df["H_trend"].fillna(0) * 0.5 +
@@ -7772,21 +7785,20 @@ if active_page == "ML Predictions":
         with c4top:
             ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=1, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud.")
 
-        st.subheader("Advanced Projection Settings")
-        a1, a2, a3, a4 = st.columns(4)
-        with a1:
-            regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength")
-        with a2:
-            age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength")
-        with a3:
-            comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight")
-        with a4:
-            k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors")
-
-        st.info(
-            "Predictions use a cached feature-engineered ML pipeline with age, position, bats, team/league context, park factor, playing time, trend slopes, walk/K rates, speed, aging, regression-to-the-mean, and similarity adjustments. "
-            "The displayed **Predicted** columns are the adjusted projections recommended for interpretation."
-        )
+        with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
+            st.caption(
+                "Feature pipeline includes age, position, bats, team/league, park factor, playing time, trend slopes, walk/K rates, and speed. "
+                "The **Predicted** table columns are the adjusted projections after these knobs."
+            )
+            a1, a2, a3, a4 = st.columns(4)
+            with a1:
+                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength")
+            with a2:
+                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength")
+            with a3:
+                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight")
+            with a4:
+                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors")
 
         run_ml_predictions = st.button("Generate / Refresh ML Predictions", type="primary", key="run_ml_predictions_button")
         if run_ml_predictions:
@@ -7894,11 +7906,13 @@ if active_page == "ML Predictions":
                         render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
                         top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
 
-                    st.info(
-                        "How to explain this in an interview: I turned baseball history into a supervised ML projection problem. "
-                        "For each player-season, the input is the previous 3–5 years of production plus age/age², position, batting hand, team, league, park factor, playing time, walk/K rates, speed proxies, recent averages, weighted recent production, and trend slopes. "
-                        "The target is the next season. I use Random Forest for nonlinear prediction, then improve stability with regression-to-the-mean, "
-                        "a learned aging curve, and a similar-player nearest-neighbor blend."
-                    )
+                    with st.expander("Interview / talking points (how this ML page is built)", expanded=False):
+                        st.markdown(
+                            "How to explain this in an interview: baseball history is framed as a supervised ML projection problem. "
+                            "For each player-season, inputs are the previous 3–5 years of production plus age/age², position, batting hand, team, league, "
+                            "park factor, playing time, walk/K rates, speed proxies, recent averages, weighted recent production, and trend slopes. "
+                            "The target is the next season. Random Forest handles nonlinear patterns; outputs are stabilized with regression-to-the-mean, "
+                            "a learned aging curve, and a similar-player nearest-neighbor blend."
+                        )
 
 st.caption("Built with Streamlit, Pandas, and Matplotlib using People.csv, Batting.csv, and Fielding.csv.")
