@@ -6165,7 +6165,7 @@ if active_page == "Fantasy Sleepers & Busts":
         for _col in ["Team", "Primary Position", "Bats", "League"]:
             if _col not in fantasy_plot_df.columns:
                 fantasy_plot_df[_col] = "Unknown"
-        for _col in ["Age", "Fantasy Edge", "Expected Fantasy Value", "ADP", "FantasyPros Rank", "Expert Std Dev", "Projected OPS", "Projected HR", "Projected RBI", "Projected SB"]:
+        for _col in ["Age", "Fantasy Edge", "Expected Fantasy Value", "ADP", "FantasyPros Rank", "Expert Std Dev", "Projected OPS", "Projected HR", "Projected RBI", "Projected SB", "Curve Edge"]:
             if _col not in fantasy_plot_df.columns:
                 fantasy_plot_df[_col] = np.nan
         fantasy_plot_df = format_fantasy_table(fantasy_plot_df)
@@ -6176,7 +6176,7 @@ if active_page == "Fantasy Sleepers & Busts":
             index=1,
             key="fantasy_market_scatter_color"
         )
-        fantasy_size_options = [c for c in ["Fantasy Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
+        fantasy_size_options = [c for c in ["Fantasy Edge", "Curve Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
         fantasy_size_col = st.selectbox(
             "Size by",
             fantasy_size_options,
@@ -6215,7 +6215,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 tooltip_cols = [c for c in [
                     "Player", "Age", "Team", "Primary Position", "Bats",
                     "Market Rank", "Model Rank", "Fantasy Edge",
-                    "Expected Fantasy Value"
+                    "Curve Edge", "Expected Fantasy Value"
                 ] if c in chart_source.columns]
 
                 if fantasy_view_mode == "Full Outlier View":
@@ -6227,6 +6227,19 @@ if active_page == "Fantasy Sleepers & Busts":
                     x_scale = alt.Scale(domain=x_domain, zero=False, reverse=True) if x_domain else alt.Scale(zero=False, reverse=True)
                     y_scale = alt.Scale(domain=y_domain, zero=False, reverse=True) if y_domain else alt.Scale(zero=False, reverse=True)
 
+                edge_fit = _best_fit_stats(chart_source, "Market Rank", "Model Rank", fantasy_trendline_type)
+                if edge_fit is not None:
+                    fit_curve = edge_fit["line_df"].sort_values("Market Rank")
+                    chart_source["Curve Expected Model Rank"] = np.interp(
+                        pd.to_numeric(chart_source["Market Rank"], errors="coerce"),
+                        pd.to_numeric(fit_curve["Market Rank"], errors="coerce"),
+                        pd.to_numeric(fit_curve["Model Rank"], errors="coerce")
+                    )
+                    chart_source["Curve Edge"] = (
+                        chart_source["Curve Expected Model Rank"] -
+                        pd.to_numeric(chart_source["Model Rank"], errors="coerce")
+                    )
+
                 enc = {
                     "x": alt.X("Market Rank:Q", title="Market Rank", scale=x_scale),
                     "y": alt.Y("Model Rank:Q", title="Model Rank", scale=y_scale),
@@ -6235,7 +6248,8 @@ if active_page == "Fantasy Sleepers & Busts":
                 color_encoding = _scatter_color_encoding(chart_source, fantasy_color_col)
                 if color_encoding is not None:
                     enc["color"] = color_encoding
-                if fantasy_size_col != "None" and fantasy_size_col in chart_source.columns:
+                size_values = pd.to_numeric(chart_source.get(fantasy_size_col, pd.Series(dtype=float)), errors="coerce")
+                if fantasy_size_col != "None" and fantasy_size_col in chart_source.columns and size_values.notna().any():
                     enc["size"] = alt.Size(f"{fantasy_size_col}:Q", title=fantasy_size_col, scale=alt.Scale(range=[25, 350], clamp=True))
                 else:
                     base = base.mark_circle(size=85, opacity=0.74, stroke="#333333", strokeWidth=0.45)
@@ -6246,7 +6260,6 @@ if active_page == "Fantasy Sleepers & Busts":
                 diagonal_df = pd.DataFrame({"Market Rank": [1, max_rank], "Model Rank": [1, max_rank]})
                 diagonal = alt.Chart(diagonal_df).mark_line(color="#111111", strokeDash=[6, 4]).encode(x="Market Rank:Q", y="Model Rank:Q")
 
-                edge_fit = _best_fit_stats(chart_source, "Market Rank", "Model Rank", fantasy_trendline_type)
                 chart_layers = points + diagonal
 
                 if edge_fit is not None:
