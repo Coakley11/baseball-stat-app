@@ -47,7 +47,7 @@ def _load_helpers_and_build() -> dict:
         _snip(2168, 2218),
         _snip(281, 296),
         "def load_data():\n" + _snip(2728, 2825),
-        _snip(2829, 3027),
+        _snip(2829, 3057),
     ]
     src = "\n\n".join(blocks)
     exec(compile(src, str(SA), "exec"), g, g)
@@ -100,7 +100,8 @@ def main() -> None:
                 "OPS_trend": compute_trend_slope(grp, "OPS"),
                 "BB_trend": compute_trend_slope(grp, "BB"),
             }
-        )
+        ),
+        include_groups=False,
     ).reset_index()
 
     room_df = agg.merge(trends, on="playerID", how="left")

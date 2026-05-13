@@ -45,6 +45,11 @@ class TestProjectionStyleFactors(unittest.TestCase):
         self.assertGreater(a["anchor_player_weight"], b["anchor_player_weight"])
         self.assertGreater(a["recency_weight_latest"], 0)
         self.assertGreater(a["raw_adj_clip"], b["raw_adj_clip"])
+        self.assertGreater(a["ml_adj_clip_pos"], -a["ml_adj_clip_neg"])
+        self.assertGreater(a["recency_weight_latest"], 0.15)
+        self.assertIn("anchor_elite_relax_quantile", a)
+        self.assertTrue(a.get("contextual_blend_pre_normalize"))
+        self.assertIsNone(b.get("contextual_blend_pre_normalize"))
 
     def test_unknown_mode_falls_back_to_balanced_numeric_profile(self):
         f = get_draft_projection_factors("not-a-real-mode")

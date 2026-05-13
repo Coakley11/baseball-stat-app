@@ -66,20 +66,38 @@ def get_draft_projection_factors(mode: str) -> Dict[str, Any]:
     elif m == "Aggressive / Upside":
         base.update(
             {
-                "regression_strength_multiplier": 0.80,
-                "youth_bump": 0.03,
-                "reg_strength_min": 0.05,
-                "reg_strength_max": 0.38,
-                "trend_clip_hr": (-6.0, 6.0),
-                "trend_clip_sb": (-6.0, 6.0),
-                "trend_clip_ops": (-0.080, 0.080),
-                "trend_clip_ba": (-0.038, 0.038),
-                "anchor_player_weight": 0.91,
-                "breakout_weights": (0.28, 0.24, 0.17, 0.23, 0.08),
-                "context_weights": (0.62, 0.12, 0.18, 0.08),
+                # Stronger trust in player line vs league median than the first Aggressive pass.
+                "regression_strength_multiplier": 0.72,
+                "youth_bump": 0.025,
+                "reg_strength_min": 0.04,
+                "reg_strength_max": 0.32,
+                "trend_clip_hr": (-7.0, 7.0),
+                "trend_clip_sb": (-7.0, 7.0),
+                "trend_clip_ops": (-0.095, 0.095),
+                "trend_clip_ba": (-0.045, 0.045),
+                "anchor_player_weight": 0.945,
+                # More weight on trend channels; slightly less on “young bucket” alone.
+                "breakout_weights": (0.22, 0.27, 0.18, 0.25, 0.08),
+                # Blend stays near the player anchor so ML adj stays interpretable; breakout gets more lift than Balanced.
+                "context_weights": (0.625, 0.082, 0.218, 0.075),
+                # Symmetric fallbacks (used if asymmetric keys absent).
                 "raw_adj_clip": 0.12,
-                "ml_adj_clip": 0.08,
-                "recency_weight_latest": 0.12,
+                "ml_adj_clip": 0.075,
+                # Wider raw gap, asymmetric ML clip: more room for upside than downside.
+                "raw_adj_clip_neg": -0.11,
+                "raw_adj_clip_pos": 0.15,
+                "ml_adj_clip_neg": -0.048,
+                "ml_adj_clip_pos": 0.110,
+                "recency_weight_latest": 0.18,
+                # Top of the base-category distribution: pull even less toward group median.
+                "anchor_elite_relax_quantile": 0.90,
+                "anchor_elite_boost": 0.035,
+                # Stretch (contextual − anchor) before clipping (1.0 = legacy behavior).
+                "ml_residual_scale": 1.0,
+                # Down-weight the risk subtraction in the contextual blend (still capped downstream).
+                "context_risk_scale": 0.78,
+                # ML residual uses weighted blend without a second pool-wide min–max (see ``build_realistic_draft_ml_adjustments``).
+                "contextual_blend_pre_normalize": True,
             }
         )
     # Balanced or unknown label → baseline factors unchanged

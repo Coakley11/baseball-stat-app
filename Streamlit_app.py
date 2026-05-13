@@ -2839,6 +2839,11 @@ def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto", projecti
 
     ``projection_mode`` (Conservative / Balanced / Aggressive) scales those steps via
     ``get_draft_projection_factors``; Balanced matches the original defaults.
+
+    Optional factor keys (Aggressive may set): ``raw_adj_clip_neg`` / ``raw_adj_clip_pos``,
+    ``ml_adj_clip_neg`` / ``ml_adj_clip_pos``, ``ml_residual_scale``, ``context_risk_scale``,
+    ``anchor_elite_relax_quantile`` / ``anchor_elite_boost``,
+    ``contextual_blend_pre_normalize`` (skip second ``normalize_series`` on contextual blend for ML residual).
     """
     out = df.copy()
     fac = get_draft_projection_factors(projection_mode)
@@ -2975,7 +2980,19 @@ def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto", projecti
 
     # Similar-player adjusted baseline: mostly player projection, modest similar-player pull.
     apw = float(fac["anchor_player_weight"])
-    similar_player_adjusted = normalize_series(base_category_score * apw + group_anchor * (1.0 - apw))
+    bcs_num = pd.to_numeric(base_category_score, errors="coerce").fillna(0.0)
+    elite_q = fac.get("anchor_elite_relax_quantile")
+    elite_boost = float(fac.get("anchor_elite_boost", 0.0) or 0.0)
+    if elite_q is not None and float(elite_q) > 0 and elite_boost > 0:
+        thr = float(bcs_num.quantile(float(elite_q)))
+        apw_eff = np.where(bcs_num >= thr, np.minimum(0.985, apw + elite_boost), apw)
+        similar_player_adjusted = normalize_series(
+            base_category_score * apw_eff + group_anchor * (1.0 - apw_eff)
+        )
+    else:
+        similar_player_adjusted = normalize_series(
+            base_category_score * apw + group_anchor * (1.0 - apw)
+        )
 
     # ML is now contextual adjustment, not the whole projection.
     # Trend/breakout/risk are deliberately modest so power does not get counted 4 times.
@@ -3001,18 +3018,31 @@ def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto", projecti
     )
 
     cw = fac["context_weights"]
-    contextual_ml_score = normalize_series(
+    risk_scale = float(fac.get("context_risk_scale", 1.0) or 1.0)
+    _ctx_blend = (
         similar_player_adjusted * cw[0] +
         category_balance * cw[1] +
         breakout_probability * cw[2] -
-        risk_score * cw[3]
+        risk_score * cw[3] * risk_scale
     )
+    # Balanced / Conservative: second min–max on the blend (legacy). Aggressive: raw blend vs anchor
+    # preserves tail spread so ML residual is not over-compressed for elites/breakouts.
+    if fac.get("contextual_blend_pre_normalize"):
+        contextual_ml_score = _ctx_blend
+    else:
+        contextual_ml_score = normalize_series(_ctx_blend)
 
     # ML adjustment is intentionally small (clip size varies by projection style).
     raw_lim = float(fac["raw_adj_clip"])
+    raw_lo = float(fac.get("raw_adj_clip_neg", -raw_lim))
+    raw_hi = float(fac.get("raw_adj_clip_pos", raw_lim))
     ml_lim = float(fac["ml_adj_clip"])
-    raw_adjustment = (contextual_ml_score - similar_player_adjusted).clip(-raw_lim, raw_lim)
-    out["ML Adjustment"] = raw_adjustment.clip(-ml_lim, ml_lim)
+    ml_lo = float(fac.get("ml_adj_clip_neg", -ml_lim))
+    ml_hi = float(fac.get("ml_adj_clip_pos", ml_lim))
+    res_scale = float(fac.get("ml_residual_scale", 1.0) or 1.0)
+    raw_adjustment = (contextual_ml_score - similar_player_adjusted) * res_scale
+    raw_adjustment = raw_adjustment.clip(raw_lo, raw_hi)
+    out["ML Adjustment"] = raw_adjustment.clip(ml_lo, ml_hi)
     out["Breakout Probability"] = breakout_probability
     out["Risk Score"] = risk_score
     out["Similar Player Anchor"] = group_anchor
