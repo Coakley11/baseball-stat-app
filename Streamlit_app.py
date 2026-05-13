@@ -709,7 +709,23 @@ def format_advanced_trend_table(df):
             out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
     if "Years Used" in out.columns:
         out["Years Used"] = pd.to_numeric(out["Years Used"], errors="coerce").round(0).astype("Int64")
-    return out
+    out = out.rename(columns={"Trend Direction": "Trend", "R²": "R-squared"})
+    ordered_cols = [
+        "Player",
+        "Stat",
+        "Slope",
+        "Trend",
+        "Recent Slope",
+        "Volatility",
+        "Consistency Rating",
+        "R-squared",
+        "Fantasy Signal",
+        "First Value",
+        "Latest Value",
+        "Net Change",
+        "Years Used",
+    ]
+    return out[[c for c in ordered_cols if c in out.columns]]
 
 
 def compute_trend_slope(group, stat_col):
