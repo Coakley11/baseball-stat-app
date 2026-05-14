@@ -1678,7 +1678,7 @@ def _descriptive_linear_xy_fit(plot_df, x_col, y_col):
     slope = float(coeffs[0])
     y_hat = np.polyval(coeffs, x)
     r2 = _safe_r2(y, y_hat)
-    return {"n": int(len(x)), "r2": float(r2) if np.isfinite(r2) else np.nan, "slope": slope, "intercept": intercept}
+    return {"n": int(len(x)), "r2": float(r2) if np.isfinite(r2) else np.nan, "slope": slope}
 
 
 def _relationship_strength_label(r2, n):
