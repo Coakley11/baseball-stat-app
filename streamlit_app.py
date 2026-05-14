@@ -2152,8 +2152,6 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             )
             ny_extra = _rf_next_year_validation_batch(plot_df, spec_tuple)
             show_display = pd.concat([show_display.reset_index(drop=True), pd.DataFrame(ny_extra)], axis=1)
-            show_display["X stat (Year N)"] = show_display["X stat"]
-            show_display["Y stat (Year N+1)"] = show_display["Y stat"]
 
         st.dataframe(show_display, width="stretch", hide_index=True)
         if validate_next_year and has_next_year_ids:
