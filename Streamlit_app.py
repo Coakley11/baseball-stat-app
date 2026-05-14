@@ -1661,155 +1661,6 @@ def _safe_r2(y_true, y_pred):
         return np.nan
 
 
-def _descriptive_linear_xy_fit(plot_df, x_col, y_col):
-    """Simple OLS line of Y on X for exploratory summaries (same filtering spirit as scatter fits)."""
-    if x_col == y_col or x_col not in plot_df.columns or y_col not in plot_df.columns:
-        return None
-    sub = plot_df[[x_col, y_col]].copy()
-    sub[x_col] = pd.to_numeric(sub[x_col], errors="coerce")
-    sub[y_col] = pd.to_numeric(sub[y_col], errors="coerce")
-    sub = sub.dropna()
-    sub = sub[np.isfinite(sub[x_col]) & np.isfinite(sub[y_col])]
-    if len(sub) < 4 or sub[x_col].nunique() < 2 or sub[y_col].nunique() < 2:
-        return None
-    x = sub[x_col].to_numpy(dtype=float)
-    y = sub[y_col].to_numpy(dtype=float)
-    coeffs = np.polyfit(x, y, 1)
-    slope = float(coeffs[0])
-    y_hat = np.polyval(coeffs, x)
-    r2 = _safe_r2(y, y_hat)
-    return {"n": int(len(x)), "r2": float(r2) if np.isfinite(r2) else np.nan, "slope": slope}
-
-
-def _relationship_strength_label(r2, n):
-    """Heuristic strength from R² and sample size (larger n earns more trust)."""
-    if not np.isfinite(r2) or n < 6:
-        return "noisy"
-    r, n = float(r2), int(n)
-    if r >= 0.55 and n >= 150:
-        return "strong"
-    if r >= 0.45 and n >= 100:
-        return "strong"
-    if r >= 0.45 and n >= 40:
-        return "moderate"
-    if r >= 0.32 and n >= 80:
-        return "moderate"
-    if r >= 0.25 and n >= 50:
-        return "moderate"
-    if r >= 0.18 and n >= 40:
-        return "weak"
-    if r >= 0.12 and n >= 25:
-        return "weak"
-    if r >= 0.06 and n >= 20:
-        return "weak"
-    return "noisy"
-
-
-def _relationship_short_explanation(x_col, y_col, slope, r2, n, strength):
-    direction = "increase" if slope >= 0 else "decrease"
-    if n >= 200:
-        trust = "A larger sample makes spurious tight fits less likely, but selection and era effects still matter."
-    elif n >= 60:
-        trust = "Sample size is moderate — treat rankings as exploratory."
-    else:
-        trust = "Small sample: a high R² can be unstable; trust increases with more rows under the same filters."
-    return (
-        f"{strength.title()} linear pattern: on average, {y_col} tends to {direction} as {x_col} rises "
-        f"(slope {slope:g} {y_col} per one-unit {x_col}; R²={r2:.3f}; n={n:,}). {trust} "
-        "Descriptive only — correlation does not show causation and this tool does not predict future outcomes."
-    )
-
-
-@st.cache_data(show_spinner=False)
-def _relationship_finder_scan_cached(plot_df, x_stats, y_stats):
-    """Rank directed X→Y linear associations by R² then sample size (cached on data + stat lists)."""
-    rows = []
-    for xc in x_stats:
-        for yc in y_stats:
-            if xc == yc:
-                continue
-            fit = _descriptive_linear_xy_fit(plot_df, xc, yc)
-            if fit is None or not np.isfinite(fit["r2"]):
-                continue
-            strength = _relationship_strength_label(fit["r2"], fit["n"])
-            rows.append({
-                "X stat": xc,
-                "Y stat": yc,
-                "Sample size": fit["n"],
-                "R-squared": fit["r2"],
-                "Slope": fit["slope"],
-                "Strength": strength,
-                "Explanation": _relationship_short_explanation(
-                    xc, yc, fit["slope"], fit["r2"], fit["n"], strength
-                ),
-            })
-    if not rows:
-        return pd.DataFrame(
-            columns=["X stat", "Y stat", "Sample size", "R-squared", "Slope", "Strength", "Explanation"]
-        )
-    out = pd.DataFrame(rows)
-    out = out.sort_values(by=["R-squared", "Sample size"], ascending=[False, False], ignore_index=True)
-    return out
-
-
-def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
-    """Descriptive scan of selected X/Y stat pairs (Historical Explorer or Career Totals)."""
-    if plot_df is None or plot_df.empty:
-        return
-    numeric_cols = _numeric_plot_columns(plot_df)
-    if len(numeric_cols) < 2:
-        return
-
-    default_x = [c for c in ["AB", "HR", "R", "SB", "BB"] if c in numeric_cols][:4] or numeric_cols[:2]
-    default_y = [c for c in ["OPS", "SLG", "OBP", "BA"] if c in numeric_cols][:4] or numeric_cols[:2]
-
-    with st.expander("Relationship Finder", expanded=False):
-        st.markdown(
-            "**Descriptive only.** This ranks simple linear fits (ordinary least squares) for pairs you choose. "
-            "Results respect your current filters. **High R² does not prove causation.** "
-            "**This is not a prediction tool** — it only summarizes co-movement in the visible rows. "
-            "Larger **sample size** generally makes a pattern more trustworthy than a spike from a handful of points."
-        )
-        x_stats_sel = st.multiselect(
-            "X stats (horizontal / predictor side for the scan)",
-            numeric_cols,
-            default=[c for c in default_x if c in numeric_cols],
-            key=f"{key_prefix}_rf_x_stats",
-        )
-        y_stats_sel = st.multiselect(
-            "Y stats (vertical / outcome side for the scan)",
-            numeric_cols,
-            default=[c for c in default_y if c in numeric_cols],
-            key=f"{key_prefix}_rf_y_stats",
-        )
-        if not x_stats_sel or not y_stats_sel:
-            st.info("Pick at least one X stat and one Y stat.")
-            return
-        pair_count = sum(1 for x in x_stats_sel for y in y_stats_sel if x != y)
-        if pair_count == 0:
-            st.info("Choose different X and Y stats (pairs cannot use the same column for both axes).")
-            return
-        if pair_count > 500:
-            st.warning("Too many pairs for a quick scan (limit 500). Narrow one of the stat lists.")
-            return
-        top_n = st.slider("Rows to show", 5, 40, 15, key=f"{key_prefix}_rf_top_n")
-
-        st.caption(f"Scanning {pair_count:,} directed pair(s) on {len(plot_df):,} {row_context}. Sorted by R², then sample size.")
-
-        result = _relationship_finder_scan_cached(
-            plot_df,
-            tuple(x_stats_sel),
-            tuple(y_stats_sel),
-        )
-        if result.empty:
-            st.info("No pairs produced a valid linear fit (need variation on both axes and at least four usable points).")
-            return
-        show = result.head(int(top_n)).copy()
-        show["R-squared"] = show["R-squared"].map(lambda v: round(float(v), 4) if pd.notna(v) else np.nan)
-        show["Slope"] = show["Slope"].map(lambda v: round(float(v), 6) if pd.notna(v) else np.nan)
-        st.dataframe(show, width="stretch", hide_index=True)
-
-
 def _poly_equation(coeffs, x_col, y_col):
     coeffs = list(coeffs)
     degree = len(coeffs) - 1
@@ -1930,6 +1781,174 @@ def _best_fit_stats(chart_df, x_col, y_col, model_type="Linear"):
         return max(fits, key=lambda f: f["r2"])
 
     return _fit_model_for_scatter(fit_df, x_col, y_col, model_type)
+
+
+def _relationship_slope_direction_blurb(fit, plot_df, x_col, y_col):
+    """Short slope or direction line for the chosen Auto Best Fit model (not a causal claim)."""
+    if fit is None or x_col not in plot_df.columns or y_col not in plot_df.columns:
+        return "—"
+    sub = plot_df[[x_col, y_col]].copy()
+    sub[x_col] = pd.to_numeric(sub[x_col], errors="coerce")
+    sub[y_col] = pd.to_numeric(sub[y_col], errors="coerce")
+    sub = sub.dropna()
+    sub = sub[np.isfinite(sub[x_col]) & np.isfinite(sub[y_col])]
+    if len(sub) < 4:
+        return "—"
+    x = sub[x_col].to_numpy(dtype=float)
+    y = sub[y_col].to_numpy(dtype=float)
+    corr = fit.get("corr", np.nan)
+    arrow = "↑" if np.isfinite(corr) and corr > 0.05 else ("↓" if np.isfinite(corr) and corr < -0.05 else "↔")
+    mt = fit.get("model_type", "")
+    if mt == "Linear":
+        slope = float(np.polyfit(x, y, 1)[0])
+        return f"{arrow} OLS slope {slope:.4g} ({y_col} per {x_col} unit)"
+    if mt == "Logarithmic":
+        return f"{arrow} log curve in {x_col} (not a constant dY/dX)"
+    if mt == "Exponential":
+        return f"{arrow} exponential curve in {x_col}"
+    if "Polynomial" in str(mt):
+        return f"{arrow} curved fit ({mt})"
+    return f"{arrow} {mt}"
+
+
+def _relationship_math_overlap_pair(x_col, y_col):
+    """True when tight fits are partly expected from definitions or shared numerators."""
+    if x_col == y_col:
+        return True
+    rates = set(RATE_STATS)
+    if x_col in rates and y_col in rates:
+        return True
+    pair = {x_col, y_col}
+    if pair <= {"H", "AB"} or pair <= {"H", "BA"} or pair <= {"AB", "BA"}:
+        return True
+    if "OPS" in pair and (pair & {"OBP", "SLG"}):
+        return True
+    return False
+
+
+def _relationship_causality_label_note(x_col, y_col, r2, n, model_type):
+    """Pick one causality-warning label and a single short sentence (interpretation layer only)."""
+    n = int(n)
+    r2 = float(r2) if np.isfinite(r2) else 0.0
+    mt = str(model_type)
+
+    notes = {
+        "likely direct relationship": "Mostly volume or bookkeeping coupling—still not proof X causes Y.",
+        "related but not necessarily causal": "Co-moves in this slice; other forces may drive both.",
+        "possibly spurious": "Thin rows or a flexible in-sample curve can inflate R².",
+        "mathematically overlapping stats": "Shared definitions or components partly tie the axes together.",
+        "needs out-of-sample testing": "Strong in-filter fit—confirm on other seasons/players before leaning on it.",
+    }
+
+    if _relationship_math_overlap_pair(x_col, y_col):
+        k = "mathematically overlapping stats"
+        return k, notes[k]
+
+    if (n < 35 and r2 > 0.22) or (n < 70 and r2 > 0.52):
+        k = "possibly spurious"
+        return k, notes[k]
+    if mt == "Polynomial (3rd Order)" and n < 140:
+        k = "possibly spurious"
+        return k, notes[k]
+    if mt == "Exponential" and n < 120:
+        k = "possibly spurious"
+        return k, notes[k]
+    if "Polynomial" in mt and n < 55 and r2 > 0.32:
+        k = "possibly spurious"
+        return k, notes[k]
+
+    if {x_col, y_col} == {"AB", "H"} and n >= 80 and r2 >= 0.22 and mt in ("Linear", "Logarithmic"):
+        k = "likely direct relationship"
+        return k, notes[k]
+
+    if r2 >= 0.42 and n >= 90:
+        k = "needs out-of-sample testing"
+        return k, notes[k]
+
+    k = "related but not necessarily causal"
+    return k, notes[k]
+
+
+@st.cache_data(show_spinner=False)
+def _relationship_finder_autofit_cached(plot_df, max_cols):
+    """Auto Best Fit (same candidate set as scatterplots) for directed pairs; ranked by R² then n."""
+    cols = _numeric_plot_columns(plot_df)[: int(max_cols)]
+    rows = []
+    for xc in cols:
+        for yc in cols:
+            if xc == yc:
+                continue
+            fit = _best_fit_stats(plot_df, xc, yc, "Auto Best Fit")
+            if fit is None:
+                continue
+            r2 = fit.get("r2", np.nan)
+            if not np.isfinite(r2):
+                continue
+            n = int(fit.get("n", 0) or 0)
+            mt = fit.get("model_type", "")
+            sdir = _relationship_slope_direction_blurb(fit, plot_df, xc, yc)
+            label, note = _relationship_causality_label_note(xc, yc, r2, n, mt)
+            rows.append({
+                "X stat": xc,
+                "Y stat": yc,
+                "Sample size": n,
+                "Fitted model": mt,
+                "R-squared": float(r2),
+                "Slope / direction": sdir,
+                "Causality warning": label,
+                "Note": note,
+            })
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "X stat", "Y stat", "Sample size", "Fitted model", "R-squared",
+                "Slope / direction", "Causality warning", "Note",
+            ]
+        )
+    out = pd.DataFrame(rows)
+    out = out.sort_values(by=["R-squared", "Sample size"], ascending=[False, False], ignore_index=True)
+    return out
+
+
+def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
+    """Surface the strongest Auto Best Fit relationships for the current filtered rows."""
+    if plot_df is None or plot_df.empty:
+        return
+    numeric_cols = _numeric_plot_columns(plot_df)
+    if len(numeric_cols) < 2:
+        return
+
+    with st.expander("Relationship Finder", expanded=False):
+        st.caption(
+            "Uses the same **Auto Best Fit** logic as the scatterplot (linear / polynomial / log / exponential). "
+            "Scans numeric columns on your current filters, then lists only the **strongest** pairs. "
+            "**High R² is not causation** and **not a forecast**; larger **sample size** usually makes a pattern more believable."
+        )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            top_k = st.slider("Max relationships to list", 3, 12, 8, key=f"{key_prefix}_rf_top_k")
+        with c2:
+            min_r2 = st.slider("Minimum R² to include", 0.05, 0.55, 0.18, 0.01, key=f"{key_prefix}_rf_min_r2")
+        with c3:
+            max_cols = st.slider("Max numeric columns to scan", 8, min(24, len(numeric_cols)), min(18, len(numeric_cols)), key=f"{key_prefix}_rf_max_cols")
+
+        approx_pairs = max(0, int(max_cols) * (int(max_cols) - 1))
+        st.caption(
+            f"Up to ~{approx_pairs:,} directed pairs on {len(plot_df):,} {row_context} "
+            f"(first {int(max_cols)} numeric fields from the scatterplot list)."
+        )
+
+        result = _relationship_finder_autofit_cached(plot_df, int(max_cols))
+        if result.empty:
+            st.info("No pairs produced a valid Auto Best Fit (need enough variation on both axes).")
+            return
+        qualified = result[result["R-squared"] >= float(min_r2)].head(int(top_k))
+        if qualified.empty:
+            st.info("Nothing met the minimum R² — lower the threshold or widen filters.")
+            return
+        show = qualified.copy()
+        show["R-squared"] = show["R-squared"].map(lambda v: round(float(v), 4) if pd.notna(v) else np.nan)
+        st.dataframe(show, width="stretch", hide_index=True)
 
 
 def fit_interpretation_markdown(fit, x_col, y_col):
