@@ -1661,6 +1661,155 @@ def _safe_r2(y_true, y_pred):
         return np.nan
 
 
+def _descriptive_linear_xy_fit(plot_df, x_col, y_col):
+    """Simple OLS line of Y on X for exploratory summaries (same filtering spirit as scatter fits)."""
+    if x_col == y_col or x_col not in plot_df.columns or y_col not in plot_df.columns:
+        return None
+    sub = plot_df[[x_col, y_col]].copy()
+    sub[x_col] = pd.to_numeric(sub[x_col], errors="coerce")
+    sub[y_col] = pd.to_numeric(sub[y_col], errors="coerce")
+    sub = sub.dropna()
+    sub = sub[np.isfinite(sub[x_col]) & np.isfinite(sub[y_col])]
+    if len(sub) < 4 or sub[x_col].nunique() < 2 or sub[y_col].nunique() < 2:
+        return None
+    x = sub[x_col].to_numpy(dtype=float)
+    y = sub[y_col].to_numpy(dtype=float)
+    coeffs = np.polyfit(x, y, 1)
+    slope = float(coeffs[0])
+    y_hat = np.polyval(coeffs, x)
+    r2 = _safe_r2(y, y_hat)
+    return {"n": int(len(x)), "r2": float(r2) if np.isfinite(r2) else np.nan, "slope": slope, "intercept": intercept}
+
+
+def _relationship_strength_label(r2, n):
+    """Heuristic strength from R² and sample size (larger n earns more trust)."""
+    if not np.isfinite(r2) or n < 6:
+        return "noisy"
+    r, n = float(r2), int(n)
+    if r >= 0.55 and n >= 150:
+        return "strong"
+    if r >= 0.45 and n >= 100:
+        return "strong"
+    if r >= 0.45 and n >= 40:
+        return "moderate"
+    if r >= 0.32 and n >= 80:
+        return "moderate"
+    if r >= 0.25 and n >= 50:
+        return "moderate"
+    if r >= 0.18 and n >= 40:
+        return "weak"
+    if r >= 0.12 and n >= 25:
+        return "weak"
+    if r >= 0.06 and n >= 20:
+        return "weak"
+    return "noisy"
+
+
+def _relationship_short_explanation(x_col, y_col, slope, r2, n, strength):
+    direction = "increase" if slope >= 0 else "decrease"
+    if n >= 200:
+        trust = "A larger sample makes spurious tight fits less likely, but selection and era effects still matter."
+    elif n >= 60:
+        trust = "Sample size is moderate — treat rankings as exploratory."
+    else:
+        trust = "Small sample: a high R² can be unstable; trust increases with more rows under the same filters."
+    return (
+        f"{strength.title()} linear pattern: on average, {y_col} tends to {direction} as {x_col} rises "
+        f"(slope {slope:g} {y_col} per one-unit {x_col}; R²={r2:.3f}; n={n:,}). {trust} "
+        "Descriptive only — correlation does not show causation and this tool does not predict future outcomes."
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _relationship_finder_scan_cached(plot_df, x_stats, y_stats):
+    """Rank directed X→Y linear associations by R² then sample size (cached on data + stat lists)."""
+    rows = []
+    for xc in x_stats:
+        for yc in y_stats:
+            if xc == yc:
+                continue
+            fit = _descriptive_linear_xy_fit(plot_df, xc, yc)
+            if fit is None or not np.isfinite(fit["r2"]):
+                continue
+            strength = _relationship_strength_label(fit["r2"], fit["n"])
+            rows.append({
+                "X stat": xc,
+                "Y stat": yc,
+                "Sample size": fit["n"],
+                "R-squared": fit["r2"],
+                "Slope": fit["slope"],
+                "Strength": strength,
+                "Explanation": _relationship_short_explanation(
+                    xc, yc, fit["slope"], fit["r2"], fit["n"], strength
+                ),
+            })
+    if not rows:
+        return pd.DataFrame(
+            columns=["X stat", "Y stat", "Sample size", "R-squared", "Slope", "Strength", "Explanation"]
+        )
+    out = pd.DataFrame(rows)
+    out = out.sort_values(by=["R-squared", "Sample size"], ascending=[False, False], ignore_index=True)
+    return out
+
+
+def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
+    """Descriptive scan of selected X/Y stat pairs (Historical Explorer or Career Totals)."""
+    if plot_df is None or plot_df.empty:
+        return
+    numeric_cols = _numeric_plot_columns(plot_df)
+    if len(numeric_cols) < 2:
+        return
+
+    default_x = [c for c in ["AB", "HR", "R", "SB", "BB"] if c in numeric_cols][:4] or numeric_cols[:2]
+    default_y = [c for c in ["OPS", "SLG", "OBP", "BA"] if c in numeric_cols][:4] or numeric_cols[:2]
+
+    with st.expander("Relationship Finder", expanded=False):
+        st.markdown(
+            "**Descriptive only.** This ranks simple linear fits (ordinary least squares) for pairs you choose. "
+            "Results respect your current filters. **High R² does not prove causation.** "
+            "**This is not a prediction tool** — it only summarizes co-movement in the visible rows. "
+            "Larger **sample size** generally makes a pattern more trustworthy than a spike from a handful of points."
+        )
+        x_stats_sel = st.multiselect(
+            "X stats (horizontal / predictor side for the scan)",
+            numeric_cols,
+            default=[c for c in default_x if c in numeric_cols],
+            key=f"{key_prefix}_rf_x_stats",
+        )
+        y_stats_sel = st.multiselect(
+            "Y stats (vertical / outcome side for the scan)",
+            numeric_cols,
+            default=[c for c in default_y if c in numeric_cols],
+            key=f"{key_prefix}_rf_y_stats",
+        )
+        if not x_stats_sel or not y_stats_sel:
+            st.info("Pick at least one X stat and one Y stat.")
+            return
+        pair_count = sum(1 for x in x_stats_sel for y in y_stats_sel if x != y)
+        if pair_count == 0:
+            st.info("Choose different X and Y stats (pairs cannot use the same column for both axes).")
+            return
+        if pair_count > 500:
+            st.warning("Too many pairs for a quick scan (limit 500). Narrow one of the stat lists.")
+            return
+        top_n = st.slider("Rows to show", 5, 40, 15, key=f"{key_prefix}_rf_top_n")
+
+        st.caption(f"Scanning {pair_count:,} directed pair(s) on {len(plot_df):,} {row_context}. Sorted by R², then sample size.")
+
+        result = _relationship_finder_scan_cached(
+            plot_df,
+            tuple(x_stats_sel),
+            tuple(y_stats_sel),
+        )
+        if result.empty:
+            st.info("No pairs produced a valid linear fit (need variation on both axes and at least four usable points).")
+            return
+        show = result.head(int(top_n)).copy()
+        show["R-squared"] = show["R-squared"].map(lambda v: round(float(v), 4) if pd.notna(v) else np.nan)
+        show["Slope"] = show["Slope"].map(lambda v: round(float(v), 6) if pd.notna(v) else np.nan)
+        st.dataframe(show, width="stretch", hide_index=True)
+
+
 def _poly_equation(coeffs, x_col, y_col):
     coeffs = list(coeffs)
     degree = len(coeffs) - 1
@@ -4871,6 +5020,9 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
+    render_relationship_finder_section(
+        hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
+    )
 
 if active_page == "Career Totals":
     render_section_header(
@@ -4997,6 +5149,9 @@ if active_page == "Career Totals":
     st.divider()
     career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
     render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
+    render_relationship_finder_section(
+        career_plot_df, key_prefix="career", row_context="filtered career rows"
+    )
 
 if active_page == "Leaderboards":
     render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
