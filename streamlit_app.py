@@ -1913,6 +1913,50 @@ def _relationship_finder_autofit_cached(plot_df, max_cols):
     return out
 
 
+_RF_SCATTER_TRENDLINE_OPTIONS = (
+    "Linear",
+    "Polynomial (2nd Order)",
+    "Polynomial (3rd Order)",
+    "Logarithmic",
+    "Exponential",
+    "Auto Best Fit",
+)
+
+
+def _apply_rf_row_to_scatter_session_state(key_prefix, row, numeric_cols):
+    """Push Relationship Finder row into scatterplot widget session keys (same keys as render_scatterplot_section)."""
+    x = str(row["X stat"])
+    y = str(row["Y stat"])
+    mt = str(row.get("Fitted model", "Linear"))
+    if numeric_cols is not None and (x not in numeric_cols or y not in numeric_cols):
+        return
+    st.session_state[f"{key_prefix}_scatter_x"] = x
+    st.session_state[f"{key_prefix}_scatter_y"] = y
+    st.session_state[f"{key_prefix}_scatter_show_trendline"] = True
+    if mt in _RF_SCATTER_TRENDLINE_OPTIONS:
+        st.session_state[f"{key_prefix}_scatter_trendline_type"] = mt
+    else:
+        st.session_state[f"{key_prefix}_scatter_trendline_type"] = "Linear"
+
+
+def _make_rf_scatter_checkbox_callback(key_prefix, row_index, rows_as_dicts, numeric_cols):
+    """Single active checkbox: turning one on clears the others and syncs the scatterplot."""
+    rows_as_dicts = list(rows_as_dicts)
+
+    def on_change():
+        key_i = f"{key_prefix}_rf_row_apply_{row_index}"
+        if not st.session_state.get(key_i):
+            return
+        for j in range(len(rows_as_dicts)):
+            if j != row_index:
+                kj = f"{key_prefix}_rf_row_apply_{j}"
+                if kj in st.session_state:
+                    st.session_state[kj] = False
+        _apply_rf_row_to_scatter_session_state(key_prefix, rows_as_dicts[row_index], numeric_cols)
+
+    return on_change
+
+
 def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
     """Surface the strongest Auto Best Fit relationships for the current filtered rows."""
     if plot_df is None or plot_df.empty:
@@ -1974,6 +2018,26 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
         show = qualified.copy()
         show["R-squared"] = show["R-squared"].map(lambda v: round(float(v), 4) if pd.notna(v) else np.nan)
         st.dataframe(show, width="stretch", hide_index=True)
+
+        rows_meta = show.to_dict("records")
+        st.caption(
+            "Check **one** row to mirror it into the scatterplot **above** (X-axis, Y-axis, trendline on, same model type). "
+            "Checking a new row clears the previous check. Unchecking does not reset the scatterplot."
+        )
+        for i, r in enumerate(rows_meta):
+            bx, tx = st.columns([0.14, 0.86])
+            with bx:
+                st.checkbox(
+                    "Use",
+                    key=f"{key_prefix}_rf_row_apply_{i}",
+                    on_change=_make_rf_scatter_checkbox_callback(key_prefix, i, rows_meta, numeric_cols),
+                    help=f"Scatterplot: X={r['X stat']}, Y={r['Y stat']}, trendline={r['Fitted model']}",
+                )
+            with tx:
+                st.markdown(
+                    f"**{r['X stat']} → {r['Y stat']}** · n={int(r['Sample size']):,} · "
+                    f"R²={float(r['R-squared']):.3f} · {r['Fitted model']}"
+                )
 
 
 def fit_interpretation_markdown(fit, x_col, y_col):
@@ -5063,10 +5127,10 @@ if active_page == "Historical Explorer":
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
     st.divider()
     hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
-    render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
     render_relationship_finder_section(
         hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
     )
+    render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
 
 if active_page == "Career Totals":
     render_section_header(
@@ -5192,10 +5256,10 @@ if active_page == "Career Totals":
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
     st.divider()
     career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
-    render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
     render_relationship_finder_section(
         career_plot_df, key_prefix="career", row_context="filtered career rows"
     )
+    render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
 
 if active_page == "Leaderboards":
     render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
