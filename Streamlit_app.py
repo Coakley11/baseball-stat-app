@@ -6265,6 +6265,12 @@ if active_page == "Fantasy Sleepers & Busts":
                     "Market Rank", "Model Rank", "Fantasy Edge",
                     "Curve Edge", "Expected Fantasy Value"
                 ] if c in chart_source.columns]
+                fantasy_tooltip_specs = [
+                    alt.Tooltip("Curve Edge:Q", title="Curve Edge", format=".1f")
+                    if c == "Curve Edge"
+                    else alt.Tooltip(c, title=c)
+                    for c in tooltip_cols
+                ]
 
                 if fantasy_view_mode == "Full Outlier View":
                     x_scale = alt.Scale(zero=False, reverse=True)
@@ -6291,7 +6297,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 enc = {
                     "x": alt.X("Market Rank:Q", title="Market Rank", scale=x_scale),
                     "y": alt.Y("Model Rank:Q", title="Model Rank", scale=y_scale),
-                    "tooltip": tooltip_cols
+                    "tooltip": fantasy_tooltip_specs,
                 }
                 color_encoding = _scatter_color_encoding(chart_source, fantasy_color_col)
                 if color_encoding is not None:
