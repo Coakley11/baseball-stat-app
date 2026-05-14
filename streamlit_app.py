@@ -1823,6 +1823,9 @@ def _relationship_math_overlap_pair(x_col, y_col):
         return True
     if "OPS" in pair and (pair & {"OBP", "SLG"}):
         return True
+    # Strong formula / component links beyond generic rate-vs-rate
+    if pair in ({"HR", "SLG"}, {"TB", "SLG"}, {"OBP", "BB"}, {"RBI", "HR"}):
+        return True
     return False
 
 
@@ -1932,17 +1935,39 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
         with c3:
             max_cols = st.slider("Max numeric columns to scan", 8, min(24, len(numeric_cols)), min(18, len(numeric_cols)), key=f"{key_prefix}_rf_max_cols")
 
+        hide_formula_overlap = st.checkbox(
+            "Hide mathematically overlapping stats",
+            value=True,
+            key=f"{key_prefix}_rf_hide_formula_overlap",
+            help="Hides rows where X and Y are tightly linked by definitions (e.g. two rate stats, H/BA/AB, OPS with OBP/SLG, HR vs SLG, TB vs SLG, OBP vs BB, RBI vs HR). "
+            "The cached scan still evaluates every pair; only this table is filtered.",
+        )
+
         approx_pairs = max(0, int(max_cols) * (int(max_cols) - 1))
         st.caption(
             f"Up to ~{approx_pairs:,} directed pairs on {len(plot_df):,} {row_context} "
             f"(first {int(max_cols)} numeric fields from the scatterplot list)."
+            + (" Formula-linked pairs are omitted from the table below." if hide_formula_overlap else "")
         )
 
         result = _relationship_finder_autofit_cached(plot_df, int(max_cols))
         if result.empty:
             st.info("No pairs produced a valid Auto Best Fit (need enough variation on both axes).")
             return
-        qualified = result[result["R-squared"] >= float(min_r2)].head(int(top_k))
+        display_df = result
+        if hide_formula_overlap:
+            keep = [
+                not _relationship_math_overlap_pair(str(a), str(b))
+                for a, b in zip(display_df["X stat"], display_df["Y stat"])
+            ]
+            display_df = display_df[keep].reset_index(drop=True)
+            if display_df.empty:
+                st.info(
+                    "Every scanned pair matched the formula-overlap rules for this column set. "
+                    "Uncheck “Hide mathematically overlapping stats”, widen “Max numeric columns to scan”, or loosen filters."
+                )
+                return
+        qualified = display_df[display_df["R-squared"] >= float(min_r2)].head(int(top_k))
         if qualified.empty:
             st.info("Nothing met the minimum R² — lower the threshold or widen filters.")
             return
