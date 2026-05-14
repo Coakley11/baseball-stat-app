@@ -1957,6 +1957,112 @@ def _make_rf_scatter_checkbox_callback(key_prefix, row_index, rows_as_dicts, num
     return on_change
 
 
+def _hist_next_year_paired_df(plot_df, x_stat, y_stat):
+    """Rows: same player appears in year N and N+1; X from N, Y from N+1 (aggregated to one row per player-year)."""
+    if plot_df is None or plot_df.empty:
+        return pd.DataFrame()
+    need = {"playerID", "yearID", x_stat, y_stat}
+    if not need.issubset(plot_df.columns):
+        return pd.DataFrame()
+    cols = ["playerID", "yearID", x_stat, y_stat]
+    if "fullName" in plot_df.columns:
+        cols.insert(2, "fullName")
+    base = plot_df[cols].copy()
+    base["yearID"] = pd.to_numeric(base["yearID"], errors="coerce")
+    base[x_stat] = pd.to_numeric(base[x_stat], errors="coerce")
+    base[y_stat] = pd.to_numeric(base[y_stat], errors="coerce")
+    base = base.dropna(subset=["playerID", "yearID"])
+    agg_map = {
+        x_stat: "mean" if x_stat in RATE_STATS else "sum",
+        y_stat: "mean" if y_stat in RATE_STATS else "sum",
+    }
+    if "fullName" in base.columns:
+        agg_map["fullName"] = "first"
+    uni = base.groupby(["playerID", "yearID"], as_index=False).agg(agg_map)
+    uni = uni.dropna(subset=["playerID", "yearID", x_stat, y_stat])
+    if uni.empty:
+        return pd.DataFrame()
+    left_cols = ["playerID", "yearID", x_stat]
+    if "fullName" in uni.columns:
+        left_cols = ["playerID", "yearID", "fullName", x_stat]
+    left = uni[left_cols].copy().rename(columns={x_stat: "__x_n"})
+    left["_join_y"] = left["yearID"] + 1
+    right = uni[["playerID", "yearID", y_stat]].rename(columns={"yearID": "_y_yr", y_stat: "__y_n1"})
+    m = left.merge(right, left_on=["playerID", "_join_y"], right_on=["playerID", "_y_yr"], how="inner")
+    xn = f"{x_stat} (Year N)"
+    yn = f"{y_stat} (Year N+1)"
+    out = pd.DataFrame(
+        {
+            xn: pd.to_numeric(m["__x_n"], errors="coerce"),
+            yn: pd.to_numeric(m["__y_n1"], errors="coerce"),
+        }
+    )
+    if "fullName" in m.columns:
+        out["Player"] = m["fullName"].astype(str)
+    out["Year N"] = pd.to_numeric(m["yearID"], errors="coerce")
+    return out.dropna(subset=[xn, yn])
+
+
+def _next_year_validation_label(r2_same, r2_next, n_next):
+    """Heuristic label for next-year fit vs same-year fit; conservative when n is small."""
+    n_next = int(n_next)
+    r2_same = float(r2_same) if np.isfinite(r2_same) else 0.0
+    if not np.isfinite(r2_next):
+        return "likely not predictive"
+    r2_next = float(r2_next)
+    if n_next < 30:
+        return "likely not predictive"
+    if n_next < 50 and r2_next > 0.42:
+        return "likely not predictive"
+    baseline = r2_same * 0.45 if np.isfinite(r2_same) else 0.0
+    if r2_next >= 0.40 and n_next >= 120 and r2_next >= baseline:
+        return "strong next-year signal"
+    if r2_next >= 0.24 and n_next >= 80:
+        return "moderate next-year signal"
+    if r2_next >= 0.11 and n_next >= 55:
+        return "weak predictive signal"
+    if r2_next < 0.07:
+        return "mostly descriptive only"
+    if np.isfinite(r2_same) and r2_same >= 0.22 and r2_next < baseline:
+        return "mostly descriptive only"
+    return "likely not predictive"
+
+
+@st.cache_data(show_spinner=False)
+def _rf_next_year_validation_batch(plot_df, spec_tuple):
+    """spec_tuple: ((x_stat, y_stat, r2_same_rounded), ...) aligned with Relationship Finder rows."""
+    rows = []
+    for tup in spec_tuple:
+        x_stat, y_stat, r2_same = str(tup[0]), str(tup[1]), float(tup[2])
+        paired = _hist_next_year_paired_df(plot_df, x_stat, y_stat)
+        n_ny = int(len(paired))
+        xn = f"{x_stat} (Year N)"
+        yn = f"{y_stat} (Year N+1)"
+        if paired.empty or n_ny < 15:
+            rows.append(
+                {
+                    "n next year": n_ny,
+                    "R2 next year": np.nan,
+                    "Next-year model": "",
+                    "Validation label": "likely not predictive",
+                }
+            )
+            continue
+        fit = _best_fit_stats(paired, xn, yn, "Auto Best Fit")
+        r2n = float(fit["r2"]) if fit is not None and np.isfinite(fit.get("r2", np.nan)) else np.nan
+        mt = str(fit.get("model_type", "")) if fit is not None else ""
+        lab = _next_year_validation_label(r2_same, r2n, n_ny)
+        rows.append(
+            {
+                "n next year": n_ny,
+                "R2 next year": r2n,
+                "Next-year model": mt,
+                "Validation label": lab,
+            }
+        )
+    return rows
+
+
 def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
     """Surface the strongest Auto Best Fit relationships for the current filtered rows."""
     if plot_df is None or plot_df.empty:
@@ -1986,6 +2092,24 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             help="Hides rows where X and Y are tightly linked by definitions (e.g. two rate stats, H/BA/AB, OPS with OBP/SLG, HR vs SLG, TB vs SLG, OBP vs BB, RBI vs HR). "
             "The cached scan still evaluates every pair; only this table is filtered.",
         )
+
+        has_next_year_ids = (
+            key_prefix == "hist"
+            and "playerID" in plot_df.columns
+            and "yearID" in plot_df.columns
+        )
+        validate_next_year = False
+        if key_prefix == "hist":
+            validate_next_year = st.checkbox(
+                "Validate against following year",
+                value=False,
+                key=f"{key_prefix}_rf_validate_next_year",
+                disabled=not has_next_year_ids,
+                help="For each pair: X in season N vs the same player's Y in season N+1 (requires seasons in both years). "
+                "Shows next-year R² and a validation label — not causation and not a league-wide forecast.",
+            )
+        else:
+            st.caption("Next-year validation runs on **Historical Explorer** only (needs season-level `playerID` / `yearID`).")
 
         approx_pairs = max(0, int(max_cols) * (int(max_cols) - 1))
         st.caption(
@@ -2017,7 +2141,26 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             return
         show = qualified.copy()
         show["R-squared"] = show["R-squared"].map(lambda v: round(float(v), 4) if pd.notna(v) else np.nan)
-        st.dataframe(show, width="stretch", hide_index=True)
+
+        show_display = show.copy()
+        show_display["R2 same year (N)"] = show_display["R-squared"]
+        show_display = show_display.drop(columns=["R-squared"], errors="ignore")
+        if validate_next_year and has_next_year_ids:
+            spec_tuple = tuple(
+                (str(r["X stat"]), str(r["Y stat"]), round(float(r["R-squared"]), 4))
+                for _, r in show.iterrows()
+            )
+            ny_extra = _rf_next_year_validation_batch(plot_df, spec_tuple)
+            show_display = pd.concat([show_display.reset_index(drop=True), pd.DataFrame(ny_extra)], axis=1)
+            show_display["X stat (Year N)"] = show_display["X stat"]
+            show_display["Y stat (Year N+1)"] = show_display["Y stat"]
+
+        st.dataframe(show_display, width="stretch", hide_index=True)
+        if validate_next_year and has_next_year_ids:
+            st.caption(
+                "Next-year columns pair **X in season N** with the **same player's Y in season N+1** (requires both seasons in your filters). "
+                "Labels are cautious when **n next year** is small; high R² is not causation."
+            )
 
         rows_meta = show.to_dict("records")
         st.caption(
@@ -2156,10 +2299,41 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
                 help="Choose a curve for the selected X/Y relationship."
             )
 
+        if key_prefix == "hist" and "playerID" in plot_df.columns and "yearID" in plot_df.columns:
+            st.radio(
+                "Point pairing",
+                [
+                    "Same season (X and Y both from Year N)",
+                    "Next year (X from Year N vs Y from Year N+1)",
+                ],
+                index=0,
+                horizontal=True,
+                key=f"{key_prefix}_scatter_temporal_mode",
+                help="Next-year mode: one dot per player with seasons in both N and N+1; axes relabel automatically. Not a causal forecast.",
+            )
+
+    x_plot, y_plot = x_col, y_col
     chart_df = plot_df.copy()
-    chart_df[x_col] = pd.to_numeric(chart_df[x_col], errors="coerce")
-    chart_df[y_col] = pd.to_numeric(chart_df[y_col], errors="coerce")
-    chart_df = chart_df.dropna(subset=[x_col, y_col])
+    use_next_year_scatter = False
+    if key_prefix == "hist" and "playerID" in plot_df.columns and "yearID" in plot_df.columns:
+        _tm = st.session_state.get(f"{key_prefix}_scatter_temporal_mode", "Same season (X and Y both from Year N)")
+        if isinstance(_tm, str) and _tm.startswith("Next year"):
+            paired_try = _hist_next_year_paired_df(plot_df, x_col, y_col)
+            if paired_try is not None and not paired_try.empty and len(paired_try) >= 10:
+                chart_df = paired_try
+                x_plot = f"{x_col} (Year N)"
+                y_plot = f"{y_col} (Year N+1)"
+                use_next_year_scatter = True
+            else:
+                st.warning(
+                    "Next-year scatter needs enough consecutive player-seasons for this X/Y pair under current filters. "
+                    "Showing same-season data instead."
+                )
+
+    chart_df = chart_df.copy()
+    chart_df[x_plot] = pd.to_numeric(chart_df[x_plot], errors="coerce")
+    chart_df[y_plot] = pd.to_numeric(chart_df[y_plot], errors="coerce")
+    chart_df = chart_df.dropna(subset=[x_plot, y_plot])
     if chart_df.empty:
         st.info("No rows have valid values for both selected axes.")
         return
@@ -2169,7 +2343,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     if len(chart_df) > max_points:
         if view_mode == "Full Outlier View":
             extreme_idx = set()
-            for _col in [x_col, y_col]:
+            for _col in [x_plot, y_plot]:
                 extreme_idx.update(chart_df.nlargest(min(25, len(chart_df)), _col).index.tolist())
                 extreme_idx.update(chart_df.nsmallest(min(25, len(chart_df)), _col).index.tolist())
             remaining = chart_df.drop(index=list(extreme_idx), errors="ignore")
@@ -2181,40 +2355,46 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
                 chart_df = chart_df.loc[list(extreme_idx)].head(max_points)
             st.caption(f"Showing {len(chart_df):,} plotted points with extreme outliers preserved. Export or narrow filters for all rows.")
         else:
-            chart_df = chart_df.sort_values(y_col, ascending=False).head(max_points)
+            chart_df = chart_df.sort_values(y_plot, ascending=False).head(max_points)
             st.caption(f"Showing {max_points:,} plotted points. Narrow filters for a complete visual.")
 
     if key_prefix == "career":
         tooltip_order = [
             "Player", "Debut Age", "Final Age", "Team", "Primary Position", "Bats", "League",
-            "HR", "OPS", "G", "SB", x_col, y_col
+            "HR", "OPS", "G", "SB", x_plot, y_plot
         ]
     else:
-        tooltip_order = [
-            "Player", "Year", "Team", "Age", "Primary Position", "Bats", "League",
-            "HR", "OPS", "G", "SB", "BB", x_col, y_col
-        ]
+        if use_next_year_scatter:
+            tooltip_order = [
+                "Player", "Year N", "Team", "Age", "Primary Position", "Bats", "League",
+                "HR", "OPS", "G", "SB", "BB", x_plot, y_plot
+            ]
+        else:
+            tooltip_order = [
+                "Player", "Year", "Team", "Age", "Primary Position", "Bats", "League",
+                "HR", "OPS", "G", "SB", "BB", x_plot, y_plot
+            ]
     tooltip_cols = [c for c in tooltip_order if c in chart_df.columns]
     tooltip_cols = list(dict.fromkeys(tooltip_cols))
 
     if view_mode == "Full Outlier View":
-        x_scale, x_axis = _full_axis_config_for_column(x_col, domain_df[x_col])
-        y_scale, y_axis = _full_axis_config_for_column(y_col, domain_df[y_col])
+        x_scale, x_axis = _full_axis_config_for_column(x_plot, domain_df[x_plot])
+        y_scale, y_axis = _full_axis_config_for_column(y_plot, domain_df[y_plot])
     else:
-        x_scale, x_axis = _axis_config_for_column(x_col, chart_df[x_col])
-        y_scale, y_axis = _axis_config_for_column(y_col, chart_df[y_col])
+        x_scale, x_axis = _axis_config_for_column(x_plot, chart_df[x_plot])
+        y_scale, y_axis = _axis_config_for_column(y_plot, chart_df[y_plot])
 
     enc = {
-        "x": alt.X(f"{x_col}:Q", title=x_col, scale=x_scale, axis=x_axis),
-        "y": alt.Y(f"{y_col}:Q", title=y_col, scale=y_scale, axis=y_axis),
+        "x": alt.X(f"{x_plot}:Q", title=x_plot, scale=x_scale, axis=x_axis),
+        "y": alt.Y(f"{y_plot}:Q", title=y_plot, scale=y_scale, axis=y_axis),
         "tooltip": [alt.Tooltip(c, title=c) for c in tooltip_cols],
     }
 
-    color_encoding = _scatter_color_encoding(chart_df, color_col)
+    color_encoding = _scatter_color_encoding(chart_df, color_col) if color_col != "None" and color_col in chart_df.columns else None
     if color_encoding is not None:
         enc["color"] = color_encoding
 
-    size_encoding = _scatter_size_encoding(chart_df, size_col)
+    size_encoding = _scatter_size_encoding(chart_df, size_col) if size_col != "None" and size_col in chart_df.columns else None
     if size_encoding is not None:
         enc["size"] = size_encoding
 
@@ -2224,21 +2404,27 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
 
     points = alt.Chart(chart_df).mark_circle(**mark_kwargs).encode(**enc)
 
-    fit = _best_fit_stats(chart_df, x_col, y_col, trendline_type) if show_trendline else None
+    fit = _best_fit_stats(chart_df, x_plot, y_plot, trendline_type) if show_trendline else None
     chart = points
     if fit is not None:
         fit_line = (
             alt.Chart(fit["line_df"])
             .mark_line(color="#111111", strokeWidth=2.5, strokeDash=[8, 5])
             .encode(
-                x=alt.X(f"{x_col}:Q", scale=x_scale),
-                y=alt.Y(f"{y_col}:Q", scale=y_scale),
+                x=alt.X(f"{x_plot}:Q", scale=x_scale),
+                y=alt.Y(f"{y_plot}:Q", scale=y_scale),
             )
         )
         chart = points + fit_line
 
     chart = chart.interactive().properties(height=520)
     st.altair_chart(chart, width="stretch")
+
+    if use_next_year_scatter:
+        st.caption(
+            "Each point is one player’s **Year N** value on X and **Year N+1** value on Y (consecutive seasons in the current filter). "
+            "High fit here is still not proof of causation."
+        )
 
     if fit is not None:
         m1, m2, m3, m4 = st.columns(4)
@@ -2247,7 +2433,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         m3.metric("R²", f"{fit['r2']:.3f}" if np.isfinite(fit.get('r2', np.nan)) else "N/A")
         m4.metric("Rows Used", f"{fit['n']:,}")
         st.caption(f"Best-fit equation: {fit.get('equation', '')}")
-        st.info(fit_interpretation_markdown(fit, x_col, y_col))
+        st.info(fit_interpretation_markdown(fit, x_plot, y_plot))
     elif show_trendline:
         st.caption("Best-fit curve unavailable because there are not enough valid numeric points, one axis has no variation, or the selected model requires positive values.")
 
