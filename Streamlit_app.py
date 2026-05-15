@@ -4269,6 +4269,279 @@ def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custo
     return df
 
 
+def _lineup_team_rate(st_df, rate_col):
+    """Combined rate for a subset (H/AB for BA; mean OBP if no PA weights)."""
+    if st_df is None or st_df.empty:
+        return np.nan
+    rate_col = str(rate_col).upper()
+    if rate_col == "BA" and "H" in st_df.columns and "AB" in st_df.columns:
+        h = pd.to_numeric(st_df["H"], errors="coerce").fillna(0).sum()
+        ab = pd.to_numeric(st_df["AB"], errors="coerce").fillna(0).sum()
+        return float(h / ab) if ab > 0 else np.nan
+    if rate_col == "OBP" and "OBP" in st_df.columns:
+        w = None
+        if "PA" in st_df.columns:
+            w = pd.to_numeric(st_df["PA"], errors="coerce").fillna(0)
+        elif "AB" in st_df.columns and "BB" in st_df.columns:
+            w = pd.to_numeric(st_df["AB"], errors="coerce").fillna(0) + pd.to_numeric(st_df["BB"], errors="coerce").fillna(0)
+        obp = pd.to_numeric(st_df["OBP"], errors="coerce")
+        if w is not None and w.sum() > 0:
+            return float((obp * w).sum() / w.sum())
+        return float(obp.mean()) if obp.notna().any() else np.nan
+    if rate_col == "BA" and "BA" in st_df.columns:
+        return float(pd.to_numeric(st_df["BA"], errors="coerce").mean())
+    return np.nan
+
+
+def _lineup_pitching_block(pdf):
+    """Return dict of pitching aggregates if roster has pitching columns."""
+    cols = {c.lower(): c for c in pdf.columns}
+    wcol = cols.get("w")
+    kcol = cols.get("so") or cols.get("k")
+    svcol = cols.get("sv")
+    eracol = cols.get("era")
+    whipcol = cols.get("whip")
+    if not any([wcol, kcol, svcol, eracol, whipcol]):
+        return None
+    out = {}
+    if wcol:
+        out["W"] = float(pd.to_numeric(pdf[wcol], errors="coerce").fillna(0).sum())
+    if kcol:
+        out["SO"] = float(pd.to_numeric(pdf[kcol], errors="coerce").fillna(0).sum())
+    if svcol:
+        out["SV"] = float(pd.to_numeric(pdf[svcol], errors="coerce").fillna(0).sum())
+    if eracol:
+        out["ERA"] = float(pd.to_numeric(pdf[eracol], errors="coerce").mean())
+    if whipcol:
+        out["WHIP"] = float(pd.to_numeric(pdf[whipcol], errors="coerce").mean())
+    return out if out else None
+
+
+def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="BA"):
+    """Build category strength summary and recommendation rows from current roster stats (no new formulas on raw MLB stats)."""
+    out = {
+        "hitting_table": pd.DataFrame(),
+        "pitching_table": pd.DataFrame(),
+        "archetype": "",
+        "strongest": [],
+        "weakest": [],
+        "balance_label": "",
+        "position_note": "",
+        "dragger_note": "",
+        "surplus_note": "",
+        "recommendations": [],
+    }
+    if starters_df is None or starters_df.empty or full_team_df is None or full_team_df.empty:
+        out["archetype"] = "Add starters (or load roster stats) to run a lineup diagnosis."
+        return out
+
+    st_df = starters_df.copy()
+    tm_df = full_team_df.copy()
+    rate_col = "OBP" if str(rate_col).upper() == "OBP" and "OBP" in st_df.columns else "BA"
+
+    cats_count = [c for c in ["HR", "RBI", "R", "SB"] if c in st_df.columns]
+    if not cats_count and rate_col not in st_df.columns and "H" not in st_df.columns:
+        out["archetype"] = "Not enough stat columns (HR/RBI/R/SB or rate) on this roster to diagnose."
+        return out
+
+    rows = []
+    for c in cats_count:
+        s_sum = pd.to_numeric(st_df[c], errors="coerce").fillna(0).sum()
+        t_sum = pd.to_numeric(tm_df[c], errors="coerce").fillna(0).sum()
+        pct = (s_sum / t_sum * 100.0) if t_sum > 0 else np.nan
+        rows.append({"Category": c, "Lineup total": s_sum, "% of team": pct})
+
+    r_line = _lineup_team_rate(st_df, rate_col)
+    r_team = _lineup_team_rate(tm_df, rate_col)
+    rate_label = "AVG" if rate_col == "BA" else "OBP"
+    pct_rate = (r_line / r_team * 100.0) if pd.notna(r_line) and pd.notna(r_team) and r_team > 0 else np.nan
+    rows.append(
+        {
+            "Category": rate_label,
+            "Lineup total": r_line,
+            "% of team": pct_rate,
+        }
+    )
+
+    hit_tbl = pd.DataFrame(rows)
+    hit_tbl["Rel. strength (0–100)"] = np.nan
+
+    strengths = {}
+    for _, r in hit_tbl.iterrows():
+        cat = r["Category"]
+        if cat in ("AVG", "OBP"):
+            v = float(r["Lineup total"]) if pd.notna(r["Lineup total"]) else np.nan
+            t_rt = _lineup_team_rate(tm_df, "OBP" if cat == "OBP" else "BA")
+            if pd.notna(v) and pd.notna(t_rt) and t_rt > 0:
+                strengths[cat] = float(np.clip(v / t_rt, 0.0, 1.5))
+            else:
+                strengths[cat] = 0.5
+        else:
+            s_sum = float(r["Lineup total"])
+            t_sum = float(pd.to_numeric(tm_df[cat], errors="coerce").fillna(0).sum()) if cat in tm_df.columns else 0.0
+            strengths[cat] = (s_sum / t_sum) if t_sum > 0 else 0.0
+
+    vals = list(strengths.values())
+    mn, mx = (min(vals), max(vals)) if vals else (0.0, 1.0)
+    rel_list = []
+    for _, r in hit_tbl.iterrows():
+        cat = r["Category"]
+        raw = strengths.get(cat, 0.5)
+        rel = 50.0 if mx <= mn else (raw - mn) / (mx - mn) * 100.0
+        rel_list.append(rel)
+    hit_tbl["Rel. strength (0–100)"] = np.round(rel_list, 1)
+
+    ranked = hit_tbl.sort_values("Rel. strength (0–100)", ascending=False).reset_index(drop=True)
+    out["strongest"] = ranked.head(2)["Category"].tolist()
+    out["weakest"] = ranked.tail(2)["Category"].tolist()
+    out["hitting_table"] = hit_tbl
+
+    weakest_cat = ranked.iloc[-1]["Category"] if len(ranked) else None
+    strongest_cat = ranked.iloc[0]["Category"] if len(ranked) else None
+
+    z_parts = []
+    if "HR" in strengths and "SB" in strengths:
+        hr_s, sb_s = strengths["HR"], strengths["SB"]
+        if hr_s > 0.65 and sb_s < 0.35:
+            z_parts.append("power-heavy but light on speed")
+        elif sb_s > 0.65 and hr_s < 0.35:
+            z_parts.append("speed-focused with lighter power")
+        elif hr_s > 0.55 and sb_s > 0.55:
+            z_parts.append("balanced power/speed shape")
+    rk_key = "OBP" if rate_label == "OBP" else "AVG"
+    if rk_key in strengths:
+        rk = strengths[rk_key]
+        if rk < 0.38:
+            z_parts.append("rate stats skew soft vs counting totals")
+        elif rk > 0.68:
+            z_parts.append("strong rate support vs counting totals")
+    out["archetype"] = (
+        "This lineup: **" + "**, **".join(z_parts) + "** (shown starters vs full-team stat mix)."
+        if z_parts
+        else "No extreme skew across HR/R/RBI/SB/" + rate_label + " among these starters — profile is fairly mixed."
+    )
+
+    cv = float(hit_tbl["Rel. strength (0–100)"].std()) if len(hit_tbl) > 1 else 0.0
+    if cv >= 28:
+        out["balance_label"] = f"**Unbalanced:** category spread index {cv:.0f} (big gaps between best and worst cats)."
+    elif cv <= 12:
+        out["balance_label"] = f"**Balanced:** spread index {cv:.0f} — strengths are spread across categories."
+    else:
+        out["balance_label"] = f"**Moderately tilted:** spread index {cv:.0f} — clear strengths with identifiable soft cats."
+
+    if "Primary Position" in st_df.columns:
+        agg = {}
+        for pos, g in st_df.groupby("Primary Position", dropna=False):
+            tot = 0.0
+            for c in ["HR", "RBI", "R"]:
+                if c in g.columns:
+                    tot += pd.to_numeric(g[c], errors="coerce").fillna(0).sum()
+            agg[str(pos)] = tot
+        if agg:
+            worst_pos = min(agg, key=agg.get)
+            best_pos = max(agg, key=agg.get)
+            if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
+                out["position_note"] = (
+                    f"**Position weakness:** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
+                    f"vs **{best_pos}** (**{agg[best_pos]:.0f}**)."
+                )
+            else:
+                out["position_note"] = "**Position shape:** HR+R+RBI is fairly even across starter positions in this set."
+
+    rate_src = "OBP" if rate_col == "OBP" else "BA"
+    if rate_src in st_df.columns or (rate_src == "BA" and "H" in st_df.columns and "AB" in st_df.columns):
+        sort_col = rate_src if rate_src in st_df.columns else "BA"
+        if sort_col in st_df.columns:
+            low_rate_df = st_df.sort_values(sort_col, ascending=True, na_position="last").head(2)
+            low_rate_df = low_rate_df[pd.to_numeric(low_rate_df[sort_col], errors="coerce").notna()]
+        else:
+            low_rate_df = pd.DataFrame()
+        if len(low_rate_df) >= 1 and "Player" in low_rate_df.columns:
+            names = ", ".join(low_rate_df["Player"].astype(str).tolist()[:2])
+            team_rate = _lineup_team_rate(tm_df, rate_col)
+            line_rate = _lineup_team_rate(st_df, rate_col)
+            if names and pd.notna(team_rate) and pd.notna(line_rate) and line_rate < team_rate - 1e-6:
+                out["dragger_note"] = (
+                    f"**{rate_label} drag:** shown starters **{line_rate:.3f}** vs full team **{team_rate:.3f}** — "
+                    f"lowest **{rate_label}** marks: **{names}**."
+                )
+
+    if strongest_cat and weakest_cat and strongest_cat != weakest_cat:
+        top_pct = hit_tbl.loc[hit_tbl["Category"] == strongest_cat, "% of team"]
+        top_pct = float(top_pct.iloc[0]) if len(top_pct) else np.nan
+        if pd.notna(top_pct) and top_pct >= 82 and strongest_cat not in ("AVG", "OBP"):
+            out["surplus_note"] = (
+                f"**Trade From:** starters carry **~{top_pct:.0f}%** of team **{strongest_cat}** while **{weakest_cat}** is weakest — "
+                f"swap some **{strongest_cat}** for **{weakest_cat}**-shaped help."
+            )
+
+    recs = []
+    sb_tot = float(hit_tbl.loc[hit_tbl["Category"] == "SB", "Lineup total"].iloc[0]) if "SB" in hit_tbl["Category"].values else 0.0
+    hr_tot = float(hit_tbl.loc[hit_tbl["Category"] == "HR", "Lineup total"].iloc[0]) if "HR" in hit_tbl["Category"].values else 0.0
+    r_tot = float(hit_tbl.loc[hit_tbl["Category"] == "R", "Lineup total"].iloc[0]) if "R" in hit_tbl["Category"].values else 0.0
+
+    if weakest_cat == "SB" or (weakest_cat and "SB" in out["weakest"] and sb_tot < 15):
+        recs.append({
+            "Type": "Draft target",
+            "Label": "Need",
+            "Detail": f"SB need: only **{sb_tot:.0f}** SB in this starter set — **Target profile:** MI/OF with double-digit SB pace and playable {rate_label}.",
+        })
+    if weakest_cat in ("AVG", "OBP") or (weakest_cat and weakest_cat in out["weakest"] and weakest_cat in ("AVG", "OBP")):
+        tr = _lineup_team_rate(st_df, rate_col)
+        recs.append({
+            "Type": "Category repair",
+            "Label": "Need",
+            "Detail": f"{weakest_cat} repair (starters **{tr:.3f}**): add high-contact bats; bench or replace lowest-{rate_label} names dragging the line.",
+        })
+    if weakest_cat == "R" or (weakest_cat and "R" in out["weakest"] and r_tot < 40):
+        recs.append({
+            "Type": "Draft target",
+            "Label": "Target profile",
+            "Detail": f"Runs gap: starters combine for **{r_tot:.0f}** R — add leadoff/OBP types who score, not only HR-only bats.",
+        })
+    if out.get("surplus_note"):
+        recs.append({
+            "Type": "Trade recommendation",
+            "Label": "Trade From → Target profile",
+            "Detail": f"Ship **{strongest_cat}** surplus for **{weakest_cat}** without emptying your best starters.",
+        })
+    elif strongest_cat and weakest_cat and strongest_cat not in ("AVG", "OBP") and weakest_cat not in ("AVG", "OBP"):
+        recs.append({
+            "Type": "Trade recommendation",
+            "Label": "Strength / Need",
+            "Detail": f"**Strength:** **{strongest_cat}**. **Need:** **{weakest_cat}** — explore 2-for-2 style swaps that move counting shape in that direction.",
+        })
+    if out.get("position_note") and "Position weakness" in out["position_note"]:
+        recs.append({
+            "Type": "Position upgrade",
+            "Label": "Need",
+            "Detail": "Upgrade the weakest starter position with HR+R+RBI that matches your best slot’s production tier.",
+        })
+
+    pitch = _lineup_pitching_block(tm_df)
+    if pitch:
+        p_rows = [{"Category": k, "Team total": v} for k, v in pitch.items()]
+        out["pitching_table"] = pd.DataFrame(p_rows)
+        sv = pitch.get("SV", 0) or 0
+        so = pitch.get("SO", 0) or 0
+        if sv < 8 and so > 150:
+            recs.append({
+                "Type": "Category repair",
+                "Label": "Need",
+                "Detail": f"Pitching snapshot: **{so:.0f}** SO but only **{sv:.0f}** SV on roster — target closers or vulture saves without dumping strikeouts.",
+            })
+
+    if lineup_format != "5x5 Roto" and len(recs) < 3:
+        recs.append({
+            "Type": "Note",
+            "Label": "Strength",
+            "Detail": "Category table still uses raw hitter stats from Standings Tracker; align adds with your points/H2H settings.",
+        })
+
+    out["recommendations"] = recs[:5]
+    return out
+
+
 def format_lineup_assistant_table(df):
     out = df.copy()
     for c in ["Current Fantasy Score", "Momentum Score", "Consistency Score", "Volatility Meter", "Lineup Confidence"]:
@@ -8317,6 +8590,65 @@ if active_page == "Fantasy Lineup Assistant":
                 file_name="lineup_recommended_starters.csv",
                 display_rows=starters_to_show,
             )
+
+            st.subheader("Lineup Diagnosis / How to Improve This Team")
+            st.caption(
+                "Uses **Standings Tracker current-season stats** merged with your Draft Room roster. "
+                "**Lineup** = the **N recommended starters** above (slider count); **team** = full drafted team on this page. "
+                "Shares and ranks compare starter totals to the whole team — not projected rest-of-season."
+            )
+            if lineup_format == "5x5 Roto":
+                diag_rate_choice = st.radio(
+                    "Roto rate category",
+                    ["BA", "OBP"],
+                    index=0,
+                    horizontal=True,
+                    key="lineup_diagnosis_rate_col",
+                    help="OBP requires an OBP column in your loaded stats.",
+                )
+            else:
+                diag_rate_choice = "BA"
+                st.caption("For non-roto modes, the table still uses raw HR/R/RBI/SB/BA from loaded stats.")
+
+            rate_for_diag = str(diag_rate_choice).upper() if lineup_format == "5x5 Roto" else "BA"
+            if rate_for_diag == "OBP" and "OBP" not in starters.columns:
+                rate_for_diag = "BA"
+                st.caption("OBP not found in roster stats — using **BA** for the rate row.")
+
+            diag = lineup_diagnosis_report(starters, scored, lineup_format, rate_col=rate_for_diag)
+
+            if not diag["hitting_table"].empty:
+                ht_disp = diag["hitting_table"].copy()
+                mask_rate = ht_disp["Category"].isin(["AVG", "OBP"])
+                ht_disp.loc[mask_rate, "Lineup total"] = pd.to_numeric(ht_disp.loc[mask_rate, "Lineup total"], errors="coerce").round(3)
+                ht_disp.loc[~mask_rate, "Lineup total"] = pd.to_numeric(ht_disp.loc[~mask_rate, "Lineup total"], errors="coerce").round(0).astype("Int64")
+                ht_disp["% of team"] = pd.to_numeric(ht_disp["% of team"], errors="coerce").round(1)
+                st.markdown("##### Category strength (starters)")
+                st.dataframe(ht_disp, width="stretch", hide_index=True)
+
+            if diag.get("pitching_table") is not None and not diag["pitching_table"].empty:
+                st.markdown("##### Pitching snapshot (full roster — if columns exist)")
+                st.dataframe(diag["pitching_table"], width="stretch", hide_index=True)
+
+            cA, cB = st.columns(2)
+            with cA:
+                st.markdown("**Strongest:** " + ", ".join(diag["strongest"]) if diag["strongest"] else "_—_")
+                st.markdown("**Weakest:** " + ", ".join(diag["weakest"]) if diag["weakest"] else "_—_")
+            with cB:
+                st.markdown(diag.get("balance_label", ""))
+            if diag.get("archetype"):
+                st.markdown(diag["archetype"])
+            if diag.get("position_note"):
+                st.markdown(diag["position_note"])
+            if diag.get("dragger_note"):
+                st.markdown(diag["dragger_note"])
+            if diag.get("surplus_note"):
+                st.markdown(diag["surplus_note"])
+
+            rec_df = pd.DataFrame(diag.get("recommendations") or [])
+            if not rec_df.empty:
+                st.markdown("##### Actionable recommendations (3–5)")
+                st.dataframe(rec_df, width="stretch", hide_index=True)
 
             st.subheader("Bench / Sit / Watch List")
             bench = scored.tail(max(1, min(10, len(scored)))).sort_values("Lineup Confidence", ascending=True).copy()
