@@ -1812,7 +1812,7 @@ def _relationship_slope_direction_blurb(fit, plot_df, x_col, y_col):
 
 
 def _relationship_math_overlap_pair(x_col, y_col):
-    """True when tight fits are partly expected from definitions or shared numerators."""
+    """True when tight fits are partly expected from definitions, shared numerators, or playing-time structure."""
     if x_col == y_col:
         return True
     rates = set(RATE_STATS)
@@ -1823,53 +1823,70 @@ def _relationship_math_overlap_pair(x_col, y_col):
         return True
     if "OPS" in pair and (pair & {"OBP", "SLG"}):
         return True
-    # Strong formula / component links beyond generic rate-vs-rate
-    if pair in ({"HR", "SLG"}, {"TB", "SLG"}, {"OBP", "BB"}, {"RBI", "HR"}):
+    # Strong formula / component links
+    if pair in ({"HR", "SLG"}, {"TB", "SLG"}, {"OBP", "BB"}, {"RBI", "HR"}, {"AB", "HR"}):
         return True
+
+    # Playing time / opportunity vs counting production (heavily structurally linked)
+    play_time = {"G", "PA", "AB"}
+    counting_volume = {
+        "R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "SO", "CS", "IBB", "HBP", "SH", "SF", "GIDP", "TB",
+    }
+    if len(pair) == 2:
+        a, b = x_col, y_col
+        if (a in play_time and b in counting_volume) or (b in play_time and a in counting_volume):
+            return True
+        if a in play_time and b in play_time:
+            return True
+        if "PA" in pair and (pair & rates):
+            return True
+
     return False
 
 
-def _relationship_causality_label_note(x_col, y_col, r2, n, model_type):
-    """Pick one causality-warning label and a single short sentence (interpretation layer only)."""
+def _relationship_causality_warning_text(x_col, y_col, r2, n, model_type):
+    """One short, specific causality line (not a causal claim)."""
     n = int(n)
     r2 = float(r2) if np.isfinite(r2) else 0.0
     mt = str(model_type)
-
-    notes = {
-        "likely direct relationship": "Mostly volume or bookkeeping coupling—still not proof X causes Y.",
-        "related but not necessarily causal": "Co-moves in this slice; other forces may drive both.",
-        "possibly spurious": "Thin rows or a flexible in-sample curve can inflate R².",
-        "mathematically overlapping stats": "Shared definitions or components partly tie the axes together.",
-        "needs out-of-sample testing": "Strong in-filter fit—confirm on other seasons/players before leaning on it.",
-    }
+    pair = {x_col, y_col}
+    rates = set(RATE_STATS)
 
     if _relationship_math_overlap_pair(x_col, y_col):
-        k = "mathematically overlapping stats"
-        return k, notes[k]
+        if "OPS" in pair and (pair & {"OBP", "SLG"}):
+            return "Mathematically overlapping: OPS includes OBP/SLG components."
+        if pair <= {"H", "BA"} or pair <= {"AB", "BA"} or (pair <= {"H", "AB"}):
+            return "Mathematically overlapping: AVG ties directly to Hits and AB."
+        if x_col in rates and y_col in rates:
+            return "Mathematically overlapping: rate stats share AB/H and similar counting inputs."
+        play_time = {"G", "PA", "AB"}
+        counting_volume = {
+            "R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "SO", "CS", "IBB", "HBP", "SH", "SF", "GIDP", "TB",
+        }
+        if "PA" in pair and (pair & rates):
+            return "Mathematically overlapping: PA scales with the counting inputs inside rate stats."
+        if (x_col in play_time and y_col in counting_volume) or (y_col in play_time and x_col in counting_volume):
+            return "Likely direct relationship: playing time strongly affects counting stats."
+        if x_col in play_time and y_col in play_time:
+            return "Mathematically overlapping: both axes mostly reflect playing time or opportunities."
+        return "Mathematically overlapping: definitions or shared components tie these stats together."
 
     if (n < 35 and r2 > 0.22) or (n < 70 and r2 > 0.52):
-        k = "possibly spurious"
-        return k, notes[k]
+        return "Possibly spurious: thin rows or a flexible in-sample curve can inflate R² — check baseball logic or N+1 validation."
     if mt == "Polynomial (3rd Order)" and n < 140:
-        k = "possibly spurious"
-        return k, notes[k]
+        return "Possibly spurious: high-degree fit can track noise — validate out-of-sample or next year."
     if mt == "Exponential" and n < 120:
-        k = "possibly spurious"
-        return k, notes[k]
+        return "Possibly spurious: exponential form is flexible in-sample — confirm with next year or context."
     if "Polynomial" in mt and n < 55 and r2 > 0.32:
-        k = "possibly spurious"
-        return k, notes[k]
+        return "Possibly spurious: curved fit on modest N — use next-year validation cautiously."
 
     if {x_col, y_col} == {"AB", "H"} and n >= 80 and r2 >= 0.22 and mt in ("Linear", "Logarithmic"):
-        k = "likely direct relationship"
-        return k, notes[k]
+        return "Likely direct relationship: more AB mechanically raises opportunities for hits."
 
     if r2 >= 0.42 and n >= 90:
-        k = "needs out-of-sample testing"
-        return k, notes[k]
+        return "Descriptive, not causal: strong same-year fit — confirm with next-year check or baseball context."
 
-    k = "related but not necessarily causal"
-    return k, notes[k]
+    return "Descriptive, not causal: both stats may be driven by playing time, role, or league context."
 
 
 @st.cache_data(show_spinner=False)
@@ -1890,7 +1907,7 @@ def _relationship_finder_autofit_cached(plot_df, max_cols):
             n = int(fit.get("n", 0) or 0)
             mt = fit.get("model_type", "")
             sdir = _relationship_slope_direction_blurb(fit, plot_df, xc, yc)
-            label, note = _relationship_causality_label_note(xc, yc, r2, n, mt)
+            warn = _relationship_causality_warning_text(xc, yc, r2, n, mt)
             rows.append({
                 "X stat": xc,
                 "Y stat": yc,
@@ -1898,14 +1915,13 @@ def _relationship_finder_autofit_cached(plot_df, max_cols):
                 "Fitted model": mt,
                 "R-squared": float(r2),
                 "Slope / direction": sdir,
-                "Causality warning": label,
-                "Note": note,
+                "Causality warning": warn,
             })
     if not rows:
         return pd.DataFrame(
             columns=[
                 "X stat", "Y stat", "Sample size", "Fitted model", "R-squared",
-                "Slope / direction", "Causality warning", "Note",
+                "Slope / direction", "Causality warning",
             ]
         )
     out = pd.DataFrame(rows)
@@ -2003,29 +2019,50 @@ def _hist_next_year_paired_df(plot_df, x_stat, y_stat):
     return out.dropna(subset=[xn, yn])
 
 
-def _next_year_validation_label(r2_same, r2_next, n_next):
-    """Heuristic label for next-year fit vs same-year fit; conservative when n is small."""
-    n_next = int(n_next)
-    r2_same = float(r2_same) if np.isfinite(r2_same) else 0.0
+def _predictive_ability_label(r2_same, r2_next, n_next):
+    """Combine same-year and next-year R²; conservative when N+1 sample is thin (not causation)."""
+    n = int(n_next)
+    rs = float(r2_same) if np.isfinite(r2_same) else 0.0
+
+    if n < 15:
+        return "Insufficient next-year pairs to judge predictive use"
     if not np.isfinite(r2_next):
-        return "likely not predictive"
-    r2_next = float(r2_next)
-    if n_next < 30:
-        return "likely not predictive"
-    if n_next < 50 and r2_next > 0.42:
-        return "likely not predictive"
-    baseline = r2_same * 0.45 if np.isfinite(r2_same) else 0.0
-    if r2_next >= 0.40 and n_next >= 120 and r2_next >= baseline:
-        return "strong next-year signal"
-    if r2_next >= 0.24 and n_next >= 80:
-        return "moderate next-year signal"
-    if r2_next >= 0.11 and n_next >= 55:
-        return "weak predictive signal"
-    if r2_next < 0.07:
-        return "mostly descriptive only"
-    if np.isfinite(r2_same) and r2_same >= 0.22 and r2_next < baseline:
-        return "mostly descriptive only"
-    return "likely not predictive"
+        return "Next-year fit unavailable — widen filters for more consecutive seasons"
+
+    rn = float(r2_next)
+    ratio = (rn / rs) if rs > 0.06 else rn / 0.06
+
+    # High in-sample fit that does not carry forward
+    if rs >= 0.30 and rn < min(0.11, rs * 0.30) and n >= 45:
+        return "High same-year fit but poor next-year validation"
+    if rs >= 0.24 and rn < 0.075 and n >= 40:
+        return "High same-year fit but poor next-year validation"
+
+    # Strong: same-year solid and next-year still explains meaningful variance
+    if rs >= 0.28 and rn >= 0.18 and n >= 90:
+        return "Strong predictive signal"
+    if rs >= 0.24 and rn >= 0.20 and n >= 110:
+        return "Strong predictive signal"
+    if rs >= 0.32 and rn >= 0.15 and n >= 70:
+        return "Strong predictive signal"
+
+    # Moderate carry-forward
+    if rn >= 0.20 and n >= 70 and ratio >= 0.40 and rs >= 0.16:
+        return "Moderate next-year signal"
+    if rn >= 0.17 and n >= 85 and rs >= 0.18:
+        return "Moderate next-year signal"
+
+    # Meaningful next year relative to same-year but not "strong"
+    if rn >= 0.13 and ratio >= 0.42 and n >= 50 and rs >= 0.16:
+        return "Potential predictive signal: relationship remains meaningful next year"
+
+    # Weak next year vs decent same-year
+    if rs >= 0.20 and rn < 0.12 and n >= 50:
+        return "Mostly descriptive; weak next-year signal"
+    if rn < 0.095 and n >= 45:
+        return "Mostly descriptive; weak next-year signal"
+
+    return "Mostly descriptive; weak next-year signal"
 
 
 @st.cache_data(show_spinner=False)
@@ -2041,23 +2078,18 @@ def _rf_next_year_validation_batch(plot_df, spec_tuple):
         if paired.empty or n_ny < 15:
             rows.append(
                 {
-                    "n next year": n_ny,
                     "R2 next year": np.nan,
-                    "Next-year model": "",
-                    "Validation label": "likely not predictive",
+                    "Predictive ability": _predictive_ability_label(r2_same, np.nan, n_ny),
                 }
             )
             continue
         fit = _best_fit_stats(paired, xn, yn, "Auto Best Fit")
         r2n = float(fit["r2"]) if fit is not None and np.isfinite(fit.get("r2", np.nan)) else np.nan
-        mt = str(fit.get("model_type", "")) if fit is not None else ""
-        lab = _next_year_validation_label(r2_same, r2n, n_ny)
+        pred = _predictive_ability_label(r2_same, r2n, n_ny)
         rows.append(
             {
-                "n next year": n_ny,
                 "R2 next year": r2n,
-                "Next-year model": mt,
-                "Validation label": lab,
+                "Predictive ability": pred,
             }
         )
     return rows
@@ -2089,7 +2121,7 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             "Hide mathematically overlapping stats",
             value=True,
             key=f"{key_prefix}_rf_hide_formula_overlap",
-            help="Hides rows where X and Y are tightly linked by definitions (e.g. two rate stats, H/BA/AB, OPS with OBP/SLG, HR vs SLG, TB vs SLG, OBP vs BB, RBI vs HR). "
+            help="Hides pairs tightly linked by definitions or opportunity: two rate stats; H/BA/AB; OPS with OBP/SLG; HR/SLG, TB/SLG, OBP/BB, RBI/HR, AB/HR; G or PA vs counting stats; G vs PA/AB; PA vs rate stats. "
             "The cached scan still evaluates every pair; only this table is filtered.",
         )
 
@@ -2152,13 +2184,22 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             )
             ny_extra = _rf_next_year_validation_batch(plot_df, spec_tuple)
             show_display = pd.concat([show_display.reset_index(drop=True), pd.DataFrame(ny_extra)], axis=1)
+            if "R2 next year" in show_display.columns:
+                show_display["R2 next year"] = show_display["R2 next year"].map(
+                    lambda v: round(float(v), 4) if pd.notna(v) else np.nan
+                )
+            drop_redundant = [c for c in [
+                "Note", "n next year", "Next-year model", "Validation label",
+                "X stat (Year N)", "Y stat (Year N+1)",
+            ] if c in show_display.columns]
+            if drop_redundant:
+                show_display = show_display.drop(columns=drop_redundant, errors="ignore")
+            st.caption(
+                "**R2 next year** uses **X in season N** vs the **same player’s Y in N+1** (consecutive seasons in your filters). "
+                "**Predictive ability** weighs **same-year R²** and **next-year R²** together — not causation."
+            )
 
         st.dataframe(show_display, width="stretch", hide_index=True)
-        if validate_next_year and has_next_year_ids:
-            st.caption(
-                "Next-year columns pair **X in season N** with the **same player's Y in season N+1** (requires both seasons in your filters). "
-                "Labels are cautious when **n next year** is small; high R² is not causation."
-            )
 
         rows_meta = show.to_dict("records")
         st.caption(
