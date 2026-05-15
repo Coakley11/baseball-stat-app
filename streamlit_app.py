@@ -1973,8 +1973,32 @@ def _make_rf_scatter_checkbox_callback(key_prefix, row_index, rows_as_dicts, num
     return on_change
 
 
-def _hist_next_year_paired_df(plot_df, x_stat, y_stat):
-    """Rows: same player appears in year N and N+1; X from N, Y from N+1 (aggregated to one row per player-year)."""
+def _hist_year_n_column_agg(plot_df, col):
+    """Aggregate plot_df to one row per (playerID, yearID) for attaching Year-N context to N→N+1 pairs."""
+    if plot_df is None or plot_df.empty or col not in plot_df.columns:
+        return None
+    df = plot_df[["playerID", "yearID", col]].copy()
+    df["yearID"] = pd.to_numeric(df["yearID"], errors="coerce")
+    df = df.dropna(subset=["playerID", "yearID"])
+    if df.empty:
+        return None
+    if col in RATE_STATS:
+        return df.groupby(["playerID", "yearID"], as_index=False)[col].mean()
+    if col in COUNT_STATS:
+        return df.groupby(["playerID", "yearID"], as_index=False)[col].sum()
+    if col == "Age":
+        return df.groupby(["playerID", "yearID"], as_index=False)[col].mean()
+    num_ratio = pd.to_numeric(df[col], errors="coerce").notna().mean()
+    if num_ratio >= 0.9:
+        return df.groupby(["playerID", "yearID"], as_index=False)[col].sum()
+    return df.groupby(["playerID", "yearID"], as_index=False)[col].first()
+
+
+def _hist_next_year_paired_df(plot_df, x_stat, y_stat, attach_year_n_cols=None):
+    """Rows: same player appears in year N and N+1; X from N, Y from N+1 (aggregated to one row per player-year).
+
+    Optional attach_year_n_cols: extra columns taken from Year N (e.g. Color by / Size by) merged onto each point.
+    """
     if plot_df is None or plot_df.empty:
         return pd.DataFrame()
     need = {"playerID", "yearID", x_stat, y_stat}
@@ -2005,6 +2029,14 @@ def _hist_next_year_paired_df(plot_df, x_stat, y_stat):
     left["_join_y"] = left["yearID"] + 1
     right = uni[["playerID", "yearID", y_stat]].rename(columns={"yearID": "_y_yr", y_stat: "__y_n1"})
     m = left.merge(right, left_on=["playerID", "_join_y"], right_on=["playerID", "_y_yr"], how="inner")
+    if attach_year_n_cols:
+        for ac in dict.fromkeys(attach_year_n_cols):
+            if not ac or ac in (x_stat, y_stat):
+                continue
+            agg = _hist_year_n_column_agg(plot_df, ac)
+            if agg is None:
+                continue
+            m = m.merge(agg, on=["playerID", "yearID"], how="left")
     xn = f"{x_stat} (Year N)"
     yn = f"{y_stat} (Year N+1)"
     out = pd.DataFrame(
@@ -2016,6 +2048,10 @@ def _hist_next_year_paired_df(plot_df, x_stat, y_stat):
     if "fullName" in m.columns:
         out["Player"] = m["fullName"].astype(str)
     out["Year N"] = pd.to_numeric(m["yearID"], errors="coerce")
+    if attach_year_n_cols:
+        for ac in dict.fromkeys(attach_year_n_cols):
+            if ac and ac in m.columns:
+                out[ac] = m[ac]
     return out.dropna(subset=[xn, yn])
 
 
@@ -2199,6 +2235,8 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
                 "**Predictive ability** weighs **same-year R²** and **next-year R²** together — not causation."
             )
 
+        show_display = show_display.drop(columns=["Slope / direction"], errors="ignore")
+
         st.dataframe(show_display, width="stretch", hide_index=True)
 
         rows_meta = show.to_dict("records")
@@ -2357,7 +2395,17 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     if key_prefix == "hist" and "playerID" in plot_df.columns and "yearID" in plot_df.columns:
         _tm = st.session_state.get(f"{key_prefix}_scatter_temporal_mode", "Same season (X and Y both from Year N)")
         if isinstance(_tm, str) and _tm.startswith("Next year"):
-            paired_try = _hist_next_year_paired_df(plot_df, x_col, y_col)
+            attach_n = []
+            if color_col != "None" and color_col in plot_df.columns:
+                attach_n.append(color_col)
+                if color_col == "Team" and "Team Color Group" in plot_df.columns:
+                    attach_n.append("Team Color Group")
+            if size_col != "None" and size_col in plot_df.columns:
+                attach_n.append(size_col)
+            attach_n = list(dict.fromkeys(attach_n))
+            paired_try = _hist_next_year_paired_df(
+                plot_df, x_col, y_col, attach_year_n_cols=attach_n if attach_n else None
+            )
             if paired_try is not None and not paired_try.empty and len(paired_try) >= 10:
                 chart_df = paired_try
                 x_plot = f"{x_col} (Year N)"
@@ -2429,11 +2477,11 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         "tooltip": [alt.Tooltip(c, title=c) for c in tooltip_cols],
     }
 
-    color_encoding = _scatter_color_encoding(chart_df, color_col) if color_col != "None" and color_col in chart_df.columns else None
+    color_encoding = _scatter_color_encoding(chart_df, color_col)
     if color_encoding is not None:
         enc["color"] = color_encoding
 
-    size_encoding = _scatter_size_encoding(chart_df, size_col) if size_col != "None" and size_col in chart_df.columns else None
+    size_encoding = _scatter_size_encoding(chart_df, size_col)
     if size_encoding is not None:
         enc["size"] = size_encoding
 
