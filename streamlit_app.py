@@ -1086,14 +1086,15 @@ PAGE_GUIDES = {
         "outputs": "Trend table (change columns), breakout/decline lists, and single-player dashboards.",
     },
     "Valuation": {
-        "purpose": "Rank players by blending recent production (Current Score) with recent improvement or decline (Trend Score).",
-        "when": "When you want one list that rewards both how good a player is now and which way he is moving.",
-        "outputs": "Sortable table with Valuation Score (0–1), plus best/worst callouts.",
+        "purpose": "Ranks hitters by mixing how good they have been lately with whether their stats are rising or falling.",
+        "when": "During draft prep or trade talks when you want one short list of names worth a closer look.",
+        "outputs": "A sortable table (Valuation Score, Current Score, Trend Score, stats) plus best/worst callouts at the bottom.",
         "extra": [
-            "<strong>Valuation Score (0–1):</strong> Higher is better. 1.0 = best in your current filter; 0.0 = weakest.",
-            "<strong>Current Score:</strong> How strong recent counting/rate production is in the window you picked.",
-            "<strong>Trend Score:</strong> Whether stats are rising or falling year over year (positive = improving).",
-            "<strong>How to use it:</strong> Sort by Valuation Score, then open Trend Value or Comparison for names you are unsure about.",
+            "<strong>Valuation Score (0–1):</strong> Higher is better. 1.0 = top of your filtered list; 0.0 = bottom.",
+            "<strong>Current Score:</strong> How strong recent counting and rate stats are in the year window you chose.",
+            "<strong>Trend Score:</strong> Whether production is trending up or down (larger = more improvement).",
+            "<strong>Reading the table:</strong> Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
+            "<strong>For fantasy:</strong> Shortlist adds, draft targets, and trade candidates here, then confirm on Trend Value or Comparison.",
         ],
     },
     "ML Predictions": {
@@ -9224,6 +9225,8 @@ if active_page == "Fantasy Lineup Assistant":
 
 if active_page == "Valuation":
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
+    render_page_guide(active_page)
+
     c1, c2 = st.columns(2)
     with c1:
         lag_value = st.selectbox("Valuation Window (Years)", [3, 4, 5], index=0, key="value_lag")
@@ -9232,35 +9235,42 @@ if active_page == "Valuation":
 
     max_year_value = int(yearly_df["yearID"].max())
     recent_years_value = list(range(max_year_value - lag_value + 1, max_year_value + 1))
-    st.write(f"Analyzing seasons: **{recent_years_value[0]}–{recent_years_value[-1]}**")
+    st.caption(f"Seasons in view: **{recent_years_value[0]}–{recent_years_value[-1]}**")
     recent_data_value = yearly_df[yearly_df["yearID"].isin(recent_years_value)].copy().sort_values(["playerID", "yearID"])
 
-    st.markdown("#### Draft Room Sync")
-    value_sync_enabled = st.checkbox(
-        "Remove already drafted players and allow drafting from Valuation page",
-        value=True,
-        key="value_use_draft_room_sync"
-    )
     value_drafted_names = []
     value_sync_team = None
-    if value_sync_enabled:
-        value_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
-        if not value_room_table.empty and "Player" in value_room_table.columns:
-            value_drafted_names = value_room_table["Player"].dropna().astype(str).str.strip().tolist()
-            value_team_options = get_draft_room_team_options()
-            if value_team_options:
-                default_value_team = st.session_state.get("room_your_team", value_team_options[0])
-                default_value_idx = value_team_options.index(default_value_team) if default_value_team in value_team_options else 0
-                value_sync_team = st.selectbox(
-                    "My Draft Room Team",
-                    value_team_options,
-                    index=default_value_idx,
-                    key="value_sync_team_for_draft"
-                )
-            st.caption(f"Removed {len(set(value_drafted_names))} already drafted player(s) from Valuation page views.")
+    with st.expander("Draft Room sync (optional)", expanded=False):
+        value_sync_enabled = st.checkbox(
+            "Remove already drafted players and allow drafting from Valuation page",
+            value=True,
+            key="value_use_draft_room_sync",
+        )
+        if value_sync_enabled:
+            value_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+            if not value_room_table.empty and "Player" in value_room_table.columns:
+                value_drafted_names = value_room_table["Player"].dropna().astype(str).str.strip().tolist()
+                value_team_options = get_draft_room_team_options()
+                if value_team_options:
+                    default_value_team = st.session_state.get("room_your_team", value_team_options[0])
+                    default_value_idx = value_team_options.index(default_value_team) if default_value_team in value_team_options else 0
+                    value_sync_team = st.selectbox(
+                        "My Draft Room Team",
+                        value_team_options,
+                        index=default_value_idx,
+                        key="value_sync_team_for_draft",
+                    )
+                st.caption(f"Removed {len(set(value_drafted_names))} already drafted player(s) from this page.")
+            else:
+                st.caption("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
         else:
-            st.caption("No Draft Room picks found yet.")
+            value_drafted_names = []
 
+    value_sync_enabled = st.session_state.get("value_use_draft_room_sync", True)
+    if value_sync_team is None:
+        _vt = st.session_state.get("value_sync_team_for_draft")
+        if _vt:
+            value_sync_team = _vt
     if value_sync_enabled and value_drafted_names:
         recent_data_value = recent_data_value[~recent_data_value["fullName"].astype(str).isin(set(value_drafted_names))].copy()
 
