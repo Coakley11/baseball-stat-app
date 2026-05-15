@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import unicodedata
 import hashlib
+from collections import Counter
 
 import workflow_sidebar as wf_sb
 from draft_strategy_intel import draft_strategy_line
@@ -4269,6 +4270,191 @@ def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custo
     return df
 
 
+# Standard fantasy hitting slots (OF x3). UTIL last — see build_position_aware_lineup.
+LINEUP_DEFAULT_HITTING_SLOTS = ("C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL")
+LINEUP_ALLOWED_SLOT_TOKENS = frozenset({"C", "1B", "2B", "3B", "SS", "OF", "UTIL"})
+
+
+def _normalize_pos_token(tok):
+    t = str(tok).strip().upper()
+    if t in ("LF", "CF", "RF"):
+        return "OF"
+    if t in ("TWP", "PH", "PR", "") or t == "NAN":
+        return "DH"
+    if t in ("SP", "RP", "P"):
+        return "P"
+    return t
+
+
+def _split_primary_positions(primary_val):
+    """Split Primary Position on / , + into normalized tokens (e.g. 1B/3B → 1B, 3B)."""
+    if primary_val is None or (isinstance(primary_val, float) and np.isnan(primary_val)):
+        return []
+    s = str(primary_val).upper().replace(" ", "")
+    parts = re.split(r"[,/\+]", s)
+    out = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        out.append(_normalize_pos_token(p))
+    if not out:
+        out.append(_normalize_pos_token(primary_val))
+    return list(dict.fromkeys(out))
+
+
+def _player_eligible_for_slot(pos_tokens, slot):
+    """slot is C,1B,2B,3B,SS,OF, or UTIL (UTIL = any non-pitcher)."""
+    if slot == "UTIL":
+        for p in pos_tokens:
+            if p in ("P", "SP", "RP"):
+                return False
+        return True
+    if slot == "OF":
+        return any(p == "OF" for p in pos_tokens)
+    if slot in ("C", "1B", "2B", "3B", "SS"):
+        if pos_tokens == ["DH"] or (len(pos_tokens) == 1 and pos_tokens[0] == "DH"):
+            return False
+        return slot in pos_tokens
+    return False
+
+
+def _parse_custom_lineup_slots(text):
+    """Return ordered list of valid slot tokens, or None if empty."""
+    if not text or not str(text).strip():
+        return None
+    raw = [s.strip().upper() for s in str(text).split(",") if s.strip()]
+    cleaned = []
+    for s in raw:
+        if s in ("LF", "CF", "RF"):
+            s = "OF"
+        if s not in LINEUP_ALLOWED_SLOT_TOKENS:
+            continue
+        cleaned.append(s)
+    return cleaned if cleaned else None
+
+
+def _slot_gap_trade_rows(missing_slots):
+    """One recommendation row per unfilled slot *type* (OF count rolled into copy)."""
+    if not missing_slots:
+        return []
+    rows = []
+    for slot, cnt in Counter(missing_slots).items():
+        if slot == "UTIL":
+            detail = (
+                "Your lineup has no eligible **UTIL** starter for the UTIL slot. "
+                "Add or trade for a versatile non-pitcher bat (multi-position eligibility helps)."
+            )
+        elif slot == "OF":
+            detail = (
+                f"Your lineup leaves **{cnt}** outfield starter slot(s) empty (no eligible OF/LF/CF/RF). "
+                "Add or trade for outfielders or bats with OF eligibility."
+            )
+        elif slot == "C":
+            detail = (
+                "Your lineup has no eligible **C** starter. "
+                "Target a catcher or a flexible bat with C eligibility."
+            )
+        elif slot == "SS":
+            detail = (
+                "Your lineup has no eligible **SS** starter. "
+                "Target a shortstop or middle-infield (2B/SS) profile."
+            )
+        elif slot == "2B":
+            detail = (
+                "Your lineup has no eligible **2B** starter. "
+                "Target a second baseman or middle-infield (2B/SS) profile."
+            )
+        elif slot == "3B":
+            detail = (
+                "Your lineup has no eligible **3B** starter. "
+                "Target a third baseman or corner infield (1B/3B) profile."
+            )
+        elif slot == "1B":
+            detail = (
+                "Your lineup has no eligible **1B** starter. "
+                "Target a first baseman or multi-position corner infielder (1B/3B)."
+            )
+        else:
+            detail = (
+                f"Your lineup has no eligible **{slot}** starter. "
+                f"Add or trade for a player with **{slot}** on the eligibility card."
+            )
+        rows.append({"Type": "Roster / slot", "Label": "Need", "Detail": detail})
+    return rows
+
+
+def build_position_aware_lineup(scored_df, *, slots=None, pos_col="Primary Position"):
+    """Assign each required slot to the best remaining eligible player by Lineup Confidence.
+
+    Returns dict: lineup_df (with Fantasy slot), slot_warnings, missing_slots, slots_used.
+    """
+    if slots is None:
+        slots = list(LINEUP_DEFAULT_HITTING_SLOTS)
+    else:
+        slots = list(slots)
+    out_empty = {
+        "lineup_df": pd.DataFrame(),
+        "slot_warnings": [],
+        "missing_slots": [],
+        "slots_used": slots,
+    }
+    if scored_df is None or scored_df.empty:
+        return out_empty
+
+    df = scored_df.sort_values("Lineup Confidence", ascending=False, na_position="last").copy()
+    if pos_col not in df.columns:
+        df[pos_col] = ""
+    df["_pos_tokens"] = df[pos_col].apply(_split_primary_positions)
+
+    assigned_idx = set()
+    lineup_rows = []
+    slot_warnings = []
+    missing_slots = []
+    of_count = 0
+
+    for slot in slots:
+        display_slot = slot
+        if slot == "OF":
+            of_count += 1
+            display_slot = f"OF{of_count}"
+        elig_idx = []
+        for ix in df.index:
+            if ix in assigned_idx:
+                continue
+            toks = df.at[ix, "_pos_tokens"]
+            if not isinstance(toks, list):
+                toks = []
+            if _player_eligible_for_slot(toks, slot):
+                elig_idx.append(ix)
+        if not elig_idx:
+            if slot == "OF":
+                slot_warnings.append("No eligible OF available for this lineup slot.")
+            else:
+                slot_warnings.append(f"No eligible {slot} available for this lineup slot.")
+            missing_slots.append(slot)
+            continue
+        best_ix = max(
+            elig_idx,
+            key=lambda i: float(df.loc[i, "Lineup Confidence"]) if pd.notna(df.loc[i, "Lineup Confidence"]) else -1.0,
+        )
+        assigned_idx.add(best_ix)
+        row = df.loc[best_ix].copy()
+        row["Fantasy slot"] = display_slot
+        lineup_rows.append(row)
+
+    lineup_df = pd.DataFrame(lineup_rows) if lineup_rows else pd.DataFrame()
+    if not lineup_df.empty and "_pos_tokens" in lineup_df.columns:
+        lineup_df = lineup_df.drop(columns=["_pos_tokens"], errors="ignore")
+
+    return {
+        "lineup_df": lineup_df,
+        "slot_warnings": slot_warnings,
+        "missing_slots": missing_slots,
+        "slots_used": slots,
+    }
+
+
 def _lineup_team_rate(st_df, rate_col):
     """Combined rate for a subset (H/AB for BA; mean OBP if no PA weights)."""
     if st_df is None or st_df.empty:
@@ -4317,7 +4503,15 @@ def _lineup_pitching_block(pdf):
     return out if out else None
 
 
-def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="BA"):
+def lineup_diagnosis_report(
+    starters_df,
+    full_team_df,
+    lineup_format,
+    rate_col="BA",
+    *,
+    missing_slots=None,
+    slot_warnings=None,
+):
     """Build category strength summary and recommendation rows from current roster stats (no new formulas on raw MLB stats)."""
     out = {
         "hitting_table": pd.DataFrame(),
@@ -4330,18 +4524,51 @@ def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="
         "dragger_note": "",
         "surplus_note": "",
         "recommendations": [],
+        "slot_gaps": "",
     }
-    if starters_df is None or starters_df.empty or full_team_df is None or full_team_df.empty:
-        out["archetype"] = "Add starters (or load roster stats) to run a lineup diagnosis."
+    missing_slots = list(missing_slots or [])
+    slot_warnings = list(slot_warnings or [])
+    ms_counts = Counter(missing_slots)
+    if ms_counts:
+        parts = []
+        for k in ("C", "1B", "2B", "3B", "SS", "OF", "UTIL"):
+            if k not in ms_counts:
+                continue
+            n = ms_counts[k]
+            parts.append(f"**{k}**" + (f" (×{n})" if n > 1 else ""))
+        out["slot_gaps"] = "**Required slot(s) still open:** " + ", ".join(parts) + "."
+
+    if full_team_df is None or full_team_df.empty:
+        out["archetype"] = "Add roster stats to run a lineup diagnosis."
+        warn_rows = [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
+        out["recommendations"] = (warn_rows + _slot_gap_trade_rows(missing_slots))[:5]
         return out
 
-    st_df = starters_df.copy()
     tm_df = full_team_df.copy()
+
+    if starters_df is None or starters_df.empty:
+        if ms_counts:
+            out["archetype"] = "**Incomplete lineup:** one or more required fantasy slots have no eligible starter on this roster."
+        else:
+            out["archetype"] = "No recommended starters to analyze — check roster and position columns."
+        pitch = _lineup_pitching_block(tm_df)
+        if pitch:
+            out["pitching_table"] = pd.DataFrame([{"Category": k, "Team total": v} for k, v in pitch.items()])
+        out["recommendations"] = (
+            [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
+            + _slot_gap_trade_rows(missing_slots)
+        )[:5]
     rate_col = "OBP" if str(rate_col).upper() == "OBP" and "OBP" in st_df.columns else "BA"
 
     cats_count = [c for c in ["HR", "RBI", "R", "SB"] if c in st_df.columns]
     if not cats_count and rate_col not in st_df.columns and "H" not in st_df.columns:
         out["archetype"] = "Not enough stat columns (HR/RBI/R/SB or rate) on this roster to diagnose."
+        out["recommendations"] = (
+            [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
+            + _slot_gap_trade_rows(missing_slots)
+        )[:5]
+        if ms_counts and not out.get("position_note"):
+            out["position_note"] = out.get("slot_gaps", "")
         return out
 
     rows = []
@@ -4429,9 +4656,10 @@ def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="
     else:
         out["balance_label"] = f"**Moderately tilted:** spread index {cv:.0f} — clear strengths with identifiable soft cats."
 
-    if "Primary Position" in st_df.columns:
+    if "Fantasy slot" in st_df.columns or "Primary Position" in st_df.columns:
+        grp_col = "Fantasy slot" if "Fantasy slot" in st_df.columns else "Primary Position"
         agg = {}
-        for pos, g in st_df.groupby("Primary Position", dropna=False):
+        for pos, g in st_df.groupby(grp_col, dropna=False):
             tot = 0.0
             for c in ["HR", "RBI", "R"]:
                 if c in g.columns:
@@ -4441,12 +4669,13 @@ def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="
             worst_pos = min(agg, key=agg.get)
             best_pos = max(agg, key=agg.get)
             if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
+                label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
                 out["position_note"] = (
-                    f"**Position weakness:** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
-                    f"vs **{best_pos}** (**{agg[best_pos]:.0f}**)."
+                    f"**Position weakness ({label}):** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
+                    f"vs **{best_pos}** (**{agg[best_pos]:.0f}**). Consider upgrading that slot via add/drop or trade."
                 )
             else:
-                out["position_note"] = "**Position shape:** HR+R+RBI is fairly even across starter positions in this set."
+                out["position_note"] = "**Position shape:** HR+R+RBI is fairly even across starter slots in this set."
 
     rate_src = "OBP" if rate_col == "OBP" else "BA"
     if rate_src in st_df.columns or (rate_src == "BA" and "H" in st_df.columns and "AB" in st_df.columns):
@@ -4515,7 +4744,7 @@ def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="
         recs.append({
             "Type": "Position upgrade",
             "Label": "Need",
-            "Detail": "Upgrade the weakest starter position with HR+R+RBI that matches your best slot’s production tier.",
+            "Detail": "Upgrade the weakest starter slot (see position note) with HR+R+RBI that matches your best slot’s production tier, or trade for that shape.",
         })
 
     pitch = _lineup_pitching_block(tm_df)
@@ -4538,7 +4767,18 @@ def lineup_diagnosis_report(starters_df, full_team_df, lineup_format, rate_col="
             "Detail": "Category table still uses raw hitter stats from Standings Tracker; align adds with your points/H2H settings.",
         })
 
+    slot_rows = _slot_gap_trade_rows(missing_slots)
+    warn_rows = [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
+    recs = warn_rows + slot_rows + recs
     out["recommendations"] = recs[:5]
+
+    if ms_counts:
+        gap = out.get("slot_gaps", "")
+        if gap:
+            if out.get("position_note"):
+                out["position_note"] = gap + " " + out["position_note"]
+            else:
+                out["position_note"] = gap
     return out
 
 
@@ -8551,7 +8791,21 @@ if active_page == "Fantasy Lineup Assistant":
                 key="lineup_format"
             )
         with l3:
-            starters_to_show = st.slider("Recommended Starters to Show", 3, 15, 9, key="lineup_starters_to_show")
+            bench_rows_to_show = st.slider("Bench rows to show", 3, 25, 12, key="lineup_bench_rows")
+
+        with st.expander("Starting lineup slots (optional)"):
+            use_util = st.checkbox(
+                "Include UTIL slot",
+                value=True,
+                key="lineup_include_util",
+                help="Uncheck if your league has no UTIL. A custom slot list below replaces defaults when provided.",
+            )
+            custom_slots_text = st.text_input(
+                "Custom slot order (comma-separated)",
+                placeholder="e.g. C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL",
+                key="lineup_custom_slots",
+                help="Valid tokens: C, 1B, 2B, 3B, SS, OF, LF, CF, RF, UTIL. Leave blank for default order.",
+            )
 
         custom_weights = None
         if lineup_format == "Points League":
@@ -8577,24 +8831,57 @@ if active_page == "Fantasy Lineup Assistant":
             scored = build_lineup_assistant_scores(team_roster, lineup_format, custom_weights)
             scored = scored.sort_values("Lineup Confidence", ascending=False)
 
+            slot_list = _parse_custom_lineup_slots(custom_slots_text)
+            if slot_list is None:
+                slot_list = list(LINEUP_DEFAULT_HITTING_SLOTS)
+                if not use_util:
+                    slot_list = [s for s in slot_list if s != "UTIL"]
+            else:
+                if not use_util:
+                    slot_list = [s for s in slot_list if s != "UTIL"]
+
+            lineup_pkg = build_position_aware_lineup(scored, slots=slot_list)
+            starters = lineup_pkg["lineup_df"]
+
+            for w in lineup_pkg["slot_warnings"]:
+                st.warning(w)
+
             st.subheader("Recommended Starters")
+            st.caption(
+                "Starting lineup recommendations are position-aware and attempt to fill every required fantasy slot."
+            )
             starter_cols = [
-                "Player", "Primary Position", "MLB Team", "Start/Sit Recommendation",
-                "Lineup Confidence", "Momentum Score", "Consistency Score", "Volatility Meter",
-                "HR", "RBI", "R", "SB", "BA", "OPS", "Lineup Reason"
+                "Fantasy slot",
+                "Player",
+                "Primary Position",
+                "MLB Team",
+                "Start/Sit Recommendation",
+                "Lineup Confidence",
+                "Momentum Score",
+                "Consistency Score",
+                "Volatility Meter",
+                "HR",
+                "RBI",
+                "R",
+                "SB",
+                "BA",
+                "OPS",
+                "Lineup Reason",
             ]
-            starters = scored.head(starters_to_show).copy()
+            if starters.empty:
+                st.info("No eligible players matched every required hitting slot — check warnings above and your roster’s Primary Position values.")
+            starter_disp_rows = max(1, min(15, len(starters))) if not starters.empty else 1
             render_output_table(
                 format_lineup_assistant_table(clean_ui_columns(starters[[c for c in starter_cols if c in starters.columns]])),
                 key="lineup_recommended_starters",
                 file_name="lineup_recommended_starters.csv",
-                display_rows=starters_to_show,
+                display_rows=starter_disp_rows,
             )
 
             st.subheader("Lineup Diagnosis / How to Improve This Team")
             st.caption(
                 "Uses **Standings Tracker current-season stats** merged with your Draft Room roster. "
-                "**Lineup** = the **N recommended starters** above (slider count); **team** = full drafted team on this page. "
+                "**Lineup** = the **position-aware recommended starters** above; **team** = full drafted team on this page. "
                 "Shares and ranks compare starter totals to the whole team — not projected rest-of-season."
             )
             if lineup_format == "5x5 Roto":
@@ -8615,7 +8902,14 @@ if active_page == "Fantasy Lineup Assistant":
                 rate_for_diag = "BA"
                 st.caption("OBP not found in roster stats — using **BA** for the rate row.")
 
-            diag = lineup_diagnosis_report(starters, scored, lineup_format, rate_col=rate_for_diag)
+            diag = lineup_diagnosis_report(
+                starters,
+                scored,
+                lineup_format,
+                rate_col=rate_for_diag,
+                missing_slots=lineup_pkg["missing_slots"],
+                slot_warnings=lineup_pkg["slot_warnings"],
+            )
 
             if not diag["hitting_table"].empty:
                 ht_disp = diag["hitting_table"].copy()
@@ -8651,25 +8945,33 @@ if active_page == "Fantasy Lineup Assistant":
                 st.dataframe(rec_df, width="stretch", hide_index=True)
 
             st.subheader("Bench / Sit / Watch List")
-            bench = scored.tail(max(1, min(10, len(scored)))).sort_values("Lineup Confidence", ascending=True).copy()
+            assigned_ix = set(starters.index) if not starters.empty else set()
+            bench_pool = scored.drop(index=list(assigned_ix), errors="ignore") if assigned_ix else scored
+            bench = bench_pool.sort_values("Lineup Confidence", ascending=False).head(bench_rows_to_show).copy()
             render_output_table(
                 format_lineup_assistant_table(clean_ui_columns(bench[[c for c in starter_cols if c in bench.columns]])),
                 key="lineup_bench_watch",
                 file_name="lineup_bench_watch.csv",
-                display_rows=10,
+                display_rows=bench_rows_to_show,
             )
 
             st.subheader("Lineup Intelligence Summary")
-            best_row = scored.iloc[0]
-            weakest_row = scored.iloc[-1]
-            st.success(
-                f"Best start candidate: {best_row.get('Player', 'Unknown')} — "
-                f"{best_row.get('Lineup Reason', '')}"
-            )
-            st.warning(
-                f"Most questionable option: {weakest_row.get('Player', 'Unknown')} — "
-                f"{weakest_row.get('Lineup Reason', '')}"
-            )
+            if not starters.empty:
+                intel_sorted = starters.sort_values("Lineup Confidence", ascending=False, na_position="last")
+                best_row = intel_sorted.iloc[0]
+                weakest_row = intel_sorted.iloc[-1]
+                st.success(
+                    f"Best start candidate: {best_row.get('Player', 'Unknown')} — "
+                    f"{best_row.get('Lineup Reason', '')}"
+                )
+                st.warning(
+                    f"Most questionable option: {weakest_row.get('Player', 'Unknown')} — "
+                    f"{weakest_row.get('Lineup Reason', '')}"
+                )
+            else:
+                st.info(
+                    "Assign a full position-valid lineup to compare best versus weakest **locked-in** starters here."
+                )
 
             st.subheader("Roster Alerts")
             alert_rows = []
