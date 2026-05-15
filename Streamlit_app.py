@@ -242,6 +242,11 @@ st.markdown("""
 .section-card {background-color: #f7f9fc; padding: 16px; border-radius: 12px; border: 1px solid #d9e2ec; margin-bottom: 16px;}
 .section-title {font-size: 24px; font-weight: 800; color: #12324a; margin-bottom: 6px;}
 .small-note {color: #4f6475; font-size: 14px;}
+.page-guide {background: linear-gradient(135deg, #eef4ff 0%, #f8fbff 100%); border-left: 4px solid #1f6feb; padding: 12px 16px; border-radius: 10px; margin: 0 0 16px 0; border: 1px solid #c8daf5;}
+.page-guide-title {font-size: 13px; font-weight: 700; color: #0b3d6e; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;}
+.page-guide ul {margin: 0; padding-left: 18px; color: #2c3e50; font-size: 14px; line-height: 1.45;}
+.page-guide li {margin-bottom: 4px;}
+.page-guide strong {color: #12324a;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -249,10 +254,7 @@ st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
-        A full baseball and fantasy analytics platform: historical explorer, career totals, leaderboards, comparison tools,
-        significance testing, scatterplots, trend analysis, ML projections, FantasyPros/ADP market sleepers and bust risks,
-        Draft Assistant recommendations, Draft Room Simulator, roster construction views, live Fantasy Standings Tracker,
-        current-season MLB API stat scoring, and Trade Analyzer tools for evaluating and proposing fantasy trades.
+        Explore MLB history, compare players, spot trends, run drafts, and manage your fantasy season — pick a page in the sidebar to start.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1059,6 +1061,91 @@ def render_section_header(title, note):
             <div class="small-note">{note}</div>
         </div>
         """, unsafe_allow_html=True)
+
+
+PAGE_GUIDES = {
+    "Historical Explorer": {
+        "purpose": "Search Lahman seasons by year, position, and team.",
+        "when": "When you want season-by-season stats for many players at once.",
+        "outputs": "Sortable table, top-10 bar chart, and optional scatterplots for the filtered set.",
+    },
+    "Career Totals": {
+        "purpose": "Roll up career counting and rate stats across a year range.",
+        "when": "When you care about full-career production, not one season.",
+        "outputs": "Career table plus charts for the filtered group.",
+    },
+    "Leaderboards": {
+        "purpose": "Rank players on a single stat with quick filters.",
+        "when": "When you want a simple who-leads-in-HR/OPS view.",
+        "outputs": "Leaderboard table and top-10 chart for the chosen stat.",
+    },
+    "Comparison Tool": {
+        "purpose": "Line up up to three players side by side.",
+        "when": "When you are deciding between specific names.",
+        "outputs": "Year-by-year table, career totals, trend charts, and optional significance tests.",
+    },
+    "Trend Value": {
+        "purpose": "See who is improving or fading over recent seasons.",
+        "when": "During draft prep or when judging breakout vs decline risk.",
+        "outputs": "Trend table (change columns), breakout/decline lists, and single-player dashboards.",
+    },
+    "Valuation": {
+        "purpose": "Blend current production with trend into one 0–1 score.",
+        "when": "When you want a single ranking that weights both level and direction.",
+        "outputs": "Valuation table and short best/worst summaries.",
+    },
+    "ML Predictions": {
+        "purpose": "Machine-learning style next-season stat projections.",
+        "when": "When you want model-based forecasts beyond simple trends.",
+        "outputs": "Ranked projection table; tune advanced blending in the expander.",
+    },
+    "Fantasy Sleepers & Busts": {
+        "purpose": "Compare your model ranks to FantasyPros ADP/market ranks.",
+        "when": "On draft day to find sleepers (positive edge) and busts (negative edge).",
+        "outputs": "Sleeper/bust tables and market-vs-model charts.",
+    },
+    "Draft Room Simulator": {
+        "purpose": "Log picks, view rosters, and grade drafts.",
+        "when": "During a live or mock draft — this feeds the Draft Assistant.",
+        "outputs": "Pick board, roster views, and post-draft grades.",
+    },
+    "Draft Assistant Simulator": {
+        "purpose": "Recommend your next pick from needs, scarcity, and projections.",
+        "when": "While drafting, after picks are entered in Draft Room.",
+        "outputs": "Ranked available players with plain-language reasons.",
+    },
+    "Fantasy Standings Tracker": {
+        "purpose": "Score every fantasy team with current-season stats.",
+        "when": "In-season to see category standings and roster totals.",
+        "outputs": "Team ranks and category breakdowns (loads stats for Lineup Assistant too).",
+    },
+    "Fantasy Lineup Assistant": {
+        "purpose": "Start/sit guidance and position-valid recommended lineups.",
+        "when": "Each scoring period with current stats loaded from Standings Tracker.",
+        "outputs": "Starters by slot, bench list, diagnosis, and trade ideas.",
+    },
+}
+
+
+def render_page_guide(page_key):
+    """Short plain-English intro for the active page (no formula changes)."""
+    g = PAGE_GUIDES.get(page_key)
+    if not g:
+        return
+    st.markdown(
+        f"""
+        <div class="page-guide">
+            <div class="page-guide-title">Quick guide</div>
+            <ul>
+                <li><strong>What it does:</strong> {g.get("purpose", "")}</li>
+                <li><strong>When to use it:</strong> {g.get("when", "")}</li>
+                <li><strong>Main outputs:</strong> {g.get("outputs", "")}</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
     if df.empty or value_col not in df.columns or name_col not in df.columns:
@@ -2507,6 +2594,11 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
 
     chart = chart.interactive().properties(height=520)
     st.altair_chart(chart, width="stretch")
+    if not show_trendline:
+        st.caption(
+            f"Each point is one row in the current filter. Compare **{x_col}** vs **{y_col}**; "
+            "enable **Show trendline** in Scatterplot options to see fit strength and R²."
+        )
 
     if use_next_year_scatter:
         st.caption(
@@ -5787,6 +5879,15 @@ if _pending_nav and _pending_nav in _PAGE_OPTION_SET:
 st.session_state.setdefault("active_page", "Historical Explorer")
 active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
 st.sidebar.caption("Filters are remembered as you move between pages.")
+with st.sidebar.expander("New here? Quick start", expanded=False):
+    st.markdown(
+        "**Typical flow:**\n"
+        "1. **Historical Explorer** — browse stats\n"
+        "2. **Trend Value** / **Valuation** — draft prep\n"
+        "3. **Draft Room** → **Draft Assistant** — live draft\n"
+        "4. **Standings Tracker** → **Lineup Assistant** — in-season\n\n"
+        "Each page has a **Quick guide** at the top. Advanced filters live in expanders."
+    )
 render_persistent_workflow_sidebar(yearly_df)
 
 if active_page == "Historical Explorer":
@@ -5794,35 +5895,51 @@ if active_page == "Historical Explorer":
         "🔎 Historical Explorer",
         "Find individual player seasons. Split-team seasons can stay as separate team rows or be combined into one primary-team season row."
     )
-    c1, c2, c_mode, c3, c4 = st.columns([1.05, 1.0, 1.25, 1.0, 1.35])
-    with c1:
-        hist_year_range = st.slider("Year Range", year_min, year_max, (default_start_hist, year_max), key="hist_year")
-    with c2:
-        bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
-        hist_bats = st.multiselect("Batting Hand", bats_options, default=bats_options, key="hist_bats")
-    with c_mode:
-        hist_position_filter_mode = st.selectbox(
-            "Position Filter Mode",
-            ["Season Primary Position", "Career Primary Position"],
-            index=0,
-            key="hist_position_filter_mode",
-            help="Season mode filters by the player’s primary position for that season. Career mode filters by the player’s full-career primary position from Fielding.csv games."
-        )
-    hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
-    with c3:
-        pos_options = _hist_explorer_pos_options(hist_position_source_col)
-        hist_pos = st.multiselect("Primary Position", pos_options, default=pos_options, key="hist_pos")
-    with c4:
-        actual_team_names = _hist_explorer_franchise_names_for_teams()
-        hist_team_options = ["All Teams", "American League", "National League"] + actual_team_names
-        hist_teams = st.multiselect("Franchise / League", hist_team_options, default=["All Teams"], key="hist_team")
+    render_page_guide(active_page)
 
-    combine_split_seasons = st.toggle(
-        "Combine split-team seasons into one primary-team row",
-        value=False,
-        key="hist_combine_split_seasons",
-        help="OFF = one row per player/year/team. ON = one row per player/year, with Team assigned to the team where he had the most games/AB in that season."
-    )
+    hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
+    with hc1:
+        hist_year_range = st.slider("Year Range", year_min, year_max, (default_start_hist, year_max), key="hist_year")
+    sort_options_hist = [
+        "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
+    ]
+    with hc2:
+        hist_sort_stat = st.selectbox(
+            "Sort by",
+            sort_options_hist,
+            index=sort_options_hist.index("HR"),
+            key="hist_sort_stat",
+        )
+    with hc3:
+        hist_sort_order = st.selectbox("Order", ["Descending", "Ascending"], index=0, key="hist_sort_order")
+
+    with st.expander("Advanced filters", expanded=False):
+        c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
+        with c2:
+            bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
+            hist_bats = st.multiselect("Batting Hand", bats_options, default=bats_options, key="hist_bats")
+        with c_mode:
+            hist_position_filter_mode = st.selectbox(
+                "Position Filter Mode",
+                ["Season Primary Position", "Career Primary Position"],
+                index=0,
+                key="hist_position_filter_mode",
+                help="Season mode filters by the player’s primary position for that season. Career mode filters by the player’s full-career primary position from Fielding.csv games.",
+            )
+        hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
+        with c3:
+            pos_options = _hist_explorer_pos_options(hist_position_source_col)
+            hist_pos = st.multiselect("Primary Position", pos_options, default=pos_options, key="hist_pos")
+        with c4:
+            actual_team_names = _hist_explorer_franchise_names_for_teams()
+            hist_team_options = ["All Teams", "American League", "National League"] + actual_team_names
+            hist_teams = st.multiselect("Franchise / League", hist_team_options, default=["All Teams"], key="hist_team")
+        combine_split_seasons = st.toggle(
+            "Combine split-team seasons into one primary-team row",
+            value=False,
+            key="hist_combine_split_seasons",
+            help="OFF = one row per player/year/team. ON = one row per player/year, with Team assigned to the team where he had the most games/AB in that season.",
+        )
 
     hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
     if hist_bats:
@@ -5876,22 +5993,6 @@ if active_page == "Historical Explorer":
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
 
-    c5, c6 = st.columns(2)
-    # Keep Historical Explorer sorting focused on baseball statistics only.
-    # Do not expose backend/name/team/position fields in the sort dropdown.
-    sort_options_hist = [
-        "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
-    ]
-    with c5:
-        hist_sort_stat = st.selectbox(
-            "Sort Historical Explorer By",
-            sort_options_hist,
-            index=sort_options_hist.index("HR"),
-            key="hist_sort_stat"
-        )
-    with c6:
-        hist_sort_order = st.selectbox("Sort Order", ["Descending", "Ascending"], index=0, key="hist_sort_order")
-
     display_cols_hist = [
         "yearID", "fullName", "bats", "displayPosition", team_col_for_display,
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
@@ -5928,35 +6029,39 @@ if active_page == "Career Totals":
         "📚 Career Totals",
         "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team."
     )
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1:
+    render_page_guide(active_page)
+    cc1, cc2 = st.columns([2.5, 1.5])
+    with cc1:
         range_career = st.slider("Select Year Range", year_min, year_max, (max(year_min, 2010), year_max), key="career_year")
-    with c2:
-        bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
-        bats_filter_career = st.multiselect("Batting Hand", bats_options_career, default=bats_options_career, key="career_bats")
-    with c3:
-        position_filter_mode = st.selectbox(
-            "Position Filter Mode",
-            ["Career Primary Position", "Season Primary Position"],
-            index=0,
-            key="career_position_filter_mode",
-            help="Career mode uses each player's full-career primary position from Fielding.csv games. Season mode includes only seasons where the selected position was that player's primary position that year."
-        )
-    with c4:
+    with cc2:
+        sort_stat_career = st.selectbox("Sort by", ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"], index=0, key="career_sort")
+
+    with st.expander("Advanced filters", expanded=False):
+        c2, c3, c4 = st.columns(3)
+        with c2:
+            bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
+            bats_filter_career = st.multiselect("Batting Hand", bats_options_career, default=bats_options_career, key="career_bats")
+        with c3:
+            position_filter_mode = st.selectbox(
+                "Position Filter Mode",
+                ["Career Primary Position", "Season Primary Position"],
+                index=0,
+                key="career_position_filter_mode",
+                help="Career mode uses each player's full-career primary position from Fielding.csv games. Season mode includes only seasons where the selected position was that player's primary position that year.",
+            )
         position_source_col = "careerPrimaryPos" if position_filter_mode == "Career Primary Position" else "primaryPos"
-        pos_options_career = sorted([x for x in batting_df[position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
-        pos_filter_career = st.multiselect("Position", pos_options_career, default=pos_options_career, key="career_pos")
-    with c5:
+        with c4:
+            pos_options_career = sorted([x for x in batting_df[position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
+            pos_filter_career = st.multiselect("Position", pos_options_career, default=pos_options_career, key="career_pos")
         actual_team_names_career = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
         team_options_career = ["All Teams", "American League", "National League"] + actual_team_names_career
         team_filter_career = st.multiselect("Franchise / League", team_options_career, default=["All Teams"], key="career_team")
-
-    show_career_by_team = st.toggle(
-        "Show career totals separately by team",
-        value=False,
-        key="career_by_team_toggle",
-        help="OFF = one row per player with a Primary Team. ON = one row per player/team, and stat minimums are applied to each team row separately."
-    )
+        show_career_by_team = st.toggle(
+            "Show career totals separately by team",
+            value=False,
+            key="career_by_team_toggle",
+            help="OFF = one row per player with a Primary Team. ON = one row per player/team, and stat minimums are applied to each team row separately.",
+        )
 
     filtered_career = batting_df[(batting_df["yearID"] >= range_career[0]) & (batting_df["yearID"] <= range_career[1])].copy()
     if bats_filter_career:
@@ -6022,7 +6127,6 @@ if active_page == "Career Totals":
     career_totals = safe_round_rate_stats(career_totals)
     st.caption(career_mode_note)
 
-    sort_stat_career = st.selectbox("Sort By", ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"], index=0, key="career_sort")
     top_bar_chart(career_totals, "fullName", sort_stat_career, f"Top 10 Career Totals by {sort_stat_career}")
 
     c5, c6, c7 = st.columns(3)
@@ -6054,11 +6158,14 @@ if active_page == "Career Totals":
 
 if active_page == "Leaderboards":
     render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
-    c1, c2 = st.columns(2)
+    render_page_guide(active_page)
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         range_leaders = st.slider("Select Year Range", year_min, year_max, (max(year_min, 2020), year_max), key="leaders_year")
     with c2:
         top_n_leaders = st.slider("Show Top N Players", 5, 100, 25, key="leaders_top_n")
+    with c3:
+        sort_stat_leaders = st.selectbox("Sort by", ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"], index=0, key="leaders_sort")
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
@@ -6080,7 +6187,6 @@ if active_page == "Leaderboards":
     for stat, weight in weight_values.items():
         leaderboard["score"] += weight * (leaderboard[stat] * 100 if stat in RATE_STATS else leaderboard[stat])
 
-    sort_stat_leaders = st.selectbox("Sort Leaderboard By", ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"], index=0, key="leaders_sort")
     top_bar_chart(leaderboard, "fullName", sort_stat_leaders, f"Top 10 by {sort_stat_leaders}")
 
     c12, c13, c14 = st.columns(3)
@@ -6232,6 +6338,7 @@ def sig_players_changed():
 
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
+    render_page_guide(active_page)
     clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
@@ -6385,227 +6492,226 @@ if active_page == "Comparison Tool":
 
 
     st.divider()
-    st.subheader("Statistical Significance Test")
-    with st.expander("How Player A/B sync works with the comparison list", expanded=False):
+    with st.expander("Advanced: Statistical significance test", expanded=False):
         st.caption(
-            "Compare two players over chosen year ranges. The app tests whether averages differ meaningfully for selected stats, "
-            "plus one overall row. The top multiselect and Player A/B below stay in sync via session state on the next rerun."
+            "Compare two players over chosen year ranges. Green/red cells highlight meaningful differences; "
+            "the multiselect above stays in sync with Player A/B on the next rerun."
         )
+        sig_col1, sig_col2 = st.columns(2)
+        clean_label_map_sig = clean_label_map_compare
+        all_player_options_sig = compare_player_options
 
-    sig_col1, sig_col2 = st.columns(2)
-    clean_label_map_sig = clean_label_map_compare
-    all_player_options_sig = compare_player_options
+        # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
+        pending_a = st.session_state.pop("pending_sig_player_a", None)
+        pending_b = st.session_state.pop("pending_sig_player_b", None)
+        if pending_a in all_player_options_sig:
+            st.session_state["sig_player_a_clean"] = pending_a
+        if pending_b in all_player_options_sig:
+            st.session_state["sig_player_b_clean"] = pending_b
 
-    # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
-    pending_a = st.session_state.pop("pending_sig_player_a", None)
-    pending_b = st.session_state.pop("pending_sig_player_b", None)
-    if pending_a in all_player_options_sig:
-        st.session_state["sig_player_a_clean"] = pending_a
-    if pending_b in all_player_options_sig:
-        st.session_state["sig_player_b_clean"] = pending_b
+        # Bottom Player A/B dropdowns show the top-selected comparison players first,
+        # but still allow any player in the database.
+        sig_priority_options = [p for p in selected_labels_compare if p in all_player_options_sig]
+        sig_dropdown_options = sig_priority_options + [p for p in all_player_options_sig if p not in sig_priority_options]
 
-    # Bottom Player A/B dropdowns show the top-selected comparison players first,
-    # but still allow any player in the database.
-    sig_priority_options = [p for p in selected_labels_compare if p in all_player_options_sig]
-    sig_dropdown_options = sig_priority_options + [p for p in all_player_options_sig if p not in sig_priority_options]
+        sig_default_a_index = 0
+        sig_default_b_index = 1 if len(sig_dropdown_options) > 1 else 0
 
-    sig_default_a_index = 0
-    sig_default_b_index = 1 if len(sig_dropdown_options) > 1 else 0
+        saved_a = st.session_state.get("sig_player_a_clean")
+        saved_b = st.session_state.get("sig_player_b_clean")
 
-    saved_a = st.session_state.get("sig_player_a_clean")
-    saved_b = st.session_state.get("sig_player_b_clean")
+        if saved_a in sig_dropdown_options:
+            sig_default_a_index = sig_dropdown_options.index(saved_a)
+        elif len(selected_labels_compare) >= 1 and selected_labels_compare[0] in sig_dropdown_options:
+            sig_default_a_index = sig_dropdown_options.index(selected_labels_compare[0])
 
-    if saved_a in sig_dropdown_options:
-        sig_default_a_index = sig_dropdown_options.index(saved_a)
-    elif len(selected_labels_compare) >= 1 and selected_labels_compare[0] in sig_dropdown_options:
-        sig_default_a_index = sig_dropdown_options.index(selected_labels_compare[0])
+        if saved_b in sig_dropdown_options:
+            sig_default_b_index = sig_dropdown_options.index(saved_b)
+        elif len(selected_labels_compare) >= 2 and selected_labels_compare[1] in sig_dropdown_options:
+            sig_default_b_index = sig_dropdown_options.index(selected_labels_compare[1])
 
-    if saved_b in sig_dropdown_options:
-        sig_default_b_index = sig_dropdown_options.index(saved_b)
-    elif len(selected_labels_compare) >= 2 and selected_labels_compare[1] in sig_dropdown_options:
-        sig_default_b_index = sig_dropdown_options.index(selected_labels_compare[1])
-
-    with sig_col1:
-        sig_player_a_label = st.selectbox(
-            "Player A",
-            sig_dropdown_options,
-            index=sig_default_a_index,
-            key="sig_player_a_clean",
-            on_change=sig_players_changed
-        )
-        pid_a_preview = clean_label_map_sig[sig_player_a_label]
-        a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
-        st.caption(f"Career span: {a_min_year}–{a_max_year}")
-        if a_min_year == a_max_year:
-            st.info(f"Player A only has one available season in the data: {a_min_year}.")
-            sig_years_a = (a_min_year, a_max_year)
-        else:
-            sig_years_a = st.slider(
-                "Player A Year Range",
-                min_value=a_min_year,
-                max_value=a_max_year,
-                value=(a_min_year, a_max_year),
-                key=f"sig_years_a_{pid_a_preview}"
+        with sig_col1:
+            sig_player_a_label = st.selectbox(
+                "Player A",
+                sig_dropdown_options,
+                index=sig_default_a_index,
+                key="sig_player_a_clean",
+                on_change=sig_players_changed
             )
-
-    with sig_col2:
-        sig_player_b_label = st.selectbox(
-            "Player B",
-            sig_dropdown_options,
-            index=sig_default_b_index,
-            key="sig_player_b_clean",
-            on_change=sig_players_changed
-        )
-        pid_b_preview = clean_label_map_sig[sig_player_b_label]
-        b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
-        st.caption(f"Career span: {b_min_year}–{b_max_year}")
-        if b_min_year == b_max_year:
-            st.info(f"Player B only has one available season in the data: {b_min_year}.")
-            sig_years_b = (b_min_year, b_max_year)
-        else:
-            sig_years_b = st.slider(
-                "Player B Year Range",
-                min_value=b_min_year,
-                max_value=b_max_year,
-                value=(b_min_year, b_max_year),
-                key=f"sig_years_b_{pid_b_preview}"
-            )
-
-    sig_stats = st.multiselect(
-        "Stats to Test",
-        ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
-        default=["HR", "RBI", "SB", "OPS"],
-        key="sig_stats"
-    )
-    alpha = st.selectbox("Significance Level", [0.10, 0.05, 0.01], index=1, key="sig_alpha")
-
-    if sig_player_a_label and sig_player_b_label and sig_stats:
-        pid_a = clean_label_map_sig[sig_player_a_label]
-        pid_b = clean_label_map_sig[sig_player_b_label]
-        player_a_name = yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().empty else sig_player_a_label
-        player_b_name = yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().empty else sig_player_b_label
-
-        data_a = yearly_df[
-            (yearly_df["playerID"] == pid_a) &
-            (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_a[0]) &
-            (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_a[1])
-        ].copy()
-        data_b = yearly_df[
-            (yearly_df["playerID"] == pid_b) &
-            (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_b[0]) &
-            (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_b[1])
-        ].copy()
-
-        if data_a.empty or data_b.empty:
-            st.warning("One of the selected players has no data in the selected year range.")
-        else:
-            sig_rows = []
-            overall_z_values = []
-            for stat in sig_stats:
-                if stat not in data_a.columns or stat not in data_b.columns:
-                    continue
-                result = _welch_test_summary(data_a[stat], data_b[stat])
-                diff = result["difference"]
-                p_value = result["p_value"]
-                test_stat = result["stat"]
-                if pd.notna(test_stat) and np.isfinite(test_stat):
-                    overall_z_values.append(test_stat)
-                sig_rows.append({
-                    "Stat": stat,
-                    f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
-                    f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
-                    "Player A Avg": result["mean1"],
-                    "Player B Avg": result["mean2"],
-                    "Difference": diff,
-                    "Test Statistic": test_stat,
-                    "p-value": p_value,
-                    "Winner": (
-                        player_a_name if pd.notna(diff) and diff > 0 else
-                        player_b_name if pd.notna(diff) and diff < 0 else
-                        "Tie"
-                    ),
-                    "Significance Result": (
-                        "Significant" if pd.notna(p_value) and p_value < alpha else
-                        "Borderline" if pd.notna(p_value) and p_value < 0.10 else
-                        "Not significant"
-                    ),
-                    "Interpretation": _interpret_significance(player_a_name, player_b_name, stat, diff, p_value, alpha)
-                })
-
-            sig_df = pd.DataFrame(sig_rows)
-            if sig_df.empty:
-                st.warning("No valid stats were available for testing.")
+            pid_a_preview = clean_label_map_sig[sig_player_a_label]
+            a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
+            st.caption(f"Career span: {a_min_year}–{a_max_year}")
+            if a_min_year == a_max_year:
+                st.info(f"Player A only has one available season in the data: {a_min_year}.")
+                sig_years_a = (a_min_year, a_max_year)
             else:
-                # Calculate and append the OVERALL row BEFORE rendering the table,
-                # so the user actually sees it inside the displayed output.
-                valid_z = [z for z in overall_z_values if pd.notna(z) and np.isfinite(z)]
-                if len(valid_z) >= 2:
-                    overall_score = float(np.mean(valid_z))
-                    overall_strength = abs(overall_score)
+                sig_years_a = st.slider(
+                    "Player A Year Range",
+                    min_value=a_min_year,
+                    max_value=a_max_year,
+                    value=(a_min_year, a_max_year),
+                    key=f"sig_years_a_{pid_a_preview}"
+                )
 
-                    if overall_strength >= 1.96:
-                        overall_winner = player_a_name if overall_score > 0 else player_b_name
-                        overall_interpretation = (
-                            f"{overall_winner} has the stronger overall profile across the selected stats, and the combined result is statistically significant."
-                        )
-                    elif overall_strength >= 1.00:
-                        overall_winner = player_a_name if overall_score > 0 else player_b_name
-                        overall_interpretation = (
-                            f"{overall_winner} has the better overall profile across the selected stats, but the combined edge is not statistically significant."
-                        )
-                    else:
-                        overall_winner = "Not significant"
-                        overall_interpretation = (
-                            "Overall result: no statistically meaningful difference across the selected stats."
-                        )
+        with sig_col2:
+            sig_player_b_label = st.selectbox(
+                "Player B",
+                sig_dropdown_options,
+                index=sig_default_b_index,
+                key="sig_player_b_clean",
+                on_change=sig_players_changed
+            )
+            pid_b_preview = clean_label_map_sig[sig_player_b_label]
+            b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
+            st.caption(f"Career span: {b_min_year}–{b_max_year}")
+            if b_min_year == b_max_year:
+                st.info(f"Player B only has one available season in the data: {b_min_year}.")
+                sig_years_b = (b_min_year, b_max_year)
+            else:
+                sig_years_b = st.slider(
+                    "Player B Year Range",
+                    min_value=b_min_year,
+                    max_value=b_max_year,
+                    value=(b_min_year, b_max_year),
+                    key=f"sig_years_b_{pid_b_preview}"
+                )
 
-                    overall_row = {
-                        "Stat": "OVERALL",
+        sig_stats = st.multiselect(
+            "Stats to Test",
+            ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
+            default=["HR", "RBI", "SB", "OPS"],
+            key="sig_stats"
+        )
+        alpha = st.selectbox("Significance Level", [0.10, 0.05, 0.01], index=1, key="sig_alpha")
+
+        if sig_player_a_label and sig_player_b_label and sig_stats:
+            pid_a = clean_label_map_sig[sig_player_a_label]
+            pid_b = clean_label_map_sig[sig_player_b_label]
+            player_a_name = yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().empty else sig_player_a_label
+            player_b_name = yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().empty else sig_player_b_label
+
+            data_a = yearly_df[
+                (yearly_df["playerID"] == pid_a) &
+                (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_a[0]) &
+                (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_a[1])
+            ].copy()
+            data_b = yearly_df[
+                (yearly_df["playerID"] == pid_b) &
+                (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_b[0]) &
+                (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_b[1])
+            ].copy()
+
+            if data_a.empty or data_b.empty:
+                st.warning("One of the selected players has no data in the selected year range.")
+            else:
+                sig_rows = []
+                overall_z_values = []
+                for stat in sig_stats:
+                    if stat not in data_a.columns or stat not in data_b.columns:
+                        continue
+                    result = _welch_test_summary(data_a[stat], data_b[stat])
+                    diff = result["difference"]
+                    p_value = result["p_value"]
+                    test_stat = result["stat"]
+                    if pd.notna(test_stat) and np.isfinite(test_stat):
+                        overall_z_values.append(test_stat)
+                    sig_rows.append({
+                        "Stat": stat,
                         f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
                         f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
-                        "Player A Avg": np.nan,
-                        "Player B Avg": np.nan,
-                        "Difference": overall_score,
-                        "Test Statistic": overall_score,
-                        "p-value": _normal_two_sided_p_from_z(overall_score),
-                        "Winner": overall_winner,
-                        "Significance Result": ("Significant" if _normal_two_sided_p_from_z(overall_score) < alpha else "Not significant"),
-                        "Interpretation": overall_interpretation
-                    }
+                        "Player A Avg": result["mean1"],
+                        "Player B Avg": result["mean2"],
+                        "Difference": diff,
+                        "Test Statistic": test_stat,
+                        "p-value": p_value,
+                        "Winner": (
+                            player_a_name if pd.notna(diff) and diff > 0 else
+                            player_b_name if pd.notna(diff) and diff < 0 else
+                            "Tie"
+                        ),
+                        "Significance Result": (
+                            "Significant" if pd.notna(p_value) and p_value < alpha else
+                            "Borderline" if pd.notna(p_value) and p_value < 0.10 else
+                            "Not significant"
+                        ),
+                        "Interpretation": _interpret_significance(player_a_name, player_b_name, stat, diff, p_value, alpha)
+                    })
+
+                sig_df = pd.DataFrame(sig_rows)
+                if sig_df.empty:
+                    st.warning("No valid stats were available for testing.")
                 else:
-                    overall_row = {
-                        "Stat": "OVERALL",
-                        f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
-                        f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
-                        "Player A Avg": np.nan,
-                        "Player B Avg": np.nan,
-                        "Difference": np.nan,
-                        "Test Statistic": np.nan,
-                        "p-value": np.nan,
-                        "Winner": "Not enough data",
-                        "Significance Result": "Not enough data",
-                        "Interpretation": "Not enough valid stat tests to make an overall comparison."
-                    }
+                    # Calculate and append the OVERALL row BEFORE rendering the table,
+                    # so the user actually sees it inside the displayed output.
+                    valid_z = [z for z in overall_z_values if pd.notna(z) and np.isfinite(z)]
+                    if len(valid_z) >= 2:
+                        overall_score = float(np.mean(valid_z))
+                        overall_strength = abs(overall_score)
 
-                sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
+                        if overall_strength >= 1.96:
+                            overall_winner = player_a_name if overall_score > 0 else player_b_name
+                            overall_interpretation = (
+                                f"{overall_winner} has the stronger overall profile across the selected stats, and the combined result is statistically significant."
+                            )
+                        elif overall_strength >= 1.00:
+                            overall_winner = player_a_name if overall_score > 0 else player_b_name
+                            overall_interpretation = (
+                                f"{overall_winner} has the better overall profile across the selected stats, but the combined edge is not statistically significant."
+                            )
+                        else:
+                            overall_winner = "Not significant"
+                            overall_interpretation = (
+                                "Overall result: no statistically meaningful difference across the selected stats."
+                            )
 
-                st.caption(
-                    "Color guide: Difference/Test Statistic/p-value are green when Player A is significantly higher, "
-                    "red when Player B is significantly higher, and gray when the result is not statistically significant. "
-                    "The Winner column shows who had the higher average stat, while Significance Result tells whether that difference is statistically meaningful."
-                )
+                        overall_row = {
+                            "Stat": "OVERALL",
+                            f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
+                            f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
+                            "Player A Avg": np.nan,
+                            "Player B Avg": np.nan,
+                            "Difference": overall_score,
+                            "Test Statistic": overall_score,
+                            "p-value": _normal_two_sided_p_from_z(overall_score),
+                            "Winner": overall_winner,
+                            "Significance Result": ("Significant" if _normal_two_sided_p_from_z(overall_score) < alpha else "Not significant"),
+                            "Interpretation": overall_interpretation
+                        }
+                    else:
+                        overall_row = {
+                            "Stat": "OVERALL",
+                            f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
+                            f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
+                            "Player A Avg": np.nan,
+                            "Player B Avg": np.nan,
+                            "Difference": np.nan,
+                            "Test Statistic": np.nan,
+                            "p-value": np.nan,
+                            "Winner": "Not enough data",
+                            "Significance Result": "Not enough data",
+                            "Interpretation": "Not enough valid stat tests to make an overall comparison."
+                        }
 
-                render_output_table(
-                    _format_sig_table(clean_ui_columns(sig_df)),
-                    key="comparison_significance_tests",
-                    file_name="comparison_significance_tests.csv",
-                    display_rows=50,
-                    style_cols=["Difference", "Test Statistic"]
-                )
+                    sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
+
+                    st.caption(
+                        "Color guide: Difference/Test Statistic/p-value are green when Player A is significantly higher, "
+                        "red when Player B is significantly higher, and gray when the result is not statistically significant. "
+                        "The Winner column shows who had the higher average stat, while Significance Result tells whether that difference is statistically meaningful."
+                    )
+
+                    render_output_table(
+                        _format_sig_table(clean_ui_columns(sig_df)),
+                        key="comparison_significance_tests",
+                        file_name="comparison_significance_tests.csv",
+                        display_rows=50,
+                        style_cols=["Difference", "Test Statistic"]
+                    )
 
 
 if active_page == "Trend Value":
     render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
+    render_page_guide(active_page)
     c1, c2 = st.columns(2)
     with c1:
         lag_trend = st.selectbox("Trend Window (Years)", [3, 4, 5], index=0, key="trend_lag")
@@ -6614,37 +6720,39 @@ if active_page == "Trend Value":
 
     max_year_trend = int(yearly_df["yearID"].max())
     recent_years_trend = list(range(max_year_trend - lag_trend + 1, max_year_trend + 1))
-    st.write(f"Analyzing seasons: **{recent_years_trend[0]}–{recent_years_trend[-1]}**")
-    st.caption(f"Trend estimates are next-season estimates for **{max_year_trend + 1}**, calculated as the player's latest season value plus the yearly trend slope from the selected window.")
+    st.caption(f"Seasons **{recent_years_trend[0]}–{recent_years_trend[-1]}** · next-year estimates target **{max_year_trend + 1}** (latest season + slope).")
     recent_baseline_trend = yearly_df[yearly_df["yearID"].isin(recent_years_trend)].copy().sort_values(["playerID", "yearID"])
     recent_data_trend = recent_baseline_trend.copy()
 
-    st.markdown("#### Draft Room Sync")
-    trend_sync_enabled = st.checkbox(
-        "Remove already drafted players and allow drafting from Trend page",
-        value=True,
-        key="trend_use_draft_room_sync"
-    )
     trend_drafted_names = []
     trend_sync_team = None
-    if trend_sync_enabled:
-        trend_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
-        if not trend_room_table.empty and "Player" in trend_room_table.columns:
-            trend_drafted_names = trend_room_table["Player"].dropna().astype(str).str.strip().tolist()
-            trend_team_options = get_draft_room_team_options()
-            if trend_team_options:
-                default_trend_team = st.session_state.get("room_your_team", trend_team_options[0])
-                default_trend_idx = trend_team_options.index(default_trend_team) if default_trend_team in trend_team_options else 0
-                trend_sync_team = st.selectbox(
-                    "My Draft Room Team",
-                    trend_team_options,
-                    index=default_trend_idx,
-                    key="trend_sync_team_for_draft"
-                )
-            st.caption(f"Removed {len(set(trend_drafted_names))} already drafted player(s) from Trend page views.")
+    with st.expander("Draft Room sync (optional)", expanded=False):
+        trend_sync_enabled = st.checkbox(
+            "Remove already drafted players and allow drafting from Trend page",
+            value=True,
+            key="trend_use_draft_room_sync",
+        )
+        if trend_sync_enabled:
+            trend_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+            if not trend_room_table.empty and "Player" in trend_room_table.columns:
+                trend_drafted_names = trend_room_table["Player"].dropna().astype(str).str.strip().tolist()
+                trend_team_options = get_draft_room_team_options()
+                if trend_team_options:
+                    default_trend_team = st.session_state.get("room_your_team", trend_team_options[0])
+                    default_trend_idx = trend_team_options.index(default_trend_team) if default_trend_team in trend_team_options else 0
+                    trend_sync_team = st.selectbox(
+                        "My Draft Room Team",
+                        trend_team_options,
+                        index=default_trend_idx,
+                        key="trend_sync_team_for_draft",
+                    )
+                st.caption(f"Removed {len(set(trend_drafted_names))} already drafted player(s) from Trend page views.")
+            else:
+                st.caption("No Draft Room picks found yet.")
         else:
-            st.caption("No Draft Room picks found yet.")
+            trend_drafted_names = []
 
+    trend_sync_enabled = st.session_state.get("trend_use_draft_room_sync", True)
     if trend_sync_enabled and trend_drafted_names:
         recent_data_trend = recent_data_trend[~recent_data_trend["fullName"].astype(str).isin(set(trend_drafted_names))].copy()
 
@@ -6702,7 +6810,7 @@ if active_page == "Trend Value":
 
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
-    st.caption("Showing the top 500 rows. Use filters to narrow the table further. Green cells are improving trends; red cells are declining trends.")
+    st.caption("Top 500 rows · **Green** = improving · **Red** = declining · Open **Stat minimum filters** above to narrow further.")
     trend_heat_cols = [c for c in TREND_COUNT_COLS + TREND_RATE_COLS if c in trend_sorted.columns]
     trend_sorted_display = trend_sorted.head(500).copy()
     for col in trend_heat_cols:
@@ -6971,6 +7079,7 @@ if active_page == "Fantasy Sleepers & Busts":
         "🧠 Fantasy Sleepers & Busts",
         "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
     )
+    render_page_guide(active_page)
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -6979,12 +7088,10 @@ if active_page == "Fantasy Sleepers & Busts":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
 
-    with st.expander("How to read this page", expanded=False):
+    with st.expander("Column glossary", expanded=False):
         st.markdown(
-            "**Current Production Score** — recent actual fantasy production from R, HR, RBI, SB and BA/OPS. "
-            "**Expected Fantasy Value** — future value from the app’s projection logic. "
-            "**Fantasy Edge** = Market Rank − Model Rank; positive means your model likes the player more than the market, negative suggests bust risk. "
-            "**Risk / Disagreement** — expert rank spread; higher means more uncertainty."
+            "**Fantasy Edge** = Market Rank − Model Rank (positive = sleeper, negative = bust risk). "
+            "**Expected Fantasy Value** = projection score; **Current Production** = recent actual stats."
         )
 
     c1, c2, c3, c4 = st.columns(4)
@@ -6997,7 +7104,6 @@ if active_page == "Fantasy Sleepers & Busts":
     with c4:
         fantasy_min_ab = st.number_input("Minimum AB", 0, 2500, 150, key="fantasy_market_min_ab")
 
-    st.markdown("#### Table filters")
     with st.expander("Sleeper / bust relevance filters", expanded=False):
         st.caption("Narrow draft-relevant players; loosen if tables look empty.")
         sf1, sf2, sf3, sf4 = st.columns(4)
@@ -7010,19 +7116,18 @@ if active_page == "Fantasy Sleepers & Busts":
         with sf4:
             sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
 
-    st.markdown("#### Draft-Room-Aware Sleeper Filter")
-    st.caption(
-        "Optional: connect this page to your Draft Room so the sleeper map focuses on available players who fit your current roster needs."
-    )
-    sleeper_sync_enabled = st.checkbox(
-        "Use Draft Room needs and remove already drafted players",
-        value=False,
-        key="sleeper_use_draft_room_needs"
-    )
     sleeper_team_name = None
     sleeper_synced_roster = []
     sleeper_synced_drafted = []
     sleeper_auto_positions = []
+    with st.expander("Draft Room sync (optional)", expanded=False):
+        st.caption("Focus on available players who fit your roster needs.")
+        sleeper_sync_enabled = st.checkbox(
+            "Use Draft Room needs and remove already drafted players",
+            value=False,
+            key="sleeper_use_draft_room_needs",
+        )
+    sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", False)
 
     if sleeper_sync_enabled:
         draft_room_for_sleepers = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
@@ -7495,13 +7600,8 @@ if active_page == "Draft Assistant Simulator":
         "🧩 Draft Assistant Simulator",
         "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board."
     )
-    wf1, wf2 = st.columns([2, 1])
-    with wf1:
-        st.caption(
-            "Enter and edit picks in **Draft Room Simulator**; this page reads them automatically and excludes drafted players from recommendations."
-        )
-    with wf2:
-        st.caption("Workflow: Draft Room → Draft Assistant → back to Draft Room to log the pick.")
+    render_page_guide(active_page)
+    st.caption("Log picks in **Draft Room Simulator** first — this page excludes drafted players automatically.")
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -7518,19 +7618,14 @@ if active_page == "Draft Assistant Simulator":
         with d3:
             draft_top_n = st.slider("Recommendations to Show", 5, 30, 10, key="draft_top_n")
 
-        st.selectbox(
-            "Projection style",
-            list(PROJECTION_STYLE_OPTIONS),
-            index=1,
-            key="fantasy_draft_projection_style",
-            help=(
-                "**Conservative** — stronger regression/shrinkage and peer anchoring; smaller breakout continuation. "
-                "**Balanced** — same as the historical default. **Aggressive / Upside** — less pull to medians, "
-                "more weight on recent seasons and trend/breakout signals (still capped; not a flat boost to everyone)."
-            ),
-        )
-
-        with st.expander("ML blend settings (optional)", expanded=False):
+        with st.expander("Advanced scoring settings", expanded=False):
+            st.selectbox(
+                "Projection style",
+                list(PROJECTION_STYLE_OPTIONS),
+                index=1,
+                key="fantasy_draft_projection_style",
+                help="Conservative / Balanced / Aggressive — changes projection blend only, not raw Lahman stats.",
+            )
             mlb1, mlb2, mlb3 = st.columns(3)
             with mlb1:
                 use_ml_in_draft = st.checkbox(
@@ -8238,31 +8333,22 @@ if active_page == "Draft Room Simulator":
         "🧾 Draft Room Simulator",
         "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft."
     )
-
-    dr_track1, dr_track2 = st.columns(2)
-    with dr_track1:
-        st.caption("**Operations center** — snake draft grid, exportable pick log, and roster views for every team.")
-    with dr_track2:
-        st.caption("**Draft Assistant** reads this board automatically for next-pick rankings.")
+    render_page_guide(active_page)
+    st.caption("Use **League setup** first, then **Board** to log picks. **Draft Assistant** reads this board automatically.")
 
     market_df = load_fantasypros_market_data()
-
-    st.selectbox(
-        "Projection style",
-        list(PROJECTION_STYLE_OPTIONS),
-        index=1,
-        key="fantasy_draft_projection_style",
-        help=(
-            "**Conservative** — stronger pull to league and peer-group medians, tighter caps on trend spikes, "
-            "smaller ML up/down tweaks. **Balanced** — original app default. **Aggressive / Upside** — lighter "
-            "regression-to-mean, slightly more trust in recent-year counting stats, wider trend caps, and a larger "
-            "(still bounded) ML tweak so hot profiles can rank higher."
-        ),
-    )
 
     dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup & import"])
 
     with dr_tab_setup:
+        with st.expander("Projection style (advanced)", expanded=False):
+            st.selectbox(
+                "Projection style",
+                list(PROJECTION_STYLE_OPTIONS),
+                index=1,
+                key="fantasy_draft_projection_style",
+                help="Conservative / Balanced / Aggressive — affects model scores on picks, not Lahman history.",
+            )
         dr1, dr2, dr3, dr4 = st.columns(4)
         with dr1:
             room_team_count = st.number_input("Number of Teams", min_value=2, max_value=16, value=2, step=1, key="room_team_count")
@@ -8608,12 +8694,7 @@ if active_page == "Fantasy Standings Tracker":
         "🏆 Fantasy Standings Tracker",
         "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
     )
-
-    with st.expander("What to upload", expanded=False):
-        st.markdown(
-            "Upload a CSV of current-season hitter stats with player names and columns such as HR, RBI, R, SB, BA, OPS. "
-            "The page matches those stats to Draft Room picks and ranks every fantasy team."
-        )
+    render_page_guide(active_page)
 
     scoring_format_tracker = st.selectbox(
         "Scoring Format",
@@ -8633,28 +8714,33 @@ if active_page == "Fantasy Standings Tracker":
         key="standings_stats_source"
     )
 
-    api_season = st.number_input(
-        "MLB API Season",
-        min_value=2020,
-        max_value=2035,
-        value=2026,
-        step=1,
-        key="standings_api_season"
-    )
-
     stats_file = None
     current_stats = pd.DataFrame()
+    api_season = 2026
 
-    if stats_source == "Upload CSV":
+    if stats_source == "MLB API Auto-Fetch":
+        api_season = st.number_input(
+            "MLB API Season",
+            min_value=2020,
+            max_value=2035,
+            value=2026,
+            step=1,
+            key="standings_api_season",
+        )
+    elif stats_source == "Upload CSV":
         stats_file = st.file_uploader(
             "Upload current-season hitter stats CSV",
-            type=["csv"]
+            type=["csv"],
+        )
+        st.caption("Include player names plus HR, RBI, R, SB, BA, OPS (or similar columns).")
+
+    draft_import_for_standings = None
+    with st.expander("Optional: import draft board (if Draft Room is empty)", expanded=False):
+        draft_import_for_standings = st.file_uploader(
+            "Upload draft board CSV/Excel",
+            type=["csv", "xlsx", "xls"],
         )
 
-    draft_import_for_standings = st.file_uploader(
-        "Optional: Upload draft board CSV/Excel if Draft Room is empty",
-        type=["csv", "xlsx", "xls"]
-    )
     if draft_import_for_standings is not None:
         try:
             draft_import_raw = read_imported_draft_file(draft_import_for_standings)
@@ -8767,10 +8853,10 @@ if active_page == "Fantasy Lineup Assistant":
         "🧠 Fantasy Lineup Assistant / Start-Sit AI",
         "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch."
     )
-
-    st.info(
-        "This page uses your Draft Room roster plus current-season stats loaded in Fantasy Standings Tracker. "
-        "For now, momentum is based on current season-to-date production because true last-7-day game logs, injuries, matchups, and ballparks would need deeper live data feeds."
+    render_page_guide(active_page)
+    st.caption(
+        "Requires rosters in **Draft Room** and current stats from **Fantasy Standings Tracker**. "
+        "Momentum uses season-to-date production (not daily game logs)."
     )
 
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
@@ -9253,6 +9339,7 @@ if active_page == "ML Predictions":
         "🤖 ML Predictions",
         "Generate next-season projections using machine learning, aging curves, regression-to-the-mean, and similar-player comparisons."
     )
+    render_page_guide(active_page)
 
     if not SKLEARN_AVAILABLE:
         st.error("Scikit-learn is not installed. In Command Prompt, run: pip install scikit-learn")
