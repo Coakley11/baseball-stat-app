@@ -1044,14 +1044,10 @@ def make_valuation_summary(row):
     proj_sb = pd.to_numeric(row.get("proj_SB", np.nan), errors="coerce")
     valuation_description = describe_valuation_index(valuation_score)
     return (
-        f"{player}'s Trend Score is {fmt_count_1(trend_score)}, Current Score is {fmt_count_1(perf_score)}, "
-        f"and Valuation Score is {fmt_rate_4(valuation_score)}. "
-        f"That is {valuation_description}. "
-        f"The Valuation Score combines current score with recent trend direction, "
-        f"then scales the result from 0 to 1 compared with the other players in the filtered group. "
-        f"If the recent pattern continues, the next-season trend estimate is roughly "
-        f"{fmt_rate_4(proj_ops)} OPS, {fmt_count_1(proj_hr)} HR, {fmt_count_1(proj_xbh)} doubles/triples, "
-        f"{fmt_count_1(proj_rbi)} RBI, and {fmt_count_1(proj_sb)} SB."
+        f"**{player}** — Valuation Score **{fmt_rate_4(valuation_score)}** ({valuation_description}). "
+        f"Current production score **{fmt_count_1(perf_score)}**, trend score **{fmt_count_1(trend_score)}** "
+        f"(positive trend = improving). If recent form continues, trend-line estimate: "
+        f"{fmt_rate_4(proj_ops)} OPS, {fmt_count_1(proj_hr)} HR, {fmt_count_1(proj_rbi)} RBI, {fmt_count_1(proj_sb)} SB."
     )
 
 def render_section_header(title, note):
@@ -1080,9 +1076,9 @@ PAGE_GUIDES = {
         "outputs": "Leaderboard table and top-10 chart for the chosen stat.",
     },
     "Comparison Tool": {
-        "purpose": "Line up up to three players side by side.",
-        "when": "When you are deciding between specific names.",
-        "outputs": "Year-by-year table, career totals, trend charts, and optional significance tests.",
+        "purpose": "Compare up to three players side by side using stats, trends, and optional significance tests.",
+        "when": "When you are choosing between a few names and want the same view for each.",
+        "outputs": "Year-by-year table, career totals, trend charts, and category-style comparisons.",
     },
     "Trend Value": {
         "purpose": "See who is improving or fading over recent seasons.",
@@ -1090,9 +1086,15 @@ PAGE_GUIDES = {
         "outputs": "Trend table (change columns), breakout/decline lists, and single-player dashboards.",
     },
     "Valuation": {
-        "purpose": "Blend current production with trend into one 0–1 score.",
-        "when": "When you want a single ranking that weights both level and direction.",
-        "outputs": "Valuation table and short best/worst summaries.",
+        "purpose": "Rank players by blending recent production (Current Score) with recent improvement or decline (Trend Score).",
+        "when": "When you want one list that rewards both how good a player is now and which way he is moving.",
+        "outputs": "Sortable table with Valuation Score (0–1), plus best/worst callouts.",
+        "extra": [
+            "<strong>Valuation Score (0–1):</strong> Higher is better. 1.0 = best in your current filter; 0.0 = weakest.",
+            "<strong>Current Score:</strong> How strong recent counting/rate production is in the window you picked.",
+            "<strong>Trend Score:</strong> Whether stats are rising or falling year over year (positive = improving).",
+            "<strong>How to use it:</strong> Sort by Valuation Score, then open Trend Value or Comparison for names you are unsure about.",
+        ],
     },
     "ML Predictions": {
         "purpose": "Machine-learning style next-season stat projections.",
@@ -1100,9 +1102,9 @@ PAGE_GUIDES = {
         "outputs": "Ranked projection table; tune advanced blending in the expander.",
     },
     "Fantasy Sleepers & Busts": {
-        "purpose": "Compare your model ranks to FantasyPros ADP/market ranks.",
-        "when": "On draft day to find sleepers (positive edge) and busts (negative edge).",
-        "outputs": "Sleeper/bust tables and market-vs-model charts.",
+        "purpose": "Find undervalued players, risky market picks, and names where your projections differ from ADP.",
+        "when": "During draft prep or on draft day when you want buy-low and avoid-overpay lists.",
+        "outputs": "Sleeper and bust tables, market-vs-model chart, and plain-language reasons.",
     },
     "Draft Room Simulator": {
         "purpose": "Log picks, view rosters, and grade drafts.",
@@ -1132,6 +1134,7 @@ def render_page_guide(page_key):
     g = PAGE_GUIDES.get(page_key)
     if not g:
         return
+    extra_items = "".join(f"<li>{x}</li>" for x in (g.get("extra") or []))
     st.markdown(
         f"""
         <div class="page-guide">
@@ -1140,6 +1143,7 @@ def render_page_guide(page_key):
                 <li><strong>What it does:</strong> {g.get("purpose", "")}</li>
                 <li><strong>When to use it:</strong> {g.get("when", "")}</li>
                 <li><strong>Main outputs:</strong> {g.get("outputs", "")}</li>
+                {extra_items}
             </ul>
         </div>
         """,
@@ -2808,7 +2812,7 @@ def normalize_score(series):
 
 
 def make_fantasy_market_reason(row, kind="sleeper"):
-    """Create individualized sleeper/bust explanations using model-vs-market gap and projected stat profile."""
+    """Plain-language sleeper/bust note from model vs ADP gap and projected stat shape."""
     player = row.get("fullName", row.get("Player", "This player"))
     edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
     market_rank = pd.to_numeric(row.get("Market Rank", row.get("ADP Rank", np.nan)), errors="coerce")
@@ -2816,70 +2820,42 @@ def make_fantasy_market_reason(row, kind="sleeper"):
 
     proj_hr = pd.to_numeric(row.get("Projected HR", row.get("proj_HR", np.nan)), errors="coerce")
     proj_rbi = pd.to_numeric(row.get("Projected RBI", row.get("proj_RBI", np.nan)), errors="coerce")
-    proj_r = pd.to_numeric(row.get("Projected R", row.get("proj_R", np.nan)), errors="coerce")
     proj_sb = pd.to_numeric(row.get("Projected SB", row.get("proj_SB", np.nan)), errors="coerce")
-    proj_ba = pd.to_numeric(row.get("Projected BA", row.get("proj_BA", np.nan)), errors="coerce")
     proj_ops = pd.to_numeric(row.get("Projected OPS", row.get("proj_OPS", np.nan)), errors="coerce")
-    prod = pd.to_numeric(row.get("Projected Production Score", np.nan), errors="coerce")
 
-    strengths = []
+    stat_bits = []
     if pd.notna(proj_hr) and proj_hr >= 25:
-        strengths.append(f"power upside ({fmt_count_1(proj_hr)} projected HR)")
+        stat_bits.append(f"~{fmt_count_1(proj_hr)} HR projected")
     if pd.notna(proj_rbi) and proj_rbi >= 80:
-        strengths.append(f"run-production upside ({fmt_count_1(proj_rbi)} projected RBI)")
-    if pd.notna(proj_r) and proj_r >= 80:
-        strengths.append(f"run-scoring upside ({fmt_count_1(proj_r)} projected R)")
+        stat_bits.append(f"~{fmt_count_1(proj_rbi)} RBI projected")
     if pd.notna(proj_sb) and proj_sb >= 15:
-        strengths.append(f"speed upside ({fmt_count_1(proj_sb)} projected SB)")
-    if pd.notna(proj_ba) and proj_ba >= 0.275:
-        strengths.append(f"batting-average support ({fmt_rate_3(proj_ba)} projected BA)")
+        stat_bits.append(f"~{fmt_count_1(proj_sb)} SB projected")
     if pd.notna(proj_ops) and proj_ops >= 0.820:
-        strengths.append(f"strong overall bat ({fmt_rate_3(proj_ops)} projected OPS)")
+        stat_bits.append(f"{fmt_rate_3(proj_ops)} OPS projected")
+    stat_line = (" Stats: " + ", ".join(stat_bits[:3]) + ".") if stat_bits else ""
 
     if kind == "sleeper":
-        if pd.notna(edge):
-            if edge >= 50:
-                gap_text = f"your model is extremely ahead of the market by {fmt_int(edge)} ranking spots"
-            elif edge >= 25:
-                gap_text = f"your model is meaningfully ahead of the market by {fmt_int(edge)} ranking spots"
-            elif edge > 0:
-                gap_text = f"your model is slightly ahead of the market by {fmt_int(edge)} spots"
-            else:
-                gap_text = "the market gap is not large, so this is more of a watch-list value than a major sleeper"
+        if pd.notna(edge) and edge > 0:
+            gap = (
+                f"Our model ranks him **{fmt_int(model_rank)}** vs ADP **{fmt_int(market_rank)}** "
+                f"(about **{fmt_int(edge)}** spots higher on our board)."
+            )
+        elif pd.notna(edge):
+            gap = "Model and ADP are close — treat as a watch name, not a clear discount."
         else:
-            gap_text = "market rank is missing, so this is based mostly on the projection"
+            gap = "No ADP match; leaning on our projection only."
+        return f"**Sleeper:** {player}. {gap}{stat_line}"
 
-        if strengths:
-            return f"{player} is flagged because {gap_text}, and the projection shows " + "; ".join(strengths[:3]) + "."
-        if pd.notna(prod) and prod >= 0.65:
-            return f"{player} is flagged because {gap_text}, with a strong overall projected production score."
-        return f"{player} is flagged because {gap_text}."
-
-    if pd.notna(edge):
-        if edge <= -50:
-            gap_text = f"the market is extremely higher than your model by {fmt_int(abs(edge))} ranking spots"
-        elif edge <= -25:
-            gap_text = f"the market is meaningfully higher than your model by {fmt_int(abs(edge))} ranking spots"
-        elif edge < 0:
-            gap_text = f"the market is slightly higher than your model by {fmt_int(abs(edge))} spots"
-        else:
-            gap_text = "your model is not strongly below the market, so the bust signal is modest"
+    if pd.notna(edge) and edge < 0:
+        gap = (
+            f"ADP **{fmt_int(market_rank)}** is ahead of our model **{fmt_int(model_rank)}** "
+            f"(about **{fmt_int(abs(edge))}** spots)."
+        )
+    elif pd.notna(edge):
+        gap = "Model is not much lower than ADP — only a mild overpay flag."
     else:
-        gap_text = "market rank is missing, so bust risk is harder to judge"
-
-    weak_notes = []
-    if pd.notna(proj_hr) and proj_hr < 15:
-        weak_notes.append("limited projected power")
-    if pd.notna(proj_sb) and proj_sb < 8:
-        weak_notes.append("limited projected speed")
-    if pd.notna(proj_ops) and proj_ops < 0.740:
-        weak_notes.append("weaker projected OPS")
-    if pd.notna(proj_ba) and proj_ba < 0.245:
-        weak_notes.append("batting-average risk")
-
-    if weak_notes:
-        return f"{player} is a bust-risk flag because {gap_text}, with " + ", ".join(weak_notes[:3]) + "."
-    return f"{player} is a bust-risk flag because {gap_text}; the projection does not appear to justify the market price."
+        gap = "No ADP match; bust call is based on projection shape only."
+    return f"**Bust risk:** {player}. {gap}{stat_line}"
 
 def baseball_age_for_season(season_year, birth_year, birth_month=np.nan, birth_day=np.nan):
     """Approximate MLB season age using July 1 of the season, not simply season_year - birth_year.
@@ -4341,20 +4317,20 @@ def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custo
         action = row.get("Start/Sit Recommendation", "Watch")
         reasons = []
         if pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce") >= 0.70:
-            reasons.append("strong current momentum")
+            reasons.append("hot recent production")
         if pd.to_numeric(row.get("Consistency Score", np.nan), errors="coerce") >= 0.70:
-            reasons.append("stable volume/rate profile")
+            reasons.append("steady playing time and rates")
         if pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce") >= 0.70:
-            reasons.append("higher volatility/upside profile")
+            reasons.append("boom/bust week-to-week profile")
         if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.800:
-            reasons.append("strong OPS foundation")
+            reasons.append(f"strong OPS ({fmt_rate_3(row.get('OPS'))})")
         if "HR" in row and pd.to_numeric(row.get("HR"), errors="coerce") >= 10:
-            reasons.append("useful power production")
+            reasons.append(f"solid power ({fmt_int(row.get('HR'))} HR)")
         if "SB" in row and pd.to_numeric(row.get("SB"), errors="coerce") >= 8:
-            reasons.append("speed contribution")
+            reasons.append(f"useful speed ({fmt_int(row.get('SB'))} SB)")
         if not reasons:
-            reasons.append("middle-tier current profile")
-        return f"{action}: {name} is rated this way because of " + ", ".join(reasons[:3]) + "."
+            reasons.append("average current-season profile")
+        return f"**{action}** — {name}: " + "; ".join(reasons[:3]) + "."
 
     df["Start/Sit Recommendation"] = df.apply(classify_action, axis=1)
     df["Lineup Reason"] = df.apply(make_lineup_reason, axis=1)
@@ -4810,20 +4786,20 @@ def lineup_diagnosis_report(
         recs.append({
             "Type": "Draft target",
             "Label": "Need",
-            "Detail": f"SB need: only **{sb_tot:.0f}** SB in this starter set — **Target profile:** MI/OF with double-digit SB pace and playable {rate_label}.",
+            "Detail": f"You only have **{sb_tot:.0f}** SB from this starting group. Look for middle infielders or outfielders with steady steals and a playable {rate_label}.",
         })
     if weakest_cat in ("AVG", "OBP") or (weakest_cat and weakest_cat in out["weakest"] and weakest_cat in ("AVG", "OBP")):
         tr = _lineup_team_rate(st_df, rate_col)
         recs.append({
             "Type": "Category repair",
             "Label": "Need",
-            "Detail": f"{weakest_cat} repair (starters **{tr:.3f}**): add high-contact bats; bench or replace lowest-{rate_label} names dragging the line.",
+            "Detail": f"Your starters’ {weakest_cat} is **{tr:.3f}**. Add contact hitters or bench the lowest-{rate_label} names in this lineup.",
         })
     if weakest_cat == "R" or (weakest_cat and "R" in out["weakest"] and r_tot < 40):
         recs.append({
             "Type": "Draft target",
             "Label": "Target profile",
-            "Detail": f"Runs gap: starters combine for **{r_tot:.0f}** R — add leadoff/OBP types who score, not only HR-only bats.",
+            "Detail": f"Starters total only **{r_tot:.0f}** runs. Target table-setters and on-base bats who score, not only home-run hitters.",
         })
     if out.get("surplus_note"):
         recs.append({
@@ -5881,12 +5857,16 @@ active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
 st.sidebar.caption("Filters are remembered as you move between pages.")
 with st.sidebar.expander("New here? Quick start", expanded=False):
     st.markdown(
-        "**Typical flow:**\n"
-        "1. **Historical Explorer** — browse stats\n"
-        "2. **Trend Value** / **Valuation** — draft prep\n"
-        "3. **Draft Room** → **Draft Assistant** — live draft\n"
-        "4. **Standings Tracker** → **Lineup Assistant** — in-season\n\n"
-        "Each page has a **Quick guide** at the top. Advanced filters live in expanders."
+        "**Draft prep**\n"
+        "1. **Historical Explorer** — browse season stats\n"
+        "2. **Comparison Tool** — compare up to three players side by side using stats, trends, fantasy value, and category strengths\n"
+        "3. **Trend Value** / **Valuation** — see who is rising or falling and who ranks best overall\n"
+        "4. **Fantasy Sleepers & Busts** — find undervalued players, risky market picks, and players whose projections may differ from market expectations\n\n"
+        "**Live draft**\n"
+        "5. **Draft Room** → **Draft Assistant** — log picks, then get next-pick help\n\n"
+        "**In-season**\n"
+        "6. **Standings Tracker** → **Lineup Assistant** — score teams and set lineups\n\n"
+        "Each page has a **Quick guide** at the top. Extra filters are in **Advanced** expanders."
     )
 render_persistent_workflow_sidebar(yearly_df)
 
@@ -7104,30 +7084,38 @@ if active_page == "Fantasy Sleepers & Busts":
     with c4:
         fantasy_min_ab = st.number_input("Minimum AB", 0, 2500, 150, key="fantasy_market_min_ab")
 
-    with st.expander("Sleeper / bust relevance filters", expanded=False):
-        st.caption("Narrow draft-relevant players; loosen if tables look empty.")
-        sf1, sf2, sf3, sf4 = st.columns(4)
-        with sf1:
-            sleeper_max_market_rank = st.number_input("Worst Market Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_market_rank")
-        with sf2:
-            sleeper_max_model_rank = st.number_input("Worst Model Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_model_rank")
-        with sf3:
-            sleeper_min_proj_hr = st.number_input("Minimum Projected HR", min_value=0, max_value=80, value=0, step=1, key="sleeper_min_proj_hr")
-        with sf4:
-            sleeper_min_expected_value = st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
+    sleeper_top_n = st.slider("Show top N sleepers / busts", 5, 50, 15, key="fantasy_market_top_n")
 
     sleeper_team_name = None
     sleeper_synced_roster = []
     sleeper_synced_drafted = []
     sleeper_auto_positions = []
-    with st.expander("Draft Room sync (optional)", expanded=False):
-        st.caption("Focus on available players who fit your roster needs.")
-        sleeper_sync_enabled = st.checkbox(
-            "Use Draft Room needs and remove already drafted players",
-            value=False,
-            key="sleeper_use_draft_room_needs",
-        )
+    with st.expander("Advanced filters", expanded=False):
+        tab_rank, tab_draft = st.tabs(["Rank cutoffs", "Draft Room sync"])
+        with tab_rank:
+            st.caption("Narrow the player pool; loosen if tables look empty.")
+            sf1, sf2, sf3, sf4 = st.columns(4)
+            with sf1:
+                st.number_input("Worst Market Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_market_rank")
+            with sf2:
+                st.number_input("Worst Model Rank to Include", 1, 1000, 350, step=10, key="sleeper_max_model_rank")
+            with sf3:
+                st.number_input("Minimum Projected HR", min_value=0, max_value=80, value=0, step=1, key="sleeper_min_proj_hr")
+            with sf4:
+                st.slider("Minimum Expected Fantasy Value", 0.00, 1.00, 0.10, step=0.01, key="sleeper_min_expected_value")
+        with tab_draft:
+            st.caption("Focus on available players who fit your roster needs.")
+            st.checkbox(
+                "Use Draft Room needs and remove already drafted players",
+                value=False,
+                key="sleeper_use_draft_room_needs",
+            )
     sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", False)
+    sleeper_max_market_rank = st.session_state.get("sleeper_max_market_rank", 350)
+    sleeper_max_model_rank = st.session_state.get("sleeper_max_model_rank", 350)
+    sleeper_min_proj_hr = st.session_state.get("sleeper_min_proj_hr", 0)
+    sleeper_min_expected_value = st.session_state.get("sleeper_min_expected_value", 0.10)
+    fantasy_top_n = int(st.session_state.get("fantasy_market_top_n", 15))
 
     if sleeper_sync_enabled:
         draft_room_for_sleepers = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
@@ -7268,22 +7256,22 @@ if active_page == "Fantasy Sleepers & Busts":
     fantasy_df["Projected SB"] = fantasy_df["proj_SB"]
     fantasy_df["Risk / Disagreement"] = pd.to_numeric(fantasy_df.get("Expert Std Dev"), errors="coerce")
 
-    f1, f2, f3, f4 = st.columns(4)
-    with f1:
-        standard_fantasy_positions = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
-        existing_fantasy_positions = sorted([
-            p for p in fantasy_df["Primary Position"].dropna().astype(str).unique()
-            if p.strip() and p not in standard_fantasy_positions and p not in ["PH", "PR"]
-        ])
-        pos_options_fantasy = standard_fantasy_positions + existing_fantasy_positions
-        fantasy_positions = st.multiselect("Primary Position", pos_options_fantasy, default=pos_options_fantasy, key="fantasy_market_positions")
-    with f2:
-        max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
-        fantasy_age_range = st.slider("Age Range", 18, max(45, max_age_fantasy), (18, max(45, max_age_fantasy)), key="fantasy_market_age_range")
-    with f3:
-        st.caption("FantasyPros/ADP matching is optional. Players without market ranks can stay in the pool, but rank-based charts use matched rows.")
-    with f4:
-        fantasy_top_n = st.slider("Show Top N", 5, 50, 15, key="fantasy_market_top_n")
+    with st.expander("Position & age filters", expanded=False):
+        pa1, pa2 = st.columns(2)
+        with pa1:
+            standard_fantasy_positions = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
+            existing_fantasy_positions = sorted([
+                p for p in fantasy_df["Primary Position"].dropna().astype(str).unique()
+                if p.strip() and p not in standard_fantasy_positions and p not in ["PH", "PR"]
+            ])
+            pos_options_fantasy = standard_fantasy_positions + existing_fantasy_positions
+            st.multiselect("Primary Position", pos_options_fantasy, default=pos_options_fantasy, key="fantasy_market_positions")
+        with pa2:
+            max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
+            st.slider("Age Range", 18, max(45, max_age_fantasy), (18, max(45, max_age_fantasy)), key="fantasy_market_age_range")
+        st.caption("FantasyPros/ADP matching is optional. Players without market ranks stay in the pool but may not appear on the edge chart.")
+    fantasy_positions = st.session_state.get("fantasy_market_positions", [])
+    fantasy_age_range = st.session_state.get("fantasy_market_age_range", (18, 45))
 
     if fantasy_positions:
         fantasy_df = fantasy_df[fantasy_df["Primary Position"].isin(fantasy_positions)].copy()
@@ -7377,34 +7365,38 @@ if active_page == "Fantasy Sleepers & Busts":
                 fantasy_plot_df[_col] = np.nan
         fantasy_plot_df = format_fantasy_table(fantasy_plot_df)
 
-        fantasy_color_col = st.selectbox(
-            "Color by",
-            ["None", "Primary Position", "Bats", "Team", "League"],
-            index=1,
-            key="fantasy_market_scatter_color"
-        )
-        fantasy_size_options = [c for c in ["Fantasy Edge", "Curve Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
-        fantasy_size_col = st.selectbox(
-            "Size by",
-            fantasy_size_options,
-            index=0,
-            key="fantasy_market_scatter_size"
-        )
-        fantasy_view_mode = st.radio(
-            "Scatterplot View",
-            ["Focused View", "Full Outlier View"],
-            horizontal=True,
-            key="fantasy_edge_scatter_view_mode",
-            help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every player/outlier."
-        )
-
-        fantasy_trendline_type = st.selectbox(
-            "Market Edge Trendline Type",
-            ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
-            index=5,
-            key="fantasy_market_edge_trendline_type",
-            help="Auto Best Fit tests linear, polynomial, logarithmic, and exponential curves, then chooses the curve with the highest R². The curve estimates the typical model rank for a given market rank."
-        )
+        with st.expander("Chart display options", expanded=False):
+            fantasy_color_col = st.selectbox(
+                "Color by",
+                ["None", "Primary Position", "Bats", "Team", "League"],
+                index=1,
+                key="fantasy_market_scatter_color",
+            )
+            fantasy_size_options = [c for c in ["Fantasy Edge", "Curve Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
+            fantasy_size_col = st.selectbox(
+                "Size by",
+                fantasy_size_options,
+                index=0,
+                key="fantasy_market_scatter_size",
+            )
+            fantasy_view_mode = st.radio(
+                "Scatterplot View",
+                ["Focused View", "Full Outlier View"],
+                horizontal=True,
+                key="fantasy_edge_scatter_view_mode",
+                help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every player/outlier.",
+            )
+            fantasy_trendline_type = st.selectbox(
+                "Market Edge Trendline Type",
+                ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
+                index=5,
+                key="fantasy_market_edge_trendline_type",
+                help="Auto Best Fit picks the curve with the highest R² for market rank vs model rank.",
+            )
+        fantasy_color_col = st.session_state.get("fantasy_market_scatter_color", "Primary Position")
+        fantasy_size_col = st.session_state.get("fantasy_market_scatter_size", "Fantasy Edge")
+        fantasy_view_mode = st.session_state.get("fantasy_edge_scatter_view_mode", "Focused View")
+        fantasy_trendline_type = st.session_state.get("fantasy_market_edge_trendline_type", "Auto Best Fit")
         st.caption("Black diagonal = equal ranking. Red curve = expected model rank at each market rank.")
 
         required_plot_cols = ["Market Rank", "Model Rank"]
@@ -7584,14 +7576,12 @@ if active_page == "Fantasy Sleepers & Busts":
 
         st.subheader("Fantasy Market Insight Summary")
         st.success(
-            f"Top sleeper: {top_sleeper['fullName']} has a Fantasy Edge of {fmt_int(top_sleeper['Fantasy Edge'])}. "
-            f"Market Rank is {fmt_int(top_sleeper['Market Rank'])}, while your Model Rank is {fmt_int(top_sleeper['Model Rank'])}. "
-            f"That means your model values him meaningfully higher than the draft market."
+            f"**Top sleeper:** {top_sleeper['fullName']} — our model #{fmt_int(top_sleeper['Model Rank'])} vs "
+            f"ADP #{fmt_int(top_sleeper['Market Rank'])}. Consider drafting before his ADP if you want this profile."
         )
         st.warning(
-            f"Top bust risk: {top_bust['fullName']} has a Fantasy Edge of {fmt_int(top_bust['Fantasy Edge'])}. "
-            f"Market Rank is {fmt_int(top_bust['Market Rank'])}, while your Model Rank is {fmt_int(top_bust['Model Rank'])}. "
-            f"That means the draft market is valuing him higher than your model does."
+            f"**Top bust risk:** {top_bust['fullName']} — ADP #{fmt_int(top_bust['Market Rank'])} vs "
+            f"our model #{fmt_int(top_bust['Model Rank'])}. The market may be paying for production we do not project."
         )
 
 
@@ -8022,9 +8012,12 @@ if active_page == "Draft Assistant Simulator":
         def make_draft_reason(r):
             pieces = []
             if pd.notna(r.get("Fantasy Edge", np.nan)) and r.get("Fantasy Edge", 0) > 0:
-                pieces.append(f"your model is {fmt_int(r['Fantasy Edge'])} ranks ahead of the market")
+                pieces.append(
+                    f"our model likes him more than ADP by about {fmt_int(r['Fantasy Edge'])} rank spots "
+                    f"(market {fmt_int(r.get('Market Rank'))} vs model {fmt_int(r.get('Model Rank'))})"
+                )
             elif pd.notna(r.get("Fantasy Edge", np.nan)) and r.get("Fantasy Edge", 0) < 0:
-                pieces.append("market is higher than your model, so this is less of a value pick")
+                pieces.append("ADP is ahead of our model, so he is less of a value target")
 
             # Explain WHY the ML projection boosted the player.
             ml_component = pd.to_numeric(r.get("ML Projection Component", 0), errors="coerce")
@@ -8110,16 +8103,16 @@ if active_page == "Draft Assistant Simulator":
                     pieces.append(f"{ml_prefix} based on the blended projection, trend, age, and playing-time signal")
 
             if r.get("Primary Position") in needed_positions:
-                pieces.append(f"fills a needed {r.get('Primary Position')} slot")
+                pieces.append(f"you still need a {r.get('Primary Position')} on your roster")
             if r.get("Position Scarcity Bonus", 0) > 0.05:
-                pieces.append(f"has strong value over replacement at {r.get('Primary Position')}")
+                pieces.append(f"few strong {r.get('Primary Position')} options remain at this pick")
             if r.get("Category Need Bonus", 0) > 0:
-                pieces.append("helps your selected category needs")
+                pieces.append("helps the weak categories you selected above")
             if r.get("Risk Penalty", 0) > 0.04:
-                pieces.append("has some expert-disagreement risk")
+                pieces.append("experts disagree more on this player than most")
             if not pieces:
-                pieces.append("has one of the strongest expected fantasy value scores among available players")
-            return "Recommended because " + ", ".join(pieces) + "."
+                pieces.append("ranks among the strongest available options for your roster right now")
+            return "Pick note: " + "; ".join(pieces[:4]) + "."
 
         available["Reason"] = available.apply(make_draft_reason, axis=1)
 
@@ -8191,15 +8184,34 @@ if active_page == "Draft Assistant Simulator":
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 
+        st.subheader("Top players left by market value")
+        st.caption("Best ADP/market ranks still on the board (lower rank number = drafted earlier in real leagues).")
+        if "Market Rank" in available.columns:
+            mkt_left = available[pd.to_numeric(available["Market Rank"], errors="coerce").notna()].copy()
+            mkt_left = mkt_left.sort_values("Market Rank", ascending=True).head(12)
+        else:
+            mkt_left = available.sort_values("Expected Fantasy Value", ascending=False).head(12)
+        mkt_cols = ["fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge", "Expected Fantasy Value"]
+        mkt_display = mkt_left[[c for c in mkt_cols if c in mkt_left.columns]].rename(columns={"fullName": "Player"})
+        if not mkt_display.empty:
+            render_output_table(
+                format_fantasy_table(clean_ui_columns(mkt_display)),
+                key="draft_assistant_top_market_left",
+                file_name="draft_assistant_top_market_left.csv",
+                display_rows=12,
+                style_cols=["Fantasy Edge"],
+            )
+        else:
+            st.info("No available players with market rank data. Load FantasyPros CSVs or check Draft Room picks.")
+
         st.subheader("Next pick recommendations")
         bv1, bv2 = st.columns(2)
         with bv1:
             if not best_fit.empty:
                 bf = best_fit.iloc[0]
                 st.success(
-                    f"**Primary recommendation:** {bf['fullName']} — Draft Fit {fmt_rate_4(bf.get('Draft Fit Score'))}. "
-                    f"Market {fmt_int(bf.get('Market Rank'))}, model {fmt_int(bf.get('Model Rank'))}, edge {fmt_int(bf.get('Fantasy Edge'))}. "
-                    f"{bf['Reason']}"
+                    f"**Best pick for your team now:** **{bf['fullName']}** ({bf.get('Primary Position', '')}). "
+                    f"{bf.get('Reason', '')}"
                 )
         with bv2:
             if not best_value.empty:
