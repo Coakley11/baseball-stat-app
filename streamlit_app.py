@@ -4558,6 +4558,11 @@ def lineup_diagnosis_report(
             [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
             + _slot_gap_trade_rows(missing_slots)
         )[:5]
+        if out.get("slot_gaps"):
+            out["position_note"] = out["slot_gaps"]
+        return out
+
+    st_df = starters_df.copy()
     rate_col = "OBP" if str(rate_col).upper() == "OBP" and "OBP" in st_df.columns else "BA"
 
     cats_count = [c for c in ["HR", "RBI", "R", "SB"] if c in st_df.columns]
