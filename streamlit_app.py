@@ -6,9 +6,11 @@ import matplotlib.pyplot as plt
 import altair as alt
 from matplotlib.ticker import MaxNLocator
 from pathlib import Path
+import io
 import re
 import unicodedata
 import hashlib
+import time
 from collections import Counter
 
 import workflow_sidebar as wf_sb
@@ -18,6 +20,7 @@ from projection_style import PROJECTION_STYLE_OPTIONS, get_draft_projection_fact
 
 BASE_DIR = Path(__file__).resolve().parent
 
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def read_required_csv(filename):
     path = BASE_DIR / filename
     if not path.exists():
@@ -745,15 +748,12 @@ def compute_trend_slope(group, stat_col):
 
 @st.cache_data(show_spinner=False)
 def compute_player_trend_table(recent_data, stats_tuple):
-    """Cached per-player trend slopes for repeated Trend/Fantasy/Draft pages."""
-    stats = list(stats_tuple or [])
+    """Cached per-player trend slopes reused by Trend, Valuation, Draft, and Sleepers pages."""
+    stats = [s for s in (stats_tuple or []) if recent_data is not None and s in recent_data.columns]
     cols = ["playerID"] + [f"{s}_trend" for s in stats]
     if recent_data is None or recent_data.empty or "playerID" not in recent_data.columns:
         return pd.DataFrame(columns=cols)
-    use_cols = ["playerID", "yearID"] + [s for s in stats if s in recent_data.columns]
-    src = recent_data[[c for c in use_cols if c in recent_data.columns]].copy()
-    if src.empty:
-        return pd.DataFrame(columns=cols)
+    src = recent_data[["playerID", "yearID"] + stats].copy()
 
     def _slopes(g):
         return pd.Series({f"{stat}_trend": compute_trend_slope(g, stat) for stat in stats})
@@ -766,6 +766,39 @@ def compute_player_trend_table(recent_data, stats_tuple):
     if out.columns.duplicated().any():
         out = out.loc[:, ~out.columns.duplicated()]
     return out
+
+
+@st.cache_data(show_spinner=False)
+def get_latest_player_context(recent_data, cols_tuple):
+    """Latest season context by player, cached to avoid repeated sorting/groupby work."""
+    cols = [c for c in (cols_tuple or []) if recent_data is not None and c in recent_data.columns]
+    if recent_data is None or recent_data.empty or "playerID" not in recent_data.columns:
+        return pd.DataFrame(columns=cols)
+    latest = recent_data.sort_values(["playerID", "yearID"]).groupby("playerID").tail(1)[cols].copy()
+    if {"yearID", "birthYear"}.issubset(latest.columns):
+        latest["Age"] = latest.apply(
+            lambda r: baseball_age_for_season(
+                r.get("yearID"),
+                r.get("birthYear"),
+                r.get("birthMonth", np.nan),
+                r.get("birthDay", np.nan),
+            ),
+            axis=1,
+        )
+    return latest
+
+
+@st.cache_data(show_spinner=False)
+def aggregate_recent_player_totals(recent_data, stat_cols_tuple):
+    """Cached player totals over a selected recent-season window."""
+    if recent_data is None or recent_data.empty:
+        return pd.DataFrame()
+    group_cols = [c for c in ["playerID", "fullName", "bats"] if c in recent_data.columns]
+    stat_cols = [c for c in (stat_cols_tuple or []) if c in recent_data.columns]
+    if not group_cols or not stat_cols:
+        return pd.DataFrame()
+    out = recent_data.groupby(group_cols, as_index=False)[stat_cols].sum()
+    return add_rate_stats(out)
 
 def add_missing_numeric_columns(df, cols):
     df = df.copy()
@@ -1197,6 +1230,15 @@ def render_page_guide(page_key):
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
     if df.empty or value_col not in df.columns or name_col not in df.columns:
+        return
+    show_chart = st.checkbox(
+        f"Show {title}",
+        value=False,
+        key=f"bar_chart_{hashlib.md5(str(title).encode('utf-8')).hexdigest()[:10]}",
+        help="Charts are rendered on demand so table-first page loads stay fast.",
+    )
+    if not show_chart:
+        st.caption("Optional chart skipped for faster page load.")
         return
     chart_df = df[[name_col, value_col]].copy()
     chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce")
@@ -2285,7 +2327,7 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             "Run relationship scan for current filters",
             value=False,
             key=f"{key_prefix}_rf_run_scan",
-            help="This can be slow on large filtered datasets, so it only runs when enabled.",
+            help="This scan can be slow on large filtered datasets, so it runs only when enabled.",
         )
         if not run_scan:
             st.caption("Enable this when you want the app to scan stat pairs for relationships.")
@@ -3004,7 +3046,6 @@ def baseball_age_for_season(season_year, birth_year, birth_month=np.nan, birth_d
     return age
 
 @st.cache_data(show_spinner=False)
-@st.cache_data(show_spinner=False)
 def add_latest_and_projection_columns(base_df, recent_data):
     """Add latest-season stats and simple next-season trend projections.
 
@@ -3478,7 +3519,6 @@ def build_similar_player_predictions(current_rows, ml_training_df, feature_cols_
     return pd.DataFrame(out_rows)
 
 
-@st.cache_data(show_spinner=False)
 def apply_advanced_projection_adjustments(pred_df, current_rows, ml_training_df, feature_cols, target_stats,
                                           regression_strength=0.20, age_strength=0.50, comp_weight=0.25, k_neighbors=25):
     """Blend compact RF output, similar-player comps, age curve, and regression-to-the-mean."""
@@ -3545,7 +3585,6 @@ def make_ml_prediction_summary(row, sort_stat):
     )
 
 
-@st.cache_data(show_spinner=False)
 @st.cache_data(show_spinner=False)
 def aggregate_player_year_team(df):
     """One row per player-year-actual team. Used when Historical Explorer shows split seasons."""
@@ -3724,6 +3763,7 @@ def load_data():
 
 
 
+@st.cache_data(show_spinner=False)
 def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto", projection_mode="Balanced"):
     """Build a more realistic ML-style adjustment for draft pages.
 
@@ -3957,6 +3997,7 @@ def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto", projecti
 
 
 
+@st.cache_data(show_spinner=False)
 def compute_team_aware_draft_room_fit(
     available_df,
     my_team_df,
@@ -4078,6 +4119,7 @@ def compute_team_aware_draft_room_fit(
 
 
 
+@st.cache_data(show_spinner=False)
 def build_draft_room_roster_view(draft_results, fantasy_team):
     """Create a lineup-style roster view for a selected fantasy team in Draft Room."""
     if draft_results is None or draft_results.empty:
@@ -4136,6 +4178,7 @@ def build_draft_room_roster_view(draft_results, fantasy_team):
 
 
 
+@st.cache_data(show_spinner=False)
 def normalize_uploaded_stat_columns(df):
     """Normalize common uploaded 2026 stat column names for fantasy standings/trades."""
     out = df.copy()
@@ -4185,6 +4228,7 @@ def normalize_uploaded_stat_columns(df):
 
 
 
+@st.cache_data(show_spinner=False)
 def format_post_draft_roster_grades(df):
     """Format Draft Room post-draft roster grades cleanly."""
     out = df.copy()
@@ -4229,6 +4273,7 @@ def format_post_draft_roster_grades(df):
     return out
 
 
+@st.cache_data(show_spinner=False)
 def format_fantasy_standings_table(df):
     """Format Fantasy Standings Tracker output cleanly."""
     out = df.copy()
@@ -4266,6 +4311,7 @@ def format_fantasy_standings_table(df):
     return out
 
 
+@st.cache_data(show_spinner=False)
 def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
     """Score drafted teams using uploaded/current stats."""
     df = roster_df.copy()
@@ -4375,6 +4421,7 @@ def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode=
         plt.close(fig)
 
 
+@st.cache_data(show_spinner=False)
 def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custom_weights=None):
     """Create start/sit style scores from current roster stats.
 
@@ -5157,14 +5204,21 @@ def normalize_imported_draft_columns(df):
 def read_imported_draft_file(uploaded_file):
     """Read uploaded draft CSV or Excel."""
     name = str(getattr(uploaded_file, "name", "")).lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    return pd.read_excel(uploaded_file)
+    return read_uploaded_table_cached(uploaded_file.getvalue(), name)
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def read_uploaded_table_cached(file_bytes, file_name=""):
+    """Cache uploaded CSV/Excel parsing so widget reruns do not re-read the same file."""
+    buffer = io.BytesIO(file_bytes)
+    if str(file_name or "").lower().endswith(".csv"):
+        return pd.read_csv(buffer)
+    return pd.read_excel(buffer)
 
 
 
 
-@st.cache_data(ttl=60 * 60 * 6)
+@st.cache_data(ttl=60 * 30, show_spinner=False)
 def fetch_mlb_api_hitter_stats(season=2026):
     """Fetch current-season MLB hitter stats from the public MLB Stats API.
 
@@ -5185,7 +5239,7 @@ def fetch_mlb_api_hitter_stats(season=2026):
     }
 
     try:
-        response = requests.get(url, params=params, timeout=20)
+        response = requests.get(url, params=params, timeout=8)
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
@@ -5785,6 +5839,7 @@ def sync_draft_room_to_assistant_from_table(draft_room_table, my_team_name):
     return sorted(list(dict.fromkeys(my_roster))), sorted(list(dict.fromkeys(other_rosters)))
 
 
+_APP_RENDER_START = time.perf_counter()
 batting_df, yearly_df, people_df = load_data()
 
 
@@ -6101,6 +6156,12 @@ if active_page != st.session_state.get("_active_page_selector"):
     if active_page in _PAGE_OPTION_SET:
         st.session_state["active_page"] = active_page
 st.sidebar.caption("Filters are remembered as you move between pages.")
+show_perf_debug = st.sidebar.checkbox(
+    "Show performance debug",
+    value=False,
+    key="show_performance_debug",
+    help="Shows current rerun timing and a short cache/lazy-load summary.",
+)
 with st.sidebar.expander("New here? Quick start", expanded=False):
     st.markdown(
         "**Draft prep**\n"
@@ -6982,8 +7043,10 @@ if active_page == "Trend Value":
     if trend_sync_enabled and trend_drafted_names:
         recent_data_trend = recent_data_trend[~recent_data_trend["fullName"].astype(str).isin(set(trend_drafted_names))].copy()
 
-    agg_trend = recent_data_trend.groupby(["playerID", "fullName", "bats"], as_index=False)[["G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
-    agg_trend = add_rate_stats(agg_trend)
+    agg_trend = aggregate_recent_player_totals(
+        recent_data_trend,
+        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+    )
     agg_trend = agg_trend[agg_trend["G"] >= min_g_trend].copy()
     agg_trend = apply_stat_min_filters(agg_trend, "trend")
 
@@ -7020,9 +7083,9 @@ if active_page == "Trend Value":
 
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
-    st.caption("Top 500 rows · **Green** = improving · **Red** = declining · Open **Stat minimum filters** above to narrow further.")
+    st.caption("Top 250 rows · **Green** = improving · **Red** = declining · Open **Stat minimum filters** above to narrow further. Export includes all rows.")
     trend_heat_cols = [c for c in TREND_COUNT_COLS + TREND_RATE_COLS if c in trend_sorted.columns]
-    trend_sorted_display = trend_sorted.head(500).copy()
+    trend_sorted_display = trend_sorted.head(250).copy()
     for col in trend_heat_cols:
         is_rate = col in TREND_RATE_COLS
         trend_sorted_display[col] = trend_sorted_display[col].apply(lambda x, is_rate=is_rate: format_trend_arrow_value(x, is_rate=is_rate))
@@ -7388,10 +7451,10 @@ if active_page == "Fantasy Sleepers & Busts":
     st.write(f"Analyzing seasons: **{fantasy_years[0]}–{fantasy_years[-1]}**")
 
     recent_fantasy = yearly_df[yearly_df["yearID"].isin(fantasy_years)].copy().sort_values(["playerID", "yearID"])
-    agg_fantasy = recent_fantasy.groupby(["playerID", "fullName", "bats"], as_index=False)[
-        ["G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]
-    ].sum()
-    agg_fantasy = add_rate_stats(agg_fantasy)
+    agg_fantasy = aggregate_recent_player_totals(
+        recent_fantasy,
+        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+    )
     agg_fantasy = agg_fantasy[
         (pd.to_numeric(agg_fantasy["G"], errors="coerce") >= fantasy_min_g) &
         (pd.to_numeric(agg_fantasy["AB"], errors="coerce") >= fantasy_min_ab)
@@ -7406,11 +7469,7 @@ if active_page == "Fantasy Sleepers & Busts":
     fantasy_df = add_latest_and_projection_columns(fantasy_df, recent_fantasy)
 
     latest_cols = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
-    latest_context = recent_fantasy.sort_values(["playerID", "yearID"]).groupby("playerID").tail(1)[[c for c in latest_cols if c in recent_fantasy.columns]].copy()
-    latest_context["Age"] = latest_context.apply(
-        lambda r: baseball_age_for_season(r.get("yearID"), r.get("birthYear"), r.get("birthMonth", np.nan), r.get("birthDay", np.nan)),
-        axis=1
-    )
+    latest_context = get_latest_player_context(recent_fantasy, tuple(latest_cols))
     fantasy_df = fantasy_df.merge(latest_context, on="playerID", how="left")
     fantasy_df["Team"] = fantasy_df.get("primaryHistoricalTeamName", "").fillna(fantasy_df.get("primaryTeamName", ""))
     fantasy_df["Team"] = fantasy_df["Team"].replace({"ATH": "Athletics", "OAK": "Athletics"}).fillna("Unknown")
@@ -7884,10 +7943,10 @@ if active_page == "Draft Assistant Simulator":
         draft_years = list(range(max_year_draft - draft_window + 1, max_year_draft + 1))
         recent_draft = yearly_df[yearly_df["yearID"].isin(draft_years)].copy().sort_values(["playerID", "yearID"])
 
-        agg_draft = recent_draft.groupby(["playerID", "fullName", "bats"], as_index=False)[
-            ["G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]
-        ].sum()
-        agg_draft = add_rate_stats(agg_draft)
+        agg_draft = aggregate_recent_player_totals(
+            recent_draft,
+            ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+        )
         agg_draft = agg_draft[(agg_draft["G"] >= 30) & (agg_draft["AB"] >= 75)].copy()
 
         draft_trends = compute_player_trend_table(
@@ -7898,11 +7957,7 @@ if active_page == "Draft Assistant Simulator":
         draft_df = add_latest_and_projection_columns(draft_df, recent_draft)
 
         latest_cols = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
-        latest_context = recent_draft.sort_values(["playerID", "yearID"]).groupby("playerID").tail(1)[[c for c in latest_cols if c in recent_draft.columns]].copy()
-        latest_context["Age"] = latest_context.apply(
-            lambda r: baseball_age_for_season(r.get("yearID"), r.get("birthYear"), r.get("birthMonth", np.nan), r.get("birthDay", np.nan)),
-            axis=1
-        )
+        latest_context = get_latest_player_context(recent_draft, tuple(latest_cols))
         draft_df = draft_df.merge(latest_context, on="playerID", how="left")
         draft_df["Team"] = draft_df.get("primaryTeamName", "").fillna(draft_df.get("primaryHistoricalTeamName", ""))
         draft_df["Team"] = draft_df["Team"].apply(current_franchise_name)
@@ -8671,10 +8726,10 @@ if active_page == "Draft Room Simulator":
     room_years = list(range(max_year_room - int(room_window) + 1, max_year_room + 1))
     recent_room = yearly_df[yearly_df["yearID"].isin(room_years)].copy().sort_values(["playerID", "yearID"])
 
-    agg_room = recent_room.groupby(["playerID", "fullName", "bats"], as_index=False)[
-        ["G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]
-    ].sum()
-    agg_room = add_rate_stats(agg_room)
+    agg_room = aggregate_recent_player_totals(
+        recent_room,
+        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+    )
     agg_room = agg_room[(agg_room["G"] >= 30) & (agg_room["AB"] >= 75)].copy()
 
     room_trends = compute_player_trend_table(
@@ -8686,11 +8741,7 @@ if active_page == "Draft Room Simulator":
     room_df = add_latest_and_projection_columns(room_df, recent_room)
 
     latest_cols_room = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
-    latest_context_room = recent_room.sort_values(["playerID", "yearID"]).groupby("playerID").tail(1)[[c for c in latest_cols_room if c in recent_room.columns]].copy()
-    latest_context_room["Age"] = latest_context_room.apply(
-        lambda r: baseball_age_for_season(r.get("yearID"), r.get("birthYear"), r.get("birthMonth", np.nan), r.get("birthDay", np.nan)),
-        axis=1
-    )
+    latest_context_room = get_latest_player_context(recent_room, tuple(latest_cols_room))
     room_df = room_df.merge(latest_context_room, on="playerID", how="left")
     room_df["Team"] = room_df.get("primaryTeamName", "").fillna(room_df.get("primaryHistoricalTeamName", ""))
     room_df["Team"] = room_df["Team"].apply(current_franchise_name)
@@ -9023,7 +9074,7 @@ if active_page == "Fantasy Standings Tracker":
             st.info("You can still use this page by switching Current Stats Source to Upload CSV.")
 
     elif stats_file is not None:
-        current_stats = pd.read_csv(stats_file)
+        current_stats = read_uploaded_table_cached(stats_file.getvalue(), getattr(stats_file, "name", "uploaded_stats.csv"))
         current_stats = normalize_uploaded_stat_columns(current_stats)
 
     if not current_stats.empty:
@@ -9521,8 +9572,10 @@ if active_page == "Valuation":
     if value_sync_enabled and value_drafted_names:
         recent_data_value = recent_data_value[~recent_data_value["fullName"].astype(str).isin(set(value_drafted_names))].copy()
 
-    agg_value = recent_data_value.groupby(["playerID", "fullName", "bats"], as_index=False)[["G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
-    agg_value = add_rate_stats(agg_value)
+    agg_value = aggregate_recent_player_totals(
+        recent_data_value,
+        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+    )
     agg_value = agg_value[agg_value["G"] >= min_g_value].copy()
     agg_value = apply_stat_min_filters(agg_value, "value")
 
@@ -9864,4 +9917,12 @@ if active_page == "ML Predictions":
                         render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
                         with st.expander("Feature importance chart", expanded=False):
                             top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
+
+if show_perf_debug:
+    elapsed_ms = (time.perf_counter() - _APP_RENDER_START) * 1000
+    with st.sidebar.expander("Performance Debug", expanded=True):
+        st.caption(f"Current page: **{active_page}**")
+        st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
+        st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
+        st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
 
