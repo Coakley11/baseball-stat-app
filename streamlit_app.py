@@ -742,6 +742,31 @@ def compute_trend_slope(group, stat_col):
         return np.nan
     return np.polyfit(x, y, 1)[0]
 
+
+@st.cache_data(show_spinner=False)
+def compute_player_trend_table(recent_data, stats_tuple):
+    """Cached per-player trend slopes for repeated Trend/Fantasy/Draft pages."""
+    stats = list(stats_tuple or [])
+    cols = ["playerID"] + [f"{s}_trend" for s in stats]
+    if recent_data is None or recent_data.empty or "playerID" not in recent_data.columns:
+        return pd.DataFrame(columns=cols)
+    use_cols = ["playerID", "yearID"] + [s for s in stats if s in recent_data.columns]
+    src = recent_data[[c for c in use_cols if c in recent_data.columns]].copy()
+    if src.empty:
+        return pd.DataFrame(columns=cols)
+
+    def _slopes(g):
+        return pd.Series({f"{stat}_trend": compute_trend_slope(g, stat) for stat in stats})
+
+    grouped = src.groupby("playerID", group_keys=False)
+    try:
+        out = grouped.apply(_slopes, include_groups=False).reset_index()
+    except TypeError:
+        out = grouped.apply(_slopes).reset_index()
+    if out.columns.duplicated().any():
+        out = out.loc[:, ~out.columns.duplicated()]
+    return out
+
 def add_missing_numeric_columns(df, cols):
     df = df.copy()
     for col in cols:
@@ -1215,7 +1240,7 @@ def format_display_table(df, count_cols=None, rate_cols=None, score_cols=None, c
 
 
 
-MAX_TABLE_DISPLAY_ROWS = 500
+MAX_TABLE_DISPLAY_ROWS = 250
 
 @st.cache_data(show_spinner=False)
 def _df_to_csv_bytes(df):
@@ -1232,7 +1257,7 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
 
     style_cols = [c for c in (style_cols or []) if c in display_df.columns]
     # Avoid heavy styling on large tables. Styling was slowing Trend/Valuation pages and re-expanding decimals.
-    if style_cols and display_df.size <= 6000:
+    if style_cols and display_df.size <= 2500:
         fmt = {}
         for col in display_df.columns:
             if col in TREND_RATE_COLS or col in ["OPS Δ", "BA Δ", "OBP Δ", "SLG Δ"]:
@@ -2256,6 +2281,15 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
             "Scans numeric columns on your current filters, then lists only the **strongest** pairs. "
             "**High R² is not causation** and **not a forecast**; larger **sample size** usually makes a pattern more believable."
         )
+        run_scan = st.checkbox(
+            "Run relationship scan for current filters",
+            value=False,
+            key=f"{key_prefix}_rf_run_scan",
+            help="This can be slow on large filtered datasets, so it only runs when enabled.",
+        )
+        if not run_scan:
+            st.caption("Enable this when you want the app to scan stat pairs for relationships.")
+            return
         c1, c2, c3 = st.columns(3)
         with c1:
             top_k = st.slider("Max relationships to list", 3, 12, 8, key=f"{key_prefix}_rf_top_k")
@@ -2441,6 +2475,15 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         return
 
     st.subheader(title)
+    show_scatter = st.checkbox(
+        "Show interactive scatterplot",
+        value=False,
+        key=f"{key_prefix}_scatter_show_chart",
+        help="Large scatterplots are optional so page switching and table loading stay fast.",
+    )
+    if not show_scatter:
+        st.caption("Turn this on to render the interactive chart for the current filtered rows.")
+        return
 
     default_x = "HR" if "HR" in numeric_cols else numeric_cols[0]
     default_y = "SB" if "SB" in numeric_cols else ("OPS" if "OPS" in numeric_cols else numeric_cols[min(1, len(numeric_cols)-1)])
@@ -2961,6 +3004,7 @@ def baseball_age_for_season(season_year, birth_year, birth_month=np.nan, birth_d
     return age
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def add_latest_and_projection_columns(base_df, recent_data):
     """Add latest-season stats and simple next-season trend projections.
 
@@ -3434,6 +3478,7 @@ def build_similar_player_predictions(current_rows, ml_training_df, feature_cols_
     return pd.DataFrame(out_rows)
 
 
+@st.cache_data(show_spinner=False)
 def apply_advanced_projection_adjustments(pred_df, current_rows, ml_training_df, feature_cols, target_stats,
                                           regression_strength=0.20, age_strength=0.50, comp_weight=0.25, k_neighbors=25):
     """Blend compact RF output, similar-player comps, age curve, and regression-to-the-mean."""
@@ -3500,6 +3545,7 @@ def make_ml_prediction_summary(row, sort_stat):
     )
 
 
+@st.cache_data(show_spinner=False)
 @st.cache_data(show_spinner=False)
 def aggregate_player_year_team(df):
     """One row per player-year-actual team. Used when Historical Explorer shows split seasons."""
@@ -6945,26 +6991,10 @@ if active_page == "Trend Value":
         "R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend",
         "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend",
     ]
-    if recent_data_trend.empty:
-        trend_table = pd.DataFrame(columns=["playerID"] + _trend_slope_cols)
-    else:
-        def _trend_slopes_for_player(g):
-            return pd.Series({
-                "R_trend": compute_trend_slope(g, "R"), "H_trend": compute_trend_slope(g, "H"),
-                "2B_trend": compute_trend_slope(g, "2B"), "3B_trend": compute_trend_slope(g, "3B"),
-                "HR_trend": compute_trend_slope(g, "HR"), "RBI_trend": compute_trend_slope(g, "RBI"),
-                "SB_trend": compute_trend_slope(g, "SB"), "BB_trend": compute_trend_slope(g, "BB"),
-                "BA_trend": compute_trend_slope(g, "BA"), "OBP_trend": compute_trend_slope(g, "OBP"),
-                "SLG_trend": compute_trend_slope(g, "SLG"), "OPS_trend": compute_trend_slope(g, "OPS"),
-            })
-
-        _gb = recent_data_trend.groupby("playerID", group_keys=False)
-        try:
-            trend_table = _gb.apply(_trend_slopes_for_player, include_groups=False).reset_index()
-        except TypeError:
-            trend_table = _gb.apply(_trend_slopes_for_player).reset_index()
-        if trend_table.columns.duplicated().any():
-            trend_table = trend_table.loc[:, ~trend_table.columns.duplicated()]
+    trend_table = compute_player_trend_table(
+        recent_data_trend,
+        ("R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"),
+    )
 
     trend_value_df = agg_trend.merge(trend_table, on="playerID", how="left")
     trend_value_df = add_latest_and_projection_columns(trend_value_df, recent_data_trend)
@@ -7367,14 +7397,10 @@ if active_page == "Fantasy Sleepers & Busts":
         (pd.to_numeric(agg_fantasy["AB"], errors="coerce") >= fantasy_min_ab)
     ].copy()
 
-    fantasy_trends = recent_fantasy.groupby("playerID").apply(lambda g: pd.Series({
-        "R_trend": compute_trend_slope(g, "R"), "H_trend": compute_trend_slope(g, "H"),
-        "2B_trend": compute_trend_slope(g, "2B"), "3B_trend": compute_trend_slope(g, "3B"),
-        "HR_trend": compute_trend_slope(g, "HR"), "RBI_trend": compute_trend_slope(g, "RBI"),
-        "SB_trend": compute_trend_slope(g, "SB"), "BB_trend": compute_trend_slope(g, "BB"),
-        "BA_trend": compute_trend_slope(g, "BA"), "OBP_trend": compute_trend_slope(g, "OBP"),
-        "SLG_trend": compute_trend_slope(g, "SLG"), "OPS_trend": compute_trend_slope(g, "OPS")
-    })).reset_index()
+    fantasy_trends = compute_player_trend_table(
+        recent_fantasy,
+        ("R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"),
+    )
 
     fantasy_df = agg_fantasy.merge(fantasy_trends, on="playerID", how="left")
     fantasy_df = add_latest_and_projection_columns(fantasy_df, recent_fantasy)
@@ -7864,12 +7890,10 @@ if active_page == "Draft Assistant Simulator":
         agg_draft = add_rate_stats(agg_draft)
         agg_draft = agg_draft[(agg_draft["G"] >= 30) & (agg_draft["AB"] >= 75)].copy()
 
-        draft_trends = recent_draft.groupby("playerID").apply(lambda g: pd.Series({
-            "R_trend": compute_trend_slope(g, "R"), "HR_trend": compute_trend_slope(g, "HR"),
-            "RBI_trend": compute_trend_slope(g, "RBI"), "SB_trend": compute_trend_slope(g, "SB"),
-            "BA_trend": compute_trend_slope(g, "BA"), "OPS_trend": compute_trend_slope(g, "OPS"),
-            "BB_trend": compute_trend_slope(g, "BB")
-        })).reset_index()
+        draft_trends = compute_player_trend_table(
+            recent_draft,
+            ("R", "HR", "RBI", "SB", "BA", "OPS", "BB"),
+        )
         draft_df = agg_draft.merge(draft_trends, on="playerID", how="left")
         draft_df = add_latest_and_projection_columns(draft_df, recent_draft)
 
@@ -8653,12 +8677,10 @@ if active_page == "Draft Room Simulator":
     agg_room = add_rate_stats(agg_room)
     agg_room = agg_room[(agg_room["G"] >= 30) & (agg_room["AB"] >= 75)].copy()
 
-    room_trends = recent_room.groupby("playerID").apply(lambda g: pd.Series({
-        "R_trend": compute_trend_slope(g, "R"), "HR_trend": compute_trend_slope(g, "HR"),
-        "RBI_trend": compute_trend_slope(g, "RBI"), "SB_trend": compute_trend_slope(g, "SB"),
-        "BA_trend": compute_trend_slope(g, "BA"), "OPS_trend": compute_trend_slope(g, "OPS"),
-        "BB_trend": compute_trend_slope(g, "BB")
-    })).reset_index()
+    room_trends = compute_player_trend_table(
+        recent_room,
+        ("R", "HR", "RBI", "SB", "BA", "OPS", "BB"),
+    )
 
     room_df = agg_room.merge(room_trends, on="playerID", how="left")
     room_df = add_latest_and_projection_columns(room_df, recent_room)
@@ -9504,14 +9526,10 @@ if active_page == "Valuation":
     agg_value = agg_value[agg_value["G"] >= min_g_value].copy()
     agg_value = apply_stat_min_filters(agg_value, "value")
 
-    trend_value = recent_data_value.groupby("playerID").apply(lambda g: pd.Series({
-        "R_trend": compute_trend_slope(g, "R"), "H_trend": compute_trend_slope(g, "H"),
-        "2B_trend": compute_trend_slope(g, "2B"), "3B_trend": compute_trend_slope(g, "3B"),
-        "HR_trend": compute_trend_slope(g, "HR"), "RBI_trend": compute_trend_slope(g, "RBI"),
-        "SB_trend": compute_trend_slope(g, "SB"), "BB_trend": compute_trend_slope(g, "BB"),
-        "BA_trend": compute_trend_slope(g, "BA"), "OBP_trend": compute_trend_slope(g, "OBP"),
-        "SLG_trend": compute_trend_slope(g, "SLG"), "OPS_trend": compute_trend_slope(g, "OPS")
-    })).reset_index()
+    trend_value = compute_player_trend_table(
+        recent_data_value,
+        ("R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"),
+    )
 
     valuation_df = agg_value.merge(trend_value, on="playerID", how="left")
     valuation_df = add_latest_and_projection_columns(valuation_df, recent_data_value)
