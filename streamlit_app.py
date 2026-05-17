@@ -4421,6 +4421,77 @@ def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode=
         plt.close(fig)
 
 
+def render_player_trend_chart_section(source_df, label_map, label_options, *, key_prefix, title="Player Trend Charts"):
+    """Visible single-player and up-to-3-player trend charts for one selected stat."""
+    st.subheader(title)
+    st.caption("Chart one player, or compare up to three players on the same selected statistic.")
+    stat_options = [c for c in ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"] if c in source_df.columns]
+    if not stat_options or not label_options:
+        st.info("No trend chart data is available for the current dataset.")
+        return
+
+    default_stat_idx = stat_options.index("OPS") if "OPS" in stat_options else 0
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        chart_stat = st.selectbox("Statistic to chart", stat_options, index=default_stat_idx, key=f"{key_prefix}_trend_chart_stat")
+    with c2:
+        single_player = st.selectbox("Single-player trend chart", label_options, index=0, key=f"{key_prefix}_single_trend_player")
+
+    def _plot_trend(selected_labels, chart_title):
+        rows = []
+        for label in selected_labels:
+            pid = label_map.get(label)
+            if not pid:
+                continue
+            sub = source_df[source_df["playerID"].astype(str) == str(pid)].copy()
+            if sub.empty or chart_stat not in sub.columns:
+                continue
+            sub = sub.sort_values("yearID")
+            for _, r in sub.iterrows():
+                year = r.get("yearID", np.nan)
+                value = r.get(chart_stat, np.nan)
+                rows.append({
+                    "Player": fullname_base_from_label(label),
+                    "Year": pd.to_numeric(year, errors="coerce"),
+                    "Value": pd.to_numeric(value, errors="coerce"),
+                })
+        chart_df = pd.DataFrame(rows).dropna(subset=["Year", "Value"])
+        if chart_df.empty:
+            st.info("No valid values found for the selected player/stat.")
+            return
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        for player, g in chart_df.groupby("Player"):
+            ax.plot(g["Year"], g["Value"], marker="o", label=player)
+        ax.set_title(chart_title)
+        ax.set_xlabel("Season")
+        ax.set_ylabel(chart_stat)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.grid(True, alpha=0.25)
+        ax.legend()
+        try:
+            st.pyplot(fig, clear_figure=True)
+        except TypeError:
+            st.pyplot(fig)
+        plt.close(fig)
+
+    _plot_trend([single_player], f"{fullname_base_from_label(single_player)} - {chart_stat} Trend")
+
+    multi_players = st.multiselect(
+        "Compare up to 3 players on this stat",
+        label_options,
+        default=[single_player],
+        key=f"{key_prefix}_multi_trend_players",
+        help="Select one to three players. All selected players are plotted on the same statistic.",
+    )
+    if len(multi_players) > 3:
+        st.warning("Showing the first 3 selected players for readability.")
+        multi_players = multi_players[:3]
+    if multi_players:
+        _plot_trend(multi_players, f"{chart_stat} Trend Comparison")
+    else:
+        st.info("Select one to three players to view the comparison chart.")
+
+
 @st.cache_data(show_spinner=False)
 def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custom_weights=None):
     """Create start/sit style scores from current roster stats.
@@ -6054,81 +6125,9 @@ def _sync_active_page_from_sidebar():
     if selected in _PAGE_OPTION_SET:
         st.session_state["active_page"] = selected
 
-# Persist navigation and page-specific widget settings.
-# IMPORTANT: Do not manually reassign widget keys in st.session_state.
-# Streamlit forbids programmatic assignment for button/download_button widgets.
-# Stable widget keys plus radio-style page navigation preserve filters and charts
-# when moving between pages during the same session.
-
-# Page navigation is handled by one stable sidebar radio key.
-# Streamlit may clean up widget values from pages that are not currently rendered.
-# This safe keep-alive loop preserves filters/settings from previously visited pages
-# while avoiding button/download/form-submit keys, which Streamlit does not allow
-# to be reassigned programmatically. Also skip player_quick_actions_popover keys
-# Skip all player_quick_actions_popover widget keys (…_qa_…) — selectbox + buttons;
-# reassigning their session_state triggers StreamlitValueAssignmentNotAllowedError.
-for _state_key in list(st.session_state.keys()):
-    _key_text = str(_state_key).lower()
-    if (
-        _key_text == "active_page"
-        or _key_text == "_active_page_selector"
-        or _key_text == "_pending_active_page"
-        or _key_text.startswith("sidebar_queue_")
-        or _key_text.startswith("sidebar_clear_")
-        or _key_text.startswith("download")
-        or _key_text.startswith("export")
-        or _key_text.startswith("button")
-        or _key_text.startswith("form_submit")
-        or _key_text.endswith("_button")
-        or "_button" in _key_text
-        or "download" in _key_text
-        or "upload" in _key_text
-        or "uploader" in _key_text
-        or "file_uploader" in _key_text
-        or "export_csv" in _key_text
-        or "form_submit" in _key_text
-        or "compact_run_action" in _key_text
-        or "compact_action" in _key_text
-        or "compact_player" in _key_text
-        or "run_player_action" in _key_text
-        or "player_action" in _key_text
-        or "draft_button" in _key_text
-        or "gobtn" in _key_text
-        or "_gobtn" in _key_text
-        or "run_action" in _key_text
-        or "_run_action" in _key_text
-        or "cpa_submit" in _key_text
-        or "cpa_selgrid" in _key_text
-        or "clear" in _key_text
-        or "reset" in _key_text
-        or "send_queue" in _key_text
-        or "trend_clear" in _key_text
-        or _key_text == "trend_clear_send_queue"
-        or "draft_assistant_import" in _key_text
-        or "button" in _key_text
-        or "dismiss" in _key_text
-        or "highlight" in _key_text
-        or "reset" in _key_text
-        or "clear" in _key_text
-        or "generate_roster_view" in _key_text
-        or "load_uploaded" in _key_text
-        or "suggest_trade" in _key_text
-        or "upload" in _key_text
-        or "uploader" in _key_text
-        or "file_uploader" in _key_text
-        or "standings_stats_upload" in _key_text
-        or "data_editor" in _key_text
-        or "draft_room_editor" in _key_text
-        or "data_editor" in _key_text
-        or "draft_room_editor" in _key_text
-        or "_qa_" in _key_text
-        or _key_text.startswith("wf_")
-    ):
-        continue
-    try:
-        st.session_state[_state_key] = st.session_state[_state_key]
-    except Exception:
-        pass
+# Page navigation is handled by one stable sidebar radio key. Avoid programmatic
+# reassignment of arbitrary widget keys; it can block navigation and trigger
+# StreamlitValueAssignmentNotAllowedError for button-like widgets.
 
 _pending_nav = st.session_state.pop("_pending_active_page", None)
 if _pending_nav and _pending_nav in _PAGE_OPTION_SET:
@@ -6142,19 +6141,16 @@ if st.session_state.get("active_page") not in _PAGE_OPTION_SET:
 if st.session_state.get("_active_page_selector") not in _PAGE_OPTION_SET:
     st.session_state["_active_page_selector"] = st.session_state["active_page"]
 
-_page_index = PAGE_OPTIONS.index(st.session_state["active_page"])
-st.sidebar.radio(
+_page_index = PAGE_OPTIONS.index(st.session_state["_active_page_selector"])
+_selected_page = st.sidebar.radio(
     "Choose Page",
     PAGE_OPTIONS,
     index=_page_index,
     key="_active_page_selector",
-    on_change=_sync_active_page_from_sidebar,
 )
+if _selected_page in _PAGE_OPTION_SET:
+    st.session_state["active_page"] = _selected_page
 active_page = st.session_state.get("active_page", "Historical Explorer")
-if active_page != st.session_state.get("_active_page_selector"):
-    active_page = st.session_state.get("_active_page_selector", active_page)
-    if active_page in _PAGE_OPTION_SET:
-        st.session_state["active_page"] = active_page
 st.sidebar.caption("Filters are remembered as you move between pages.")
 show_perf_debug = st.sidebar.checkbox(
     "Show performance debug",
@@ -7081,6 +7077,16 @@ if active_page == "Trend Value":
         c4m.metric(f"Worst {selected_trend_name} Trend", fmt_count_1(selected_values.min()))
         c5m.metric(f"Average {selected_trend_name} Trend", fmt_count_1(selected_values.mean()))
 
+    full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
+    full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
+    render_player_trend_chart_section(
+        yearly_df,
+        full_trend_label_map,
+        full_trend_labels,
+        key_prefix="trend_visible",
+        title="Trend Charts",
+    )
+
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
     st.caption("Top 250 rows · **Green** = improving · **Red** = declining · Open **Stat minimum filters** above to narrow further. Export includes all rows.")
@@ -7170,9 +7176,6 @@ if active_page == "Trend Value":
             st.session_state.pop("single_trend_dashboard_player", None)
             st.session_state.pop("trend_players_multi", None)
             st.rerun()
-
-    full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
-    full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
 
     # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
     _stp = st.session_state.get("single_trend_dashboard_player")
@@ -9625,6 +9628,16 @@ if active_page == "Valuation":
     c7.metric("Top Valuation Score", fmt_rate_4(valuation_df["Valuation_Score"].max() if not valuation_df.empty else 0))
     c8.metric("Average Valuation Score", fmt_rate_4(valuation_df["Valuation_Score"].mean() if not valuation_df.empty else 0))
     c9.metric("Top Valuation Player", valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else "N/A")
+
+    value_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
+    value_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
+    render_player_trend_chart_section(
+        yearly_df,
+        value_trend_label_map,
+        value_trend_labels,
+        key_prefix="valuation_visible",
+        title="Valuation Trend Charts",
+    )
 
     valuation_display = valuation_df[["fullName", "bats", "R", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS", "Trend_Score", "Perf_Score", "Valuation_Score"]].sort_values("Valuation_Score", ascending=False).rename(columns={
         "fullName": "Player", "bats": "Bats", "Trend_Score": "Trend Score", "Perf_Score": "Current Score", "Valuation_Score": "Valuation Score"
