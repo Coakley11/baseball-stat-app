@@ -2858,6 +2858,71 @@ def make_fantasy_market_reason(row, kind="sleeper"):
         gap = "No ADP match; bust call is based on projection shape only."
     return f"**Bust risk:** {player}. {gap}{stat_line}"
 
+
+def _insight_name_col(df):
+    for c in ["Player", "fullName"]:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _select_insight_row(df, *, key, label="Select player for insight", default_name=None):
+    """Select a player from a dataframe and return the matching row for section summaries."""
+    if df is None or df.empty:
+        return None
+    name_col = _insight_name_col(df)
+    if not name_col:
+        return None
+    options = [str(x).strip() for x in df[name_col].dropna().astype(str).tolist() if str(x).strip()]
+    options = list(dict.fromkeys(options))
+    if not options:
+        return None
+    saved = st.session_state.get(key)
+    if saved not in options:
+        saved = default_name if default_name in options else options[0]
+        st.session_state[key] = saved
+    selected = st.selectbox(label, options, index=options.index(saved), key=key)
+    st.markdown(f"**Selected:** <span style='color:#b42318;font-weight:800'>{selected}</span>", unsafe_allow_html=True)
+    match = df[df[name_col].astype(str).str.strip().eq(str(selected).strip())]
+    return match.iloc[0] if not match.empty else None
+
+
+def _fmt_insight_num(v, *, rate=False):
+    try:
+        if pd.isna(v):
+            return "N/A"
+        return fmt_rate_3(v) if rate else fmt_count_1(v)
+    except Exception:
+        return "N/A"
+
+
+def make_draft_recommendation_insight(row):
+    """Plain-language selected-player explanation from Draft Assistant outputs."""
+    name = row.get("fullName", row.get("Player", "This player"))
+    pos = row.get("Primary Position", "")
+    market = fmt_int(row.get("Market Rank"))
+    model = fmt_int(row.get("Model Rank"))
+    edge = fmt_int(row.get("Fantasy Edge"))
+    fit = fmt_rate_4(row.get("Draft Fit Score"))
+    efv = fmt_rate_4(row.get("Expected Fantasy Value"))
+    parts = [f"**{name}**"]
+    if pos:
+        parts.append(f"({pos})")
+    parts.append(f"has Draft Fit **{fit}** and expected fantasy value **{efv}**.")
+    if market or model:
+        parts.append(f"Market rank **{market or 'N/A'}**, model rank **{model or 'N/A'}**, fantasy edge **{edge or 'N/A'}**.")
+    for col in ["Reason", "Team fit", "Strategy"]:
+        val = str(row.get(col, "")).strip()
+        if val:
+            parts.append(val)
+    return " ".join(parts)
+
+
+def make_market_selected_insight(row):
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    kind = "sleeper" if pd.isna(edge) or edge >= 0 else "bust"
+    return make_fantasy_market_reason(row, kind=kind)
+
 def baseball_age_for_season(season_year, birth_year, birth_month=np.nan, birth_day=np.nan):
     """Approximate MLB season age using July 1 of the season, not simply season_year - birth_year.
     This prevents late-year birthdays from being overstated by one year.
@@ -3202,7 +3267,7 @@ def _clear_ml_projection_session_cache():
         st.session_state.pop(k, None)
 
 
-def _ml_projection_run_signature(yl_df, lookback, min_games, max_players, reg, age_s, comp_w, k_nei, min_ab):
+def _ml_projection_run_signature(yl_df, lookback, min_games, max_players, reg, age_s, comp_w, k_nei, min_ab, projection_style="Balanced"):
     """Inputs that affect base ML + adjustment layer; used to skip redundant work on Streamlit reruns."""
     return (
         _ml_year_pool_signature(yl_df),
@@ -3214,6 +3279,7 @@ def _ml_projection_run_signature(yl_df, lookback, min_games, max_players, reg, a
         float(comp_w),
         int(k_nei),
         int(min_ab),
+        str(projection_style),
     )
 
 
@@ -3401,10 +3467,17 @@ def make_ml_prediction_summary(row, sort_stat):
     hr = row.get("Predicted HR", np.nan)
     rbi = row.get("Predicted RBI", np.nan)
     sb = row.get("Predicted SB", np.nan)
+    value = row.get("ML Fantasy Value", np.nan)
+    rank = row.get("Model Rank", np.nan)
+    confidence = row.get("Projection Confidence", np.nan)
+    breakout = row.get("Breakout Score", np.nan)
+    style = row.get("Projection Style", "Balanced")
     stat_text = fmt_rate_3(stat_val) if sort_stat in RATE_STATS else fmt_int(stat_val)
     return (
         f"{player}'s advanced ML projection is strongest on {sort_stat}: {stat_text}. "
         f"The model projects about {fmt_rate_3(ops)} OPS, {fmt_int(hr)} HR, {fmt_int(rbi)} RBI, and {fmt_int(sb)} SB. "
+        f"ML Fantasy Value is {fmt_rate_4(value)} (model rank {fmt_int(rank)}), "
+        f"breakout score {fmt_rate_4(breakout)}, and projection confidence {fmt_rate_4(confidence)} under the {style} style. "
         f"The displayed projection blends Random Forest, age/age², position, bats, league/team context, playing time, trends, similar-player history, aging curves, and regression-to-the-mean."
     )
 
@@ -5214,7 +5287,7 @@ def execute_player_action_once(selected_player, action, team_name, user_draft_te
             return "Sent to Trend Value (single-player anchor + multi chart queue updated)."
         return "Skipped — name could not be matched for Trend."
 
-    if action == "Send to Draft Assistant":
+    if action == "Add to Watchlist":
         st.session_state["pending_draft_assistant_player"] = sp
         focus = st.session_state.get("draft_assistant_focus_players", [])
         if not isinstance(focus, list):
@@ -5222,7 +5295,7 @@ def execute_player_action_once(selected_player, action, team_name, user_draft_te
         if sp not in focus:
             focus.append(sp)
         st.session_state["draft_assistant_focus_players"] = focus[-10:]
-        return "Added to Draft Assistant focus/watch list."
+        return "Added to Watchlist."
 
     if action == "Add as trade target to acquire":
         acquire = st.session_state.get("pending_trade_acquire_players", [])
@@ -5306,12 +5379,6 @@ def compact_player_action_center(
         help_text=help_text
         or "Pick a player, then choose an action.",
     )
-
-    _workflow_normalize_draft_queue()
-    q = st.session_state.get("draft_queue", [])
-    if q:
-        with st.expander("Current Draft Queue / Watch List", expanded=False):
-            st.write(q)
 
     return ctx[0] if ctx else None
 
@@ -5465,8 +5532,8 @@ def player_quick_actions_popover(
 
         b4, b5, b6 = st.columns(3)
         with b4:
-            if st.button("Send to Draft Assistant", key=f"{key}_qa_da_{sfx}"):
-                msg = execute_player_action_once(pick, "Send to Draft Assistant", team_for_draft, user_draft_team, label_map)
+            if st.button("Add to Watchlist", key=f"{key}_qa_da_{sfx}"):
+                msg = execute_player_action_once(pick, "Add to Watchlist", team_for_draft, user_draft_team, label_map)
                 st.success(msg)
         with b5:
             if not on_my:
@@ -5756,7 +5823,7 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
 
     with st.sidebar.expander("Watchlist", expanded=bool(watch)):
         if not watch:
-            st.caption("Empty — use **Send to Draft Assistant** from Player Actions.")
+            st.caption("Empty — use **Add to Watchlist** from Player Actions.")
         else:
             for pname in reversed(watch[-12:]):
                 st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
@@ -6856,7 +6923,7 @@ if active_page == "Trend Value":
         user_draft_team=trend_sync_team,
         projection_lookup_df=trend_value_df,
         projection_lookup_name_col="fullName",
-        help_text="Trend leaderboard — send players to Comparison, Draft Assistant, or the draft queue without retyping names.",
+        help_text="Trend leaderboard — add players to Watchlist, Comparison, Trend, or the draft queue without retyping names.",
     )
 
     breakout_df = trend_value_df[["fullName", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]].copy()
@@ -6893,11 +6960,19 @@ if active_page == "Trend Value":
         help_text="Breakout / decline callouts — same actions as the main trend table.",
     )
 
-    st.subheader("Insight Summaries")
-    top_breakout_row = trend_value_df.sort_values("OPS_trend", ascending=False).head(1)
-    top_decline_row = trend_value_df.sort_values("OPS_trend", ascending=True).head(1)
-    if not top_breakout_row.empty: st.success(make_trend_insight_summary(top_breakout_row.iloc[0]))
-    if not top_decline_row.empty: st.error(make_trend_insight_summary(top_decline_row.iloc[0]))
+    st.subheader("Insight Summary")
+    trend_insight_pool = pd.concat([top_breakouts, biggest_declines], ignore_index=True)
+    trend_selected = _select_insight_row(
+        trend_insight_pool,
+        key="trend_breakout_decline_selected_player",
+        label="Choose a breakout or decline player",
+        default_name=top_breakouts.iloc[0]["fullName"] if not top_breakouts.empty else None,
+    )
+    if trend_selected is not None:
+        if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
+            st.success(make_trend_insight_summary(trend_selected))
+        else:
+            st.error(make_trend_insight_summary(trend_selected))
 
     dash_hdr_1, dash_hdr_2 = st.columns([4, 1])
     with dash_hdr_1:
@@ -7615,14 +7690,19 @@ if active_page == "Fantasy Sleepers & Busts":
         )
 
         st.subheader("Fantasy Market Insight Summary")
-        st.success(
-            f"**Top sleeper:** {top_sleeper['fullName']} — our model #{fmt_int(top_sleeper['Model Rank'])} vs "
-            f"ADP #{fmt_int(top_sleeper['Market Rank'])}. Consider drafting before his ADP if you want this profile."
+        market_insight_pool = pd.concat([sleepers, busts], ignore_index=True).drop_duplicates("fullName")
+        selected_market_row = _select_insight_row(
+            market_insight_pool,
+            key="fantasy_market_selected_player",
+            label="Choose a sleeper or bust-risk player",
+            default_name=top_sleeper.get("fullName"),
         )
-        st.warning(
-            f"**Top bust risk:** {top_bust['fullName']} — ADP #{fmt_int(top_bust['Market Rank'])} vs "
-            f"our model #{fmt_int(top_bust['Model Rank'])}. The market may be paying for production we do not project."
-        )
+        if selected_market_row is not None:
+            edge_val = pd.to_numeric(selected_market_row.get("Fantasy Edge", np.nan), errors="coerce")
+            if pd.notna(edge_val) and edge_val < 0:
+                st.warning(make_market_selected_insight(selected_market_row))
+            else:
+                st.success(make_market_selected_insight(selected_market_row))
 
 
 if active_page == "Draft Assistant Simulator":
@@ -8268,14 +8348,17 @@ if active_page == "Draft Assistant Simulator":
         rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Team fit", "Strategy", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
-        focus_players = st.session_state.get("draft_assistant_focus_players", [])
-        if focus_players:
-            with st.expander("Draft Assistant focus / watch list", expanded=False):
-                st.caption("Players sent here from other pages for draft review.")
-                st.write(focus_players)
-
         st.caption("Recommendation table with roster fit, strategy context, and CSV export.")
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+        st.subheader("Selected Player Insight")
+        selected_draft_row = _select_insight_row(
+            recs,
+            key="draft_assistant_selected_player",
+            label="Choose a recommendation to explain",
+            default_name=best_fit.iloc[0]["fullName"] if not best_fit.empty else None,
+        )
+        if selected_draft_row is not None:
+            st.info(make_draft_recommendation_insight(selected_draft_row))
         compact_player_action_center(
             recs_display["Player"].dropna().astype(str).tolist(),
             key="draft_assistant_recs_actions_final",
@@ -8284,7 +8367,7 @@ if active_page == "Draft Assistant Simulator":
             user_draft_team=assistant_my_team_name,
             projection_lookup_df=draft_df,
             projection_lookup_name_col="fullName",
-            help_text="Pick a name from the recommendation table, then send it to another tool in one click.",
+            help_text="Pick a name from the recommendation table, then add it to Watchlist, queue, compare, or trend in one click.",
         )
 
         with st.expander("Position scarcity & roster category heatmap", expanded=False):
@@ -9388,6 +9471,15 @@ if active_page == "Valuation":
 
 
     st.subheader("Valuation Insight Summaries")
+    selected_value_row = _select_insight_row(
+        valuation_df,
+        key="valuation_selected_player",
+        label="Choose a player to explain",
+        default_name=valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else None,
+    )
+    if selected_value_row is not None:
+        st.info(make_valuation_summary(selected_value_row))
+
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
     worst_value_row = valuation_df.sort_values("Valuation_Score", ascending=True).head(1)
     if not best_value_row.empty:
@@ -9426,6 +9518,16 @@ if active_page == "ML Predictions":
 
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
+            ml_projection_style = st.selectbox(
+                "Projection Style",
+                ["Conservative", "Balanced", "Aggressive"],
+                index=1,
+                key="ml_projection_style",
+                help=(
+                    "Conservative adds more regression and lowers volatility. Balanced keeps the normal model behavior. "
+                    "Aggressive trusts upside/recent signals more and regresses less."
+                ),
+            )
             a1, a2, a3, a4 = st.columns(4)
             with a1:
                 regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength")
@@ -9435,6 +9537,19 @@ if active_page == "ML Predictions":
                 comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight")
             with a4:
                 k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors")
+            _ml_style_mode = "Aggressive / Upside" if ml_projection_style == "Aggressive" else ml_projection_style
+            _ml_style_factors = get_draft_projection_factors(_ml_style_mode)
+            effective_regression_strength = float(
+                np.clip(regression_strength * float(_ml_style_factors.get("regression_strength_multiplier", 1.0)), 0.0, 0.80)
+            )
+            effective_comp_weight = float(
+                np.clip(comp_weight * (float(_ml_style_factors.get("anchor_player_weight", 0.84)) / 0.84), 0.0, 0.80)
+            )
+            effective_age_strength = float(age_strength)
+            st.caption(
+                f"Effective blend: regression {effective_regression_strength:.2f}, "
+                f"similar players {effective_comp_weight:.2f}, age {effective_age_strength:.2f}."
+            )
 
         run_ml_predictions = st.button("Generate / Refresh ML Predictions", type="primary", key="run_ml_predictions_button")
         if run_ml_predictions:
@@ -9456,6 +9571,7 @@ if active_page == "ML Predictions":
                 comp_weight,
                 k_neighbors,
                 ml_min_ab,
+                ml_projection_style,
             )
             if st.session_state.get("_ml_proj_sig") == run_sig and "_ml_proj_pred_df" in st.session_state:
                 ml_training_df = st.session_state["_ml_proj_training_df"]
@@ -9491,9 +9607,9 @@ if active_page == "ML Predictions":
                                 ml_training_df,
                                 ml_feature_cols,
                                 ML_TARGET_STATS,
-                                regression_strength=regression_strength,
-                                age_strength=age_strength,
-                                comp_weight=comp_weight,
+                                regression_strength=effective_regression_strength,
+                                age_strength=effective_age_strength,
+                                comp_weight=effective_comp_weight,
                                 k_neighbors=k_neighbors,
                             )
                         if not pred_df.empty:
@@ -9534,6 +9650,33 @@ if active_page == "ML Predictions":
                 else:
                     st.success(f"Generated {len(pred_df):,} player projections.")
 
+                    _style_conf_adj = {"Conservative": 0.05, "Balanced": 0.00, "Aggressive": -0.04}.get(ml_projection_style, 0.00)
+                    _style_breakout_mult = {"Conservative": 0.90, "Balanced": 1.00, "Aggressive": 1.12}.get(ml_projection_style, 1.00)
+                    _count_value = pd.Series(0.0, index=pred_df.index)
+                    _value_weights = {
+                        "Predicted R": 0.12,
+                        "Predicted HR": 0.22,
+                        "Predicted RBI": 0.20,
+                        "Predicted SB": 0.14,
+                        "Predicted BA": 0.12,
+                        "Predicted OPS": 0.20,
+                    }
+                    for _col, _w in _value_weights.items():
+                        if _col in pred_df.columns:
+                            _count_value += normalize_series(pd.to_numeric(pred_df[_col], errors="coerce").fillna(0)) * _w
+                    pred_df["ML Fantasy Value"] = normalize_series(_count_value)
+                    pred_df["Model Rank"] = pred_df["ML Fantasy Value"].rank(ascending=False, method="min")
+                    _recent_ab = pd.to_numeric(pred_df.get("hist_AB_total", 0), errors="coerce").fillna(0)
+                    pred_df["Projection Confidence"] = ((_recent_ab / 1200).clip(lower=0.20, upper=1.0) + _style_conf_adj).clip(0.05, 1.0)
+                    _age = pd.to_numeric(pred_df.get("age_entering_year", np.nan), errors="coerce")
+                    _age_upside = pd.Series(np.where((_age >= 22) & (_age <= 27), 1.0, 0.45), index=pred_df.index)
+                    _breakout_base = pd.Series(0.0, index=pred_df.index)
+                    for _col in ["Predicted HR", "Predicted SB", "Predicted OPS"]:
+                        if _col in pred_df.columns:
+                            _breakout_base += normalize_series(pd.to_numeric(pred_df[_col], errors="coerce").fillna(0)) / 3.0
+                    pred_df["Breakout Score"] = normalize_series((_breakout_base * 0.75 + _age_upside * 0.25) * _style_breakout_mult)
+                    pred_df["Projection Style"] = ml_projection_style
+
                     sort_col = f"Predicted {ml_sort_stat}"
                     if sort_col in pred_df.columns:
                         pred_df = pred_df.sort_values(sort_col, ascending=False)
@@ -9544,7 +9687,8 @@ if active_page == "ML Predictions":
                     display_cols = [
                         "fullName", "bats", "prediction_year", "age_entering_year",
                         "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
-                        "Predicted BA", "Predicted OBP", "Predicted SLG", "Predicted OPS"
+                        "Predicted BA", "Predicted OBP", "Predicted SLG", "Predicted OPS",
+                        "ML Fantasy Value", "Model Rank", "Breakout Score", "Projection Confidence", "Projection Style"
                     ]
                     display_cols = [c for c in display_cols if c in pred_df.columns]
                     projection_rename = {
@@ -9559,13 +9703,25 @@ if active_page == "ML Predictions":
                         if _col.startswith("Predicted "):
                             _stat = _col.replace("Predicted ", "")
                             ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(3 if _stat in RATE_STATS else 0)
+                    for _col in ["ML Fantasy Value", "Breakout Score", "Projection Confidence"]:
+                        if _col in ml_display.columns:
+                            ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(4)
+                    if "Model Rank" in ml_display.columns:
+                        ml_display["Model Rank"] = pd.to_numeric(ml_display["Model Rank"], errors="coerce").round(0).astype("Int64")
                     if "Age" in ml_display.columns:
                         ml_display["Age"] = pd.to_numeric(ml_display["Age"], errors="coerce").round(0)
                     render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv")
 
                     if not ml_display.empty:
-                        st.subheader("Top Prediction Summary")
-                        st.success(make_ml_prediction_summary(ml_display.iloc[0], ml_sort_stat))
+                        st.subheader("Selected Projection Insight")
+                        selected_ml_row = _select_insight_row(
+                            ml_display,
+                            key="ml_predictions_selected_player",
+                            label="Choose a projected player",
+                            default_name=ml_display.iloc[0]["Player"] if "Player" in ml_display.columns else None,
+                        )
+                        if selected_ml_row is not None:
+                            st.success(make_ml_prediction_summary(selected_ml_row, ml_sort_stat))
 
                     with st.expander("Show age curve details", expanded=False):
                         st.write("The age curve estimates typical year-to-year changes by age.")
