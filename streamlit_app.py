@@ -5897,6 +5897,78 @@ def player_quick_actions_popover(
                 _projection_breakdown_dialog(md)
 
 
+def is_active_recent_player(player_id, source_df):
+    """Active/recent = played in 2025/2026 if present, or within 1 season of latest dataset year."""
+    if source_df is None or source_df.empty or "playerID" not in source_df.columns or "yearID" not in source_df.columns:
+        return False
+    years = pd.to_numeric(source_df.loc[source_df["playerID"] == player_id, "yearID"], errors="coerce").dropna()
+    if years.empty:
+        return False
+    latest_player_year = int(years.max())
+    all_years_local = pd.to_numeric(source_df["yearID"], errors="coerce").dropna()
+    latest_dataset_year = int(all_years_local.max()) if not all_years_local.empty else latest_player_year
+    return latest_player_year in (2025, 2026) or latest_player_year >= latest_dataset_year - 1
+
+
+def render_contextual_player_actions(label, player_id, *, key_prefix, source_df, team_name=None, label_map=None):
+    """Compact context-aware actions for Comparison and Significance selected players."""
+    player_name = fullname_base_from_label(label)
+    active_recent = is_active_recent_player(player_id, source_df)
+    already_drafted = player_name in _drafted_player_names_from_room()
+    active_available = active_recent and not already_drafted
+    teams = get_draft_room_team_options()
+    ownership_known = bool(team_name) and bool(teams)
+    on_my_team = player_on_fantasy_team(player_name, team_name) if ownership_known else False
+    label_map = label_map or get_clean_player_label_map_yearly(source_df)
+    with st.popover(f"Actions: {player_name}"):
+        st.caption("Active/recent player" if active_recent else "Historical player")
+        if st.button("Add to Watchlist", key=f"{key_prefix}_watch"):
+            msg = execute_player_action_once(player_name, "Add to Watchlist", team_name, team_name, label_map)
+            st.session_state["workflow_sidebar_flash"] = msg
+            st.rerun()
+        if st.button("Track Player", key=f"{key_prefix}_track"):
+            record_workflow_recent_player(player_name)
+            st.session_state["workflow_sidebar_flash"] = f"Tracking {player_name}."
+            st.rerun()
+        if st.button("Send to Comparison", key=f"{key_prefix}_compare"):
+            msg = execute_player_action_once(player_name, "Send to Comparison Tool", team_name, team_name, label_map)
+            st.session_state["workflow_sidebar_flash"] = msg
+            st.rerun()
+
+        if not active_recent:
+            st.caption("Fantasy draft, trend, and trade actions are hidden for historical players.")
+            return
+        if already_drafted:
+            st.caption("Draft queue and simulation are hidden because this player is already drafted.")
+
+        if active_available:
+            if st.button("Add to Draft Queue", key=f"{key_prefix}_queue"):
+                msg = execute_player_action_once(player_name, "Queue player", team_name, team_name, label_map)
+                st.session_state["workflow_sidebar_flash"] = msg
+                st.rerun()
+        if st.button("Send to Trend Page", key=f"{key_prefix}_trend"):
+            msg = execute_player_action_once(player_name, "Send to Trend Page", team_name, team_name, label_map)
+            st.session_state["workflow_sidebar_flash"] = msg
+            request_sidebar_page("Trend Value")
+        if active_available:
+            if st.button("Simulate Draft Pick", key=f"{key_prefix}_simulate"):
+                msg = execute_player_action_once(player_name, "Simulate drafting this player", team_name, team_name, label_map)
+                st.success(msg)
+        if ownership_known:
+            if on_my_team:
+                if st.button("Trade Away", key=f"{key_prefix}_trade_away"):
+                    msg = execute_player_action_once(player_name, "Add as player to trade away", team_name, team_name, label_map)
+                    st.session_state["workflow_sidebar_flash"] = msg
+                    st.rerun()
+            else:
+                if st.button("Try to Acquire", key=f"{key_prefix}_trade_acquire"):
+                    msg = execute_player_action_once(player_name, "Add as trade target to acquire", team_name, team_name, label_map)
+                    st.session_state["workflow_sidebar_flash"] = msg
+                    st.rerun()
+        else:
+            st.caption("Trade actions hidden until a Draft Room team is available.")
+
+
 def clickable_player_draft_table(df, player_col="Player", team_name=None, key="clickable_draft_table", title="Clickable Draft Table"):
     """Interactive player table: select one row and draft that player to the next Draft Room pick.
 
@@ -6785,6 +6857,29 @@ if active_page == "Comparison Tool":
         on_change=compare_top_changed
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
+    comparison_action_team = st.session_state.get("room_your_team")
+    if selected_labels_compare:
+        st.caption("Context-aware actions: historical players only show historical/watchlist actions; active players show fantasy workflow actions.")
+        action_cols = st.columns(min(3, len(selected_labels_compare)))
+        for i, label in enumerate(selected_labels_compare):
+            with action_cols[i % len(action_cols)]:
+                render_contextual_player_actions(
+                    label,
+                    clean_label_map_compare[label],
+                    key_prefix=f"compare_selected_action_{i}_{_qa_key_suffix(label)}",
+                    source_df=yearly_df,
+                    team_name=comparison_action_team,
+                    label_map=clean_label_map_compare,
+                )
+
+    compare_year_range = (year_min, year_max)
+    if selected_ids_compare:
+        _cmp_years = pd.to_numeric(
+            yearly_df.loc[yearly_df["playerID"].isin(selected_ids_compare), "yearID"],
+            errors="coerce",
+        ).dropna()
+        if not _cmp_years.empty:
+            compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
     with st.expander("Chart options", expanded=False):
         stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
         compare_x_axis_mode = st.radio(
@@ -6793,9 +6888,32 @@ if active_page == "Comparison Tool":
             horizontal=True,
             key="compare_x_axis_mode"
         )
-        compare_age_range = (20, 40)
-        if compare_x_axis_mode == "Player Age":
-            compare_age_range = st.slider("Age Range to Compare", 16, 50, (22, 30), key="compare_age_range")
+        compare_age_range = (16, 50)
+        if compare_x_axis_mode == "Season Year":
+            _saved_cmp_year_range = st.session_state.get("compare_year_range")
+            if (
+                isinstance(_saved_cmp_year_range, tuple)
+                and len(_saved_cmp_year_range) == 2
+                and (_saved_cmp_year_range[0] < compare_year_range[0] or _saved_cmp_year_range[1] > compare_year_range[1])
+            ):
+                st.session_state.pop("compare_year_range", None)
+            compare_year_range = st.slider(
+                "Season Year Range",
+                min_value=compare_year_range[0],
+                max_value=compare_year_range[1],
+                value=compare_year_range,
+                key="compare_year_range",
+                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
+            )
+        else:
+            compare_age_range = st.slider(
+                "Player Age Range",
+                16,
+                50,
+                (16, 50),
+                key="compare_age_range",
+                help="Filters the comparison chart, year-by-year table, and trend intelligence by season age.",
+            )
         compare_trend_mode = st.radio(
             "Comparison Chart Mode",
             ["Actual Values", "Smoothed Moving Average"],
@@ -6808,10 +6926,34 @@ if active_page == "Comparison Tool":
 
     if selected_ids_compare:
         compare = yearly_df[yearly_df["playerID"].isin(selected_ids_compare)].copy()
+        compare["Age"] = compare.apply(
+            lambda r: baseball_age_for_season(
+                r.get("yearID"),
+                r.get("birthYear", np.nan),
+                r.get("birthMonth", np.nan),
+                r.get("birthDay", np.nan),
+            ),
+            axis=1,
+        )
+        if compare_x_axis_mode == "Season Year":
+            compare = compare[
+                (pd.to_numeric(compare["yearID"], errors="coerce") >= compare_year_range[0]) &
+                (pd.to_numeric(compare["yearID"], errors="coerce") <= compare_year_range[1])
+            ].copy()
+        else:
+            compare["Age"] = pd.to_numeric(compare["Age"], errors="coerce")
+            compare = compare[
+                (compare["Age"] >= compare_age_range[0]) &
+                (compare["Age"] <= compare_age_range[1])
+            ].copy()
         compare = safe_round_rate_stats(compare)
 
+        if compare.empty:
+            st.warning("Selected player(s) have no seasons in the selected year/age range.")
+            compare = pd.DataFrame(columns=yearly_df.columns)
+
         st.subheader("Year-by-Year Comparison")
-        compare_display = compare[["yearID", "fullName", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB", "BA", "OBP", "SLG", "OPS"]].sort_values(["fullName", "yearID"]).rename(columns={"yearID": "Year", "fullName": "Player"})
+        compare_display = compare[[c for c in ["yearID", "fullName", "Age", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB", "BA", "OBP", "SLG", "OPS"] if c in compare.columns]].sort_values(["fullName", "yearID"]).rename(columns={"yearID": "Year", "fullName": "Player"})
         compare_table = format_display_table(clean_ui_columns(compare_display), count_cols=["Year", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
         render_output_table(compare_table, key="comparison_yearly", file_name="comparison_year_by_year.csv")
 
@@ -6828,21 +6970,7 @@ if active_page == "Comparison Tool":
 
         if compare_x_axis_mode == "Player Age":
             compare_age_df = compare.copy()
-            if "Age" not in compare_age_df.columns:
-                compare_age_df["Age"] = compare_age_df.apply(
-                    lambda r: baseball_age_for_season(
-                        r.get("yearID"),
-                        r.get("birthYear", np.nan),
-                        r.get("birthMonth", np.nan),
-                        r.get("birthDay", np.nan)
-                    ),
-                    axis=1
-                )
             compare_age_df["Age"] = pd.to_numeric(compare_age_df["Age"], errors="coerce")
-            compare_age_df = compare_age_df[
-                (compare_age_df["Age"] >= compare_age_range[0]) &
-                (compare_age_df["Age"] <= compare_age_range[1])
-            ].copy()
 
             for pid in selected_ids_compare:
                 subset = compare_age_df[compare_age_df["playerID"] == pid].sort_values("Age").copy()
@@ -6876,7 +7004,10 @@ if active_page == "Comparison Tool":
             ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
 
         ax.set_ylabel(stat_choice_compare)
-        ax.legend()
+        if ax.lines:
+            ax.legend()
+        else:
+            st.warning("No selected player has seasons in the selected range for this chart.")
         ax.grid(True, alpha=0.3)
         try:
             st.pyplot(fig, clear_figure=True)
@@ -6949,7 +7080,10 @@ if active_page == "Comparison Tool":
             pid_a_preview = clean_label_map_sig[sig_player_a_label]
             a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
             st.caption(f"Career span: {a_min_year}–{a_max_year}")
-            if a_min_year == a_max_year:
+            if compare_x_axis_mode == "Season Year":
+                sig_years_a = (max(a_min_year, compare_year_range[0]), min(a_max_year, compare_year_range[1]))
+                st.caption(f"Synced to comparison year range: {sig_years_a[0]}–{sig_years_a[1]}")
+            elif a_min_year == a_max_year:
                 st.info(f"Player A only has one available season in the data: {a_min_year}.")
                 sig_years_a = (a_min_year, a_max_year)
             else:
@@ -6972,7 +7106,10 @@ if active_page == "Comparison Tool":
             pid_b_preview = clean_label_map_sig[sig_player_b_label]
             b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
             st.caption(f"Career span: {b_min_year}–{b_max_year}")
-            if b_min_year == b_max_year:
+            if compare_x_axis_mode == "Season Year":
+                sig_years_b = (max(b_min_year, compare_year_range[0]), min(b_max_year, compare_year_range[1]))
+                st.caption(f"Synced to comparison year range: {sig_years_b[0]}–{sig_years_b[1]}")
+            elif b_min_year == b_max_year:
                 st.info(f"Player B only has one available season in the data: {b_min_year}.")
                 sig_years_b = (b_min_year, b_max_year)
             else:
@@ -6995,6 +7132,26 @@ if active_page == "Comparison Tool":
         if sig_player_a_label and sig_player_b_label and sig_stats:
             pid_a = clean_label_map_sig[sig_player_a_label]
             pid_b = clean_label_map_sig[sig_player_b_label]
+            st.caption("Actions for significance-test players")
+            sig_action_cols = st.columns(2)
+            with sig_action_cols[0]:
+                render_contextual_player_actions(
+                    sig_player_a_label,
+                    pid_a,
+                    key_prefix=f"sig_a_action_{_qa_key_suffix(sig_player_a_label)}",
+                    source_df=yearly_df,
+                    team_name=comparison_action_team,
+                    label_map=clean_label_map_sig,
+                )
+            with sig_action_cols[1]:
+                render_contextual_player_actions(
+                    sig_player_b_label,
+                    pid_b,
+                    key_prefix=f"sig_b_action_{_qa_key_suffix(sig_player_b_label)}",
+                    source_df=yearly_df,
+                    team_name=comparison_action_team,
+                    label_map=clean_label_map_sig,
+                )
             player_a_name = yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().empty else sig_player_a_label
             player_b_name = yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().empty else sig_player_b_label
 
@@ -7008,9 +7165,28 @@ if active_page == "Comparison Tool":
                 (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_b[0]) &
                 (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_b[1])
             ].copy()
+            if compare_x_axis_mode == "Player Age":
+                for _df in (data_a, data_b):
+                    _df["Age"] = _df.apply(
+                        lambda r: baseball_age_for_season(
+                            r.get("yearID"),
+                            r.get("birthYear", np.nan),
+                            r.get("birthMonth", np.nan),
+                            r.get("birthDay", np.nan),
+                        ),
+                        axis=1,
+                    )
+                data_a = data_a[
+                    (pd.to_numeric(data_a["Age"], errors="coerce") >= compare_age_range[0]) &
+                    (pd.to_numeric(data_a["Age"], errors="coerce") <= compare_age_range[1])
+                ].copy()
+                data_b = data_b[
+                    (pd.to_numeric(data_b["Age"], errors="coerce") >= compare_age_range[0]) &
+                    (pd.to_numeric(data_b["Age"], errors="coerce") <= compare_age_range[1])
+                ].copy()
 
             if data_a.empty or data_b.empty:
-                st.warning("One of the selected players has no data in the selected year range.")
+                st.warning("One of the selected players has no data in the selected year/age range.")
             else:
                 sig_rows = []
                 overall_z_values = []
