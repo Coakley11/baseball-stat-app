@@ -5972,6 +5972,8 @@ for _state_key in list(st.session_state.keys()):
         _key_text == "active_page"
         or _key_text == "_active_page_selector"
         or _key_text == "_pending_active_page"
+        or _key_text.startswith("sidebar_queue_")
+        or _key_text.startswith("sidebar_clear_")
         or _key_text.startswith("download")
         or _key_text.startswith("export")
         or _key_text.startswith("button")
