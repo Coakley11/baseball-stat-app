@@ -772,6 +772,12 @@ def apply_stat_min_filters(df, prefix):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     with st.expander("Stat minimum filters", expanded=False):
+        if prefix == "trend":
+            st.caption(
+                "Trend page filters use the **combined totals across the selected trend window** "
+                "(for example, HR >= 100 means 100 HR across all selected lookback seasons). "
+                "Rate-stat filters use the rate calculated from that same selected window."
+            )
         count_tab, rate_tab = st.tabs(["Counting stats", "Rate stats"])
         mins = {}
         with count_tab:
@@ -779,24 +785,36 @@ def apply_stat_min_filters(df, prefix):
             count_filter_cols = [c for c in stat_columns if c not in RATE_STATS]
             for i, stat in enumerate(count_filter_cols):
                 with cols[i % 4]:
+                    label = f"Min total {stat} (window)" if prefix == "trend" else f"Min {stat}"
                     mins[stat] = st.number_input(
-                        f"Min {stat}",
+                        label,
                         min_value=0,
                         value=0,
                         step=1,
                         key=f"{prefix}_{stat}_min",
+                        help=(
+                            f"Minimum {stat} combined across selected lookback years."
+                            if prefix == "trend"
+                            else None
+                        ),
                     )
         with rate_tab:
             cols = st.columns(4)
             for i, stat in enumerate([c for c in stat_columns if c in RATE_STATS]):
                 with cols[i % 4]:
+                    label = f"Min window {stat}" if prefix == "trend" else f"Min {stat}"
                     mins[stat] = st.number_input(
-                        f"Min {stat}",
+                        label,
                         min_value=0.0,
                         value=0.0,
                         step=0.001,
                         format="%.3f",
                         key=f"{prefix}_{stat}_min",
+                        help=(
+                            f"Minimum {stat} based on the selected trend-window data."
+                            if prefix == "trend"
+                            else None
+                        ),
                     )
 
     mask = pd.Series(True, index=df.index)
@@ -5516,37 +5534,41 @@ def player_quick_actions_popover(
 
         b1, b2, b3 = st.columns(3)
         with b1:
-            if st.button("Add to Draft Queue", key=f"{key}_qa_queue_{sfx}"):
+            if st.button("Add to Queue", key=f"{key}_qa_queue_{sfx}"):
                 msg = execute_player_action_once(pick, "Queue player", team_for_draft, user_draft_team, label_map)
-                st.success(msg)
+                st.session_state["workflow_sidebar_flash"] = msg
+                st.rerun()
         with b2:
             if st.button("Send to Comparison", key=f"{key}_qa_cmp_{sfx}"):
                 msg = execute_player_action_once(pick, "Send to Comparison Tool", team_for_draft, user_draft_team, label_map)
-                st.success(msg)
+                st.session_state["workflow_sidebar_flash"] = msg
                 request_sidebar_page("Comparison Tool")
         with b3:
             if st.button("Send to Trend", key=f"{key}_qa_tr_{sfx}"):
                 msg = execute_player_action_once(pick, "Send to Trend Page", team_for_draft, user_draft_team, label_map)
-                st.success(msg)
+                st.session_state["workflow_sidebar_flash"] = msg
                 request_sidebar_page("Trend Value")
 
         b4, b5, b6 = st.columns(3)
         with b4:
             if st.button("Add to Watchlist", key=f"{key}_qa_da_{sfx}"):
                 msg = execute_player_action_once(pick, "Add to Watchlist", team_for_draft, user_draft_team, label_map)
-                st.success(msg)
+                st.session_state["workflow_sidebar_flash"] = msg
+                st.rerun()
         with b5:
             if not on_my:
                 if st.button("Trade · Acquire", key=f"{key}_qa_tacq_{sfx}"):
                     msg = execute_player_action_once(pick, "Add as trade target to acquire", team_for_draft, user_draft_team, label_map)
-                    st.success(msg)
+                    st.session_state["workflow_sidebar_flash"] = msg
+                    st.rerun()
             else:
                 st.caption("On your roster — *Trade · Acquire* is hidden.")
         with b6:
             if on_my:
                 if st.button("Trade · Away", key=f"{key}_qa_taw_{sfx}"):
                     msg = execute_player_action_once(pick, "Add as player to trade away", team_for_draft, user_draft_team, label_map)
-                    st.success(msg)
+                    st.session_state["workflow_sidebar_flash"] = msg
+                    st.rerun()
             else:
                 st.caption("Not on your roster — *Trade · Away* is hidden.")
 
@@ -5555,7 +5577,8 @@ def player_quick_actions_popover(
             if can_draft:
                 if st.button("Draft this player", key=f"{key}_qa_draft_{sfx}"):
                     msg = execute_player_action_once(pick, "Draft player to next pick", team_for_draft, user_draft_team, label_map)
-                    st.success(msg)
+                    st.session_state["workflow_sidebar_flash"] = msg
+                    st.rerun()
             else:
                 st.caption("Not your pick — *Draft this player* hidden.")
         with b8:
@@ -5685,6 +5708,7 @@ def add_player_to_next_draft_room_pick(player_name, team_name):
 
     table.loc[idx, "Player"] = player_name
     st.session_state["draft_room_table"] = table
+    _auto_remove_drafted_from_queue()
     pick_num = table.loc[idx, "Pick"] if "Pick" in table.columns else idx + 1
     return f"Drafted {player_name} to {team_name} at pick {pick_num}."
 
@@ -5785,13 +5809,59 @@ def _workflow_normalize_draft_queue():
     st.session_state["draft_queue"] = wf_sb.normalize_dedupe_queue(st.session_state.get("draft_queue"))
 
 
+def _drafted_player_names_from_room():
+    """Names already drafted by any team; used only to prune unavailable draft queue items."""
+    table = st.session_state.get("draft_room_table", pd.DataFrame())
+    if table is None or getattr(table, "empty", True) or "Player" not in table.columns:
+        return set()
+    return {
+        str(x).strip()
+        for x in table["Player"].dropna().astype(str).tolist()
+        if str(x).strip()
+    }
+
+
+def _auto_remove_drafted_from_queue():
+    """Remove drafted players from Draft Queue, but leave Watchlist/Tracked Players untouched."""
+    _workflow_normalize_draft_queue()
+    drafted = _drafted_player_names_from_room()
+    if not drafted:
+        return []
+    q = st.session_state.get("draft_queue", []) or []
+    kept = [p for p in q if str(p).strip() not in drafted]
+    removed = [p for p in q if str(p).strip() in drafted]
+    if removed:
+        st.session_state["draft_queue"] = kept
+    return removed
+
+
+def _move_queue_item(idx, delta):
+    q = list(st.session_state.get("draft_queue", []) or [])
+    new_idx = idx + delta
+    if idx < 0 or idx >= len(q) or new_idx < 0 or new_idx >= len(q):
+        return
+    q[idx], q[new_idx] = q[new_idx], q[idx]
+    st.session_state["draft_queue"] = q
+
+
+def _clear_workflow_list(key):
+    st.session_state[key] = []
+
+
 def render_persistent_workflow_sidebar(_yearly_df_local=None):
     """Persistent workflow panel: draft queue, watchlist, and tracked players."""
     _workflow_normalize_draft_queue()
+    removed_drafted = _auto_remove_drafted_from_queue()
 
     flash = st.session_state.pop("workflow_sidebar_flash", None)
     if flash:
         st.sidebar.warning(str(flash))
+    if removed_drafted:
+        st.sidebar.info(
+            "Removed drafted player(s) from Draft Queue: "
+            + ", ".join(str(x) for x in removed_drafted[:3])
+            + (f" +{len(removed_drafted) - 3} more" if len(removed_drafted) > 3 else "")
+        )
 
     dq = st.session_state.get("draft_queue", []) or []
     watch = st.session_state.get("draft_assistant_focus_players", []) or []
@@ -5816,10 +5886,23 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
         if not dq:
             st.caption("Empty — add players with **Queue player** in Player Actions.")
         else:
-            for pname in dq[-12:]:
-                st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
-            if len(dq) > 12:
-                st.caption(f"+{len(dq) - 12} more")
+            for idx, pname in enumerate(dq[:20]):
+                label = str(pname).strip()
+                c_rank, c_name, c_up, c_down = st.columns([0.18, 0.52, 0.15, 0.15])
+                c_rank.caption(f"{idx + 1}.")
+                c_name.caption(label[:42] + ("…" if len(label) > 42 else ""))
+                if c_up.button("↑", key=f"sidebar_queue_up_{idx}", disabled=idx == 0):
+                    _move_queue_item(idx, -1)
+                    st.rerun()
+                if c_down.button("↓", key=f"sidebar_queue_down_{idx}", disabled=idx == len(dq) - 1):
+                    _move_queue_item(idx, 1)
+                    st.rerun()
+            if len(dq) > 20:
+                st.caption(f"+{len(dq) - 20} more")
+        clear_q, _ = st.columns([1, 1])
+        if clear_q.button("Clear Draft Queue", key="sidebar_clear_draft_queue", disabled=not bool(dq)):
+            _clear_workflow_list("draft_queue")
+            st.rerun()
 
     with st.sidebar.expander("Watchlist", expanded=bool(watch)):
         if not watch:
@@ -5829,6 +5912,10 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
                 st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
             if len(watch) > 12:
                 st.caption(f"+{len(watch) - 12} more")
+        if st.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
+            _clear_workflow_list("draft_assistant_focus_players")
+            _clear_workflow_list("workflow_favorite_targets")
+            st.rerun()
 
     with st.sidebar.expander("Tracked players", expanded=False):
         if not rv and not pairs:
@@ -5842,6 +5929,10 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             for pair in reversed(pairs[-5:]):
                 if isinstance(pair, (list, tuple)) and len(pair) >= 2:
                     st.caption(f"• {str(pair[0])[:22]} vs {str(pair[1])[:22]}")
+        if st.button("Clear Tracked Players", key="sidebar_clear_tracked_players", disabled=not bool(rv or pairs)):
+            _clear_workflow_list("workflow_recently_viewed")
+            _clear_workflow_list("workflow_recent_compare_pairs")
+            st.rerun()
 
 
 PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
@@ -8525,7 +8616,9 @@ if active_page == "Draft Room Simulator":
                 else:
                     if st.button("Load Uploaded Draft Into Draft Room"):
                         st.session_state["draft_room_table"] = imported_draft.copy()
-                        st.success(f"Loaded {len(imported_draft)} drafted players into the Draft Room.")
+                        _auto_remove_drafted_from_queue()
+                        st.session_state["workflow_sidebar_flash"] = f"Loaded {len(imported_draft)} drafted players into the Draft Room."
+                        st.rerun()
                     st.caption("Uploaded draft preview:")
                     render_output_table(
                         clean_ui_columns(imported_draft.head(50)),
@@ -8679,6 +8772,12 @@ if active_page == "Draft Room Simulator":
             }
         )
         st.session_state["draft_room_table"] = edited_draft.copy()
+        removed_after_edit = _auto_remove_drafted_from_queue()
+        if removed_after_edit:
+            st.session_state["workflow_sidebar_flash"] = (
+                "Removed drafted player(s) from Draft Queue: " + ", ".join(str(x) for x in removed_after_edit[:3])
+            )
+            st.rerun()
         st.caption("Same board is used by **Fantasy Standings Tracker** when you score this league.")
 
         pick_info = room_df[[
@@ -8882,7 +8981,9 @@ if active_page == "Fantasy Standings Tracker":
             draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
             if st.button("Use Uploaded Draft Board For Standings"):
                 st.session_state["draft_room_table"] = draft_import_norm.copy()
-                st.success(f"Loaded {len(draft_import_norm)} picks for standings/trade analysis.")
+                _auto_remove_drafted_from_queue()
+                st.session_state["workflow_sidebar_flash"] = f"Loaded {len(draft_import_norm)} picks for standings/trade analysis."
+                st.rerun()
         except Exception as e:
             st.error(f"Could not read draft board upload: {e}")
 
