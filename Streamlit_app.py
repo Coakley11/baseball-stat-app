@@ -5431,6 +5431,102 @@ def simulate_drafting_player(player_name, team_name):
     return sim_table, f"Simulation: {player_name} would be drafted by {team_name} at pick {pick_num}."
 
 
+def _projection_name_series(df, name_col):
+    if df is None or df.empty:
+        return pd.Series(dtype="object")
+    if name_col in df.columns:
+        return df[name_col].astype(str).str.strip()
+    if "Player" in df.columns:
+        return df["Player"].astype(str).str.strip()
+    if "fullName" in df.columns:
+        return df["fullName"].astype(str).str.strip()
+    return pd.Series("", index=df.index, dtype="object")
+
+
+def _rows_for_player_names(player_names, lookup_df, name_col):
+    if lookup_df is None or lookup_df.empty:
+        return pd.DataFrame()
+    wanted = {str(p).strip() for p in player_names if str(p).strip()}
+    if not wanted:
+        return pd.DataFrame()
+    names = _projection_name_series(lookup_df, name_col)
+    return lookup_df[names.isin(wanted)].copy()
+
+
+def _team_players_from_draft_room(team_name):
+    table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+    if table.empty or "Team" not in table.columns or "Player" not in table.columns:
+        return []
+    team_rows = table[
+        table["Team"].astype(str).str.strip().eq(str(team_name).strip())
+        & table["Player"].astype(str).str.strip().ne("")
+    ]
+    return team_rows["Player"].dropna().astype(str).str.strip().tolist()
+
+
+def _aggregate_sim_categories(rows):
+    categories = [
+        ("R", "proj_R", "Runs"),
+        ("H", "proj_H", "Hits"),
+        ("2B", "proj_2B", "Doubles"),
+        ("3B", "proj_3B", "Triples"),
+        ("HR", "proj_HR", "HR"),
+        ("RBI", "proj_RBI", "RBI"),
+        ("SB", "proj_SB", "SB"),
+        ("BB", "proj_BB", "BB"),
+        ("BA", "proj_BA", "AVG"),
+        ("OBP", "proj_OBP", "OBP"),
+        ("SLG", "proj_SLG", "SLG"),
+        ("OPS", "proj_OPS", "OPS"),
+        ("Expected Fantasy Value", "Expected Fantasy Value", "Fantasy Value"),
+        ("Draft Fit Score", "Draft Fit Score", "Draft Fit Score"),
+        ("Valuation_Score", "Valuation_Score", "Valuation Score"),
+        ("Valuation Score", "Valuation Score", "Valuation Score"),
+    ]
+    out = {}
+    if rows is None or rows.empty:
+        return out
+    for actual_col, proj_col, label in categories:
+        col = proj_col if proj_col in rows.columns else actual_col if actual_col in rows.columns else None
+        if col is None:
+            continue
+        vals = pd.to_numeric(rows[col], errors="coerce")
+        if vals.notna().sum() == 0:
+            continue
+        if label in {"AVG", "OBP", "SLG", "OPS"}:
+            weights = pd.to_numeric(rows.get("AB", pd.Series(1, index=rows.index)), errors="coerce").fillna(0)
+            mask = vals.notna() & (weights > 0)
+            out[label] = float(np.average(vals[mask], weights=weights[mask])) if mask.any() else float(vals.mean())
+        else:
+            out[label] = float(vals.sum())
+    return out
+
+
+def build_simulated_draft_impact(player_name, team_name, lookup_df, name_col="fullName"):
+    """Before/after category impact for simulating one player onto the current draft team."""
+    current_players = _team_players_from_draft_room(team_name)
+    player_name = str(player_name).strip()
+    after_players = list(dict.fromkeys(current_players + ([player_name] if player_name else [])))
+    before_rows = _rows_for_player_names(current_players, lookup_df, name_col)
+    after_rows = _rows_for_player_names(after_players, lookup_df, name_col)
+    candidate_rows = _rows_for_player_names([player_name], lookup_df, name_col)
+    before = _aggregate_sim_categories(before_rows)
+    after = _aggregate_sim_categories(after_rows)
+    labels = [label for label in after.keys() if label in after or label in before]
+    impact_rows = []
+    for label in labels:
+        b = before.get(label, 0.0)
+        a = after.get(label, 0.0)
+        impact_rows.append({"Category": label, "Before": b, "After": a, "Change": a - b})
+    impact_df = pd.DataFrame(impact_rows)
+    roster_df = pd.DataFrame({
+        "Current Team Before": current_players + [""] * max(0, len(after_players) - len(current_players)),
+        "Team After Simulation": after_players,
+    })
+    candidate_summary = candidate_rows.iloc[0].to_dict() if not candidate_rows.empty else {}
+    return impact_df, roster_df, candidate_summary
+
+
 
 
 def player_on_fantasy_team(player_name, fantasy_team):
@@ -5556,7 +5652,10 @@ def compact_player_action_center(
         st.info("No players in this section for actions.")
         return None
 
-    st.caption("Open Player Actions to queue, compare, trend, draft, simulate, trade, or view a projection breakdown.")
+    st.caption(
+        "Open Player Actions to **Add to Watchlist**, **Add to Draft Queue**, **Send to Comparison**, "
+        "**Send to Trend**, **Simulate Draft Pick**, draft, trade, or view a projection breakdown."
+    )
     player_quick_actions_popover(
         ctx,
         key=key,
@@ -5753,13 +5852,39 @@ def player_quick_actions_popover(
             else:
                 st.caption("Not your pick — *Draft this player* hidden.")
         with b8:
-            if st.button("Simulate draft fit", key=f"{key}_qa_sim_{sfx}"):
+            if st.button("Simulate Draft Pick", key=f"{key}_qa_sim_{sfx}"):
                 msg = execute_player_action_once(pick, "Simulate drafting this player", team_for_draft, user_draft_team, label_map)
                 st.success(msg)
-                last_sim = st.session_state.get("simulated_draft_room_table")
-                if last_sim is not None and not getattr(last_sim, "empty", True):
-                    st.caption("Latest simulated board after this pick:")
-                    st.dataframe(last_sim, use_container_width=True, hide_index=True)
+                if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True):
+                    impact_df, roster_df, candidate_summary = build_simulated_draft_impact(
+                        pick,
+                        team_for_draft,
+                        projection_lookup_df,
+                        projection_lookup_name_col,
+                    )
+                    if not impact_df.empty:
+                        st.caption(f"Projected team impact if **{team_for_draft}** drafts **{pick}** next:")
+                        display_impact = impact_df.copy()
+                        for _col in ["Before", "After", "Change"]:
+                            display_impact[_col] = display_impact.apply(
+                                lambda r: fmt_rate_4(r[_col]) if r["Category"] in {"AVG", "OBP", "SLG", "OPS", "Fantasy Value", "Draft Fit Score", "Valuation Score"} else fmt_count_1(r[_col]),
+                                axis=1,
+                            )
+                        st.dataframe(display_impact, use_container_width=True, hide_index=True)
+                        st.caption("Current roster before vs. roster after the simulated pick:")
+                        st.dataframe(roster_df, use_container_width=True, hide_index=True)
+                        if candidate_summary:
+                            st.caption(
+                                "Simulation uses the projection/valuation columns available in the current table "
+                                "(projected columns when present, otherwise the page's recent-window stats)."
+                            )
+                    else:
+                        st.info("Simulation board was created, but this page does not have enough projection columns to calculate category impact.")
+                else:
+                    last_sim = st.session_state.get("simulated_draft_room_table")
+                    if last_sim is not None and not getattr(last_sim, "empty", True):
+                        st.caption("Latest simulated board after this pick:")
+                        st.dataframe(last_sim, use_container_width=True, hide_index=True)
         with b9:
             if st.button("Projection breakdown", key=f"{key}_qa_proj_{sfx}"):
                 record_workflow_recent_player(pick)
@@ -5827,7 +5952,7 @@ def clickable_player_draft_table(df, player_col="Player", team_name=None, key="c
             else:
                 st.info(
                     "It is not your team's turn on the Draft Room board — **Draft to next pick** is disabled. "
-                    "Use Player Actions below to **queue** the player or **simulate** a draft."
+                    "Use Player Actions below to **Add to Watchlist**, **Add to Draft Queue**, **Send to Comparison**, **Send to Trend**, or **Simulate Draft Pick**."
                 )
         else:
             st.info("Open Draft Room Simulator first so the app knows the fantasy teams.")
@@ -7077,16 +7202,6 @@ if active_page == "Trend Value":
         c4m.metric(f"Worst {selected_trend_name} Trend", fmt_count_1(selected_values.min()))
         c5m.metric(f"Average {selected_trend_name} Trend", fmt_count_1(selected_values.mean()))
 
-    full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
-    full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
-    render_player_trend_chart_section(
-        yearly_df,
-        full_trend_label_map,
-        full_trend_labels,
-        key_prefix="trend_visible",
-        title="Trend Charts",
-    )
-
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
     st.caption("Top 250 rows · **Green** = improving · **Red** = declining · Open **Stat minimum filters** above to narrow further. Export includes all rows.")
@@ -7115,7 +7230,7 @@ if active_page == "Trend Value":
         user_draft_team=trend_sync_team,
         projection_lookup_df=trend_value_df,
         projection_lookup_name_col="fullName",
-        help_text="Trend leaderboard — add players to Watchlist, Comparison, Trend, or the draft queue without retyping names.",
+        help_text="Trend leaderboard — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick without retyping names.",
     )
 
     breakout_df = trend_value_df[["fullName", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]].copy()
@@ -7176,6 +7291,9 @@ if active_page == "Trend Value":
             st.session_state.pop("single_trend_dashboard_player", None)
             st.session_state.pop("trend_players_multi", None)
             st.rerun()
+
+    full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
+    full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
 
     # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
     _stp = st.session_state.get("single_trend_dashboard_player")
@@ -8542,7 +8660,7 @@ if active_page == "Draft Assistant Simulator":
             user_draft_team=assistant_my_team_name,
             projection_lookup_df=draft_df,
             projection_lookup_name_col="fullName",
-            help_text="Pick a name from the recommendation table, then add it to Watchlist, queue, compare, or trend in one click.",
+            help_text="Pick a name from the recommendation table, then Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick in one click.",
         )
 
         with st.expander("Position scarcity & roster category heatmap", expanded=False):
@@ -9629,14 +9747,11 @@ if active_page == "Valuation":
     c8.metric("Average Valuation Score", fmt_rate_4(valuation_df["Valuation_Score"].mean() if not valuation_df.empty else 0))
     c9.metric("Top Valuation Player", valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else "N/A")
 
-    value_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
-    value_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
-    render_player_trend_chart_section(
-        yearly_df,
-        value_trend_label_map,
-        value_trend_labels,
-        key_prefix="valuation_visible",
-        title="Valuation Trend Charts",
+    st.info(
+        f"Valuation table stats are **actual summed production from the selected {recent_years_value[0]}-{recent_years_value[-1]} seasons** "
+        "(for example HR, 2B, 3B, RBI, R, SB) plus rate stats recalculated from that same window. "
+        "**Current Score**, **Trend Score**, and **Valuation Score** are derived from those recent stats, trend slopes, and the weights above. "
+        "They are not standalone 2026 stat projections."
     )
 
     valuation_display = valuation_df[["fullName", "bats", "R", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS", "Trend_Score", "Perf_Score", "Valuation_Score"]].sort_values("Valuation_Score", ascending=False).rename(columns={
@@ -9653,7 +9768,7 @@ if active_page == "Valuation":
             user_draft_team=value_sync_team,
             projection_lookup_df=valuation_df,
             projection_lookup_name_col="fullName",
-            help_text="Valuation table — projection breakdown uses window stats + trends (not full fantasy market ranks unless merged on this page).",
+            help_text="Valuation table — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick. Projection breakdown uses recent-window stats and trends.",
         )
 
 
@@ -9668,11 +9783,8 @@ if active_page == "Valuation":
         st.info(make_valuation_summary(selected_value_row))
 
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
-    worst_value_row = valuation_df.sort_values("Valuation_Score", ascending=True).head(1)
     if not best_value_row.empty:
         st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
-    if not worst_value_row.empty:
-        st.warning(f"⚠️ Weakest valuation profile: {make_valuation_summary(worst_value_row.iloc[0])}")
 
 if active_page == "ML Predictions":
     render_section_header(
