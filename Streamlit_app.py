@@ -5910,7 +5910,34 @@ def is_active_recent_player(player_id, source_df):
     return latest_player_year in (2025, 2026) or latest_player_year >= latest_dataset_year - 1
 
 
-def render_contextual_player_actions(label, player_id, *, key_prefix, source_df, team_name=None, label_map=None):
+def _comparison_simulation_explanation(player_name, team_name, impact_df):
+    if impact_df is None or impact_df.empty:
+        return f"Simulated drafting {player_name} for {team_name}."
+    df = impact_df.copy()
+    df["Change"] = pd.to_numeric(df["Change"], errors="coerce")
+    gains = df[df["Change"] > 0].sort_values("Change", ascending=False)
+    if gains.empty:
+        return f"Drafting {player_name} does not show a clear category gain from the available projection columns."
+    top = gains.head(3)
+    parts = []
+    for r in top.itertuples(index=False):
+        cat = getattr(r, "Category")
+        chg = getattr(r, "Change")
+        parts.append(f"{cat} +{fmt_rate_4(chg) if cat in {'AVG', 'OBP', 'SLG', 'OPS', 'Fantasy Value', 'Draft Fit Score', 'Valuation Score'} else fmt_count_1(chg)}")
+    return f"Drafting {player_name} improves {team_name}'s projected profile: " + ", ".join(parts) + "."
+
+
+def render_contextual_player_actions(
+    label,
+    player_id,
+    *,
+    key_prefix,
+    source_df,
+    team_name=None,
+    label_map=None,
+    projection_lookup_df=None,
+    projection_lookup_name_col="fullName",
+):
     """Compact context-aware actions for Comparison and Significance selected players."""
     player_name = fullname_base_from_label(label)
     active_recent = is_active_recent_player(player_id, source_df)
@@ -5924,14 +5951,6 @@ def render_contextual_player_actions(label, player_id, *, key_prefix, source_df,
         st.caption("Active/recent player" if active_recent else "Historical player")
         if st.button("Add to Watchlist", key=f"{key_prefix}_watch"):
             msg = execute_player_action_once(player_name, "Add to Watchlist", team_name, team_name, label_map)
-            st.session_state["workflow_sidebar_flash"] = msg
-            st.rerun()
-        if st.button("Track Player", key=f"{key_prefix}_track"):
-            record_workflow_recent_player(player_name)
-            st.session_state["workflow_sidebar_flash"] = f"Tracking {player_name}."
-            st.rerun()
-        if st.button("Send to Comparison", key=f"{key_prefix}_compare"):
-            msg = execute_player_action_once(player_name, "Send to Comparison Tool", team_name, team_name, label_map)
             st.session_state["workflow_sidebar_flash"] = msg
             st.rerun()
 
@@ -5953,7 +5972,28 @@ def render_contextual_player_actions(label, player_id, *, key_prefix, source_df,
         if active_available:
             if st.button("Simulate Draft Pick", key=f"{key_prefix}_simulate"):
                 msg = execute_player_action_once(player_name, "Simulate drafting this player", team_name, team_name, label_map)
-                st.success(msg)
+                impact_df, roster_df, _candidate_summary = build_simulated_draft_impact(
+                    player_name,
+                    team_name,
+                    projection_lookup_df if projection_lookup_df is not None else source_df,
+                    projection_lookup_name_col,
+                )
+                st.session_state["comparison_simulation_result"] = {
+                    "message": msg,
+                    "player": player_name,
+                    "team": team_name,
+                    "impact": impact_df,
+                    "roster": roster_df,
+                    "explanation": _comparison_simulation_explanation(player_name, team_name, impact_df),
+                }
+                st.rerun()
+            if is_users_draft_turn(team_name):
+                if st.button("Draft Player", key=f"{key_prefix}_draft"):
+                    msg = execute_player_action_once(player_name, "Draft player to next pick", team_name, team_name, label_map)
+                    st.session_state["workflow_sidebar_flash"] = msg
+                    st.rerun()
+            else:
+                st.caption("Draft Player hidden until it is your team's pick.")
         if ownership_known:
             if on_my_team:
                 if st.button("Trade Away", key=f"{key_prefix}_trade_away"):
@@ -6793,11 +6833,30 @@ def _format_sig_table(df):
 def compare_top_changed():
     selected = st.session_state.get("compare_players", [])
     if isinstance(selected, list):
+        st.session_state["compare_players_saved"] = selected[:3]
         if len(selected) >= 1:
             st.session_state["pending_sig_player_a"] = selected[0]
         if len(selected) >= 2:
             st.session_state["pending_sig_player_b"] = selected[1]
             record_workflow_comparison_pair(selected[0], selected[1])
+
+
+def compare_settings_changed():
+    for _key in [
+        "compare_stat",
+        "compare_x_axis_mode",
+        "compare_year_range",
+        "compare_age_range",
+        "compare_trend_mode",
+        "compare_smooth_window",
+    ]:
+        if _key in st.session_state:
+            st.session_state[f"{_key}_saved"] = st.session_state[_key]
+
+
+def _sig_years_changed(key):
+    if key in st.session_state:
+        st.session_state[f"{key}_saved"] = st.session_state[key]
 
 
 def sig_players_changed():
@@ -6813,6 +6872,7 @@ def sig_players_changed():
         for p in current:
             if p not in selected and len(selected) < 3:
                 selected.append(p)
+    st.session_state["compare_players_saved"] = selected[:3]
     st.session_state["pending_compare_players"] = selected[:3]
 
 
@@ -6838,6 +6898,7 @@ if active_page == "Comparison Tool":
             # Drop stale multiselect session so navigation from other pages always applies the send.
             st.session_state.pop("compare_players", None)
             st.session_state["compare_players"] = normalized
+            st.session_state["compare_players_saved"] = normalized
 
     if st.session_state.pop("pending_compare_clear_player_b", False):
         st.session_state.pop("sig_player_b_clean", None)
@@ -6847,6 +6908,24 @@ if active_page == "Comparison Tool":
         _lbl = st.session_state.get(_sig_key)
         if _lbl in compare_player_options and _lbl not in default_compare_labels:
             default_compare_labels.append(_lbl)
+    if not default_compare_labels:
+        saved_compare = st.session_state.get("compare_players_saved", [])
+        if isinstance(saved_compare, list):
+            default_compare_labels = [p for p in saved_compare if p in compare_player_options][:3]
+
+    if "compare_players" not in st.session_state and default_compare_labels:
+        st.session_state["compare_players"] = default_compare_labels[:3]
+    for _key in [
+        "compare_stat",
+        "compare_x_axis_mode",
+        "compare_year_range",
+        "compare_age_range",
+        "compare_trend_mode",
+        "compare_smooth_window",
+    ]:
+        _saved = st.session_state.get(f"{_key}_saved")
+        if _saved is not None and _key not in st.session_state:
+            st.session_state[_key] = _saved
 
     selected_labels_compare = st.multiselect(
         "Select up to 3 players",
@@ -6858,6 +6937,29 @@ if active_page == "Comparison Tool":
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     comparison_action_team = st.session_state.get("room_your_team")
+    comparison_teams = get_draft_room_team_options()
+    if comparison_teams:
+        default_compare_team = comparison_action_team if comparison_action_team in comparison_teams else comparison_teams[0]
+        comparison_action_team = st.selectbox(
+            "Which fantasy team are you?",
+            comparison_teams,
+            index=comparison_teams.index(default_compare_team),
+            key="comparison_user_team",
+            help="Used to decide whether Draft Player is available and whether trade actions are Trade Away or Try to Acquire.",
+        )
+        st.session_state["room_your_team"] = comparison_action_team
+    else:
+        st.caption("Draft/trade actions require a Draft Room table with fantasy teams.")
+
+    _comparison_recent_years = list(range(max(year_min, year_max - 2), year_max + 1))
+    _comparison_recent = yearly_df[yearly_df["yearID"].isin(_comparison_recent_years)].copy().sort_values(["playerID", "yearID"])
+    comparison_projection_lookup = aggregate_recent_player_totals(
+        _comparison_recent,
+        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+    )
+    if not comparison_projection_lookup.empty:
+        comparison_projection_lookup = add_latest_and_projection_columns(comparison_projection_lookup, _comparison_recent)
+
     if selected_labels_compare:
         st.caption("Context-aware actions: historical players only show historical/watchlist actions; active players show fantasy workflow actions.")
         action_cols = st.columns(min(3, len(selected_labels_compare)))
@@ -6870,7 +6972,32 @@ if active_page == "Comparison Tool":
                     source_df=yearly_df,
                     team_name=comparison_action_team,
                     label_map=clean_label_map_compare,
+                    projection_lookup_df=comparison_projection_lookup,
+                    projection_lookup_name_col="fullName",
                 )
+
+    _sim_result = st.session_state.get("comparison_simulation_result")
+    if isinstance(_sim_result, dict):
+        st.subheader("Simulated Draft Impact")
+        st.success(_sim_result.get("message", "Simulation complete."))
+        if _sim_result.get("explanation"):
+            st.info(_sim_result["explanation"])
+        impact_df = _sim_result.get("impact")
+        if isinstance(impact_df, pd.DataFrame) and not impact_df.empty:
+            sim_display = impact_df.copy()
+            for _col in ["Before", "After", "Change"]:
+                sim_display[_col] = sim_display.apply(
+                    lambda r: fmt_rate_4(r[_col]) if r["Category"] in {"AVG", "OBP", "SLG", "OPS", "Fantasy Value", "Draft Fit Score", "Valuation Score"} else fmt_count_1(r[_col]),
+                    axis=1,
+                )
+            st.dataframe(sim_display, width="stretch", hide_index=True)
+        roster_df = _sim_result.get("roster")
+        if isinstance(roster_df, pd.DataFrame) and not roster_df.empty:
+            st.caption("Roster before and after the simulated pick")
+            st.dataframe(roster_df, width="stretch", hide_index=True)
+        if st.button("Clear simulated draft impact", key="comparison_clear_sim_result"):
+            st.session_state.pop("comparison_simulation_result", None)
+            st.rerun()
 
     compare_year_range = (year_min, year_max)
     if selected_ids_compare:
@@ -6881,12 +7008,24 @@ if active_page == "Comparison Tool":
         if not _cmp_years.empty:
             compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
     with st.expander("Chart options", expanded=False):
-        stat_choice_compare = st.selectbox("Choose stat to plot", ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"], index=0, key="compare_stat")
+        _compare_stat_options = ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"]
+        _saved_stat = st.session_state.get("compare_stat", "R")
+        stat_choice_compare = st.selectbox(
+            "Choose stat to plot",
+            _compare_stat_options,
+            index=_compare_stat_options.index(_saved_stat) if _saved_stat in _compare_stat_options else 0,
+            key="compare_stat",
+            on_change=compare_settings_changed,
+        )
+        _compare_axis_options = ["Season Year", "Player Age"]
+        _saved_axis = st.session_state.get("compare_x_axis_mode", "Season Year")
         compare_x_axis_mode = st.radio(
             "Comparison X-Axis",
-            ["Season Year", "Player Age"],
+            _compare_axis_options,
+            index=_compare_axis_options.index(_saved_axis) if _saved_axis in _compare_axis_options else 0,
             horizontal=True,
-            key="compare_x_axis_mode"
+            key="compare_x_axis_mode",
+            on_change=compare_settings_changed,
         )
         compare_age_range = (16, 50)
         if compare_x_axis_mode == "Season Year":
@@ -6903,6 +7042,7 @@ if active_page == "Comparison Tool":
                 max_value=compare_year_range[1],
                 value=compare_year_range,
                 key="compare_year_range",
+                on_change=compare_settings_changed,
                 help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
             )
         else:
@@ -6912,17 +7052,30 @@ if active_page == "Comparison Tool":
                 50,
                 (16, 50),
                 key="compare_age_range",
+                on_change=compare_settings_changed,
                 help="Filters the comparison chart, year-by-year table, and trend intelligence by season age.",
             )
+        _compare_mode_options = ["Actual Values", "Smoothed Moving Average"]
+        _saved_mode = st.session_state.get("compare_trend_mode", "Actual Values")
         compare_trend_mode = st.radio(
             "Comparison Chart Mode",
-            ["Actual Values", "Smoothed Moving Average"],
+            _compare_mode_options,
+            index=_compare_mode_options.index(_saved_mode) if _saved_mode in _compare_mode_options else 0,
             horizontal=True,
-            key="compare_trend_mode"
+            key="compare_trend_mode",
+            on_change=compare_settings_changed,
         )
         compare_smooth_window = 3
         if compare_trend_mode == "Smoothed Moving Average":
-            compare_smooth_window = st.slider("Comparison Smoothing Window", 2, 7, 3, key="compare_smooth_window")
+            compare_smooth_window = st.slider(
+                "Comparison Smoothing Window",
+                2,
+                7,
+                3,
+                key="compare_smooth_window",
+                on_change=compare_settings_changed,
+            )
+        compare_settings_changed()
 
     if selected_ids_compare:
         compare = yearly_df[yearly_df["playerID"].isin(selected_ids_compare)].copy()
@@ -7087,12 +7240,25 @@ if active_page == "Comparison Tool":
                 st.info(f"Player A only has one available season in the data: {a_min_year}.")
                 sig_years_a = (a_min_year, a_max_year)
             else:
+                _sig_a_key = f"sig_years_a_{pid_a_preview}"
+                _sig_a_saved = st.session_state.get(f"{_sig_a_key}_saved", (a_min_year, a_max_year))
+                if (
+                    not isinstance(_sig_a_saved, tuple)
+                    or len(_sig_a_saved) != 2
+                    or _sig_a_saved[0] < a_min_year
+                    or _sig_a_saved[1] > a_max_year
+                ):
+                    _sig_a_saved = (a_min_year, a_max_year)
+                if _sig_a_key not in st.session_state:
+                    st.session_state[_sig_a_key] = _sig_a_saved
                 sig_years_a = st.slider(
                     "Player A Year Range",
                     min_value=a_min_year,
                     max_value=a_max_year,
-                    value=(a_min_year, a_max_year),
-                    key=f"sig_years_a_{pid_a_preview}"
+                    value=_sig_a_saved,
+                    key=_sig_a_key,
+                    on_change=_sig_years_changed,
+                    args=(_sig_a_key,),
                 )
 
         with sig_col2:
@@ -7113,12 +7279,25 @@ if active_page == "Comparison Tool":
                 st.info(f"Player B only has one available season in the data: {b_min_year}.")
                 sig_years_b = (b_min_year, b_max_year)
             else:
+                _sig_b_key = f"sig_years_b_{pid_b_preview}"
+                _sig_b_saved = st.session_state.get(f"{_sig_b_key}_saved", (b_min_year, b_max_year))
+                if (
+                    not isinstance(_sig_b_saved, tuple)
+                    or len(_sig_b_saved) != 2
+                    or _sig_b_saved[0] < b_min_year
+                    or _sig_b_saved[1] > b_max_year
+                ):
+                    _sig_b_saved = (b_min_year, b_max_year)
+                if _sig_b_key not in st.session_state:
+                    st.session_state[_sig_b_key] = _sig_b_saved
                 sig_years_b = st.slider(
                     "Player B Year Range",
                     min_value=b_min_year,
                     max_value=b_max_year,
-                    value=(b_min_year, b_max_year),
-                    key=f"sig_years_b_{pid_b_preview}"
+                    value=_sig_b_saved,
+                    key=_sig_b_key,
+                    on_change=_sig_years_changed,
+                    args=(_sig_b_key,),
                 )
 
         sig_stats = st.multiselect(
