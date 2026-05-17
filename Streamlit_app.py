@@ -5719,50 +5719,62 @@ def _workflow_normalize_draft_queue():
 
 
 def render_persistent_workflow_sidebar(_yearly_df_local=None):
-    """Fantasy Workflow Center: draft queue + recently viewed (``st.sidebar`` only)."""
+    """Persistent workflow panel: draft queue, watchlist, and tracked players."""
     _workflow_normalize_draft_queue()
-
-    active = str(st.session_state.get("active_page", "")).strip()
-    _fantasy_draft_pages = frozenset({
-        "Fantasy Sleepers & Busts",
-        "Draft Room Simulator",
-        "Draft Assistant Simulator",
-        "Fantasy Standings Tracker",
-        "Fantasy Lineup Assistant",
-    })
-    if active not in _fantasy_draft_pages:
-        return
 
     flash = st.session_state.pop("workflow_sidebar_flash", None)
     if flash:
         st.sidebar.warning(str(flash))
 
     dq = st.session_state.get("draft_queue", []) or []
+    watch = st.session_state.get("draft_assistant_focus_players", []) or []
+    favorites = st.session_state.get("workflow_favorite_targets", []) or []
+    if not isinstance(watch, list):
+        watch = []
+    if not isinstance(favorites, list):
+        favorites = []
+    watch = list(dict.fromkeys([str(x).strip() for x in favorites + watch if str(x).strip()]))
     rv = st.session_state.get("workflow_recently_viewed", [])
     if not isinstance(rv, list):
         rv = []
+    pairs = st.session_state.get("workflow_recent_compare_pairs", [])
+    if not isinstance(pairs, list):
+        pairs = []
 
     st.sidebar.divider()
-    st.sidebar.markdown("### Fantasy Workflow Center")
-    st.sidebar.caption("Lists persist in this session while you move between pages.")
+    st.sidebar.markdown("### Watchlist & Draft Queue")
+    st.sidebar.caption("Quick reference that persists while you switch pages.")
 
     with st.sidebar.expander("Draft queue", expanded=bool(dq)):
         if not dq:
-            st.caption("Empty — add players with **Add to Draft Queue** in player actions.")
+            st.caption("Empty — add players with **Queue player** in Player Actions.")
         else:
             for pname in dq[-12:]:
                 st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
             if len(dq) > 12:
                 st.caption(f"+{len(dq) - 12} more")
 
-    with st.sidebar.expander("Recently viewed players", expanded=False):
-        if not rv:
-            st.caption("Updates when you select, send, or analyze a player.")
+    with st.sidebar.expander("Watchlist", expanded=bool(watch)):
+        if not watch:
+            st.caption("Empty — use **Send to Draft Assistant** from Player Actions.")
         else:
-            for pname in reversed(rv[-12:]):
+            for pname in reversed(watch[-12:]):
                 st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
-            if len(rv) > 12:
-                st.caption(f"+{len(rv) - 12} older")
+            if len(watch) > 12:
+                st.caption(f"+{len(watch) - 12} more")
+
+    with st.sidebar.expander("Tracked players", expanded=False):
+        if not rv and not pairs:
+            st.caption("Updates when you select, send, compare, or analyze players.")
+        if rv:
+            st.caption("Recently viewed")
+            for pname in reversed(rv[-8:]):
+                st.caption("• " + str(pname).strip()[:46] + ("…" if len(str(pname).strip()) > 46 else ""))
+        if pairs:
+            st.caption("Recent comparisons")
+            for pair in reversed(pairs[-5:]):
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    st.caption(f"• {str(pair[0])[:22]} vs {str(pair[1])[:22]}")
 
 
 PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
@@ -5775,6 +5787,13 @@ def request_sidebar_page(page: str):
     if p in _PAGE_OPTION_SET:
         st.session_state["_pending_active_page"] = p
         st.rerun()
+
+
+def _sync_active_page_from_sidebar():
+    """Keep the page widget key separate from the canonical active page state."""
+    selected = st.session_state.get("_active_page_selector", "Historical Explorer")
+    if selected in _PAGE_OPTION_SET:
+        st.session_state["active_page"] = selected
 
 # Persist navigation and page-specific widget settings.
 # IMPORTANT: Do not manually reassign widget keys in st.session_state.
@@ -5793,6 +5812,7 @@ for _state_key in list(st.session_state.keys()):
     _key_text = str(_state_key).lower()
     if (
         _key_text == "active_page"
+        or _key_text == "_active_page_selector"
         or _key_text == "_pending_active_page"
         or _key_text.startswith("download")
         or _key_text.startswith("export")
@@ -5852,9 +5872,28 @@ for _state_key in list(st.session_state.keys()):
 _pending_nav = st.session_state.pop("_pending_active_page", None)
 if _pending_nav and _pending_nav in _PAGE_OPTION_SET:
     st.session_state["active_page"] = _pending_nav
+    st.session_state["_active_page_selector"] = _pending_nav
 
 st.session_state.setdefault("active_page", "Historical Explorer")
-active_page = st.sidebar.radio("Choose Page", PAGE_OPTIONS, key="active_page")
+if st.session_state.get("active_page") not in _PAGE_OPTION_SET:
+    st.session_state["active_page"] = "Historical Explorer"
+
+if st.session_state.get("_active_page_selector") not in _PAGE_OPTION_SET:
+    st.session_state["_active_page_selector"] = st.session_state["active_page"]
+
+_page_index = PAGE_OPTIONS.index(st.session_state["active_page"])
+st.sidebar.radio(
+    "Choose Page",
+    PAGE_OPTIONS,
+    index=_page_index,
+    key="_active_page_selector",
+    on_change=_sync_active_page_from_sidebar,
+)
+active_page = st.session_state.get("active_page", "Historical Explorer")
+if active_page != st.session_state.get("_active_page_selector"):
+    active_page = st.session_state.get("_active_page_selector", active_page)
+    if active_page in _PAGE_OPTION_SET:
+        st.session_state["active_page"] = active_page
 st.sidebar.caption("Filters are remembered as you move between pages.")
 with st.sidebar.expander("New here? Quick start", expanded=False):
     st.markdown(
