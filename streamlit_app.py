@@ -5464,32 +5464,43 @@ def _team_players_from_draft_room(team_name):
     return team_rows["Player"].dropna().astype(str).str.strip().tolist()
 
 
-def _aggregate_sim_categories(rows):
-    categories = [
-        ("HR", "proj_HR", "HR"),
-        ("RBI", "proj_RBI", "RBI"),
-        ("R", "proj_R", "R"),
-        ("SB", "proj_SB", "SB"),
-        ("BA", "proj_BA", "AVG"),
-        ("OPS", "proj_OPS", "OPS"),
-    ]
-    out = {}
+def _sim_stat_col(rows, actual_col, proj_col):
     if rows is None or rows.empty:
-        return out
-    for actual_col, proj_col, label in categories:
-        col = proj_col if proj_col in rows.columns else actual_col if actual_col in rows.columns else None
-        if col is None:
-            continue
-        vals = pd.to_numeric(rows[col], errors="coerce")
-        if vals.notna().sum() == 0:
-            continue
-        if label in {"AVG", "OBP", "SLG", "OPS"}:
-            weights = pd.to_numeric(rows.get("AB", pd.Series(1, index=rows.index)), errors="coerce").fillna(0)
-            mask = vals.notna() & (weights > 0)
-            out[label] = float(np.average(vals[mask], weights=weights[mask])) if mask.any() else float(vals.mean())
-        else:
-            out[label] = float(vals.sum())
-    return out
+        return None
+    if proj_col in rows.columns:
+        return proj_col
+    if actual_col in rows.columns:
+        return actual_col
+    return None
+
+
+def _sim_sum(rows, actual_col, proj_col):
+    col = _sim_stat_col(rows, actual_col, proj_col)
+    if col is None:
+        return 0.0
+    return float(pd.to_numeric(rows[col], errors="coerce").fillna(0).sum())
+
+
+def _sim_weighted_rate(rows, actual_col, proj_col):
+    col = _sim_stat_col(rows, actual_col, proj_col)
+    if rows is None or rows.empty or col is None:
+        return 0.0, True
+    vals = pd.to_numeric(rows[col], errors="coerce")
+    weights = pd.to_numeric(rows.get("AB", pd.Series(np.nan, index=rows.index)), errors="coerce")
+    mask = vals.notna() & weights.notna() & (weights > 0)
+    if mask.any():
+        return float(np.average(vals[mask], weights=weights[mask])), False
+    return float(vals.dropna().mean()) if vals.notna().any() else 0.0, True
+
+
+def _sim_player_value(candidate_rows, actual_col, proj_col, *, rate=False):
+    if candidate_rows is None or candidate_rows.empty:
+        return 0.0
+    row = candidate_rows.head(1)
+    if rate:
+        val, _estimated = _sim_weighted_rate(row, actual_col, proj_col)
+        return val
+    return _sim_sum(row, actual_col, proj_col)
 
 
 def build_simulated_draft_impact(player_name, team_name, lookup_df, name_col="fullName"):
@@ -5498,16 +5509,34 @@ def build_simulated_draft_impact(player_name, team_name, lookup_df, name_col="fu
     player_name = str(player_name).strip()
     after_players = list(dict.fromkeys(current_players + ([player_name] if player_name else [])))
     before_rows = _rows_for_player_names(current_players, lookup_df, name_col)
-    after_rows = _rows_for_player_names(after_players, lookup_df, name_col)
     candidate_rows = _rows_for_player_names([player_name], lookup_df, name_col)
-    before = _aggregate_sim_categories(before_rows)
-    after = _aggregate_sim_categories(after_rows)
-    labels = [label for label in after.keys() if label in after or label in before]
+    rate_estimated = False
     impact_rows = []
-    for label in labels:
-        b = before.get(label, 0.0)
-        a = after.get(label, 0.0)
-        impact_rows.append({"Category": label, "Before": b, "After": a, "Change": a - b})
+    for label, actual_col, proj_col, is_rate in [
+        ("HR", "HR", "proj_HR", False),
+        ("RBI", "RBI", "proj_RBI", False),
+        ("R", "R", "proj_R", False),
+        ("SB", "SB", "proj_SB", False),
+        ("AVG", "BA", "proj_BA", True),
+        ("OPS", "OPS", "proj_OPS", True),
+    ]:
+        if is_rate:
+            before, before_est = _sim_weighted_rate(before_rows, actual_col, proj_col)
+            player = _sim_player_value(candidate_rows, actual_col, proj_col, rate=True)
+            combined = pd.concat([before_rows, candidate_rows], ignore_index=True)
+            after, after_est = _sim_weighted_rate(combined, actual_col, proj_col)
+            rate_estimated = rate_estimated or before_est or after_est
+        else:
+            before = _sim_sum(before_rows, actual_col, proj_col)
+            player = _sim_player_value(candidate_rows, actual_col, proj_col)
+            after = before + player
+        impact_rows.append({
+            "Category": label,
+            "Current Team Projection": before,
+            "Added Player Projection": player,
+            "New Team Projection": after,
+            "Change": after - before,
+        })
     impact_df = pd.DataFrame(impact_rows)
     after_detail_rows = _rows_for_player_names(after_players, lookup_df, name_col)
     roster_rows = []
@@ -5529,7 +5558,7 @@ def build_simulated_draft_impact(player_name, team_name, lookup_df, name_col="fu
         })
     roster_df = pd.DataFrame(roster_rows)
     candidate_summary = candidate_rows.iloc[0].to_dict() if not candidate_rows.empty else {}
-    return impact_df, roster_df, candidate_summary
+    return impact_df, roster_df, candidate_summary, rate_estimated
 
 
 def draft_simulation_summary(player_name, impact_df):
@@ -5553,7 +5582,7 @@ def draft_simulation_summary(player_name, impact_df):
 def build_draft_simulation_result(player_name, team_name, lookup_df, name_col="fullName"):
     sim_table, msg = simulate_drafting_player(player_name, team_name)
     st.session_state["simulated_draft_room_table"] = sim_table
-    impact_df, roster_df, candidate_summary = build_simulated_draft_impact(player_name, team_name, lookup_df, name_col)
+    impact_df, roster_df, candidate_summary, rate_estimated = build_simulated_draft_impact(player_name, team_name, lookup_df, name_col)
     return {
         "message": msg,
         "player": str(player_name).strip(),
@@ -5562,7 +5591,23 @@ def build_draft_simulation_result(player_name, team_name, lookup_df, name_col="f
         "roster": roster_df,
         "candidate": candidate_summary,
         "summary": draft_simulation_summary(player_name, impact_df),
+        "rate_estimated": rate_estimated,
     }
+
+
+def default_draft_simulation_lookup():
+    """Fallback projection-like lookup for pages without their own projection table."""
+    try:
+        latest_year = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().max())
+        recent_years = list(range(latest_year - 2, latest_year + 1))
+        recent = yearly_df[yearly_df["yearID"].isin(recent_years)].copy().sort_values(["playerID", "yearID"])
+        lookup = aggregate_recent_player_totals(
+            recent,
+            ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+        )
+        return add_latest_and_projection_columns(lookup, recent)
+    except Exception:
+        return pd.DataFrame()
 
 
 def _format_sim_value(category, value):
@@ -5579,10 +5624,12 @@ def render_draft_simulation_result(result):
     if isinstance(impact_df, pd.DataFrame) and not impact_df.empty:
         display_impact = impact_df.copy()
         display_impact = display_impact[display_impact["Category"].isin(["HR", "RBI", "R", "SB", "AVG", "OPS"])].copy()
-        for col in ["Before", "After", "Change"]:
+        for col in ["Current Team Projection", "Added Player Projection", "New Team Projection", "Change"]:
             display_impact[col] = display_impact.apply(lambda r: _format_sim_value(r["Category"], r[col]), axis=1)
         st.caption("Before / after category impact")
         st.dataframe(display_impact, width="stretch", hide_index=True)
+        if result.get("rate_estimated"):
+            st.caption("AVG/OPS are weighted by AB when available; otherwise they are estimated from available rates.")
     roster_df = result.get("roster")
     if isinstance(roster_df, pd.DataFrame) and not roster_df.empty:
         st.caption("Simulated roster after pick")
@@ -5915,19 +5962,16 @@ def player_quick_actions_popover(
                 st.caption("Not your pick — *Draft this player* hidden.")
         with b8:
             if st.button("Simulate Draft Pick", key=f"{key}_qa_sim_{sfx}"):
-                if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True):
-                    result = build_draft_simulation_result(
-                        pick,
-                        team_for_draft,
-                        projection_lookup_df,
-                        projection_lookup_name_col,
-                    )
-                    st.session_state["draft_simulation_result"] = result
-                    render_draft_simulation_result(result)
-                else:
-                    sim_table, msg = simulate_drafting_player(pick, team_for_draft)
-                    st.session_state["simulated_draft_room_table"] = sim_table
-                    st.success(msg)
+                lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
+                lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
+                result = build_draft_simulation_result(
+                    pick,
+                    team_for_draft,
+                    lookup_df,
+                    lookup_name_col,
+                )
+                st.session_state["draft_simulation_result"] = result
+                render_draft_simulation_result(result)
         with b9:
             if st.button("Projection breakdown", key=f"{key}_qa_proj_{sfx}"):
                 record_workflow_recent_player(pick)
@@ -5997,14 +6041,16 @@ def render_contextual_player_actions(
             request_sidebar_page("Trend Value")
         if active_available:
             if st.button("Simulate Draft Pick", key=f"{key_prefix}_simulate"):
+                lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
+                lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
                 result = build_draft_simulation_result(
                     player_name,
                     team_name,
-                    projection_lookup_df if projection_lookup_df is not None else source_df,
-                    projection_lookup_name_col,
+                    lookup_df,
+                    lookup_name_col,
                 )
                 st.session_state["draft_simulation_result"] = result
-                st.rerun()
+                render_draft_simulation_result(result)
             if is_users_draft_turn(team_name):
                 if st.button("Draft Player", key=f"{key_prefix}_draft"):
                     msg = execute_player_action_once(player_name, "Draft player to next pick", team_name, team_name, label_map)
