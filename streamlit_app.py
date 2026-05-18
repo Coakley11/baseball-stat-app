@@ -1051,7 +1051,7 @@ def format_fantasy_table(df):
     ]
     edge_cols = ["Fantasy Edge"]
     rate_cols = ["BA", "OBP", "SLG", "OPS", "Projected BA", "Projected OBP", "Projected SLG", "Projected OPS"]
-    count_cols = ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "Projected R", "Projected H", "Projected 2B", "Projected 3B", "Projected HR", "Projected RBI", "Projected SB", "Projected BB"]
+    count_cols = ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "Projected G", "Projected PA", "Projected AB", "Projected R", "Projected H", "Projected 2B", "Projected 3B", "Projected HR", "Projected RBI", "Projected SB", "Projected BB"]
     one_decimal_cols = ["ADP", "Expert Std Dev", "Age", "Availability Probability", "Position Need Bonus", "Category Need Bonus", "Risk Penalty"]
     for col in rank_cols + edge_cols:
         if col in df.columns:
@@ -3827,8 +3827,10 @@ def build_realistic_draft_ml_adjustments(df, fantasy_format="5x5 Roto", projecti
             med[c] = 0
 
     age = out["Age"].fillna(29)
-    games = out["G"].fillna(0)
-    ab = out["AB"].fillna(0)
+    games_source = "proj_G" if "proj_G" in out.columns else "G"
+    ab_source = "proj_AB" if "proj_AB" in out.columns else "AB"
+    games = pd.to_numeric(out[games_source], errors="coerce").fillna(0)
+    ab = pd.to_numeric(out[ab_source], errors="coerce").fillna(0)
 
     # Stability: high playing time means we trust the projection more.
     stability = (games / 150).clip(lower=0.20, upper=1.00)
@@ -5673,32 +5675,141 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         pool["Expert Std Dev"] = np.nan
     pool["Market Rank"] = pd.to_numeric(pool.get("Market Rank"), errors="coerce")
 
-    # Draft-lab-only projection sanity pass: blend trend projections back toward recent
-    # multi-year rates, then cap extreme totals unless recent production supports them.
-    years_played = recent.groupby("playerID")["yearID"].nunique()
-    recent_avg = recent.groupby("playerID")[["HR", "RBI", "R", "SB", "AB"]].mean().add_prefix("avg_")
-    recent_max = recent.groupby("playerID")[["HR", "RBI", "R", "SB"]].max().add_prefix("max_")
-    support = pd.concat([years_played.rename("years_played"), recent_avg, recent_max], axis=1).reset_index()
+    # Draft-lab-only stabilized projections. Counting stats are rebuilt from
+    # projected playing time x stabilized recent rates instead of latest + trend.
+    projection_source = recent.copy()
+    for c in ["G", "AB", "H", "HR", "RBI", "R", "SB", "BB", "HBP", "SF", "BA", "OPS"]:
+        if c not in projection_source.columns:
+            projection_source[c] = 0
+        projection_source[c] = pd.to_numeric(projection_source[c], errors="coerce").fillna(0)
+    projection_source["PA_est"] = projection_source["AB"] + projection_source["BB"] + projection_source["HBP"] + projection_source["SF"]
+    safe_pa = projection_source["PA_est"].replace(0, np.nan)
+    safe_ab = projection_source["AB"].replace(0, np.nan)
+    for stat in ["HR", "RBI", "R", "SB"]:
+        projection_source[f"{stat}_per_PA"] = (projection_source[stat] / safe_pa).replace([np.inf, -np.inf], np.nan).fillna(0)
+    projection_source["PA_per_G"] = (projection_source["PA_est"] / projection_source["G"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    projection_source["AB_per_PA"] = (projection_source["AB"] / safe_pa).replace([np.inf, -np.inf], np.nan)
+
+    years_played = projection_source.groupby("playerID")["yearID"].nunique()
+    recent_avg = projection_source.groupby("playerID")[["G", "AB", "PA_est", "HR", "RBI", "R", "SB", "BA", "OPS", "PA_per_G", "AB_per_PA"]].mean().add_prefix("avg_")
+    recent_max = projection_source.groupby("playerID")[["G", "AB", "PA_est", "HR", "RBI", "R", "SB"]].max().add_prefix("max_")
+    recent_std = projection_source.groupby("playerID")[["G", "AB", "PA_est", "HR_per_PA", "RBI_per_PA", "R_per_PA", "SB_per_PA", "BA", "OPS"]].std().add_prefix("std_")
+    latest_support = (
+        projection_source.sort_values(["playerID", "yearID"])
+        .groupby("playerID")
+        .tail(1)[["playerID", "G", "AB", "PA_est", "HR", "RBI", "R", "SB", "BA", "OPS", "PA_per_G", "AB_per_PA"]]
+        .rename(columns={c: f"latest_support_{c}" for c in ["G", "AB", "PA_est", "HR", "RBI", "R", "SB", "BA", "OPS", "PA_per_G", "AB_per_PA"]})
+    )
+    rate_trends = compute_player_trend_table(
+        projection_source,
+        ("G", "AB", "PA_est", "HR_per_PA", "RBI_per_PA", "R_per_PA", "SB_per_PA"),
+    )
+    support = pd.concat([years_played.rename("years_played"), recent_avg, recent_max, recent_std], axis=1).reset_index()
+    support = support.merge(latest_support, on="playerID", how="left").merge(rate_trends, on="playerID", how="left")
     pool = pool.merge(support, on="playerID", how="left")
-    limited_data = (pd.to_numeric(pool.get("AB", 0), errors="coerce").fillna(0) < 350) | (pd.to_numeric(pool.get("years_played", 0), errors="coerce").fillna(0) < 2)
-    pool["Projection Warning"] = np.where(limited_data, "Limited data: projection regressed toward recent averages", "")
+
+    total_pa = pd.to_numeric(pool.get("PA_est", 0), errors="coerce").fillna(0)
+    total_ab = pd.to_numeric(pool.get("AB", 0), errors="coerce").fillna(0)
+    years = pd.to_numeric(pool.get("years_played", 0), errors="coerce").fillna(0)
+    latest_g = pd.to_numeric(pool.get("latest_support_G", pool.get("G", 0)), errors="coerce").fillna(0)
+    avg_g = pd.to_numeric(pool.get("avg_G", latest_g), errors="coerce").fillna(latest_g)
+    max_g = pd.to_numeric(pool.get("max_G", avg_g), errors="coerce").fillna(avg_g)
+    g_trend = pd.to_numeric(pool.get("G_trend", 0), errors="coerce").fillna(0).clip(-18, 18)
+    trend_g = (latest_g + g_trend).clip(lower=0)
+    durability = (avg_g / 145).clip(0.35, 1.05)
+    projected_g = (latest_g * 0.42 + avg_g * 0.38 + trend_g * 0.20)
+    projected_g = projected_g * (0.92 + durability * 0.08)
+    projected_g = np.minimum(projected_g, np.maximum(max_g + 8, avg_g * 1.18))
+    projected_g = pd.Series(projected_g, index=pool.index).clip(lower=20, upper=150)
+    catcher_mask = pool["Primary Position"].astype(str).eq("C")
+    projected_g = projected_g.mask(catcher_mask, projected_g.clip(upper=132))
+
+    latest_pa_pg = pd.to_numeric(pool.get("latest_support_PA_per_G", np.nan), errors="coerce")
+    avg_pa_pg = pd.to_numeric(pool.get("avg_PA_per_G", np.nan), errors="coerce")
+    pa_pg = (latest_pa_pg.fillna(avg_pa_pg) * 0.55 + avg_pa_pg.fillna(latest_pa_pg) * 0.45).fillna(3.7).clip(2.2, 4.75)
+    ab_per_pa = (
+        pd.to_numeric(pool.get("latest_support_AB_per_PA", np.nan), errors="coerce").fillna(pd.to_numeric(pool.get("avg_AB_per_PA", np.nan), errors="coerce")) * 0.55 +
+        pd.to_numeric(pool.get("avg_AB_per_PA", np.nan), errors="coerce").fillna(pd.to_numeric(pool.get("latest_support_AB_per_PA", np.nan), errors="coerce")) * 0.45
+    ).fillna(0.89).clip(0.74, 0.96)
+    projected_pa = (projected_g * pa_pg).clip(lower=60, upper=720)
+    projected_ab = (projected_pa * ab_per_pa).clip(lower=40, upper=650)
+    pool["proj_G"] = projected_g.round(1)
+    pool["proj_PA"] = projected_pa.round(1)
+    pool["proj_AB"] = projected_ab.round(1)
+
+    limited_data = (total_ab < 450) | (years < 2)
+    very_limited_data = (total_ab < 250) | (years < 2)
+    volatility = (
+        normalize_series(pd.to_numeric(pool.get("std_PA_est", 0), errors="coerce").fillna(0)) * 0.45 +
+        normalize_series(pd.to_numeric(pool.get("std_OPS", 0), errors="coerce").fillna(0)) * 0.35 +
+        normalize_series(pd.to_numeric(pool.get("std_BA", 0), errors="coerce").fillna(0)) * 0.20
+    )
+    consistency = (1 - volatility).clip(0, 1)
+    sample_score = (total_ab / 1100).clip(0, 1)
+    games_score = (avg_g / 125).clip(0, 1)
+    confidence_score = (sample_score * 0.34 + games_score * 0.26 + consistency * 0.25 + (years / 3).clip(0, 1) * 0.15).clip(0, 1)
+    pool["Projection Confidence Score"] = confidence_score
+    pool["Projection Confidence"] = np.select(
+        [confidence_score >= 0.72, confidence_score >= 0.48],
+        ["High Confidence", "Medium Confidence"],
+        default="Risky Projection",
+    )
+    pool["Projection Warning"] = np.select(
+        [very_limited_data, limited_data, volatility >= 0.70],
+        [
+            "Small sample: projection heavily regressed and capped",
+            "Limited data: projection regressed toward recent averages",
+            "Volatile profile: projection confidence reduced",
+        ],
+        default="",
+    )
+
+    league_rates = {}
+    for stat in ["HR", "RBI", "R", "SB"]:
+        denom = projection_source["PA_est"].sum()
+        league_rates[stat] = float(projection_source[stat].sum() / denom) if denom else 0.0
+    league_ba = float((projection_source["H"].sum() / projection_source["AB"].sum())) if projection_source["AB"].sum() else 0.250
+    league_ops = float(projection_source["OPS"].replace(0, np.nan).median()) if projection_source["OPS"].replace(0, np.nan).notna().any() else 0.720
+
     cap_rules = {
-        "HR": ("proj_HR", "avg_HR", "max_HR", 62, 8),
-        "RBI": ("proj_RBI", "avg_RBI", "max_RBI", 140, 20),
-        "R": ("proj_R", "avg_R", "max_R", 140, 20),
-        "SB": ("proj_SB", "avg_SB", "max_SB", 70, 12),
+        "HR": ("proj_HR", 58, 6, 1.20, 2.15),
+        "RBI": ("proj_RBI", 128, 16, 1.20, 1.85),
+        "R": ("proj_R", 128, 16, 1.20, 1.85),
+        "SB": ("proj_SB", 60, 10, 1.18, 2.35),
     }
-    for _stat, (_proj, _avg, _max, _hard_cap, _support_pad) in cap_rules.items():
-        if _proj not in pool.columns or _avg not in pool.columns:
-            continue
-        proj = pd.to_numeric(pool[_proj], errors="coerce").fillna(0)
-        avg = pd.to_numeric(pool[_avg], errors="coerce").fillna(proj)
-        maxv = pd.to_numeric(pool.get(_max, avg), errors="coerce").fillna(avg)
-        regressed = proj * 0.55 + avg * 0.45
-        support_cap = np.maximum(maxv + _support_pad, avg * 1.35)
-        capped = np.minimum(regressed, np.minimum(_hard_cap, support_cap))
-        capped = np.where(limited_data, capped * 0.88 + avg * 0.12, capped)
-        pool[_proj] = pd.Series(capped, index=pool.index).clip(lower=0)
+    rate_regression = (420 / (total_pa + 420)).clip(0.24, 0.72)
+    rate_regression = (rate_regression + very_limited_data.astype(float) * 0.12 + volatility * 0.08).clip(0.24, 0.82)
+    for stat, (proj_col, hard_cap, support_pad, avg_cap_mult, league_cap_mult) in cap_rules.items():
+        total_rate = (pd.to_numeric(pool.get(stat, 0), errors="coerce").fillna(0) / total_pa.replace(0, np.nan)).fillna(0)
+        latest_rate = (
+            pd.to_numeric(pool.get(f"latest_support_{stat}", 0), errors="coerce").fillna(0) /
+            pd.to_numeric(pool.get("latest_support_PA_est", np.nan), errors="coerce").replace(0, np.nan)
+        ).fillna(total_rate)
+        rate_trend = pd.to_numeric(pool.get(f"{stat}_per_PA_trend", 0), errors="coerce").fillna(0)
+        trend_rate = (latest_rate + rate_trend).clip(lower=0)
+        blended_rate = total_rate * 0.52 + latest_rate * 0.33 + trend_rate * 0.15
+        stabilized_rate = blended_rate * (1 - rate_regression) + league_rates[stat] * rate_regression
+        avg_stat = pd.to_numeric(pool.get(f"avg_{stat}", 0), errors="coerce").fillna(0)
+        max_stat = pd.to_numeric(pool.get(f"max_{stat}", avg_stat), errors="coerce").fillna(avg_stat)
+        rate_cap = np.maximum(total_rate * avg_cap_mult, league_rates[stat] * league_cap_mult)
+        rate_cap = np.where(very_limited_data, np.maximum(total_rate * 1.08, league_rates[stat] * 1.55), rate_cap)
+        projected = np.minimum(stabilized_rate, rate_cap) * projected_pa
+        support_cap = np.maximum(max_stat + support_pad, avg_stat * np.where(very_limited_data, 1.10, 1.25))
+        projected = np.minimum(projected, np.minimum(hard_cap, support_cap))
+        pool[proj_col] = pd.Series(projected, index=pool.index).clip(lower=0).round(1)
+
+    ba_regression = (360 / (total_ab + 360)).clip(0.20, 0.68)
+    ops_regression = (420 / (total_pa + 420)).clip(0.20, 0.68)
+    latest_ba = pd.to_numeric(pool.get("latest_support_BA", pool.get("latest_BA", np.nan)), errors="coerce")
+    avg_ba = pd.to_numeric(pool.get("avg_BA", pool.get("BA", np.nan)), errors="coerce")
+    ba_trend = pd.to_numeric(pool.get("BA_trend", 0), errors="coerce").fillna(0).clip(-0.025, 0.025)
+    blended_ba = avg_ba.fillna(league_ba) * 0.55 + latest_ba.fillna(avg_ba).fillna(league_ba) * 0.35 + (latest_ba.fillna(avg_ba).fillna(league_ba) + ba_trend) * 0.10
+    pool["proj_BA"] = (blended_ba * (1 - ba_regression) + league_ba * ba_regression).clip(0.185, 0.340)
+    latest_ops = pd.to_numeric(pool.get("latest_support_OPS", pool.get("latest_OPS", np.nan)), errors="coerce")
+    avg_ops = pd.to_numeric(pool.get("avg_OPS", pool.get("OPS", np.nan)), errors="coerce")
+    ops_trend = pd.to_numeric(pool.get("OPS_trend", 0), errors="coerce").fillna(0).clip(-0.060, 0.060)
+    blended_ops = avg_ops.fillna(league_ops) * 0.55 + latest_ops.fillna(avg_ops).fillna(league_ops) * 0.35 + (latest_ops.fillna(avg_ops).fillna(league_ops) + ops_trend) * 0.10
+    pool["proj_OPS"] = (blended_ops * (1 - ops_regression) + league_ops * ops_regression).clip(0.560, 1.050)
 
     if fantasy_format == "5x5 Roto":
         pool["Projected Production Score"] = (
@@ -5734,14 +5845,16 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         normalize_series(pd.to_numeric(pool.get("Capped Fantasy Edge", 0), errors="coerce").fillna(0).clip(lower=0)) * 0.35 +
         normalize_series(pool["Expected Fantasy Value"]) * 0.65
     )
-    replacement_depths = {"C": 12, "1B": 12, "2B": 12, "3B": 12, "SS": 12, "OF": 36, "DH": 12, "P": 12}
+    replacement_depths = {"C": 10, "1B": 12, "2B": 12, "3B": 12, "SS": 12, "OF": 36, "DH": 12, "P": 12}
     replacement_values = {}
     for pos, pos_group in pool.groupby("Primary Position"):
         pos_group = pos_group.sort_values("Expected Fantasy Value", ascending=False)
         depth = replacement_depths.get(pos, 12)
         replacement_values[pos] = pd.to_numeric(pos_group.iloc[min(depth - 1, len(pos_group) - 1)]["Expected Fantasy Value"], errors="coerce")
     pool["Position Replacement Value"] = pool["Primary Position"].map(replacement_values).fillna(pool["Expected Fantasy Value"].median())
-    pool["Scarcity Score"] = normalize_series((pool["Expected Fantasy Value"] - pool["Position Replacement Value"]).clip(lower=0))
+    scarcity_raw = (pool["Expected Fantasy Value"] - pool["Position Replacement Value"]).clip(lower=0)
+    scarcity_raw = scarcity_raw.mask(pool["Primary Position"].astype(str).eq("C"), scarcity_raw * 0.85)
+    pool["Scarcity Score"] = normalize_series(scarcity_raw)
     pool["App Ranking Score"] = normalize_series(-pd.to_numeric(pool["Model Rank"], errors="coerce").fillna(pool["Model Rank"].max()))
     pool["Market vs Model Score"] = normalize_series(pd.to_numeric(pool["Capped Fantasy Edge"], errors="coerce").fillna(0))
     pool["Best Player Available Score"] = normalize_series(pool["Expected Fantasy Value"]) * 0.73 + normalize_series(pool["App Ranking Score"]) * 0.27
@@ -5807,6 +5920,7 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
         _targets, gaps = _draft_lab_roster_needs(roster_df)
         scored = available.copy()
         position_need = scored["Primary Position"].isin(gaps).astype(float)
+        position_need = position_need.mask(scored["Primary Position"].astype(str).eq("C"), position_need * 0.85)
         category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
         scored["Roster Need Score"] = (position_need * 0.70 + category_need * 0.30).clip(0, 1)
         scored["Projected Value Component"] = normalize_series(scored["Expected Fantasy Value"])
@@ -5857,7 +5971,8 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
 
 def _weighted_rate(df, col):
     vals = pd.to_numeric(df.get(col, np.nan), errors="coerce")
-    weights = pd.to_numeric(df.get("AB", pd.Series(1, index=df.index)), errors="coerce").fillna(0)
+    weight_col = "proj_AB" if str(col).startswith("proj_") and "proj_AB" in df.columns else "AB"
+    weights = pd.to_numeric(df.get(weight_col, pd.Series(1, index=df.index)), errors="coerce").fillna(0)
     mask = vals.notna() & (weights > 0)
     return float(np.average(vals[mask], weights=weights[mask])) if mask.any() else float(vals.mean()) if vals.notna().any() else np.nan
 
@@ -10003,8 +10118,9 @@ if active_page == "Draft Simulation Test Mode":
             - **3% Sleeper Score**: small value boost, not a primary driver.
             - **2% Fantasy Edge / Market Inefficiency**: capped with diminishing returns.
 
-            **Projection sanity checks:** draft-lab projections are blended back toward recent multi-year averages,
-            regressed for limited samples, and capped for extreme HR/RBI/R/SB totals unless recent elite production supports them.
+            **Projection sanity checks:** draft-lab projections estimate games, plate appearances, and at-bats first,
+            then rebuild HR/RBI/R/SB from stabilized per-PA rates. Limited samples are regressed harder, volatile
+            profiles receive lower confidence, and extreme totals are capped unless recent elite production supports them.
 
             **Shohei Ohtani handling:** if Ohtani has hitter data, the draft lab treats him as **DH/UTIL** eligible
             instead of letting a pitcher-only label suppress his hitter value.
@@ -10065,7 +10181,7 @@ if active_page == "Draft Simulation Test Mode":
 
         draft_show_cols = [
             "Round", "Pick", "Fantasy Team", "fullName", "Primary Position", "Team",
-            "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value",
+            "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value", "Projection Confidence",
             "Best Player Available Score", "Best Value Sleeper Score",
             "Sleeper Score", "Scarcity Score", "Decision Score", "Roster Need At Pick",
             "Why This Pick", "Projection Warning",
@@ -10088,12 +10204,16 @@ if active_page == "Draft Simulation Test Mode":
 
         roster_cols = [
             "Fantasy Team", "Round", "Pick", "fullName", "Primary Position", "Team",
+            "proj_G", "proj_PA", "proj_AB",
             "proj_HR", "proj_RBI", "proj_R", "proj_SB", "proj_BA", "proj_OPS",
-            "Expected Fantasy Value", "Fantasy Edge",
+            "Expected Fantasy Value", "Fantasy Edge", "Projection Confidence",
         ]
         roster_view = lab_draft[[c for c in roster_cols if c in lab_draft.columns]].rename(columns={
             "fullName": "Player",
             "Team": "MLB Team",
+            "proj_G": "Projected G",
+            "proj_PA": "Projected PA",
+            "proj_AB": "Projected AB",
             "proj_HR": "Projected HR",
             "proj_RBI": "Projected RBI",
             "proj_R": "Projected R",
