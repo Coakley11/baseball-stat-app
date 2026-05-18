@@ -5532,9 +5532,9 @@ def build_simulated_draft_impact(player_name, team_name, lookup_df, name_col="fu
             after = before + player
         impact_rows.append({
             "Category": label,
-            "Current Team Projection": before,
-            "Added Player Projection": player,
-            "New Team Projection": after,
+            "Current Projection": before,
+            "Added Player": player,
+            "New Projection": after,
             "Change": after - before,
         })
     impact_df = pd.DataFrame(impact_rows)
@@ -5544,17 +5544,11 @@ def build_simulated_draft_impact(player_name, team_name, lookup_df, name_col="fu
     for pname in after_players:
         m = after_detail_rows[name_lookup.eq(str(pname).strip())] if not after_detail_rows.empty else pd.DataFrame()
         r = m.iloc[0] if not m.empty else {}
+        pos = r.get("Primary Position", r.get("primaryPos", "")) if hasattr(r, "get") else ""
+        display_name = pname + (" (Simulated Next Pick)" if str(pname).strip() == player_name else "")
         roster_rows.append({
-            "Player": pname,
-            "Roster Status": "Simulated Next Pick" if str(pname).strip() == player_name else "Current Roster",
-            "Position": r.get("Primary Position", r.get("primaryPos", "")) if hasattr(r, "get") else "",
-            "MLB Team": r.get("Team", r.get("primaryTeamName", r.get("primaryHistoricalTeamName", ""))) if hasattr(r, "get") else "",
-            "Projected HR": r.get("proj_HR", r.get("HR", np.nan)) if hasattr(r, "get") else np.nan,
-            "Projected RBI": r.get("proj_RBI", r.get("RBI", np.nan)) if hasattr(r, "get") else np.nan,
-            "Projected R": r.get("proj_R", r.get("R", np.nan)) if hasattr(r, "get") else np.nan,
-            "Projected SB": r.get("proj_SB", r.get("SB", np.nan)) if hasattr(r, "get") else np.nan,
-            "Projected AVG": r.get("proj_BA", r.get("BA", np.nan)) if hasattr(r, "get") else np.nan,
-            "Projected OPS": r.get("proj_OPS", r.get("OPS", np.nan)) if hasattr(r, "get") else np.nan,
+            "Position": pos,
+            "Player": display_name,
         })
     roster_df = pd.DataFrame(roster_rows)
     candidate_summary = candidate_rows.iloc[0].to_dict() if not candidate_rows.empty else {}
@@ -5566,17 +5560,18 @@ def draft_simulation_summary(player_name, impact_df):
         return f"Drafting {player_name} could not be summarized from the available projection columns."
     df = impact_df.copy()
     df["Change"] = pd.to_numeric(df["Change"], errors="coerce")
-    pos = df[df["Change"] > 0].copy()
+    pos = df[
+        ((df["Category"].isin(["HR", "RBI", "R", "SB"])) & (df["Change"] > 0)) |
+        ((df["Category"].isin(["AVG", "OPS"])) & (df["Change"] > 0.0005))
+    ].copy()
     if pos.empty:
-        return f"Drafting {player_name} does not show a clear gain in the displayed hitting categories."
+        return f"Adding {player_name} does not show a meaningful gain in the displayed hitting categories."
     priority = {"HR": 0, "RBI": 1, "R": 2, "SB": 3, "AVG": 4, "OPS": 5}
     pos["_priority"] = pos["Category"].map(priority).fillna(99)
     cats = pos.sort_values(["_priority", "Change"], ascending=[True, False])["Category"].head(5).tolist()
-    if "SB" not in cats:
-        sb_row = df[df["Category"].eq("SB")]
-        if not sb_row.empty and pd.to_numeric(sb_row.iloc[0]["Change"], errors="coerce") <= 0:
-            return f"Drafting {player_name} improves your team's {', '.join(cats)} profile, but adds limited stolen-base value."
-    return f"Drafting {player_name} improves your team's {', '.join(cats)} profile."
+    pretty = {"R": "Runs", "AVG": "AVG", "OPS": "OPS"}
+    cat_text = ", ".join(pretty.get(c, c) for c in cats)
+    return f"Adding {player_name} improves your projected {cat_text}."
 
 
 def build_draft_simulation_result(player_name, team_name, lookup_df, name_col="fullName"):
@@ -5624,9 +5619,9 @@ def render_draft_simulation_result(result):
     if isinstance(impact_df, pd.DataFrame) and not impact_df.empty:
         display_impact = impact_df.copy()
         display_impact = display_impact[display_impact["Category"].isin(["HR", "RBI", "R", "SB", "AVG", "OPS"])].copy()
-        for col in ["Current Team Projection", "Added Player Projection", "New Team Projection", "Change"]:
+        for col in ["Current Projection", "Added Player", "New Projection", "Change"]:
             display_impact[col] = display_impact.apply(lambda r: _format_sim_value(r["Category"], r[col]), axis=1)
-        st.caption("Before / after category impact")
+        st.caption("Simple projected category impact")
         st.dataframe(display_impact, width="stretch", hide_index=True)
         if result.get("rate_estimated"):
             st.caption("AVG/OPS are weighted by AB when available; otherwise they are estimated from available rates.")
@@ -5776,6 +5771,13 @@ def compact_player_action_center(
         help_text=help_text
         or "Pick a player, then choose an action.",
     )
+    sim_result = st.session_state.get(f"{key}_draft_simulation_result")
+    if isinstance(sim_result, dict):
+        st.markdown("##### Simulate Draft Pick")
+        render_draft_simulation_result(sim_result)
+        if st.button("Clear simulation", key=f"{key}_clear_draft_simulation"):
+            st.session_state.pop(f"{key}_draft_simulation_result", None)
+            st.rerun()
 
     return ctx[0] if ctx else None
 
@@ -5970,8 +5972,7 @@ def player_quick_actions_popover(
                     lookup_df,
                     lookup_name_col,
                 )
-                st.session_state["draft_simulation_result"] = result
-                render_draft_simulation_result(result)
+                st.session_state[f"{key}_draft_simulation_result"] = result
         with b9:
             if st.button("Projection breakdown", key=f"{key}_qa_proj_{sfx}"):
                 record_workflow_recent_player(pick)
@@ -7063,14 +7064,6 @@ if active_page == "Comparison Tool":
                     projection_lookup_df=comparison_projection_lookup,
                     projection_lookup_name_col="fullName",
                 )
-
-    _sim_result = st.session_state.get("draft_simulation_result")
-    if isinstance(_sim_result, dict):
-        st.subheader("Simulated Draft Impact")
-        render_draft_simulation_result(_sim_result)
-        if st.button("Clear simulated draft impact", key="comparison_clear_sim_result"):
-            st.session_state.pop("draft_simulation_result", None)
-            st.rerun()
 
     compare_year_range = (year_min, year_max)
     if selected_ids_compare:
