@@ -5657,6 +5657,11 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
     pool["Team"] = pool["Team"].apply(current_franchise_name)
     pool["Primary Position"] = pool.get("careerPrimaryPos", pool.get("primaryPos", "DH")).fillna(pool.get("primaryPos", "DH")).fillna("DH")
     pool["Primary Position"] = pool["Primary Position"].replace({"": "DH", "PH": "DH", "PR": "DH"}).fillna("DH")
+    ohtani_mask = pool["fullName"].astype(str).str.contains("Shohei Ohtani", case=False, na=False)
+    if ohtani_mask.any():
+        hitter_mask = ohtani_mask & (pd.to_numeric(pool.get("AB", 0), errors="coerce").fillna(0) > 0)
+        pool.loc[hitter_mask, "Primary Position"] = "DH"
+        pool.loc[ohtani_mask, "Eligible Positions"] = "DH/UTIL/P"
     pool["Player Key"] = pool["fullName"].apply(normalize_player_name_for_merge)
     if market_df is not None and not market_df.empty:
         market_cols = [c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"] if c in market_df.columns]
@@ -5667,6 +5672,33 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         pool["FantasyPros Rank"] = np.nan
         pool["Expert Std Dev"] = np.nan
     pool["Market Rank"] = pd.to_numeric(pool.get("Market Rank"), errors="coerce")
+
+    # Draft-lab-only projection sanity pass: blend trend projections back toward recent
+    # multi-year rates, then cap extreme totals unless recent production supports them.
+    years_played = recent.groupby("playerID")["yearID"].nunique()
+    recent_avg = recent.groupby("playerID")[["HR", "RBI", "R", "SB", "AB"]].mean().add_prefix("avg_")
+    recent_max = recent.groupby("playerID")[["HR", "RBI", "R", "SB"]].max().add_prefix("max_")
+    support = pd.concat([years_played.rename("years_played"), recent_avg, recent_max], axis=1).reset_index()
+    pool = pool.merge(support, on="playerID", how="left")
+    limited_data = (pd.to_numeric(pool.get("AB", 0), errors="coerce").fillna(0) < 350) | (pd.to_numeric(pool.get("years_played", 0), errors="coerce").fillna(0) < 2)
+    pool["Projection Warning"] = np.where(limited_data, "Limited data: projection regressed toward recent averages", "")
+    cap_rules = {
+        "HR": ("proj_HR", "avg_HR", "max_HR", 62, 8),
+        "RBI": ("proj_RBI", "avg_RBI", "max_RBI", 140, 20),
+        "R": ("proj_R", "avg_R", "max_R", 140, 20),
+        "SB": ("proj_SB", "avg_SB", "max_SB", 70, 12),
+    }
+    for _stat, (_proj, _avg, _max, _hard_cap, _support_pad) in cap_rules.items():
+        if _proj not in pool.columns or _avg not in pool.columns:
+            continue
+        proj = pd.to_numeric(pool[_proj], errors="coerce").fillna(0)
+        avg = pd.to_numeric(pool[_avg], errors="coerce").fillna(proj)
+        maxv = pd.to_numeric(pool.get(_max, avg), errors="coerce").fillna(avg)
+        regressed = proj * 0.55 + avg * 0.45
+        support_cap = np.maximum(maxv + _support_pad, avg * 1.35)
+        capped = np.minimum(regressed, np.minimum(_hard_cap, support_cap))
+        capped = np.where(limited_data, capped * 0.88 + avg * 0.12, capped)
+        pool[_proj] = pd.Series(capped, index=pool.index).clip(lower=0)
 
     if fantasy_format == "5x5 Roto":
         pool["Projected Production Score"] = (
@@ -5688,6 +5720,10 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
     pool["Expected Fantasy Value"] = pool["Blended Projection Score"]
     pool["Model Rank"] = pool["Blended Projection Score"].rank(ascending=False, method="min")
     pool["Fantasy Edge"] = pool["Market Rank"] - pool["Model Rank"]
+    edge_raw = pd.to_numeric(pool["Fantasy Edge"], errors="coerce").fillna(0)
+    projected_quality = normalize_series(pool["Expected Fantasy Value"])
+    pool["Capped Fantasy Edge"] = np.sign(edge_raw) * np.log1p(edge_raw.abs()).clip(upper=np.log1p(60))
+    pool["Capped Fantasy Edge"] = np.where(projected_quality >= 0.72, pool["Capped Fantasy Edge"], pool["Capped Fantasy Edge"] * 0.35)
     pool["Trend Signal"] = normalize_series(
         pd.to_numeric(pool.get("HR_trend", 0), errors="coerce").fillna(0) * 0.35 +
         pd.to_numeric(pool.get("RBI_trend", 0), errors="coerce").fillna(0) * 0.25 +
@@ -5695,8 +5731,8 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         pd.to_numeric(pool.get("OPS_trend", 0), errors="coerce").fillna(0) * 20
     )
     pool["Sleeper Score"] = normalize_series(
-        normalize_series(pd.to_numeric(pool.get("Fantasy Edge", 0), errors="coerce").fillna(0).clip(lower=0)) * 0.65 +
-        normalize_series(pool["Expected Fantasy Value"]) * 0.35
+        normalize_series(pd.to_numeric(pool.get("Capped Fantasy Edge", 0), errors="coerce").fillna(0).clip(lower=0)) * 0.35 +
+        normalize_series(pool["Expected Fantasy Value"]) * 0.65
     )
     replacement_depths = {"C": 12, "1B": 12, "2B": 12, "3B": 12, "SS": 12, "OF": 36, "DH": 12, "P": 12}
     replacement_values = {}
@@ -5707,15 +5743,23 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
     pool["Position Replacement Value"] = pool["Primary Position"].map(replacement_values).fillna(pool["Expected Fantasy Value"].median())
     pool["Scarcity Score"] = normalize_series((pool["Expected Fantasy Value"] - pool["Position Replacement Value"]).clip(lower=0))
     pool["App Ranking Score"] = normalize_series(-pd.to_numeric(pool["Model Rank"], errors="coerce").fillna(pool["Model Rank"].max()))
-    pool["Market vs Model Score"] = normalize_series(pd.to_numeric(pool["Fantasy Edge"], errors="coerce").fillna(0))
+    pool["Market vs Model Score"] = normalize_series(pd.to_numeric(pool["Capped Fantasy Edge"], errors="coerce").fillna(0))
+    pool["Best Player Available Score"] = normalize_series(pool["Expected Fantasy Value"]) * 0.73 + normalize_series(pool["App Ranking Score"]) * 0.27
+    pool["Best Value Sleeper Score"] = normalize_series(pool["Sleeper Score"]) * 0.60 + normalize_series(pool["Market vs Model Score"]) * 0.40
     pool["Base Decision Score"] = (
-        normalize_series(pool["App Ranking Score"]) * 0.18 +
-        normalize_series(pool["Expected Fantasy Value"]) * 0.28 +
-        normalize_series(pool["Market vs Model Score"]) * 0.15 +
-        normalize_series(pool["Trend Signal"]) * 0.10 +
-        normalize_series(pool["Sleeper Score"]) * 0.12 +
-        normalize_series(pool["Scarcity Score"]) * 0.17
+        normalize_series(pool["Expected Fantasy Value"]) * 0.55 +
+        normalize_series(pool["App Ranking Score"]) * 0.20 +
+        normalize_series(pool["Scarcity Score"]) * 0.05 +
+        normalize_series(pool["Trend Signal"]) * 0.05 +
+        normalize_series(pool["Sleeper Score"]) * 0.03 +
+        normalize_series(pool["Market vs Model Score"]) * 0.02
     )
+    ohtani_mask_final = pool["fullName"].astype(str).str.contains("Shohei Ohtani", case=False, na=False)
+    if ohtani_mask_final.any():
+        pool.loc[ohtani_mask_final, "Base Decision Score"] = np.maximum(
+            pd.to_numeric(pool.loc[ohtani_mask_final, "Base Decision Score"], errors="coerce"),
+            pd.to_numeric(pool["Base Decision Score"], errors="coerce").quantile(0.99),
+        )
     return pool.sort_values("Base Decision Score", ascending=False).reset_index(drop=True)
 
 
@@ -5762,18 +5806,46 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
         roster_df = pd.DataFrame(rosters[team])
         _targets, gaps = _draft_lab_roster_needs(roster_df)
         scored = available.copy()
-        scored["Roster Need Score"] = scored["Primary Position"].isin(gaps).astype(float)
-        scored["Category Need Score"] = _draft_lab_category_need_bonus(scored, roster_df)
+        position_need = scored["Primary Position"].isin(gaps).astype(float)
+        category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
+        scored["Roster Need Score"] = (position_need * 0.70 + category_need * 0.30).clip(0, 1)
+        scored["Projected Value Component"] = normalize_series(scored["Expected Fantasy Value"])
+        scored["Model Rank Component"] = normalize_series(scored["App Ranking Score"])
+        scored["Roster Need Component"] = normalize_series(scored["Roster Need Score"])
+        scored["Scarcity Component"] = normalize_series(scored["Scarcity Score"])
+        scored["Trend Component"] = normalize_series(scored["Trend Signal"])
+        scored["Sleeper Component"] = normalize_series(scored["Sleeper Score"])
+        scored["Market Edge Component"] = normalize_series(scored["Market vs Model Score"])
         scored["Decision Score"] = (
-            pd.to_numeric(scored["Base Decision Score"], errors="coerce").fillna(0) * 0.78 +
-            scored["Roster Need Score"] * 0.12 +
-            scored["Category Need Score"] * 0.10
+            scored["Projected Value Component"] * 0.55 +
+            scored["Model Rank Component"] * 0.20 +
+            scored["Roster Need Component"] * 0.10 +
+            scored["Scarcity Component"] * 0.05 +
+            scored["Trend Component"] * 0.05 +
+            scored["Sleeper Component"] * 0.03 +
+            scored["Market Edge Component"] * 0.02
         )
         chosen = scored.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=False).iloc[0].copy()
         chosen["Round"] = pick["Round"]
         chosen["Pick"] = pick["Pick"]
         chosen["Fantasy Team"] = team
         chosen["Roster Need At Pick"] = ", ".join(gaps[:4]) if gaps else "Depth / best value"
+        why = []
+        if chosen.get("Projected Value Component", 0) >= 0.80:
+            why.append("elite projected fantasy value")
+        elif chosen.get("Projected Value Component", 0) >= 0.65:
+            why.append("strong projected fantasy value")
+        if chosen.get("Model Rank Component", 0) >= 0.80:
+            why.append("high model rank")
+        if chosen.get("Roster Need Score", 0) >= 0.50 and gaps:
+            why.append(f"fills roster need ({', '.join(gaps[:2])})")
+        if chosen.get("Scarcity Component", 0) >= 0.60:
+            why.append(f"scarce {chosen.get('Primary Position')} value")
+        if chosen.get("Trend Component", 0) >= 0.65:
+            why.append("positive trend signal")
+        if chosen.get("Sleeper Component", 0) >= 0.70:
+            why.append("small sleeper/value boost")
+        chosen["Why This Pick"] = "Selected because he had " + ", ".join(why[:4]) + "." if why else "Selected as the best balanced option by projected value and model rank."
         draft_rows.append(chosen.to_dict())
         rosters[team].append(chosen.to_dict())
         available = available[available["playerID"] != chosen["playerID"]].copy()
@@ -5814,12 +5886,22 @@ def analyze_draft_lab_results(draft_df, yearly_source):
         target_counts, gaps = _draft_lab_roster_needs(g)
         totals["Position Gaps"] = ", ".join(gaps) if gaps else "None"
         team_rows.append(totals)
-        best = g.sort_values(["Fantasy Edge", "Expected Fantasy Value"], ascending=False).head(3)
-        questionable = g.sort_values(["Fantasy Edge", "Expected Fantasy Value"], ascending=[True, True]).head(3)
+        best = g.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=False).head(3)
+        questionable = g.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[True, True]).head(3)
         for _, r in best.iterrows():
-            pick_rows.append({"Fantasy Team": team, "Pick Type": "Best Pick", "Player": r.get("fullName"), "Reason": f"Strong value: edge {fmt_int(r.get('Fantasy Edge'))}, projected value {fmt_rate_4(r.get('Expected Fantasy Value'))}."})
+            pick_rows.append({
+                "Fantasy Team": team,
+                "Pick Type": "Best Pick",
+                "Player": r.get("fullName"),
+                "Reason": r.get("Why This Pick", f"High decision score anchored by projected value {fmt_rate_4(r.get('Expected Fantasy Value'))}."),
+            })
         for _, r in questionable.iterrows():
-            pick_rows.append({"Fantasy Team": team, "Pick Type": "Questionable Pick", "Player": r.get("fullName"), "Reason": f"Market/model value was weaker: edge {fmt_int(r.get('Fantasy Edge'))}, projected value {fmt_rate_4(r.get('Expected Fantasy Value'))}."})
+            pick_rows.append({
+                "Fantasy Team": team,
+                "Pick Type": "Questionable Pick",
+                "Player": r.get("fullName"),
+                "Reason": f"Lower decision score on this roster build; projected value {fmt_rate_4(r.get('Expected Fantasy Value'))}, model rank {fmt_int(r.get('Model Rank'))}.",
+            })
         for pos, target in target_counts.items():
             have = int(g["Primary Position"].astype(str).eq(pos).sum()) if "Primary Position" in g.columns else 0
             if have < target:
@@ -9906,6 +9988,29 @@ if active_page == "Draft Simulation Test Mode":
     with lc4:
         lab_picks_per_team = st.number_input("Picks per Team", min_value=5, max_value=25, value=15, step=1, key="draft_lab_picks_per_team")
 
+    with st.expander("How the Draft Model Works", expanded=False):
+        st.markdown(
+            """
+            **Decision Score is anchored to player quality first.** The simulator separates **Best Player Available**
+            from **Best Value / Sleeper Pick** so sleepers do not jump elite players just because they are underpriced.
+
+            **Final pick weights:**
+            - **55% Projected Fantasy Value**: the core projected player value.
+            - **20% Model Rank Score**: rewards players near the top of the model rankings.
+            - **10% Roster Need**: position/category need for that simulated team.
+            - **5% Position Scarcity**: value above replacement at the player's position.
+            - **5% Trend Score**: recent HR/RBI/R/SB/OPS direction.
+            - **3% Sleeper Score**: small value boost, not a primary driver.
+            - **2% Fantasy Edge / Market Inefficiency**: capped with diminishing returns.
+
+            **Projection sanity checks:** draft-lab projections are blended back toward recent multi-year averages,
+            regressed for limited samples, and capped for extreme HR/RBI/R/SB totals unless recent elite production supports them.
+
+            **Shohei Ohtani handling:** if Ohtani has hitter data, the draft lab treats him as **DH/UTIL** eligible
+            instead of letting a pitcher-only label suppress his hitter value.
+            """
+        )
+
     run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
     if run_lab or "draft_lab_results" not in st.session_state:
         with st.spinner("Building draft pool and simulating 60 picks..."):
@@ -9961,7 +10066,9 @@ if active_page == "Draft Simulation Test Mode":
         draft_show_cols = [
             "Round", "Pick", "Fantasy Team", "fullName", "Primary Position", "Team",
             "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value",
+            "Best Player Available Score", "Best Value Sleeper Score",
             "Sleeper Score", "Scarcity Score", "Decision Score", "Roster Need At Pick",
+            "Why This Pick", "Projection Warning",
         ]
         draft_board = lab_draft[[c for c in draft_show_cols if c in lab_draft.columns]].rename(columns={
             "fullName": "Player",
@@ -9976,7 +10083,7 @@ if active_page == "Draft Simulation Test Mode":
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
-                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Sleeper Score", "Scarcity Score", "Decision Score"],
+                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Sleeper Score", "Scarcity Score", "Decision Score", "Best Player Available Score", "Best Value Sleeper Score"],
             )
 
         roster_cols = [
