@@ -6972,13 +6972,57 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             st.rerun()
 
 
-PAGE_OPTIONS = ["Historical Explorer", "Career Totals", "Leaderboards", "Comparison Tool", "Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts", "Draft Room Simulator", "Draft Assistant Simulator", "Draft Simulation Test Mode", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"]
+PAGE_OPTIONS = [
+    "Historical Explorer",
+    "Career Totals",
+    "Leaderboards",
+    "Comparison Tool",
+    "Trend Value",
+    "Valuation",
+    "ML Predictions",
+    "Fantasy Sleepers & Busts",
+    "Draft Room Simulator",
+    "Draft Assistant Simulator",
+    "Draft Simulation Test Mode",
+    "Fantasy Standings Tracker",
+    "Fantasy Lineup Assistant",
+]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
+
+# Sidebar display labels — emojis match each page's section header title.
+PAGE_OPTION_LABELS = {
+    "Historical Explorer": "🔎 Historical Explorer",
+    "Career Totals": "📚 Career Totals",
+    "Leaderboards": "🏆 Leaderboards",
+    "Comparison Tool": "📈 Comparison Tool",
+    "Trend Value": "🔥 Trend Value",
+    "Valuation": "💰 Valuation",
+    "ML Predictions": "🤖 ML Predictions",
+    "Fantasy Sleepers & Busts": "🧠 Fantasy Sleepers & Busts",
+    "Draft Room Simulator": "🧾 Draft Room Simulator",
+    "Draft Assistant Simulator": "🧩 Draft Assistant Simulator",
+    "Draft Simulation Test Mode": "🧪 Draft Simulation Test Mode",
+    "Fantasy Standings Tracker": "🏆 Fantasy Standings Tracker",
+    "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
+}
+_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
+
+
+def page_option_label(page_key: str) -> str:
+    return PAGE_OPTION_LABELS.get(page_key, page_key)
+
+
+def normalize_page_key(value) -> str:
+    """Map sidebar/session values back to canonical page keys."""
+    key = str(value or "").strip()
+    if key in _PAGE_OPTION_SET:
+        return key
+    return _PAGE_LABEL_TO_KEY.get(key, "Historical Explorer")
 
 
 def request_sidebar_page(page: str):
     """Defer page changes until before ``st.sidebar.radio`` — avoids StreamlitAPIException."""
-    p = str(page).strip()
+    p = normalize_page_key(page)
     if p in _PAGE_OPTION_SET:
         st.session_state["_pending_active_page"] = p
         st.rerun()
@@ -6995,16 +7039,17 @@ def _sync_active_page_from_sidebar():
 # StreamlitValueAssignmentNotAllowedError for button-like widgets.
 
 _pending_nav = st.session_state.pop("_pending_active_page", None)
-if _pending_nav and _pending_nav in _PAGE_OPTION_SET:
-    st.session_state["active_page"] = _pending_nav
-    st.session_state["_active_page_selector"] = _pending_nav
+if _pending_nav:
+    _pending_nav = normalize_page_key(_pending_nav)
+    if _pending_nav in _PAGE_OPTION_SET:
+        st.session_state["active_page"] = _pending_nav
+        st.session_state["_active_page_selector"] = _pending_nav
 
 st.session_state.setdefault("active_page", "Historical Explorer")
-if st.session_state.get("active_page") not in _PAGE_OPTION_SET:
-    st.session_state["active_page"] = "Historical Explorer"
-
-if st.session_state.get("_active_page_selector") not in _PAGE_OPTION_SET:
-    st.session_state["_active_page_selector"] = st.session_state["active_page"]
+st.session_state["active_page"] = normalize_page_key(st.session_state.get("active_page"))
+st.session_state["_active_page_selector"] = normalize_page_key(
+    st.session_state.get("_active_page_selector", st.session_state["active_page"])
+)
 
 _page_index = PAGE_OPTIONS.index(st.session_state["_active_page_selector"])
 _selected_page = st.sidebar.radio(
@@ -7012,6 +7057,7 @@ _selected_page = st.sidebar.radio(
     PAGE_OPTIONS,
     index=_page_index,
     key="_active_page_selector",
+    format_func=page_option_label,
 )
 if _selected_page in _PAGE_OPTION_SET:
     st.session_state["active_page"] = _selected_page
@@ -11253,7 +11299,7 @@ if active_page == "ML Predictions":
 if show_perf_debug:
     elapsed_ms = (time.perf_counter() - _APP_RENDER_START) * 1000
     with st.sidebar.expander("Performance Debug", expanded=True):
-        st.caption(f"Current page: **{active_page}**")
+        st.caption(f"Current page: **{page_option_label(active_page)}**")
         st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
         st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
         st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
