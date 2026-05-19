@@ -283,6 +283,127 @@ def fmt_rate_4(x):
     return f"{x:.4f}"
 
 
+def fmt_score_2(x):
+    x = pd.to_numeric(x, errors="coerce")
+    if pd.isna(x):
+        return ""
+    return f"{x:.2f}"
+
+
+def fmt_fantasy_edge(x):
+    x = pd.to_numeric(x, errors="coerce")
+    if pd.isna(x):
+        return ""
+    return f"{x:+.1f}"
+
+
+def fmt_rate_dot(x):
+    """Rate stat for display: four decimals, leading dot when below 1.000."""
+    x = pd.to_numeric(x, errors="coerce")
+    if pd.isna(x):
+        return ""
+    s = f"{x:.4f}"
+    if x < 1 and x >= 0 and s.startswith("0."):
+        return s[1:]
+    if x > -1 and x < 0 and s.startswith("-0."):
+        return "-" + s[2:]
+    return s
+
+
+def fmt_percent_1(x):
+    x = pd.to_numeric(x, errors="coerce")
+    if pd.isna(x):
+        return ""
+    if abs(x) <= 1.5:
+        x = x * 100
+    return f"{x:.1f}%"
+
+
+def _draft_lab_column_kind(col):
+    """Classify a draft-lab column for consistent numeric formatting."""
+    name = str(col)
+    low = name.lower()
+    if name in {"Round", "Pick", "Players", "Have", "Target", "Gap", "Projected Team Rank", "Actual Rank"}:
+        return "int"
+    if name in {"Market Rank", "Model Rank", "FantasyPros Rank", "ADP Rank", "Current Rank"} or low.endswith(" rank"):
+        return "int"
+    if "fantasy edge" in low:
+        return "edge"
+    if low.endswith("probability") or "percent" in low or low.endswith(" pct") or name == "Projection Confidence Score":
+        return "percent"
+    if name in {
+        "Expected Fantasy Value", "Total Projected Fantasy Value", "Decision Score", "Sleeper Score",
+        "Scarcity Score", "Best Player Available Score", "Best Value Sleeper Score", "Blended Projection Score",
+        "ML Projection Score", "App Ranking Score", "Actual Draft Score", "Elite Star Score",
+        "Roster Need Improvement", "Projected Value Gain/Loss", "Average Scarcity Score",
+        "Average Expected Fantasy Value",
+    }:
+        return "score2"
+    if low in {"ba", "obp", "slg", "ops"} or "projected avg" in low or "projected obp" in low or "projected slg" in low or "projected ops" in low:
+        return "rate"
+    if low.startswith("proj_") and low.split("_", 1)[-1] in {"ba", "obp", "slg", "ops"}:
+        return "rate"
+    if low.startswith("proj_") and low.split("_", 1)[-1] in {"hr", "rbi", "r", "sb", "g", "pa", "ab", "bb", "h", "2b", "3b"}:
+        return "count"
+    if low.startswith("projected "):
+        stat = low.replace("projected ", "", 1)
+        if stat in {"hr", "rbi", "r", "sb", "g", "pa", "ab", "bb", "h", "2b", "3b"}:
+            return "count"
+        if stat in {"avg", "obp", "slg", "ops"}:
+            return "rate"
+    if low.startswith("actual ") and low.split()[-1] in {"hr", "rbi", "r", "sb"}:
+        return "count"
+    if low.startswith("actual ") and low.endswith("ops"):
+        return "rate"
+    return None
+
+
+def format_draft_lab_table(df, for_export=False):
+    """Polished numeric formatting for Draft Simulation Test Mode tables and exports."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for col in out.columns:
+        kind = _draft_lab_column_kind(col)
+        if kind is None:
+            continue
+        vals = pd.to_numeric(out[col], errors="coerce")
+        if kind == "int":
+            out[col] = vals.round(0).astype("Int64")
+        elif kind == "edge":
+            out[col] = vals.apply(fmt_fantasy_edge) if for_export else vals.round(1)
+        elif kind == "score2":
+            out[col] = vals.apply(fmt_score_2) if for_export else vals.round(2)
+        elif kind == "percent":
+            out[col] = vals.apply(fmt_percent_1)
+        elif kind == "rate":
+            out[col] = vals.apply(fmt_rate_dot) if for_export else vals.round(4)
+        else:  # count
+            out[col] = vals.apply(fmt_count_1) if for_export else vals.round(1)
+    return out
+
+
+def _draft_lab_styler_format(display_df):
+    """Pandas Styler format map for draft-lab tables."""
+    fmt = {}
+    for col in display_df.columns:
+        kind = _draft_lab_column_kind(col)
+        if kind == "percent":
+            continue
+        if kind == "edge":
+            fmt[col] = "{:+.1f}"
+        elif kind == "score2":
+            fmt[col] = "{:.2f}"
+        elif kind == "count":
+            fmt[col] = "{:.1f}"
+        elif kind == "rate":
+            fmt[col] = fmt_rate_dot
+        elif kind == "percent":
+            fmt[col] = "{:.1f}%"
+        elif kind == "int":
+            fmt[col] = "{:.0f}"
+    return fmt
+
 
 def normalize_series(series):
     """Scale a numeric pandas Series to 0-1 safely.
@@ -1303,6 +1424,10 @@ def _df_to_csv_bytes(df):
 def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_ROWS, style_cols=None):
     """Render a table quickly and add a CSV export button that opens cleanly in Excel."""
     table_df = df.copy()
+    export_df = table_df
+    if str(key).startswith("draft_lab"):
+        table_df = format_draft_lab_table(table_df, for_export=False)
+        export_df = format_draft_lab_table(df.copy(), for_export=True)
     if len(table_df) > display_rows:
         st.caption(f"Showing first {display_rows:,} rows. Export downloads all {len(table_df):,} rows.")
         display_df = table_df.head(display_rows)
@@ -1312,8 +1437,13 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
     style_cols = [c for c in (style_cols or []) if c in display_df.columns]
     # Avoid heavy styling on large tables. Styling was slowing Trend/Valuation pages and re-expanding decimals.
     if style_cols and display_df.size <= 2500:
-        fmt = {}
+        if str(key).startswith("draft_lab"):
+            fmt = _draft_lab_styler_format(display_df)
+        else:
+            fmt = {}
         for col in display_df.columns:
+            if str(key).startswith("draft_lab"):
+                continue
             if col in TREND_RATE_COLS or col in ["OPS Δ", "BA Δ", "OBP Δ", "SLG Δ"]:
                 fmt[col] = "{:.4f}"
             elif col in TREND_COUNT_COLS or col in ["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ", "R Δ", "H Δ", "2B Δ", "3B Δ", "BB Δ"]:
@@ -1372,7 +1502,7 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
 
     st.download_button(
         "Export CSV for Excel",
-        data=_df_to_csv_bytes(table_df),
+        data=_df_to_csv_bytes(export_df if str(key).startswith("draft_lab") else table_df),
         file_name=file_name,
         mime="text/csv",
         width="content",
@@ -6080,14 +6210,14 @@ def analyze_draft_lab_results(draft_df, yearly_source):
                 "Fantasy Team": team,
                 "Pick Type": "Best Pick",
                 "Player": r.get("fullName"),
-                "Reason": r.get("Why This Pick", f"High decision score anchored by projected value {fmt_rate_4(r.get('Expected Fantasy Value'))}."),
+                "Reason": r.get("Why This Pick", f"High decision score anchored by projected value {fmt_score_2(r.get('Expected Fantasy Value'))}."),
             })
         for _, r in questionable.iterrows():
             pick_rows.append({
                 "Fantasy Team": team,
                 "Pick Type": "Questionable Pick",
                 "Player": r.get("fullName"),
-                "Reason": f"Lower decision score on this roster build; projected value {fmt_rate_4(r.get('Expected Fantasy Value'))}, model rank {fmt_int(r.get('Model Rank'))}.",
+                "Reason": f"Lower decision score on this roster build; projected value {fmt_score_2(r.get('Expected Fantasy Value'))}, model rank {fmt_int(r.get('Model Rank'))}.",
             })
         for pos, target in target_counts.items():
             have = int(g["Primary Position"].astype(str).eq(pos).sum()) if "Primary Position" in g.columns else 0
@@ -6185,8 +6315,8 @@ def suggest_draft_lab_trades(draft_df, team_summary, max_suggestions=12):
                         "Player From Team A": a.get("fullName"),
                         "Team Giving Player B": team_b,
                         "Player From Team B": b.get("fullName"),
-                        f"{team_a} Impact": f"+{a_get_help} need area(s); value change {fmt_rate_4(b_val - a_val)}",
-                        f"{team_b} Impact": f"+{b_get_help} need area(s); value change {fmt_rate_4(a_val - b_val)}",
+                        f"{team_a} Impact": f"+{a_get_help} need area(s); value change {fmt_score_2(b_val - a_val)}",
+                        f"{team_b} Impact": f"+{b_get_help} need area(s); value change {fmt_score_2(a_val - b_val)}",
                         "Helps Both Teams": "Yes" if a_get_help > 0 and b_get_help > 0 else "One-sided / needs review",
                         "Projected Value Gain/Loss": (b_val - a_val) + (a_val - b_val),
                         "Roster Need Improvement": a_get_help + b_get_help,
@@ -10287,7 +10417,7 @@ if active_page == "Draft Simulation Test Mode":
             winner = lab_team_summary.sort_values("Projected Team Rank").iloc[0]
             w1, w2, w3, w4 = st.columns(4)
             w1.metric("Projected Best Draft", winner["Fantasy Team"])
-            w2.metric("Projected Value", fmt_rate_4(winner["Total Projected Fantasy Value"]))
+            w2.metric("Projected Value", fmt_score_2(winner["Total Projected Fantasy Value"]))
             w3.metric("Total Picks", f"{len(lab_draft):,}")
             w4.metric("Teams", "4")
 
@@ -10315,7 +10445,7 @@ if active_page == "Draft Simulation Test Mode":
             st.subheader("Full Draft Pick Order")
             st.caption("Snake draft: odd rounds Team A -> Team D, even rounds Team D -> Team A.")
             render_output_table(
-                format_fantasy_table(clean_ui_columns(draft_board)),
+                clean_ui_columns(draft_board),
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
@@ -10346,7 +10476,7 @@ if active_page == "Draft Simulation Test Mode":
             team_view = st.selectbox("View Team", ["All Teams", "Team A", "Team B", "Team C", "Team D"], key="draft_lab_roster_team")
             roster_filtered = roster_view if team_view == "All Teams" else roster_view[roster_view["Fantasy Team"] == team_view]
             render_output_table(
-                format_fantasy_table(clean_ui_columns(roster_filtered)),
+                clean_ui_columns(roster_filtered),
                 key="draft_lab_rosters",
                 file_name="draft_simulation_rosters.csv",
                 display_rows=80,
@@ -10360,7 +10490,7 @@ if active_page == "Draft Simulation Test Mode":
             else:
                 team_analysis = lab_team_summary
             render_output_table(
-                format_fantasy_table(clean_ui_columns(team_analysis)),
+                clean_ui_columns(team_analysis),
                 key="draft_lab_team_analysis",
                 file_name="draft_simulation_team_analysis.csv",
                 display_rows=20,
@@ -10372,7 +10502,7 @@ if active_page == "Draft Simulation Test Mode":
             if lab_actual_summary is not None and not lab_actual_summary.empty:
                 st.subheader("Actual 2026 Results Check")
                 render_output_table(
-                    format_fantasy_table(clean_ui_columns(lab_actual_summary)),
+                    clean_ui_columns(lab_actual_summary),
                     key="draft_lab_actual_2026",
                     file_name="draft_simulation_actual_2026.csv",
                     display_rows=20,
@@ -10405,14 +10535,14 @@ if active_page == "Draft Simulation Test Mode":
         with tabs[5]:
             st.subheader("Export Draft Lab")
             export_frames = build_draft_lab_export_frames(
-                draft_board,
-                roster_view,
-                lab_team_summary,
-                lab_strengths,
-                lab_pick_analysis,
-                lab_gaps,
-                lab_trades,
-                lab_actual_summary,
+                format_draft_lab_table(draft_board.copy(), for_export=True),
+                format_draft_lab_table(roster_view.copy(), for_export=True),
+                format_draft_lab_table(lab_team_summary.copy(), for_export=True),
+                format_draft_lab_table(lab_strengths.copy(), for_export=True) if lab_strengths is not None and not lab_strengths.empty else lab_strengths,
+                format_draft_lab_table(lab_pick_analysis.copy(), for_export=True) if lab_pick_analysis is not None and not lab_pick_analysis.empty else lab_pick_analysis,
+                format_draft_lab_table(lab_gaps.copy(), for_export=True) if lab_gaps is not None and not lab_gaps.empty else lab_gaps,
+                format_draft_lab_table(lab_trades.copy(), for_export=True) if lab_trades is not None and not lab_trades.empty else lab_trades,
+                format_draft_lab_table(lab_actual_summary.copy(), for_export=True) if lab_actual_summary is not None and not lab_actual_summary.empty else lab_actual_summary,
             )
             st.download_button(
                 "Download Full Draft Lab CSV",
