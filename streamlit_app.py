@@ -5758,21 +5758,50 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
     consistency = (1 - volatility).clip(0, 1)
     sample_score = (total_ab / 1100).clip(0, 1)
     games_score = (avg_g / 125).clip(0, 1)
-    confidence_score = (sample_score * 0.34 + games_score * 0.26 + consistency * 0.25 + (years / 3).clip(0, 1) * 0.15).clip(0, 1)
+    avg_hr = safe_numeric_series(pool, "avg_HR", 0)
+    max_hr = safe_numeric_series(pool, "max_HR", 0)
+    avg_ops = safe_numeric_series(pool, "avg_OPS", 0)
+    power_history = normalize_series(avg_hr * 0.55 + max_hr * 0.45)
+    production_history = normalize_series(avg_ops)
+    multi_season_strength = ((years >= 3).astype(float) * 0.22 + (years >= 2).astype(float) * 0.10)
+    playing_time_strength = (projected_g / 145).clip(0, 1)
+    elite_star_score = (
+        power_history * 0.30 +
+        production_history * 0.24 +
+        consistency * 0.22 +
+        multi_season_strength +
+        playing_time_strength * 0.14
+    ).clip(0, 1)
+    stable_veteran = (years >= 3) & (consistency >= 0.58) & (volatility < 0.48)
+    injury_risk = (projected_g < avg_g * 0.82) | (durability < 0.55)
+    star_protected = (elite_star_score >= 0.68) & (consistency >= 0.55) & (playing_time_strength >= 0.72)
+    confidence_score = (
+        sample_score * 0.28 +
+        games_score * 0.20 +
+        consistency * 0.30 +
+        (years / 3).clip(0, 1) * 0.12 +
+        elite_star_score * 0.10
+    ).clip(0, 1)
+    pool["Elite Star Score"] = elite_star_score.round(4)
     pool["Projection Confidence Score"] = confidence_score
     pool["Projection Confidence"] = np.select(
-        [confidence_score >= 0.72, confidence_score >= 0.48],
+        [confidence_score >= 0.70, confidence_score >= 0.46],
         ["High Confidence", "Medium Confidence"],
         default="Risky Projection",
     )
     pool["Projection Warning"] = np.select(
-        [very_limited_data, limited_data, volatility >= 0.70],
+        [very_limited_data, limited_data & ~star_protected, volatility >= 0.70],
         [
             "Small sample: projection heavily regressed and capped",
             "Limited data: projection regressed toward recent averages",
             "Volatile profile: projection confidence reduced",
         ],
         default="",
+    )
+    pool.loc[star_protected, "Projection Warning"] = np.where(
+        pool.loc[star_protected, "Projection Warning"].astype(str).str.strip() == "",
+        "Star-tier profile: lighter regression and softer ceiling",
+        pool.loc[star_protected, "Projection Warning"],
     )
 
     league_rates = {}
@@ -5782,15 +5811,24 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
     league_ba = float((projection_source["H"].sum() / projection_source["AB"].sum())) if projection_source["AB"].sum() else 0.250
     league_ops = float(projection_source["OPS"].replace(0, np.nan).median()) if projection_source["OPS"].replace(0, np.nan).notna().any() else 0.720
 
+    # Slightly higher base caps for power/run cats; SB stays tighter.
     cap_rules = {
-        "HR": ("proj_HR", 58, 6, 1.20, 2.15),
-        "RBI": ("proj_RBI", 128, 16, 1.20, 1.85),
-        "R": ("proj_R", 128, 16, 1.20, 1.85),
-        "SB": ("proj_SB", 60, 10, 1.18, 2.35),
+        "HR": ("proj_HR", 62, 8, 1.28, 2.30, True),
+        "RBI": ("proj_RBI", 135, 18, 1.28, 1.95, True),
+        "R": ("proj_R", 135, 18, 1.28, 1.95, True),
+        "SB": ("proj_SB", 62, 10, 1.20, 2.35, False),
     }
-    rate_regression = (420 / (total_pa + 420)).clip(0.24, 0.72)
-    rate_regression = (rate_regression + very_limited_data.astype(float) * 0.12 + volatility * 0.08).clip(0.24, 0.82)
-    for stat, (proj_col, hard_cap, support_pad, avg_cap_mult, league_cap_mult) in cap_rules.items():
+    base_rate_regression = (380 / (total_pa + 380)).clip(0.20, 0.64)
+    rate_regression = (
+        base_rate_regression
+        + very_limited_data.astype(float) * 0.10
+        + volatility * 0.06
+        + injury_risk.astype(float) * 0.05
+        - elite_star_score * 0.15
+        - stable_veteran.astype(float) * 0.06
+    ).clip(0.14, 0.76)
+    star_weight = elite_star_score.clip(0, 1)
+    for stat, (proj_col, hard_cap, support_pad, avg_cap_mult, league_cap_mult, star_soft_cap) in cap_rules.items():
         total_rate = (safe_numeric_series(pool, stat, 0) / total_pa.replace(0, np.nan)).fillna(0)
         latest_rate = (
             safe_numeric_series(pool, f"latest_support_{stat}", 0) /
@@ -5798,19 +5836,36 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         ).fillna(total_rate)
         rate_trend = safe_numeric_series(pool, f"{stat}_per_PA_trend", 0)
         trend_rate = (latest_rate + rate_trend).clip(lower=0)
-        blended_rate = total_rate * 0.52 + latest_rate * 0.33 + trend_rate * 0.15
+        blended_rate = (
+            total_rate * (0.50 - star_weight * 0.06) +
+            latest_rate * (0.32 + star_weight * 0.08) +
+            trend_rate * (0.18 + star_weight * 0.02)
+        )
         stabilized_rate = blended_rate * (1 - rate_regression) + league_rates[stat] * rate_regression
         avg_stat = safe_numeric_series(pool, f"avg_{stat}", 0)
         max_stat = safe_numeric_series(pool, f"max_{stat}", np.nan).fillna(avg_stat)
-        rate_cap = np.maximum(total_rate * avg_cap_mult, league_rates[stat] * league_cap_mult)
-        rate_cap = np.where(very_limited_data, np.maximum(total_rate * 1.08, league_rates[stat] * 1.55), rate_cap)
+        star_cap_lift = np.where(star_soft_cap, star_weight * 0.14, star_weight * 0.05)
+        rate_cap = np.maximum(total_rate * (avg_cap_mult + star_cap_lift), league_rates[stat] * (league_cap_mult + star_cap_lift))
+        rate_cap = np.where(very_limited_data, np.maximum(total_rate * 1.08, league_rates[stat] * 1.50), rate_cap)
         projected = np.minimum(stabilized_rate, rate_cap) * projected_pa
-        support_cap = np.maximum(max_stat + support_pad, avg_stat * np.where(very_limited_data, 1.10, 1.25))
-        projected = np.minimum(projected, np.minimum(hard_cap, support_cap))
+        hard_cap_eff = hard_cap + np.where(star_soft_cap, star_weight * 10, star_weight * 4)
+        support_pad_eff = support_pad + np.where(star_soft_cap, star_weight * 6, star_weight * 2)
+        support_mult = np.where(very_limited_data, 1.10, 1.25) + np.where(star_soft_cap, star_weight * 0.14, star_weight * 0.06)
+        support_cap = np.maximum(max_stat + support_pad_eff, avg_stat * support_mult)
+        projected = np.minimum(projected, np.minimum(hard_cap_eff, support_cap))
+        if star_soft_cap:
+            talent_floor = (avg_stat * 0.52 + max_stat * 0.48) * (projected_pa / total_pa.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(1)
+            star_floor = talent_floor * (0.90 + star_weight * 0.10)
+            projected = np.maximum(projected, star_floor)
+        if star_protected.any():
+            protected_boost = 1 + star_weight * np.where(star_protected, 0.035, 0.0)
+            projected = projected * protected_boost
         pool[proj_col] = pd.Series(projected, index=pool.index).clip(lower=0).round(1)
 
-    ba_regression = (360 / (total_ab + 360)).clip(0.20, 0.68)
-    ops_regression = (420 / (total_pa + 420)).clip(0.20, 0.68)
+    ba_regression = (400 / (total_ab + 400)).clip(0.18, 0.62)
+    ops_regression = (430 / (total_pa + 430)).clip(0.18, 0.62)
+    ba_regression = (ba_regression - elite_star_score * 0.08 - stable_veteran.astype(float) * 0.03).clip(0.14, 0.62)
+    ops_regression = (ops_regression - elite_star_score * 0.08 - stable_veteran.astype(float) * 0.03).clip(0.14, 0.62)
     latest_ba = safe_numeric_series(pool, "latest_support_BA", np.nan).fillna(safe_numeric_series(pool, "latest_BA", np.nan))
     avg_ba = safe_numeric_series(pool, "avg_BA", np.nan).fillna(safe_numeric_series(pool, "BA", np.nan))
     ba_trend = safe_numeric_series(pool, "BA_trend", 0).clip(-0.025, 0.025)
@@ -5835,9 +5890,15 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
             pool["proj_HR"] * 4 + pool["proj_RBI"] + pool["proj_R"] + pool["proj_SB"] * 2 + pool["proj_BB"] + pool["proj_OPS"] * 20
         )
     pool = build_realistic_draft_ml_adjustments(pool, fantasy_format, projection_mode=projection_style)
+    raw_production = normalize_series(pool["Projected Production Score"])
+    ml_blended = normalize_series(
+        safe_numeric_series(pool, "Realistic Base Projection Score", np.nan).fillna(pool["Projected Production Score"]) * 0.86 +
+        safe_numeric_series(pool, "Expected Fantasy Value", np.nan).fillna(pool["Projected Production Score"]) * 0.14
+    )
+    elite_preserve = elite_star_score.clip(0, 1)
+    high_conf_elite = elite_preserve * confidence_score.clip(0, 1)
     pool["Blended Projection Score"] = normalize_series(
-        safe_numeric_series(pool, "Realistic Base Projection Score", np.nan).fillna(pool["Projected Production Score"]) * 0.88 +
-        safe_numeric_series(pool, "Expected Fantasy Value", np.nan).fillna(pool["Projected Production Score"]) * 0.12
+        ml_blended * (1 - high_conf_elite * 0.14) + raw_production * (high_conf_elite * 0.14)
     )
     pool["Expected Fantasy Value"] = pool["Blended Projection Score"]
     pool["Model Rank"] = pool["Blended Projection Score"].rank(ascending=False, method="min")
@@ -10177,8 +10238,9 @@ if active_page == "Draft Simulation Test Mode":
             - **2% Fantasy Edge / Market Inefficiency**: capped with diminishing returns.
 
             **Projection sanity checks:** draft-lab projections estimate games, plate appearances, and at-bats first,
-            then rebuild HR/RBI/R/SB from stabilized per-PA rates. Limited samples are regressed harder, volatile
-            profiles receive lower confidence, and extreme totals are capped unless recent elite production supports them.
+            then rebuild HR/RBI/R/SB from stabilized per-PA rates. Regression is dynamic: stable veterans and star-tier
+            profiles keep more upside, while small samples, volatility, and injury-risk profiles are regressed harder.
+            Elite ceilings for HR/RBI/R are softer than before, but runaway breakouts are still capped.
 
             **Shohei Ohtani handling:** if Ohtani has hitter data, the draft lab treats him as **DH/UTIL** eligible
             instead of letting a pitcher-only label suppress his hitter value.
