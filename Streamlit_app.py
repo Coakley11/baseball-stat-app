@@ -11,6 +11,7 @@ import re
 import unicodedata
 import hashlib
 import time
+import uuid
 from collections import Counter
 
 import workflow_sidebar as wf_sb
@@ -1325,6 +1326,11 @@ PAGE_GUIDES = {
         "purpose": "Run a polished four-team fantasy draft lab using the app's Draft Assistant-style scoring.",
         "when": "For portfolio demos, draft strategy testing, or comparing team-building outcomes.",
         "outputs": "Snake draft results, rosters, team rankings, best/questionable picks, position gaps, exports, and trade ideas.",
+    },
+    "Live Draft Room": {
+        "purpose": "Run a configurable live snake draft in your browser with timers, manual picks, and auto-pick rules.",
+        "when": "Mock drafts, portfolio demos, or testing draft-room flow before multi-user sync is added.",
+        "outputs": "Live draft board, team rosters, recommendations, exports, and optional handoff to Draft Simulation analysis.",
     },
     "Fantasy Standings Tracker": {
         "purpose": "Score every fantasy team with current-season stats.",
@@ -6363,6 +6369,355 @@ def draft_lab_excel_export(frames):
     return buffer.getvalue()
 
 
+LIVE_DRAFT_TIMER_CHOICES = {
+    "30 sec": 30,
+    "60 sec": 60,
+    "90 sec": 90,
+    "2 min": 120,
+    "5 min": 300,
+    "20 min": 1200,
+}
+LIVE_DRAFT_AUTO_RULES = [
+    "best market rank",
+    "best model rank",
+    "best projected fantasy value",
+    "best roster need",
+    "balanced recommendation",
+]
+
+
+def _live_draft_default_teams(num_teams):
+    labels = []
+    for i in range(int(num_teams)):
+        if i < 26:
+            labels.append(f"Team {chr(65 + i)}")
+        else:
+            labels.append(f"Team {i + 1}")
+    return labels
+
+
+def _live_draft_target_counts(config):
+    slots = config.get("slots", {})
+    return {
+        "C": int(slots.get("C", 1)),
+        "1B": int(slots.get("1B", 1)),
+        "2B": int(slots.get("2B", 1)),
+        "3B": int(slots.get("3B", 1)),
+        "SS": int(slots.get("SS", 1)),
+        "OF": int(slots.get("OF", 3)),
+        "DH": int(slots.get("DH", 1)),
+        "P": int(slots.get("P", 0)),
+    }
+
+
+def _live_draft_roster_needs(roster_df, target_counts):
+    if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
+        return [pos for pos, n in target_counts.items() if n > 0]
+    counts = roster_df["Primary Position"].fillna("DH").astype(str).value_counts().to_dict()
+    gaps = [pos for pos, target in target_counts.items() if target > 0 and int(counts.get(pos, 0)) < target]
+    return gaps
+
+
+def _live_draft_pick_verdict(row, rule, gaps):
+    player = row.get("fullName", "Player")
+    pos = row.get("Primary Position", "")
+    parts = [f"Drafted via {rule}"]
+    if gaps and str(pos) in gaps:
+        parts.append(f"fills {pos} need")
+    efv = pd.to_numeric(row.get("Expected Fantasy Value", np.nan), errors="coerce")
+    if pd.notna(efv) and efv >= 0.75:
+        parts.append("elite projected value")
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    if pd.notna(edge) and edge >= 8:
+        parts.append("positive fantasy edge")
+    return f"{player}: " + ", ".join(parts[:4]) + "."
+
+
+def _live_draft_score_available(available, roster_df, rule, target_counts):
+    scored = available.copy()
+    gaps = _live_draft_roster_needs(roster_df, target_counts)
+    rule = str(rule).strip().lower()
+    if rule == "best market rank":
+        scored["_pick_score"] = -pd.to_numeric(scored.get("Market Rank"), errors="coerce").fillna(9999)
+        scored = scored.sort_values(["_pick_score", "Expected Fantasy Value"], ascending=[False, False])
+    elif rule == "best model rank":
+        scored["_pick_score"] = -pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999)
+        scored = scored.sort_values(["_pick_score", "Expected Fantasy Value"], ascending=[False, False])
+    elif rule == "best projected fantasy value":
+        scored = scored.sort_values(["Expected Fantasy Value", "Model Rank"], ascending=[False, True])
+    elif rule == "best roster need":
+        position_need = scored["Primary Position"].isin(gaps).astype(float)
+        position_need = position_need.mask(scored["Primary Position"].astype(str).eq("C"), position_need * 0.85)
+        category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
+        scored["_pick_score"] = position_need * 0.70 + category_need * 0.30
+        scored = scored.sort_values(["_pick_score", "Expected Fantasy Value"], ascending=[False, False])
+    else:
+        position_need = scored["Primary Position"].isin(gaps).astype(float)
+        position_need = position_need.mask(scored["Primary Position"].astype(str).eq("C"), position_need * 0.85)
+        category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
+        scored["Roster Need Score"] = (position_need * 0.70 + category_need * 0.30).clip(0, 1)
+        rank_component = (
+            scored["App Ranking Score"]
+            if "App Ranking Score" in scored.columns
+            else normalize_series(-pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999))
+        )
+        scored["Decision Score"] = (
+            normalize_series(scored["Expected Fantasy Value"]) * 0.55 +
+            normalize_series(rank_component) * 0.20 +
+            normalize_series(scored.get("Scarcity Score", 0)) * 0.05 +
+            normalize_series(scored.get("Trend Signal", 0)) * 0.05 +
+            normalize_series(scored.get("Sleeper Score", 0)) * 0.03 +
+            normalize_series(scored.get("Market vs Model Score", 0)) * 0.02 +
+            scored["Roster Need Score"] * 0.10
+        )
+        scored = scored.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[False, False])
+    return scored, gaps
+
+
+def live_draft_get_available(room):
+    pool = room.get("pool")
+    if pool is None or getattr(pool, "empty", True):
+        return pd.DataFrame()
+    drafted = set(room.get("drafted_player_ids", []) or [])
+    if not drafted:
+        return pool.copy()
+    return pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
+
+
+def live_draft_current_slot(room):
+    picks = room.get("pick_order", [])
+    idx = int(room.get("current_pick_index", 0))
+    if idx >= len(picks):
+        return None
+    return picks[idx]
+
+
+def live_draft_seconds_remaining(room):
+    if room.get("status") != "in_progress":
+        return int(room.get("config", {}).get("timer_seconds", 60))
+    started = room.get("timer_started_at")
+    if started is None:
+        return int(room.get("config", {}).get("timer_seconds", 60))
+    elapsed = max(0.0, time.time() - float(started))
+    return max(0, int(room.get("config", {}).get("timer_seconds", 60)) - int(elapsed))
+
+
+def live_draft_reset_timer(room):
+    room["timer_started_at"] = time.time()
+    room["timer_handled_index"] = -1
+
+
+def live_draft_init_room(config, pool_df):
+    teams = list(config.get("teams", []))
+    picks_per_team = int(config.get("picks_per_team", 15))
+    pick_order = _draft_lab_pick_order(teams, picks_per_team)
+    return {
+        "draft_room_id": str(uuid.uuid4())[:8].upper(),
+        "config": config,
+        "status": "not_started",
+        "teams": teams,
+        "pick_order": pick_order,
+        "current_pick_index": 0,
+        "drafted_player_ids": [],
+        "draft_board": [],
+        "rosters": {t: [] for t in teams},
+        "pool": pool_df.copy(),
+        "timer_started_at": None,
+        "timer_handled_index": -1,
+        "paused_remaining_seconds": None,
+    }
+
+
+def live_draft_start(room):
+    room["status"] = "in_progress"
+    live_draft_reset_timer(room)
+
+
+def live_draft_make_pick(room, player_row, verdict="Manual pick"):
+    slot = live_draft_current_slot(room)
+    if slot is None:
+        return False, "Draft is already complete."
+    team = slot["Team"]
+    pid = str(player_row.get("playerID", ""))
+    if pid in set(room.get("drafted_player_ids", [])):
+        return False, "That player has already been drafted."
+    pick_record = dict(player_row)
+    pick_record.update({
+        "Round": slot["Round"],
+        "Pick": slot["Pick"],
+        "Fantasy Team": team,
+        "Pick Verdict": verdict,
+    })
+    room["draft_board"].append(pick_record)
+    room["rosters"].setdefault(team, []).append(pick_record)
+    room["drafted_player_ids"].append(pid)
+    room["current_pick_index"] = int(room.get("current_pick_index", 0)) + 1
+    if room["current_pick_index"] >= len(room.get("pick_order", [])):
+        room["status"] = "complete"
+        room["timer_started_at"] = None
+    else:
+        live_draft_reset_timer(room)
+    return True, f"Drafted {player_row.get('fullName', 'player')} to {team}."
+
+
+def live_draft_auto_pick(room):
+    slot = live_draft_current_slot(room)
+    if slot is None:
+        return False, "Draft is already complete."
+    available = live_draft_get_available(room)
+    if available.empty:
+        room["status"] = "complete"
+        return False, "No players remain in the pool."
+    team = slot["Team"]
+    roster_df = pd.DataFrame(room["rosters"].get(team, []))
+    target_counts = _live_draft_target_counts(room.get("config", {}))
+    rule = room.get("config", {}).get("auto_pick_rule", "balanced recommendation")
+    scored, gaps = _live_draft_score_available(available, roster_df, rule, target_counts)
+    chosen = scored.iloc[0]
+    verdict = _live_draft_pick_verdict(chosen, rule, gaps)
+    return live_draft_make_pick(room, chosen.to_dict(), verdict=verdict)
+
+
+def live_draft_build_board_df(room):
+    if not room.get("draft_board"):
+        return pd.DataFrame()
+    df = pd.DataFrame(room["draft_board"])
+    rename = {
+        "fullName": "Player",
+        "Team": "MLB Team",
+        "Fantasy Team": "Draft Team",
+        "Pick Verdict": "Pick Verdict",
+    }
+    for old, new in rename.items():
+        if old in df.columns and new not in df.columns:
+            df = df.rename(columns={old: new})
+    show = [
+        "Round", "Pick", "Draft Team", "Player", "Primary Position", "MLB Team",
+        "Expected Fantasy Value", "Model Rank", "Market Rank", "Fantasy Edge", "Pick Verdict",
+    ]
+    return df[[c for c in show if c in df.columns]]
+
+
+def live_draft_recommendations(room, top_n=8):
+    slot = live_draft_current_slot(room)
+    if slot is None:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    available = live_draft_get_available(room)
+    if available.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    team = slot["Team"]
+    roster_df = pd.DataFrame(room["rosters"].get(team, []))
+    target_counts = _live_draft_target_counts(room.get("config", {}))
+    config = room.get("config", {})
+    balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts)
+    top_recommended = balanced.head(top_n)
+    best_available = available.sort_values(["Expected Fantasy Value", "Model Rank"], ascending=[False, True]).head(top_n)
+    positional = balanced[balanced["Primary Position"].isin(gaps)].head(top_n) if gaps else pd.DataFrame()
+    sleepers = available.sort_values(["Sleeper Score", "Expected Fantasy Value"], ascending=[False, False]).head(top_n)
+    if "Sleeper Score" not in available.columns:
+        edge_sorted = available.copy()
+        edge_sorted["Fantasy Edge"] = pd.to_numeric(edge_sorted.get("Fantasy Edge"), errors="coerce")
+        sleepers = edge_sorted.sort_values("Fantasy Edge", ascending=False).head(top_n)
+    return top_recommended, best_available, positional, sleepers
+
+
+def live_draft_rosters_df(room):
+    rows = []
+    for team, players in (room.get("rosters") or {}).items():
+        for p in players:
+            row = dict(p)
+            row["Fantasy Team"] = team
+            rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    return df.rename(columns={"fullName": "Player", "Team": "MLB Team"})
+
+
+def live_draft_team_totals(room):
+    rosters = live_draft_rosters_df(room)
+    if rosters.empty:
+        return pd.DataFrame()
+    rows = []
+    for team, g in rosters.groupby("Fantasy Team"):
+        rows.append({
+            "Fantasy Team": team,
+            "Players": len(g),
+            "Total Projected Fantasy Value": safe_numeric_series(g, "Expected Fantasy Value", 0).sum(),
+            "Projected HR": safe_numeric_series(g, "proj_HR", 0).sum(),
+            "Projected RBI": safe_numeric_series(g, "proj_RBI", 0).sum(),
+            "Projected R": safe_numeric_series(g, "proj_R", 0).sum(),
+            "Projected SB": safe_numeric_series(g, "proj_SB", 0).sum(),
+            "Projected AVG": _weighted_rate(g, "proj_BA"),
+            "Projected OPS": _weighted_rate(g, "proj_OPS"),
+        })
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["Projected Team Rank"] = out["Total Projected Fantasy Value"].rank(ascending=False, method="min")
+        out = out.sort_values("Projected Team Rank")
+    return out
+
+
+def live_draft_export_frames(room):
+    config = room.get("config", {})
+    config_rows = pd.DataFrame([{
+        "League Name": config.get("league_name", ""),
+        "Teams": len(config.get("teams", [])),
+        "Picks Per Team": config.get("picks_per_team", ""),
+        "Draft Type": config.get("draft_type", "snake"),
+        "Scoring Type": config.get("scoring_type", ""),
+        "Timer Seconds": config.get("timer_seconds", ""),
+        "Auto Pick Rule": config.get("auto_pick_rule", ""),
+        "Draft Room ID": room.get("draft_room_id", ""),
+        "Status": room.get("status", ""),
+    }])
+    slot_cfg = pd.DataFrame([config.get("slots", {})])
+    available = live_draft_get_available(room)
+    avail_show = available.copy()
+    if "fullName" in avail_show.columns:
+        avail_show = avail_show.rename(columns={"fullName": "Player"})
+    return {
+        "draft_configuration": config_rows,
+        "roster_settings": slot_cfg,
+        "draft_board": live_draft_build_board_df(room),
+        "team_rosters": live_draft_rosters_df(room),
+        "available_players": avail_show,
+        "team_projected_totals": live_draft_team_totals(room),
+    }
+
+
+def live_draft_to_lab_draft_df(room):
+    """Convert a completed live draft into Draft Simulation Test Mode analysis shape."""
+    if not room.get("draft_board"):
+        return pd.DataFrame()
+    df = pd.DataFrame(room["draft_board"])
+    if "Fantasy Team" not in df.columns and "Draft Team" in df.columns:
+        df["Fantasy Team"] = df["Draft Team"]
+    if "fullName" not in df.columns and "Player" in df.columns:
+        df["fullName"] = df["Player"]
+    if "Decision Score" not in df.columns:
+        df["Decision Score"] = np.nan
+    return df
+
+
+def live_draft_push_analysis_to_session(room):
+    lab_draft = live_draft_to_lab_draft_df(room)
+    if lab_draft.empty:
+        return False
+    team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(lab_draft, yearly_df)
+    trades = suggest_draft_lab_trades(lab_draft, team_summary, max_suggestions=12)
+    st.session_state["draft_lab_results"] = {
+        "pool": room.get("pool", pd.DataFrame()),
+        "draft": lab_draft,
+        "team_summary": team_summary,
+        "strengths": strengths,
+        "pick_analysis": pick_analysis,
+        "gaps": gaps,
+        "actual_summary": actual_summary,
+        "trades": trades,
+        "source": "Live Draft Room",
+    }
+    return True
 
 
 def player_on_fantasy_team(player_name, fantasy_team):
@@ -7193,6 +7548,7 @@ PAGE_OPTION_LABELS = {
     "Draft Room Simulator": "🧾 Draft Room Simulator",
     "Draft Assistant Simulator": "🧩 Draft Assistant Simulator",
     "Draft Simulation Test Mode": "🧪 Draft Simulation Test Mode",
+    "Live Draft Room": "📡 Live Draft Room",
     "Fantasy Standings Tracker": "🏆 Fantasy Standings Tracker",
     "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
 }
@@ -10562,6 +10918,345 @@ if active_page == "Draft Simulation Test Mode":
                 )
             except Exception as e:
                 st.info(f"Excel export is unavailable in this environment ({e}). CSV export is ready above.")
+
+
+if active_page == "Live Draft Room":
+    render_section_header(
+        "📡 Live Draft Room",
+        "Configure and run a live snake draft in this session — manual picks, timers, auto-pick rules, exports, and analysis handoff."
+    )
+    render_page_guide(active_page)
+    st.markdown(
+        """
+        <div class="section-card">
+            <div class="section-title">Live Fantasy Draft Prototype</div>
+            <div class="small-note">
+                This version stores everything in local session state for a stable single-browser draft experience.
+                The structure is ready for a future multi-drafter sync layer.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if "live_draft_room" not in st.session_state:
+        st.session_state["live_draft_room"] = None
+    room = st.session_state.get("live_draft_room")
+    market_df_live = load_fantasypros_market_data()
+
+    with st.expander("Draft Setup / Configuration", expanded=room is None or room.get("status") == "not_started"):
+        st.subheader("League & Draft Settings")
+        lc1, lc2, lc3 = st.columns(3)
+        with lc1:
+            live_league_name = st.text_input("League Name", value="My Fantasy League", key="live_draft_league_name")
+            live_num_teams = st.selectbox("Number of Teams", [4, 8, 10, 12, 14], index=0, key="live_draft_num_teams")
+            live_picks_per_team = st.number_input("Picks per Team", min_value=1, max_value=30, value=15, step=1, key="live_draft_picks_per_team")
+        with lc2:
+            live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], index=0, key="live_draft_type")
+            live_scoring = st.selectbox("Scoring Type", ["Roto (5x5)", "Points League"], index=0, key="live_draft_scoring")
+            live_timer_label = st.selectbox("Timer per Pick", list(LIVE_DRAFT_TIMER_CHOICES.keys()), index=1, key="live_draft_timer")
+        with lc3:
+            live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, index=4, key="live_draft_auto_rule")
+            live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), index=1, key="live_draft_proj_style")
+            live_proj_window = st.selectbox("Projection Window (years)", [3, 4, 5], index=0, key="live_draft_proj_window")
+
+        st.subheader("Roster Settings")
+        rs1, rs2, rs3, rs4 = st.columns(4)
+        with rs1:
+            slot_c = st.number_input("C", min_value=0, max_value=3, value=1, step=1, key="live_slot_c")
+            slot_1b = st.number_input("1B", min_value=0, max_value=3, value=1, step=1, key="live_slot_1b")
+        with rs2:
+            slot_2b = st.number_input("2B", min_value=0, max_value=3, value=1, step=1, key="live_slot_2b")
+            slot_3b = st.number_input("3B", min_value=0, max_value=3, value=1, step=1, key="live_slot_3b")
+        with rs3:
+            slot_ss = st.number_input("SS", min_value=0, max_value=3, value=1, step=1, key="live_slot_ss")
+            slot_of = st.number_input("OF", min_value=0, max_value=5, value=3, step=1, key="live_slot_of")
+        with rs4:
+            slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, value=1, step=1, key="live_slot_dh")
+            slot_p = st.number_input("P", min_value=0, max_value=10, value=0, step=1, key="live_slot_p")
+            slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, value=5, step=1, key="live_slot_bench")
+
+        st.caption("Rename teams (optional)")
+        default_teams = _live_draft_default_teams(live_num_teams)
+        team_cols = st.columns(min(int(live_num_teams), 4))
+        team_names = []
+        for i in range(int(live_num_teams)):
+            with team_cols[i % len(team_cols)]:
+                team_names.append(
+                    st.text_input(f"Team {i + 1}", value=default_teams[i], key=f"live_draft_team_name_{i}")
+                )
+
+        b_start, b_reset = st.columns(2)
+        with b_start:
+            start_live = st.button("Start Live Draft", type="primary", key="live_draft_start_btn")
+        with b_reset:
+            reset_live = st.button("Reset Draft Room", key="live_draft_reset_btn")
+
+        if reset_live:
+            st.session_state["live_draft_room"] = None
+            st.rerun()
+
+        if start_live:
+            fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
+            with st.spinner("Building player pool and draft room..."):
+                pool_live = build_draft_lab_player_pool(
+                    yearly_df,
+                    market_df_live,
+                    draft_window=int(live_proj_window),
+                    fantasy_format=fantasy_format,
+                    projection_style=live_proj_style,
+                )
+            total_picks = int(live_num_teams) * int(live_picks_per_team)
+            if pool_live.empty:
+                st.error("Could not build a player pool. Check your data files and try again.")
+            elif total_picks > len(pool_live):
+                st.error(f"Not enough players in the pool ({len(pool_live):,}) for {total_picks:,} total picks.")
+            else:
+                config = {
+                    "league_name": live_league_name.strip() or "My Fantasy League",
+                    "num_teams": int(live_num_teams),
+                    "picks_per_team": int(live_picks_per_team),
+                    "draft_type": "snake",
+                    "scoring_type": live_scoring,
+                    "fantasy_format": fantasy_format,
+                    "timer_seconds": LIVE_DRAFT_TIMER_CHOICES[live_timer_label],
+                    "auto_pick_rule": live_auto_rule,
+                    "projection_style": live_proj_style,
+                    "projection_window": int(live_proj_window),
+                    "teams": [str(t).strip() or default_teams[i] for i, t in enumerate(team_names)],
+                    "slots": {
+                        "C": int(slot_c), "1B": int(slot_1b), "2B": int(slot_2b), "3B": int(slot_3b),
+                        "SS": int(slot_ss), "OF": int(slot_of), "DH": int(slot_dh), "P": int(slot_p),
+                        "BN": int(slot_bench),
+                    },
+                }
+                new_room = live_draft_init_room(config, pool_live)
+                live_draft_start(new_room)
+                st.session_state["live_draft_room"] = new_room
+                st.success(f"Live draft started — Room ID **{new_room['draft_room_id']}**")
+                st.rerun()
+
+    room = st.session_state.get("live_draft_room")
+
+    if room is None:
+        st.info("Configure your league above, then click **Start Live Draft**.")
+    else:
+        cfg = room.get("config", {})
+        slot = live_draft_current_slot(room)
+        total_picks = len(room.get("pick_order", []))
+        picks_done = len(room.get("draft_board", []))
+        st.markdown(
+            f"**{cfg.get('league_name', 'League')}** · Room `{room.get('draft_room_id', '')}` · "
+            f"Status: **{str(room.get('status', '')).replace('_', ' ').title()}** · "
+            f"Pick {min(picks_done + 1, total_picks)} of {total_picks}"
+        )
+
+        if room.get("status") == "in_progress" and slot is not None:
+            idx = int(room.get("current_pick_index", 0))
+            remaining = live_draft_seconds_remaining(room)
+            if remaining <= 0 and room.get("timer_handled_index") != idx:
+                ok, msg = live_draft_auto_pick(room)
+                room["timer_handled_index"] = idx
+                st.session_state["live_draft_room"] = room
+                if ok:
+                    st.toast(msg)
+                else:
+                    st.warning(msg)
+                st.rerun()
+
+        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
+        with ctrl1:
+            if st.button("Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
+                room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
+                room["status"] = "paused"
+                st.session_state["live_draft_room"] = room
+                st.rerun()
+        with ctrl2:
+            if st.button("Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume"):
+                room["status"] = "in_progress"
+                pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
+                room["timer_started_at"] = time.time() - (int(cfg.get("timer_seconds", 60)) - pause_left)
+                room["paused_remaining_seconds"] = None
+                st.session_state["live_draft_room"] = room
+                st.rerun()
+        with ctrl3:
+            if st.button("Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
+                live_draft_reset_timer(room)
+                st.session_state["live_draft_room"] = room
+                st.rerun()
+        with ctrl4:
+            if st.button("Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
+                if room.get("status") == "paused":
+                    room["status"] = "in_progress"
+                ok, msg = live_draft_auto_pick(room)
+                st.session_state["live_draft_room"] = room
+                if ok:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
+                st.rerun()
+
+        board_col, rec_col = st.columns([1.45, 1.0])
+
+        with rec_col:
+            st.subheader("Current Pick")
+            if slot is None:
+                st.success("Draft complete.")
+            else:
+                remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("On the Clock", slot["Team"])
+                m2.metric("Round", slot["Round"])
+                m3.metric("Pick #", slot["Pick"])
+                m4.metric("Timer", f"{remaining}s")
+                top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=6)
+                rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
+                rec_cols = ["fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank", "Fantasy Edge"]
+                with rec_tabs[0]:
+                    render_output_table(
+                        clean_ui_columns(top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})),
+                        key="live_draft_rec_top",
+                        file_name="live_draft_top_recommendations.csv",
+                        display_rows=10,
+                    )
+                with rec_tabs[1]:
+                    render_output_table(
+                        clean_ui_columns(best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})),
+                        key="live_draft_rec_bpa",
+                        file_name="live_draft_best_available.csv",
+                        display_rows=10,
+                    )
+                with rec_tabs[2]:
+                    if pos_fit.empty:
+                        st.caption("No specific positional need flagged — take best value.")
+                    else:
+                        render_output_table(
+                            clean_ui_columns(pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})),
+                            key="live_draft_rec_pos",
+                            file_name="live_draft_positional_fits.csv",
+                            display_rows=10,
+                        )
+                with rec_tabs[3]:
+                    render_output_table(
+                        clean_ui_columns(value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})),
+                        key="live_draft_rec_value",
+                        file_name="live_draft_value_sleepers.csv",
+                        display_rows=10,
+                    )
+
+                st.subheader("Manual Draft")
+                available = live_draft_get_available(room)
+                if available.empty:
+                    st.warning("No players left in the pool.")
+                else:
+                    player_options = available.sort_values(
+                        ["Expected Fantasy Value", "Model Rank"], ascending=[False, True]
+                    )["fullName"].astype(str).tolist()
+                    selected_player = st.selectbox("Available Player", player_options, key="live_draft_player_select")
+                    if st.button("Draft Player", type="primary", key="live_draft_manual_pick", disabled=room.get("status") == "paused"):
+                        row = available[available["fullName"].astype(str) == str(selected_player)].iloc[0]
+                        gaps = _live_draft_roster_needs(
+                            pd.DataFrame(room["rosters"].get(slot["Team"], [])),
+                            _live_draft_target_counts(cfg),
+                        )
+                        verdict = _live_draft_pick_verdict(row, "manual pick", gaps)
+                        ok, msg = live_draft_make_pick(room, row.to_dict(), verdict=verdict)
+                        st.session_state["live_draft_room"] = room
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                        st.rerun()
+
+        with board_col:
+            st.subheader("Draft Board")
+            board_df = live_draft_build_board_df(room)
+            if board_df.empty:
+                st.caption("No picks yet.")
+            else:
+                render_output_table(
+                    format_draft_lab_table(clean_ui_columns(board_df)),
+                    key="live_draft_board",
+                    file_name="live_draft_board.csv",
+                    display_rows=80,
+                    style_cols=["Fantasy Edge", "Expected Fantasy Value"],
+                )
+
+        st.subheader("Team Rosters")
+        roster_df = live_draft_rosters_df(room)
+        if roster_df.empty:
+            st.caption("Rosters will appear after the first pick.")
+        else:
+            roster_tabs = st.tabs(sorted(room.get("teams", [])))
+            roster_show = ["Player", "Primary Position", "MLB Team", "Expected Fantasy Value", "Fantasy Edge", "Model Rank", "Market Rank"]
+            for tab, team_name in zip(roster_tabs, sorted(room.get("teams", []))):
+                with tab:
+                    team_view = roster_df[roster_df["Fantasy Team"] == team_name]
+                    render_output_table(
+                        format_draft_lab_table(clean_ui_columns(team_view[[c for c in roster_show if c in team_view.columns]])),
+                        key=f"live_draft_roster_{team_name}",
+                        file_name=f"live_draft_roster_{team_name}.csv",
+                        display_rows=40,
+                    )
+
+        totals_df = live_draft_team_totals(room)
+        if not totals_df.empty:
+            st.subheader("Team Projected Totals")
+            render_output_table(
+                format_draft_lab_table(clean_ui_columns(totals_df)),
+                key="live_draft_team_totals",
+                file_name="live_draft_team_totals.csv",
+                display_rows=20,
+                style_cols=["Total Projected Fantasy Value"],
+            )
+
+        if room.get("status") == "complete":
+            st.success("Draft complete. Export results or send to analysis below.")
+            export_frames_live = live_draft_export_frames(room)
+            ex1, ex2 = st.columns(2)
+            with ex1:
+                st.download_button(
+                    "Download Live Draft CSV",
+                    data=draft_lab_csv_export(export_frames_live),
+                    file_name="live_draft_room_export.csv",
+                    mime="text/csv",
+                    width="content",
+                )
+            with ex2:
+                try:
+                    st.download_button(
+                        "Download Live Draft Excel",
+                        data=draft_lab_excel_export(export_frames_live),
+                        file_name="live_draft_room_export.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="content",
+                    )
+                except Exception as e:
+                    st.caption(f"Excel export unavailable ({e}).")
+
+            if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
+                if live_draft_push_analysis_to_session(room):
+                    st.success("Analysis loaded. Opening Draft Simulation Test Mode…")
+                    request_sidebar_page("Draft Simulation Test Mode")
+                else:
+                    st.error("Could not build analysis from this draft.")
+
+        with st.expander("Future Multi-Drafter Mode", expanded=False):
+            st.markdown(
+                """
+                **Current version:** one browser session, local `st.session_state`, stable manual/auto drafting.
+
+                **Designed for a future upgrade:**
+                - shared room codes so multiple drafters can join
+                - synced picks across computers in near real time
+                - live draft board updates for every manager
+                - turn-based clock enforcement per team
+                - persistent storage of draft rooms, rosters, and results
+
+                The room object already tracks draft order, rosters, timers, and board history in a structure that can
+                later be mirrored to a database or websocket service without rewriting the UI.
+                """
+            )
 
 
 if active_page == "Fantasy Standings Tracker":
