@@ -16,6 +16,7 @@ from collections import Counter
 
 import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
+import page_state as pg_state
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
 from projection_style import PROJECTION_STYLE_OPTIONS, get_draft_projection_factors
@@ -232,6 +233,8 @@ def sort_positions_custom(pos_list):
 
 
 TREND_RATE_COLS = ["BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
+TREND_SLOPE_COLS = ["Slope", "Recent Slope"]
+ALL_TREND_DELTA_COLS = TREND_COUNT_COLS + TREND_RATE_COLS
 ML_TARGET_STATS = ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
 ML_BASE_FEATURE_STATS = ["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "BA", "OBP", "SLG", "OPS"]
 ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XBH_rate", "HR_rate", "Speed_Index"]
@@ -811,13 +814,13 @@ def make_advanced_trend_commentary(intel_df, stat_col):
     if pd.notna(best.get("Slope")):
         lines.append(
             f"{best['Player']} shows the strongest {stat_col} growth trend in this comparison "
-            f"(slope {best['Slope']:.3f} per season, {best.get('Trend Direction', 'trend unclear').lower()})."
+            f"(slope {best['Slope']:.2f} per season, {best.get('Trend Direction', 'trend unclear').lower()})."
         )
 
     if len(intel_df) > 1 and pd.notna(worst.get("Slope")) and worst["Player"] != best["Player"]:
         lines.append(
             f"{worst['Player']} has the weakest {stat_col} trend here "
-            f"(slope {worst['Slope']:.3f} per season, {worst.get('Trend Direction', 'trend unclear').lower()})."
+            f"(slope {worst['Slope']:.2f} per season, {worst.get('Trend Direction', 'trend unclear').lower()})."
         )
 
     volatile = intel_df[intel_df["Consistency Rating"].astype(str).str.contains("volatile", case=False, na=False)]
@@ -840,11 +843,25 @@ def make_advanced_trend_commentary(intel_df, stat_col):
     return " ".join(lines)
 
 
+def round_trend_delta_frame(df):
+    """Round per-season slope (Δ) columns to 2 decimals for display and export."""
+    out = df.copy()
+    for col in ALL_TREND_DELTA_COLS:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(2)
+    return out
+
+
 def format_advanced_trend_table(df):
     out = df.copy()
-    for c in ["Slope", "Recent Slope", "Volatility", "R²", "First Value", "Latest Value", "Net Change"]:
+    for c in TREND_SLOPE_COLS:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(2)
+    for c in ["Volatility", "First Value", "Latest Value", "Net Change"]:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
+    if "R²" in out.columns:
+        out["R²"] = pd.to_numeric(out["R²"], errors="coerce").round(4)
     if "Years Used" in out.columns:
         out["Years Used"] = pd.to_numeric(out["Years Used"], errors="coerce").round(0).astype("Int64")
     out = out.rename(columns={"Trend Direction": "Trend", "R²": "R-squared"})
@@ -1160,14 +1177,12 @@ def trend_heatmap_style_dynamic(val, col_name):
 
 
 def format_trend_arrow_value(x, is_rate=False):
-    """Format a trend value with an arrow and correct decimals."""
+    """Format a per-season slope (Δ) with arrow — always 2 decimal places."""
     x = pd.to_numeric(x, errors="coerce")
     if pd.isna(x):
         return ""
     arrow = "▲" if x > 0 else ("▼" if x < 0 else "")
-    if is_rate:
-        return f"{arrow} {x:.4f}".strip()
-    return f"{arrow} {x:.1f}".strip()
+    return f"{arrow} {x:.2f}".strip()
 
 
 def format_fantasy_table(df):
@@ -1417,7 +1432,12 @@ def format_display_table(df, count_cols=None, rate_cols=None, score_cols=None, c
             df[col] = pd.to_numeric(df[col], errors="coerce").round(rate_decimals)
     for col in score_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").round(4 if col == "Valuation Score" else 1)
+            if col in ("Trend Score", "Current Score"):
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+            elif col == "Valuation Score":
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
+            else:
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(1)
     return df
 
 
@@ -1453,10 +1473,14 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
         for col in display_df.columns:
             if str(key).startswith("draft_lab"):
                 continue
-            if col in TREND_RATE_COLS or col in ["OPS Δ", "BA Δ", "OBP Δ", "SLG Δ"]:
+            if col in TREND_SLOPE_COLS:
+                fmt[col] = "{:.2f}"
+            elif col == "R-squared":
                 fmt[col] = "{:.4f}"
-            elif col in TREND_COUNT_COLS or col in ["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ", "R Δ", "H Δ", "2B Δ", "3B Δ", "BB Δ"]:
-                fmt[col] = "{:.1f}"
+            elif col in TREND_RATE_COLS or col in ALL_TREND_DELTA_COLS or col in ["OPS Δ", "BA Δ", "OBP Δ", "SLG Δ", "HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"]:
+                fmt[col] = "{:.2f}"
+            elif col in TREND_COUNT_COLS or col in ["R Δ", "H Δ", "2B Δ", "3B Δ", "BB Δ"]:
+                fmt[col] = "{:.2f}"
             elif col in RATE_STATS or col in ["BA", "OBP", "SLG", "OPS"]:
                 fmt[col] = "{:.3f}"
             elif col in ["Trend Score", "Current Score", "Performance Score", "Score"]:
@@ -7579,6 +7603,18 @@ def request_sidebar_page(page: str):
         st.rerun()
 
 
+def save_page_state(page_name: str):
+    """Persist the current page's widget keys into ``page_filter_state``."""
+    store = st.session_state.setdefault("page_filter_state", {})
+    pg_state.save_page_state(st.session_state, normalize_page_key(page_name), store)
+
+
+def restore_page_state(page_name: str) -> bool:
+    """Restore a saved snapshot for sidebar return visits (not contextual transfers)."""
+    store = st.session_state.get("page_filter_state", {})
+    return pg_state.restore_page_state(st.session_state, normalize_page_key(page_name), store)
+
+
 _PAGE_TRANSFER_ALLOWED_KEYS = {
     "Historical Explorer": frozenset({
         "hist_year", "hist_bats", "hist_pos", "hist_position_filter_mode", "hist_team",
@@ -8588,7 +8624,7 @@ if active_page == "Comparison Tool":
                 key="comparison_advanced_trend_intelligence",
                 file_name="comparison_advanced_trend_intelligence.csv",
                 display_rows=10,
-                style_cols=["Slope", "Recent Slope", "Net Change"]
+                style_cols=["Slope", "Recent Slope", "R-squared", "Net Change"],
             )
 
 
@@ -8985,9 +9021,10 @@ if active_page == "Trend Value":
         subset=trend_heat_cols
     )
     st.dataframe(styled_trend, width="stretch", hide_index=True)
+    trend_export_df = round_trend_delta_frame(trend_sorted)
     st.download_button(
         "Export CSV for Excel",
-        data=_df_to_csv_bytes(trend_sorted),
+        data=_df_to_csv_bytes(trend_export_df),
         file_name="trend_value.csv",
         mime="text/csv",
         width="content",
@@ -9020,11 +9057,11 @@ if active_page == "Trend Value":
     c3, c4 = st.columns(2)
     with c3:
         st.subheader("🔥 Top Breakout Players")
-        breakout_table = format_display_table(top_breakouts_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=1, rate_decimals=4)
+        breakout_table = format_display_table(top_breakouts_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=2, rate_decimals=2)
         render_output_table(breakout_table, key="top_breakouts", file_name="top_breakouts.csv", style_cols=[c for c in breakout_table.columns if "Δ" in c])
     with c4:
         st.subheader("❄️ Biggest Declines")
-        declines_table = format_display_table(biggest_declines_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=1, rate_decimals=4)
+        declines_table = format_display_table(biggest_declines_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=2, rate_decimals=2)
         render_output_table(declines_table, key="biggest_declines", file_name="biggest_declines.csv", style_cols=[c for c in declines_table.columns if "Δ" in c])
 
     breakout_decline_players = []
@@ -9240,7 +9277,7 @@ if active_page == "Trend Value":
                 key="trend_advanced_intelligence",
                 file_name="trend_advanced_intelligence.csv",
                 display_rows=10,
-                style_cols=["Slope", "Recent Slope", "Net Change"]
+                style_cols=["Slope", "Recent Slope", "R-squared", "Net Change"],
             )
 
         st.subheader("Fantasy-Style Player Notes")
@@ -12159,7 +12196,12 @@ if active_page == "Valuation":
     valuation_display = valuation_df[["fullName", "bats", "R", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS", "Trend_Score", "Perf_Score", "Valuation_Score"]].sort_values("Valuation_Score", ascending=False).rename(columns={
         "fullName": "Player", "bats": "Bats", "Trend_Score": "Trend Score", "Perf_Score": "Current Score", "Valuation_Score": "Valuation Score"
     })
-    valuation_table = format_display_table(clean_ui_columns(valuation_display), count_cols=["R", "H", "2B", "3B", "HR", "RBI", "SB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Trend Score", "Current Score", "Valuation Score"])
+    valuation_table = format_display_table(
+        clean_ui_columns(valuation_display),
+        count_cols=["R", "H", "2B", "3B", "HR", "RBI", "SB"],
+        rate_cols=["BA", "OBP", "SLG", "OPS"],
+        score_cols=["Trend Score", "Current Score", "Valuation Score"],
+    )
     render_output_table(valuation_table, key="valuation", file_name="valuation.csv")
     if not valuation_table.empty:
         compact_player_action_center(
