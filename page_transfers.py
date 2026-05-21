@@ -4,6 +4,21 @@ from __future__ import annotations
 
 _TRANSFER_STAT_COLS = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
 
+# Stable widget keys (with legacy fallbacks for one migration cycle).
+_HIST_YEAR_KEYS = ("historical_year_range_filter", "hist_year")
+_CAREER_YEAR_KEYS = ("career_year_range_filter", "career_year")
+_LEADERS_YEAR_KEYS = ("leaders_year_range_filter", "leaders_year")
+_HIST_BATS_KEYS = ("historical_batting_hand_filter", "hist_bats")
+_CAREER_BATS_KEYS = ("career_batting_hand_filter", "career_bats")
+_HIST_POS_KEYS = ("historical_position_filter", "hist_pos")
+_CAREER_POS_KEYS = ("career_position_filter", "career_pos")
+_HIST_MODE_KEYS = ("historical_position_filter_mode", "hist_position_filter_mode")
+_CAREER_MODE_KEYS = ("career_position_filter_mode", "career_position_filter_mode")
+_HIST_TEAM_KEYS = ("historical_team_filter", "hist_team")
+_CAREER_TEAM_KEYS = ("career_team_filter", "career_team")
+_DRAFT_LAB_FORMAT_KEYS = ("draft_lab_scoring_type", "draft_lab_format")
+_LIVE_TEAM_COUNT_KEYS = ("live_draft_team_count", "live_draft_num_teams")
+
 
 def year_tuple(val):
     if isinstance(val, (tuple, list)) and len(val) == 2:
@@ -11,6 +26,22 @@ def year_tuple(val):
             return (int(val[0]), int(val[1]))
         except (TypeError, ValueError):
             pass
+    return None
+
+
+def _session_year(session, *key_candidates):
+    for key in key_candidates:
+        yr = year_tuple(session.get(key))
+        if yr:
+            return yr
+    return None
+
+
+def _session_list(session, *key_candidates):
+    for key in key_candidates:
+        val = session.get(key)
+        if val:
+            return list(val)
     return None
 
 
@@ -24,41 +55,46 @@ def copy_prefix_stat_mins(session, from_prefix: str, to_prefix: str, keys_out: d
 def shared_hist_career_keys(session, from_prefix: str, to_prefix: str) -> dict:
     keys = {}
     if from_prefix == "hist":
-        yr = year_tuple(session.get("hist_year"))
+        yr = _session_year(session, *_HIST_YEAR_KEYS)
         if yr:
-            keys["career_year" if to_prefix == "career" else "hist_year"] = yr
-        src_bats, src_pos, src_mode, src_team = "hist_bats", "hist_pos", "hist_position_filter_mode", "hist_team"
+            keys[_CAREER_YEAR_KEYS[0] if to_prefix == "career" else _HIST_YEAR_KEYS[0]] = yr
+        src_bats, src_pos, src_mode, src_team = _HIST_BATS_KEYS, _HIST_POS_KEYS, _HIST_MODE_KEYS, _HIST_TEAM_KEYS
     else:
-        yr = year_tuple(session.get("career_year"))
+        yr = _session_year(session, *_CAREER_YEAR_KEYS)
         if yr:
-            keys["hist_year" if to_prefix == "hist" else "career_year"] = yr
-        src_bats, src_pos, src_mode, src_team = "career_bats", "career_pos", "career_position_filter_mode", "career_team"
-    dst_bats = "career_bats" if to_prefix == "career" else "hist_bats"
-    dst_pos = "career_pos" if to_prefix == "career" else "hist_pos"
-    dst_mode = "career_position_filter_mode" if to_prefix == "career" else "hist_position_filter_mode"
-    dst_team = "career_team" if to_prefix == "career" else "hist_team"
-    if session.get(src_bats):
-        keys[dst_bats] = list(session[src_bats])
-    if session.get(src_pos):
-        keys[dst_pos] = list(session[src_pos])
-    if session.get(src_mode):
-        keys[dst_mode] = session[src_mode]
-    if session.get(src_team):
-        keys[dst_team] = list(session[src_team])
+            keys[_HIST_YEAR_KEYS[0] if to_prefix == "hist" else _CAREER_YEAR_KEYS[0]] = yr
+        src_bats, src_pos, src_mode, src_team = _CAREER_BATS_KEYS, _CAREER_POS_KEYS, _CAREER_MODE_KEYS, _CAREER_TEAM_KEYS
+    dst_bats = _CAREER_BATS_KEYS[0] if to_prefix == "career" else _HIST_BATS_KEYS[0]
+    dst_pos = _CAREER_POS_KEYS[0] if to_prefix == "career" else _HIST_POS_KEYS[0]
+    dst_mode = _CAREER_MODE_KEYS[0] if to_prefix == "career" else _HIST_MODE_KEYS[0]
+    dst_team = _CAREER_TEAM_KEYS[0] if to_prefix == "career" else _HIST_TEAM_KEYS[0]
+    bats = _session_list(session, *src_bats)
+    if bats:
+        keys[dst_bats] = bats
+    pos = _session_list(session, *src_pos)
+    if pos:
+        keys[dst_pos] = pos
+    for mode_key in src_mode:
+        if session.get(mode_key):
+            keys[dst_mode] = session[mode_key]
+            break
+    team = _session_list(session, *src_team)
+    if team:
+        keys[dst_team] = team
     copy_prefix_stat_mins(session, from_prefix, to_prefix, keys)
     return keys
 
 
 def leaders_year_keys(session, to_prefix: str) -> dict:
     keys = {}
-    yr = year_tuple(session.get("leaders_year"))
+    yr = _session_year(session, *_LEADERS_YEAR_KEYS)
     if not yr:
         return keys
     if to_prefix == "hist":
-        keys["hist_year"] = yr
+        keys[_HIST_YEAR_KEYS[0]] = yr
         copy_prefix_stat_mins(session, "leaders", "hist", keys)
     elif to_prefix == "career":
-        keys["career_year"] = yr
+        keys[_CAREER_YEAR_KEYS[0]] = yr
         copy_prefix_stat_mins(session, "leaders", "career", keys)
     return keys
 
@@ -95,9 +131,9 @@ def _career_to_hist(session, extra):
 @_register_builder("hist_to_leaders")
 def _hist_to_leaders(session, extra):
     keys = {}
-    yr = year_tuple(session.get("hist_year"))
+    yr = _session_year(session, *_HIST_YEAR_KEYS)
     if yr:
-        keys["leaders_year"] = yr
+        keys[_LEADERS_YEAR_KEYS[0]] = yr
     copy_prefix_stat_mins(session, "hist", "leaders", keys)
     return {"session_keys": keys}
 
@@ -105,9 +141,9 @@ def _hist_to_leaders(session, extra):
 @_register_builder("career_to_leaders")
 def _career_to_leaders(session, extra):
     keys = {}
-    yr = year_tuple(session.get("career_year"))
+    yr = _session_year(session, *_CAREER_YEAR_KEYS)
     if yr:
-        keys["leaders_year"] = yr
+        keys[_LEADERS_YEAR_KEYS[0]] = yr
     copy_prefix_stat_mins(session, "career", "leaders", keys)
     return {"session_keys": keys}
 
@@ -115,7 +151,7 @@ def _career_to_leaders(session, extra):
 @_register_builder("hist_to_compare")
 def _hist_to_compare(session, extra):
     keys = {}
-    yr = year_tuple(session.get("hist_year"))
+    yr = _session_year(session, *_HIST_YEAR_KEYS)
     if yr:
         keys["compare_year_range"] = yr
     names = extra.get("player_names") or []
@@ -127,7 +163,7 @@ def _hist_to_compare(session, extra):
 @_register_builder("career_to_compare")
 def _career_to_compare(session, extra):
     keys = {}
-    yr = year_tuple(session.get("career_year"))
+    yr = _session_year(session, *_CAREER_YEAR_KEYS)
     if yr:
         keys["compare_year_range"] = yr
     names = extra.get("player_names") or []
@@ -139,7 +175,7 @@ def _career_to_compare(session, extra):
 @_register_builder("hist_to_trend")
 def _hist_to_trend(session, extra):
     keys = {}
-    yr = year_tuple(session.get("hist_year"))
+    yr = _session_year(session, *_HIST_YEAR_KEYS)
     if yr and yr[1] - yr[0] + 1 in (3, 4, 5):
         keys["trend_lag"] = yr[1] - yr[0] + 1
     copy_prefix_stat_mins(session, "hist", "trend", keys)
@@ -152,7 +188,7 @@ def _hist_to_trend(session, extra):
 @_register_builder("hist_to_valuation")
 def _hist_to_valuation(session, extra):
     keys = {}
-    yr = year_tuple(session.get("hist_year"))
+    yr = _session_year(session, *_HIST_YEAR_KEYS)
     if yr and yr[1] - yr[0] + 1 in (3, 4, 5):
         keys["value_lag"] = yr[1] - yr[0] + 1
     copy_prefix_stat_mins(session, "hist", "value", keys)
@@ -231,7 +267,7 @@ def _leaders_to_career(session, extra):
 @_register_builder("leaders_to_compare")
 def _leaders_to_compare(session, extra):
     keys = {}
-    yr = year_tuple(session.get("leaders_year"))
+    yr = _session_year(session, *_LEADERS_YEAR_KEYS)
     if yr:
         keys["compare_year_range"] = yr
     return {"session_keys": keys}
@@ -240,7 +276,7 @@ def _leaders_to_compare(session, extra):
 @_register_builder("leaders_to_trend")
 def _leaders_to_trend(session, extra):
     keys = leaders_year_keys(session, "hist")
-    yr = year_tuple(session.get("leaders_year"))
+    yr = _session_year(session, *_LEADERS_YEAR_KEYS)
     if yr and yr[1] - yr[0] + 1 in (3, 4, 5):
         keys["trend_lag"] = yr[1] - yr[0] + 1
     copy_prefix_stat_mins(session, "leaders", "trend", keys)
@@ -250,7 +286,7 @@ def _leaders_to_trend(session, extra):
 @_register_builder("leaders_to_valuation")
 def _leaders_to_valuation(session, extra):
     keys = {}
-    yr = year_tuple(session.get("leaders_year"))
+    yr = _session_year(session, *_LEADERS_YEAR_KEYS)
     if yr and yr[1] - yr[0] + 1 in (3, 4, 5):
         keys["value_lag"] = yr[1] - yr[0] + 1
     copy_prefix_stat_mins(session, "leaders", "value", keys)
@@ -262,7 +298,7 @@ def _compare_to_hist(session, extra):
     keys = {}
     yr = year_tuple(session.get("compare_year_range"))
     if yr:
-        keys["hist_year"] = yr
+        keys[_HIST_YEAR_KEYS[0]] = yr
     return {"session_keys": keys}
 
 
@@ -271,7 +307,7 @@ def _compare_to_career(session, extra):
     keys = {}
     yr = year_tuple(session.get("compare_year_range"))
     if yr:
-        keys["career_year"] = yr
+        keys[_CAREER_YEAR_KEYS[0]] = yr
     labels = []
     for k in ("compare_players", "compare_players_saved"):
         raw = session.get(k)
@@ -283,16 +319,24 @@ def _compare_to_career(session, extra):
     return payload
 
 
+def _draft_lab_format(session):
+    for key in _DRAFT_LAB_FORMAT_KEYS:
+        val = session.get(key)
+        if val:
+            return str(val)
+    return "5x5 Roto"
+
+
 @_register_builder("lab_to_live_draft")
 def _lab_to_live_draft(session, extra):
-    fmt = str(session.get("draft_lab_format", "5x5 Roto"))
+    fmt = _draft_lab_format(session)
     scoring = "Roto (5x5)" if "Roto" in fmt else "Points League"
     style = session.get("draft_lab_projection_style")
     window = session.get("draft_lab_window")
     keys = {
-        "live_draft_num_teams": 4,
-        "live_picks_per_team": int(session.get("draft_lab_picks_per_team", 15) or 15),
-        "live_scoring": scoring,
+        _LIVE_TEAM_COUNT_KEYS[0]: 4,
+        "live_draft_picks_per_team": int(session.get("draft_lab_picks_per_team", 15) or 15),
+        "live_draft_scoring": scoring,
     }
     if style in ("Conservative", "Balanced", "Aggressive") or style is not None:
         keys["live_draft_proj_style"] = style
@@ -318,14 +362,6 @@ def _draft_assistant_to_sleepers(session, extra):
     style = session.get("fantasy_draft_projection_style")
     if style is not None:
         keys["fantasy_draft_projection_style"] = style
-    pos = session.get(f"draft_need_positions_auto_{session.get('draft_assistant_synced_team', '')}")
-    if not pos:
-        for k, v in session.items():
-            if str(k).startswith("draft_need_positions_auto_") and v:
-                pos = v
-                break
-    if pos:
-        keys["fantasy_market_positions"] = list(pos)
     return {"session_keys": keys}
 
 
@@ -338,24 +374,18 @@ def _sleepers_to_draft_assistant(session, extra):
     window = session.get("fantasy_market_window")
     if window in (3, 4, 5):
         keys["draft_window"] = int(window)
-    keys["sleeper_min_expected_value"] = session.get("sleeper_min_expected_value", 0.10)
-    keys["sleeper_max_market_rank"] = session.get("sleeper_max_market_rank", 350)
-    names = extra.get("player_names") or []
-    payload = {"session_keys": keys}
-    if names:
-        payload["draft_assistant_highlight"] = names[0]
-    return payload
+    return {"session_keys": keys}
 
 
 @_register_builder("standings_to_lineup")
 def _standings_to_lineup(session, extra):
     keys = {}
     fmt = session.get("standings_scoring_format")
-    if fmt in ("5x5 Roto", "Points League"):
+    if fmt:
         keys["lineup_format"] = fmt
-    team = extra.get("team") or session.get("lineup_team") or session.get("room_your_team")
+    team = session.get("room_your_team")
     if team:
-        keys["lineup_team"] = str(team)
+        keys["lineup_team"] = team
     return {"session_keys": keys}
 
 
@@ -364,14 +394,11 @@ def _lineup_to_standings(session, extra):
     keys = {}
     fmt = session.get("lineup_format")
     if fmt in ("5x5 Roto", "Points League", "Head-to-Head Categories"):
-        keys["standings_scoring_format"] = "5x5 Roto" if "Roto" in str(fmt) else "Points League"
-    team = session.get("lineup_team")
-    if team:
-        keys["room_your_team"] = str(team)
+        keys["standings_scoring_format"] = fmt if fmt != "Head-to-Head Categories" else "5x5 Roto"
     return {"session_keys": keys}
 
 
-# (source_page, placement_key) -> list of {target, builder, label}
+# Registry: (source_page, placement_key) -> list of {target, builder, label}
 CONTEXTUAL_NAV_REGISTRY = {
     ("Historical Explorer", "after_table"): [
         {"target": "Career Totals", "builder": "hist_to_career", "label": "Career Totals — same team, years, hand, position"},
@@ -382,76 +409,48 @@ CONTEXTUAL_NAV_REGISTRY = {
     ],
     ("Career Totals", "after_table"): [
         {"target": "Historical Explorer", "builder": "career_to_hist", "label": "Historical Explorer — same filters"},
-        {"target": "Leaderboards", "builder": "career_to_leaders", "label": "Leaderboards — same year range"},
+        {"target": "Leaderboards", "builder": "career_to_leaders", "label": "Leaderboards — same year window"},
         {"target": "Comparison Tool", "builder": "career_to_compare", "label": "Comparison Tool — same year range"},
     ],
     ("Leaderboards", "after_table"): [
-        {"target": "Historical Explorer", "builder": "leaders_to_hist", "label": "Historical Explorer — same year window"},
-        {"target": "Career Totals", "builder": "leaders_to_career", "label": "Career Totals — same year window"},
+        {"target": "Historical Explorer", "builder": "leaders_to_hist", "label": "Historical Explorer"},
+        {"target": "Career Totals", "builder": "leaders_to_career", "label": "Career Totals"},
         {"target": "Comparison Tool", "builder": "leaders_to_compare", "label": "Comparison Tool"},
         {"target": "Trend Value", "builder": "leaders_to_trend", "label": "Trend Value"},
         {"target": "Valuation", "builder": "leaders_to_valuation", "label": "Valuation"},
     ],
     ("Comparison Tool", "after_analysis"): [
-        {"target": "Trend Value", "builder": "compare_to_trend", "label": "Trend Value — compared players & years"},
-        {"target": "Valuation", "builder": "compare_to_valuation", "label": "Valuation — same lookback"},
-        {"target": "Historical Explorer", "builder": "compare_to_hist", "label": "Historical Explorer — same year range"},
-        {"target": "Career Totals", "builder": "compare_to_career", "label": "Career Totals — same year range"},
+        {"target": "Trend Value", "builder": "compare_to_trend", "label": "Trend Value"},
+        {"target": "Valuation", "builder": "compare_to_valuation", "label": "Valuation"},
+        {"target": "Historical Explorer", "builder": "compare_to_hist", "label": "Historical Explorer"},
+        {"target": "Career Totals", "builder": "compare_to_career", "label": "Career Totals"},
     ],
     ("Trend Value", "after_table"): [
-        {"target": "Comparison Tool", "builder": "trend_to_compare", "label": "Comparison Tool — trend players"},
+        {"target": "Comparison Tool", "builder": "trend_to_compare", "label": "Comparison Tool"},
         {"target": "Valuation", "builder": "hist_to_valuation", "label": "Valuation"},
-        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts"},
     ],
     ("Valuation", "after_table"): [
         {"target": "Comparison Tool", "builder": "valuation_to_compare", "label": "Comparison Tool"},
         {"target": "Trend Value", "builder": "hist_to_trend", "label": "Trend Value"},
-        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts"},
     ],
     ("Fantasy Sleepers & Busts", "after_tables"): [
-        {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant — scoring & edge filters"},
-        {"target": "Draft Simulation Test Mode", "builder": "lab_to_live_draft", "label": "Draft Simulation Test Mode"},
-        {"target": "Trend Value", "builder": "hist_to_trend", "label": "Trend Value"},
-        {"target": "Valuation", "builder": "hist_to_valuation", "label": "Valuation"},
+        {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant"},
+        {"target": "Draft Assistant Simulator", "builder": "draft_assistant_to_sleepers", "label": "Sync format from Draft Assistant"},
     ],
     ("Draft Assistant Simulator", "after_recommendations"): [
-        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers — same scoring & position focus"},
-        {"target": "Draft Room Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Room"},
-        {"target": "Trend Value", "builder": "hist_to_trend", "label": "Trend Value"},
-        {"target": "Valuation", "builder": "hist_to_valuation", "label": "Valuation"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts"},
+        {"target": "Draft Simulation Test Mode", "builder": "lab_to_live_draft", "label": "Draft Lab settings"},
     ],
     ("Draft Simulation Test Mode", "after_results"): [
-        {"target": "Live Draft Room", "builder": "lab_to_live_draft", "label": "Live Draft Room — league & projection settings"},
-        {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant"},
-        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts"},
-        {"target": "Trend Value", "builder": "hist_to_trend", "label": "Trend Value"},
-        {"target": "Valuation", "builder": "hist_to_valuation", "label": "Valuation"},
-        {"target": "Fantasy Standings Tracker", "builder": "standings_to_lineup", "label": "Fantasy Standings Tracker"},
-        {"target": "Fantasy Lineup Assistant", "builder": "standings_to_lineup", "label": "Fantasy Lineup Assistant"},
+        {"target": "Live Draft Room", "builder": "lab_to_live_draft", "label": "Live Draft Room — apply lab scoring"},
     ],
-    ("Live Draft Room", "after_board"): [
-        {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab", "label": "Analyze completed draft in Draft Simulation"},
-        {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant"},
-        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts"},
-        {"target": "Trend Value", "builder": "hist_to_trend", "label": "Trend Value"},
-        {"target": "Valuation", "builder": "hist_to_valuation", "label": "Valuation"},
-    ],
-    ("Live Draft Room", "draft_workflow"): [
-        {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant"},
-        {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab", "label": "Draft Simulation — analyze this draft"},
-        {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts"},
-        {"target": "Trend Value", "builder": "hist_to_trend", "label": "Trend Value"},
-        {"target": "Valuation", "builder": "hist_to_valuation", "label": "Valuation"},
-        {"target": "Fantasy Standings Tracker", "builder": "standings_to_lineup", "label": "Fantasy Standings Tracker"},
-        {"target": "Fantasy Lineup Assistant", "builder": "standings_to_lineup", "label": "Fantasy Lineup Assistant"},
+    ("Live Draft Room", "after_draft"): [
+        {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab", "label": "Analyze in Draft Lab"},
     ],
     ("Fantasy Standings Tracker", "after_standings"): [
-        {"target": "Fantasy Lineup Assistant", "builder": "standings_to_lineup", "label": "Lineup Assistant — team & scoring"},
-        {"target": "Draft Simulation Test Mode", "builder": "lab_to_live_draft", "label": "Draft Simulation Test Mode"},
-        {"target": "Live Draft Room", "builder": "lab_to_live_draft", "label": "Live Draft Room"},
+        {"target": "Fantasy Lineup Assistant", "builder": "standings_to_lineup", "label": "Lineup Assistant"},
     ],
     ("Fantasy Lineup Assistant", "after_lineup"): [
-        {"target": "Fantasy Standings Tracker", "builder": "lineup_to_standings", "label": "Standings Tracker — same team"},
-        {"target": "Draft Simulation Test Mode", "builder": "lab_to_live_draft", "label": "Draft Simulation Test Mode"},
+        {"target": "Fantasy Standings Tracker", "builder": "lineup_to_standings", "label": "Standings Tracker"},
     ],
 }
