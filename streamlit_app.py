@@ -7530,6 +7530,7 @@ PAGE_OPTIONS = [
     "Draft Room Simulator",
     "Draft Assistant Simulator",
     "Draft Simulation Test Mode",
+    "Live Draft Room",
     "Fantasy Standings Tracker",
     "Fantasy Lineup Assistant",
 ]
