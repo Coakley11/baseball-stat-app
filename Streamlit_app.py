@@ -15,6 +15,7 @@ import uuid
 from collections import Counter
 
 import workflow_sidebar as wf_sb
+import page_transfers as pg_xfer
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
 from projection_style import PROJECTION_STYLE_OPTIONS, get_draft_projection_factors
@@ -251,11 +252,8 @@ st.markdown("""
 .page-guide ul {margin: 0; padding-left: 18px; color: #2c3e50; font-size: 14px; line-height: 1.45;}
 .page-guide li {margin-bottom: 4px;}
 .page-guide strong {color: #12324a;}
-.related-shortcuts-wrap {background: linear-gradient(135deg, #f8fafc 0%, #eef3f9 100%); border: 1px solid #d5e0ec; border-radius: 12px; padding: 14px 16px 10px; margin: 0 0 18px 0;}
-.related-shortcuts-title {font-size: 13px; font-weight: 700; color: #0b3d6e; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 10px 0;}
-.related-shortcuts-note {color: #5a6f82; font-size: 13px; margin: 0 0 8px 0;}
-div[data-testid="column"] .stButton > button {border-radius: 10px; font-weight: 600; border: 1px solid #c5d4e3; background: #fff;}
-div[data-testid="column"] .stButton > button:hover {border-color: #1f6feb; color: #0b3d6e;}
+.ctx-transfer-row {margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d5dde5;}
+.ctx-transfer-row [data-testid="stSelectbox"] label p {font-size: 12px; color: #5a6f82; font-weight: 600;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -7581,200 +7579,191 @@ def request_sidebar_page(page: str):
         st.rerun()
 
 
-SHORTCUT_TAGLINES = {
-    page_key: str(guide.get("purpose", "")).strip()
-    for page_key, guide in PAGE_GUIDES.items()
-}
-SHORTCUT_TAGLINES.update({
-    "Draft Simulation Test Mode": "Simulate draft outcomes and team strengths.",
-    "Live Draft Room": "Run a live snake draft with timers and manual picks.",
-    "Draft Assistant Simulator": "Get next-pick recommendations while you draft.",
-    "Fantasy Sleepers & Busts": "Find undervalued sleepers and risky busts.",
-    "Trend Value": "See who is improving or fading over recent seasons.",
-    "Valuation": "Rank players by current production plus trend.",
-    "Comparison Tool": "Compare up to three players side by side.",
-    "Historical Explorer": "Browse season-by-season Lahman stats.",
-    "Career Totals": "Roll up career counting and rate stats.",
-    "Leaderboards": "Rank players on a single stat with quick filters.",
-    "Fantasy Standings Tracker": "Score every fantasy team in your league.",
-    "Fantasy Lineup Assistant": "Start/sit guidance and valid lineups.",
-    "Draft Room Simulator": "Log picks, view rosters, and grade drafts.",
-})
-
-RELATED_SHORTCUT_CLUSTERS = {
-    "draft_fantasy": [
-        "Draft Simulation Test Mode",
-        "Live Draft Room",
-        "Draft Assistant Simulator",
-        "Fantasy Sleepers & Busts",
-        "Trend Value",
-        "Valuation",
-        "Comparison Tool",
-    ],
-    "historical": [
-        "Historical Explorer",
-        "Career Totals",
-        "Leaderboards",
-        "Comparison Tool",
-    ],
-    "team_mgmt": [
-        "Fantasy Standings Tracker",
-        "Fantasy Lineup Assistant",
-        "Draft Simulation Test Mode",
-        "Live Draft Room",
-        "Draft Assistant Simulator",
-    ],
-    "comparison_valuation": [
-        "Comparison Tool",
-        "Trend Value",
-        "Valuation",
-        "Leaderboards",
-        "Career Totals",
-        "Historical Explorer",
-    ],
-}
-
-DRAFT_FANTASY_CLUSTER_PAGES = frozenset({
-    "Draft Simulation Test Mode",
-    "Live Draft Room",
-    "Draft Assistant Simulator",
-    "Draft Room Simulator",
-    "Fantasy Sleepers & Busts",
-    "Trend Value",
-    "Valuation",
-})
-HISTORICAL_CLUSTER_PAGES = frozenset({"Historical Explorer", "Career Totals"})
-TEAM_MGMT_CLUSTER_PAGES = frozenset({"Fantasy Standings Tracker", "Fantasy Lineup Assistant"})
-COMPARISON_VALUATION_CLUSTER_PAGES = frozenset({
-    "Comparison Tool",
-    "Trend Value",
-    "Valuation",
-    "Leaderboards",
-    "Career Totals",
-})
-
-PAGE_SHORTCUT_OVERRIDES = {
-    "Live Draft Room": {
-        "title": "Draft Workflow",
-        "subtitle": "Jump between draft prep, live drafting, and in-season tools.",
-        "targets": [
-            "Draft Assistant Simulator",
-            "Draft Simulation Test Mode",
-            "Fantasy Sleepers & Busts",
-            "Trend Value",
-            "Valuation",
-            "Fantasy Standings Tracker",
-            "Fantasy Lineup Assistant",
-        ],
-    },
-    "Draft Simulation Test Mode": {
-        "title": "Continue to Related Pages",
-        "subtitle": "Move from draft lab results to live draft, research, or in-season tools.",
-        "targets": [
-            "Live Draft Room",
-            "Draft Assistant Simulator",
-            "Fantasy Sleepers & Busts",
-            "Trend Value",
-            "Valuation",
-            "Fantasy Standings Tracker",
-            "Fantasy Lineup Assistant",
-        ],
-    },
+_PAGE_TRANSFER_ALLOWED_KEYS = {
+    "Historical Explorer": frozenset({
+        "hist_year", "hist_bats", "hist_pos", "hist_position_filter_mode", "hist_team",
+        *(f"hist_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+    }),
+    "Career Totals": frozenset({
+        "career_year", "career_bats", "career_pos", "career_position_filter_mode", "career_team",
+        *(f"career_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+    }),
+    "Leaderboards": frozenset({
+        "leaders_year", *(f"leaders_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+    }),
+    "Comparison Tool": frozenset({
+        "compare_year_range", "compare_stat", "compare_x_axis_mode", "compare_trend_mode",
+    }),
+    "Trend Value": frozenset({
+        "trend_lag", "trend_min_g", "trend_sort_col", *(f"trend_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+    }),
+    "Valuation": frozenset({
+        "value_lag", "value_min_g", *(f"value_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+    }),
+    "Fantasy Sleepers & Busts": frozenset({
+        "fantasy_market_format", "fantasy_market_window", "fantasy_market_positions",
+        "fantasy_market_min_g", "fantasy_market_min_ab",
+        "sleeper_max_market_rank", "sleeper_max_model_rank", "sleeper_min_proj_hr", "sleeper_min_expected_value",
+    }),
+    "Draft Assistant Simulator": frozenset({
+        "draft_format", "draft_window", "fantasy_draft_projection_style",
+        "draft_assistant_synced_team", "room_your_team",
+        "sleeper_min_expected_value", "sleeper_max_market_rank",
+    }),
+    "Draft Simulation Test Mode": frozenset({
+        "draft_lab_window", "draft_lab_format", "draft_lab_projection_style", "draft_lab_picks_per_team",
+    }),
+    "Live Draft Room": frozenset({
+        "live_draft_num_teams", "live_picks_per_team", "live_scoring",
+        "live_draft_proj_style", "live_draft_proj_window",
+    }),
+    "Fantasy Standings Tracker": frozenset({"standings_scoring_format", "room_your_team"}),
+    "Fantasy Lineup Assistant": frozenset({"lineup_format", "lineup_team", "room_your_team"}),
 }
 
 
-def _dedupe_preserve_order(items):
-    seen = set()
-    out = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def _related_shortcut_plan(current_page: str):
-    """Return (section_title, subtitle, target page keys) for shortcut navigation."""
-    page = normalize_page_key(current_page)
-    override = PAGE_SHORTCUT_OVERRIDES.get(page)
-    if override:
-        raw = list(override.get("targets", []))
-        raw = [
-            normalize_page_key(t)
-            for t in raw
-            if normalize_page_key(t) in _PAGE_OPTION_SET and normalize_page_key(t) != page
-        ]
-        return (
-            override.get("title", "Related Tools"),
-            override.get("subtitle", ""),
-            _dedupe_preserve_order(raw),
-        )
-    targets = []
-    if page in DRAFT_FANTASY_CLUSTER_PAGES:
-        targets.extend(RELATED_SHORTCUT_CLUSTERS["draft_fantasy"])
-    if page in HISTORICAL_CLUSTER_PAGES:
-        targets.extend(RELATED_SHORTCUT_CLUSTERS["historical"])
-    if page in TEAM_MGMT_CLUSTER_PAGES:
-        targets.extend(RELATED_SHORTCUT_CLUSTERS["team_mgmt"])
-    if page in COMPARISON_VALUATION_CLUSTER_PAGES:
-        targets.extend(RELATED_SHORTCUT_CLUSTERS["comparison_valuation"])
-    targets = _dedupe_preserve_order(targets)
-    targets = [
-        normalize_page_key(t)
-        for t in targets
-        if normalize_page_key(t) in _PAGE_OPTION_SET and normalize_page_key(t) != page
-    ]
-    return ("Related Tools", "Continue to connected pages without using the sidebar.", targets)
-
-
-def render_related_page_shortcuts(current_page: str, title=None, targets=None):
-    """Portfolio-style shortcut row; uses ``request_sidebar_page`` (same as sidebar radio)."""
-    page = normalize_page_key(current_page)
-    if targets is None:
-        section_title, subtitle, targets = _related_shortcut_plan(page)
-    else:
-        section_title = title or "Related Tools"
-        subtitle = ""
-        targets = list(targets)
-    if title:
-        section_title = title
-    targets = [
-        normalize_page_key(t)
-        for t in targets
-        if normalize_page_key(t) in _PAGE_OPTION_SET and normalize_page_key(t) != page
-    ]
-    targets = _dedupe_preserve_order(targets)
-    if not targets:
+def set_pending_page_transfer(target_page: str, filters_dict=None, source_page=None):
+    """Queue filter transfer for the next navigation (contextual controls only)."""
+    target = normalize_page_key(target_page)
+    if target not in _PAGE_OPTION_SET:
         return
-    subtitle_html = (
-        f'<p class="related-shortcuts-note">{subtitle}</p>' if subtitle else ""
-    )
-    st.markdown(
-        f"""
-        <div class="related-shortcuts-wrap">
-            <div class="related-shortcuts-title">{section_title}</div>
-            {subtitle_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    cols_per_row = 3
-    for row_start in range(0, len(targets), cols_per_row):
-        row_targets = targets[row_start : row_start + cols_per_row]
-        cols = st.columns(len(row_targets))
-        for col, target in zip(cols, row_targets):
-            label = page_option_label(target)
-            tagline = SHORTCUT_TAGLINES.get(target, "")
-            with col:
-                if st.button(
-                    label,
-                    key=f"related_nav_{page}_{target}_{row_start}",
-                    use_container_width=True,
-                    help=tagline or None,
-                ):
-                    request_sidebar_page(target)
-                if tagline:
-                    st.caption(f"“{tagline}”")
+    st.session_state["_pending_page_transfer"] = {
+        "target": target,
+        "source": normalize_page_key(source_page) if source_page else None,
+        "filters": filters_dict if isinstance(filters_dict, dict) else {},
+    }
+
+
+def request_contextual_page(target_page: str, filters_dict=None, source_page=None):
+    """Navigate via sidebar state and apply filters on the target page only."""
+    set_pending_page_transfer(target_page, filters_dict, source_page)
+    request_sidebar_page(target_page)
+
+
+def _apply_transfer_session_keys(target_page: str, keys: dict):
+    allowed = _PAGE_TRANSFER_ALLOWED_KEYS.get(target_page, frozenset())
+    for key, value in (keys or {}).items():
+        if key.startswith("_transfer_"):
+            continue
+        if key not in allowed:
+            continue
+        try:
+            st.session_state[key] = value
+        except Exception:
+            pass
+
+
+def _apply_transfer_players_to_compare(payload: dict):
+    label_map = get_clean_player_label_map_yearly(yearly_df)
+    labels = list(payload.get("player_labels") or [])
+    if not labels:
+        for name in payload.get("player_names") or []:
+            lbl = resolve_fullname_to_clean_label(name, label_map)
+            if lbl and lbl not in labels:
+                labels.append(lbl)
+    if not labels:
+        return
+    st.session_state["pending_compare_players"] = labels[:3]
+    if labels:
+        st.session_state["pending_sig_player_a"] = labels[0]
+    if len(labels) > 1:
+        st.session_state["pending_sig_player_b"] = labels[1]
+
+
+def _apply_transfer_players_to_trend(payload: dict):
+    label_map = get_clean_player_label_map_yearly(yearly_df)
+    names = list(payload.get("player_names") or [])
+    for lbl in payload.get("player_labels") or []:
+        base = fullname_base_from_label(lbl)
+        if base:
+            names.append(base)
+    for name in names[:3]:
+        register_players_sent_to_trend_page(name, label_map)
+
+
+def apply_pending_page_transfer(current_page: str):
+    """Apply queued filters when landing on a page via contextual navigation."""
+    pending = st.session_state.get("_pending_page_transfer")
+    if not pending:
+        return False
+    target = normalize_page_key(pending.get("target"))
+    page = normalize_page_key(current_page)
+    if target != page:
+        return False
+    st.session_state.pop("_pending_page_transfer", None)
+    payload = pending.get("filters") or {}
+    keys = dict(payload.get("session_keys") or {})
+    if "_transfer_value_lag" in keys:
+        lag = keys.pop("_transfer_value_lag")
+        try:
+            max_y = int(yearly_df["yearID"].max())
+            keys["compare_year_range"] = (max_y - int(lag) + 1, max_y)
+        except Exception:
+            pass
+    if "_transfer_trend_lag" in keys:
+        lag = keys.pop("_transfer_trend_lag")
+        try:
+            max_y = int(yearly_df["yearID"].max())
+            keys["compare_year_range"] = (max_y - int(lag) + 1, max_y)
+        except Exception:
+            pass
+    lag_trend = keys.get("trend_lag")
+    if lag_trend in (3, 4, 5) and "compare_year_range" not in keys and page == "Comparison Tool":
+        try:
+            max_y = int(yearly_df["yearID"].max())
+            keys["compare_year_range"] = (max_y - int(lag_trend) + 1, max_y)
+        except Exception:
+            pass
+    _apply_transfer_session_keys(page, keys)
+    for action in payload.get("actions") or []:
+        if action == "push_live_draft_to_lab":
+            room = st.session_state.get("live_draft_room")
+            if room and room.get("status") == "complete":
+                live_draft_push_analysis_to_session(room)
+    if page == "Comparison Tool":
+        _apply_transfer_players_to_compare(payload)
+    if page == "Trend Value":
+        _apply_transfer_players_to_trend(payload)
+    highlight = payload.get("draft_assistant_highlight")
+    if highlight and page == "Draft Assistant Simulator":
+        st.session_state["pending_draft_assistant_player"] = str(highlight)
+    return True
+
+
+def render_contextual_page_nav(
+    source_page: str,
+    placement_key: str,
+    label: str = "Continue analysis in…",
+    extra_context=None,
+):
+    """Compact dropdown below a section; transfers filters only when used."""
+    source = normalize_page_key(source_page)
+    entries = pg_xfer.CONTEXTUAL_NAV_REGISTRY.get((source, placement_key), [])
+    if not entries:
+        return
+    options = ["— Stay on this page —"]
+    route_map = {}
+    for ent in entries:
+        tgt = normalize_page_key(ent["target"])
+        if tgt not in _PAGE_OPTION_SET or tgt == source:
+            continue
+        hint = ent.get("label") or page_option_label(tgt)
+        disp = f"{page_option_label(tgt)} — {hint}" if hint else page_option_label(tgt)
+        options.append(disp)
+        route_map[disp] = ent
+    if len(options) < 2:
+        return
+    with st.container():
+        st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
+        with st.form(key=f"ctx_xfer_form_{source}_{placement_key}", clear_on_submit=True):
+            choice = st.selectbox(label, options, index=0)
+            go = st.form_submit_button("Open selected tool", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+    if go and choice and choice != options[0]:
+        ent = route_map.get(choice)
+        if ent:
+            filters = pg_xfer.build_transfer(st.session_state, ent["builder"], extra_context)
+            request_contextual_page(ent["target"], filters, source_page=source)
 
 
 def _sync_active_page_from_sidebar():
@@ -7839,7 +7828,7 @@ if active_page == "Historical Explorer":
         "Find individual player seasons. Split-team seasons can stay as separate team rows or be combined into one primary-team season row."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
 
     hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
     with hc1:
@@ -7961,6 +7950,11 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    render_contextual_page_nav(
+        "Historical Explorer",
+        "after_table",
+        label="Use these filters in another tool…",
+    )
     st.divider()
     hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
     render_relationship_finder_section(
@@ -7974,7 +7968,7 @@ if active_page == "Career Totals":
         "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
         range_career = st.slider("Select Year Range", year_min, year_max, (max(year_min, 2010), year_max), key="career_year")
@@ -8094,6 +8088,11 @@ if active_page == "Career Totals":
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
+    render_contextual_page_nav(
+        "Career Totals",
+        "after_table",
+        label="Use these filters in another tool…",
+    )
     st.divider()
     career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
     render_relationship_finder_section(
@@ -8104,7 +8103,7 @@ if active_page == "Career Totals":
 if active_page == "Leaderboards":
     render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         range_leaders = st.slider("Select Year Range", year_min, year_max, (max(year_min, 2020), year_max), key="leaders_year")
@@ -8147,7 +8146,11 @@ if active_page == "Leaderboards":
     st.divider()
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])
     render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv")
-
+    render_contextual_page_nav(
+        "Leaderboards",
+        "after_table",
+        label="Use these filters in another tool…",
+    )
 
 
 # ----------------------------
@@ -8307,7 +8310,7 @@ def sig_players_changed():
 if active_page == "Comparison Tool":
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
@@ -8876,12 +8879,17 @@ if active_page == "Comparison Tool":
                         display_rows=50,
                         style_cols=["Difference", "Test Statistic"]
                     )
+    render_contextual_page_nav(
+        "Comparison Tool",
+        "after_analysis",
+        label="Continue analysis in…",
+    )
 
 
 if active_page == "Trend Value":
     render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     c1, c2 = st.columns(2)
     with c1:
         lag_trend = st.selectbox("Trend Window (Years)", [3, 4, 5], index=0, key="trend_lag")
@@ -8983,6 +8991,12 @@ if active_page == "Trend Value":
         file_name="trend_value.csv",
         mime="text/csv",
         width="content",
+    )
+    render_contextual_page_nav(
+        "Trend Value",
+        "after_table",
+        label="Continue analysis in…",
+        extra_context={"player_names": trend_sorted_display["Player"].dropna().astype(str).head(3).tolist() if "Player" in trend_sorted_display.columns else []},
     )
     compact_player_action_center(
         trend_sorted_display["Player"].dropna().astype(str).tolist(),
@@ -9246,7 +9260,7 @@ if active_page == "Fantasy Sleepers & Busts":
         "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -9775,7 +9789,7 @@ if active_page == "Draft Assistant Simulator":
         "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     st.caption("Log picks in **Draft Room Simulator** first — this page excludes drafted players automatically.")
 
     market_df = load_fantasypros_market_data()
@@ -10409,6 +10423,11 @@ if active_page == "Draft Assistant Simulator":
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.caption("Recommendation table with roster fit, strategy context, and CSV export.")
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+        render_contextual_page_nav(
+            "Draft Assistant Simulator",
+            "after_recommendations",
+            label="Continue draft prep in…",
+        )
         st.subheader("Selected Player Insight")
         selected_draft_row = _select_insight_row(
             recs,
@@ -10529,7 +10548,7 @@ if active_page == "Draft Room Simulator":
         "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     st.caption("Use **League setup** first, then **Board** to log picks. **Draft Assistant** reads this board automatically.")
 
     market_df = load_fantasypros_market_data()
@@ -10893,7 +10912,7 @@ if active_page == "Draft Simulation Test Mode":
         "A portfolio-style fantasy draft lab: four teams, snake format, Draft Assistant-style decisions, post-draft analysis, exports, and trade ideas."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     st.markdown(
         """
         <div class="section-card">
@@ -11129,6 +11148,11 @@ if active_page == "Draft Simulation Test Mode":
                 )
             except Exception as e:
                 st.info(f"Excel export is unavailable in this environment ({e}). CSV export is ready above.")
+        render_contextual_page_nav(
+            "Draft Simulation Test Mode",
+            "after_results",
+            label="Send draft settings to…",
+        )
 
 
 if active_page == "Live Draft Room":
@@ -11137,7 +11161,7 @@ if active_page == "Live Draft Room":
         "Configure and run a live snake draft in this session — manual picks, timers, auto-pick rules, exports, and analysis handoff."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     st.markdown(
         """
         <div class="section-card">
@@ -11393,6 +11417,12 @@ if active_page == "Live Draft Room":
                     display_rows=80,
                     style_cols=["Fantasy Edge", "Expected Fantasy Value"],
                 )
+        if room.get("status") != "complete":
+            render_contextual_page_nav(
+                "Live Draft Room",
+                "after_board",
+                label="Draft workflow…",
+            )
 
         st.subheader("Team Rosters")
         roster_df = live_draft_rosters_df(room)
@@ -11447,11 +11477,16 @@ if active_page == "Live Draft Room":
                     st.caption(f"Excel export unavailable ({e}).")
 
             if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
-                if live_draft_push_analysis_to_session(room):
-                    st.success("Analysis loaded. Opening Draft Simulation Test Mode…")
-                    request_sidebar_page("Draft Simulation Test Mode")
-                else:
-                    st.error("Could not build analysis from this draft.")
+                request_contextual_page(
+                    "Draft Simulation Test Mode",
+                    {"actions": ["push_live_draft_to_lab"]},
+                    source_page="Live Draft Room",
+                )
+            render_contextual_page_nav(
+                "Live Draft Room",
+                "draft_workflow",
+                label="Send completed draft to…",
+            )
 
         with st.expander("Future Multi-Drafter Mode", expanded=False):
             st.markdown(
@@ -11477,7 +11512,7 @@ if active_page == "Fantasy Standings Tracker":
         "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
 
     scoring_format_tracker = st.selectbox(
         "Scoring Format",
@@ -11585,6 +11620,12 @@ if active_page == "Fantasy Standings Tracker":
 
             st.session_state["fantasy_current_roster_stats"] = roster_stats
             st.session_state["fantasy_current_standings"] = standings
+            render_contextual_page_nav(
+                "Fantasy Standings Tracker",
+                "after_standings",
+                label="Analyze this roster in…",
+                extra_context={"team": st.session_state.get("room_your_team")},
+            )
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
@@ -11639,7 +11680,7 @@ if active_page == "Fantasy Lineup Assistant":
         "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch."
     )
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
     st.caption(
         "Requires rosters in **Draft Room** and current stats from **Fantasy Standings Tracker**. "
         "Momentum uses season-to-date production (not daily game logs)."
@@ -11753,6 +11794,12 @@ if active_page == "Fantasy Lineup Assistant":
                 key="lineup_recommended_starters",
                 file_name="lineup_recommended_starters.csv",
                 display_rows=starter_disp_rows,
+            )
+            render_contextual_page_nav(
+                "Fantasy Lineup Assistant",
+                "after_lineup",
+                label="Analyze this roster in…",
+                extra_context={"team": lineup_team},
             )
 
             st.subheader("Lineup Diagnosis / How to Improve This Team")
@@ -11999,7 +12046,7 @@ if active_page == "Fantasy Lineup Assistant":
 if active_page == "Valuation":
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
     render_page_guide(active_page)
-    render_related_page_shortcuts(active_page)
+    apply_pending_page_transfer(active_page)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -12125,7 +12172,16 @@ if active_page == "Valuation":
             projection_lookup_name_col="fullName",
             help_text="Valuation table — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick. Projection breakdown uses recent-window stats and trends.",
         )
-
+    render_contextual_page_nav(
+        "Valuation",
+        "after_table",
+        label="Continue analysis in…",
+        extra_context={
+            "player_names": valuation_table["Player"].dropna().astype(str).head(3).tolist()
+            if not valuation_table.empty and "Player" in valuation_table.columns
+            else []
+        },
+    )
 
     st.subheader("Valuation Insight Summaries")
     selected_value_row = _select_insight_row(
