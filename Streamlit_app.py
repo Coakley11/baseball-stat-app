@@ -7649,57 +7649,55 @@ def migrate_legacy_widget_keys():
             st.session_state[MAIN_SIDEBAR_PAGE_KEY] = old_page
 
 
-def ensure_widget_state(key: str, default):
-    """Initialize a widget key only if the user has not set it yet."""
+def init_state_once(key, default):
+    """Set a session key only the first time — never overwrite user choices."""
     if key not in st.session_state:
         st.session_state[key] = default
-    return st.session_state[key]
 
 
-def ensure_multiselect_state(key: str, options, default_selection):
-    """Keep multiselect values valid without passing ``default=`` every rerun."""
+def validate_state_option(key, options, default=None):
+    """Selectbox/radio: init once; if stored value is invalid, fall back to default or first option."""
+    opts = list(options)
+    if not opts:
+        return
+    fallback = default if default is not None else opts[0]
+    if fallback not in opts:
+        fallback = opts[0]
+    if key not in st.session_state:
+        st.session_state[key] = fallback
+    elif st.session_state[key] not in opts:
+        st.session_state[key] = fallback
+
+
+def validate_multiselect_options(key, options, default=None):
+    """Multiselect: init once; drop invalid selections only (do not reset to full default)."""
     opts = list(options)
     if key not in st.session_state:
-        st.session_state[key] = list(default_selection)
+        st.session_state[key] = list(default) if default is not None else []
+    elif not isinstance(st.session_state.get(key), list):
+        st.session_state[key] = list(default) if default is not None else []
     else:
-        cur = st.session_state.get(key)
-        if not isinstance(cur, list):
-            st.session_state[key] = list(default_selection)
-        else:
-            valid = [x for x in cur if x in opts]
-            st.session_state[key] = valid if valid else list(default_selection)
-    return st.session_state[key]
+        st.session_state[key] = [x for x in st.session_state[key] if x in opts]
 
 
-def ensure_slider_range(key: str, min_value: int, max_value: int, default_range):
-    """Initialize year-range sliders from session state."""
+def validate_slider_range(key, min_value, max_value, default=None):
+    """Range slider: init once; clamp stored tuple into bounds."""
+    if default is None:
+        default = (int(min_value), int(max_value))
+    lo_def, hi_def = default
     if key not in st.session_state:
-        lo, hi = default_range
-        st.session_state[key] = (int(lo), int(hi))
+        st.session_state[key] = (int(lo_def), int(hi_def))
     else:
         cur = st.session_state.get(key)
         if not isinstance(cur, (tuple, list)) or len(cur) != 2:
-            lo, hi = default_range
-            st.session_state[key] = (int(lo), int(hi))
+            st.session_state[key] = (int(lo_def), int(hi_def))
         else:
             lo = max(int(min_value), min(int(cur[0]), int(max_value)))
             hi = max(lo, min(int(cur[1]), int(max_value)))
             st.session_state[key] = (lo, hi)
-    return st.session_state[key]
 
 
-def ensure_select_in_options(key: str, options, default_value):
-    """Selectbox state: store the chosen label, not ``index=``."""
-    opts = list(options)
-    if key not in st.session_state:
-        st.session_state[key] = default_value if default_value in opts else opts[0]
-    elif st.session_state[key] not in opts:
-        st.session_state[key] = default_value if default_value in opts else opts[0]
-    return st.session_state[key]
-
-
-def ensure_number_state(key: str, default, min_value=None, max_value=None, as_int=True):
-    """Number inputs: initialize once; clamp on later reruns."""
+def validate_number_state(key, default, min_value=None, max_value=None, as_int=True):
     if key not in st.session_state:
         st.session_state[key] = default
     else:
@@ -7712,13 +7710,58 @@ def ensure_number_state(key: str, default, min_value=None, max_value=None, as_in
             st.session_state[key] = val
         except (TypeError, ValueError):
             st.session_state[key] = default
+
+
+def validate_text_state(key, default: str):
+    init_state_once(key, default)
+
+
+# Back-compat aliases used across the app.
+def ensure_widget_state(key: str, default):
+    init_state_once(key, default)
+    return st.session_state[key]
+
+
+def ensure_multiselect_state(key: str, options, default_selection):
+    validate_multiselect_options(key, options, default_selection)
+    return st.session_state[key]
+
+
+def ensure_slider_range(key: str, min_value: int, max_value: int, default_range):
+    validate_slider_range(key, min_value, max_value, default_range)
+    return st.session_state[key]
+
+
+def ensure_select_in_options(key: str, options, default_value):
+    validate_state_option(key, options, default_value)
+    return st.session_state[key]
+
+
+def ensure_number_state(key: str, default, min_value=None, max_value=None, as_int=True):
+    validate_number_state(key, default, min_value, max_value, as_int)
     return st.session_state[key]
 
 
 def ensure_text_state(key: str, default: str):
-    if key not in st.session_state:
-        st.session_state[key] = default
+    validate_text_state(key, default)
     return st.session_state[key]
+
+
+def render_page_filters_debug(page_name: str):
+    """Bottom-of-page debug: confirm filter keys survive sidebar navigation."""
+    prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
+    rows = []
+    for k in sorted(st.session_state.keys()):
+        if not isinstance(k, str):
+            continue
+        if any(k.startswith(p) for p in prefixes):
+            rows.append({"key": k, "value": st.session_state[k]})
+    with st.expander("Debug: current saved filters", expanded=False):
+        st.caption(f"Page: **{page_name}** — values in `st.session_state` (restored on sidebar return).")
+        if rows:
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        else:
+            st.caption("No filter keys stored yet for this page.")
 
 
 def render_page_state_debug(page_name: str):
@@ -7962,15 +8005,13 @@ def _sync_active_page_from_sidebar():
 # reassignment of arbitrary widget keys; it can block navigation and trigger
 # StreamlitValueAssignmentNotAllowedError for button-like widgets.
 
-migrate_legacy_widget_keys()
-
 _pending_nav = st.session_state.pop("_pending_active_page", None)
 if _pending_nav:
     _pending_nav = normalize_page_key(_pending_nav)
     if _pending_nav in _PAGE_OPTION_SET:
         st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _pending_nav
 
-ensure_select_in_options(
+validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
     st.session_state.get("active_page", "Historical Explorer"),
@@ -7983,6 +8024,16 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
+
+# Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
+pg_state.handle_sidebar_page_state(
+    st.session_state,
+    active_page,
+    normalize_page_key,
+    st.session_state.get("_pending_page_transfer"),
+)
+migrate_legacy_widget_keys()
+
 st.sidebar.caption("Filters are remembered as you move between pages.")
 render_page_state_debug(active_page)
 show_perf_debug = st.sidebar.checkbox(
@@ -8019,7 +8070,7 @@ if active_page == "Historical Explorer":
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
     with hc1:
-        ensure_slider_range(
+        validate_slider_range(
             "historical_year_range_filter",
             year_min,
             year_max,
@@ -8029,18 +8080,17 @@ if active_page == "Historical Explorer":
             "Year Range",
             min_value=year_min,
             max_value=year_max,
-            value=st.session_state["historical_year_range_filter"],
             key="historical_year_range_filter",
         )
     with hc2:
-        ensure_select_in_options("historical_sort_stat_filter", sort_options_hist, "HR")
+        validate_state_option("historical_sort_stat_filter", sort_options_hist, "HR")
         hist_sort_stat = st.selectbox(
             "Sort by",
             sort_options_hist,
             key="historical_sort_stat_filter",
         )
     with hc3:
-        ensure_select_in_options("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
+        validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
         hist_sort_order = st.selectbox(
             "Order",
             ["Descending", "Ascending"],
@@ -8051,14 +8101,14 @@ if active_page == "Historical Explorer":
         c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
             bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
-            ensure_multiselect_state("historical_batting_hand_filter", bats_options, bats_options)
+            validate_multiselect_options("historical_batting_hand_filter", bats_options, bats_options)
             hist_bats = st.multiselect(
                 "Batting Hand",
                 bats_options,
                 key="historical_batting_hand_filter",
             )
         with c_mode:
-            ensure_select_in_options(
+            validate_state_option(
                 "historical_position_filter_mode",
                 ["Season Primary Position", "Career Primary Position"],
                 "Season Primary Position",
@@ -8072,7 +8122,7 @@ if active_page == "Historical Explorer":
         hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
         with c3:
             pos_options = _hist_explorer_pos_options(hist_position_source_col)
-            ensure_multiselect_state("historical_position_filter", pos_options, pos_options)
+            validate_multiselect_options("historical_position_filter", pos_options, pos_options)
             hist_pos = st.multiselect(
                 "Primary Position",
                 pos_options,
@@ -8081,13 +8131,13 @@ if active_page == "Historical Explorer":
         with c4:
             actual_team_names = _hist_explorer_franchise_names_for_teams()
             hist_team_options = ["All Teams", "American League", "National League"] + actual_team_names
-            ensure_multiselect_state("historical_team_filter", hist_team_options, ["All Teams"])
+            validate_multiselect_options("historical_team_filter", hist_team_options, ["All Teams"])
             hist_teams = st.multiselect(
                 "Franchise / League",
                 hist_team_options,
                 key="historical_team_filter",
             )
-        ensure_widget_state("historical_combine_split_seasons_filter", False)
+        init_state_once("historical_combine_split_seasons_filter", False)
         combine_split_seasons = st.toggle(
             "Combine split-team seasons into one primary-team row",
             key="historical_combine_split_seasons_filter",
@@ -8175,6 +8225,7 @@ if active_page == "Historical Explorer":
         "after_table",
         label="Use these filters in another tool…",
     )
+    render_page_filters_debug(active_page)
     st.divider()
     hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
     render_relationship_finder_section(
@@ -8192,7 +8243,7 @@ if active_page == "Career Totals":
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
     cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
-        ensure_slider_range(
+        validate_slider_range(
             "career_year_range_filter",
             year_min,
             year_max,
@@ -8202,11 +8253,10 @@ if active_page == "Career Totals":
             "Select Year Range",
             min_value=year_min,
             max_value=year_max,
-            value=st.session_state["career_year_range_filter"],
             key="career_year_range_filter",
         )
     with cc2:
-        ensure_select_in_options("career_sort_stat_filter", career_sort_options, "HR")
+        validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
         sort_stat_career = st.selectbox(
             "Sort by",
             career_sort_options,
@@ -8217,14 +8267,14 @@ if active_page == "Career Totals":
         c2, c3, c4 = st.columns(3)
         with c2:
             bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
-            ensure_multiselect_state("career_batting_hand_filter", bats_options_career, bats_options_career)
+            validate_multiselect_options("career_batting_hand_filter", bats_options_career, bats_options_career)
             bats_filter_career = st.multiselect(
                 "Batting Hand",
                 bats_options_career,
                 key="career_batting_hand_filter",
             )
         with c3:
-            ensure_select_in_options(
+            validate_state_option(
                 "career_position_filter_mode",
                 ["Career Primary Position", "Season Primary Position"],
                 "Career Primary Position",
@@ -8238,7 +8288,7 @@ if active_page == "Career Totals":
         position_source_col = "careerPrimaryPos" if position_filter_mode == "Career Primary Position" else "primaryPos"
         with c4:
             pos_options_career = sorted([x for x in batting_df[position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
-            ensure_multiselect_state("career_position_filter", pos_options_career, pos_options_career)
+            validate_multiselect_options("career_position_filter", pos_options_career, pos_options_career)
             pos_filter_career = st.multiselect(
                 "Position",
                 pos_options_career,
@@ -8246,13 +8296,13 @@ if active_page == "Career Totals":
             )
         actual_team_names_career = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
         team_options_career = ["All Teams", "American League", "National League"] + actual_team_names_career
-        ensure_multiselect_state("career_team_filter", team_options_career, ["All Teams"])
+        validate_multiselect_options("career_team_filter", team_options_career, ["All Teams"])
         team_filter_career = st.multiselect(
             "Franchise / League",
             team_options_career,
             key="career_team_filter",
         )
-        ensure_widget_state("career_by_team_toggle_filter", False)
+        init_state_once("career_by_team_toggle_filter", False)
         show_career_by_team = st.toggle(
             "Show career totals separately by team",
             key="career_by_team_toggle_filter",
@@ -8350,6 +8400,7 @@ if active_page == "Career Totals":
         "after_table",
         label="Use these filters in another tool…",
     )
+    render_page_filters_debug(active_page)
     st.divider()
     career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
     render_relationship_finder_section(
@@ -8364,7 +8415,7 @@ if active_page == "Leaderboards":
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        ensure_slider_range(
+        validate_slider_range(
             "leaders_year_range_filter",
             year_min,
             year_max,
@@ -8374,20 +8425,18 @@ if active_page == "Leaderboards":
             "Select Year Range",
             min_value=year_min,
             max_value=year_max,
-            value=st.session_state["leaders_year_range_filter"],
             key="leaders_year_range_filter",
         )
     with c2:
-        ensure_widget_state("leaders_top_n_filter", 25)
+        init_state_once("leaders_top_n_filter", 25)
         top_n_leaders = st.slider(
             "Show Top N Players",
             min_value=5,
             max_value=100,
-            value=int(st.session_state["leaders_top_n_filter"]),
             key="leaders_top_n_filter",
         )
     with c3:
-        ensure_select_in_options("leaders_sort_stat_filter", leaders_sort_options, "score")
+        validate_state_option("leaders_sort_stat_filter", leaders_sort_options, "score")
         sort_stat_leaders = st.selectbox(
             "Sort by",
             leaders_sort_options,
@@ -8433,6 +8482,7 @@ if active_page == "Leaderboards":
         "after_table",
         label="Use these filters in another tool…",
     )
+    render_page_filters_debug(active_page)
 
 
 # ----------------------------
@@ -8699,7 +8749,7 @@ if active_page == "Comparison Tool":
             compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
     with st.expander("Chart options", expanded=False):
         _compare_stat_options = ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"]
-        ensure_select_in_options("compare_stat", _compare_stat_options, "R")
+        validate_state_option("compare_stat", _compare_stat_options, "R")
         stat_choice_compare = st.selectbox(
             "Choose stat to plot",
             _compare_stat_options,
@@ -8707,7 +8757,7 @@ if active_page == "Comparison Tool":
             on_change=compare_settings_changed,
         )
         _compare_axis_options = ["Season Year", "Player Age"]
-        ensure_select_in_options("compare_x_axis_mode", _compare_axis_options, "Season Year")
+        validate_state_option("compare_x_axis_mode", _compare_axis_options, "Season Year")
         compare_x_axis_mode = st.radio(
             "Comparison X-Axis",
             _compare_axis_options,
@@ -8724,7 +8774,7 @@ if active_page == "Comparison Tool":
                 and (_saved_cmp_year_range[0] < compare_year_range[0] or _saved_cmp_year_range[1] > compare_year_range[1])
             ):
                 st.session_state.pop("compare_year_range", None)
-            ensure_slider_range(
+            validate_slider_range(
                 "compare_year_range",
                 compare_year_range[0],
                 compare_year_range[1],
@@ -8734,24 +8784,22 @@ if active_page == "Comparison Tool":
                 "Season Year Range",
                 min_value=compare_year_range[0],
                 max_value=compare_year_range[1],
-                value=st.session_state["compare_year_range"],
                 key="compare_year_range",
                 on_change=compare_settings_changed,
                 help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
             )
         else:
-            ensure_slider_range("compare_age_range", 16, 50, (16, 50))
+            validate_slider_range("compare_age_range", 16, 50, (16, 50))
             compare_age_range = st.slider(
                 "Player Age Range",
                 min_value=16,
                 max_value=50,
-                value=st.session_state["compare_age_range"],
                 key="compare_age_range",
                 on_change=compare_settings_changed,
                 help="Filters the comparison chart, year-by-year table, and trend intelligence by season age.",
             )
         _compare_mode_options = ["Actual Values", "Smoothed Moving Average"]
-        ensure_select_in_options("compare_trend_mode", _compare_mode_options, "Actual Values")
+        validate_state_option("compare_trend_mode", _compare_mode_options, "Actual Values")
         compare_trend_mode = st.radio(
             "Comparison Chart Mode",
             _compare_mode_options,
@@ -8761,12 +8809,11 @@ if active_page == "Comparison Tool":
         )
         compare_smooth_window = 3
         if compare_trend_mode == "Smoothed Moving Average":
-            ensure_widget_state("compare_smooth_window", 3)
+            init_state_once("compare_smooth_window", 3)
             compare_smooth_window = st.slider(
                 "Comparison Smoothing Window",
                 min_value=2,
                 max_value=7,
-                value=int(st.session_state["compare_smooth_window"]),
                 key="compare_smooth_window",
                 on_change=compare_settings_changed,
             )
@@ -9179,15 +9226,14 @@ if active_page == "Trend Value":
     _trend_lag_options = [3, 4, 5]
     c1, c2 = st.columns(2)
     with c1:
-        ensure_select_in_options("trend_lag", _trend_lag_options, 3)
+        validate_state_option("trend_lag", _trend_lag_options, 3)
         lag_trend = st.selectbox("Trend Window (Years)", _trend_lag_options, key="trend_lag")
     with c2:
-        ensure_number_state("trend_min_g", 50, min_value=0, max_value=800)
+        validate_number_state("trend_min_g", 50, min_value=0, max_value=800)
         min_g_trend = st.number_input(
             "Minimum Games Played",
             min_value=0,
             max_value=800,
-            value=int(st.session_state["trend_min_g"]),
             key="trend_min_g",
         )
 
@@ -9200,9 +9246,9 @@ if active_page == "Trend Value":
     trend_drafted_names = []
     trend_sync_team = None
     with st.expander("Draft Room sync (optional)", expanded=False):
+        init_state_once("trend_use_draft_room_sync", True)
         trend_sync_enabled = st.checkbox(
             "Remove already drafted players and allow drafting from Trend page",
-            value=True,
             key="trend_use_draft_room_sync",
         )
         if trend_sync_enabled:
@@ -9251,7 +9297,7 @@ if active_page == "Trend Value":
     trend_display.columns = ["Player", "Bats", "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
 
     _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
-    ensure_select_in_options("trend_sort_col", _trend_sort_options, "OPS Δ")
+    validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
     sort_col = st.selectbox("Sort By Trend", _trend_sort_options, key="trend_sort_col")
     trend_label_to_column = {"R Δ": "R_trend", "H Δ": "H_trend", "2B Δ": "2B_trend", "3B Δ": "3B_trend", "HR Δ": "HR_trend", "RBI Δ": "RBI_trend", "SB Δ": "SB_trend", "BB Δ": "BB_trend", "BA Δ": "BA_trend", "OBP Δ": "OBP_trend", "SLG Δ": "SLG_trend", "OPS Δ": "OPS_trend"}
     selected_trend_col = trend_label_to_column[sort_col]
@@ -9550,6 +9596,8 @@ if active_page == "Trend Value":
     else:
         st.info("Select one to three players to view trend charts.")
 
+    render_page_filters_debug(active_page)
+
 
 if active_page == "Fantasy Sleepers & Busts":
     render_section_header(
@@ -9576,36 +9624,33 @@ if active_page == "Fantasy Sleepers & Busts":
     _fantasy_format_options = ["5x5 Roto", "Points League"]
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        ensure_select_in_options("fantasy_market_window", _fantasy_window_options, 3)
+        validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
         fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window")
     with c2:
-        ensure_select_in_options("fantasy_market_format", _fantasy_format_options, "5x5 Roto")
+        validate_state_option("fantasy_market_format", _fantasy_format_options, "5x5 Roto")
         fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format")
     with c3:
-        ensure_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
+        validate_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
         fantasy_min_g = st.number_input(
             "Minimum Games",
             min_value=0,
             max_value=800,
-            value=int(st.session_state["fantasy_market_min_g"]),
             key="fantasy_market_min_g",
         )
     with c4:
-        ensure_number_state("fantasy_market_min_ab", 150, min_value=0, max_value=2500)
+        validate_number_state("fantasy_market_min_ab", 150, min_value=0, max_value=2500)
         fantasy_min_ab = st.number_input(
             "Minimum AB",
             min_value=0,
             max_value=2500,
-            value=int(st.session_state["fantasy_market_min_ab"]),
             key="fantasy_market_min_ab",
         )
 
-    ensure_widget_state("fantasy_market_top_n", 15)
+    init_state_once("fantasy_market_top_n", 15)
     sleeper_top_n = st.slider(
         "Show top N sleepers / busts",
         min_value=5,
         max_value=50,
-        value=int(st.session_state["fantasy_market_top_n"]),
         key="fantasy_market_top_n",
     )
 
@@ -9619,48 +9664,44 @@ if active_page == "Fantasy Sleepers & Busts":
             st.caption("Narrow the player pool; loosen if tables look empty.")
             sf1, sf2, sf3, sf4 = st.columns(4)
             with sf1:
-                ensure_number_state("sleeper_max_market_rank", 350, min_value=1, max_value=1000)
+                validate_number_state("sleeper_max_market_rank", 350, min_value=1, max_value=1000)
                 st.number_input(
                     "Worst Market Rank to Include",
                     min_value=1,
                     max_value=1000,
-                    value=int(st.session_state["sleeper_max_market_rank"]),
                     step=10,
                     key="sleeper_max_market_rank",
                 )
             with sf2:
-                ensure_number_state("sleeper_max_model_rank", 350, min_value=1, max_value=1000)
+                validate_number_state("sleeper_max_model_rank", 350, min_value=1, max_value=1000)
                 st.number_input(
                     "Worst Model Rank to Include",
                     min_value=1,
                     max_value=1000,
-                    value=int(st.session_state["sleeper_max_model_rank"]),
                     step=10,
                     key="sleeper_max_model_rank",
                 )
             with sf3:
-                ensure_number_state("sleeper_min_proj_hr", 0, min_value=0, max_value=80)
+                validate_number_state("sleeper_min_proj_hr", 0, min_value=0, max_value=80)
                 st.number_input(
                     "Minimum Projected HR",
                     min_value=0,
                     max_value=80,
-                    value=int(st.session_state["sleeper_min_proj_hr"]),
                     step=1,
                     key="sleeper_min_proj_hr",
                 )
             with sf4:
-                ensure_widget_state("sleeper_min_expected_value", 0.10)
+                init_state_once("sleeper_min_expected_value", 0.10)
                 st.slider(
                     "Minimum Expected Fantasy Value",
                     min_value=0.00,
                     max_value=1.00,
-                    value=float(st.session_state["sleeper_min_expected_value"]),
                     step=0.01,
                     key="sleeper_min_expected_value",
                 )
         with tab_draft:
             st.caption("Focus on available players who fit your roster needs.")
-            ensure_widget_state("sleeper_use_draft_room_needs", False)
+            init_state_once("sleeper_use_draft_room_needs", False)
             st.checkbox(
                 "Use Draft Room needs and remove already drafted players",
                 key="sleeper_use_draft_room_needs",
@@ -10144,6 +10185,8 @@ if active_page == "Fantasy Sleepers & Busts":
             else:
                 st.success(make_market_selected_insight(selected_market_row))
 
+    render_page_filters_debug(active_page)
+
 
 if active_page == "Draft Assistant Simulator":
     render_section_header(
@@ -10165,23 +10208,22 @@ if active_page == "Draft Assistant Simulator":
         _draft_format_options = ["5x5 Roto", "Points League"]
         d1, d2, d3 = st.columns(3)
         with d1:
-            ensure_select_in_options("draft_window", _draft_window_options, 3)
+            validate_state_option("draft_window", _draft_window_options, 3)
             draft_window = st.selectbox("Projection Window", _draft_window_options, key="draft_window")
         with d2:
-            ensure_select_in_options("draft_format", _draft_format_options, "5x5 Roto")
+            validate_state_option("draft_format", _draft_format_options, "5x5 Roto")
             draft_format = st.selectbox("League Format", _draft_format_options, key="draft_format")
         with d3:
-            ensure_widget_state("draft_top_n", 10)
+            init_state_once("draft_top_n", 10)
             draft_top_n = st.slider(
                 "Recommendations to Show",
                 min_value=5,
                 max_value=30,
-                value=int(st.session_state["draft_top_n"]),
                 key="draft_top_n",
             )
 
         with st.expander("Advanced scoring settings", expanded=False):
-            ensure_select_in_options("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+            validate_state_option("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
             st.selectbox(
                 "Projection style",
                 list(PROJECTION_STYLE_OPTIONS),
@@ -10190,30 +10232,28 @@ if active_page == "Draft Assistant Simulator":
             )
             mlb1, mlb2, mlb3 = st.columns(3)
             with mlb1:
-                ensure_widget_state("draft_use_ml_blend", True)
+                init_state_once("draft_use_ml_blend", True)
                 use_ml_in_draft = st.checkbox(
                     "Blend ML projection signal into Draft Fit Score",
                     key="draft_use_ml_blend",
                     help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score."
                 )
             with mlb2:
-                ensure_widget_state("draft_ml_blend_weight", 0.12)
+                init_state_once("draft_ml_blend_weight", 0.12)
                 ml_blend_weight = st.slider(
                     "ML Signal Weight",
                     min_value=0.00,
                     max_value=0.30,
-                    value=float(st.session_state["draft_ml_blend_weight"]),
                     step=0.01,
                     key="draft_ml_blend_weight",
                     help="Higher values make the Draft Assistant trust the ML projection signal more.",
                 )
             with mlb3:
-                ensure_number_state("draft_ml_min_games_signal", 50, min_value=0, max_value=500)
+                validate_number_state("draft_ml_min_games_signal", 50, min_value=0, max_value=500)
                 ml_min_games_for_signal = st.number_input(
                     "ML Signal Min Recent Games",
                     min_value=0,
                     max_value=500,
-                    value=int(st.session_state["draft_ml_min_games_signal"]),
                     step=10,
                     key="draft_ml_min_games_signal",
                 )
@@ -10919,6 +10959,8 @@ if active_page == "Draft Assistant Simulator":
                     hide_index=True
                 )
 
+        render_page_filters_debug(active_page)
+
 
 if active_page == "Draft Room Simulator":
     render_section_header(
@@ -11331,21 +11373,20 @@ if active_page == "Draft Simulation Test Mode":
     _lab_format_options = ["5x5 Roto", "Points League"]
     lc1, lc2, lc3, lc4 = st.columns(4)
     with lc1:
-        ensure_select_in_options("draft_lab_window", _lab_window_options, 3)
+        validate_state_option("draft_lab_window", _lab_window_options, 3)
         lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window")
     with lc2:
-        ensure_select_in_options("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
+        validate_state_option("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
         lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type")
     with lc3:
-        ensure_select_in_options("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+        validate_state_option("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
         lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="draft_lab_projection_style")
     with lc4:
-        ensure_number_state("draft_lab_picks_per_team", 15, min_value=5, max_value=25)
+        validate_number_state("draft_lab_picks_per_team", 15, min_value=5, max_value=25)
         lab_picks_per_team = st.number_input(
             "Picks per Team",
             min_value=5,
             max_value=25,
-            value=int(st.session_state["draft_lab_picks_per_team"]),
             step=1,
             key="draft_lab_picks_per_team",
         )
@@ -11566,6 +11607,8 @@ if active_page == "Draft Simulation Test Mode":
             label="Send draft settings to…",
         )
 
+    render_page_filters_debug(active_page)
+
 
 if active_page == "Live Draft Room":
     render_section_header(
@@ -11600,36 +11643,34 @@ if active_page == "Live Draft Room":
         _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
         _live_proj_window_options = [3, 4, 5]
         with lc1:
-            ensure_text_state("live_draft_league_name", "My Fantasy League")
+            validate_text_state("live_draft_league_name", "My Fantasy League")
             live_league_name = st.text_input(
                 "League Name",
-                value=st.session_state["live_draft_league_name"],
                 key="live_draft_league_name",
             )
-            ensure_select_in_options("live_draft_team_count", _live_team_options, 4)
+            validate_state_option("live_draft_team_count", _live_team_options, 4)
             live_num_teams = st.selectbox("Number of Teams", _live_team_options, key="live_draft_team_count")
-            ensure_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
+            validate_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
             live_picks_per_team = st.number_input(
                 "Picks per Team",
                 min_value=1,
                 max_value=30,
-                value=int(st.session_state["live_draft_picks_per_team"]),
                 step=1,
                 key="live_draft_picks_per_team",
             )
         with lc2:
-            ensure_select_in_options("live_draft_type", ["Snake Draft"], "Snake Draft")
+            validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
             live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type")
-            ensure_select_in_options("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
+            validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
             live_scoring = st.selectbox("Scoring Type", _live_scoring_options, key="live_draft_scoring")
-            ensure_select_in_options("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
+            validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
             live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer")
         with lc3:
-            ensure_select_in_options("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
+            validate_state_option("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
             live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule")
-            ensure_select_in_options("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+            validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
             live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style")
-            ensure_select_in_options("live_draft_proj_window", _live_proj_window_options, 3)
+            validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
             live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window")
 
         st.subheader("Roster Settings")
@@ -11941,6 +11982,8 @@ if active_page == "Live Draft Room":
                 """
             )
 
+    render_page_filters_debug(active_page)
+
 
 if active_page == "Fantasy Standings Tracker":
     render_section_header(
@@ -11951,7 +11994,7 @@ if active_page == "Fantasy Standings Tracker":
     apply_pending_page_transfer(active_page)
 
     _standings_format_options = ["5x5 Roto", "Points League"]
-    ensure_select_in_options("standings_scoring_format", _standings_format_options, "5x5 Roto")
+    validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
     scoring_format_tracker = st.selectbox(
         "Scoring Format",
         _standings_format_options,
@@ -11962,7 +12005,7 @@ if active_page == "Fantasy Standings Tracker":
     # Keyed upload widgets can trigger StreamlitValueAssignmentNotAllowedError
     # when combined with page-state preservation logic.
     _standings_source_options = ["MLB API Auto-Fetch", "Upload CSV"]
-    ensure_select_in_options("standings_stats_source", _standings_source_options, "MLB API Auto-Fetch")
+    validate_state_option("standings_stats_source", _standings_source_options, "MLB API Auto-Fetch")
     stats_source = st.radio(
         "Current Stats Source",
         _standings_source_options,
@@ -11975,12 +12018,11 @@ if active_page == "Fantasy Standings Tracker":
     api_season = 2026
 
     if stats_source == "MLB API Auto-Fetch":
-        ensure_number_state("standings_api_season", 2026, min_value=2020, max_value=2035)
+        validate_number_state("standings_api_season", 2026, min_value=2020, max_value=2035)
         api_season = st.number_input(
             "MLB API Season",
             min_value=2020,
             max_value=2035,
-            value=int(st.session_state["standings_api_season"]),
             step=1,
             key="standings_api_season",
         )
@@ -12067,6 +12109,8 @@ if active_page == "Fantasy Standings Tracker":
             )
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
+
+    render_page_filters_debug(active_page)
 
 
 
@@ -12498,6 +12542,9 @@ if active_page == "Fantasy Lineup Assistant":
                                 style_cols=["Trade Fit Score", "Fairness Gap"]
                             )
 
+    render_page_filters_debug(active_page)
+
+
 if active_page == "Valuation":
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
     render_page_guide(active_page)
@@ -12506,15 +12553,14 @@ if active_page == "Valuation":
     _value_lag_options = [3, 4, 5]
     c1, c2 = st.columns(2)
     with c1:
-        ensure_select_in_options("value_lag", _value_lag_options, 3)
+        validate_state_option("value_lag", _value_lag_options, 3)
         lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag")
     with c2:
-        ensure_number_state("value_min_g", 50, min_value=0, max_value=800)
+        validate_number_state("value_min_g", 50, min_value=0, max_value=800)
         min_g_value = st.number_input(
             "Minimum Games Played",
             min_value=0,
             max_value=800,
-            value=int(st.session_state["value_min_g"]),
             key="value_min_g",
         )
 
@@ -12526,9 +12572,9 @@ if active_page == "Valuation":
     value_drafted_names = []
     value_sync_team = None
     with st.expander("Draft Room sync (optional)", expanded=False):
+        init_state_once("value_use_draft_room_sync", True)
         value_sync_enabled = st.checkbox(
             "Remove already drafted players and allow drafting from Valuation page",
-            value=True,
             key="value_use_draft_room_sync",
         )
         if value_sync_enabled:
@@ -12664,6 +12710,9 @@ if active_page == "Valuation":
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
     if not best_value_row.empty:
         st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
+
+    render_page_filters_debug(active_page)
+
 
 if active_page == "ML Predictions":
     render_section_header(

@@ -4,24 +4,37 @@ from __future__ import annotations
 
 import copy
 
-# Widget session keys (+ prefixes) owned by each page.
+# Widget session keys (+ prefixes) owned by each page (stable names used by widgets).
 PAGE_STATE_REGISTRY = {
     "Historical Explorer": {
-        "exact": ["hist_year", "hist_sort_stat", "hist_sort_order", "hist_bats", "hist_position_filter_mode", "hist_pos", "hist_team", "hist_combine_split_seasons"],
-        "prefixes": ["hist_"],
+        "exact": [
+            "historical_year_range_filter", "historical_sort_stat_filter", "historical_sort_order_filter",
+            "historical_batting_hand_filter", "historical_position_filter_mode", "historical_position_filter",
+            "historical_team_filter", "historical_combine_split_seasons_filter",
+            "hist_year", "hist_sort_stat", "hist_sort_order", "hist_bats", "hist_position_filter_mode",
+            "hist_pos", "hist_team", "hist_combine_split_seasons",
+        ],
+        "prefixes": ["historical_", "hist_"],
     },
     "Career Totals": {
-        "exact": ["career_year", "career_sort", "career_bats", "career_position_filter_mode", "career_pos", "career_team", "career_by_team_toggle"],
+        "exact": [
+            "career_year_range_filter", "career_sort_stat_filter", "career_batting_hand_filter",
+            "career_position_filter_mode", "career_position_filter", "career_team_filter",
+            "career_by_team_toggle_filter",
+            "career_year", "career_sort", "career_bats", "career_position_filter_mode",
+            "career_pos", "career_team", "career_by_team_toggle",
+        ],
         "prefixes": ["career_"],
     },
     "Leaderboards": {
-        "exact": ["leaders_year", "leaders_top_n", "leaders_sort"],
+        "exact": ["leaders_year_range_filter", "leaders_top_n_filter", "leaders_sort_stat_filter", "leaders_year", "leaders_top_n", "leaders_sort"],
         "prefixes": ["leaders_"],
     },
     "Comparison Tool": {
         "exact": [
             "compare_players", "compare_players_saved", "compare_stat", "compare_x_axis_mode",
             "compare_year_range", "compare_age_range", "compare_trend_mode", "compare_smooth_window",
+            "comparison_user_team",
             "compare_stat_saved", "compare_x_axis_mode_saved", "compare_year_range_saved",
             "compare_age_range_saved", "compare_trend_mode_saved", "compare_smooth_window_saved",
             "sig_player_a_clean", "sig_player_b_clean",
@@ -68,26 +81,28 @@ PAGE_STATE_REGISTRY = {
     "Draft Room Simulator": {
         "exact": [
             "draft_room_table", "draft_room_roster_team_to_view", "draft_room_show_all_rosters",
-            "room_your_team", "fantasy_draft_projection_style",
+            "room_your_team", "room_team_count", "room_rounds", "room_format", "room_window",
+            "room_team_names", "fantasy_draft_projection_style",
         ],
         "prefixes": ["draft_room_", "room_"],
     },
     "Draft Simulation Test Mode": {
         "exact": [
-            "draft_lab_window", "draft_lab_format", "draft_lab_projection_style", "draft_lab_picks_per_team",
-            "draft_lab_roster_team", "draft_lab_results",
+            "draft_lab_window", "draft_lab_scoring_type", "draft_lab_format",
+            "draft_lab_projection_style", "draft_lab_picks_per_team", "draft_lab_roster_team",
+            "draft_lab_results",
         ],
         "prefixes": ["draft_lab_"],
     },
     "Live Draft Room": {
         "exact": [
-            "live_draft_room", "live_draft_league_name", "live_draft_num_teams", "live_draft_picks_per_team",
-            "live_draft_type", "live_scoring", "live_draft_timer", "live_draft_auto_rule",
-            "live_draft_proj_style", "live_draft_proj_window",
+            "live_draft_room", "live_draft_league_name", "live_draft_team_count", "live_draft_num_teams",
+            "live_draft_picks_per_team", "live_draft_type", "live_draft_scoring", "live_draft_timer",
+            "live_draft_auto_rule", "live_draft_proj_style", "live_draft_proj_window",
             "live_slot_c", "live_slot_1b", "live_slot_2b", "live_slot_3b", "live_slot_ss",
             "live_slot_of", "live_slot_dh", "live_slot_p", "live_slot_bench",
         ],
-        "prefixes": ["live_draft_team_name_", "live_draft_"],
+        "prefixes": ["live_draft_team_name_", "live_draft_", "live_slot_"],
     },
     "Fantasy Standings Tracker": {
         "exact": ["standings_scoring_format", "standings_stats_source", "standings_api_season"],
@@ -97,16 +112,12 @@ PAGE_STATE_REGISTRY = {
         "exact": [
             "lineup_team", "lineup_format", "lineup_bench_rows", "lineup_include_util", "lineup_custom_slots",
             "lineup_diagnosis_rate_col",
+            "lineup_trade_my_team", "lineup_trade_other_team", "lineup_trade_give_players", "lineup_trade_get_players",
             "lineup_pts_r", "lineup_pts_rbi", "lineup_pts_hr", "lineup_pts_sb", "lineup_pts_h", "lineup_pts_bb", "lineup_pts_ops",
         ],
         "prefixes": ["lineup_"],
     },
 }
-
-GLOBAL_STATE_PREFIXES = (
-    "page_filter_state", "_page_state_", "_pending_", "_active_page", "_lifecycle",
-    "workflow_", "draft_queue", "show_performance_debug",
-)
 
 
 def _collect_keys_for_page(session, page_name: str) -> list:
@@ -160,14 +171,13 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
     if pending_transfer and isinstance(pending_transfer, dict):
         pending_target = normalize_page_key(pending_transfer.get("target"))
 
-    entered_new_page = prev is None or prev != curr
     if prev and prev != curr:
         save_page_state(session, prev, store)
         if pending_target and pending_target != curr:
             session.pop("_pending_page_transfer", None)
 
-    # Restore only when the user enters a page via sidebar — not on every same-page rerun.
-    if entered_new_page and pending_target != curr:
+    # Restore only when entering a different page via sidebar (not every same-page rerun).
+    if prev != curr and pending_target != curr:
         restore_page_state(session, curr, store)
 
     session["_page_state_last_active"] = curr
