@@ -19,8 +19,8 @@ _CAREER_TEAM_KEYS = ("career_team_filter", "career_team")
 _DRAFT_LAB_FORMAT_KEYS = ("draft_lab_scoring_type", "draft_lab_format")
 _LIVE_TEAM_COUNT_KEYS = ("live_draft_team_count", "live_draft_num_teams")
 
-# Live Draft Room roster slot widgets (must match streamlit_app.py session_state keys).
-_LIVE_SLOT_KEYS = (
+# Live Draft Room roster slot widgets — must match streamlit_app.py st.number_input key= values.
+_LIVE_SLOT_KEYS = [
     "live_slot_c",
     "live_slot_1b",
     "live_slot_2b",
@@ -30,7 +30,7 @@ _LIVE_SLOT_KEYS = (
     "live_slot_dh",
     "live_slot_p",
     "live_slot_bench",
-)
+]
 
 __all__ = [
     "_TRANSFER_STAT_COLS",

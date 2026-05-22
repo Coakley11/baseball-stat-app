@@ -16,7 +16,22 @@ from collections import Counter
 
 import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
-from page_transfers import _LIVE_SLOT_KEYS
+
+# Live Draft slot widgets (keys must match st.number_input key= in Live Draft Room).
+if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
+    pg_xfer._LIVE_SLOT_KEYS = (
+        "live_slot_c",
+        "live_slot_1b",
+        "live_slot_2b",
+        "live_slot_3b",
+        "live_slot_ss",
+        "live_slot_of",
+        "live_slot_dh",
+        "live_slot_p",
+        "live_slot_bench",
+    )
+_LIVE_SLOT_KEYS = pg_xfer._LIVE_SLOT_KEYS
+
 import page_state as pg_state
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
