@@ -44,6 +44,9 @@ __all__ = [
     "empty_transfer_payload",
     "normalize_transfer_payload",
     "resolve_players_from_extra",
+    "resolve_compare_selected_players",
+    "resolve_table_top3_players",
+    "BUILDER_SHOW_TOP3_CHECKBOX",
     "summarize_transfer_payload",
     "builder_allows_top3_checkbox",
     "target_allows_top3_players",
@@ -61,6 +64,7 @@ _TREND_SORT_COLS = frozenset({
 # Contextual transfers to these pages may offer the top-3 players checkbox.
 _TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
 
+# Explorer / Career / Leaderboards: optional top-3 via checkbox only.
 _BUILDER_ALLOWS_TOP3 = frozenset({
     "hist_to_compare",
     "hist_to_trend",
@@ -71,11 +75,21 @@ _BUILDER_ALLOWS_TOP3 = frozenset({
     "leaders_to_compare",
     "leaders_to_trend",
     "leaders_to_valuation",
+})
+
+# Comparison Tool → Trend / Valuation: all players selected in Comparison multiselect.
+_BUILDER_COMPARE_SELECTED_PLAYERS = frozenset({
     "compare_to_trend",
+    "compare_to_valuation",
+})
+
+# Trend / Valuation → Comparison: top 3 from main table (no checkbox).
+_BUILDER_TABLE_TOP3_PLAYERS = frozenset({
     "trend_to_compare",
     "valuation_to_compare",
-    "valuation_to_trend",
 })
+
+BUILDER_SHOW_TOP3_CHECKBOX = _BUILDER_ALLOWS_TOP3
 
 TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
@@ -195,8 +209,21 @@ def _pick_rank_stat(df, preferred: str) -> str:
     return "OPS"
 
 
+def resolve_compare_selected_players(session, extra):
+    """All players currently selected in the Comparison Tool multiselect."""
+    labels = extra.get("compare_selected_labels")
+    if labels is None:
+        labels = session.get("compare_players") or []
+    if not isinstance(labels, list):
+        labels = []
+    labels = [str(x).strip() for x in labels if str(x).strip()]
+    if not labels:
+        return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    return {"mode": "compare_selected", "names": [], "labels": labels, "rank_stat": None}
+
+
 def resolve_players_from_extra(session, extra):
-    """Only when user checks top-3: first three rows of the main results table (pre-sorted)."""
+    """Top-3 from pre-sorted main table when checkbox is on (Explorer/Career/Leaders)."""
     if not extra.get("send_top_3_players"):
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     df = extra.get("transfer_results_df") or extra.get("results_df")
@@ -207,6 +234,21 @@ def resolve_players_from_extra(session, extra):
     )
     rank_stat = str(extra.get("rank_stat") or extra.get("default_rank_stat") or "OPS")
     names = top_players_in_display_order(df, player_col=name_col, limit=3)
+    return {"mode": "top_3", "names": names, "labels": [], "rank_stat": rank_stat}
+
+
+def resolve_table_top3_players(session, extra):
+    """Top 3 from main Trends/Valuation table row order (no checkbox)."""
+    df = extra.get("transfer_results_df") or extra.get("results_df")
+    name_col = str(
+        extra.get("transfer_name_col")
+        or extra.get("results_player_col")
+        or "Player"
+    )
+    rank_stat = str(extra.get("rank_stat") or extra.get("default_rank_stat") or "OPS")
+    names = top_players_in_display_order(df, player_col=name_col, limit=3)
+    if not names:
+        return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     return {"mode": "top_3", "names": names, "labels": [], "rank_stat": rank_stat}
 
 
@@ -243,8 +285,12 @@ def summarize_transfer_payload(payload, target_page=None) -> dict:
     draft = p.get("transfer_draft_objects") or {}
     actions = p.get("actions") or []
     filter_lines, min_lines = _split_filter_preview_lines(filters)
-    names = players.get("names") or players.get("labels") or []
-    if players.get("mode") == "top_3" and names:
+    names = players.get("names") or []
+    labels = players.get("labels") or []
+    if players.get("mode") == "compare_selected" and labels:
+        display = [str(x).split(" (")[0].strip() for x in labels]
+        player_lines = ["Players: " + ", ".join(display)]
+    elif players.get("mode") == "top_3" and names:
         player_lines = ["Players: " + ", ".join(names)]
     else:
         player_lines = ["Players: None"]
@@ -543,14 +589,18 @@ def fantasy_format_window_keys(session, fmt_src, fmt_dst, window_src, window_dst
 
 
 def build_transfer(session, builder_id: str, extra_context=None) -> dict:
-    """Build structured transfer payload: filters/settings; players only if top-3 checked."""
+    """Build structured transfer payload: filters/settings; players per route rules."""
     extra = extra_context or {}
     b = TRANSFER_BUILDERS.get(builder_id)
     if not b:
         return empty_transfer_payload()
     payload = normalize_transfer_payload(b(session, extra))
     payload["transfer_players"] = {"mode": "none", "names": [], "labels": [], "rank_stat": None}
-    if builder_id in _BUILDER_ALLOWS_TOP3:
+    if builder_id in _BUILDER_COMPARE_SELECTED_PLAYERS:
+        payload["transfer_players"] = resolve_compare_selected_players(session, extra)
+    elif builder_id in _BUILDER_TABLE_TOP3_PLAYERS:
+        payload["transfer_players"] = resolve_table_top3_players(session, extra)
+    elif builder_id in _BUILDER_ALLOWS_TOP3:
         payload["transfer_players"] = resolve_players_from_extra(session, extra)
     return payload
 

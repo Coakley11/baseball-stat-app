@@ -120,14 +120,31 @@ PAGE_STATE_REGISTRY = {
 }
 
 
+def _is_ephemeral_widget_key(key: str) -> bool:
+    """Button/action widget keys must not be snapshotted (causes StreamlitValueAssignmentNotAllowedError)."""
+    k = str(key)
+    if k.endswith("_button") or k.endswith("_btn"):
+        return True
+    if k.startswith("plr_act_") or k.startswith("ctx_go_"):
+        return True
+    if "compare_selected_action_" in k or k.startswith("sig_a_action_") or k.startswith("sig_b_action_"):
+        return True
+    if "_qa_" in k and any(
+        tag in k
+        for tag in ("_queue_", "_cmp_", "_tr_", "_da_", "_draft_", "_sim_", "_tacq_", "_taw_", "_proj_")
+    ):
+        return True
+    return False
+
+
 def _collect_keys_for_page(session, page_name: str) -> list:
     spec = PAGE_STATE_REGISTRY.get(page_name, {})
     keys = set(spec.get("exact", []))
     for prefix in spec.get("prefixes", []):
         for k in session:
-            if isinstance(k, str) and k.startswith(prefix):
+            if isinstance(k, str) and k.startswith(prefix) and not _is_ephemeral_widget_key(k):
                 keys.add(k)
-    return sorted(keys)
+    return sorted(k for k in keys if not _is_ephemeral_widget_key(k))
 
 
 def save_page_state(session, page_name: str, store: dict):
@@ -151,6 +168,9 @@ def restore_page_state(session, page_name: str, store: dict):
     if not snapshot:
         return False
     for key, value in snapshot.items():
+        if _is_ephemeral_widget_key(key):
+            session.pop(key, None)
+            continue
         try:
             session[key] = copy.deepcopy(value)
         except Exception:

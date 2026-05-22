@@ -71,7 +71,6 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
             "hist_to_compare", "hist_to_trend", "hist_to_valuation",
             "career_to_compare", "career_to_trend", "career_to_valuation",
             "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
-            "compare_to_trend", "trend_to_compare", "valuation_to_compare", "valuation_to_trend",
         }
     )
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
@@ -695,7 +694,7 @@ def register_players_sent_to_trend_page(full_name, label_map):
     if base_fn in mq:
         mq.remove(base_fn)
     mq.append(base_fn)
-    while len(mq) > 3:
+    while len(mq) > 12:
         mq.pop(0)
 
     st.session_state["trend_multi_queue_fullnames"] = mq
@@ -711,9 +710,8 @@ def register_players_sent_to_trend_page(full_name, label_map):
         if ml and ml not in multi_labels:
             multi_labels.append(ml)
 
-    st.session_state["trend_force_multi_labels"] = multi_labels[:3]
-    # Also store readable names for pages that use base-name matching.
-    st.session_state["pending_trend_players"] = [fullname_base_from_label(x) for x in multi_labels[:3]]
+    st.session_state["trend_force_multi_labels"] = multi_labels
+    st.session_state["pending_trend_players"] = [fullname_base_from_label(x) for x in multi_labels]
     st.session_state["pending_trend_player"] = fullname_base_from_label(anchor_label) if anchor_label else base_fn
     return True
 
@@ -8119,12 +8117,12 @@ def player_quick_actions_popover(
 
         b1, b2, b3 = st.columns(3)
         with b1:
-            if st.button("Add to Queue", key=f"{key}_qa_queue_{sfx}"):
+            if st.button("Add to Queue", key=f"plr_act_{sfx}_add_draft_queue_button"):
                 msg = execute_player_action_once(pick, "Queue player", team_for_draft, user_draft_team, label_map)
                 st.session_state["workflow_sidebar_flash"] = msg
                 st.rerun()
         with b2:
-            if st.button("Send to Comparison", key=f"{key}_qa_cmp_{sfx}"):
+            if st.button("Send to Comparison", key=f"plr_act_{sfx}_send_comparison_button"):
                 msg = execute_player_action_once(pick, "Send to Comparison Tool", team_for_draft, user_draft_team, label_map)
                 st.session_state["workflow_sidebar_flash"] = msg
                 request_sidebar_page("Comparison Tool")
@@ -8136,13 +8134,13 @@ def player_quick_actions_popover(
 
         b4, b5, b6 = st.columns(3)
         with b4:
-            if st.button("Add to Watchlist", key=f"{key}_qa_da_{sfx}"):
+            if st.button("Add to Watchlist", key=f"plr_act_{sfx}_add_watchlist_button"):
                 msg = execute_player_action_once(pick, "Add to Watchlist", team_for_draft, user_draft_team, label_map)
                 st.session_state["workflow_sidebar_flash"] = msg
                 st.rerun()
         with b5:
             if not on_my:
-                if st.button("Trade · Acquire", key=f"{key}_qa_tacq_{sfx}"):
+                if st.button("Trade · Acquire", key=f"plr_act_{sfx}_trade_acquire_button"):
                     msg = execute_player_action_once(pick, "Add as trade target to acquire", team_for_draft, user_draft_team, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
@@ -8160,14 +8158,14 @@ def player_quick_actions_popover(
         b7, b8, b9 = st.columns(3)
         with b7:
             if can_draft:
-                if st.button("Draft this player", key=f"{key}_qa_draft_{sfx}"):
+                if st.button("Draft this player", key=f"plr_act_{sfx}_draft_player_button"):
                     msg = execute_player_action_once(pick, "Draft player to next pick", team_for_draft, user_draft_team, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
             else:
                 st.caption("Not your pick — *Draft this player* hidden.")
         with b8:
-            if st.button("Simulate Draft Pick", key=f"{key}_qa_sim_{sfx}"):
+            if st.button("Simulate Draft Pick", key=f"plr_act_{sfx}_simulate_draft_button"):
                 lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
                 lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
                 result = build_draft_simulation_result(
@@ -8178,7 +8176,7 @@ def player_quick_actions_popover(
                 )
                 st.session_state[f"{key}_draft_simulation_result"] = result
         with b9:
-            if st.button("Projection breakdown", key=f"{key}_qa_proj_{sfx}"):
+            if st.button("Projection breakdown", key=f"plr_act_{sfx}_projection_breakdown_button"):
                 record_workflow_recent_player(pick)
                 row = None
                 if projection_lookup_df is not None and projection_lookup_name_col in projection_lookup_df.columns:
@@ -8222,9 +8220,10 @@ def render_contextual_player_actions(
     ownership_known = bool(team_name) and bool(teams)
     on_my_team = player_on_fantasy_team(player_name, team_name) if ownership_known else False
     label_map = label_map or get_clean_player_label_map_yearly(source_df)
+    act_id = _qa_key_suffix(f"{key_prefix}|{player_name}")
     with st.popover(f"Actions: {player_name}"):
         st.caption("Active/recent player" if active_recent else "Historical player")
-        if st.button("Add to Watchlist", key=f"{key_prefix}_watch_btn"):
+        if st.button("Add to Watchlist", key=f"plr_act_{act_id}_add_watchlist_button"):
             msg = execute_player_action_once(player_name, "Add to Watchlist", team_name, team_name, label_map)
             st.session_state["workflow_sidebar_flash"] = msg
             st.rerun()
@@ -8236,16 +8235,16 @@ def render_contextual_player_actions(
             st.caption("Draft queue and simulation are hidden because this player is already drafted.")
 
         if active_available:
-            if st.button("Add to Draft Queue", key=f"{key_prefix}_queue_btn"):
+            if st.button("Add to Draft Queue", key=f"plr_act_{act_id}_add_draft_queue_button"):
                 msg = execute_player_action_once(player_name, "Queue player", team_name, team_name, label_map)
                 st.session_state["workflow_sidebar_flash"] = msg
                 st.rerun()
-        if st.button("Send to Trend Page", key=f"{key_prefix}_trend_btn"):
+        if st.button("Send to Trend Page", key=f"plr_act_{act_id}_send_trend_button"):
             msg = execute_player_action_once(player_name, "Send to Trend Page", team_name, team_name, label_map)
             st.session_state["workflow_sidebar_flash"] = msg
             request_sidebar_page("Trend Value")
         if active_available:
-            if st.button("Simulate Draft Pick", key=f"{key_prefix}_simulate_btn"):
+            if st.button("Simulate Draft Pick", key=f"plr_act_{act_id}_simulate_draft_button"):
                 lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
                 lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
                 result = build_draft_simulation_result(
@@ -8257,7 +8256,7 @@ def render_contextual_player_actions(
                 st.session_state["draft_simulation_result"] = result
                 render_draft_simulation_result(result)
             if is_users_draft_turn(team_name):
-                if st.button("Draft Player", key=f"{key_prefix}_draft_btn"):
+                if st.button("Draft Player", key=f"plr_act_{act_id}_draft_player_button"):
                     msg = execute_player_action_once(player_name, "Draft player to next pick", team_name, team_name, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
@@ -8265,12 +8264,12 @@ def render_contextual_player_actions(
                 st.caption("Draft Player hidden until it is your team's pick.")
         if ownership_known:
             if on_my_team:
-                if st.button("Trade Away", key=f"{key_prefix}_trade_away_btn"):
+                if st.button("Trade Away", key=f"plr_act_{act_id}_trade_away_button"):
                     msg = execute_player_action_once(player_name, "Add as player to trade away", team_name, team_name, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
             else:
-                if st.button("Try to Acquire", key=f"{key_prefix}_trade_acquire_btn"):
+                if st.button("Try to Acquire", key=f"plr_act_{act_id}_trade_acquire_button"):
                     msg = execute_player_action_once(player_name, "Add as trade target to acquire", team_name, team_name, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
@@ -9010,6 +9009,21 @@ def _apply_transfer_session_keys(target_page: str, keys: dict):
             pass
 
 
+def _clear_stale_transfer_player_state():
+    """Remove prior contextual-transfer player queues before applying a new payload."""
+    for key in (
+        "pending_compare_players",
+        "pending_compare_clear_player_b",
+        "pending_trend_players",
+        "pending_trend_player",
+        "trend_multi_queue_fullnames",
+        "trend_anchor_fullname",
+        "trend_force_single_label",
+        "trend_force_multi_labels",
+    ):
+        st.session_state.pop(key, None)
+
+
 def _apply_transfer_players_to_compare(players: dict):
     label_map = get_clean_player_label_map_yearly(yearly_df)
     mode = str((players or {}).get("mode", "none")).lower()
@@ -9043,6 +9057,30 @@ def _apply_transfer_players_to_trend(players: dict):
         st.session_state.pop("trend_multi_queue_fullnames", None)
         st.session_state.pop("trend_anchor_fullname", None)
         st.session_state.pop("trend_force_single_label", None)
+        st.session_state.pop("trend_force_multi_labels", None)
+        return
+    if mode == "compare_selected":
+        labels = [str(x).strip() for x in (players.get("labels") or []) if str(x).strip()]
+        valid = []
+        for lbl in labels:
+            if lbl in label_map:
+                valid.append(lbl)
+                continue
+            resolved = resolve_fullname_to_clean_label(lbl, label_map)
+            if resolved and resolved not in valid:
+                valid.append(resolved)
+        if not valid:
+            return
+        st.session_state["trend_force_multi_labels"] = valid
+        st.session_state["trend_force_single_label"] = valid[0]
+        st.session_state["trend_anchor_fullname"] = fullname_base_from_label(valid[0])
+        st.session_state["trend_multi_queue_fullnames"] = [
+            fullname_base_from_label(lbl) for lbl in valid
+        ]
+        st.session_state["pending_trend_players"] = [
+            fullname_base_from_label(lbl) for lbl in valid
+        ]
+        st.session_state["pending_trend_player"] = fullname_base_from_label(valid[0])
         return
     names = list(players.get("names") or [])
     for lbl in players.get("labels") or []:
@@ -9116,6 +9154,7 @@ def apply_pending_page_transfer(current_page: str):
             room = st.session_state.get("live_draft_room")
             if room and room.get("status") == "complete":
                 live_draft_push_analysis_to_session(room)
+    _clear_stale_transfer_player_state()
     players = payload.get("transfer_players") or {}
     if page == "Comparison Tool":
         _apply_transfer_players_to_compare(players)
@@ -9129,14 +9168,18 @@ def apply_pending_page_transfer(current_page: str):
     return True
 
 
-def _preview_top3_player_names(transfer_df, name_col: str, *, send_top3: bool):
-    if not send_top3:
+def _preview_transfer_player_names(ent, base_extra, main_xfer_df, name_col, *, send_top3: bool):
+    if not ent:
         return []
-    return pg_xfer.top_players_in_display_order(
-        transfer_df,
-        player_col=name_col,
-        limit=3,
-    )
+    builder = ent.get("builder") or ""
+    if builder in getattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS", frozenset()):
+        labels = base_extra.get("compare_selected_labels") or st.session_state.get("compare_players") or []
+        return [str(x).split(" (")[0].strip() for x in labels if str(x).strip()]
+    if builder in getattr(pg_xfer, "_BUILDER_TABLE_TOP3_PLAYERS", frozenset()):
+        return pg_xfer.top_players_in_display_order(main_xfer_df, player_col=name_col, limit=3)
+    if send_top3:
+        return pg_xfer.top_players_in_display_order(main_xfer_df, player_col=name_col, limit=3)
+    return []
 
 
 def render_contextual_page_nav(
@@ -9196,7 +9239,12 @@ def render_contextual_page_nav(
         target_page = normalize_page_key(ent["target"]) if ent else None
 
         send_top3 = False
-        if target_page in CONTEXTUAL_TOP3_PLAYER_TARGETS:
+        show_top3_checkbox = bool(
+            ent
+            and ent.get("builder") in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset())
+            and target_page in CONTEXTUAL_TOP3_PLAYER_TARGETS
+        )
+        if show_top3_checkbox:
             chk_key = f"{source}_{target_page}_send_top_3_players"
             send_top3 = st.checkbox(
                 CONTEXTUAL_TOP3_CHECKBOX_LABEL,
@@ -9204,7 +9252,9 @@ def render_contextual_page_nav(
                 key=chk_key,
             )
 
-        preview_names = _preview_top3_player_names(main_xfer_df, name_col, send_top3=send_top3)
+        preview_names = _preview_transfer_player_names(
+            ent, base_extra, main_xfer_df, name_col, send_top3=send_top3
+        )
 
         if ent:
             ctx = dict(base_extra)
@@ -9215,7 +9265,7 @@ def render_contextual_page_nav(
             st.markdown(f"**Target:** {page_option_label(summary['target'])}")
             st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
             st.markdown(f"**Min stat filters:** {', '.join(summary['min_stats'][:14])}" + (" …" if len(summary['min_stats']) > 14 else ""))
-            if send_top3 and preview_names:
+            if preview_names:
                 st.markdown(f"**Players:** {', '.join(preview_names)}")
             else:
                 st.markdown("**Players:** None")
@@ -9226,7 +9276,7 @@ def render_contextual_page_nav(
                 st.caption(f"Source page: {source_page}")
                 st.caption(f"Rank stat (table sort): {rank_stat}")
                 st.caption(
-                    f"First 3: {', '.join(preview_names) if preview_names else '—'}"
+                    f"First 3: {', '.join(preview_names[:3]) if preview_names else '—'}"
                 )
                 row_count = len(main_xfer_df) if main_xfer_df is not None else 0
                 st.caption(f"Row count: {row_count}")
@@ -9241,7 +9291,8 @@ def render_contextual_page_nav(
             if go_ent:
                 go_target = normalize_page_key(go_ent["target"])
                 ctx = dict(base_extra)
-                if go_target in CONTEXTUAL_TOP3_PLAYER_TARGETS:
+                builder_id = go_ent.get("builder") or ""
+                if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
                     ctx["send_top_3_players"] = bool(
                         st.session_state.get(f"{source}_{go_target}_send_top_3_players", False)
                     )
@@ -9290,6 +9341,11 @@ pg_state.handle_sidebar_page_state(
     st.session_state.get("_pending_page_transfer"),
 )
 migrate_legacy_widget_keys()
+
+# Drop snapshotted button widget keys (they must never be restored into session_state).
+for _ephemeral_key in list(st.session_state.keys()):
+    if pg_state._is_ephemeral_widget_key(_ephemeral_key):
+        st.session_state.pop(_ephemeral_key, None)
 
 st.sidebar.caption("Filters are remembered as you move between pages.")
 render_page_state_debug(active_page)
@@ -10491,6 +10547,7 @@ if active_page == "Comparison Tool":
         "Comparison Tool",
         "after_analysis",
         label="Continue analysis in…",
+        extra_context={"compare_selected_labels": selected_labels_compare},
     )
 
 
@@ -10713,7 +10770,7 @@ if active_page == "Trend Value":
 
     if "trend_force_multi_labels" in st.session_state:
         _tml = st.session_state.pop("trend_force_multi_labels")
-        _tml = [x for x in _tml if x in full_trend_labels][:3]
+        _tml = [x for x in _tml if x in full_trend_labels]
         if _tml:
             st.session_state["trend_players_multi"] = _tml
 
@@ -10808,9 +10865,9 @@ if active_page == "Trend Value":
 
     st.subheader("Player Trend Visualization")
     selected_labels_trend = st.multiselect(
-        "Select up to 3 Players to View Trend",
+        "Select players to view trend",
         full_trend_labels,
-        max_selections=3,
+        max_selections=6,
         key="trend_players_multi"
     )
     selected_ids_trend = [full_trend_label_map[label] for label in selected_labels_trend]
