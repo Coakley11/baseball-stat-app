@@ -8885,12 +8885,31 @@ def render_page_state_debug(page_name: str):
             st.caption("No matching widget keys in session state yet.")
 
 
+def go_to_related_page(
+    target_page: str,
+    transfer_payload=None,
+    *,
+    source_page=None,
+    navigate_only: bool = False,
+):
+    """
+    One-click contextual navigation: queue transfer, set sidebar page, apply filters, rerun.
+    """
+    target = normalize_page_key(target_page)
+    if target not in _PAGE_OPTION_SET:
+        return
+    if not navigate_only:
+        set_pending_page_transfer(target, transfer_payload, source_page)
+        _apply_transfer_payload_to_page(target, transfer_payload or {})
+    st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
+    st.session_state["active_page"] = target
+    st.session_state["_pending_active_page"] = target
+    st.rerun()
+
+
 def request_sidebar_page(page: str):
-    """Defer page changes until before ``st.sidebar.radio`` — avoids StreamlitAPIException."""
-    p = normalize_page_key(page)
-    if p in _PAGE_OPTION_SET:
-        st.session_state["_pending_active_page"] = p
-        st.rerun()
+    """Navigate via the main sidebar page key (single source of truth)."""
+    go_to_related_page(page, navigate_only=True)
 
 
 def save_page_state(page_name: str):
@@ -9047,11 +9066,8 @@ def _apply_transfer_payload_to_page(page: str, payload: dict) -> bool:
 
 
 def request_contextual_page(target_page: str, transfer_payload=None, source_page=None):
-    """Navigate via sidebar; apply transfer immediately, then rerun on the target page."""
-    target = normalize_page_key(target_page)
-    set_pending_page_transfer(target, transfer_payload, source_page)
-    _apply_transfer_payload_to_page(target, transfer_payload or {})
-    request_sidebar_page(target_page)
+    """Navigate with transfer payload (one click)."""
+    go_to_related_page(target_page, transfer_payload, source_page=source_page)
 
 
 def _apply_transfer_session_keys(target_page: str, keys: dict):
@@ -9108,52 +9124,85 @@ def _apply_transfer_players_to_compare(players: dict):
         st.session_state["pending_sig_player_b"] = labels[1]
 
 
+def _valid_trend_chart_labels(candidate_labels, label_map, *, lag_years=None, min_seasons=2):
+    """Labels that exist in the Trends UI and have enough recent seasons to graph."""
+    try:
+        lag = int(lag_years if lag_years is not None else st.session_state.get("trend_lag", 3))
+    except (TypeError, ValueError):
+        lag = 3
+    if lag not in (3, 4, 5):
+        lag = 3
+    max_y = int(st.session_state.get("_lahman_max_year", year_max))
+    min_y = max_y - lag + 1
+    allowed = set(get_sorted_clean_player_label_keys(yearly_df))
+    valid = []
+    for raw in candidate_labels:
+        lbl = str(raw).strip()
+        if not lbl:
+            continue
+        if lbl not in label_map:
+            resolved = resolve_fullname_to_clean_label(lbl, label_map)
+            lbl = resolved or lbl
+        if not lbl or lbl not in allowed or lbl not in label_map:
+            continue
+        pid = label_map[lbl]
+        sub = yearly_df[
+            (yearly_df["playerID"] == pid)
+            & (yearly_df["yearID"] >= min_y)
+            & (yearly_df["yearID"] <= max_y)
+        ]
+        if len(sub) < min_seasons:
+            continue
+        if lbl not in valid:
+            valid.append(lbl)
+        if len(valid) >= 3:
+            break
+    return valid
+
+
 def _apply_transfer_players_to_trend(players: dict):
     label_map = get_clean_player_label_map_yearly(yearly_df)
     mode = str((players or {}).get("mode", "none")).lower()
+    st.session_state.pop("trend_chart_transfer_note", None)
     if mode in ("", "none"):
+        st.session_state.pop("trend_players_multi", None)
         st.session_state.pop("trend_multi_queue_fullnames", None)
         st.session_state.pop("trend_anchor_fullname", None)
         st.session_state.pop("trend_force_single_label", None)
         st.session_state.pop("trend_force_multi_labels", None)
         return
+
+    candidates = []
     if mode == "compare_selected":
-        labels = [str(x).strip() for x in (players.get("labels") or []) if str(x).strip()]
-        valid = []
-        for lbl in labels:
-            if lbl in label_map:
-                valid.append(lbl)
-                continue
-            resolved = resolve_fullname_to_clean_label(lbl, label_map)
-            if resolved and resolved not in valid:
-                valid.append(resolved)
-        if not valid:
-            return
-        st.session_state["trend_force_multi_labels"] = valid
-        st.session_state["trend_force_single_label"] = valid[0]
-        st.session_state["trend_anchor_fullname"] = fullname_base_from_label(valid[0])
-        st.session_state["trend_multi_queue_fullnames"] = [
-            fullname_base_from_label(lbl) for lbl in valid
-        ]
-        st.session_state["pending_trend_players"] = [
-            fullname_base_from_label(lbl) for lbl in valid
-        ]
-        st.session_state["pending_trend_player"] = fullname_base_from_label(valid[0])
+        candidates = [str(x).strip() for x in (players.get("labels") or []) if str(x).strip()]
+    else:
+        for name in players.get("names") or []:
+            candidates.append(str(name).strip())
+        for lbl in players.get("labels") or []:
+            candidates.append(str(lbl).strip())
+
+    valid = _valid_trend_chart_labels(candidates, label_map)
+    if not valid:
         return
-    names = list(players.get("names") or [])
-    for lbl in players.get("labels") or []:
-        base = fullname_base_from_label(lbl)
-        if base and base not in names:
-            names.append(base)
-    seen = set()
-    deduped = []
-    for n in names:
-        n = str(n).strip()
-        if n and n not in seen:
-            seen.add(n)
-            deduped.append(n)
-    for name in deduped[:3]:
-        register_players_sent_to_trend_page(name, label_map)
+
+    chart_labels = valid[:3]
+    st.session_state["trend_players_multi"] = chart_labels
+    st.session_state["single_trend_dashboard_player"] = chart_labels[0]
+    st.session_state["trend_force_multi_labels"] = chart_labels
+    st.session_state["trend_force_single_label"] = chart_labels[0]
+    st.session_state["trend_anchor_fullname"] = fullname_base_from_label(chart_labels[0])
+    st.session_state["trend_multi_queue_fullnames"] = [
+        fullname_base_from_label(lbl) for lbl in chart_labels
+    ]
+    st.session_state["pending_trend_players"] = [
+        fullname_base_from_label(lbl) for lbl in chart_labels
+    ]
+    st.session_state["pending_trend_player"] = fullname_base_from_label(chart_labels[0])
+
+    if len(candidates) > len(chart_labels) or len(candidates) > 3:
+        st.session_state["trend_chart_transfer_note"] = (
+            f"Showing first {len(chart_labels)} valid transferred players."
+        )
 
 
 def _apply_transfer_players_to_valuation(players: dict):
@@ -9276,30 +9325,30 @@ def render_contextual_page_nav(
             ent, base_extra, main_xfer_df, name_col, send_top3=send_top3
         )
 
-        if show_top3_checkbox and send_top3 and preview_names:
-            st.markdown("**Top 3 players to transfer:**")
-            for _pname in preview_names[:3]:
-                st.markdown(f"- {_pname}")
+        builder_id = ent.get("builder") or "" if ent else ""
+        if builder_id in getattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS", frozenset()):
+            _cmp_preview = _preview_transfer_player_names(
+                ent, base_extra, main_xfer_df, name_col, send_top3=False
+            )
+            if _cmp_preview:
+                st.caption(f"Sending comparison players: {', '.join(_cmp_preview)}")
+        elif show_top3_checkbox and send_top3 and preview_names:
+            st.caption(f"Sending top 3 players: {', '.join(preview_names[:3])}")
 
         if st.button("Open selected tool", key=go_key, use_container_width=True):
-            choice_now = st.session_state.get(choice_key, option_labels[0])
-            try:
-                go_idx = option_labels.index(choice_now)
-            except ValueError:
-                go_idx = 0
-            go_ent = option_entries[go_idx]
-            if go_ent:
-                go_target = normalize_page_key(go_ent["target"])
+            if not ent:
+                st.warning("Choose a destination page first.")
+            else:
+                go_target = normalize_page_key(ent["target"])
                 ctx = dict(base_extra)
-                builder_id = go_ent.get("builder") or ""
                 if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
                     ctx["send_top_3_players"] = bool(
                         st.session_state.get(f"{source}_{go_target}_send_top_3_players", False)
                     )
                 else:
                     ctx["send_top_3_players"] = False
-                payload = pg_xfer.build_transfer(st.session_state, go_ent["builder"], ctx)
-                request_contextual_page(go_target, payload, source_page=source)
+                payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
+                go_to_related_page(go_target, payload, source_page=source)
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -9318,6 +9367,15 @@ if _pending_nav:
     _pending_nav = normalize_page_key(_pending_nav)
     if _pending_nav in _PAGE_OPTION_SET:
         st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _pending_nav
+        st.session_state["active_page"] = _pending_nav
+
+# If a contextual transfer is queued, force the sidebar to the target page before the radio renders.
+_pending_xfer_nav = st.session_state.get("_pending_page_transfer")
+if isinstance(_pending_xfer_nav, dict):
+    _xfer_nav_tgt = normalize_page_key(_pending_xfer_nav.get("target"))
+    if _xfer_nav_tgt in _PAGE_OPTION_SET:
+        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _xfer_nav_tgt
+        st.session_state["active_page"] = _xfer_nav_tgt
 
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
@@ -10866,6 +10924,9 @@ if active_page == "Trend Value":
             st.info("Choose at least one stat to graph for the selected player.")
 
     st.subheader("Player Trend Visualization")
+    _trend_xfer_note = st.session_state.pop("trend_chart_transfer_note", None)
+    if _trend_xfer_note:
+        st.caption(_trend_xfer_note)
     selected_labels_trend = st.multiselect(
         "Select players to view trend",
         full_trend_labels,
