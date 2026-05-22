@@ -75,6 +75,9 @@ _BUILDER_ALLOWS_TOP3 = frozenset({
     "leaders_to_compare",
     "leaders_to_trend",
     "leaders_to_valuation",
+    "sleepers_to_compare",
+    "sleepers_to_trend",
+    "sleepers_to_valuation",
 })
 
 # Comparison Tool → Trend / Valuation: all players selected in Comparison multiselect.
@@ -865,6 +868,54 @@ def _sleepers_to_draft_assistant(session, extra):
     return {"session_keys": keys}
 
 
+def _compare_year_range_from_lag(session, extra, lag_key="fantasy_market_window"):
+    keys = {}
+    lag = session.get(lag_key)
+    max_y = extra.get("dataset_max_year")
+    if max_y is None:
+        max_y = session.get("_lahman_max_year")
+    try:
+        max_y = int(max_y)
+        lag = int(lag)
+    except (TypeError, ValueError):
+        return keys
+    if lag in (3, 4, 5) and max_y > 0:
+        keys["compare_year_range"] = (max_y - lag + 1, max_y)
+    return keys
+
+
+@_register_builder("sleepers_to_compare")
+def _sleepers_to_compare(session, extra):
+    keys = _compare_year_range_from_lag(session, extra)
+    keys.update(
+        fantasy_format_window_keys(
+            session,
+            "fantasy_market_format", "draft_format",
+            "fantasy_market_window", "draft_window",
+            "fantasy_draft_projection_style", "fantasy_draft_projection_style",
+        )
+    )
+    return {"session_keys": keys}
+
+
+@_register_builder("sleepers_to_trend")
+def _sleepers_to_trend(session, extra):
+    keys = {}
+    lag = session.get("fantasy_market_window")
+    if lag in (3, 4, 5):
+        keys["trend_lag"] = int(lag)
+    return {"session_keys": keys}
+
+
+@_register_builder("sleepers_to_valuation")
+def _sleepers_to_valuation(session, extra):
+    keys = {}
+    lag = session.get("fantasy_market_window")
+    if lag in (3, 4, 5):
+        keys["value_lag"] = int(lag)
+    return {"session_keys": keys}
+
+
 @_register_builder("draft_assistant_to_live")
 def _draft_assistant_to_live(session, extra):
     keys = {}
@@ -950,8 +1001,10 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Trend Value", "builder": "valuation_to_trend", "label": "Trend Value — window & stat minimums"},
     ],
     ("Fantasy Sleepers & Busts", "after_tables"): [
+        {"target": "Comparison Tool", "builder": "sleepers_to_compare", "label": "Comparison Tool — projection window"},
+        {"target": "Trend Value", "builder": "sleepers_to_trend", "label": "Trend Value — projection window"},
+        {"target": "Valuation", "builder": "sleepers_to_valuation", "label": "Valuation — projection window"},
         {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant — scoring & window"},
-        {"target": "Draft Assistant Simulator", "builder": "draft_assistant_to_sleepers", "label": "Sleepers — sync format from Draft Assistant"},
     ],
     ("Draft Assistant Simulator", "after_recommendations"): [
         {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts — format & window"},

@@ -71,6 +71,7 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
             "hist_to_compare", "hist_to_trend", "hist_to_valuation",
             "career_to_compare", "career_to_trend", "career_to_valuation",
             "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
+            "sleepers_to_compare", "sleepers_to_trend", "sleepers_to_valuation",
         }
     )
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
@@ -8462,6 +8463,7 @@ def _hist_explorer_franchise_names_for_teams():
 all_years = sorted(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().astype(int).unique())
 year_min = int(min(all_years))
 year_max = int(max(all_years))
+st.session_state.setdefault("_lahman_max_year", year_max)
 default_start_hist = max(year_min, 2010)
 default_start_leaders = max(year_min, 2020)
 
@@ -8769,7 +8771,7 @@ def validate_multiselect_options(key, options, default=None):
         st.session_state[key] = list(default) if default is not None else []
     elif not isinstance(st.session_state.get(key), list):
         st.session_state[key] = list(default) if default is not None else []
-    else:
+    elif st.session_state.get("_transfer_just_applied_to") != st.session_state.get("active_page"):
         st.session_state[key] = [x for x in st.session_state[key] if x in opts]
 
 
@@ -8990,9 +8992,65 @@ def set_pending_page_transfer(target_page: str, transfer_payload=None, source_pa
     }
 
 
+def _expand_transfer_filter_keys(page: str, keys: dict) -> dict:
+    """Map internal transfer keys (lags) onto target-page widget keys."""
+    out = dict(keys or {})
+    if "_transfer_value_lag" in out:
+        lag = out.pop("_transfer_value_lag")
+        try:
+            max_y = int(st.session_state.get("_lahman_max_year", year_max))
+            out["compare_year_range"] = (max_y - int(lag) + 1, max_y)
+        except Exception:
+            pass
+    if "_transfer_trend_lag" in out:
+        lag = out.pop("_transfer_trend_lag")
+        try:
+            max_y = int(st.session_state.get("_lahman_max_year", year_max))
+            out["compare_year_range"] = (max_y - int(lag) + 1, max_y)
+        except Exception:
+            pass
+    lag_trend = out.get("trend_lag")
+    if lag_trend in (3, 4, 5) and "compare_year_range" not in out and page == "Comparison Tool":
+        try:
+            max_y = int(st.session_state.get("_lahman_max_year", year_max))
+            out["compare_year_range"] = (max_y - int(lag_trend) + 1, max_y)
+        except Exception:
+            pass
+    return out
+
+
+def _apply_transfer_payload_to_page(page: str, payload: dict) -> bool:
+    """Write transfer filters/players onto session_state for the target page."""
+    page = normalize_page_key(page)
+    payload = pg_xfer.normalize_transfer_payload(payload or {})
+    keys = _expand_transfer_filter_keys(page, dict(payload.get("transfer_filters") or {}))
+    if keys:
+        _apply_transfer_session_keys(page, keys)
+    for action in payload.get("actions") or []:
+        if action == "push_live_draft_to_lab":
+            room = st.session_state.get("live_draft_room")
+            if room and room.get("status") == "complete":
+                live_draft_push_analysis_to_session(room)
+    _clear_stale_transfer_player_state()
+    players = payload.get("transfer_players") or {}
+    if page == "Comparison Tool":
+        _apply_transfer_players_to_compare(players)
+    if page == "Trend Value":
+        _apply_transfer_players_to_trend(players)
+    if page == "Valuation":
+        _apply_transfer_players_to_valuation(players)
+    highlight = payload.get("draft_assistant_highlight")
+    if highlight and page == "Draft Assistant Simulator":
+        st.session_state["pending_draft_assistant_player"] = str(highlight)
+    st.session_state["_transfer_just_applied_to"] = page
+    return True
+
+
 def request_contextual_page(target_page: str, transfer_payload=None, source_page=None):
-    """Navigate via sidebar and apply contextual transfer on the target page only."""
-    set_pending_page_transfer(target_page, transfer_payload, source_page)
+    """Navigate via sidebar; apply transfer immediately, then rerun on the target page."""
+    target = normalize_page_key(target_page)
+    set_pending_page_transfer(target, transfer_payload, source_page)
+    _apply_transfer_payload_to_page(target, transfer_payload or {})
     request_sidebar_page(target_page)
 
 
@@ -9116,7 +9174,7 @@ def _apply_transfer_players_to_valuation(players: dict):
 
 
 def apply_pending_page_transfer(current_page: str):
-    """Apply queued contextual transfer when landing on the target page."""
+    """Apply queued contextual transfer when landing on the target page (idempotent)."""
     pending = st.session_state.get("_pending_page_transfer")
     if not pending:
         return False
@@ -9125,47 +9183,8 @@ def apply_pending_page_transfer(current_page: str):
     if target != page:
         return False
     st.session_state.pop("_pending_page_transfer", None)
-    payload = pg_xfer.normalize_transfer_payload(pending.get("payload") or pending.get("filters") or {})
-    keys = dict(payload.get("transfer_filters") or {})
-    if "_transfer_value_lag" in keys:
-        lag = keys.pop("_transfer_value_lag")
-        try:
-            max_y = int(yearly_df["yearID"].max())
-            keys["compare_year_range"] = (max_y - int(lag) + 1, max_y)
-        except Exception:
-            pass
-    if "_transfer_trend_lag" in keys:
-        lag = keys.pop("_transfer_trend_lag")
-        try:
-            max_y = int(yearly_df["yearID"].max())
-            keys["compare_year_range"] = (max_y - int(lag) + 1, max_y)
-        except Exception:
-            pass
-    lag_trend = keys.get("trend_lag")
-    if lag_trend in (3, 4, 5) and "compare_year_range" not in keys and page == "Comparison Tool":
-        try:
-            max_y = int(yearly_df["yearID"].max())
-            keys["compare_year_range"] = (max_y - int(lag_trend) + 1, max_y)
-        except Exception:
-            pass
-    _apply_transfer_session_keys(page, keys)
-    for action in payload.get("actions") or []:
-        if action == "push_live_draft_to_lab":
-            room = st.session_state.get("live_draft_room")
-            if room and room.get("status") == "complete":
-                live_draft_push_analysis_to_session(room)
-    _clear_stale_transfer_player_state()
-    players = payload.get("transfer_players") or {}
-    if page == "Comparison Tool":
-        _apply_transfer_players_to_compare(players)
-    if page == "Trend Value":
-        _apply_transfer_players_to_trend(players)
-    if page == "Valuation":
-        _apply_transfer_players_to_valuation(players)
-    highlight = payload.get("draft_assistant_highlight")
-    if highlight and page == "Draft Assistant Simulator":
-        st.session_state["pending_draft_assistant_player"] = str(highlight)
-    return True
+    payload = pending.get("payload") or pending.get("filters") or {}
+    return _apply_transfer_payload_to_page(page, payload)
 
 
 def _preview_transfer_player_names(ent, base_extra, main_xfer_df, name_col, *, send_top3: bool):
@@ -9221,6 +9240,7 @@ def render_contextual_page_nav(
     rank_stat = default_rank_stat
 
     base_extra = dict(extra_context or {})
+    base_extra.setdefault("dataset_max_year", st.session_state.get("_lahman_max_year", year_max))
     if main_xfer_df is not None:
         base_extra["transfer_results_df"] = main_xfer_df
         base_extra["results_df"] = main_xfer_df
@@ -9256,30 +9276,10 @@ def render_contextual_page_nav(
             ent, base_extra, main_xfer_df, name_col, send_top3=send_top3
         )
 
-        if ent:
-            ctx = dict(base_extra)
-            ctx["send_top_3_players"] = send_top3
-            preview_payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
-            summary = pg_xfer.summarize_transfer_payload(preview_payload, target_page)
-            st.markdown("**Transfer preview**")
-            st.markdown(f"**Target:** {page_option_label(summary['target'])}")
-            st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
-            st.markdown(f"**Min stat filters:** {', '.join(summary['min_stats'][:14])}" + (" …" if len(summary['min_stats']) > 14 else ""))
-            if preview_names:
-                st.markdown(f"**Players:** {', '.join(preview_names)}")
-            else:
-                st.markdown("**Players:** None")
-            if summary["draft_objects"] != ["None"]:
-                st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
-
-            with st.expander("Top 3 source dataframe (debug)", expanded=False):
-                st.caption(f"Source page: {source_page}")
-                st.caption(f"Rank stat (table sort): {rank_stat}")
-                st.caption(
-                    f"First 3: {', '.join(preview_names[:3]) if preview_names else '—'}"
-                )
-                row_count = len(main_xfer_df) if main_xfer_df is not None else 0
-                st.caption(f"Row count: {row_count}")
+        if show_top3_checkbox and send_top3 and preview_names:
+            st.markdown("**Top 3 players to transfer:**")
+            for _pname in preview_names[:3]:
+                st.markdown(f"- {_pname}")
 
         if st.button("Open selected tool", key=go_key, use_container_width=True):
             choice_now = st.session_state.get(choice_key, option_labels[0])
@@ -9340,6 +9340,8 @@ pg_state.handle_sidebar_page_state(
     normalize_page_key,
     st.session_state.get("_pending_page_transfer"),
 )
+# Apply contextual transfer before page widgets render (filters must be in session_state first).
+apply_pending_page_transfer(active_page)
 migrate_legacy_widget_keys()
 
 # Drop snapshotted button widget keys (they must never be restored into session_state).
@@ -11523,6 +11525,19 @@ if active_page == "Fantasy Sleepers & Busts":
                 st.warning(make_market_selected_insight(selected_market_row))
             else:
                 st.success(make_market_selected_insight(selected_market_row))
+
+    _sleepers_xfer_df = pd.DataFrame()
+    if not fantasy_df.empty:
+        _sleepers_xfer_df = fantasy_df.sort_values("Fantasy Edge", ascending=False)
+    render_contextual_page_nav(
+        "Fantasy Sleepers & Busts",
+        "after_tables",
+        label="Use these filters in another tool…",
+        extra_context={"dataset_max_year": year_max},
+        transfer_results_df=_sleepers_xfer_df,
+        transfer_name_col="fullName",
+        default_rank_stat="Fantasy Edge",
+    )
 
     render_page_filters_debug(active_page)
 

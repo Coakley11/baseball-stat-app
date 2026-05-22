@@ -193,10 +193,9 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
 
     if prev and prev != curr:
         save_page_state(session, prev, store)
-        if pending_target and pending_target != curr:
-            session.pop("_pending_page_transfer", None)
+        session.pop("_transfer_just_applied_to", None)
 
-    # Restore only when entering a different page via sidebar (not every same-page rerun).
+    # Restore only when entering via sidebar — never when a contextual transfer targets this page.
     if prev != curr and pending_target != curr:
         restore_page_state(session, curr, store)
 
