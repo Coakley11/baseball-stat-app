@@ -77,6 +77,85 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
     pg_xfer.TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
+_CONTEXTUAL_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
+_BUILDER_TOP3_CHECKBOX_FALLBACK = frozenset({
+    "hist_to_compare", "hist_to_trend", "hist_to_valuation",
+    "career_to_compare", "career_to_trend", "career_to_valuation",
+    "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
+    "sleepers_to_compare", "sleepers_to_trend", "sleepers_to_valuation",
+    "trend_to_compare", "valuation_to_compare",
+})
+_BUILDER_COMPARE_SELECTED_FALLBACK = frozenset({"compare_to_trend", "compare_to_valuation"})
+
+if not hasattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX"):
+    pg_xfer.BUILDER_SHOW_TOP3_CHECKBOX = _BUILDER_TOP3_CHECKBOX_FALLBACK
+if not hasattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS"):
+    pg_xfer._BUILDER_COMPARE_SELECTED_PLAYERS = _BUILDER_COMPARE_SELECTED_FALLBACK
+if not hasattr(pg_xfer, "_BUILDER_TOP3_CHECKBOX"):
+    pg_xfer._BUILDER_TOP3_CHECKBOX = _BUILDER_TOP3_CHECKBOX_FALLBACK
+
+if not hasattr(pg_xfer, "source_has_transferable_players"):
+    def _source_has_transferable_players_fallback(df, name_col=None, *, min_players=1):
+        if df is None:
+            return False
+        if not hasattr(df, "empty") or df.empty:
+            return False
+        possible_name_cols = []
+        if name_col:
+            possible_name_cols.append(str(name_col))
+        possible_name_cols.extend(["fullName", "Player", "player_name", "Name", "name"])
+        need = max(1, int(min_players))
+        for col in possible_name_cols:
+            if col in getattr(df, "columns", []):
+                names = pg_xfer.top_players_in_display_order(df, player_col=col, limit=need)
+                if len(names) >= need:
+                    return True
+        return False
+
+    pg_xfer.source_has_transferable_players = _source_has_transferable_players_fallback
+
+if not hasattr(pg_xfer, "target_accepts_transferred_players"):
+    pg_xfer.target_accepts_transferred_players = (
+        pg_xfer.target_allows_top3_players
+        if hasattr(pg_xfer, "target_allows_top3_players")
+        else lambda target_page: str(target_page or "").strip() in _CONTEXTUAL_PLAYER_TARGETS
+    )
+
+if not hasattr(pg_xfer, "should_show_top3_checkbox"):
+    def _should_show_top3_checkbox_fallback(builder_id, target_page, df, name_col="fullName"):
+        if builder_id in _BUILDER_COMPARE_SELECTED_FALLBACK:
+            return False
+        if builder_id not in _BUILDER_TOP3_CHECKBOX_FALLBACK:
+            return False
+        if not pg_xfer.target_accepts_transferred_players(target_page):
+            return False
+        return pg_xfer.source_has_transferable_players(df, name_col)
+
+    pg_xfer.should_show_top3_checkbox = _should_show_top3_checkbox_fallback
+
+if not hasattr(pg_xfer, "contextual_nav_option_label"):
+    def _contextual_nav_option_label_fallback(
+        target_page,
+        builder_id,
+        *,
+        target_display=None,
+        has_source_players=False,
+    ):
+        display = (target_display or str(target_page or "")).strip() or str(target_page)
+        if builder_id in _BUILDER_COMPARE_SELECTED_FALLBACK:
+            if pg_xfer.target_accepts_transferred_players(target_page):
+                return f"Open {display}"
+            return f"Use these filters in {display}"
+        if (
+            builder_id in _BUILDER_TOP3_CHECKBOX_FALLBACK
+            and pg_xfer.target_accepts_transferred_players(target_page)
+            and has_source_players
+        ):
+            return f"Open {display}"
+        return f"Use these filters in {display}"
+
+    pg_xfer.contextual_nav_option_label = _contextual_nav_option_label_fallback
+
 if not hasattr(pg_xfer, "summarize_transfer_payload"):
     def summarize_transfer_payload(payload, target_page=""):
         """Fallback preview when deployed page_transfers.py is older."""

@@ -309,15 +309,34 @@ def target_accepts_transferred_players(target_page: str) -> bool:
     return target_allows_top3_players(target_page)
 
 
-def source_has_transferable_players(df, name_col: str = "fullName", *, min_players: int = 1) -> bool:
-    """True when the visible main table has at least one player name row."""
-    if not _is_usable_transfer_df(df):
+def source_has_transferable_players(df, name_col=None, *, min_players: int = 1) -> bool:
+    """
+    Return True if the source dataframe has player rows that can be transferred.
+    Used to decide whether to show the top-3 transfer checkbox.
+    """
+    if df is None:
         return False
-    col = _resolve_player_column(df, str(name_col or "fullName"))
-    if not col:
+    if not hasattr(df, "empty") or df.empty:
         return False
-    names = top_players_in_display_order(df, player_col=col, limit=max(1, int(min_players)))
-    return len(names) >= max(1, int(min_players))
+
+    possible_name_cols = []
+    if name_col:
+        possible_name_cols.append(str(name_col))
+    possible_name_cols.extend([
+        "fullName",
+        "Player",
+        "player_name",
+        "Name",
+        "name",
+    ])
+
+    need = max(1, int(min_players))
+    for col in possible_name_cols:
+        if col in getattr(df, "columns", []):
+            names = top_players_in_display_order(df, player_col=col, limit=need)
+            if len(names) >= need:
+                return True
+    return False
 
 
 def should_show_top3_checkbox(
