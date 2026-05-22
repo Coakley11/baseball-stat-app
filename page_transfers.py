@@ -141,8 +141,20 @@ def normalize_transfer_payload(raw):
     }
 
 
+def _is_usable_transfer_df(df) -> bool:
+    """True when df is a non-empty pandas DataFrame (never use bool(df))."""
+    if df is None:
+        return False
+    if not isinstance(df, pd.DataFrame):
+        return False
+    try:
+        return not df.empty
+    except Exception:
+        return False
+
+
 def _resolve_rank_column(df, rank_stat: str):
-    if df is None or getattr(df, "empty", True):
+    if not _is_usable_transfer_df(df):
         return None
     stat = str(rank_stat or "OPS").strip()
     if stat.lower() in ("fantasy value", "fantasy_value", "valuation"):
@@ -159,6 +171,8 @@ def _resolve_rank_column(df, rank_stat: str):
 
 
 def _resolve_player_column(df, player_col: str):
+    if not _is_usable_transfer_df(df):
+        return None
     if player_col in df.columns:
         return player_col
     for cand in ("fullName", "Player"):
@@ -167,9 +181,32 @@ def _resolve_player_column(df, player_col: str):
     return None
 
 
+def _transfer_df_from_extra(extra) -> pd.DataFrame | None:
+    """Resolve main results table from transfer context without DataFrame `or` chains."""
+    if not isinstance(extra, dict):
+        return None
+    df = extra.get("transfer_results_df")
+    if df is None:
+        df = extra.get("results_df")
+    if not _is_usable_transfer_df(df):
+        return None
+    return df
+
+
+def _name_col_from_extra(extra, default: str = "Player") -> str:
+    if not isinstance(extra, dict):
+        return default
+    col = extra.get("transfer_name_col")
+    if col is None:
+        col = extra.get("results_player_col")
+    if col is None:
+        return default
+    return str(col)
+
+
 def top_players_in_display_order(df, *, player_col="Player", limit=3):
     """First N unique player names in dataframe row order (main table/chart order)."""
-    if df is None or getattr(df, "empty", True):
+    if not _is_usable_transfer_df(df):
         return []
     col = _resolve_player_column(df, str(player_col or "Player"))
     if not col:
@@ -189,7 +226,7 @@ def top_players_in_display_order(df, *, player_col="Player", limit=3):
 
 def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=3):
     """Legacy re-rank helper; contextual top-3 uses top_players_in_display_order instead."""
-    if df is None or getattr(df, "empty", True):
+    if not _is_usable_transfer_df(df):
         return []
     col = _resolve_player_column(df, str(player_col or "Player"))
     if not col:
@@ -227,28 +264,30 @@ def resolve_compare_selected_players(session, extra):
 
 def resolve_players_from_extra(session, extra):
     """Top-3 from pre-sorted main table when checkbox is on (Explorer/Career/Leaders)."""
-    if not extra.get("send_top_3_players"):
+    if not isinstance(extra, dict) or not extra.get("send_top_3_players"):
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
-    df = extra.get("transfer_results_df") or extra.get("results_df")
-    name_col = str(
-        extra.get("transfer_name_col")
-        or extra.get("results_player_col")
-        or "Player"
-    )
-    rank_stat = str(extra.get("rank_stat") or extra.get("default_rank_stat") or "OPS")
+    df = _transfer_df_from_extra(extra)
+    if df is None:
+        return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    name_col = _name_col_from_extra(extra, "Player")
+    rank_stat = str(extra.get("rank_stat"))
+    if not rank_stat:
+        rank_stat = str(extra.get("default_rank_stat") or "OPS")
     names = top_players_in_display_order(df, player_col=name_col, limit=3)
+    if not names:
+        return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     return {"mode": "top_3", "names": names, "labels": [], "rank_stat": rank_stat}
 
 
 def resolve_table_top3_players(session, extra):
     """Top 3 from main Trends/Valuation table row order (no checkbox)."""
-    df = extra.get("transfer_results_df") or extra.get("results_df")
-    name_col = str(
-        extra.get("transfer_name_col")
-        or extra.get("results_player_col")
-        or "Player"
-    )
-    rank_stat = str(extra.get("rank_stat") or extra.get("default_rank_stat") or "OPS")
+    df = _transfer_df_from_extra(extra)
+    if df is None:
+        return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    name_col = _name_col_from_extra(extra, "Player")
+    rank_stat = str(extra.get("rank_stat"))
+    if not rank_stat:
+        rank_stat = str(extra.get("default_rank_stat") or "OPS")
     names = top_players_in_display_order(df, player_col=name_col, limit=3)
     if not names:
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
