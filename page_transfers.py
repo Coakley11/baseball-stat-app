@@ -45,9 +45,7 @@ __all__ = [
     "normalize_transfer_payload",
     "resolve_players_from_extra",
     "summarize_transfer_payload",
-    "builder_supports_player_transfer",
-    "PLAYER_TRANSFER_MODE_LABELS",
-    "PLAYER_TRANSFER_RANK_STATS",
+    "builder_allows_top3_checkbox",
 ]
 
 _FANTASY_FORMAT_VALUES = frozenset({"5x5 Roto", "Points League"})
@@ -58,37 +56,21 @@ _TREND_SORT_COLS = frozenset({
     "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ",
 })
 
-# Builders that may attach players from explicit session widgets (e.g. compare_players).
-_BUILDER_PLAYER_POLICY_SESSION = frozenset({
-    "compare_to_trend",
-    "compare_to_career",
-    "trend_to_compare",
-})
-
-# Builders where contextual UI controls player transfer (default: filters only).
-_BUILDER_PLAYER_POLICY_OPTIONAL = frozenset({
+# Transfers to Comparison Tool or Trend Value may optionally include top 3 from filtered results.
+_BUILDER_ALLOWS_TOP3 = frozenset({
     "hist_to_compare",
     "hist_to_trend",
-    "hist_to_valuation",
     "career_to_compare",
     "career_to_trend",
-    "career_to_valuation",
     "leaders_to_compare",
     "leaders_to_trend",
-    "leaders_to_valuation",
+    "compare_to_trend",
+    "trend_to_compare",
     "valuation_to_compare",
     "valuation_to_trend",
 })
 
-PLAYER_TRANSFER_RANK_STATS = ("HR", "RBI", "R", "SB", "AVG", "OPS", "score", "Expected Fantasy Value", "Valuation_Score")
-
-PLAYER_TRANSFER_MODE_LABELS = {
-    "none": "None — filters only",
-    "selected": "Selected players only",
-    "top_3": "Top 3 players from current results",
-    "top_5": "Top 5 players from current results",
-    "top_10": "Top 10 players from current results",
-}
+TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
 
 def empty_transfer_payload():
@@ -172,74 +154,62 @@ def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=
     return ranked[player_col].dropna().astype(str).head(int(limit)).tolist()
 
 
+def _pick_rank_stat(df, preferred: str) -> str:
+    """Use page sort stat when present in results; else OPS or fantasy value."""
+    for cand in (preferred, "OPS", "Expected Fantasy Value", "Valuation_Score", "score"):
+        if cand and _resolve_rank_column(df, str(cand)):
+            return str(cand)
+    return "OPS"
+
+
 def resolve_players_from_extra(session, extra):
-    """Map contextual UI player choice to transfer_players (never from table visibility alone)."""
-    mode = str(extra.get("player_mode", "none")).strip().lower()
-    if mode in ("", "none", "filters_only"):
+    """Only when user checks top-3: rank filtered results (never visible rows/charts)."""
+    if not extra.get("send_top_3_players"):
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
-    if mode == "selected":
-        names = []
-        labels = []
-        key = extra.get("explicit_players_key")
-        if key and isinstance(session.get(key), list):
-            names = [str(x).strip() for x in session[key] if str(x).strip()]
-        if extra.get("use_compare_players"):
-            for ck in ("compare_players", "compare_players_saved"):
-                raw = session.get(ck)
-                if isinstance(raw, list) and raw:
-                    labels = [str(x).strip() for x in raw if str(x).strip()]
-                    break
-        if extra.get("use_trend_players"):
-            raw = session.get("trend_players_multi")
-            if isinstance(raw, list) and raw:
-                names = [str(x).strip() for x in raw if str(x).strip()]
-        return {
-            "mode": "selected",
-            "names": names[:10],
-            "labels": labels[:10],
-            "rank_stat": None,
-        }
-    if mode in ("top_3", "top_5", "top_10"):
-        n = int(mode.split("_")[1])
-        df = extra.get("results_df")
-        rank_stat = extra.get("rank_stat", "OPS")
-        names = top_players_from_results(
-            df,
-            player_col=str(extra.get("results_player_col", "Player")),
-            rank_stat=rank_stat,
-            limit=n,
-        )
-        return {"mode": mode, "names": names, "labels": [], "rank_stat": rank_stat}
-    return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    df = extra.get("results_df")
+    rank_stat = _pick_rank_stat(df, str(extra.get("rank_stat") or "OPS"))
+    names = top_players_from_results(
+        df,
+        player_col=str(extra.get("results_player_col", "Player")),
+        rank_stat=rank_stat,
+        limit=3,
+    )
+    return {"mode": "top_3", "names": names, "labels": [], "rank_stat": rank_stat}
 
 
-def builder_supports_player_transfer(builder_id: str) -> bool:
-    """Show player-mode UI only when the contextual form should control transfer (not session widgets)."""
-    return builder_id in _BUILDER_PLAYER_POLICY_OPTIONAL
+def builder_allows_top3_checkbox(builder_id: str) -> bool:
+    return builder_id in _BUILDER_ALLOWS_TOP3
+
+
+def _split_filter_preview_lines(filters: dict):
+    """Separate min-threshold keys from other filter/settings keys."""
+    mins = []
+    other = []
+    for key, val in sorted((filters or {}).items()):
+        if str(key).startswith("_"):
+            continue
+        line = f"{key}: {val}"
+        if str(key).endswith("_min"):
+            mins.append(line)
+        else:
+            other.append(line)
+    return other or ["None"], mins or ["None"]
 
 
 def summarize_transfer_payload(payload, target_page: str) -> dict:
-    """Human-readable preview sections for the contextual transfer UI."""
+    """Human-readable preview for contextual transfer UI."""
     p = normalize_transfer_payload(payload)
     filters = p.get("transfer_filters") or {}
     players = p.get("transfer_players") or {}
     draft = p.get("transfer_draft_objects") or {}
     actions = p.get("actions") or []
-    filter_lines = [f"{k}: {v}" for k, v in sorted(filters.items()) if not str(k).startswith("_")]
-    player_lines = []
-    mode = players.get("mode", "none")
-    if mode == "none":
-        player_lines.append("None")
-    elif mode == "selected":
-        picked = players.get("labels") or players.get("names") or []
-        player_lines.append(", ".join(picked) if picked else "None (no explicit selection)")
-    elif str(mode).startswith("top_"):
+    filter_lines, min_lines = _split_filter_preview_lines(filters)
+    names = players.get("names") or players.get("labels") or []
+    if players.get("mode") == "top_3" and names:
         stat = players.get("rank_stat") or "OPS"
-        names = players.get("names") or []
-        player_lines.append(f"{len(names)} player(s) by {stat}: " + (", ".join(names) if names else "—"))
+        player_lines = [f"Top 3 by {stat}: " + ", ".join(names)]
     else:
-        picked = players.get("labels") or players.get("names") or []
-        player_lines.append(", ".join(picked) if picked else "None")
+        player_lines = ["None"]
     draft_lines = []
     if draft:
         draft_lines.extend(f"{k}: {v}" for k, v in sorted(draft.items()))
@@ -247,7 +217,8 @@ def summarize_transfer_payload(payload, target_page: str) -> dict:
         draft_lines.extend(f"Action: {a}" for a in actions)
     return {
         "target": target_page,
-        "filters": filter_lines or ["None"],
+        "filters": filter_lines,
+        "min_stats": min_lines,
         "players": player_lines,
         "draft_objects": draft_lines or ["None"],
     }
@@ -534,13 +505,14 @@ def fantasy_format_window_keys(session, fmt_src, fmt_dst, window_src, window_dst
 
 
 def build_transfer(session, builder_id: str, extra_context=None) -> dict:
-    """Build structured transfer payload: filters, players, draft objects."""
+    """Build structured transfer payload: filters/settings; players only if top-3 checked."""
     extra = extra_context or {}
     b = TRANSFER_BUILDERS.get(builder_id)
     if not b:
         return empty_transfer_payload()
     payload = normalize_transfer_payload(b(session, extra))
-    if builder_id in _BUILDER_PLAYER_POLICY_OPTIONAL:
+    payload["transfer_players"] = {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    if builder_id in _BUILDER_ALLOWS_TOP3:
         payload["transfer_players"] = resolve_players_from_extra(session, extra)
     return payload
 
@@ -581,9 +553,6 @@ def _hist_to_compare(session, extra):
     yr = _session_year(session, *_HIST_YEAR_KEYS)
     if yr:
         keys["compare_year_range"] = yr
-    names = extra.get("player_names") or []
-    if names:
-        return {"session_keys": keys, "player_names": names[:3]}
     return {"session_keys": keys}
 
 
@@ -593,9 +562,6 @@ def _career_to_compare(session, extra):
     yr = _session_year(session, *_CAREER_YEAR_KEYS)
     if yr:
         keys["compare_year_range"] = yr
-    names = extra.get("player_names") or []
-    if names:
-        return {"session_keys": keys, "player_names": names[:3]}
     return {"session_keys": keys}
 
 
@@ -606,9 +572,6 @@ def _hist_to_trend(session, extra):
     if yr and yr[1] - yr[0] + 1 in (3, 4, 5):
         keys["trend_lag"] = yr[1] - yr[0] + 1
     copy_prefix_stat_mins(session, "hist", "trend", keys)
-    names = extra.get("player_names") or []
-    if names:
-        return {"session_keys": keys, "player_names": names[:3]}
     return {"session_keys": keys}
 
 
@@ -629,9 +592,6 @@ def _career_to_trend(session, extra):
     if yr and yr[1] - yr[0] + 1 in (3, 4, 5):
         keys["trend_lag"] = yr[1] - yr[0] + 1
     copy_prefix_stat_mins(session, "career", "trend", keys)
-    names = extra.get("player_names") or []
-    if names:
-        return {"session_keys": keys, "player_names": names[:3]}
     return {"session_keys": keys}
 
 
@@ -658,13 +618,6 @@ def _compare_to_trend(session, extra):
     }
     if stat in trend_sort_map:
         keys["trend_sort_col"] = trend_sort_map[stat]
-    names = []
-    for k in ("compare_players", "compare_players_saved"):
-        raw = session.get(k)
-        if isinstance(raw, list):
-            names.extend(raw)
-    if names:
-        return {"session_keys": keys, "player_labels": names[:3]}
     return {"session_keys": keys}
 
 
@@ -683,12 +636,6 @@ def _trend_to_compare(session, extra):
     lag = session.get("trend_lag")
     if lag in (3, 4, 5):
         keys["_transfer_trend_lag"] = int(lag)
-    labels = extra.get("player_labels") or []
-    names = extra.get("player_names") or []
-    if labels:
-        return {"session_keys": keys, "player_labels": labels[:3]}
-    if names:
-        return {"session_keys": keys, "player_names": names[:3]}
     return {"session_keys": keys}
 
 
@@ -708,9 +655,6 @@ def _valuation_to_compare(session, extra):
     lag = session.get("value_lag")
     if lag in (3, 4, 5):
         keys["_transfer_value_lag"] = int(lag)
-    names = extra.get("player_names") or []
-    if names:
-        return {"session_keys": keys, "player_names": names[:3]}
     return {"session_keys": keys}
 
 
@@ -778,15 +722,7 @@ def _compare_to_career(session, extra):
     yr = year_tuple(session.get("compare_year_range"))
     if yr:
         keys[_CAREER_YEAR_KEYS[0]] = yr
-    labels = []
-    for k in ("compare_players", "compare_players_saved"):
-        raw = session.get(k)
-        if isinstance(raw, list):
-            labels.extend(raw)
-    payload = {"session_keys": keys}
-    if labels:
-        payload["player_labels"] = labels[:3]
-    return payload
+    return {"session_keys": keys}
 
 
 def _draft_lab_format(session):

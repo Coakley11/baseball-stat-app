@@ -59,6 +59,15 @@ if not hasattr(pg_xfer, "sanitize_session_keys"):
 
     pg_xfer.sanitize_session_keys = _sanitize_session_keys_fallback
 
+if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
+    pg_xfer.builder_allows_top3_checkbox = lambda builder_id: builder_id in {
+        "hist_to_compare", "hist_to_trend", "career_to_compare", "career_to_trend",
+        "leaders_to_compare", "leaders_to_trend", "compare_to_trend", "trend_to_compare",
+        "valuation_to_compare", "valuation_to_trend",
+    }
+if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
+    pg_xfer.TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
+
 import page_state as pg_state
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
@@ -9025,13 +9034,11 @@ def render_contextual_page_nav(
     *,
     results_df=None,
     results_player_col="Player",
-    explicit_players_key=None,
-    rank_stat_options=None,
     default_rank_stat="OPS",
 ):
     """
-    Contextual cross-page navigation with explicit player transfer choices and preview.
-    Sidebar navigation does not use this — it restores per-page state via page_state.py.
+    Contextual navigation: transfers filters/settings; optional top-3 players via checkbox only.
+    Sidebar navigation restores each page's saved state and does not use this control.
     """
     source = normalize_page_key(source_page)
     entries = pg_xfer.CONTEXTUAL_NAV_REGISTRY.get((source, placement_key), [])
@@ -9053,59 +9060,39 @@ def render_contextual_page_nav(
     if results_df is not None:
         base_extra["results_df"] = results_df
     base_extra["results_player_col"] = results_player_col
-    if explicit_players_key:
-        base_extra["explicit_players_key"] = explicit_players_key
+    base_extra["rank_stat"] = default_rank_stat
+    chk_key = f"ctx_send_top3_{source}_{placement_key}"
     with st.container():
         st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
         with st.form(key=f"ctx_xfer_form_{source}_{placement_key}", clear_on_submit=True):
             choice = st.selectbox(label, options, index=0)
             ent_preview = route_map.get(choice) if choice and choice != options[0] else None
-            player_mode = "none"
-            rank_stat = default_rank_stat
-            if ent_preview and pg_xfer.builder_supports_player_transfer(ent_preview["builder"]):
-                st.caption("Player transfer (optional — never inferred from visible table rows alone)")
-                mode_labels = list(pg_xfer.PLAYER_TRANSFER_MODE_LABELS.items())
-                player_mode = st.selectbox(
-                    "Which players should be sent?",
-                    [m[0] for m in mode_labels],
-                    format_func=lambda k: pg_xfer.PLAYER_TRANSFER_MODE_LABELS.get(k, k),
-                    index=0,
-                    key=f"ctx_player_mode_{source}_{placement_key}",
+            send_top3 = False
+            if ent_preview and pg_xfer.builder_allows_top3_checkbox(ent_preview["builder"]):
+                send_top3 = st.checkbox(
+                    pg_xfer.TOP3_CHECKBOX_LABEL,
+                    value=False,
+                    key=chk_key,
                 )
-                if str(player_mode).startswith("top_"):
-                    rank_choices = list(rank_stat_options or pg_xfer.PLAYER_TRANSFER_RANK_STATS)
-                    if default_rank_stat and default_rank_stat not in rank_choices:
-                        rank_choices = [default_rank_stat] + rank_choices
-                    rank_stat = st.selectbox(
-                        "Rank top players by",
-                        rank_choices,
-                        index=rank_choices.index(default_rank_stat) if default_rank_stat in rank_choices else 0,
-                        key=f"ctx_rank_stat_{source}_{placement_key}",
-                    )
             if ent_preview:
                 ctx = dict(base_extra)
-                ctx["player_mode"] = player_mode
-                ctx["rank_stat"] = rank_stat
-                if ent_preview["builder"] in ("compare_to_trend", "trend_to_compare"):
-                    ctx["use_compare_players"] = player_mode == "selected"
+                ctx["send_top_3_players"] = send_top3
                 preview_payload = pg_xfer.build_transfer(st.session_state, ent_preview["builder"], ctx)
                 summary = pg_xfer.summarize_transfer_payload(preview_payload, ent_preview["target"])
                 st.markdown("**Transfer preview**")
                 st.markdown(f"**Target:** {page_option_label(summary['target'])}")
-                st.markdown(f"**Filters:** {', '.join(summary['filters'][:12])}" + (" …" if len(summary['filters']) > 12 else ""))
+                st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
+                st.markdown(f"**Min stat filters:** {', '.join(summary['min_stats'][:14])}" + (" …" if len(summary['min_stats']) > 14 else ""))
                 st.markdown(f"**Players:** {'; '.join(summary['players'])}")
-                st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
+                if summary["draft_objects"] != ["None"]:
+                    st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
             go = st.form_submit_button("Open selected tool", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
     if go and choice and choice != options[0]:
         ent = route_map.get(choice)
         if ent:
             ctx = dict(base_extra)
-            ctx["player_mode"] = st.session_state.get(f"ctx_player_mode_{source}_{placement_key}", "none")
-            if str(ctx["player_mode"]).startswith("top_"):
-                ctx["rank_stat"] = st.session_state.get(f"ctx_rank_stat_{source}_{placement_key}", default_rank_stat)
-            if ent["builder"] in ("compare_to_trend", "trend_to_compare"):
-                ctx["use_compare_players"] = ctx["player_mode"] == "selected"
+            ctx["send_top_3_players"] = bool(st.session_state.get(chk_key, False))
             payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
             request_contextual_page(ent["target"], payload, source_page=source)
 
@@ -9335,18 +9322,12 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
-    with st.expander("Players for cross-page transfer (optional)", expanded=False):
-        st.caption("Only players you select here can be sent via “Selected players only.” Table visibility does not auto-transfer.")
-        _hist_xfer_opts = sorted(hist_display_raw["fullName"].dropna().astype(str).unique().tolist()) if not hist_display_raw.empty else []
-        init_state_once("hist_explicit_transfer_players", [])
-        st.multiselect("Explicitly selected players", _hist_xfer_opts, key="hist_explicit_transfer_players")
     render_contextual_page_nav(
         "Historical Explorer",
         "after_table",
         label="Use these filters in another tool…",
         results_df=hist_display_raw,
         results_player_col="fullName",
-        explicit_players_key="hist_explicit_transfer_players",
         default_rank_stat=hist_sort_stat,
     )
     render_page_filters_debug(active_page)
@@ -9519,18 +9500,12 @@ if active_page == "Career Totals":
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
-    with st.expander("Players for cross-page transfer (optional)", expanded=False):
-        st.caption("Select players here for explicit transfer; career table rows are not auto-sent.")
-        _career_xfer_opts = sorted(career_totals["fullName"].dropna().astype(str).unique().tolist()) if not career_totals.empty else []
-        init_state_once("career_explicit_transfer_players", [])
-        st.multiselect("Explicitly selected players", _career_xfer_opts, key="career_explicit_transfer_players")
     render_contextual_page_nav(
         "Career Totals",
         "after_table",
         label="Use these filters in another tool…",
         results_df=career_totals,
         results_player_col="fullName",
-        explicit_players_key="career_explicit_transfer_players",
         default_rank_stat=sort_stat_career,
     )
     render_page_filters_debug(active_page)
@@ -9610,10 +9585,15 @@ if active_page == "Leaderboards":
     st.divider()
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])
     render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv")
+    _lb_xfer_df = leaderboard.sort_values(sort_stat_leaders, ascending=False) if not leaderboard.empty else leaderboard
+    _lb_rank_default = sort_stat_leaders if sort_stat_leaders in ("HR", "RBI", "R", "SB", "AVG", "OPS", "score") else "HR"
     render_contextual_page_nav(
         "Leaderboards",
         "after_table",
         label="Use these filters in another tool…",
+        results_df=_lb_xfer_df,
+        results_player_col="fullName",
+        default_rank_stat=_lb_rank_default,
     )
     render_page_filters_debug(active_page)
 
@@ -13705,7 +13685,6 @@ if active_page == "Valuation":
         results_df=valuation_df,
         results_player_col="fullName",
         default_rank_stat="Valuation_Score",
-        rank_stat_options=["Valuation_Score", "HR", "RBI", "R", "SB", "AVG", "OPS"],
     )
 
     st.subheader("Valuation Insight Summaries")
