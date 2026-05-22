@@ -8630,6 +8630,10 @@ PAGE_OPTIONS = [
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
+# Contextual transfer: optional top-3 players (Comparison, Trend Value, Valuation).
+CONTEXTUAL_TOP3_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
+CONTEXTUAL_TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
+
 # Sidebar display labels — emojis match each page's section header title.
 PAGE_OPTION_LABELS = {
     "Historical Explorer": "🔎 Historical Explorer",
@@ -9116,47 +9120,52 @@ def render_contextual_page_nav(
     Sidebar navigation restores each page's saved state and does not use this control.
     """
     source = normalize_page_key(source_page)
-    entries = pg_xfer.CONTEXTUAL_NAV_REGISTRY.get((source, placement_key), [])
+    registry = getattr(pg_xfer, "CONTEXTUAL_NAV_REGISTRY", {})
+    entries = registry.get((source, placement_key), [])
     if not entries:
         return
-    options = ["— Stay on this page —"]
-    route_map = {}
+
+    option_labels = ["— Stay on this page —"]
+    option_entries = [None]
     for ent in entries:
         tgt = normalize_page_key(ent["target"])
         if tgt not in _PAGE_OPTION_SET or tgt == source:
             continue
         hint = ent.get("label") or page_option_label(tgt)
-        disp = f"{page_option_label(tgt)} — {hint}" if hint else page_option_label(tgt)
-        options.append(disp)
-        route_map[disp] = ent
-    if len(options) < 2:
+        option_labels.append(f"{page_option_label(tgt)} — {hint}")
+        option_entries.append(ent)
+    if len(option_labels) < 2:
         return
+
     base_extra = dict(extra_context or {})
     if results_df is not None:
         base_extra["results_df"] = results_df
     base_extra["results_player_col"] = results_player_col
     base_extra["rank_stat"] = default_rank_stat
     choice_key = f"ctx_choice_{source}_{placement_key}"
-    chk_key = f"ctx_send_top3_{source}_{placement_key}"
     go_key = f"ctx_go_{source}_{placement_key}"
+
     with st.container():
         st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
-        choice = st.selectbox(label, options, index=0, key=choice_key)
-        ent_preview = route_map.get(choice) if choice and choice != options[0] else None
+        choice = st.selectbox(label, option_labels, index=0, key=choice_key)
+        sel_idx = option_labels.index(choice) if choice in option_labels else 0
+        ent = option_entries[sel_idx]
+        target_page = normalize_page_key(ent["target"]) if ent else None
+
         send_top3 = False
-        route_chk_key = chk_key
-        if ent_preview and pg_xfer.builder_allows_top3_checkbox(ent_preview["builder"], ent_preview["target"]):
-            route_chk_key = f"{chk_key}_{ent_preview['target']}"
+        if target_page in CONTEXTUAL_TOP3_PLAYER_TARGETS:
+            chk_key = f"{source}_{target_page}_send_top_3_players"
             send_top3 = st.checkbox(
-                pg_xfer.TOP3_CHECKBOX_LABEL,
+                CONTEXTUAL_TOP3_CHECKBOX_LABEL,
                 value=False,
-                key=route_chk_key,
+                key=chk_key,
             )
-        if ent_preview:
+
+        if ent:
             ctx = dict(base_extra)
             ctx["send_top_3_players"] = send_top3
-            preview_payload = pg_xfer.build_transfer(st.session_state, ent_preview["builder"], ctx)
-            summary = pg_xfer.summarize_transfer_payload(preview_payload, ent_preview["target"])
+            preview_payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
+            summary = pg_xfer.summarize_transfer_payload(preview_payload, target_page)
             st.markdown("**Transfer preview**")
             st.markdown(f"**Target:** {page_option_label(summary['target'])}")
             st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
@@ -9164,16 +9173,25 @@ def render_contextual_page_nav(
             st.markdown(f"**Players:** {'; '.join(summary['players'])}")
             if summary["draft_objects"] != ["None"]:
                 st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
+
         if st.button("Open selected tool", key=go_key, use_container_width=True):
-            choice_now = st.session_state.get(choice_key, options[0])
-            if choice_now and choice_now != options[0]:
-                ent = route_map.get(choice_now)
-                if ent:
-                    ctx = dict(base_extra)
-                    _route_chk = f"{chk_key}_{ent['target']}" if pg_xfer.target_allows_top3_players(ent["target"]) else chk_key
-                    ctx["send_top_3_players"] = bool(st.session_state.get(_route_chk, False))
-                    payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
-                    request_contextual_page(ent["target"], payload, source_page=source)
+            choice_now = st.session_state.get(choice_key, option_labels[0])
+            try:
+                go_idx = option_labels.index(choice_now)
+            except ValueError:
+                go_idx = 0
+            go_ent = option_entries[go_idx]
+            if go_ent:
+                go_target = normalize_page_key(go_ent["target"])
+                ctx = dict(base_extra)
+                if go_target in CONTEXTUAL_TOP3_PLAYER_TARGETS:
+                    ctx["send_top_3_players"] = bool(
+                        st.session_state.get(f"{source}_{go_target}_send_top_3_players", False)
+                    )
+                else:
+                    ctx["send_top_3_players"] = False
+                payload = pg_xfer.build_transfer(st.session_state, go_ent["builder"], ctx)
+                request_contextual_page(go_target, payload, source_page=source)
         st.markdown("</div>", unsafe_allow_html=True)
 
 
