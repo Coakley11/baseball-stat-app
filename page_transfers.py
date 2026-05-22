@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pandas as pd
+
 _TRANSFER_STAT_COLS = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
 
 # Stable widget keys (with legacy fallbacks for one migration cycle).
@@ -39,6 +41,13 @@ __all__ = [
     "CONTEXTUAL_NAV_REGISTRY",
     "sanitize_session_keys",
     "build_transfer",
+    "empty_transfer_payload",
+    "normalize_transfer_payload",
+    "resolve_players_from_extra",
+    "summarize_transfer_payload",
+    "builder_supports_player_transfer",
+    "PLAYER_TRANSFER_MODE_LABELS",
+    "PLAYER_TRANSFER_RANK_STATS",
 ]
 
 _FANTASY_FORMAT_VALUES = frozenset({"5x5 Roto", "Points League"})
@@ -48,6 +57,200 @@ _TREND_SORT_COLS = frozenset({
     "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ",
     "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ",
 })
+
+# Builders that may attach players from explicit session widgets (e.g. compare_players).
+_BUILDER_PLAYER_POLICY_SESSION = frozenset({
+    "compare_to_trend",
+    "compare_to_career",
+    "trend_to_compare",
+})
+
+# Builders where contextual UI controls player transfer (default: filters only).
+_BUILDER_PLAYER_POLICY_OPTIONAL = frozenset({
+    "hist_to_compare",
+    "hist_to_trend",
+    "hist_to_valuation",
+    "career_to_compare",
+    "career_to_trend",
+    "career_to_valuation",
+    "leaders_to_compare",
+    "leaders_to_trend",
+    "leaders_to_valuation",
+    "valuation_to_compare",
+    "valuation_to_trend",
+})
+
+PLAYER_TRANSFER_RANK_STATS = ("HR", "RBI", "R", "SB", "AVG", "OPS", "score", "Expected Fantasy Value", "Valuation_Score")
+
+PLAYER_TRANSFER_MODE_LABELS = {
+    "none": "None — filters only",
+    "selected": "Selected players only",
+    "top_3": "Top 3 players from current results",
+    "top_5": "Top 5 players from current results",
+    "top_10": "Top 10 players from current results",
+}
+
+
+def empty_transfer_payload():
+    return {
+        "transfer_filters": {},
+        "transfer_players": {"mode": "none", "names": [], "labels": [], "rank_stat": None},
+        "transfer_draft_objects": {},
+        "actions": [],
+    }
+
+
+def normalize_transfer_payload(raw):
+    """Accept legacy ``session_keys`` payloads or structured transfer dicts."""
+    if not isinstance(raw, dict):
+        return empty_transfer_payload()
+    if "transfer_filters" in raw or "transfer_players" in raw:
+        out = empty_transfer_payload()
+        out["transfer_filters"] = dict(raw.get("transfer_filters") or {})
+        tp = raw.get("transfer_players") or {}
+        out["transfer_players"] = {
+            "mode": tp.get("mode", "none"),
+            "names": list(tp.get("names") or []),
+            "labels": list(tp.get("labels") or []),
+            "rank_stat": tp.get("rank_stat"),
+        }
+        out["transfer_draft_objects"] = dict(raw.get("transfer_draft_objects") or {})
+        out["actions"] = list(raw.get("actions") or [])
+        if raw.get("draft_assistant_highlight"):
+            out["draft_assistant_highlight"] = raw["draft_assistant_highlight"]
+        return out
+    names = list(raw.get("player_names") or [])
+    labels = list(raw.get("player_labels") or [])
+    players = (
+        {"mode": "explicit", "names": names, "labels": labels, "rank_stat": None}
+        if names or labels
+        else {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    )
+    return {
+        "transfer_filters": dict(raw.get("session_keys") or {}),
+        "transfer_players": players,
+        "transfer_draft_objects": dict(raw.get("draft_objects") or {}),
+        "actions": list(raw.get("actions") or []),
+        **({"draft_assistant_highlight": raw["draft_assistant_highlight"]} if raw.get("draft_assistant_highlight") else {}),
+    }
+
+
+def _resolve_rank_column(df, rank_stat: str):
+    if df is None or getattr(df, "empty", True):
+        return None
+    stat = str(rank_stat or "OPS").strip()
+    if stat.lower() in ("fantasy value", "fantasy_value", "valuation"):
+        for cand in ("Expected Fantasy Value", "Valuation_Score", "Valuation Score", "score"):
+            if cand in df.columns:
+                return cand
+    if stat in df.columns:
+        return stat
+    upper = stat.upper()
+    for col in df.columns:
+        if str(col).upper() == upper:
+            return col
+    return None
+
+
+def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=3):
+    """Rank filtered results; never infer from chart labels or arbitrary visible rows."""
+    if df is None or getattr(df, "empty", True):
+        return []
+    if player_col not in df.columns:
+        for cand in ("Player", "fullName"):
+            if cand in df.columns:
+                player_col = cand
+                break
+        else:
+            return []
+    stat_col = _resolve_rank_column(df, rank_stat)
+    if stat_col is None:
+        return df[player_col].dropna().astype(str).head(int(limit)).tolist()
+    ranked = df.copy()
+    ranked["_rank_val"] = pd.to_numeric(ranked[stat_col], errors="coerce")
+    ranked = ranked.sort_values("_rank_val", ascending=False, na_position="last")
+    return ranked[player_col].dropna().astype(str).head(int(limit)).tolist()
+
+
+def resolve_players_from_extra(session, extra):
+    """Map contextual UI player choice to transfer_players (never from table visibility alone)."""
+    mode = str(extra.get("player_mode", "none")).strip().lower()
+    if mode in ("", "none", "filters_only"):
+        return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+    if mode == "selected":
+        names = []
+        labels = []
+        key = extra.get("explicit_players_key")
+        if key and isinstance(session.get(key), list):
+            names = [str(x).strip() for x in session[key] if str(x).strip()]
+        if extra.get("use_compare_players"):
+            for ck in ("compare_players", "compare_players_saved"):
+                raw = session.get(ck)
+                if isinstance(raw, list) and raw:
+                    labels = [str(x).strip() for x in raw if str(x).strip()]
+                    break
+        if extra.get("use_trend_players"):
+            raw = session.get("trend_players_multi")
+            if isinstance(raw, list) and raw:
+                names = [str(x).strip() for x in raw if str(x).strip()]
+        return {
+            "mode": "selected",
+            "names": names[:10],
+            "labels": labels[:10],
+            "rank_stat": None,
+        }
+    if mode in ("top_3", "top_5", "top_10"):
+        n = int(mode.split("_")[1])
+        df = extra.get("results_df")
+        rank_stat = extra.get("rank_stat", "OPS")
+        names = top_players_from_results(
+            df,
+            player_col=str(extra.get("results_player_col", "Player")),
+            rank_stat=rank_stat,
+            limit=n,
+        )
+        return {"mode": mode, "names": names, "labels": [], "rank_stat": rank_stat}
+    return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
+
+
+def builder_supports_player_transfer(builder_id: str) -> bool:
+    """Show player-mode UI only when the contextual form should control transfer (not session widgets)."""
+    return builder_id in _BUILDER_PLAYER_POLICY_OPTIONAL
+
+
+def summarize_transfer_payload(payload, target_page: str) -> dict:
+    """Human-readable preview sections for the contextual transfer UI."""
+    p = normalize_transfer_payload(payload)
+    filters = p.get("transfer_filters") or {}
+    players = p.get("transfer_players") or {}
+    draft = p.get("transfer_draft_objects") or {}
+    actions = p.get("actions") or []
+    filter_lines = [f"{k}: {v}" for k, v in sorted(filters.items()) if not str(k).startswith("_")]
+    player_lines = []
+    mode = players.get("mode", "none")
+    if mode == "none":
+        player_lines.append("None")
+    elif mode == "selected":
+        picked = players.get("labels") or players.get("names") or []
+        player_lines.append(", ".join(picked) if picked else "None (no explicit selection)")
+    elif str(mode).startswith("top_"):
+        stat = players.get("rank_stat") or "OPS"
+        names = players.get("names") or []
+        player_lines.append(f"{len(names)} player(s) by {stat}: " + (", ".join(names) if names else "—"))
+    else:
+        picked = players.get("labels") or players.get("names") or []
+        player_lines.append(", ".join(picked) if picked else "None")
+    draft_lines = []
+    if draft:
+        draft_lines.extend(f"{k}: {v}" for k, v in sorted(draft.items()))
+    if actions:
+        draft_lines.extend(f"Action: {a}" for a in actions)
+    return {
+        "target": target_page,
+        "filters": filter_lines or ["None"],
+        "players": player_lines,
+        "draft_objects": draft_lines or ["None"],
+    }
 
 
 def year_tuple(val):
@@ -271,10 +474,11 @@ def _lab_format_from_live(scoring: str) -> str:
 
 
 def lab_to_live_keys(session) -> dict:
-    """Draft Simulation Test Mode -> Live Draft Room."""
+    """Draft Simulation Test Mode -> Live Draft Room (settings only, no players)."""
     keys = {}
     fmt = _draft_lab_format(session)
     keys["live_draft_scoring"] = _live_scoring_from_lab(fmt)
+    keys["live_draft_team_count"] = 4
     picks = _safe_int(session.get("draft_lab_picks_per_team"), None)
     if picks is not None:
         keys["live_draft_picks_per_team"] = picks
@@ -287,6 +491,12 @@ def lab_to_live_keys(session) -> dict:
     for slot_key in _LIVE_SLOT_KEYS:
         if slot_key in session:
             keys[slot_key] = session[slot_key]
+    if "draft_use_ml_blend" in session:
+        keys["draft_use_ml_blend"] = bool(session.get("draft_use_ml_blend"))
+    if session.get("draft_ml_blend_weight") is not None:
+        keys["draft_ml_blend_weight"] = session.get("draft_ml_blend_weight")
+    if session.get("draft_ml_min_games_signal") is not None:
+        keys["draft_ml_min_games_signal"] = session.get("draft_ml_min_games_signal")
     return keys
 
 
@@ -324,11 +534,15 @@ def fantasy_format_window_keys(session, fmt_src, fmt_dst, window_src, window_dst
 
 
 def build_transfer(session, builder_id: str, extra_context=None) -> dict:
+    """Build structured transfer payload: filters, players, draft objects."""
     extra = extra_context or {}
     b = TRANSFER_BUILDERS.get(builder_id)
     if not b:
-        return {}
-    return b(session, extra)
+        return empty_transfer_payload()
+    payload = normalize_transfer_payload(b(session, extra))
+    if builder_id in _BUILDER_PLAYER_POLICY_OPTIONAL:
+        payload["transfer_players"] = resolve_players_from_extra(session, extra)
+    return payload
 
 
 TRANSFER_BUILDERS = {}
@@ -590,7 +804,12 @@ def _lab_to_live_draft(session, extra):
 
 @_register_builder("live_to_draft_lab")
 def _live_to_draft_lab(session, extra):
-    return {"session_keys": live_to_lab_keys(session), "actions": ["push_live_draft_to_lab"]}
+    """Completed draft analysis only — use explicit button, not default contextual nav."""
+    return {
+        "session_keys": live_to_lab_keys(session),
+        "actions": ["push_live_draft_to_lab"],
+        "draft_objects": {"completed_draft": True},
+    }
 
 
 @_register_builder("live_to_draft_lab_settings")
@@ -718,8 +937,7 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Live Draft Room", "builder": "lab_to_live_draft", "label": "Live Draft Room — league size, scoring, roster slots, picks"},
     ],
     ("Live Draft Room", "after_draft"): [
-        {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab", "label": "Analyze completed draft in Draft Lab"},
-        {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab_settings", "label": "Draft Lab — copy live draft settings"},
+        {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab_settings", "label": "Draft Lab — copy live draft settings (no draft board)"},
     ],
     ("Fantasy Standings Tracker", "after_standings"): [
         {"target": "Fantasy Lineup Assistant", "builder": "standings_to_lineup", "label": "Lineup Assistant — team, scoring, category needs"},

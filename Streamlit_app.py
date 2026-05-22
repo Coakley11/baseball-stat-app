@@ -8875,6 +8875,7 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
         "live_draft_team_count", "live_draft_num_teams", "live_draft_picks_per_team", "live_draft_scoring",
         "live_draft_proj_style", "live_draft_proj_window", "live_draft_league_name",
         "live_draft_type", "live_draft_timer", "live_draft_auto_rule",
+        "draft_use_ml_blend", "draft_ml_blend_weight", "draft_ml_min_games_signal",
         *_LIVE_SLOT_KEYS,
     }),
     "Fantasy Standings Tracker": frozenset({
@@ -8887,21 +8888,24 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
 }
 
 
-def set_pending_page_transfer(target_page: str, filters_dict=None, source_page=None):
-    """Queue filter transfer for the next navigation (contextual controls only)."""
+def set_pending_page_transfer(target_page: str, transfer_payload=None, source_page=None):
+    """Queue contextual transfer (filters / players / draft objects) for the next navigation."""
     target = normalize_page_key(target_page)
     if target not in _PAGE_OPTION_SET:
         return
+    payload = pg_xfer.normalize_transfer_payload(transfer_payload)
     st.session_state["_pending_page_transfer"] = {
         "target": target,
         "source": normalize_page_key(source_page) if source_page else None,
-        "filters": filters_dict if isinstance(filters_dict, dict) else {},
+        "payload": payload,
+        # Legacy readers still expect "filters" at top level.
+        "filters": payload,
     }
 
 
-def request_contextual_page(target_page: str, filters_dict=None, source_page=None):
-    """Navigate via sidebar state and apply filters on the target page only."""
-    set_pending_page_transfer(target_page, filters_dict, source_page)
+def request_contextual_page(target_page: str, transfer_payload=None, source_page=None):
+    """Navigate via sidebar and apply contextual transfer on the target page only."""
+    set_pending_page_transfer(target_page, transfer_payload, source_page)
     request_sidebar_page(target_page)
 
 
@@ -8918,36 +8922,53 @@ def _apply_transfer_session_keys(target_page: str, keys: dict):
             pass
 
 
-def _apply_transfer_players_to_compare(payload: dict):
+def _apply_transfer_players_to_compare(players: dict):
     label_map = get_clean_player_label_map_yearly(yearly_df)
-    labels = list(payload.get("player_labels") or [])
+    mode = str((players or {}).get("mode", "none")).lower()
+    if mode in ("", "none"):
+        st.session_state["compare_players"] = []
+        st.session_state["compare_players_saved"] = []
+        st.session_state.pop("pending_compare_players", None)
+        st.session_state.pop("pending_compare_clear_player_b", None)
+        return
+    labels = list(players.get("labels") or [])
     if not labels:
-        for name in payload.get("player_names") or []:
+        for name in players.get("names") or []:
             lbl = resolve_fullname_to_clean_label(name, label_map)
             if lbl and lbl not in labels:
                 labels.append(lbl)
     if not labels:
         return
     st.session_state["pending_compare_players"] = labels[:3]
+    st.session_state["compare_players"] = labels[:3]
+    st.session_state["compare_players_saved"] = labels[:3]
     if labels:
         st.session_state["pending_sig_player_a"] = labels[0]
     if len(labels) > 1:
         st.session_state["pending_sig_player_b"] = labels[1]
 
 
-def _apply_transfer_players_to_trend(payload: dict):
+def _apply_transfer_players_to_trend(players: dict):
     label_map = get_clean_player_label_map_yearly(yearly_df)
-    names = list(payload.get("player_names") or [])
-    for lbl in payload.get("player_labels") or []:
+    mode = str((players or {}).get("mode", "none")).lower()
+    if mode in ("", "none"):
+        st.session_state.pop("trend_multi_queue_fullnames", None)
+        st.session_state.pop("trend_anchor_fullname", None)
+        return
+    names = list(players.get("names") or [])
+    for lbl in players.get("labels") or []:
         base = fullname_base_from_label(lbl)
         if base:
             names.append(base)
-    for name in names[:3]:
+    names = [n for n in names if n][:3]
+    if not names:
+        return
+    for name in names:
         register_players_sent_to_trend_page(name, label_map)
 
 
 def apply_pending_page_transfer(current_page: str):
-    """Apply queued filters when landing on a page via contextual navigation."""
+    """Apply queued contextual transfer when landing on the target page."""
     pending = st.session_state.get("_pending_page_transfer")
     if not pending:
         return False
@@ -8956,8 +8977,8 @@ def apply_pending_page_transfer(current_page: str):
     if target != page:
         return False
     st.session_state.pop("_pending_page_transfer", None)
-    payload = pending.get("filters") or {}
-    keys = dict(payload.get("session_keys") or {})
+    payload = pg_xfer.normalize_transfer_payload(pending.get("payload") or pending.get("filters") or {})
+    keys = dict(payload.get("transfer_filters") or {})
     if "_transfer_value_lag" in keys:
         lag = keys.pop("_transfer_value_lag")
         try:
@@ -8985,10 +9006,11 @@ def apply_pending_page_transfer(current_page: str):
             room = st.session_state.get("live_draft_room")
             if room and room.get("status") == "complete":
                 live_draft_push_analysis_to_session(room)
+    players = payload.get("transfer_players") or {}
     if page == "Comparison Tool":
-        _apply_transfer_players_to_compare(payload)
+        _apply_transfer_players_to_compare(players)
     if page == "Trend Value":
-        _apply_transfer_players_to_trend(payload)
+        _apply_transfer_players_to_trend(players)
     highlight = payload.get("draft_assistant_highlight")
     if highlight and page == "Draft Assistant Simulator":
         st.session_state["pending_draft_assistant_player"] = str(highlight)
@@ -9000,8 +9022,17 @@ def render_contextual_page_nav(
     placement_key: str,
     label: str = "Continue analysis in…",
     extra_context=None,
+    *,
+    results_df=None,
+    results_player_col="Player",
+    explicit_players_key=None,
+    rank_stat_options=None,
+    default_rank_stat="OPS",
 ):
-    """Compact dropdown below a section; transfers filters only when used."""
+    """
+    Contextual cross-page navigation with explicit player transfer choices and preview.
+    Sidebar navigation does not use this — it restores per-page state via page_state.py.
+    """
     source = normalize_page_key(source_page)
     entries = pg_xfer.CONTEXTUAL_NAV_REGISTRY.get((source, placement_key), [])
     if not entries:
@@ -9018,17 +9049,65 @@ def render_contextual_page_nav(
         route_map[disp] = ent
     if len(options) < 2:
         return
+    base_extra = dict(extra_context or {})
+    if results_df is not None:
+        base_extra["results_df"] = results_df
+    base_extra["results_player_col"] = results_player_col
+    if explicit_players_key:
+        base_extra["explicit_players_key"] = explicit_players_key
     with st.container():
         st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
         with st.form(key=f"ctx_xfer_form_{source}_{placement_key}", clear_on_submit=True):
             choice = st.selectbox(label, options, index=0)
+            ent_preview = route_map.get(choice) if choice and choice != options[0] else None
+            player_mode = "none"
+            rank_stat = default_rank_stat
+            if ent_preview and pg_xfer.builder_supports_player_transfer(ent_preview["builder"]):
+                st.caption("Player transfer (optional — never inferred from visible table rows alone)")
+                mode_labels = list(pg_xfer.PLAYER_TRANSFER_MODE_LABELS.items())
+                player_mode = st.selectbox(
+                    "Which players should be sent?",
+                    [m[0] for m in mode_labels],
+                    format_func=lambda k: pg_xfer.PLAYER_TRANSFER_MODE_LABELS.get(k, k),
+                    index=0,
+                    key=f"ctx_player_mode_{source}_{placement_key}",
+                )
+                if str(player_mode).startswith("top_"):
+                    rank_choices = list(rank_stat_options or pg_xfer.PLAYER_TRANSFER_RANK_STATS)
+                    if default_rank_stat and default_rank_stat not in rank_choices:
+                        rank_choices = [default_rank_stat] + rank_choices
+                    rank_stat = st.selectbox(
+                        "Rank top players by",
+                        rank_choices,
+                        index=rank_choices.index(default_rank_stat) if default_rank_stat in rank_choices else 0,
+                        key=f"ctx_rank_stat_{source}_{placement_key}",
+                    )
+            if ent_preview:
+                ctx = dict(base_extra)
+                ctx["player_mode"] = player_mode
+                ctx["rank_stat"] = rank_stat
+                if ent_preview["builder"] in ("compare_to_trend", "trend_to_compare"):
+                    ctx["use_compare_players"] = player_mode == "selected"
+                preview_payload = pg_xfer.build_transfer(st.session_state, ent_preview["builder"], ctx)
+                summary = pg_xfer.summarize_transfer_payload(preview_payload, ent_preview["target"])
+                st.markdown("**Transfer preview**")
+                st.markdown(f"**Target:** {page_option_label(summary['target'])}")
+                st.markdown(f"**Filters:** {', '.join(summary['filters'][:12])}" + (" …" if len(summary['filters']) > 12 else ""))
+                st.markdown(f"**Players:** {'; '.join(summary['players'])}")
+                st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
             go = st.form_submit_button("Open selected tool", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
     if go and choice and choice != options[0]:
         ent = route_map.get(choice)
         if ent:
-            filters = pg_xfer.build_transfer(st.session_state, ent["builder"], extra_context)
-            request_contextual_page(ent["target"], filters, source_page=source)
+            ctx = dict(base_extra)
+            ctx["player_mode"] = st.session_state.get(f"ctx_player_mode_{source}_{placement_key}", "none")
+            if str(ctx["player_mode"]).startswith("top_"):
+                ctx["rank_stat"] = st.session_state.get(f"ctx_rank_stat_{source}_{placement_key}", default_rank_stat)
+            if ent["builder"] in ("compare_to_trend", "trend_to_compare"):
+                ctx["use_compare_players"] = ctx["player_mode"] == "selected"
+            payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
+            request_contextual_page(ent["target"], payload, source_page=source)
 
 
 def _sync_active_page_from_sidebar():
@@ -9256,10 +9335,19 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    with st.expander("Players for cross-page transfer (optional)", expanded=False):
+        st.caption("Only players you select here can be sent via “Selected players only.” Table visibility does not auto-transfer.")
+        _hist_xfer_opts = sorted(hist_display_raw["fullName"].dropna().astype(str).unique().tolist()) if not hist_display_raw.empty else []
+        init_state_once("hist_explicit_transfer_players", [])
+        st.multiselect("Explicitly selected players", _hist_xfer_opts, key="hist_explicit_transfer_players")
     render_contextual_page_nav(
         "Historical Explorer",
         "after_table",
         label="Use these filters in another tool…",
+        results_df=hist_display_raw,
+        results_player_col="fullName",
+        explicit_players_key="hist_explicit_transfer_players",
+        default_rank_stat=hist_sort_stat,
     )
     render_page_filters_debug(active_page)
     st.divider()
@@ -9431,10 +9519,19 @@ if active_page == "Career Totals":
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
+    with st.expander("Players for cross-page transfer (optional)", expanded=False):
+        st.caption("Select players here for explicit transfer; career table rows are not auto-sent.")
+        _career_xfer_opts = sorted(career_totals["fullName"].dropna().astype(str).unique().tolist()) if not career_totals.empty else []
+        init_state_once("career_explicit_transfer_players", [])
+        st.multiselect("Explicitly selected players", _career_xfer_opts, key="career_explicit_transfer_players")
     render_contextual_page_nav(
         "Career Totals",
         "after_table",
         label="Use these filters in another tool…",
+        results_df=career_totals,
+        results_player_col="fullName",
+        explicit_players_key="career_explicit_transfer_players",
+        default_rank_stat=sort_stat_career,
     )
     render_page_filters_debug(active_page)
     st.divider()
@@ -10375,7 +10472,9 @@ if active_page == "Trend Value":
         "Trend Value",
         "after_table",
         label="Continue analysis in…",
-        extra_context={"player_names": trend_sorted_display["Player"].dropna().astype(str).head(3).tolist() if "Player" in trend_sorted_display.columns else []},
+        results_df=trend_value_df,
+        results_player_col="fullName",
+        default_rank_stat="OPS",
     )
     compact_player_action_center(
         trend_sorted_display["Player"].dropna().astype(str).tolist(),
@@ -12854,9 +12953,10 @@ if active_page == "Live Draft Room":
                     st.caption(f"Excel export unavailable ({e}).")
 
             if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
+                _analyze_payload = pg_xfer.build_transfer(st.session_state, "live_to_draft_lab", {})
                 request_contextual_page(
                     "Draft Simulation Test Mode",
-                    {"actions": ["push_live_draft_to_lab"]},
+                    _analyze_payload,
                     source_page="Live Draft Room",
                 )
             render_contextual_page_nav(
@@ -13602,11 +13702,10 @@ if active_page == "Valuation":
         "Valuation",
         "after_table",
         label="Continue analysis in…",
-        extra_context={
-            "player_names": valuation_table["Player"].dropna().astype(str).head(3).tolist()
-            if not valuation_table.empty and "Player" in valuation_table.columns
-            else []
-        },
+        results_df=valuation_df,
+        results_player_col="fullName",
+        default_rank_stat="Valuation_Score",
+        rank_stat_options=["Valuation_Score", "HR", "RBI", "R", "SB", "AVG", "OPS"],
     )
 
     st.subheader("Valuation Insight Summaries")
