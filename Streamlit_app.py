@@ -68,6 +68,49 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
     pg_xfer.TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
+if not hasattr(pg_xfer, "summarize_transfer_payload"):
+    def summarize_transfer_payload(payload, target_page=""):
+        """Fallback preview when deployed page_transfers.py is older."""
+        if hasattr(pg_xfer, "normalize_transfer_payload"):
+            p = pg_xfer.normalize_transfer_payload(payload)
+        else:
+            raw = payload if isinstance(payload, dict) else {}
+            p = {
+                "transfer_filters": raw.get("transfer_filters") or raw.get("session_keys") or {},
+                "transfer_players": raw.get("transfer_players") or {},
+                "transfer_draft_objects": raw.get("draft_objects") or raw.get("transfer_draft_objects") or {},
+                "actions": raw.get("actions") or [],
+            }
+        filters = p.get("transfer_filters") or {}
+        players = p.get("transfer_players") or {}
+        filter_lines, min_lines = [], []
+        for key, val in sorted(filters.items()):
+            if str(key).startswith("_"):
+                continue
+            line = f"{key}: {val}"
+            if str(key).endswith("_min"):
+                min_lines.append(line)
+            else:
+                filter_lines.append(line)
+        names = players.get("names") or players.get("labels") or []
+        if players.get("mode") == "top_3" and names:
+            stat = players.get("rank_stat") or "OPS"
+            player_lines = [f"Top 3 by {stat}: " + ", ".join(names)]
+        else:
+            player_lines = ["None"]
+        draft_lines = list(p.get("actions") or [])
+        if p.get("transfer_draft_objects"):
+            draft_lines.append("Draft/Roster Objects: Included")
+        return {
+            "target": target_page,
+            "filters": filter_lines or ["None"],
+            "min_stats": min_lines or ["None"],
+            "players": player_lines,
+            "draft_objects": draft_lines or ["None"],
+        }
+
+    pg_xfer.summarize_transfer_payload = summarize_transfer_payload
+
 import page_state as pg_state
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
@@ -9061,40 +9104,42 @@ def render_contextual_page_nav(
         base_extra["results_df"] = results_df
     base_extra["results_player_col"] = results_player_col
     base_extra["rank_stat"] = default_rank_stat
+    choice_key = f"ctx_choice_{source}_{placement_key}"
     chk_key = f"ctx_send_top3_{source}_{placement_key}"
+    go_key = f"ctx_go_{source}_{placement_key}"
     with st.container():
         st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
-        with st.form(key=f"ctx_xfer_form_{source}_{placement_key}", clear_on_submit=True):
-            choice = st.selectbox(label, options, index=0)
-            ent_preview = route_map.get(choice) if choice and choice != options[0] else None
-            send_top3 = False
-            if ent_preview and pg_xfer.builder_allows_top3_checkbox(ent_preview["builder"]):
-                send_top3 = st.checkbox(
-                    pg_xfer.TOP3_CHECKBOX_LABEL,
-                    value=False,
-                    key=chk_key,
-                )
-            if ent_preview:
-                ctx = dict(base_extra)
-                ctx["send_top_3_players"] = send_top3
-                preview_payload = pg_xfer.build_transfer(st.session_state, ent_preview["builder"], ctx)
-                summary = pg_xfer.summarize_transfer_payload(preview_payload, ent_preview["target"])
-                st.markdown("**Transfer preview**")
-                st.markdown(f"**Target:** {page_option_label(summary['target'])}")
-                st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
-                st.markdown(f"**Min stat filters:** {', '.join(summary['min_stats'][:14])}" + (" …" if len(summary['min_stats']) > 14 else ""))
-                st.markdown(f"**Players:** {'; '.join(summary['players'])}")
-                if summary["draft_objects"] != ["None"]:
-                    st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
-            go = st.form_submit_button("Open selected tool", use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-    if go and choice and choice != options[0]:
-        ent = route_map.get(choice)
-        if ent:
+        choice = st.selectbox(label, options, index=0, key=choice_key)
+        ent_preview = route_map.get(choice) if choice and choice != options[0] else None
+        send_top3 = False
+        if ent_preview and pg_xfer.builder_allows_top3_checkbox(ent_preview["builder"]):
+            send_top3 = st.checkbox(
+                pg_xfer.TOP3_CHECKBOX_LABEL,
+                value=False,
+                key=chk_key,
+            )
+        if ent_preview:
             ctx = dict(base_extra)
-            ctx["send_top_3_players"] = bool(st.session_state.get(chk_key, False))
-            payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
-            request_contextual_page(ent["target"], payload, source_page=source)
+            ctx["send_top_3_players"] = send_top3
+            preview_payload = pg_xfer.build_transfer(st.session_state, ent_preview["builder"], ctx)
+            summary = pg_xfer.summarize_transfer_payload(preview_payload, ent_preview["target"])
+            st.markdown("**Transfer preview**")
+            st.markdown(f"**Target:** {page_option_label(summary['target'])}")
+            st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
+            st.markdown(f"**Min stat filters:** {', '.join(summary['min_stats'][:14])}" + (" …" if len(summary['min_stats']) > 14 else ""))
+            st.markdown(f"**Players:** {'; '.join(summary['players'])}")
+            if summary["draft_objects"] != ["None"]:
+                st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
+        if st.button("Open selected tool", key=go_key, use_container_width=True):
+            choice_now = st.session_state.get(choice_key, options[0])
+            if choice_now and choice_now != options[0]:
+                ent = route_map.get(choice_now)
+                if ent:
+                    ctx = dict(base_extra)
+                    ctx["send_top_3_players"] = bool(st.session_state.get(chk_key, False))
+                    payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
+                    request_contextual_page(ent["target"], payload, source_page=source)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _sync_active_page_from_sidebar():

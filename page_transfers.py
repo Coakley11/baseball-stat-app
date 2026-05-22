@@ -196,7 +196,7 @@ def _split_filter_preview_lines(filters: dict):
     return other or ["None"], mins or ["None"]
 
 
-def summarize_transfer_payload(payload, target_page: str) -> dict:
+def summarize_transfer_payload(payload, target_page=None) -> dict:
     """Human-readable preview for contextual transfer UI."""
     p = normalize_transfer_payload(payload)
     filters = p.get("transfer_filters") or {}
