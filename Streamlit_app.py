@@ -8682,6 +8682,11 @@ def page_option_label(page_key: str) -> str:
     return PAGE_OPTION_LABELS.get(page_key, page_key)
 
 
+def get_sidebar_page_label(page_key: str) -> str:
+    """Display label for sidebar radio (emoji + name)."""
+    return page_option_label(normalize_page_key(page_key))
+
+
 def normalize_page_key(value) -> str:
     """Map sidebar/session values back to canonical page keys."""
     key = str(value or "").strip()
@@ -8690,6 +8695,13 @@ def normalize_page_key(value) -> str:
     return _PAGE_LABEL_TO_KEY.get(key, "Historical Explorer")
 
 
+def get_sidebar_page_value(page_key: str) -> str:
+    """Exact value stored in the sidebar radio (canonical PAGE_OPTIONS entry)."""
+    key = normalize_page_key(page_key)
+    return key if key in _PAGE_OPTION_SET else PAGE_OPTIONS[0]
+
+
+# Single source of truth for left-sidebar page selection (st.sidebar.radio key=).
 MAIN_SIDEBAR_PAGE_KEY = "main_sidebar_page"
 
 # New stable widget keys (migrated once from legacy hist_* / sidebar keys).
@@ -8885,31 +8897,55 @@ def render_page_state_debug(page_name: str):
             st.caption("No matching widget keys in session state yet.")
 
 
-def go_to_related_page(
-    target_page: str,
-    transfer_payload=None,
-    *,
-    source_page=None,
-    navigate_only: bool = False,
-):
+def _consume_scheduled_navigation():
     """
-    One-click contextual navigation: queue transfer, set sidebar page, apply filters, rerun.
+    Apply a page change before the sidebar radio is drawn.
+    Must run at the top of every script run (widgets must not overwrite this afterward).
     """
-    target = normalize_page_key(target_page)
+    target = None
+    scheduled = st.session_state.pop("_navigate_to_page", None)
+    if scheduled is not None:
+        target = get_sidebar_page_value(scheduled)
+    if target is None:
+        legacy = st.session_state.pop("_pending_active_page", None)
+        if legacy is not None:
+            target = get_sidebar_page_value(legacy)
+    if target is None:
+        pending = st.session_state.get("_pending_page_transfer")
+        if isinstance(pending, dict):
+            target = get_sidebar_page_value(pending.get("target"))
+    if target and target in _PAGE_OPTION_SET:
+        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
+        st.session_state["active_page"] = target
+    return target
+
+
+def navigate_to_page(target_page, transfer_payload=None, *, source_page=None, from_callback=False):
+    """
+    One-click navigation: queue transfer, schedule page change, rerun.
+    Page change is applied in _consume_scheduled_navigation() before the sidebar radio.
+    """
+    target = get_sidebar_page_value(target_page)
     if target not in _PAGE_OPTION_SET:
-        return
-    if not navigate_only:
+        return False
+    if transfer_payload is not None:
         set_pending_page_transfer(target, transfer_payload, source_page)
-        _apply_transfer_payload_to_page(target, transfer_payload or {})
-    st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
-    st.session_state["active_page"] = target
-    st.session_state["_pending_active_page"] = target
-    st.rerun()
+    st.session_state["_navigate_to_page"] = target
+    if not from_callback:
+        st.rerun()
+    return True
+
+
+def go_to_related_page(target_page, transfer_payload=None, *, source_page=None, navigate_only=False):
+    """Backward-compatible alias for navigate_to_page."""
+    if navigate_only:
+        return navigate_to_page(target_page, transfer_payload=None, source_page=source_page)
+    return navigate_to_page(target_page, transfer_payload, source_page=source_page)
 
 
 def request_sidebar_page(page: str):
     """Navigate via the main sidebar page key (single source of truth)."""
-    go_to_related_page(page, navigate_only=True)
+    navigate_to_page(page, transfer_payload=None)
 
 
 def save_page_state(page_name: str):
@@ -9067,7 +9103,37 @@ def _apply_transfer_payload_to_page(page: str, payload: dict) -> bool:
 
 def request_contextual_page(target_page: str, transfer_payload=None, source_page=None):
     """Navigate with transfer payload (one click)."""
-    go_to_related_page(target_page, transfer_payload, source_page=source_page)
+    navigate_to_page(target_page, transfer_payload, source_page=source_page)
+
+
+def _ctx_nav_on_open_tool(nav_target_key: str, nav_payload_key: str, source_page: str, meta_key: str):
+    """Button callback: rebuild payload from latest checkbox, then schedule navigation."""
+    meta = st.session_state.get(meta_key) or {}
+    target = st.session_state.get(nav_target_key) or meta.get("go_target")
+    if not target:
+        return
+    target = get_sidebar_page_value(target)
+    builder_id = meta.get("builder_id") or ""
+    source = meta.get("source") or source_page
+    placement_key = meta.get("placement_key") or ""
+    go_target = get_sidebar_page_value(meta.get("go_target") or target)
+    base_extra = dict(st.session_state.get(f"ctx_nav_base_extra_{source}_{placement_key}") or {})
+    xfer_df = st.session_state.get(f"ctx_nav_xfer_df_{source}_{placement_key}")
+    xfer_col = st.session_state.get(f"ctx_nav_xfer_col_{source}_{placement_key}", "fullName")
+    if xfer_df is not None:
+        base_extra["transfer_results_df"] = xfer_df
+        base_extra["results_df"] = xfer_df
+        base_extra["transfer_name_col"] = xfer_col
+        base_extra["results_player_col"] = xfer_col
+    ctx = dict(base_extra)
+    if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
+        ctx["send_top_3_players"] = bool(
+            st.session_state.get(f"{source}_{go_target}_send_top_3_players", False)
+        )
+    else:
+        ctx["send_top_3_players"] = False
+    payload = pg_xfer.build_transfer(st.session_state, builder_id, ctx) if builder_id else None
+    navigate_to_page(target, payload, source_page=source_page, from_callback=True)
 
 
 def _apply_transfer_session_keys(target_page: str, keys: dict):
@@ -9297,8 +9363,18 @@ def render_contextual_page_nav(
     base_extra["results_player_col"] = name_col
     base_extra["rank_stat"] = rank_stat
     base_extra["default_rank_stat"] = rank_stat
+    st.session_state[f"ctx_nav_base_extra_{source}_{placement_key}"] = {
+        k: v
+        for k, v in base_extra.items()
+        if k not in ("transfer_results_df", "results_df")
+    }
+    if main_xfer_df is not None:
+        st.session_state[f"ctx_nav_xfer_df_{source}_{placement_key}"] = main_xfer_df
+        st.session_state[f"ctx_nav_xfer_col_{source}_{placement_key}"] = name_col
     choice_key = f"ctx_choice_{source}_{placement_key}"
     go_key = f"ctx_go_{source}_{placement_key}_btn"
+    nav_target_key = f"ctx_nav_target_{source}_{placement_key}"
+    nav_payload_key = f"ctx_nav_payload_{source}_{placement_key}"
 
     with st.container():
         st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
@@ -9306,11 +9382,12 @@ def render_contextual_page_nav(
         sel_idx = option_labels.index(choice) if choice in option_labels else 0
         ent = option_entries[sel_idx]
         target_page = normalize_page_key(ent["target"]) if ent else None
+        builder_id = ent.get("builder") or "" if ent else ""
 
         send_top3 = False
         show_top3_checkbox = bool(
             ent
-            and ent.get("builder") in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset())
+            and builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset())
             and target_page in CONTEXTUAL_TOP3_PLAYER_TARGETS
         )
         if show_top3_checkbox:
@@ -9325,7 +9402,34 @@ def render_contextual_page_nav(
             ent, base_extra, main_xfer_df, name_col, send_top3=send_top3
         )
 
-        builder_id = ent.get("builder") or "" if ent else ""
+        if ent:
+            go_target = get_sidebar_page_value(ent["target"])
+            st.session_state[nav_target_key] = go_target
+            st.session_state[f"ctx_nav_meta_{source}_{placement_key}"] = {
+                "source": source,
+                "placement_key": placement_key,
+                "builder_id": builder_id,
+                "go_target": go_target,
+            }
+            xfer_df = st.session_state.get(f"ctx_nav_xfer_df_{source}_{placement_key}")
+            xfer_col = st.session_state.get(f"ctx_nav_xfer_col_{source}_{placement_key}", name_col)
+            ctx_preview = dict(st.session_state.get(f"ctx_nav_base_extra_{source}_{placement_key}") or {})
+            if xfer_df is not None:
+                ctx_preview["transfer_results_df"] = xfer_df
+                ctx_preview["results_df"] = xfer_df
+                ctx_preview["transfer_name_col"] = xfer_col
+                ctx_preview["results_player_col"] = xfer_col
+            if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
+                ctx_preview["send_top_3_players"] = send_top3
+            else:
+                ctx_preview["send_top_3_players"] = False
+            st.session_state[nav_payload_key] = pg_xfer.build_transfer(
+                st.session_state, builder_id, ctx_preview
+            )
+        else:
+            st.session_state.pop(nav_target_key, None)
+            st.session_state.pop(nav_payload_key, None)
+            st.session_state.pop(f"ctx_nav_meta_{source}_{placement_key}", None)
         if builder_id in getattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS", frozenset()):
             _cmp_preview = _preview_transfer_player_names(
                 ent, base_extra, main_xfer_df, name_col, send_top3=False
@@ -9335,47 +9439,24 @@ def render_contextual_page_nav(
         elif show_top3_checkbox and send_top3 and preview_names:
             st.caption(f"Sending top 3 players: {', '.join(preview_names[:3])}")
 
-        if st.button("Open selected tool", key=go_key, use_container_width=True):
-            if not ent:
-                st.warning("Choose a destination page first.")
-            else:
-                go_target = normalize_page_key(ent["target"])
-                ctx = dict(base_extra)
-                if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
-                    ctx["send_top_3_players"] = bool(
-                        st.session_state.get(f"{source}_{go_target}_send_top_3_players", False)
-                    )
-                else:
-                    ctx["send_top_3_players"] = False
-                payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
-                go_to_related_page(go_target, payload, source_page=source)
+        st.button(
+            "Open selected tool",
+            key=go_key,
+            use_container_width=True,
+            disabled=not bool(ent),
+            on_click=_ctx_nav_on_open_tool,
+            kwargs={
+                "nav_target_key": nav_target_key,
+                "nav_payload_key": nav_payload_key,
+                "source_page": source,
+                "meta_key": f"ctx_nav_meta_{source}_{placement_key}",
+            },
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _sync_active_page_from_sidebar():
-    """Keep the page widget key separate from the canonical active page state."""
-    selected = st.session_state.get("_active_page_selector", "Historical Explorer")
-    if selected in _PAGE_OPTION_SET:
-        st.session_state["active_page"] = selected
-
-# Page navigation is handled by one stable sidebar radio key. Avoid programmatic
-# reassignment of arbitrary widget keys; it can block navigation and trigger
-# StreamlitValueAssignmentNotAllowedError for button-like widgets.
-
-_pending_nav = st.session_state.pop("_pending_active_page", None)
-if _pending_nav:
-    _pending_nav = normalize_page_key(_pending_nav)
-    if _pending_nav in _PAGE_OPTION_SET:
-        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _pending_nav
-        st.session_state["active_page"] = _pending_nav
-
-# If a contextual transfer is queued, force the sidebar to the target page before the radio renders.
-_pending_xfer_nav = st.session_state.get("_pending_page_transfer")
-if isinstance(_pending_xfer_nav, dict):
-    _xfer_nav_tgt = normalize_page_key(_pending_xfer_nav.get("target"))
-    if _xfer_nav_tgt in _PAGE_OPTION_SET:
-        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _xfer_nav_tgt
-        st.session_state["active_page"] = _xfer_nav_tgt
+# Page navigation: consume scheduled navigation BEFORE the sidebar radio is instantiated.
+_consume_scheduled_navigation()
 
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
