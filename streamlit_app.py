@@ -339,7 +339,8 @@ def _draft_lab_column_kind(col):
     if low.endswith("probability") or "percent" in low or low.endswith(" pct") or name == "Projection Confidence Score":
         return "percent"
     if name in {
-        "Expected Fantasy Value", "Total Projected Fantasy Value", "Decision Score", "Sleeper Score",
+        "Expected Fantasy Value", "Total Projected Fantasy Value", "Decision Score", "Draft Fit Score",
+        "Positional Fit", "Recommendation Score", "Sleeper Score",
         "Scarcity Score", "Best Player Available Score", "Best Value Sleeper Score", "Blended Projection Score",
         "ML Projection Score", "App Ranking Score", "Actual Draft Score", "Elite Star Score",
         "Roster Need Improvement", "Projected Value Gain/Loss", "Average Scarcity Score",
@@ -6111,6 +6112,417 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
     return pool.sort_values("Base Decision Score", ascending=False).reset_index(drop=True)
 
 
+DRAFT_POSITION_REPLACEMENT_DEPTHS = {
+    "C": 12, "1B": 12, "2B": 12, "3B": 12, "SS": 12, "OF": 36, "DH": 12, "P": 12,
+}
+
+
+def _draft_compute_position_replacement(available, replacement_depths=None):
+    """Replacement-level scarcity among remaining players at each position."""
+    depths = replacement_depths or DRAFT_POSITION_REPLACEMENT_DEPTHS
+    replacement_values = {}
+    position_summary_rows = []
+    efv_col = "Expected Fantasy Value"
+    for pos, pos_group in available.groupby("Primary Position"):
+        pos_group = pos_group.copy().sort_values(efv_col, ascending=False)
+        depth = depths.get(pos, 12)
+        if pos_group.empty:
+            continue
+        if len(pos_group) >= depth:
+            replacement_value = pd.to_numeric(pos_group.iloc[depth - 1][efv_col], errors="coerce")
+        else:
+            replacement_value = pd.to_numeric(pos_group[efv_col], errors="coerce").min()
+        replacement_values[pos] = replacement_value
+        top_row = pos_group.iloc[0]
+        top_value = pd.to_numeric(top_row.get(efv_col, np.nan), errors="coerce")
+        position_summary_rows.append({
+            "Position": pos,
+            "Available Players": len(pos_group),
+            "Replacement Depth": depth,
+            "Replacement Value": replacement_value,
+            "Top Available": top_row.get("fullName", ""),
+            "Top Available Value": top_value,
+            "Scarcity Dropoff": top_value - replacement_value if pd.notna(top_value) and pd.notna(replacement_value) else np.nan,
+        })
+    return replacement_values, position_summary_rows
+
+
+DRAFT_SCORING_CONSISTENCY_PLAYERS = [
+    "Shohei Ohtani",
+    "Aaron Judge",
+    "Bobby Witt Jr.",
+    "Juan Soto",
+    "Cal Raleigh",
+    "Kyle Tucker",
+    "Francisco Lindor",
+    "Gunnar Henderson",
+]
+
+DRAFT_POOL_CONSISTENCY_COLS = [
+    "proj_HR", "proj_RBI", "proj_R", "proj_SB", "proj_BA", "proj_OPS",
+    "Expected Fantasy Value", "Model Rank", "Market Rank", "Fantasy Edge",
+    "Sleeper Score", "Scarcity Score", "Projection Confidence Score",
+]
+
+DRAFT_CONTEXT_CONSISTENCY_COLS = [
+    "Draft Fit Score", "Positional Fit", "Decision Score",
+]
+
+
+def build_unified_draft_player_pool(
+    yearly_source,
+    market_df,
+    *,
+    draft_window=3,
+    fantasy_format="5x5 Roto",
+    projection_style="Balanced",
+    use_ml_blend=False,
+    ml_blend_weight=0.12,
+    ml_min_games_for_signal=50,
+):
+    """
+    Canonical player pool for every fantasy draft page (Lab, Live Draft, Assistant, Draft Room).
+
+    Wraps ``build_draft_lab_player_pool`` (stabilized projections) and optional Draft Assistant ML rebalance.
+    """
+    pool = build_draft_lab_player_pool(
+        yearly_source,
+        market_df,
+        draft_window=draft_window,
+        fantasy_format=fantasy_format,
+        projection_style=projection_style,
+    )
+    pool["ML Signal Eligible"] = safe_numeric_series(pool, "G", 0) >= int(ml_min_games_for_signal)
+    ineligible = ~pool["ML Signal Eligible"]
+    if ineligible.any():
+        pool.loc[ineligible, "ML Projection Score"] = (
+            pd.to_numeric(pool.loc[ineligible, "ML Projection Score"], errors="coerce") * 0.90
+        )
+        pool.loc[ineligible, "Expected Fantasy Value"] = (
+            pd.to_numeric(pool.loc[ineligible, "Expected Fantasy Value"], errors="coerce") * 0.96
+        )
+    base = pd.to_numeric(pool["Realistic Base Projection Score"], errors="coerce").fillna(
+        pd.to_numeric(pool["Expected Fantasy Value"], errors="coerce")
+    )
+    ml_efv = pd.to_numeric(pool["Expected Fantasy Value"], errors="coerce").fillna(0)
+    if use_ml_blend and float(ml_blend_weight) > 0:
+        w = float(ml_blend_weight)
+        pool["Blended Projection Score"] = normalize_series(base * (1 - w) + ml_efv * w)
+    else:
+        pool["Blended Projection Score"] = normalize_series(base)
+    pool["Expected Fantasy Value"] = pool["Blended Projection Score"]
+    pool["Model Rank"] = pool["Blended Projection Score"].rank(ascending=False, method="min")
+    pool["Fantasy Edge"] = pd.to_numeric(pool["Market Rank"], errors="coerce") - pool["Model Rank"]
+    edge_raw = pd.to_numeric(pool["Fantasy Edge"], errors="coerce").fillna(0)
+    projected_quality = normalize_series(pool["Expected Fantasy Value"])
+    pool["Capped Fantasy Edge"] = np.sign(edge_raw) * np.log1p(edge_raw.abs()).clip(upper=np.log1p(60))
+    pool["Capped Fantasy Edge"] = np.where(
+        projected_quality >= 0.72,
+        pool["Capped Fantasy Edge"],
+        pool["Capped Fantasy Edge"] * 0.35,
+    )
+    pool["Sleeper Score"] = normalize_series(
+        normalize_series(pool["Capped Fantasy Edge"].clip(lower=0)) * 0.35 + projected_quality * 0.65
+    )
+    pool["Market vs Model Score"] = normalize_series(pool["Capped Fantasy Edge"].fillna(0))
+    pool["App Ranking Score"] = normalize_series(-pool["Model Rank"].fillna(9999))
+    replacement_values, _ = _draft_compute_position_replacement(pool)
+    pool["Position Replacement Value"] = pool["Primary Position"].map(replacement_values).fillna(
+        pd.to_numeric(pool["Expected Fantasy Value"], errors="coerce").median()
+    )
+    scarcity_raw = (
+        pd.to_numeric(pool["Expected Fantasy Value"], errors="coerce") -
+        pd.to_numeric(pool["Position Replacement Value"], errors="coerce")
+    ).clip(lower=0)
+    scarcity_raw = scarcity_raw.mask(pool["Primary Position"].astype(str).eq("C"), scarcity_raw * 0.85)
+    pool["Scarcity Score"] = normalize_series(scarcity_raw)
+    pool["Base Decision Score"] = (
+        normalize_series(pool["Expected Fantasy Value"]) * 0.55 +
+        normalize_series(pool["App Ranking Score"]) * 0.20 +
+        normalize_series(pool["Scarcity Score"]) * 0.05 +
+        normalize_series(pool["Trend Signal"]) * 0.05 +
+        normalize_series(pool["Sleeper Score"]) * 0.03 +
+        normalize_series(pool["Market vs Model Score"]) * 0.02
+    )
+    return pool
+
+
+def _resolve_consistency_player_name(pool_df, display_name):
+    if pool_df is None or pool_df.empty or "fullName" not in pool_df.columns:
+        return None
+    want = str(display_name).strip().lower()
+    names = pool_df["fullName"].astype(str)
+
+    def _match_candidates(label):
+        label = str(label).strip().lower()
+        cands = [label, re.sub(r"\s+", " ", label.replace(".", ""))]
+        for suffix in (" jr.", " jr", " sr.", " sr", " ii", " iii"):
+            if label.endswith(suffix):
+                cands.append(label[: -len(suffix)].strip())
+        return cands
+
+    want_cands = _match_candidates(want)
+    for n in names.unique():
+        n_norm = str(n).strip().lower()
+        n_cands = _match_candidates(n_norm)
+        if n_norm in want_cands or any(w in n_cands for w in want_cands) or any(n in want_cands for n in n_cands):
+            return str(n)
+    return None
+
+
+def run_draft_scoring_consistency_check(
+    yearly_source,
+    market_df,
+    test_players=None,
+    *,
+    draft_window=3,
+    fantasy_format="5x5 Roto",
+    projection_style="Balanced",
+    use_ml_blend=True,
+    ml_blend_weight=0.12,
+    ml_min_games_for_signal=50,
+    current_pick=1,
+    compare_pick_context=25,
+    numeric_tolerance=0.0005,
+    rank_tolerance=0.5,
+):
+    """
+    Compare pool-level and context scores across draft page pipelines (offline + UI validation).
+    Returns summary DataFrame and detail notes.
+    """
+    test_players = test_players or DRAFT_SCORING_CONSISTENCY_PLAYERS
+    pool_kwargs = dict(
+        draft_window=draft_window,
+        fantasy_format=fantasy_format,
+        projection_style=projection_style,
+        use_ml_blend=use_ml_blend,
+        ml_blend_weight=ml_blend_weight,
+        ml_min_games_for_signal=ml_min_games_for_signal,
+    )
+    canonical_pool = build_unified_draft_player_pool(yearly_source, market_df, **pool_kwargs)
+    lab_pool = build_draft_lab_player_pool(
+        yearly_source, market_df,
+        draft_window=draft_window,
+        fantasy_format=fantasy_format,
+        projection_style=projection_style,
+    )
+    empty_roster = pd.DataFrame()
+    target_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
+
+    scored_pick1, _ = apply_draft_pick_scoring(
+        canonical_pool.copy(),
+        empty_roster,
+        fantasy_format=fantasy_format,
+        target_counts=target_counts,
+        current_pick=int(current_pick),
+        use_ml_blend=use_ml_blend,
+        ml_blend_weight=ml_blend_weight,
+        recommendation_mode="draft_fit",
+    )
+    scored_pick_ctx, _ = apply_draft_pick_scoring(
+        canonical_pool.copy(),
+        empty_roster,
+        fantasy_format=fantasy_format,
+        target_counts=target_counts,
+        current_pick=int(compare_pick_context),
+        use_ml_blend=use_ml_blend,
+        ml_blend_weight=ml_blend_weight,
+        recommendation_mode="draft_fit",
+    )
+
+    page_frames = {
+        "Draft Lab / Live Draft (canonical pool)": canonical_pool,
+        "Draft Assistant (canonical pool)": canonical_pool,
+        "Draft Room Simulator (canonical pool)": canonical_pool,
+        "Draft Lab base pool (no ML rebalance)": lab_pool,
+        f"Scored @ pick {current_pick} (shared engine)": scored_pick1,
+        f"Scored @ pick {compare_pick_context} (context test)": scored_pick_ctx,
+    }
+
+    ref_label = "Draft Lab / Live Draft (canonical pool)"
+    ref_df = page_frames[ref_label]
+    summary_rows = []
+    detail_notes = []
+
+    def _num_close(a, b, tol=numeric_tolerance):
+        if pd.isna(a) and pd.isna(b):
+            return True
+        if pd.isna(a) or pd.isna(b):
+            return False
+        if abs(float(a) - float(b)) <= tol:
+            return True
+        denom = max(abs(float(b)), 1e-9)
+        return abs(float(a) - float(b)) / denom <= 0.002
+
+    for display_name in test_players:
+        resolved = _resolve_consistency_player_name(canonical_pool, display_name)
+        if resolved is None:
+            for src in page_frames:
+                summary_rows.append({
+                    "Player": display_name,
+                    "Page / Source": src,
+                    "Expected Fantasy Value": np.nan,
+                    "Fantasy Edge": np.nan,
+                    "Sleeper Score": np.nan,
+                    "Scarcity Score": np.nan,
+                    "Draft Fit Score": np.nan,
+                    "Decision Score": np.nan,
+                    "Match Status": "❌ Mismatch",
+                    "Notes": "Player not found in pool",
+                })
+            continue
+
+        ref_row = ref_df[ref_df["fullName"].astype(str) == resolved].iloc[0]
+        ref_scored = scored_pick1[scored_pick1["fullName"].astype(str) == resolved].iloc[0]
+
+        for src, frame in page_frames.items():
+            sub = frame[frame["fullName"].astype(str) == resolved]
+            if sub.empty:
+                summary_rows.append({
+                    "Player": resolved,
+                    "Page / Source": src,
+                    "Expected Fantasy Value": np.nan,
+                    "Fantasy Edge": np.nan,
+                    "Sleeper Score": np.nan,
+                    "Scarcity Score": np.nan,
+                    "Draft Fit Score": np.nan,
+                    "Decision Score": np.nan,
+                    "Match Status": "❌ Mismatch",
+                    "Notes": "Missing row",
+                })
+                continue
+            row = sub.iloc[0]
+            pool_mismatch_cols = []
+            for col in DRAFT_POOL_CONSISTENCY_COLS:
+                if col not in ref_row.index or col not in row.index:
+                    continue
+                rv = pd.to_numeric(ref_row.get(col), errors="coerce")
+                v = pd.to_numeric(row.get(col), errors="coerce")
+                tol = rank_tolerance if "Rank" in col else numeric_tolerance
+                if not _num_close(v, rv, tol=tol):
+                    pool_mismatch_cols.append(col)
+
+            is_pool_source = "pool" in src.lower() and "scored" not in src.lower()
+            is_context_row = src.startswith("Scored @")
+            is_lab_base = "no ML rebalance" in src
+
+            if is_context_row and src != f"Scored @ pick {current_pick} (shared engine)":
+                status = "⚠️ Context Difference"
+                notes = f"Pick context {compare_pick_context} vs reference pick {current_pick}"
+            elif is_lab_base and pool_mismatch_cols:
+                status = "⚠️ Context Difference"
+                notes = "Lab base pool omits Assistant ML rebalance; enable ML blend on Lab for parity"
+            elif pool_mismatch_cols and is_pool_source:
+                status = "❌ Mismatch"
+                notes = "Pool differs: " + ", ".join(pool_mismatch_cols[:6])
+                detail_notes.append(f"{resolved} | {src}: {notes}")
+            elif is_context_row and src == f"Scored @ pick {current_pick} (shared engine)":
+                ctx_cols = [c for c in DRAFT_CONTEXT_CONSISTENCY_COLS if c in row.index]
+                ctx_ok = all(
+                    _num_close(pd.to_numeric(row.get(c), errors="coerce"), pd.to_numeric(ref_scored.get(c), errors="coerce"))
+                    for c in ctx_cols
+                )
+                status = "✅ Match" if ctx_ok else "❌ Mismatch"
+                notes = "Shared apply_draft_pick_scoring @ same pick" if ctx_ok else "Scored context mismatch"
+            elif is_pool_source:
+                status = "✅ Match"
+                notes = "Canonical unified pool"
+            else:
+                status = "✅ Match"
+                notes = ""
+
+            summary_rows.append({
+                "Player": resolved,
+                "Page / Source": src,
+                "Expected Fantasy Value": pd.to_numeric(row.get("Expected Fantasy Value"), errors="coerce"),
+                "Fantasy Edge": pd.to_numeric(row.get("Fantasy Edge"), errors="coerce"),
+                "Sleeper Score": pd.to_numeric(row.get("Sleeper Score"), errors="coerce"),
+                "Scarcity Score": pd.to_numeric(row.get("Scarcity Score"), errors="coerce"),
+                "Draft Fit Score": pd.to_numeric(row.get("Draft Fit Score"), errors="coerce"),
+                "Decision Score": pd.to_numeric(row.get("Decision Score"), errors="coerce"),
+                "Match Status": status,
+                "Notes": notes,
+            })
+
+    summary = pd.DataFrame(summary_rows)
+    return summary, detail_notes
+
+
+def render_shared_scoring_consistency_check(yearly_source, market_df, key_suffix="main"):
+    """Temporary validation UI: pool + context scoring parity across draft pages."""
+    with st.expander("Shared Scoring Consistency Check", expanded=False):
+        st.caption(
+            "Validates canonical pool metrics and `apply_draft_pick_scoring()` using the session's draft settings. "
+            "Pool stats should match across pages; Draft Fit / Decision may differ when pick # or roster context differs."
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            chk_window = int(st.session_state.get("draft_lab_window", st.session_state.get("draft_window", 3)))
+        with c2:
+            chk_format = st.session_state.get("draft_lab_scoring_type", st.session_state.get("draft_format", "5x5 Roto"))
+        with c3:
+            chk_style = st.session_state.get("draft_lab_projection_style", st.session_state.get("fantasy_draft_projection_style", "Balanced"))
+        with c4:
+            chk_ml = bool(st.session_state.get("draft_use_ml_blend", True))
+            chk_ml_w = float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0)
+        st.caption(
+            f"Settings: window={chk_window}, format={chk_format}, style={chk_style}, "
+            f"ML blend={'on' if chk_ml else 'off'} ({chk_ml_w:.2f})."
+        )
+        if st.button("Run consistency check", key=f"run_draft_consistency_{key_suffix}"):
+            with st.spinner("Comparing sample players across draft pipelines..."):
+                summary, notes = run_draft_scoring_consistency_check(
+                    yearly_source,
+                    market_df,
+                    draft_window=chk_window,
+                    fantasy_format=chk_format,
+                    projection_style=chk_style,
+                    use_ml_blend=chk_ml,
+                    ml_blend_weight=chk_ml_w,
+                    ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                )
+            st.session_state[f"draft_consistency_summary_{key_suffix}"] = summary
+            st.session_state[f"draft_consistency_notes_{key_suffix}"] = notes
+        summary = st.session_state.get(f"draft_consistency_summary_{key_suffix}")
+        if summary is not None and not summary.empty:
+            render_output_table(
+                clean_ui_columns(summary),
+                key=f"draft_consistency_table_{key_suffix}",
+                file_name="draft_scoring_consistency.csv",
+                display_rows=80,
+            )
+            counts = summary["Match Status"].value_counts().to_dict()
+            st.caption(
+                "Status counts: "
+                + ", ".join(f"{k}={v}" for k, v in counts.items())
+            )
+            notes = st.session_state.get(f"draft_consistency_notes_{key_suffix}", [])
+            if notes:
+                with st.expander("Mismatch details", expanded=False):
+                    for line in notes[:30]:
+                        st.markdown(f"- {line}")
+            with st.expander("Full pool metric comparison (sample players)", expanded=False):
+                pool = build_unified_draft_player_pool(
+                    yearly_source,
+                    market_df,
+                    draft_window=chk_window,
+                    fantasy_format=chk_format,
+                    projection_style=chk_style,
+                    use_ml_blend=chk_ml,
+                    ml_blend_weight=chk_ml_w,
+                    ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                )
+                rows = []
+                for pname in DRAFT_SCORING_CONSISTENCY_PLAYERS:
+                    resolved = _resolve_consistency_player_name(pool, pname)
+                    if not resolved:
+                        continue
+                    r = pool[pool["fullName"].astype(str) == resolved].iloc[0]
+                    rows.append({c: r.get(c, np.nan) for c in ["fullName"] + DRAFT_POOL_CONSISTENCY_COLS if c in r.index or c == "fullName"})
+                if rows:
+                    render_output_table(clean_ui_columns(pd.DataFrame(rows)), key=f"draft_consistency_pool_{key_suffix}", display_rows=20)
+
+
 def _draft_lab_pick_order(teams, picks_per_team):
     order = []
     pick_no = 1
@@ -6149,51 +6561,44 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
     available = pool_df.copy()
     rosters = {team: [] for team in teams}
     draft_rows = []
+    fantasy_format = "5x5 Roto"
     for pick in _draft_lab_pick_order(list(teams), picks_per_team):
         team = pick["Team"]
         roster_df = pd.DataFrame(rosters[team])
         _targets, gaps = _draft_lab_roster_needs(roster_df)
-        scored = available.copy()
-        position_need = scored["Primary Position"].isin(gaps).astype(float)
-        position_need = position_need.mask(scored["Primary Position"].astype(str).eq("C"), position_need * 0.85)
-        category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
-        scored["Roster Need Score"] = (position_need * 0.70 + category_need * 0.30).clip(0, 1)
-        scored["Projected Value Component"] = normalize_series(scored["Expected Fantasy Value"])
-        scored["Model Rank Component"] = normalize_series(scored["App Ranking Score"])
-        scored["Roster Need Component"] = normalize_series(scored["Roster Need Score"])
-        scored["Scarcity Component"] = normalize_series(scored["Scarcity Score"])
-        scored["Trend Component"] = normalize_series(scored["Trend Signal"])
-        scored["Sleeper Component"] = normalize_series(scored["Sleeper Score"])
-        scored["Market Edge Component"] = normalize_series(scored["Market vs Model Score"])
-        scored["Decision Score"] = (
-            scored["Projected Value Component"] * 0.55 +
-            scored["Model Rank Component"] * 0.20 +
-            scored["Roster Need Component"] * 0.10 +
-            scored["Scarcity Component"] * 0.05 +
-            scored["Trend Component"] * 0.05 +
-            scored["Sleeper Component"] * 0.03 +
-            scored["Market Edge Component"] * 0.02
+        category_needs = _draft_lab_infer_category_needs(roster_df, available, fantasy_format)
+        scored, _gaps = apply_draft_pick_scoring(
+            available,
+            roster_df,
+            fantasy_format=fantasy_format,
+            target_counts=_targets,
+            current_pick=int(pick["Pick"]),
+            category_needs=category_needs,
         )
-        chosen = scored.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=False).iloc[0].copy()
+        chosen = scored.sort_values(["Decision Score", "Draft Fit Score", "Expected Fantasy Value"], ascending=False).iloc[0].copy()
         chosen["Round"] = pick["Round"]
         chosen["Pick"] = pick["Pick"]
         chosen["Fantasy Team"] = team
         chosen["Roster Need At Pick"] = ", ".join(gaps[:4]) if gaps else "Depth / best value"
         why = []
-        if chosen.get("Projected Value Component", 0) >= 0.80:
+        efv = pd.to_numeric(chosen.get("Expected Fantasy Value"), errors="coerce")
+        if pd.notna(efv) and efv >= 0.80:
             why.append("elite projected fantasy value")
-        elif chosen.get("Projected Value Component", 0) >= 0.65:
+        elif pd.notna(efv) and efv >= 0.65:
             why.append("strong projected fantasy value")
-        if chosen.get("Model Rank Component", 0) >= 0.80:
+        mr = pd.to_numeric(chosen.get("Model Rank"), errors="coerce")
+        if pd.notna(mr) and mr <= 30:
             why.append("high model rank")
-        if chosen.get("Roster Need Score", 0) >= 0.50 and gaps:
+        if pd.to_numeric(chosen.get("Roster Need Score", 0), errors="coerce") >= 0.50 and gaps:
             why.append(f"fills roster need ({', '.join(gaps[:2])})")
-        if chosen.get("Scarcity Component", 0) >= 0.60:
+        if pd.to_numeric(chosen.get("Scarcity Score", 0), errors="coerce") >= 0.60:
             why.append(f"scarce {chosen.get('Primary Position')} value")
-        if chosen.get("Trend Component", 0) >= 0.65:
+        if pd.to_numeric(chosen.get("Trend Signal", 0), errors="coerce") >= 0.65:
             why.append("positive trend signal")
-        if chosen.get("Sleeper Component", 0) >= 0.70:
+        if pd.to_numeric(chosen.get("Sleeper Score", 0), errors="coerce") >= 0.70:
             why.append("small sleeper/value boost")
+        if pd.to_numeric(chosen.get("Draft Fit Score", 0), errors="coerce") >= 0.72:
+            why.append("strong draft fit for roster")
         chosen["Why This Pick"] = "Selected because he had " + ", ".join(why[:4]) + "." if why else "Selected as the best balanced option by projected value and model rank."
         draft_rows.append(chosen.to_dict())
         rosters[team].append(chosen.to_dict())
@@ -6451,6 +6856,9 @@ def _live_draft_pick_verdict(row, rule, gaps):
     parts = [f"Drafted via {rule}"]
     if gaps and str(pos) in gaps:
         parts.append(f"fills {pos} need")
+    dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
+    if pd.notna(dfs) and dfs >= 0.72:
+        parts.append("strong draft fit")
     efv = pd.to_numeric(row.get("Expected Fantasy Value", np.nan), errors="coerce")
     if pd.notna(efv) and efv >= 0.75:
         parts.append("elite projected value")
@@ -6460,44 +6868,322 @@ def _live_draft_pick_verdict(row, rule, gaps):
     return f"{player}: " + ", ".join(parts[:4]) + "."
 
 
-def _live_draft_score_available(available, roster_df, rule, target_counts):
+def _draft_lab_infer_category_needs(roster_df, available, fantasy_format="5x5 Roto"):
+    """Auto-detect category weaknesses from roster vs remaining pool (Draft Assistant logic)."""
+    if roster_df is None or roster_df.empty or available is None or available.empty:
+        return []
+    if fantasy_format == "5x5 Roto":
+        triples = [("proj_HR", "HR"), ("proj_RBI", "RBI"), ("proj_SB", "SB"), ("proj_BA", "BA")]
+    else:
+        triples = [
+            ("proj_HR", "Power"),
+            ("proj_RBI", "Run Production"),
+            ("proj_SB", "Speed"),
+            ("proj_OPS", "Walks/OPS"),
+        ]
+    needs = []
+    for col, need_label in triples:
+        if col not in roster_df.columns or col not in available.columns:
+            continue
+        rm = pd.to_numeric(roster_df[col], errors="coerce").mean()
+        pm = pd.to_numeric(available[col], errors="coerce").median()
+        if pd.notna(rm) and pd.notna(pm) and rm < pm * 0.92:
+            needs.append(need_label)
+    return needs
+
+
+def _draft_category_need_bonus_list(available, category_needs, fantasy_format="5x5 Roto"):
+    """Explicit category-need bonus from user-selected or auto-detected categories."""
+    cat_bonus = pd.Series(0.0, index=available.index)
+    if not category_needs:
+        return cat_bonus
+    if fantasy_format == "5x5 Roto":
+        if "R" in category_needs:
+            cat_bonus += normalize_series(available["proj_R"]) * 0.05
+        if "HR" in category_needs:
+            cat_bonus += normalize_series(available["proj_HR"]) * 0.06
+        if "RBI" in category_needs:
+            cat_bonus += normalize_series(available["proj_RBI"]) * 0.06
+        if "SB" in category_needs:
+            cat_bonus += normalize_series(available["proj_SB"]) * 0.07
+        if "BA" in category_needs:
+            cat_bonus += normalize_series(available["proj_BA"]) * 0.05
+    else:
+        if "Power" in category_needs:
+            cat_bonus += normalize_series(available["proj_HR"]) * 0.07
+        if "Run Production" in category_needs:
+            cat_bonus += normalize_series(available["proj_RBI"] + available["proj_R"]) * 0.06
+        if "Speed" in category_needs:
+            cat_bonus += normalize_series(available["proj_SB"]) * 0.05
+        if "Walks/OPS" in category_needs:
+            cat_bonus += normalize_series(available["proj_BB"] + available["proj_OPS"] * 50) * 0.05
+        if "Volume" in category_needs:
+            cat_bonus += normalize_series(available["AB"]) * 0.04
+    return cat_bonus
+
+
+def apply_draft_pick_scoring(
+    available,
+    roster_df,
+    *,
+    fantasy_format="5x5 Roto",
+    target_counts=None,
+    current_pick=None,
+    category_needs=None,
+    needed_positions=None,
+    use_ml_blend=False,
+    ml_blend_weight=0.0,
+    replacement_depths=None,
+    return_position_summary=False,
+    recommendation_mode="decision",
+):
+    """
+    Centralized fantasy draft intelligence engine.
+
+    Powers Live Draft Room, Draft Simulation Test Mode, Fantasy Draft Assistant, and auto-pick.
+    Computes Draft Fit Score (roster-construction fit) and Decision Score (blended pick rank).
+
+    All component columns are exposed for the Draft Scoring Breakdown debug expander.
+    """
     scored = available.copy()
+    roster_df = roster_df if roster_df is not None else pd.DataFrame()
+    target_counts = target_counts or {}
     gaps = _live_draft_roster_needs(roster_df, target_counts)
+    if needed_positions is None:
+        needed_positions = gaps if gaps else []
+
+    # --- Positional / roster slot fit (display + Decision roster-need term) ---
+    slot_fit = scored["Primary Position"].isin(gaps).astype(float)
+    slot_fit = slot_fit.mask(scored["Primary Position"].astype(str).eq("C"), slot_fit * 0.85)
+    if category_needs:
+        cat_need_raw = _draft_category_need_bonus_list(scored, category_needs, fantasy_format)
+    else:
+        cat_need_raw = _draft_lab_category_need_bonus(scored, roster_df)
+    category_need_norm = normalize_series(cat_need_raw)
+    scored["Positional Fit"] = (slot_fit * 0.70 + category_need_norm * 0.30).clip(0, 1)
+    scored["Roster Need Score"] = scored["Positional Fit"]
+    scored["Position Need Bonus"] = scored["Primary Position"].apply(
+        lambda p: 0.08 if str(p) in needed_positions else 0.0
+    )
+    scored["Category Need Bonus"] = cat_need_raw
+
+    # --- Replacement-level position scarcity (pick-time, from remaining pool) ---
+    replacement_values, position_summary_rows = _draft_compute_position_replacement(
+        scored, replacement_depths=replacement_depths
+    )
+    scored["Position Replacement Value"] = scored["Primary Position"].map(replacement_values).fillna(
+        pd.to_numeric(scored["Expected Fantasy Value"], errors="coerce").median()
+    )
+    scored["Position Scarcity Score"] = (
+        pd.to_numeric(scored["Expected Fantasy Value"], errors="coerce") -
+        pd.to_numeric(scored["Position Replacement Value"], errors="coerce")
+    ).clip(lower=0)
+    scored["Position Scarcity Bonus"] = normalize_series(scored["Position Scarcity Score"]) * 0.12
+    scored.loc[scored["Primary Position"].isin(needed_positions), "Position Scarcity Bonus"] *= 1.25
+
+    # --- Risk & projection confidence ---
+    scored["Risk Penalty"] = normalize_series(safe_numeric_series(scored, "Expert Std Dev", 0))
+    conf = (
+        normalize_series(safe_numeric_series(scored, "Projection Confidence Score", 0.5))
+        if "Projection Confidence Score" in scored.columns
+        else pd.Series(0.5, index=scored.index)
+    )
+    scored["Projection Confidence"] = conf
+
+    # --- Availability / urgency (ADP vs current pick) ---
+    if current_pick is not None:
+        mr = safe_numeric_series(scored, "Market Rank", float(current_pick))
+        scored["Availability Probability"] = 1 / (1 + np.exp(-(mr - float(current_pick)) / 35))
+    else:
+        scored["Availability Probability"] = pd.Series(0.50, index=scored.index)
+
+    # --- Draft Fit Score components (Fantasy Draft Assistant formula, unified) ---
+    ml_w = float(ml_blend_weight) if use_ml_blend else 0.0
+    value_weight = max(0.38 - (ml_w * 0.25 if use_ml_blend else 0.0), 0.28)
+    scored["Player Value Component"] = normalize_series(scored["Expected Fantasy Value"]) * value_weight
+    scored["ML Projection Component"] = (
+        normalize_series(scored["ML Adjustment"].fillna(0).clip(lower=0)) * ml_w
+        if use_ml_blend and "ML Adjustment" in scored.columns
+        else pd.Series(0.0, index=scored.index)
+    )
+    if "Projection Confidence Score" in scored.columns:
+        scored["Player Value Component"] *= (0.94 + conf * 0.06)
+        scored["Confidence Component"] = conf * 0.02
+    else:
+        scored["Confidence Component"] = pd.Series(0.0, index=scored.index)
+
+    scored["Market Edge Component"] = normalize_series(scored["Fantasy Edge"].fillna(0)) * 0.22
+    scored["Roster Need Component"] = normalize_series(scored["Position Need Bonus"].fillna(0)) * 0.14
+    scored["Scarcity Component"] = normalize_series(scored["Position Scarcity Bonus"].fillna(0))
+    scored["Category Fit Component"] = normalize_series(scored["Category Need Bonus"].fillna(0)) * 0.08
+    scored["Availability Urgency Component"] = (
+        1 - pd.to_numeric(scored["Availability Probability"], errors="coerce").fillna(0.50)
+    ) * 0.06
+    scored["Sleeper Fit Component"] = (
+        normalize_series(scored["Sleeper Score"]) * 0.03
+        if "Sleeper Score" in scored.columns
+        else pd.Series(0.0, index=scored.index)
+    )
+    scored["Risk Component"] = scored["Risk Penalty"] * 0.08 * (1.12 - conf * 0.12)
+
+    scored["Draft Fit Score"] = (
+        scored["Player Value Component"]
+        + scored["ML Projection Component"]
+        + scored["Market Edge Component"]
+        + scored["Roster Need Component"]
+        + scored["Scarcity Component"]
+        + scored["Category Fit Component"]
+        + scored["Availability Urgency Component"]
+        + scored["Sleeper Fit Component"]
+        + scored["Confidence Component"]
+        - scored["Risk Component"]
+    ).clip(lower=0)
+
+    # --- Decision Score (auto-pick / balanced recommendation) ---
+    rank_component = (
+        scored["App Ranking Score"]
+        if "App Ranking Score" in scored.columns
+        else normalize_series(-pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999))
+    )
+    pool_scarcity = (
+        normalize_series(scored["Scarcity Score"])
+        if "Scarcity Score" in scored.columns
+        else normalize_series(scored["Position Scarcity Score"])
+    )
+    trend_comp = (
+        normalize_series(scored["Trend Signal"])
+        if "Trend Signal" in scored.columns
+        else pd.Series(0.0, index=scored.index)
+    )
+    sleeper_dec = (
+        normalize_series(scored["Sleeper Score"])
+        if "Sleeper Score" in scored.columns
+        else pd.Series(0.0, index=scored.index)
+    )
+    market_dec = (
+        normalize_series(scored["Market vs Model Score"])
+        if "Market vs Model Score" in scored.columns
+        else normalize_series(scored["Fantasy Edge"].fillna(0))
+    )
+    value_dec = normalize_series(scored["Expected Fantasy Value"])
+
+    scored["Decision Value Component"] = value_dec * 0.55
+    scored["Decision Rank Component"] = normalize_series(rank_component) * 0.20
+    scored["Decision Roster Component"] = normalize_series(scored["Roster Need Score"]) * 0.10
+    scored["Decision Scarcity Component"] = pool_scarcity * 0.05
+    scored["Decision Trend Component"] = trend_comp * 0.05
+    scored["Decision Sleeper Component"] = sleeper_dec * 0.03
+    scored["Decision Market Component"] = market_dec * 0.02
+
+    scored["Decision Score"] = (
+        scored["Decision Value Component"]
+        + scored["Decision Rank Component"]
+        + scored["Decision Roster Component"]
+        + scored["Decision Scarcity Component"]
+        + scored["Decision Trend Component"]
+        + scored["Decision Sleeper Component"]
+        + scored["Decision Market Component"]
+    ).clip(lower=0)
+    scored["Draft Fit Rank"] = scored["Draft Fit Score"].rank(ascending=False, method="min")
+    if recommendation_mode == "draft_fit":
+        scored["Recommendation Score"] = scored["Draft Fit Score"]
+        scored["Recommendation Rank"] = scored["Draft Fit Rank"]
+    else:
+        scored["Recommendation Score"] = scored["Decision Score"]
+        scored["Recommendation Rank"] = scored["Decision Score"].rank(ascending=False, method="min")
+
+    if return_position_summary:
+        return scored, gaps, position_summary_rows
+    return scored, gaps
+
+
+def calculate_draft_fit_score(available, roster_df, **kwargs):
+    """Apply centralized draft scoring; returns the scored DataFrame."""
+    result = apply_draft_pick_scoring(available, roster_df, **kwargs)
+    return result[0] if isinstance(result, tuple) else result
+
+
+def render_draft_scoring_breakdown(scored_df, player_name=None, key_suffix=""):
+    """Developer/debug expander: component contributions for Draft Fit and Decision scores."""
+    if scored_df is None or scored_df.empty:
+        st.caption("No scored players available.")
+        return
+    view = scored_df.copy()
+    if player_name:
+        mask = view["fullName"].astype(str).eq(str(player_name))
+        if mask.any():
+            view = view[mask].head(1)
+        else:
+            st.warning(f"No scored row found for **{player_name}**.")
+            return
+    else:
+        sort_col = "Decision Score" if "Decision Score" in view.columns else "Draft Fit Score"
+        view = view.sort_values(sort_col, ascending=False).head(5)
+
+    breakdown_map = [
+        ("Player Value Component", "Expected Fantasy Value"),
+        ("Market Edge Component", "Fantasy Edge"),
+        ("Scarcity Component", "Scarcity (replacement-level)"),
+        ("Sleeper Fit Component", "Sleeper"),
+        ("Roster Need Component", "Positional / roster need"),
+        ("Category Fit Component", "Category need"),
+        ("Availability Urgency Component", "Availability urgency"),
+        ("ML Projection Component", "ML projection boost"),
+        ("Confidence Component", "Projection confidence"),
+        ("Risk Component", "Risk penalty (subtracted)"),
+        ("Draft Fit Score", "Final Draft Fit Score"),
+        ("Decision Score", "Final Decision Score"),
+    ]
+    rows = []
+    for _, r in view.iterrows():
+        player = r.get("fullName", r.get("Player", ""))
+        for col, label in breakdown_map:
+            val = pd.to_numeric(r.get(col, np.nan), errors="coerce")
+            if pd.notna(val):
+                rows.append({"Player": player, "Component": label, "Contribution": val})
+    if not rows:
+        st.caption("Score components not computed yet — run draft scoring first.")
+        return
+    breakdown_df = pd.DataFrame(rows)
+    render_output_table(
+        clean_ui_columns(breakdown_df),
+        key=f"draft_scoring_breakdown_{key_suffix}",
+        file_name="draft_scoring_breakdown.csv",
+        display_rows=40,
+    )
+
+
+def _live_draft_score_available(available, roster_df, rule, target_counts, config=None):
+    config = config or {}
+    fantasy_format = config.get("fantasy_format", "5x5 Roto")
+    current_pick = int(config.get("current_pick", 1) or 1)
+    category_needs = config.get("category_needs")
+    if category_needs is None and not roster_df.empty:
+        category_needs = _draft_lab_infer_category_needs(roster_df, available, fantasy_format)
+    scored, gaps = apply_draft_pick_scoring(
+        available,
+        roster_df,
+        fantasy_format=fantasy_format,
+        target_counts=target_counts,
+        current_pick=current_pick,
+        category_needs=category_needs,
+        needed_positions=config.get("needed_positions"),
+        use_ml_blend=bool(config.get("use_ml_blend", False)),
+        ml_blend_weight=float(config.get("ml_blend_weight", 0) or 0),
+    )
     rule = str(rule).strip().lower()
     if rule == "best market rank":
         scored["_pick_score"] = -pd.to_numeric(scored.get("Market Rank"), errors="coerce").fillna(9999)
-        scored = scored.sort_values(["_pick_score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = scored.sort_values(["_pick_score", "Decision Score", "Expected Fantasy Value"], ascending=[False, False])
     elif rule == "best model rank":
         scored["_pick_score"] = -pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999)
-        scored = scored.sort_values(["_pick_score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = scored.sort_values(["_pick_score", "Decision Score", "Expected Fantasy Value"], ascending=[False, False])
     elif rule == "best projected fantasy value":
         scored = scored.sort_values(["Expected Fantasy Value", "Model Rank"], ascending=[False, True])
     elif rule == "best roster need":
-        position_need = scored["Primary Position"].isin(gaps).astype(float)
-        position_need = position_need.mask(scored["Primary Position"].astype(str).eq("C"), position_need * 0.85)
-        category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
-        scored["_pick_score"] = position_need * 0.70 + category_need * 0.30
-        scored = scored.sort_values(["_pick_score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = scored.sort_values(["Positional Fit", "Draft Fit Score", "Expected Fantasy Value"], ascending=[False, False])
     else:
-        position_need = scored["Primary Position"].isin(gaps).astype(float)
-        position_need = position_need.mask(scored["Primary Position"].astype(str).eq("C"), position_need * 0.85)
-        category_need = normalize_series(_draft_lab_category_need_bonus(scored, roster_df))
-        scored["Roster Need Score"] = (position_need * 0.70 + category_need * 0.30).clip(0, 1)
-        rank_component = (
-            scored["App Ranking Score"]
-            if "App Ranking Score" in scored.columns
-            else normalize_series(-pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999))
-        )
-        scored["Decision Score"] = (
-            normalize_series(scored["Expected Fantasy Value"]) * 0.55 +
-            normalize_series(rank_component) * 0.20 +
-            normalize_series(scored.get("Scarcity Score", 0)) * 0.05 +
-            normalize_series(scored.get("Trend Signal", 0)) * 0.05 +
-            normalize_series(scored.get("Sleeper Score", 0)) * 0.03 +
-            normalize_series(scored.get("Market vs Model Score", 0)) * 0.02 +
-            scored["Roster Need Score"] * 0.10
-        )
-        scored = scored.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = scored.sort_values(["Decision Score", "Draft Fit Score", "Expected Fantasy Value"], ascending=[False, False])
     return scored, gaps
 
 
@@ -6597,9 +7283,11 @@ def live_draft_auto_pick(room):
         return False, "No players remain in the pool."
     team = slot["Team"]
     roster_df = pd.DataFrame(room["rosters"].get(team, []))
-    target_counts = _live_draft_target_counts(room.get("config", {}))
-    rule = room.get("config", {}).get("auto_pick_rule", "balanced recommendation")
-    scored, gaps = _live_draft_score_available(available, roster_df, rule, target_counts)
+    cfg = dict(room.get("config", {}))
+    cfg["current_pick"] = int(slot.get("Pick", 1))
+    target_counts = _live_draft_target_counts(cfg)
+    rule = cfg.get("auto_pick_rule", "balanced recommendation")
+    scored, gaps = _live_draft_score_available(available, roster_df, rule, target_counts, config=cfg)
     chosen = scored.iloc[0]
     verdict = _live_draft_pick_verdict(chosen, rule, gaps)
     return live_draft_make_pick(room, chosen.to_dict(), verdict=verdict)
@@ -6634,17 +7322,15 @@ def live_draft_recommendations(room, top_n=8):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     team = slot["Team"]
     roster_df = pd.DataFrame(room["rosters"].get(team, []))
-    target_counts = _live_draft_target_counts(room.get("config", {}))
-    config = room.get("config", {})
-    balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts)
+    cfg = room.get("config", {})
+    target_counts = _live_draft_target_counts(cfg)
+    balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg)
     top_recommended = balanced.head(top_n)
-    best_available = available.sort_values(["Expected Fantasy Value", "Model Rank"], ascending=[False, True]).head(top_n)
-    positional = balanced[balanced["Primary Position"].isin(gaps)].head(top_n) if gaps else pd.DataFrame()
-    sleepers = available.sort_values(["Sleeper Score", "Expected Fantasy Value"], ascending=[False, False]).head(top_n)
-    if "Sleeper Score" not in available.columns:
-        edge_sorted = available.copy()
-        edge_sorted["Fantasy Edge"] = pd.to_numeric(edge_sorted.get("Fantasy Edge"), errors="coerce")
-        sleepers = edge_sorted.sort_values("Fantasy Edge", ascending=False).head(top_n)
+    best_available = balanced.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[False, False]).head(top_n)
+    positional = balanced[balanced["Primary Position"].isin(gaps)].sort_values(
+        ["Positional Fit", "Draft Fit Score"], ascending=[False, False]
+    ).head(top_n) if gaps else pd.DataFrame()
+    sleepers = balanced.sort_values(["Sleeper Score", "Draft Fit Score"], ascending=[False, False]).head(top_n)
     return top_recommended, best_available, positional, sleepers
 
 
@@ -7803,51 +8489,75 @@ def restore_page_state(page_name: str) -> bool:
     return pg_state.restore_page_state(st.session_state, normalize_page_key(page_name), store)
 
 
+def _transfer_stat_min_keys(*prefixes):
+    keys = set()
+    for prefix in prefixes:
+        keys.update(f"{prefix}_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS)
+    return keys
+
+
 _PAGE_TRANSFER_ALLOWED_KEYS = {
     "Historical Explorer": frozenset({
         "historical_year_range_filter", "historical_batting_hand_filter", "historical_position_filter",
-        "historical_position_filter_mode", "historical_team_filter",
+        "historical_position_filter_mode", "historical_team_filter", "historical_combine_split_seasons_filter",
+        "historical_sort_stat_filter", "historical_sort_order_filter",
         "hist_year", "hist_bats", "hist_pos", "hist_position_filter_mode", "hist_team",
-        *(f"hist_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+        *_transfer_stat_min_keys("hist"),
     }),
     "Career Totals": frozenset({
         "career_year_range_filter", "career_batting_hand_filter", "career_position_filter",
-        "career_position_filter_mode", "career_team_filter",
+        "career_position_filter_mode", "career_team_filter", "career_by_team_toggle_filter",
+        "career_sort_stat_filter",
         "career_year", "career_bats", "career_pos", "career_position_filter_mode", "career_team",
-        *(f"career_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+        *_transfer_stat_min_keys("career"),
     }),
     "Leaderboards": frozenset({
-        "leaders_year_range_filter", "leaders_year", *(f"leaders_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+        "leaders_year_range_filter", "leaders_year", "leaders_top_n_filter", "leaders_sort_stat_filter",
+        *_transfer_stat_min_keys("leaders"),
     }),
     "Comparison Tool": frozenset({
         "compare_year_range", "compare_stat", "compare_x_axis_mode", "compare_trend_mode",
+        "compare_smooth_window", "compare_age_range",
     }),
     "Trend Value": frozenset({
-        "trend_lag", "trend_min_g", "trend_sort_col", *(f"trend_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+        "trend_lag", "trend_min_g", "trend_sort_col", "trend_use_draft_room_sync", "trend_sync_team_for_draft",
+        *_transfer_stat_min_keys("trend"),
     }),
     "Valuation": frozenset({
-        "value_lag", "value_min_g", *(f"value_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS),
+        "value_lag", "value_min_g", "value_use_draft_room_sync", "value_sync_team_for_draft",
+        "value_w_current", "value_w_trend",
+        *_transfer_stat_min_keys("value"),
     }),
     "Fantasy Sleepers & Busts": frozenset({
         "fantasy_market_format", "fantasy_market_window", "fantasy_market_positions",
-        "fantasy_market_min_g", "fantasy_market_min_ab",
+        "fantasy_market_min_g", "fantasy_market_min_ab", "fantasy_market_top_n", "fantasy_market_age_range",
         "sleeper_max_market_rank", "sleeper_max_model_rank", "sleeper_min_proj_hr", "sleeper_min_expected_value",
+        "sleeper_use_draft_room_needs", "sleeper_sync_team",
+        "fantasy_draft_projection_style",
     }),
     "Draft Assistant Simulator": frozenset({
-        "draft_format", "draft_window", "fantasy_draft_projection_style",
+        "draft_format", "draft_window", "draft_top_n", "fantasy_draft_projection_style",
+        "draft_use_ml_blend", "draft_ml_blend_weight", "draft_ml_min_games_signal",
         "draft_assistant_synced_team", "room_your_team",
-        "sleeper_min_expected_value", "sleeper_max_market_rank",
     }),
     "Draft Simulation Test Mode": frozenset({
         "draft_lab_window", "draft_lab_format", "draft_lab_scoring_type", "draft_lab_projection_style",
         "draft_lab_picks_per_team",
+        *pg_xfer._LIVE_SLOT_KEYS,
     }),
     "Live Draft Room": frozenset({
         "live_draft_team_count", "live_draft_num_teams", "live_draft_picks_per_team", "live_draft_scoring",
-        "live_draft_proj_style", "live_draft_proj_window",
+        "live_draft_proj_style", "live_draft_proj_window", "live_draft_league_name",
+        "live_draft_type", "live_draft_timer", "live_draft_auto_rule",
+        *pg_xfer._LIVE_SLOT_KEYS,
     }),
-    "Fantasy Standings Tracker": frozenset({"standings_scoring_format", "room_your_team"}),
-    "Fantasy Lineup Assistant": frozenset({"lineup_format", "lineup_team", "room_your_team"}),
+    "Fantasy Standings Tracker": frozenset({
+        "standings_scoring_format", "standings_stats_source", "standings_api_season", "room_your_team",
+    }),
+    "Fantasy Lineup Assistant": frozenset({
+        "lineup_format", "lineup_team", "lineup_bench_rows", "lineup_include_util", "lineup_custom_slots",
+        "lineup_diagnosis_rate_col", "lineup_context_category_needs", "room_your_team",
+    }),
 }
 
 
@@ -7870,12 +8580,12 @@ def request_contextual_page(target_page: str, filters_dict=None, source_page=Non
 
 
 def _apply_transfer_session_keys(target_page: str, keys: dict):
+    """Apply contextual transfer keys only when allowed and valid for the target page."""
     allowed = _PAGE_TRANSFER_ALLOWED_KEYS.get(target_page, frozenset())
-    for key, value in (keys or {}).items():
-        if key.startswith("_transfer_"):
-            continue
-        if key not in allowed:
-            continue
+    if not allowed:
+        return
+    clean = pg_xfer.sanitize_session_keys(keys or {}, allowed)
+    for key, value in clean.items():
         try:
             st.session_state[key] = value
         except Exception:
@@ -10204,6 +10914,7 @@ if active_page == "Draft Assistant Simulator":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
     else:
+        render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_assistant")
         _draft_window_options = [3, 4, 5]
         _draft_format_options = ["5x5 Roto", "Points League"]
         d1, d2, d3 = st.columns(3)
@@ -10258,71 +10969,16 @@ if active_page == "Draft Assistant Simulator":
                     key="draft_ml_min_games_signal",
                 )
 
-        max_year_draft = int(yearly_df["yearID"].max())
-        draft_years = list(range(max_year_draft - draft_window + 1, max_year_draft + 1))
-        recent_draft = yearly_df[yearly_df["yearID"].isin(draft_years)].copy().sort_values(["playerID", "yearID"])
-
-        agg_draft = aggregate_recent_player_totals(
-            recent_draft,
-            ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+        draft_df = build_unified_draft_player_pool(
+            yearly_df,
+            market_df,
+            draft_window=draft_window,
+            fantasy_format=draft_format,
+            projection_style=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
+            use_ml_blend=use_ml_in_draft,
+            ml_blend_weight=ml_blend_weight,
+            ml_min_games_for_signal=ml_min_games_for_signal,
         )
-        agg_draft = agg_draft[(agg_draft["G"] >= 30) & (agg_draft["AB"] >= 75)].copy()
-
-        draft_trends = compute_player_trend_table(
-            recent_draft,
-            ("R", "HR", "RBI", "SB", "BA", "OPS", "BB"),
-        )
-        draft_df = agg_draft.merge(draft_trends, on="playerID", how="left")
-        draft_df = add_latest_and_projection_columns(draft_df, recent_draft)
-
-        latest_cols = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
-        latest_context = get_latest_player_context(recent_draft, tuple(latest_cols))
-        draft_df = draft_df.merge(latest_context, on="playerID", how="left")
-        draft_df["Team"] = draft_df.get("primaryTeamName", "").fillna(draft_df.get("primaryHistoricalTeamName", ""))
-        draft_df["Team"] = draft_df["Team"].apply(current_franchise_name)
-        draft_df["Primary Position"] = draft_df.get("careerPrimaryPos", draft_df.get("primaryPos", "DH")).fillna(draft_df.get("primaryPos", "DH")).fillna("DH")
-        draft_df["Primary Position"] = draft_df["Primary Position"].replace({"": "DH", "PH": "DH", "PR": "DH"}).fillna("DH")
-        draft_df["Bats"] = draft_df.get("bats", "Unknown").replace({"": "Unknown"}).fillna("Unknown")
-        draft_df["League"] = draft_df.get("primaryLeague", "Unknown").replace({"AL": "American League", "NL": "National League", "": "Unknown"}).fillna("Unknown")
-        draft_df["Player Key"] = draft_df["fullName"].apply(normalize_player_name_for_merge)
-
-        market_cols = [c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"] if c in market_df.columns]
-        draft_df = draft_df.merge(market_df[market_cols], on="Player Key", how="left")
-        draft_df["Market Rank"] = safe_numeric_series(draft_df, "Market Rank", np.nan)
-
-        if draft_format == "5x5 Roto":
-            draft_df["Current Production Score"] = normalize_series(draft_df["R"]) * 0.20 + normalize_series(draft_df["HR"]) * 0.20 + normalize_series(draft_df["RBI"]) * 0.20 + normalize_series(draft_df["SB"]) * 0.20 + normalize_series(draft_df["BA"]) * 0.20
-            draft_df["Projected Production Score"] = normalize_series(draft_df["proj_R"]) * 0.20 + normalize_series(draft_df["proj_HR"]) * 0.20 + normalize_series(draft_df["proj_RBI"]) * 0.20 + normalize_series(draft_df["proj_SB"]) * 0.20 + normalize_series(draft_df["proj_BA"]) * 0.20
-        else:
-            draft_df["Current Production Score"] = normalize_series(draft_df["HR"] * 4 + draft_df["RBI"] + draft_df["R"] + draft_df["SB"] * 2 + draft_df["BB"] + draft_df["OPS"] * 20)
-            draft_df["Projected Production Score"] = normalize_series(draft_df["proj_HR"] * 4 + draft_df["proj_RBI"] + draft_df["proj_R"] + draft_df["proj_SB"] * 2 + draft_df["proj_BB"] + draft_df["proj_OPS"] * 20)
-
-        # Realistic projection + modest ML adjustment for the Draft Assistant.
-        # Base projection uses regression-to-mean, age context, similar-player anchoring,
-        # capped trends, and category-balanced scoring. ML now acts as a small contextual
-        # boost/downgrade rather than fully driving the projection.
-        draft_df = build_realistic_draft_ml_adjustments(
-            draft_df,
-            draft_format,
-            projection_mode=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
-        )
-        draft_df["ML Signal Eligible"] = safe_numeric_series(draft_df, "G", 0) >= ml_min_games_for_signal
-        draft_df.loc[~draft_df["ML Signal Eligible"], "ML Projection Score"] *= 0.90
-        draft_df.loc[~draft_df["ML Signal Eligible"], "Expected Fantasy Value"] = (
-            pd.to_numeric(draft_df.loc[~draft_df["ML Signal Eligible"], "Expected Fantasy Value"], errors="coerce") * 0.96
-        )
-
-        # Blended model score: user controls how much of the modest ML adjustment is used.
-        if use_ml_in_draft and ml_blend_weight > 0:
-            draft_df["Blended Projection Score"] = normalize_series(
-                pd.to_numeric(draft_df["Realistic Base Projection Score"], errors="coerce").fillna(0) * (1 - ml_blend_weight) +
-                pd.to_numeric(draft_df["Expected Fantasy Value"], errors="coerce").fillna(0) * ml_blend_weight
-            )
-        else:
-            draft_df["Blended Projection Score"] = draft_df["Realistic Base Projection Score"]
-
-        draft_df["Model Rank"] = draft_df["Blended Projection Score"].rank(ascending=False, method="min")
-        draft_df["Fantasy Edge"] = draft_df["Market Rank"] - draft_df["Model Rank"]
 
         with st.expander("Draft Room connection & pick number", expanded=True):
             st.caption(
@@ -10505,120 +11161,19 @@ if active_page == "Draft Assistant Simulator":
         # players on other rosters + players on my roster.
         available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
 
-
-        available["Position Need Bonus"] = available["Primary Position"].apply(lambda p: 0.08 if p in needed_positions else 0.0)
-        if draft_format == "5x5 Roto":
-            cat_bonus = pd.Series(0.0, index=available.index)
-            if "R" in category_needs: cat_bonus += normalize_series(available["proj_R"]) * 0.05
-            if "HR" in category_needs: cat_bonus += normalize_series(available["proj_HR"]) * 0.06
-            if "RBI" in category_needs: cat_bonus += normalize_series(available["proj_RBI"]) * 0.06
-            if "SB" in category_needs: cat_bonus += normalize_series(available["proj_SB"]) * 0.07
-            if "BA" in category_needs: cat_bonus += normalize_series(available["proj_BA"]) * 0.05
-            available["Category Need Bonus"] = cat_bonus
-        else:
-            cat_bonus = pd.Series(0.0, index=available.index)
-            if "Power" in category_needs: cat_bonus += normalize_series(available["proj_HR"]) * 0.07
-            if "Run Production" in category_needs: cat_bonus += normalize_series(available["proj_RBI"] + available["proj_R"]) * 0.06
-            if "Speed" in category_needs: cat_bonus += normalize_series(available["proj_SB"]) * 0.05
-            if "Walks/OPS" in category_needs: cat_bonus += normalize_series(available["proj_BB"] + available["proj_OPS"] * 50) * 0.05
-            if "Volume" in category_needs: cat_bonus += normalize_series(available["AB"]) * 0.04
-            available["Category Need Bonus"] = cat_bonus
-
-        available["Risk Penalty"] = normalize_series(safe_numeric_series(available, "Expert Std Dev", 0)) * 0.08
-        available["Expected Fantasy Value"] = available["Blended Projection Score"]
-        # ML component is now a small contextual boost/downgrade based on breakout probability,
-        # risk, similar-player anchor, and capped trends.
-        available["ML Component"] = normalize_series(available["ML Adjustment"].fillna(0).clip(lower=0)) * ml_blend_weight if use_ml_in_draft else 0.0
-
-        # Position Scarcity Model: value over replacement by position among remaining players.
-        # This rewards players who are substantially better than the replacement-level option at their position.
-        replacement_depths = {
-            "C": 12,
-            "1B": 12,
-            "2B": 12,
-            "3B": 12,
-            "SS": 12,
-            "OF": 36,
-            "DH": 12,
-            "P": 12,
-        }
-
-        position_summary_rows = []
-        replacement_values = {}
-        for pos, pos_group in available.groupby("Primary Position"):
-            pos_group = pos_group.copy().sort_values("Expected Fantasy Value", ascending=False)
-            depth = replacement_depths.get(pos, 12)
-            if pos_group.empty:
-                continue
-            if len(pos_group) >= depth:
-                replacement_value = pd.to_numeric(pos_group.iloc[depth - 1]["Expected Fantasy Value"], errors="coerce")
-            else:
-                replacement_value = pd.to_numeric(pos_group["Expected Fantasy Value"], errors="coerce").min()
-            replacement_values[pos] = replacement_value
-            top_row = pos_group.iloc[0]
-            top_value = pd.to_numeric(top_row.get("Expected Fantasy Value", np.nan), errors="coerce")
-            position_summary_rows.append({
-                "Position": pos,
-                "Available Players": len(pos_group),
-                "Replacement Depth": depth,
-                "Replacement Value": replacement_value,
-                "Top Available": top_row.get("fullName", ""),
-                "Top Available Value": top_value,
-                "Scarcity Dropoff": top_value - replacement_value if pd.notna(top_value) and pd.notna(replacement_value) else np.nan,
-            })
-
-        available["Position Replacement Value"] = available["Primary Position"].map(replacement_values).fillna(available["Expected Fantasy Value"].median())
-        available["Position Scarcity Score"] = (
-            pd.to_numeric(available["Expected Fantasy Value"], errors="coerce") -
-            pd.to_numeric(available["Position Replacement Value"], errors="coerce")
-        ).clip(lower=0)
-        available["Position Scarcity Bonus"] = normalize_series(available["Position Scarcity Score"]) * 0.12
-        # If the position is also a user-selected need, scarcity should matter a bit more.
-        available.loc[available["Primary Position"].isin(needed_positions), "Position Scarcity Bonus"] *= 1.25
-
-        available["Availability Probability"] = 1 / (1 + np.exp(-(safe_numeric_series(available, "Market Rank", current_pick) - float(current_pick)) / 35))
-        # Improved Draft Fit Score
-        # This score is designed to behave more like a draft-decision model:
-        #   1. Expected Fantasy Value = player quality / projected production.
-        #   2. Fantasy Edge = where your model disagrees positively with the market.
-        #   3. Position Need Bonus = whether this player fills an open roster need.
-        #   4. Position Scarcity Bonus = whether this position is drying up quickly.
-        #   5. Category Need Bonus = whether the player helps categories you selected.
-        #   6. Availability Probability = how likely the player is to still be around later.
-        #   7. Risk Penalty = expert disagreement / uncertainty.
-        #
-        # Higher score = better pick for your team right now.
-        base_value_weight = 0.38 - (ml_blend_weight * 0.25 if use_ml_in_draft else 0.0)
-        available["Player Value Component"] = normalize_series(available["Expected Fantasy Value"]) * max(base_value_weight, 0.28)
-        available["ML Projection Component"] = available["ML Component"]
-        available["Market Edge Component"] = normalize_series(available["Fantasy Edge"].fillna(0)) * 0.22
-        available["Roster Need Component"] = normalize_series(available["Position Need Bonus"].fillna(0)) * 0.14
-        available["Scarcity Component"] = normalize_series(available["Position Scarcity Bonus"].fillna(0)) * 0.12
-        available["Category Fit Component"] = normalize_series(available["Category Need Bonus"].fillna(0)) * 0.08
-
-        # Availability urgency: if a strong player is unlikely to last until your next pick,
-        # he gets a small urgency boost. If he is very likely to be available later,
-        # the app is less aggressive about recommending him now.
-        available["Availability Urgency Component"] = (
-            1 - pd.to_numeric(available["Availability Probability"], errors="coerce").fillna(0.50)
-        ) * 0.06
-
-        available["Risk Component"] = normalize_series(available["Risk Penalty"].fillna(0)) * 0.08
-
-        available["Draft Fit Score"] = (
-            available["Player Value Component"] +
-            available["ML Projection Component"] +
-            available["Market Edge Component"] +
-            available["Roster Need Component"] +
-            available["Scarcity Component"] +
-            available["Category Fit Component"] +
-            available["Availability Urgency Component"] -
-            available["Risk Component"]
+        available, _gaps, position_summary_rows = apply_draft_pick_scoring(
+            available,
+            roster_df_auto,
+            fantasy_format=draft_format,
+            target_counts=target_position_counts,
+            current_pick=current_pick,
+            category_needs=category_needs,
+            needed_positions=needed_positions,
+            use_ml_blend=use_ml_in_draft,
+            ml_blend_weight=ml_blend_weight,
+            return_position_summary=True,
+            recommendation_mode="draft_fit",
         )
-
-        available["Recommendation Score"] = available["Draft Fit Score"]
-        available["Draft Fit Rank"] = available["Draft Fit Score"].rank(ascending=False, method="min")
-        available["Recommendation Rank"] = available["Draft Fit Rank"]
 
         def make_draft_reason(r):
             pieces = []
@@ -10841,6 +11396,15 @@ if active_page == "Draft Assistant Simulator":
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.caption("Recommendation table with roster fit, strategy context, and CSV export.")
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+        with st.expander("Draft Scoring Breakdown", expanded=False):
+            st.caption("Developer view: per-component contributions from the centralized `apply_draft_pick_scoring()` engine.")
+            _da_brk_opts = [""] + recs["fullName"].astype(str).tolist()
+            _da_brk_player = st.selectbox("Inspect player", _da_brk_opts, key="draft_assistant_breakdown_player")
+            render_draft_scoring_breakdown(
+                available,
+                player_name=_da_brk_player if _da_brk_player else None,
+                key_suffix="assistant",
+            )
         render_contextual_page_nav(
             "Draft Assistant Simulator",
             "after_recommendations",
@@ -10972,6 +11536,7 @@ if active_page == "Draft Room Simulator":
     st.caption("Use **League setup** first, then **Board** to log picks. **Draft Assistant** reads this board automatically.")
 
     market_df = load_fantasypros_market_data()
+    render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_room")
 
     dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup & import"])
 
@@ -11071,76 +11636,26 @@ if active_page == "Draft Room Simulator":
     room_team_names = room_team_names[:room_team_count]
     your_team = st.session_state.get("room_your_team", room_team_names[0] if room_team_names else "Team 1")
 
-    max_year_room = int(yearly_df["yearID"].max())
-    room_years = list(range(max_year_room - int(room_window) + 1, max_year_room + 1))
-    recent_room = yearly_df[yearly_df["yearID"].isin(room_years)].copy().sort_values(["playerID", "yearID"])
-
-    agg_room = aggregate_recent_player_totals(
-        recent_room,
-        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
-    )
-    agg_room = agg_room[(agg_room["G"] >= 30) & (agg_room["AB"] >= 75)].copy()
-
-    room_trends = compute_player_trend_table(
-        recent_room,
-        ("R", "HR", "RBI", "SB", "BA", "OPS", "BB"),
+    room_df = build_unified_draft_player_pool(
+        yearly_df,
+        market_df,
+        draft_window=int(room_window),
+        fantasy_format=room_format,
+        projection_style=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
+        use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
+        ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+        ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
     )
 
-    room_df = agg_room.merge(room_trends, on="playerID", how="left")
-    room_df = add_latest_and_projection_columns(room_df, recent_room)
-
-    latest_cols_room = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
-    latest_context_room = get_latest_player_context(recent_room, tuple(latest_cols_room))
-    room_df = room_df.merge(latest_context_room, on="playerID", how="left")
-    room_df["Team"] = room_df.get("primaryTeamName", "").fillna(room_df.get("primaryHistoricalTeamName", ""))
-    room_df["Team"] = room_df["Team"].apply(current_franchise_name)
-    room_df["Primary Position"] = room_df.get("careerPrimaryPos", room_df.get("primaryPos", "DH")).fillna(room_df.get("primaryPos", "DH")).fillna("DH")
-    room_df["Primary Position"] = room_df["Primary Position"].replace({"": "DH", "PH": "DH", "PR": "DH"}).fillna("DH")
-    room_df["Bats"] = room_df.get("bats", "Unknown").replace({"": "Unknown"}).fillna("Unknown")
-    room_df["Player Key"] = room_df["fullName"].apply(normalize_player_name_for_merge)
-
-    if not market_df.empty:
-        market_cols_room = [c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"] if c in market_df.columns]
-        room_df = room_df.merge(market_df[market_cols_room], on="Player Key", how="left")
-    else:
-        room_df["Market Rank"] = np.nan
-
-    room_df["Market Rank"] = safe_numeric_series(room_df, "Market Rank", np.nan)
-
-    if room_format == "5x5 Roto":
-        room_df["Projected Production Score"] = (
-            normalize_series(room_df["proj_R"]) * 0.20 +
-            normalize_series(room_df["proj_HR"]) * 0.20 +
-            normalize_series(room_df["proj_RBI"]) * 0.20 +
-            normalize_series(room_df["proj_SB"]) * 0.20 +
-            normalize_series(room_df["proj_BA"]) * 0.20
-        )
-    else:
-        room_df["Projected Production Score"] = normalize_series(
-            room_df["proj_HR"] * 4 +
-            room_df["proj_RBI"] +
-            room_df["proj_R"] +
-            room_df["proj_SB"] * 2 +
-            room_df["proj_BB"] +
-            room_df["proj_OPS"] * 20
-        )
-
-    # Realistic projection + modest ML adjustment for draft room.
-    # Uses regression-to-mean, similar-player anchoring, capped trends, age curve,
-    # breakout probability, and risk assessment to avoid overinflating HR/RBI/OPS-heavy profiles.
-    room_df = build_realistic_draft_ml_adjustments(
+    _room_pick_no = 1
+    _room_tbl = st.session_state.get("draft_room_table", pd.DataFrame())
+    if not _room_tbl.empty and "Player" in _room_tbl.columns:
+        _room_pick_no = max(1, int(_room_tbl["Player"].astype(str).str.strip().ne("").sum()) + 1)
+    room_df, _ = apply_draft_pick_scoring(
         room_df,
-        room_format,
-        projection_mode=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
-    )
-    room_df["Model Rank"] = room_df["Expected Fantasy Value"].rank(ascending=False, method="min")
-    room_df["Fantasy Edge"] = room_df["Market Rank"] - room_df["Model Rank"]
-
-    # Available-player draft fit uses global value + edge. Team-specific need is displayed via roster grades after picks.
-    room_df["Draft Fit Score"] = (
-        normalize_series(room_df["Expected Fantasy Value"]) * 0.55 +
-        normalize_series(room_df["Fantasy Edge"].fillna(0)) * 0.25 +
-        normalize_series(room_df["ML Projection Score"].fillna(0)) * 0.20
+        pd.DataFrame(),
+        fantasy_format=room_format,
+        current_pick=_room_pick_no,
     )
 
     player_options_room = [""] + sorted(room_df["fullName"].dropna().unique().tolist())
@@ -11416,15 +11931,20 @@ if active_page == "Draft Simulation Test Mode":
             """
         )
 
+    render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
+
     run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
     if run_lab or "draft_lab_results" not in st.session_state:
         with st.spinner("Building draft pool and simulating 60 picks..."):
-            lab_pool = build_draft_lab_player_pool(
+            lab_pool = build_unified_draft_player_pool(
                 yearly_df,
                 lab_market_df,
                 draft_window=lab_window,
                 fantasy_format=lab_format,
                 projection_style=lab_projection_style,
+                use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
+                ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+                ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
             )
             lab_draft = simulate_draft_lab(lab_pool, teams=("Team A", "Team B", "Team C", "Team D"), picks_per_team=int(lab_picks_per_team))
             lab_team_summary, lab_strengths, lab_pick_analysis, lab_gaps, lab_actual_summary = analyze_draft_lab_results(lab_draft, yearly_df)
@@ -11472,7 +11992,7 @@ if active_page == "Draft Simulation Test Mode":
             "Round", "Pick", "Fantasy Team", "fullName", "Primary Position", "Team",
             "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value", "Projection Confidence",
             "Best Player Available Score", "Best Value Sleeper Score",
-            "Sleeper Score", "Scarcity Score", "Decision Score", "Roster Need At Pick",
+            "Sleeper Score", "Scarcity Score", "Draft Fit Score", "Decision Score", "Roster Need At Pick",
             "Why This Pick", "Projection Warning",
         ]
         draft_board = lab_draft[[c for c in draft_show_cols if c in lab_draft.columns]].rename(columns={
@@ -11488,8 +12008,17 @@ if active_page == "Draft Simulation Test Mode":
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
-                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Sleeper Score", "Scarcity Score", "Decision Score", "Best Player Available Score", "Best Value Sleeper Score"],
+                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Sleeper Score", "Scarcity Score", "Draft Fit Score", "Decision Score", "Best Player Available Score", "Best Value Sleeper Score"],
             )
+            with st.expander("Draft Scoring Breakdown", expanded=False):
+                st.caption("Developer view: pick-level component contributions from `apply_draft_pick_scoring()`.")
+                _lab_brk_opts = [""] + lab_draft["fullName"].astype(str).head(25).tolist()
+                _lab_brk_player = st.selectbox("Inspect player", _lab_brk_opts, key="draft_lab_breakdown_player")
+                render_draft_scoring_breakdown(
+                    lab_draft,
+                    player_name=_lab_brk_player if _lab_brk_player else None,
+                    key_suffix="lab",
+                )
 
         roster_cols = [
             "Fantasy Team", "Round", "Pick", "fullName", "Primary Position", "Team",
@@ -11634,6 +12163,7 @@ if active_page == "Live Draft Room":
         st.session_state["live_draft_room"] = None
     room = st.session_state.get("live_draft_room")
     market_df_live = load_fantasypros_market_data()
+    render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 
     with st.expander("Draft Setup / Configuration", expanded=room is None or room.get("status") == "not_started"):
         st.subheader("League & Draft Settings")
@@ -11712,12 +12242,15 @@ if active_page == "Live Draft Room":
         if start_live:
             fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
             with st.spinner("Building player pool and draft room..."):
-                pool_live = build_draft_lab_player_pool(
+                pool_live = build_unified_draft_player_pool(
                     yearly_df,
                     market_df_live,
                     draft_window=int(live_proj_window),
                     fantasy_format=fantasy_format,
                     projection_style=live_proj_style,
+                    use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
+                    ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+                    ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
                 )
             total_picks = int(live_num_teams) * int(live_picks_per_team)
             if pool_live.empty:
@@ -11736,6 +12269,8 @@ if active_page == "Live Draft Room":
                     "auto_pick_rule": live_auto_rule,
                     "projection_style": live_proj_style,
                     "projection_window": int(live_proj_window),
+                    "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", False)),
+                    "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
                     "teams": [str(t).strip() or default_teams[i] for i, t in enumerate(team_names)],
                     "slots": {
                         "C": int(slot_c), "1B": int(slot_1b), "2B": int(slot_2b), "3B": int(slot_3b),
@@ -11824,7 +12359,10 @@ if active_page == "Live Draft Room":
                 m4.metric("Timer", f"{remaining}s")
                 top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
-                rec_cols = ["fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank", "Fantasy Edge"]
+                rec_cols = [
+                    "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
+                    "Fantasy Edge", "Sleeper Score", "Scarcity Score", "Positional Fit", "Draft Fit Score", "Decision Score",
+                ]
                 with rec_tabs[0]:
                     render_output_table(
                         clean_ui_columns(top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})),
@@ -11856,6 +12394,15 @@ if active_page == "Live Draft Room":
                         file_name="live_draft_value_sleepers.csv",
                         display_rows=10,
                     )
+                with st.expander("Draft Scoring Breakdown", expanded=False):
+                    st.caption("Developer view: component contributions from `apply_draft_pick_scoring()`.")
+                    _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
+                    _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
+                    render_draft_scoring_breakdown(
+                        top_rec if not top_rec.empty else pd.DataFrame(),
+                        player_name=_ld_brk_player if _ld_brk_player else None,
+                        key_suffix="live",
+                    )
 
                 st.subheader("Manual Draft")
                 available = live_draft_get_available(room)
@@ -11867,11 +12414,17 @@ if active_page == "Live Draft Room":
                     )["fullName"].astype(str).tolist()
                     selected_player = st.selectbox("Available Player", player_options, key="live_draft_player_select")
                     if st.button("Draft Player", type="primary", key="live_draft_manual_pick", disabled=room.get("status") == "paused"):
-                        row = available[available["fullName"].astype(str) == str(selected_player)].iloc[0]
-                        gaps = _live_draft_roster_needs(
-                            pd.DataFrame(room["rosters"].get(slot["Team"], [])),
+                        roster_df = pd.DataFrame(room["rosters"].get(slot["Team"], []))
+                        pick_cfg = dict(cfg)
+                        pick_cfg["current_pick"] = int(slot.get("Pick", 1))
+                        scored_pick, gaps = _live_draft_score_available(
+                            available[available["fullName"].astype(str) == str(selected_player)],
+                            roster_df,
+                            "balanced recommendation",
                             _live_draft_target_counts(cfg),
+                            config=pick_cfg,
                         )
+                        row = scored_pick.iloc[0]
                         verdict = _live_draft_pick_verdict(row, "manual pick", gaps)
                         ok, msg = live_draft_make_pick(room, row.to_dict(), verdict=verdict)
                         st.session_state["live_draft_room"] = room
@@ -12101,11 +12654,20 @@ if active_page == "Fantasy Standings Tracker":
 
             st.session_state["fantasy_current_roster_stats"] = roster_stats
             st.session_state["fantasy_current_standings"] = standings
+            _standings_team_ctx = st.session_state.get("room_your_team")
+            _standings_needs_ctx = (
+                summarize_team_category_needs(standings, _standings_team_ctx)
+                if _standings_team_ctx and not standings.empty
+                else {}
+            )
             render_contextual_page_nav(
                 "Fantasy Standings Tracker",
                 "after_standings",
                 label="Analyze this roster in…",
-                extra_context={"team": st.session_state.get("room_your_team")},
+                extra_context={
+                    "team": _standings_team_ctx,
+                    "category_needs": _standings_needs_ctx,
+                },
             )
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
@@ -12164,6 +12726,9 @@ if active_page == "Fantasy Lineup Assistant":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _xfer_cats = st.session_state.pop("lineup_context_category_needs", None)
+    if _xfer_cats:
+        st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}** — prioritize starters who help these areas.")
     st.caption(
         "Requires rosters in **Draft Room** and current stats from **Fantasy Standings Tracker**. "
         "Momentum uses season-to-date production (not daily game logs)."
