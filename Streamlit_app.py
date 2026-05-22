@@ -1058,12 +1058,35 @@ def round_trend_delta_frame(df):
     return out
 
 
+def format_trimmed_2dp(value):
+    """Round to 2 decimals and strip trailing zeros (1.50 -> 1.5, 2.00 -> 2)."""
+    try:
+        if pd.isna(value):
+            return ""
+        s = f"{float(value):.2f}".rstrip("0").rstrip(".")
+        if s == "-0":
+            s = "0"
+        if s.startswith("."):
+            s = "0" + s
+        if s.startswith("-."):
+            s = s.replace("-.", "-0.", 1)
+        return s
+    except Exception:
+        return value
+
+
+TREND_VOLATILITY_COLS = ["Volatility"]
+
+
 def format_advanced_trend_table(df):
     out = df.copy()
     for c in TREND_SLOPE_COLS:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").round(2)
-    for c in ["Volatility", "First Value", "Latest Value", "Net Change"]:
+    for c in TREND_VOLATILITY_COLS:
+        if c in out.columns:
+            out[c] = out[c].apply(format_trimmed_2dp)
+    for c in ["First Value", "Latest Value", "Net Change"]:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
     if "R²" in out.columns:
