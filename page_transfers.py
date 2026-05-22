@@ -141,27 +141,25 @@ def _resolve_rank_column(df, rank_stat: str):
     return None
 
 
-def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=3):
-    """Rank filtered results; never infer from chart labels or arbitrary visible rows."""
+def _resolve_player_column(df, player_col: str):
+    if player_col in df.columns:
+        return player_col
+    for cand in ("fullName", "Player"):
+        if cand in df.columns:
+            return cand
+    return None
+
+
+def top_players_in_display_order(df, *, player_col="Player", limit=3):
+    """First N unique player names in dataframe row order (main table/chart order)."""
     if df is None or getattr(df, "empty", True):
         return []
-    if player_col not in df.columns:
-        for cand in ("Player", "fullName"):
-            if cand in df.columns:
-                player_col = cand
-                break
-        else:
-            return []
-    stat_col = _resolve_rank_column(df, rank_stat)
-    if stat_col is None:
-        return df[player_col].dropna().astype(str).head(int(limit)).tolist()
-    ranked = df.copy()
-    ranked["_rank_val"] = pd.to_numeric(ranked[stat_col], errors="coerce")
-    ranked = ranked.sort_values("_rank_val", ascending=False, na_position="last")
-    ranked = ranked.drop_duplicates(subset=[player_col], keep="first")
+    col = _resolve_player_column(df, str(player_col or "Player"))
+    if not col:
+        return []
     names = []
     seen = set()
-    for name in ranked[player_col].dropna().astype(str):
+    for name in df[col].dropna().astype(str):
         n = str(name).strip()
         if not n or n in seen:
             continue
@@ -170,6 +168,23 @@ def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=
         if len(names) >= int(limit):
             break
     return names
+
+
+def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=3):
+    """Legacy re-rank helper; contextual top-3 uses top_players_in_display_order instead."""
+    if df is None or getattr(df, "empty", True):
+        return []
+    col = _resolve_player_column(df, str(player_col or "Player"))
+    if not col:
+        return []
+    stat_col = _resolve_rank_column(df, rank_stat)
+    if stat_col is None:
+        return top_players_in_display_order(df, player_col=col, limit=limit)
+    ranked = df.copy()
+    ranked["_rank_val"] = pd.to_numeric(ranked[stat_col], errors="coerce")
+    ranked = ranked.sort_values("_rank_val", ascending=False, na_position="last")
+    ranked = ranked.drop_duplicates(subset=[col], keep="first")
+    return top_players_in_display_order(ranked, player_col=col, limit=limit)
 
 
 def _pick_rank_stat(df, preferred: str) -> str:
@@ -181,17 +196,17 @@ def _pick_rank_stat(df, preferred: str) -> str:
 
 
 def resolve_players_from_extra(session, extra):
-    """Only when user checks top-3: rank filtered results (never visible rows/charts)."""
+    """Only when user checks top-3: first three rows of the main results table (pre-sorted)."""
     if not extra.get("send_top_3_players"):
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
-    df = extra.get("results_df")
-    rank_stat = _pick_rank_stat(df, str(extra.get("rank_stat") or "OPS"))
-    names = top_players_from_results(
-        df,
-        player_col=str(extra.get("results_player_col", "Player")),
-        rank_stat=rank_stat,
-        limit=3,
+    df = extra.get("transfer_results_df") or extra.get("results_df")
+    name_col = str(
+        extra.get("transfer_name_col")
+        or extra.get("results_player_col")
+        or "Player"
     )
+    rank_stat = str(extra.get("rank_stat") or extra.get("default_rank_stat") or "OPS")
+    names = top_players_in_display_order(df, player_col=name_col, limit=3)
     return {"mode": "top_3", "names": names, "labels": [], "rank_stat": rank_stat}
 
 
@@ -230,10 +245,9 @@ def summarize_transfer_payload(payload, target_page=None) -> dict:
     filter_lines, min_lines = _split_filter_preview_lines(filters)
     names = players.get("names") or players.get("labels") or []
     if players.get("mode") == "top_3" and names:
-        stat = players.get("rank_stat") or "OPS"
-        player_lines = [f"Top 3 by {stat}: " + ", ".join(names)]
+        player_lines = ["Players: " + ", ".join(names)]
     else:
-        player_lines = ["None"]
+        player_lines = ["Players: None"]
     draft_lines = []
     if draft:
         draft_lines.extend(f"{k}: {v}" for k, v in sorted(draft.items()))

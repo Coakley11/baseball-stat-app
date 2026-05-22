@@ -103,10 +103,9 @@ if not hasattr(pg_xfer, "summarize_transfer_payload"):
                 filter_lines.append(line)
         names = players.get("names") or players.get("labels") or []
         if players.get("mode") == "top_3" and names:
-            stat = players.get("rank_stat") or "OPS"
-            player_lines = [f"Top 3 by {stat}: " + ", ".join(names)]
+            player_lines = ["Players: " + ", ".join(names)]
         else:
-            player_lines = ["None"]
+            player_lines = ["Players: None"]
         draft_lines = list(p.get("actions") or [])
         if p.get("transfer_draft_objects"):
             draft_lines.append("Draft/Roster Objects: Included")
@@ -117,6 +116,30 @@ if not hasattr(pg_xfer, "summarize_transfer_payload"):
             "players": player_lines,
             "draft_objects": draft_lines or ["None"],
         }
+
+if not hasattr(pg_xfer, "top_players_in_display_order"):
+    def _top_players_in_display_order_fallback(df, *, player_col="Player", limit=3):
+        if df is None or getattr(df, "empty", True):
+            return []
+        col = player_col if player_col in df.columns else None
+        if col is None:
+            for cand in ("fullName", "Player"):
+                if cand in df.columns:
+                    col = cand
+                    break
+        if not col:
+            return []
+        names, seen = [], set()
+        for name in df[col].dropna().astype(str):
+            n = str(name).strip()
+            if n and n not in seen:
+                seen.add(n)
+                names.append(n)
+            if len(names) >= int(limit):
+                break
+        return names
+
+    pg_xfer.top_players_in_display_order = _top_players_in_display_order_fallback
 
     pg_xfer.summarize_transfer_payload = summarize_transfer_payload
 
@@ -8201,7 +8224,7 @@ def render_contextual_player_actions(
     label_map = label_map or get_clean_player_label_map_yearly(source_df)
     with st.popover(f"Actions: {player_name}"):
         st.caption("Active/recent player" if active_recent else "Historical player")
-        if st.button("Add to Watchlist", key=f"{key_prefix}_watch"):
+        if st.button("Add to Watchlist", key=f"{key_prefix}_watch_btn"):
             msg = execute_player_action_once(player_name, "Add to Watchlist", team_name, team_name, label_map)
             st.session_state["workflow_sidebar_flash"] = msg
             st.rerun()
@@ -8213,16 +8236,16 @@ def render_contextual_player_actions(
             st.caption("Draft queue and simulation are hidden because this player is already drafted.")
 
         if active_available:
-            if st.button("Add to Draft Queue", key=f"{key_prefix}_queue"):
+            if st.button("Add to Draft Queue", key=f"{key_prefix}_queue_btn"):
                 msg = execute_player_action_once(player_name, "Queue player", team_name, team_name, label_map)
                 st.session_state["workflow_sidebar_flash"] = msg
                 st.rerun()
-        if st.button("Send to Trend Page", key=f"{key_prefix}_trend"):
+        if st.button("Send to Trend Page", key=f"{key_prefix}_trend_btn"):
             msg = execute_player_action_once(player_name, "Send to Trend Page", team_name, team_name, label_map)
             st.session_state["workflow_sidebar_flash"] = msg
             request_sidebar_page("Trend Value")
         if active_available:
-            if st.button("Simulate Draft Pick", key=f"{key_prefix}_simulate"):
+            if st.button("Simulate Draft Pick", key=f"{key_prefix}_simulate_btn"):
                 lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
                 lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
                 result = build_draft_simulation_result(
@@ -8234,7 +8257,7 @@ def render_contextual_player_actions(
                 st.session_state["draft_simulation_result"] = result
                 render_draft_simulation_result(result)
             if is_users_draft_turn(team_name):
-                if st.button("Draft Player", key=f"{key_prefix}_draft"):
+                if st.button("Draft Player", key=f"{key_prefix}_draft_btn"):
                     msg = execute_player_action_once(player_name, "Draft player to next pick", team_name, team_name, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
@@ -8242,12 +8265,12 @@ def render_contextual_player_actions(
                 st.caption("Draft Player hidden until it is your team's pick.")
         if ownership_known:
             if on_my_team:
-                if st.button("Trade Away", key=f"{key_prefix}_trade_away"):
+                if st.button("Trade Away", key=f"{key_prefix}_trade_away_btn"):
                     msg = execute_player_action_once(player_name, "Add as player to trade away", team_name, team_name, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
             else:
-                if st.button("Try to Acquire", key=f"{key_prefix}_trade_acquire"):
+                if st.button("Try to Acquire", key=f"{key_prefix}_trade_acquire_btn"):
                     msg = execute_player_action_once(player_name, "Add as trade target to acquire", team_name, team_name, label_map)
                     st.session_state["workflow_sidebar_flash"] = msg
                     st.rerun()
@@ -9040,6 +9063,7 @@ def _apply_transfer_players_to_trend(players: dict):
 def _apply_transfer_players_to_valuation(players: dict):
     mode = str((players or {}).get("mode", "none")).lower()
     if mode in ("", "none"):
+        st.session_state.pop("valuation_selected_player", None)
         return
     names = list(players.get("names") or [])
     seen = set()
@@ -9105,6 +9129,16 @@ def apply_pending_page_transfer(current_page: str):
     return True
 
 
+def _preview_top3_player_names(transfer_df, name_col: str, *, send_top3: bool):
+    if not send_top3:
+        return []
+    return pg_xfer.top_players_in_display_order(
+        transfer_df,
+        player_col=name_col,
+        limit=3,
+    )
+
+
 def render_contextual_page_nav(
     source_page: str,
     placement_key: str,
@@ -9114,6 +9148,8 @@ def render_contextual_page_nav(
     results_df=None,
     results_player_col="Player",
     default_rank_stat="OPS",
+    transfer_results_df=None,
+    transfer_name_col=None,
 ):
     """
     Contextual navigation: transfers filters/settings; optional top-3 players via checkbox only.
@@ -9137,13 +9173,20 @@ def render_contextual_page_nav(
     if len(option_labels) < 2:
         return
 
+    main_xfer_df = transfer_results_df if transfer_results_df is not None else results_df
+    name_col = transfer_name_col or results_player_col or "fullName"
+    rank_stat = default_rank_stat
+
     base_extra = dict(extra_context or {})
-    if results_df is not None:
-        base_extra["results_df"] = results_df
-    base_extra["results_player_col"] = results_player_col
-    base_extra["rank_stat"] = default_rank_stat
+    if main_xfer_df is not None:
+        base_extra["transfer_results_df"] = main_xfer_df
+        base_extra["results_df"] = main_xfer_df
+    base_extra["transfer_name_col"] = name_col
+    base_extra["results_player_col"] = name_col
+    base_extra["rank_stat"] = rank_stat
+    base_extra["default_rank_stat"] = rank_stat
     choice_key = f"ctx_choice_{source}_{placement_key}"
-    go_key = f"ctx_go_{source}_{placement_key}"
+    go_key = f"ctx_go_{source}_{placement_key}_btn"
 
     with st.container():
         st.markdown('<div class="ctx-transfer-row">', unsafe_allow_html=True)
@@ -9161,6 +9204,8 @@ def render_contextual_page_nav(
                 key=chk_key,
             )
 
+        preview_names = _preview_top3_player_names(main_xfer_df, name_col, send_top3=send_top3)
+
         if ent:
             ctx = dict(base_extra)
             ctx["send_top_3_players"] = send_top3
@@ -9170,9 +9215,21 @@ def render_contextual_page_nav(
             st.markdown(f"**Target:** {page_option_label(summary['target'])}")
             st.markdown(f"**Filters:** {', '.join(summary['filters'][:14])}" + (" …" if len(summary['filters']) > 14 else ""))
             st.markdown(f"**Min stat filters:** {', '.join(summary['min_stats'][:14])}" + (" …" if len(summary['min_stats']) > 14 else ""))
-            st.markdown(f"**Players:** {'; '.join(summary['players'])}")
+            if send_top3 and preview_names:
+                st.markdown(f"**Players:** {', '.join(preview_names)}")
+            else:
+                st.markdown("**Players:** None")
             if summary["draft_objects"] != ["None"]:
                 st.markdown(f"**Draft / roster:** {'; '.join(summary['draft_objects'])}")
+
+            with st.expander("Top 3 source dataframe (debug)", expanded=False):
+                st.caption(f"Source page: {source_page}")
+                st.caption(f"Rank stat (table sort): {rank_stat}")
+                st.caption(
+                    f"First 3: {', '.join(preview_names) if preview_names else '—'}"
+                )
+                row_count = len(main_xfer_df) if main_xfer_df is not None else 0
+                st.caption(f"Row count: {row_count}")
 
         if st.button("Open selected tool", key=go_key, use_container_width=True):
             choice_now = st.session_state.get(choice_key, option_labels[0])
@@ -9420,17 +9477,13 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
-    _hist_xfer_df = (
-        hist_display_raw.sort_values(hist_sort_stat, ascending=False)
-        if not hist_display_raw.empty and hist_sort_stat in hist_display_raw.columns
-        else hist_display_raw
-    )
+    _hist_xfer_df = hist_display_raw.copy()
     render_contextual_page_nav(
         "Historical Explorer",
         "after_table",
         label="Use these filters in another tool…",
-        results_df=_hist_xfer_df,
-        results_player_col="fullName",
+        transfer_results_df=_hist_xfer_df,
+        transfer_name_col="fullName",
         default_rank_stat=hist_sort_stat,
     )
     render_page_filters_debug(active_page)
@@ -9603,17 +9656,15 @@ if active_page == "Career Totals":
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
-    _career_xfer_df = (
-        career_totals.sort_values(sort_stat_career, ascending=False)
-        if not career_totals.empty and sort_stat_career in career_totals.columns
-        else career_totals
-    )
+    _career_xfer_df = career_display.copy()
+    if "Player" in _career_xfer_df.columns and "fullName" not in _career_xfer_df.columns:
+        _career_xfer_df = _career_xfer_df.rename(columns={"Player": "fullName"})
     render_contextual_page_nav(
         "Career Totals",
         "after_table",
         label="Use these filters in another tool…",
-        results_df=_career_xfer_df,
-        results_player_col="fullName",
+        transfer_results_df=_career_xfer_df,
+        transfer_name_col="fullName",
         default_rank_stat=sort_stat_career,
     )
     render_page_filters_debug(active_page)
@@ -9693,15 +9744,18 @@ if active_page == "Leaderboards":
     st.divider()
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])
     render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv")
-    _lb_xfer_df = leaderboard.sort_values(sort_stat_leaders, ascending=False) if not leaderboard.empty else leaderboard
-    _lb_rank_default = sort_stat_leaders if sort_stat_leaders in ("HR", "RBI", "R", "SB", "AVG", "OPS", "score") else "HR"
+    _lb_xfer_df = (
+        leaderboard.sort_values(sort_stat_leaders, ascending=False).head(top_n_leaders)
+        if not leaderboard.empty
+        else leaderboard
+    )
     render_contextual_page_nav(
         "Leaderboards",
         "after_table",
         label="Use these filters in another tool…",
-        results_df=_lb_xfer_df,
-        results_player_col="fullName",
-        default_rank_stat=_lb_rank_default,
+        transfer_results_df=_lb_xfer_df,
+        transfer_name_col="fullName",
+        default_rank_stat=sort_stat_leaders,
     )
     render_page_filters_debug(active_page)
 
@@ -10557,18 +10611,17 @@ if active_page == "Trend Value":
         width="content",
     )
     _trend_xfer_df = (
-        trend_value_df.sort_values(selected_trend_col, ascending=False)
+        trend_value_df.sort_values(selected_trend_col, ascending=False).head(250)
         if not trend_value_df.empty and selected_trend_col in trend_value_df.columns
         else trend_value_df
     )
-    _trend_rank_label = sort_col.replace(" Δ", "") if " Δ" in str(sort_col) else "OPS"
     render_contextual_page_nav(
         "Trend Value",
         "after_table",
         label="Continue analysis in…",
-        results_df=_trend_xfer_df,
-        results_player_col="fullName",
-        default_rank_stat=_trend_rank_label,
+        transfer_results_df=_trend_xfer_df,
+        transfer_name_col="fullName",
+        default_rank_stat=sort_col,
     )
     compact_player_action_center(
         trend_sorted_display["Player"].dropna().astype(str).tolist(),
@@ -13792,18 +13845,16 @@ if active_page == "Valuation":
             projection_lookup_name_col="fullName",
             help_text="Valuation table — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick. Projection breakdown uses recent-window stats and trends.",
         )
-    _val_xfer_df = (
-        valuation_df.sort_values("Valuation_Score", ascending=False)
-        if not valuation_df.empty and "Valuation_Score" in valuation_df.columns
-        else valuation_df
-    )
+    _val_xfer_df = valuation_display.copy()
+    if "Player" in _val_xfer_df.columns and "fullName" not in _val_xfer_df.columns:
+        _val_xfer_df = _val_xfer_df.rename(columns={"Player": "fullName"})
     render_contextual_page_nav(
         "Valuation",
         "after_table",
         label="Continue analysis in…",
-        results_df=_val_xfer_df,
-        results_player_col="fullName",
-        default_rank_stat="Valuation_Score",
+        transfer_results_df=_val_xfer_df,
+        transfer_name_col="fullName",
+        default_rank_stat="Valuation Score",
     )
 
     st.subheader("Valuation Insight Summaries")
