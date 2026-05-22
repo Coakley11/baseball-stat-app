@@ -50,6 +50,10 @@ __all__ = [
     "summarize_transfer_payload",
     "builder_allows_top3_checkbox",
     "target_allows_top3_players",
+    "target_accepts_transferred_players",
+    "source_has_transferable_players",
+    "should_show_top3_checkbox",
+    "contextual_nav_option_label",
     "TOP3_CHECKBOX_LABEL",
 ]
 
@@ -86,13 +90,15 @@ _BUILDER_COMPARE_SELECTED_PLAYERS = frozenset({
     "compare_to_valuation",
 })
 
-# Trend / Valuation → Comparison: top 3 from main table (no checkbox).
+# Trend / Valuation → Comparison: top 3 from main table via checkbox.
 _BUILDER_TABLE_TOP3_PLAYERS = frozenset({
     "trend_to_compare",
     "valuation_to_compare",
 })
 
-BUILDER_SHOW_TOP3_CHECKBOX = _BUILDER_ALLOWS_TOP3
+_BUILDER_TOP3_CHECKBOX = _BUILDER_ALLOWS_TOP3 | _BUILDER_TABLE_TOP3_PLAYERS
+
+BUILDER_SHOW_TOP3_CHECKBOX = _BUILDER_TOP3_CHECKBOX
 
 TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
@@ -298,10 +304,64 @@ def target_allows_top3_players(target_page: str) -> bool:
     return str(target_page or "").strip() in _TOP3_TRANSFER_TARGET_PAGES
 
 
+def target_accepts_transferred_players(target_page: str) -> bool:
+    """Pages that can apply transferred player selections (Trends, Comparison, Valuation)."""
+    return target_allows_top3_players(target_page)
+
+
+def source_has_transferable_players(df, name_col: str = "fullName", *, min_players: int = 1) -> bool:
+    """True when the visible main table has at least one player name row."""
+    if not _is_usable_transfer_df(df):
+        return False
+    col = _resolve_player_column(df, str(name_col or "fullName"))
+    if not col:
+        return False
+    names = top_players_in_display_order(df, player_col=col, limit=max(1, int(min_players)))
+    return len(names) >= max(1, int(min_players))
+
+
+def should_show_top3_checkbox(
+    builder_id: str,
+    target_page: str,
+    df,
+    name_col: str = "fullName",
+) -> bool:
+    """Checkbox only when source table has players and target can use them."""
+    if builder_id in _BUILDER_COMPARE_SELECTED_PLAYERS:
+        return False
+    if builder_id not in _BUILDER_TOP3_CHECKBOX:
+        return False
+    if not target_accepts_transferred_players(target_page):
+        return False
+    return source_has_transferable_players(df, name_col)
+
+
+def contextual_nav_option_label(
+    target_page: str,
+    builder_id: str,
+    *,
+    target_display: str | None = None,
+    has_source_players: bool = False,
+) -> str:
+    """Short selectbox label; no player wording for filter-only routes."""
+    display = (target_display or str(target_page or "")).strip() or str(target_page)
+    if builder_id in _BUILDER_COMPARE_SELECTED_PLAYERS:
+        if target_accepts_transferred_players(target_page):
+            return f"Open {display}"
+        return f"Use these filters in {display}"
+    if (
+        builder_id in _BUILDER_TOP3_CHECKBOX
+        and target_accepts_transferred_players(target_page)
+        and has_source_players
+    ):
+        return f"Open {display}"
+    return f"Use these filters in {display}"
+
+
 def builder_allows_top3_checkbox(builder_id: str, target_page: str | None = None) -> bool:
-    if target_page:
-        return target_allows_top3_players(target_page)
-    return builder_id in _BUILDER_ALLOWS_TOP3
+    if target_page and not target_accepts_transferred_players(target_page):
+        return False
+    return builder_id in _BUILDER_TOP3_CHECKBOX
 
 
 def _split_filter_preview_lines(filters: dict):
@@ -335,7 +395,7 @@ def summarize_transfer_payload(payload, target_page=None) -> dict:
     elif players.get("mode") == "top_3" and names:
         player_lines = ["Players: " + ", ".join(names)]
     else:
-        player_lines = ["Players: None"]
+        player_lines = []
     draft_lines = []
     if draft:
         draft_lines.extend(f"{k}: {v}" for k, v in sorted(draft.items()))
@@ -640,9 +700,7 @@ def build_transfer(session, builder_id: str, extra_context=None) -> dict:
     payload["transfer_players"] = {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     if builder_id in _BUILDER_COMPARE_SELECTED_PLAYERS:
         payload["transfer_players"] = resolve_compare_selected_players(session, extra)
-    elif builder_id in _BUILDER_TABLE_TOP3_PLAYERS:
-        payload["transfer_players"] = resolve_table_top3_players(session, extra)
-    elif builder_id in _BUILDER_ALLOWS_TOP3:
+    elif builder_id in _BUILDER_TOP3_CHECKBOX:
         payload["transfer_players"] = resolve_players_from_extra(session, extra)
     return payload
 
@@ -1029,7 +1087,7 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Trend Value", "builder": "compare_to_trend", "label": "Trend Value — players & year window"},
         {"target": "Valuation", "builder": "compare_to_valuation", "label": "Valuation — year window"},
         {"target": "Historical Explorer", "builder": "compare_to_hist", "label": "Historical Explorer — year range"},
-        {"target": "Career Totals", "builder": "compare_to_career", "label": "Career Totals — year range & players"},
+        {"target": "Career Totals", "builder": "compare_to_career", "label": "Career Totals — year range"},
     ],
     ("Trend Value", "after_table"): [
         {"target": "Comparison Tool", "builder": "trend_to_compare", "label": "Comparison Tool — players & window"},

@@ -9126,7 +9126,8 @@ def _ctx_nav_on_open_tool(nav_target_key: str, nav_payload_key: str, source_page
         base_extra["transfer_name_col"] = xfer_col
         base_extra["results_player_col"] = xfer_col
     ctx = dict(base_extra)
-    if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
+    show_top3 = bool(meta.get("show_top3_checkbox"))
+    if show_top3:
         ctx["send_top_3_players"] = bool(
             st.session_state.get(f"{source}_{go_target}_send_top_3_players", False)
         )
@@ -9309,8 +9310,6 @@ def _preview_transfer_player_names(ent, base_extra, main_xfer_df, name_col, *, s
     if builder in getattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS", frozenset()):
         labels = base_extra.get("compare_selected_labels") or st.session_state.get("compare_players") or []
         return [str(x).split(" (")[0].strip() for x in labels if str(x).strip()]
-    if builder in getattr(pg_xfer, "_BUILDER_TABLE_TOP3_PLAYERS", frozenset()):
-        return pg_xfer.top_players_in_display_order(main_xfer_df, player_col=name_col, limit=3)
     if send_top3:
         return pg_xfer.top_players_in_display_order(main_xfer_df, player_col=name_col, limit=3)
     return []
@@ -9338,21 +9337,29 @@ def render_contextual_page_nav(
     if not entries:
         return
 
+    main_xfer_df = transfer_results_df if transfer_results_df is not None else results_df
+    name_col = transfer_name_col or results_player_col or "fullName"
+    rank_stat = default_rank_stat
+    has_source_players = pg_xfer.source_has_transferable_players(main_xfer_df, name_col)
+
     option_labels = ["— Stay on this page —"]
     option_entries = [None]
     for ent in entries:
         tgt = normalize_page_key(ent["target"])
         if tgt not in _PAGE_OPTION_SET or tgt == source:
             continue
-        hint = ent.get("label") or page_option_label(tgt)
-        option_labels.append(f"{page_option_label(tgt)} — {hint}")
+        builder = ent.get("builder") or ""
+        option_labels.append(
+            pg_xfer.contextual_nav_option_label(
+                tgt,
+                builder,
+                target_display=page_option_label(tgt),
+                has_source_players=has_source_players,
+            )
+        )
         option_entries.append(ent)
     if len(option_labels) < 2:
         return
-
-    main_xfer_df = transfer_results_df if transfer_results_df is not None else results_df
-    name_col = transfer_name_col or results_player_col or "fullName"
-    rank_stat = default_rank_stat
 
     base_extra = dict(extra_context or {})
     base_extra.setdefault("dataset_max_year", st.session_state.get("_lahman_max_year", year_max))
@@ -9387,8 +9394,9 @@ def render_contextual_page_nav(
         send_top3 = False
         show_top3_checkbox = bool(
             ent
-            and builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset())
-            and target_page in CONTEXTUAL_TOP3_PLAYER_TARGETS
+            and pg_xfer.should_show_top3_checkbox(
+                builder_id, target_page or "", main_xfer_df, name_col
+            )
         )
         if show_top3_checkbox:
             chk_key = f"{source}_{target_page}_send_top_3_players"
@@ -9410,6 +9418,7 @@ def render_contextual_page_nav(
                 "placement_key": placement_key,
                 "builder_id": builder_id,
                 "go_target": go_target,
+                "show_top3_checkbox": show_top3_checkbox,
             }
             xfer_df = st.session_state.get(f"ctx_nav_xfer_df_{source}_{placement_key}")
             xfer_col = st.session_state.get(f"ctx_nav_xfer_col_{source}_{placement_key}", name_col)
@@ -9419,7 +9428,7 @@ def render_contextual_page_nav(
                 ctx_preview["results_df"] = xfer_df
                 ctx_preview["transfer_name_col"] = xfer_col
                 ctx_preview["results_player_col"] = xfer_col
-            if builder_id in getattr(pg_xfer, "BUILDER_SHOW_TOP3_CHECKBOX", frozenset()):
+            if show_top3_checkbox:
                 ctx_preview["send_top_3_players"] = send_top3
             else:
                 ctx_preview["send_top_3_players"] = False
@@ -9430,7 +9439,10 @@ def render_contextual_page_nav(
             st.session_state.pop(nav_target_key, None)
             st.session_state.pop(nav_payload_key, None)
             st.session_state.pop(f"ctx_nav_meta_{source}_{placement_key}", None)
-        if builder_id in getattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS", frozenset()):
+        if (
+            builder_id in getattr(pg_xfer, "_BUILDER_COMPARE_SELECTED_PLAYERS", frozenset())
+            and pg_xfer.target_accepts_transferred_players(target_page or "")
+        ):
             _cmp_preview = _preview_transfer_player_names(
                 ent, base_extra, main_xfer_df, name_col, send_top3=False
             )
