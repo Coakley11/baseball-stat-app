@@ -46,6 +46,8 @@ __all__ = [
     "resolve_players_from_extra",
     "summarize_transfer_payload",
     "builder_allows_top3_checkbox",
+    "target_allows_top3_players",
+    "TOP3_CHECKBOX_LABEL",
 ]
 
 _FANTASY_FORMAT_VALUES = frozenset({"5x5 Roto", "Points League"})
@@ -56,14 +58,19 @@ _TREND_SORT_COLS = frozenset({
     "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ",
 })
 
-# Transfers to Comparison Tool or Trend Value may optionally include top 3 from filtered results.
+# Contextual transfers to these pages may offer the top-3 players checkbox.
+_TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
+
 _BUILDER_ALLOWS_TOP3 = frozenset({
     "hist_to_compare",
     "hist_to_trend",
+    "hist_to_valuation",
     "career_to_compare",
     "career_to_trend",
+    "career_to_valuation",
     "leaders_to_compare",
     "leaders_to_trend",
+    "leaders_to_valuation",
     "compare_to_trend",
     "trend_to_compare",
     "valuation_to_compare",
@@ -151,7 +158,18 @@ def top_players_from_results(df, *, player_col="Player", rank_stat="OPS", limit=
     ranked = df.copy()
     ranked["_rank_val"] = pd.to_numeric(ranked[stat_col], errors="coerce")
     ranked = ranked.sort_values("_rank_val", ascending=False, na_position="last")
-    return ranked[player_col].dropna().astype(str).head(int(limit)).tolist()
+    ranked = ranked.drop_duplicates(subset=[player_col], keep="first")
+    names = []
+    seen = set()
+    for name in ranked[player_col].dropna().astype(str):
+        n = str(name).strip()
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        names.append(n)
+        if len(names) >= int(limit):
+            break
+    return names
 
 
 def _pick_rank_stat(df, preferred: str) -> str:
@@ -177,7 +195,13 @@ def resolve_players_from_extra(session, extra):
     return {"mode": "top_3", "names": names, "labels": [], "rank_stat": rank_stat}
 
 
-def builder_allows_top3_checkbox(builder_id: str) -> bool:
+def target_allows_top3_players(target_page: str) -> bool:
+    return str(target_page or "").strip() in _TOP3_TRANSFER_TARGET_PAGES
+
+
+def builder_allows_top3_checkbox(builder_id: str, target_page: str | None = None) -> bool:
+    if target_page:
+        return target_allows_top3_players(target_page)
     return builder_id in _BUILDER_ALLOWS_TOP3
 
 

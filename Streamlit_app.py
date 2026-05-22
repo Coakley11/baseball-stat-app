@@ -59,12 +59,21 @@ if not hasattr(pg_xfer, "sanitize_session_keys"):
 
     pg_xfer.sanitize_session_keys = _sanitize_session_keys_fallback
 
-if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
-    pg_xfer.builder_allows_top3_checkbox = lambda builder_id: builder_id in {
-        "hist_to_compare", "hist_to_trend", "career_to_compare", "career_to_trend",
-        "leaders_to_compare", "leaders_to_trend", "compare_to_trend", "trend_to_compare",
-        "valuation_to_compare", "valuation_to_trend",
+if not hasattr(pg_xfer, "target_allows_top3_players"):
+    pg_xfer.target_allows_top3_players = lambda target: str(target or "").strip() in {
+        "Comparison Tool", "Trend Value", "Valuation",
     }
+if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
+    pg_xfer.builder_allows_top3_checkbox = lambda builder_id, target_page=None: (
+        pg_xfer.target_allows_top3_players(target_page)
+        if target_page
+        else builder_id in {
+            "hist_to_compare", "hist_to_trend", "hist_to_valuation",
+            "career_to_compare", "career_to_trend", "career_to_valuation",
+            "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
+            "compare_to_trend", "trend_to_compare", "valuation_to_compare", "valuation_to_trend",
+        }
+    )
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
     pg_xfer.TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
@@ -9006,17 +9015,38 @@ def _apply_transfer_players_to_trend(players: dict):
     if mode in ("", "none"):
         st.session_state.pop("trend_multi_queue_fullnames", None)
         st.session_state.pop("trend_anchor_fullname", None)
+        st.session_state.pop("trend_force_single_label", None)
         return
     names = list(players.get("names") or [])
     for lbl in players.get("labels") or []:
         base = fullname_base_from_label(lbl)
-        if base:
+        if base and base not in names:
             names.append(base)
-    names = [n for n in names if n][:3]
-    if not names:
-        return
-    for name in names:
+    seen = set()
+    deduped = []
+    for n in names:
+        n = str(n).strip()
+        if n and n not in seen:
+            seen.add(n)
+            deduped.append(n)
+    for name in deduped[:3]:
         register_players_sent_to_trend_page(name, label_map)
+
+
+def _apply_transfer_players_to_valuation(players: dict):
+    mode = str((players or {}).get("mode", "none")).lower()
+    if mode in ("", "none"):
+        return
+    names = list(players.get("names") or [])
+    seen = set()
+    deduped = []
+    for n in names:
+        n = str(n).strip()
+        if n and n not in seen:
+            seen.add(n)
+            deduped.append(n)
+    if deduped:
+        st.session_state["valuation_selected_player"] = deduped[0]
 
 
 def apply_pending_page_transfer(current_page: str):
@@ -9063,6 +9093,8 @@ def apply_pending_page_transfer(current_page: str):
         _apply_transfer_players_to_compare(players)
     if page == "Trend Value":
         _apply_transfer_players_to_trend(players)
+    if page == "Valuation":
+        _apply_transfer_players_to_valuation(players)
     highlight = payload.get("draft_assistant_highlight")
     if highlight and page == "Draft Assistant Simulator":
         st.session_state["pending_draft_assistant_player"] = str(highlight)
@@ -9112,11 +9144,13 @@ def render_contextual_page_nav(
         choice = st.selectbox(label, options, index=0, key=choice_key)
         ent_preview = route_map.get(choice) if choice and choice != options[0] else None
         send_top3 = False
-        if ent_preview and pg_xfer.builder_allows_top3_checkbox(ent_preview["builder"]):
+        route_chk_key = chk_key
+        if ent_preview and pg_xfer.builder_allows_top3_checkbox(ent_preview["builder"], ent_preview["target"]):
+            route_chk_key = f"{chk_key}_{ent_preview['target']}"
             send_top3 = st.checkbox(
                 pg_xfer.TOP3_CHECKBOX_LABEL,
                 value=False,
-                key=chk_key,
+                key=route_chk_key,
             )
         if ent_preview:
             ctx = dict(base_extra)
@@ -9136,7 +9170,8 @@ def render_contextual_page_nav(
                 ent = route_map.get(choice_now)
                 if ent:
                     ctx = dict(base_extra)
-                    ctx["send_top_3_players"] = bool(st.session_state.get(chk_key, False))
+                    _route_chk = f"{chk_key}_{ent['target']}" if pg_xfer.target_allows_top3_players(ent["target"]) else chk_key
+                    ctx["send_top_3_players"] = bool(st.session_state.get(_route_chk, False))
                     payload = pg_xfer.build_transfer(st.session_state, ent["builder"], ctx)
                     request_contextual_page(ent["target"], payload, source_page=source)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -9367,11 +9402,16 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    _hist_xfer_df = (
+        hist_display_raw.sort_values(hist_sort_stat, ascending=False)
+        if not hist_display_raw.empty and hist_sort_stat in hist_display_raw.columns
+        else hist_display_raw
+    )
     render_contextual_page_nav(
         "Historical Explorer",
         "after_table",
         label="Use these filters in another tool…",
-        results_df=hist_display_raw,
+        results_df=_hist_xfer_df,
         results_player_col="fullName",
         default_rank_stat=hist_sort_stat,
     )
@@ -9545,11 +9585,16 @@ if active_page == "Career Totals":
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
+    _career_xfer_df = (
+        career_totals.sort_values(sort_stat_career, ascending=False)
+        if not career_totals.empty and sort_stat_career in career_totals.columns
+        else career_totals
+    )
     render_contextual_page_nav(
         "Career Totals",
         "after_table",
         label="Use these filters in another tool…",
-        results_df=career_totals,
+        results_df=_career_xfer_df,
         results_player_col="fullName",
         default_rank_stat=sort_stat_career,
     )
@@ -10493,13 +10538,19 @@ if active_page == "Trend Value":
         mime="text/csv",
         width="content",
     )
+    _trend_xfer_df = (
+        trend_value_df.sort_values(selected_trend_col, ascending=False)
+        if not trend_value_df.empty and selected_trend_col in trend_value_df.columns
+        else trend_value_df
+    )
+    _trend_rank_label = sort_col.replace(" Δ", "") if " Δ" in str(sort_col) else "OPS"
     render_contextual_page_nav(
         "Trend Value",
         "after_table",
         label="Continue analysis in…",
-        results_df=trend_value_df,
+        results_df=_trend_xfer_df,
         results_player_col="fullName",
-        default_rank_stat="OPS",
+        default_rank_stat=_trend_rank_label,
     )
     compact_player_action_center(
         trend_sorted_display["Player"].dropna().astype(str).tolist(),
@@ -13723,11 +13774,16 @@ if active_page == "Valuation":
             projection_lookup_name_col="fullName",
             help_text="Valuation table — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick. Projection breakdown uses recent-window stats and trends.",
         )
+    _val_xfer_df = (
+        valuation_df.sort_values("Valuation_Score", ascending=False)
+        if not valuation_df.empty and "Valuation_Score" in valuation_df.columns
+        else valuation_df
+    )
     render_contextual_page_nav(
         "Valuation",
         "after_table",
         label="Continue analysis in…",
-        results_df=valuation_df,
+        results_df=_val_xfer_df,
         results_player_col="fullName",
         default_rank_stat="Valuation_Score",
     )
