@@ -16,6 +16,7 @@ from collections import Counter
 
 import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
+from page_transfers import _LIVE_SLOT_KEYS
 import page_state as pg_state
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line
@@ -6818,6 +6819,138 @@ LIVE_DRAFT_AUTO_RULES = [
 ]
 
 
+def build_live_draft_room_metadata(config, host_team=None):
+    """
+    Serializable room metadata for future multi-user sync (WebSocket / DB / REST).
+
+    Today: stored in session only. Future: ``sync.revision`` increments on each pick;
+    clients subscribe by ``draft_room_id`` and merge ``draft_board`` + ``turn``.
+    """
+    teams = list(config.get("teams", []))
+    host = host_team or (teams[0] if teams else "Host")
+    return {
+        "schema_version": 1,
+        "draft_room_id": None,
+        "league_name": config.get("league_name", "My Fantasy League"),
+        "num_teams": int(config.get("num_teams", len(teams) or 4)),
+        "picks_per_team": int(config.get("picks_per_team", 15)),
+        "draft_type": config.get("draft_type", "snake"),
+        "created_at": time.time(),
+        "commissioner_team": host,
+        "participants": {
+            str(t): {
+                "user_id": None,
+                "display_name": str(t),
+                "is_host": str(t) == str(host),
+                "connected": False,
+            }
+            for t in teams
+        },
+        "turn_model": {
+            "mode": "snake",
+            "on_clock_team": None,
+            "current_pick_index": 0,
+        },
+        "sync": {
+            "revision": 0,
+            "last_event": None,
+            "storage_backend": "session_state",
+        },
+    }
+
+
+def serialize_live_draft_room(room):
+    """JSON-friendly snapshot for future persistence / reconnect (local stub)."""
+    if not room:
+        return {}
+    meta = room.get("meta", {})
+    return {
+        "draft_room_id": room.get("draft_room_id"),
+        "status": room.get("status"),
+        "config": room.get("config"),
+        "teams": room.get("teams"),
+        "current_pick_index": room.get("current_pick_index"),
+        "draft_board": room.get("draft_board"),
+        "drafted_player_ids": room.get("drafted_player_ids"),
+        "meta": meta,
+        "sync_revision": meta.get("sync", {}).get("revision", 0),
+    }
+
+
+def live_draft_bump_sync_revision(room, event="pick"):
+    """Hook for future real-time broadcast after each state change."""
+    meta = room.setdefault("meta", {})
+    sync = meta.setdefault("sync", {"revision": 0, "storage_backend": "session_state"})
+    sync["revision"] = int(sync.get("revision", 0)) + 1
+    sync["last_event"] = event
+    sync["updated_at"] = time.time()
+
+
+def live_draft_next_pick_for_team(room, team_name):
+    """Snake draft: next overall pick number when ``team_name`` is on the clock."""
+    pick_order = room.get("pick_order", [])
+    idx = int(room.get("current_pick_index", 0))
+    for entry in pick_order[idx + 1 :]:
+        if str(entry.get("Team")) == str(team_name):
+            return int(entry.get("Pick"))
+    return None
+
+
+def _survival_label_from_prob(prob):
+    p = float(prob)
+    if p >= 0.72:
+        return "Likely available at your next pick"
+    if p >= 0.50:
+        return "May still be there — moderate risk"
+    if p >= 0.30:
+        return "Coin flip — consider drafting now"
+    if p >= 0.15:
+        return "Unlikely to survive to your next pick"
+    return "Very unlikely — draft now"
+
+
+def enrich_player_survival_metrics(scored, *, current_pick, next_user_pick, num_teams=12):
+    """
+    Estimate P(player still available at user's next pick).
+
+    Uses market rank vs pick gap (ADP logistic), snake spacing, and position scarcity pressure.
+    """
+    out = scored.copy()
+    cur = max(1, int(current_pick or 1))
+    nxt = int(next_user_pick) if next_user_pick is not None else cur
+    gap = max(0, nxt - cur)
+    mr = pd.to_numeric(out.get("Market Rank"), errors="coerce").fillna(9999)
+    scale = max(10.0, float(num_teams) * 0.92)
+    p_at_next = 1.0 / (1.0 + np.exp((mr - nxt) / scale))
+    gap_decay = np.power(0.90, np.maximum(0, gap - 1))
+    scarcity_pen = (
+        normalize_series(out["Position Scarcity Score"])
+        if "Position Scarcity Score" in out.columns
+        else pd.Series(0.0, index=out.index)
+    ) * 0.10
+    survival = (p_at_next * gap_decay - scarcity_pen).clip(0.02, 0.99)
+    if next_user_pick is None or nxt <= cur:
+        survival = pd.Series(1.0, index=out.index)
+    out["Survival Probability"] = survival
+    out["Survival Label"] = survival.apply(_survival_label_from_prob)
+    out["Survival Urgency"] = (1.0 - survival).clip(0, 1)
+    if "Decision Score" in out.columns:
+        out["Decision Score"] = (
+            pd.to_numeric(out["Decision Score"], errors="coerce").fillna(0)
+            + normalize_series(out["Survival Urgency"]) * 0.05
+        ).clip(lower=0)
+    if "Draft Fit Score" in out.columns and "Availability Urgency Component" in out.columns:
+        out["Availability Urgency Component"] = (
+            pd.to_numeric(out["Availability Urgency Component"], errors="coerce").fillna(0)
+            + normalize_series(out["Survival Urgency"]) * 0.04
+        )
+        out["Draft Fit Score"] = (
+            pd.to_numeric(out["Draft Fit Score"], errors="coerce").fillna(0)
+            + normalize_series(out["Survival Urgency"]) * 0.04
+        ).clip(lower=0)
+    return out
+
+
 def _live_draft_default_teams(num_teams):
     labels = []
     for i in range(int(num_teams)):
@@ -6856,6 +6989,11 @@ def _live_draft_pick_verdict(row, rule, gaps):
     parts = [f"Drafted via {rule}"]
     if gaps and str(pos) in gaps:
         parts.append(f"fills {pos} need")
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv) and surv < 0.35:
+        parts.append(f"~{surv * 100:.0f}% chance to survive to your next pick")
+    elif pd.notna(surv) and surv >= 0.72:
+        parts.append("likely could have waited")
     dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
     if pd.notna(dfs) and dfs >= 0.72:
         parts.append("strong draft fit")
@@ -7171,6 +7309,12 @@ def _live_draft_score_available(available, roster_df, rule, target_counts, confi
         use_ml_blend=bool(config.get("use_ml_blend", False)),
         ml_blend_weight=float(config.get("ml_blend_weight", 0) or 0),
     )
+    scored = enrich_player_survival_metrics(
+        scored,
+        current_pick=current_pick,
+        next_user_pick=config.get("next_user_pick"),
+        num_teams=int(config.get("num_teams", 12) or 12),
+    )
     rule = str(rule).strip().lower()
     if rule == "best market rank":
         scored["_pick_score"] = -pd.to_numeric(scored.get("Market Rank"), errors="coerce").fillna(9999)
@@ -7224,8 +7368,12 @@ def live_draft_init_room(config, pool_df):
     teams = list(config.get("teams", []))
     picks_per_team = int(config.get("picks_per_team", 15))
     pick_order = _draft_lab_pick_order(teams, picks_per_team)
+    host_team = config.get("user_team") or (teams[0] if teams else "Team 1")
+    meta = build_live_draft_room_metadata(config, host_team=host_team)
+    room_id = str(uuid.uuid4())[:8].upper()
+    meta["draft_room_id"] = room_id
     return {
-        "draft_room_id": str(uuid.uuid4())[:8].upper(),
+        "draft_room_id": room_id,
         "config": config,
         "status": "not_started",
         "teams": teams,
@@ -7238,6 +7386,7 @@ def live_draft_init_room(config, pool_df):
         "timer_started_at": None,
         "timer_handled_index": -1,
         "paused_remaining_seconds": None,
+        "meta": meta,
     }
 
 
@@ -7265,6 +7414,9 @@ def live_draft_make_pick(room, player_row, verdict="Manual pick"):
     room["rosters"].setdefault(team, []).append(pick_record)
     room["drafted_player_ids"].append(pid)
     room["current_pick_index"] = int(room.get("current_pick_index", 0)) + 1
+    live_draft_bump_sync_revision(room, event="pick")
+    if room.get("meta"):
+        room["meta"].setdefault("turn_model", {})["current_pick_index"] = room["current_pick_index"]
     if room["current_pick_index"] >= len(room.get("pick_order", [])):
         room["status"] = "complete"
         room["timer_started_at"] = None
@@ -7322,7 +7474,10 @@ def live_draft_recommendations(room, top_n=8):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     team = slot["Team"]
     roster_df = pd.DataFrame(room["rosters"].get(team, []))
-    cfg = room.get("config", {})
+    cfg = dict(room.get("config", {}))
+    cfg["current_pick"] = int(slot.get("Pick", 1))
+    cfg["next_user_pick"] = live_draft_next_pick_for_team(room, team)
+    cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
     target_counts = _live_draft_target_counts(cfg)
     balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg)
     top_recommended = balanced.head(top_n)
@@ -7411,6 +7566,102 @@ def live_draft_to_lab_draft_df(room):
     if "Decision Score" not in df.columns:
         df["Decision Score"] = np.nan
     return df
+
+
+def _render_live_draft_styles():
+    st.markdown(
+        """
+        <style>
+        .live-draft-on-clock {
+            background: linear-gradient(90deg, #0b3d6e 0%, #1f6feb 100%);
+            color: #fff;
+            padding: 14px 18px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            box-shadow: 0 4px 14px rgba(15, 60, 120, 0.25);
+        }
+        .live-draft-on-clock .ld-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.9; }
+        .live-draft-on-clock .ld-team { font-size: 26px; font-weight: 800; margin: 4px 0; }
+        .live-draft-on-clock .ld-meta { font-size: 14px; opacity: 0.92; }
+        .live-draft-timer {
+            display: inline-block;
+            background: rgba(255,255,255,0.15);
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-weight: 700;
+            font-size: 18px;
+        }
+        .live-rec-card {
+            background: #fff;
+            border: 1px solid #d9e2ec;
+            border-radius: 10px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+        }
+        .live-rec-card .name { font-weight: 700; color: #12324a; font-size: 15px; }
+        .live-rec-card .pos { color: #5a6f82; font-size: 12px; }
+        .live-rec-card .surv-high { color: #1a7f37; font-weight: 600; font-size: 12px; }
+        .live-rec-card .surv-mid { color: #b8860b; font-weight: 600; font-size: 12px; }
+        .live-rec-card .surv-low { color: #c0392b; font-weight: 600; font-size: 12px; }
+        .live-draft-controls {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: #f7f9fc;
+            padding: 8px 0 12px 0;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 12px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_live_draft_on_clock_banner(slot, remaining, next_pick=None):
+    team = slot.get("Team", "—")
+    rnd = slot.get("Round", "—")
+    pick_no = slot.get("Pick", "—")
+    next_txt = f" · Your next pick: #{next_pick}" if next_pick else ""
+    st.markdown(
+        f"""
+        <div class="live-draft-on-clock">
+            <div class="ld-title">On the clock</div>
+            <div class="ld-team">{team}</div>
+            <div class="ld-meta">
+                Round {rnd} · Pick {pick_no}{next_txt}
+                <span class="live-draft-timer" style="float:right;">{remaining}s</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_live_draft_rec_cards(rec_df, max_cards=6):
+    if rec_df is None or rec_df.empty:
+        st.caption("No recommendations available.")
+        return
+    for _, r in rec_df.head(max_cards).iterrows():
+        name = r.get("fullName", "Player")
+        pos = r.get("Primary Position", "")
+        efv = pd.to_numeric(r.get("Expected Fantasy Value", np.nan), errors="coerce")
+        edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
+        surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
+        surv_lbl = str(r.get("Survival Label", ""))
+        surv_cls = "surv-high" if pd.notna(surv) and surv >= 0.55 else ("surv-mid" if pd.notna(surv) and surv >= 0.30 else "surv-low")
+        surv_pct = f"{surv * 100:.0f}% at next pick" if pd.notna(surv) else ""
+        st.markdown(
+            f"""
+            <div class="live-rec-card">
+                <div class="name">{name}</div>
+                <div class="pos">{pos} · EFV {fmt_rate_4(efv)} · Edge {fmt_int(edge)}</div>
+                <div class="{surv_cls}">{surv_pct} — {surv_lbl}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def live_draft_push_analysis_to_session(room):
@@ -8433,6 +8684,13 @@ def ensure_text_state(key: str, default: str):
     return st.session_state[key]
 
 
+def _debug_session_value_repr(val):
+    """Arrow-safe string for debug tables (mixed list/scalar session values)."""
+    if isinstance(val, (list, tuple, set, dict)):
+        return repr(val)
+    return val
+
+
 def render_page_filters_debug(page_name: str):
     """Bottom-of-page debug: confirm filter keys survive sidebar navigation."""
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
@@ -8441,7 +8699,7 @@ def render_page_filters_debug(page_name: str):
         if not isinstance(k, str):
             continue
         if any(k.startswith(p) for p in prefixes):
-            rows.append({"key": k, "value": st.session_state[k]})
+            rows.append({"key": k, "value": _debug_session_value_repr(st.session_state[k])})
     with st.expander("Debug: current saved filters", expanded=False):
         st.caption(f"Page: **{page_name}** — values in `st.session_state` (restored on sidebar return).")
         if rows:
@@ -8460,7 +8718,7 @@ def render_page_state_debug(page_name: str):
         if not isinstance(k, str):
             continue
         if any(k.startswith(p) for p in prefixes):
-            rows.append({"key": k, "value": st.session_state[k]})
+            rows.append({"key": k, "value": _debug_session_value_repr(st.session_state[k])})
     with st.sidebar.expander("Page State Debug", expanded=False):
         st.caption(f"Active page: **{page_name}**")
         if rows:
@@ -8543,13 +8801,12 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
     "Draft Simulation Test Mode": frozenset({
         "draft_lab_window", "draft_lab_format", "draft_lab_scoring_type", "draft_lab_projection_style",
         "draft_lab_picks_per_team",
-        *pg_xfer._LIVE_SLOT_KEYS,
     }),
     "Live Draft Room": frozenset({
         "live_draft_team_count", "live_draft_num_teams", "live_draft_picks_per_team", "live_draft_scoring",
         "live_draft_proj_style", "live_draft_proj_window", "live_draft_league_name",
         "live_draft_type", "live_draft_timer", "live_draft_auto_rule",
-        *pg_xfer._LIVE_SLOT_KEYS,
+        *_LIVE_SLOT_KEYS,
     }),
     "Fantasy Standings Tracker": frozenset({
         "standings_scoring_format", "standings_stats_source", "standings_api_season", "room_your_team",
@@ -12272,6 +12529,7 @@ if active_page == "Live Draft Room":
                     "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", False)),
                     "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
                     "teams": [str(t).strip() or default_teams[i] for i, t in enumerate(team_names)],
+                    "user_team": str(team_names[0]).strip() or default_teams[0],
                     "slots": {
                         "C": int(slot_c), "1B": int(slot_1b), "2B": int(slot_2b), "3B": int(slot_3b),
                         "SS": int(slot_ss), "OF": int(slot_of), "DH": int(slot_dh), "P": int(slot_p),
@@ -12289,16 +12547,30 @@ if active_page == "Live Draft Room":
     if room is None:
         st.info("Configure your league above, then click **Start Live Draft**.")
     else:
+        _render_live_draft_styles()
         cfg = room.get("config", {})
         slot = live_draft_current_slot(room)
         total_picks = len(room.get("pick_order", []))
         picks_done = len(room.get("draft_board", []))
-        st.markdown(
+        team_list = list(room.get("teams", []))
+        user_team = cfg.get("user_team") or (team_list[0] if team_list else "")
+        if team_list:
+            user_team = st.selectbox(
+                "Your team (for survival % & next-pick logic)",
+                team_list,
+                index=team_list.index(user_team) if user_team in team_list else 0,
+                key="live_draft_my_team",
+            )
+            cfg["user_team"] = user_team
+            room["config"]["user_team"] = user_team
+        st.caption(
             f"**{cfg.get('league_name', 'League')}** · Room `{room.get('draft_room_id', '')}` · "
+            f"Your team: **{user_team}** · "
             f"Status: **{str(room.get('status', '')).replace('_', ' ').title()}** · "
             f"Pick {min(picks_done + 1, total_picks)} of {total_picks}"
         )
 
+        st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         if room.get("status") == "in_progress" and slot is not None:
             idx = int(room.get("current_pick_index", 0))
             remaining = live_draft_seconds_remaining(room)
@@ -12343,25 +12615,25 @@ if active_page == "Live Draft Room":
                 else:
                     st.warning(msg)
                 st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
 
         with rec_col:
-            st.subheader("Current Pick")
             if slot is None:
                 st.success("Draft complete.")
             else:
                 remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("On the Clock", slot["Team"])
-                m2.metric("Round", slot["Round"])
-                m3.metric("Pick #", slot["Pick"])
-                m4.metric("Timer", f"{remaining}s")
+                next_user_pick = live_draft_next_pick_for_team(room, user_team)
+                _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=6)
+                st.markdown("##### Recommended picks")
+                _render_live_draft_rec_cards(top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                 rec_cols = [
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
-                    "Fantasy Edge", "Sleeper Score", "Scarcity Score", "Positional Fit", "Draft Fit Score", "Decision Score",
+                    "Fantasy Edge", "Survival Probability", "Survival Label",
+                    "Sleeper Score", "Scarcity Score", "Positional Fit", "Draft Fit Score", "Decision Score",
                 ]
                 with rec_tabs[0]:
                     render_output_table(
@@ -12453,6 +12725,12 @@ if active_page == "Live Draft Room":
                 "after_board",
                 label="Draft workflow…",
             )
+
+        with st.expander("Future multiplayer architecture (local preview)", expanded=False):
+            st.caption(
+                "Room state is session-local today. This snapshot is the shape a future sync service would persist."
+            )
+            st.json(serialize_live_draft_room(room))
 
         st.subheader("Team Rosters")
         roster_df = live_draft_rosters_df(room)
