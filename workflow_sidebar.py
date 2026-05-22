@@ -13,6 +13,9 @@ SESSION_RECENT_VIEWED = "workflow_recently_viewed"
 SESSION_RECENT_COMPARE_PAIRS = "workflow_recent_compare_pairs"
 SESSION_FAVORITES = "workflow_favorite_targets"
 SESSION_SIDEBAR_FLASH = "workflow_sidebar_flash"
+SESSION_TRANSFER_BATCHES = "workflow_transfer_batches"
+
+TRANSFER_BATCH_CAP = 8
 
 
 def normalize_dedupe_queue(raw):
@@ -39,6 +42,39 @@ def merge_mru(existing, item, cap):
     lst = [x for x in existing if str(x).strip() != name]
     lst.append(name)
     return lst[-int(cap) :]
+
+
+def merge_mru_batch(existing, items, cap):
+    """Bump multiple items to MRU end in order; cap final length."""
+    if not isinstance(existing, list):
+        existing = []
+    lst = list(existing)
+    for item in items or []:
+        lst = merge_mru(lst, item, max(int(cap) * 2, int(cap) + len(items or [])))
+    return lst[-int(cap) :]
+
+
+def append_transfer_batch(existing, *, label, players, source=None, target=None, cap=TRANSFER_BATCH_CAP):
+    """Record a labeled contextual-transfer batch (deduped by player set)."""
+    names = normalize_dedupe_queue(players)
+    if not names:
+        return list(existing) if isinstance(existing, list) else []
+    if not isinstance(existing, list):
+        existing = []
+    sig = tuple(names)
+    kept = [
+        b
+        for b in existing
+        if isinstance(b, dict) and tuple(b.get("players") or []) != sig
+    ]
+    batch_label = str(label or "").strip() or "Transferred players"
+    kept.append({
+        "label": batch_label,
+        "players": names,
+        "source": str(source).strip() if source else None,
+        "target": str(target).strip() if target else None,
+    })
+    return kept[-int(cap) :]
 
 
 def merge_comparison_pairs(existing, label_a, label_b, cap):

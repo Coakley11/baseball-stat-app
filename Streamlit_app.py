@@ -8476,6 +8476,82 @@ def record_workflow_recent_player(display_name):
     st.session_state["workflow_recently_viewed"] = wf_sb.merge_mru(lst, name, wf_sb.RECENT_VIEW_CAP)
 
 
+def _short_workflow_page_name(page: str | None) -> str:
+    """Short page names for Tracked Players transfer batch labels."""
+    key = normalize_page_key(page) if page else ""
+    return {
+        "Trend Value": "Trends",
+        "Comparison Tool": "Comparison",
+        "Valuation": "Valuation",
+        "Historical Explorer": "Historical Explorer",
+        "Career Totals": "Career Totals",
+        "Leaderboards": "Leaderboards",
+        "Fantasy Sleepers & Busts": "Sleepers",
+    }.get(key, key or "page")
+
+
+def _transfer_track_batch_label(
+    source_page: str | None,
+    target_page: str,
+    *,
+    transfer_mode: str | None = None,
+    player_count: int = 0,
+) -> str:
+    tgt = _short_workflow_page_name(target_page)
+    src = _short_workflow_page_name(source_page)
+    mode = str(transfer_mode or "").lower()
+    if mode == "top_3" and src:
+        return f"Top 3 from {src}"
+    if src:
+        return f"Transferred to {tgt}"
+    return f"Transferred to {tgt}"
+
+
+def add_transferred_players_to_tracked_players(
+    players,
+    source_page: str | None,
+    target_page: str,
+    *,
+    transfer_mode: str | None = None,
+):
+    """
+    Add successfully transferred players to Tracked Players (sidebar).
+    Call only after target-page validation with the final player list.
+    """
+    names = []
+    seen = set()
+    for raw in players or []:
+        display = fullname_base_from_label(str(raw).strip()) or str(raw).strip()
+        if not display or display in seen:
+            continue
+        seen.add(display)
+        names.append(display)
+    if not names:
+        return
+
+    batch_label = _transfer_track_batch_label(
+        source_page,
+        target_page,
+        transfer_mode=transfer_mode,
+        player_count=len(names),
+    )
+    batches = st.session_state.get(wf_sb.SESSION_TRANSFER_BATCHES, [])
+    st.session_state[wf_sb.SESSION_TRANSFER_BATCHES] = wf_sb.append_transfer_batch(
+        batches,
+        label=batch_label,
+        players=names,
+        source=source_page,
+        target=target_page,
+    )
+
+    rv = st.session_state.get("workflow_recently_viewed", [])
+    st.session_state["workflow_recently_viewed"] = wf_sb.merge_mru_batch(
+        rv, names, wf_sb.RECENT_VIEW_CAP
+    )
+    if len(names) >= 2:
+        record_workflow_comparison_group(names)
+
+
 def record_workflow_comparison_pair(label_a, label_b):
     """Store ordered A vs B pairs for one-click reload (deduped by unordered pair)."""
     record_workflow_comparison_group([label_a, label_b])
@@ -8576,6 +8652,9 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     pairs = st.session_state.get("workflow_recent_compare_pairs", [])
     if not isinstance(pairs, list):
         pairs = []
+    transfer_batches = st.session_state.get(wf_sb.SESSION_TRANSFER_BATCHES, [])
+    if not isinstance(transfer_batches, list):
+        transfer_batches = []
 
     st.sidebar.divider()
     st.sidebar.markdown("### Watchlist & Draft Queue")
@@ -8630,9 +8709,14 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
                     names = [str(x).strip() for x in pair if str(x).strip()]
                     label = " vs ".join(names)
                     st.caption("• " + label[:54] + ("…" if len(label) > 54 else ""))
-        if st.button("Clear Tracked Players", key="sidebar_clear_tracked_players", disabled=not bool(rv or pairs)):
+        if st.button(
+            "Clear Tracked Players",
+            key="sidebar_clear_tracked_players",
+            disabled=not bool(rv or pairs or transfer_batches),
+        ):
             _clear_workflow_list("workflow_recently_viewed")
             _clear_workflow_list("workflow_recent_compare_pairs")
+            _clear_workflow_list(wf_sb.SESSION_TRANSFER_BATCHES)
             st.rerun()
 
 
@@ -9074,7 +9158,12 @@ def _expand_transfer_filter_keys(page: str, keys: dict) -> dict:
     return out
 
 
-def _apply_transfer_payload_to_page(page: str, payload: dict) -> bool:
+def _apply_transfer_payload_to_page(
+    page: str,
+    payload: dict,
+    *,
+    source_page: str | None = None,
+) -> bool:
     """Write transfer filters/players onto session_state for the target page."""
     page = normalize_page_key(page)
     payload = pg_xfer.normalize_transfer_payload(payload or {})
@@ -9088,12 +9177,22 @@ def _apply_transfer_payload_to_page(page: str, payload: dict) -> bool:
                 live_draft_push_analysis_to_session(room)
     _clear_stale_transfer_player_state()
     players = payload.get("transfer_players") or {}
-    if page == "Comparison Tool":
-        _apply_transfer_players_to_compare(players)
-    if page == "Trend Value":
-        _apply_transfer_players_to_trend(players)
-    if page == "Valuation":
-        _apply_transfer_players_to_valuation(players)
+    player_mode = str((players or {}).get("mode", "none")).lower()
+    applied_players = []
+    if player_mode not in ("", "none"):
+        if page == "Comparison Tool":
+            applied_players = _apply_transfer_players_to_compare(players)
+        elif page == "Trend Value":
+            applied_players = _apply_transfer_players_to_trend(players)
+        elif page == "Valuation":
+            applied_players = _apply_transfer_players_to_valuation(players)
+        if applied_players:
+            add_transferred_players_to_tracked_players(
+                applied_players,
+                source_page,
+                page,
+                transfer_mode=player_mode,
+            )
     highlight = payload.get("draft_assistant_highlight")
     if highlight and page == "Draft Assistant Simulator":
         st.session_state["pending_draft_assistant_player"] = str(highlight)
@@ -9300,7 +9399,8 @@ def apply_pending_page_transfer(current_page: str):
         return False
     st.session_state.pop("_pending_page_transfer", None)
     payload = pending.get("payload") or pending.get("filters") or {}
-    return _apply_transfer_payload_to_page(page, payload)
+    source = pending.get("source")
+    return _apply_transfer_payload_to_page(page, payload, source_page=source)
 
 
 def _preview_transfer_player_names(ent, base_extra, main_xfer_df, name_col, *, send_top3: bool):
