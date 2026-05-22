@@ -7306,6 +7306,23 @@ def render_draft_scoring_breakdown(scored_df, player_name=None, key_suffix=""):
     )
 
 
+def _sort_draft_candidates(df, columns, *, ascending=None):
+    """Sort by score columns; ascending list length must match column count (pandas 2+)."""
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return df
+    if ascending is None:
+        asc = [False] * len(cols)
+    elif isinstance(ascending, bool):
+        asc = [ascending] * len(cols)
+    else:
+        asc = list(ascending)
+        if len(asc) < len(cols):
+            asc = asc + [asc[-1] if asc else False] * (len(cols) - len(asc))
+        asc = asc[: len(cols)]
+    return df.sort_values(cols, ascending=asc, na_position="last")
+
+
 def _live_draft_score_available(available, roster_df, rule, target_counts, config=None):
     config = config or {}
     fantasy_format = config.get("fantasy_format", "5x5 Roto")
@@ -7333,16 +7350,26 @@ def _live_draft_score_available(available, roster_df, rule, target_counts, confi
     rule = str(rule).strip().lower()
     if rule == "best market rank":
         scored["_pick_score"] = -pd.to_numeric(scored.get("Market Rank"), errors="coerce").fillna(9999)
-        scored = scored.sort_values(["_pick_score", "Decision Score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = _sort_draft_candidates(
+            scored, ["_pick_score", "Decision Score", "Expected Fantasy Value"], ascending=False
+        )
     elif rule == "best model rank":
         scored["_pick_score"] = -pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999)
-        scored = scored.sort_values(["_pick_score", "Decision Score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = _sort_draft_candidates(
+            scored, ["_pick_score", "Decision Score", "Expected Fantasy Value"], ascending=False
+        )
     elif rule == "best projected fantasy value":
-        scored = scored.sort_values(["Expected Fantasy Value", "Model Rank"], ascending=[False, True])
+        scored = _sort_draft_candidates(
+            scored, ["Expected Fantasy Value", "Model Rank"], ascending=[False, True]
+        )
     elif rule == "best roster need":
-        scored = scored.sort_values(["Positional Fit", "Draft Fit Score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = _sort_draft_candidates(
+            scored, ["Positional Fit", "Draft Fit Score", "Expected Fantasy Value"], ascending=False
+        )
     else:
-        scored = scored.sort_values(["Decision Score", "Draft Fit Score", "Expected Fantasy Value"], ascending=[False, False])
+        scored = _sort_draft_candidates(
+            scored, ["Decision Score", "Draft Fit Score", "Expected Fantasy Value"], ascending=False
+        )
     return scored, gaps
 
 
