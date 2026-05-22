@@ -32,6 +32,33 @@ if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
     )
 _LIVE_SLOT_KEYS = pg_xfer._LIVE_SLOT_KEYS
 
+if not hasattr(pg_xfer, "_TRANSFER_STAT_COLS"):
+    pg_xfer._TRANSFER_STAT_COLS = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
+
+if not hasattr(pg_xfer, "sanitize_session_keys"):
+    _pg_xfer_sanitize_value = getattr(pg_xfer, "_sanitize_value", None)
+
+    def _sanitize_session_keys_fallback(keys, allowed_keys):
+        if not isinstance(keys, dict):
+            return {}
+        allowed = set(allowed_keys or ())
+        if not allowed:
+            return dict(keys)
+        out = {}
+        for key, value in keys.items():
+            if key not in allowed or str(key).startswith("_transfer_"):
+                continue
+            if _pg_xfer_sanitize_value is not None:
+                cleaned = _pg_xfer_sanitize_value(key, value)
+                if cleaned is None:
+                    continue
+                out[key] = cleaned
+            else:
+                out[key] = value
+        return out
+
+    pg_xfer.sanitize_session_keys = _sanitize_session_keys_fallback
+
 import page_state as pg_state
 from draft_strategy_intel import draft_strategy_line
 from draft_team_fit import team_fit_summary_line

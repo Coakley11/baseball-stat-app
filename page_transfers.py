@@ -161,13 +161,19 @@ def _sanitize_value(key: str, value):
     return None
 
 
-def sanitize_session_keys(raw: dict, allowed: frozenset) -> dict:
-    """Keep only allowed keys with validated/coerced values."""
-    if not raw or not allowed:
+def sanitize_session_keys(keys, allowed_keys):
+    """
+    Return only keys allowed for the target page transfer, with validated/coerced values.
+    Prevents unsupported session_state keys from being transferred between pages.
+    """
+    if not isinstance(keys, dict):
         return {}
+    allowed = frozenset(allowed_keys or ())
+    if not allowed:
+        return dict(keys)
     out = {}
-    for key, value in raw.items():
-        if key not in allowed or key.startswith("_transfer_"):
+    for key, value in keys.items():
+        if key not in allowed or str(key).startswith("_transfer_"):
             continue
         cleaned = _sanitize_value(key, value)
         if cleaned is not None:
