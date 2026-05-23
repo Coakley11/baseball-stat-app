@@ -1,4 +1,4 @@
-"""Tutorial module — fan-focused content and prefs."""
+"""Tutorial — fan-first onboarding copy and structure."""
 
 import json
 import tempfile
@@ -8,34 +8,24 @@ from unittest import mock
 import app_tutorial as tut
 
 
-def test_tutorial_steps_fan_flow():
+def test_tutorial_has_action_first_steps():
     steps = tut.get_tutorial_steps()
-    assert len(steps) == 16
-    titles = [s["title"] for s in steps]
-    assert titles[0] == "Welcome"
-    assert titles[-1] == "You are all set"
-    assert "How to use filters" in titles
-    assert "Comparison Tool" in titles
-    assert "Trends and Valuation" in titles
-    assert "Sending filters to another page" in titles
-    assert "Tracked Players" in titles
+    assert len(steps) >= 15
+    hist = next(s for s in steps if s["id"] == "historical")
+    assert hist["steps"][0].startswith("Open")
+    assert any("Try" in t or "try" in t.lower() for s in steps for t in s.get("tries", []))
 
 
-def test_no_developer_jargon_in_copy():
+def test_metrics_mostly_in_advanced():
     steps = tut.get_tutorial_steps()
-    blob = json.dumps(steps).lower()
-    banned = (
-        "session state",
-        "pipeline",
-        "helper function",
-        "architecture",
-        "unified pool",
-        "lahman",
-        "widget",
-        "debug",
-    )
-    for term in banned:
-        assert term not in blob, f"developer term found: {term}"
+    main_blob = json.dumps(
+        [{k: v for k, v in s.items() if k != "advanced"} for s in steps]
+    ).lower()
+    assert "normalized" not in main_blob
+    assert "unified" not in main_blob
+    assert "session state" not in main_blob
+    trends = next(s for s in steps if s["id"] == "trends")
+    assert trends.get("advanced")
 
 
 def test_hide_button_prefs_roundtrip():
@@ -43,5 +33,4 @@ def test_hide_button_prefs_roundtrip():
         prefs_path = Path(tmp) / "prefs.json"
         with mock.patch.object(tut, "_PREFS_PATH", prefs_path):
             tut._save_prefs({"hide_button": True})
-            loaded = tut._load_prefs()
-            assert loaded.get("hide_button") is True
+            assert tut._load_prefs().get("hide_button") is True

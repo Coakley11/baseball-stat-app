@@ -471,7 +471,7 @@ st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
-        Explore MLB history, compare players, spot trends, run drafts, and manage your fantasy season — pick a page in the sidebar or tap <strong>Tutorial</strong> below.
+        Explore MLB history, compare players, spot trends, run drafts, and manage your fantasy season — pick a page in the sidebar or tap <strong>Start Tutorial</strong> below.
     </div>
 </div>
 """, unsafe_allow_html=True)
