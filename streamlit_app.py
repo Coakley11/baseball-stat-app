@@ -16,6 +16,7 @@ from collections import Counter
 
 import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
+import app_tutorial
 
 # Live Draft slot widgets (keys must match st.number_input key= in Live Draft Room).
 if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
@@ -470,10 +471,12 @@ st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
-        Explore MLB history, compare players, spot trends, run drafts, and manage your fantasy season — pick a page in the sidebar to start.
+        Explore MLB history, compare players, spot trends, run drafts, and manage your fantasy season — pick a page in the sidebar or tap <strong>Start Tutorial</strong> below.
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+app_tutorial.render_tutorial_header_bar()
 
 def fmt_int(x):
     x = pd.to_numeric(x, errors="coerce")
@@ -9715,19 +9718,7 @@ for _ephemeral_key in list(st.session_state.keys()):
 st.sidebar.caption("Filters are remembered as you move between pages.")
 render_developer_mode_sidebar_toggle()
 render_page_state_debug(active_page)
-with st.sidebar.expander("New here? Quick start", expanded=False):
-    st.markdown(
-        "**Draft prep**\n"
-        "1. **Historical Explorer** — browse season stats\n"
-        "2. **Comparison Tool** — compare up to three players side by side using stats, trends, fantasy value, and category strengths\n"
-        "3. **Trend Value** / **Valuation** — see who is rising or falling and who ranks best overall\n"
-        "4. **Fantasy Sleepers & Busts** — find undervalued players, risky market picks, and players whose projections may differ from market expectations\n\n"
-        "**Live draft**\n"
-        "5. **Draft Room** → **Draft Assistant** — log picks, then get next-pick help\n\n"
-        "**In-season**\n"
-        "6. **Standings Tracker** → **Lineup Assistant** — score teams and set lineups\n\n"
-        "Each page has a **Quick guide** at the top. Extra filters are in **Advanced** expanders."
-    )
+app_tutorial.maybe_open_tutorial_dialog()
 render_persistent_workflow_sidebar(yearly_df)
 
 if active_page == "Historical Explorer":
