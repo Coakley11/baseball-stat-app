@@ -18,6 +18,7 @@ import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
 import app_tutorial
 import player_actions as plr_act
+import projection_calibration as proj_cal
 
 # Live Draft slot widgets (keys must match st.number_input key= in Live Draft Room).
 if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
@@ -3824,6 +3825,7 @@ def _clear_ml_data_caches():
         build_similar_player_predictions,
         get_age_curve_adjustments,
         get_target_baselines,
+        build_stabilized_projection_anchors,
     ):
         try:
             fn.clear()
@@ -3959,6 +3961,16 @@ def _run_ml_projection_pipeline(
             status["message"] = "Projection adjustment returned no rows. Try different tuning sliders."
             status["fallback"] = "adjustment_empty"
             return status
+
+        with st.spinner("Applying final projection calibration…"):
+            anchor_ids = tuple(sorted(str(x) for x in pred_df["playerID"].unique()))
+            anchors = build_stabilized_projection_anchors(
+                yearly_source,
+                anchor_ids,
+                int(ml_lookback),
+            )
+            if not anchors.empty:
+                pred_df = proj_cal.apply_ml_final_output_calibration(pred_df, anchors)
 
         status["pred_df"] = pred_df
         status["age_curve_df"] = age_curve_df if age_curve_df is not None else pd.DataFrame()
@@ -4205,15 +4217,19 @@ def make_ml_prediction_summary(row, sort_stat):
     value = row.get("ML Fantasy Value", np.nan)
     rank = row.get("Model Rank", np.nan)
     confidence = row.get("Projection Confidence", np.nan)
+    conf_score = row.get("Projection Confidence Score", np.nan)
+    warning = row.get("Projection Warning", "")
     breakout = row.get("Breakout Score", np.nan)
     style = row.get("Projection Style", "Balanced")
     stat_text = fmt_rate_3(stat_val) if sort_stat in RATE_STATS else fmt_int(stat_val)
+    conf_text = str(confidence) if pd.notna(confidence) and str(confidence).strip() else fmt_rate_4(conf_score)
+    warn_text = f" {warning.strip()}" if isinstance(warning, str) and warning.strip() else ""
     return (
         f"{player}'s advanced ML projection is strongest on {sort_stat}: {stat_text}. "
         f"The model projects about {fmt_rate_3(ops)} OPS, {fmt_int(hr)} HR, {fmt_int(rbi)} RBI, and {fmt_int(sb)} SB. "
         f"ML Fantasy Value is {fmt_rate_4(value)} (model rank {fmt_int(rank)}), "
-        f"breakout score {fmt_rate_4(breakout)}, and projection confidence {fmt_rate_4(confidence)} under the {style} style. "
-        f"The displayed projection blends Random Forest, age/age², position, bats, league/team context, playing time, trends, similar-player history, aging curves, and regression-to-the-mean."
+        f"breakout score {fmt_rate_4(breakout)}, and projection confidence {conf_text} under the {style} style.{warn_text} "
+        f"The displayed projection blends Random Forest, aging, similarity, regression-to-the-mean, and a light final calibration pass."
     )
 
 
@@ -6304,198 +6320,15 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         pool["Expert Std Dev"] = np.nan
     pool["Market Rank"] = safe_numeric_series(pool, "Market Rank", np.nan)
 
-    # Draft-lab-only stabilized projections. Counting stats are rebuilt from
-    # projected playing time x stabilized recent rates instead of latest + trend.
-    projection_source = recent.copy()
-    for c in ["G", "AB", "H", "HR", "RBI", "R", "SB", "BB", "HBP", "SF", "BA", "OPS"]:
-        if c not in projection_source.columns:
-            projection_source[c] = 0
-        projection_source[c] = pd.to_numeric(projection_source[c], errors="coerce").fillna(0)
-    projection_source["PA_est"] = projection_source["AB"] + projection_source["BB"] + projection_source["HBP"] + projection_source["SF"]
-    safe_pa = projection_source["PA_est"].replace(0, np.nan)
-    safe_ab = projection_source["AB"].replace(0, np.nan)
-    for stat in ["HR", "RBI", "R", "SB"]:
-        projection_source[f"{stat}_per_PA"] = (projection_source[stat] / safe_pa).replace([np.inf, -np.inf], np.nan).fillna(0)
-    projection_source["PA_per_G"] = (projection_source["PA_est"] / projection_source["G"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
-    projection_source["AB_per_PA"] = (projection_source["AB"] / safe_pa).replace([np.inf, -np.inf], np.nan)
-
-    years_played = projection_source.groupby("playerID")["yearID"].nunique()
-    recent_avg = projection_source.groupby("playerID")[["G", "AB", "PA_est", "HR", "RBI", "R", "SB", "BA", "OPS", "PA_per_G", "AB_per_PA"]].mean().add_prefix("avg_")
-    recent_max = projection_source.groupby("playerID")[["G", "AB", "PA_est", "HR", "RBI", "R", "SB"]].max().add_prefix("max_")
-    recent_std = projection_source.groupby("playerID")[["G", "AB", "PA_est", "HR_per_PA", "RBI_per_PA", "R_per_PA", "SB_per_PA", "BA", "OPS"]].std().add_prefix("std_")
-    latest_support = (
-        projection_source.sort_values(["playerID", "yearID"])
-        .groupby("playerID")
-        .tail(1)[["playerID", "G", "AB", "PA_est", "HR", "RBI", "R", "SB", "BA", "OPS", "PA_per_G", "AB_per_PA"]]
-        .rename(columns={c: f"latest_support_{c}" for c in ["G", "AB", "PA_est", "HR", "RBI", "R", "SB", "BA", "OPS", "PA_per_G", "AB_per_PA"]})
-    )
+    # Draft-lab-only stabilized projections (shared with ML final calibration).
+    projection_source = proj_cal.build_projection_source(recent)
     rate_trends = compute_player_trend_table(
         projection_source,
         ("G", "AB", "PA_est", "HR_per_PA", "RBI_per_PA", "R_per_PA", "SB_per_PA"),
     )
-    support = pd.concat([years_played.rename("years_played"), recent_avg, recent_max, recent_std], axis=1).reset_index()
-    support = support.merge(latest_support, on="playerID", how="left").merge(rate_trends, on="playerID", how="left")
-    pool = pool.merge(support, on="playerID", how="left")
-
-    total_pa = safe_numeric_series(pool, "PA_est", 0)
-    total_ab = safe_numeric_series(pool, "AB", 0)
-    years = safe_numeric_series(pool, "years_played", 0)
-    latest_g = safe_numeric_series(pool, "latest_support_G", np.nan).fillna(safe_numeric_series(pool, "G", 0))
-    avg_g = safe_numeric_series(pool, "avg_G", np.nan).fillna(latest_g)
-    max_g = safe_numeric_series(pool, "max_G", np.nan).fillna(avg_g)
-    g_trend = safe_numeric_series(pool, "G_trend", 0).clip(-18, 18)
-    trend_g = (latest_g + g_trend).clip(lower=0)
-    durability = (avg_g / 145).clip(0.35, 1.05)
-    projected_g = (latest_g * 0.42 + avg_g * 0.38 + trend_g * 0.20)
-    projected_g = projected_g * (0.92 + durability * 0.08)
-    projected_g = np.minimum(projected_g, np.maximum(max_g + 8, avg_g * 1.18))
-    projected_g = pd.Series(projected_g, index=pool.index).clip(lower=20, upper=150)
-    catcher_mask = pool["Primary Position"].astype(str).eq("C")
-    projected_g = projected_g.mask(catcher_mask, projected_g.clip(upper=132))
-
-    latest_pa_pg = safe_numeric_series(pool, "latest_support_PA_per_G", np.nan)
-    avg_pa_pg = safe_numeric_series(pool, "avg_PA_per_G", np.nan)
-    pa_pg = (latest_pa_pg.fillna(avg_pa_pg) * 0.55 + avg_pa_pg.fillna(latest_pa_pg) * 0.45).fillna(3.7).clip(2.2, 4.75)
-    latest_ab_per_pa = safe_numeric_series(pool, "latest_support_AB_per_PA", np.nan)
-    avg_ab_per_pa = safe_numeric_series(pool, "avg_AB_per_PA", np.nan)
-    ab_per_pa = (
-        latest_ab_per_pa.fillna(avg_ab_per_pa) * 0.55 +
-        avg_ab_per_pa.fillna(latest_ab_per_pa) * 0.45
-    ).fillna(0.89).clip(0.74, 0.96)
-    projected_pa = (projected_g * pa_pg).clip(lower=60, upper=720)
-    projected_ab = (projected_pa * ab_per_pa).clip(lower=40, upper=650)
-    pool["proj_G"] = projected_g.round(1)
-    pool["proj_PA"] = projected_pa.round(1)
-    pool["proj_AB"] = projected_ab.round(1)
-
-    limited_data = (total_ab < 450) | (years < 2)
-    very_limited_data = (total_ab < 250) | (years < 2)
-    volatility = (
-        normalize_series(safe_numeric_series(pool, "std_PA_est", 0)) * 0.45 +
-        normalize_series(safe_numeric_series(pool, "std_OPS", 0)) * 0.35 +
-        normalize_series(safe_numeric_series(pool, "std_BA", 0)) * 0.20
-    )
-    consistency = (1 - volatility).clip(0, 1)
-    sample_score = (total_ab / 1100).clip(0, 1)
-    games_score = (avg_g / 125).clip(0, 1)
-    avg_hr = safe_numeric_series(pool, "avg_HR", 0)
-    max_hr = safe_numeric_series(pool, "max_HR", 0)
-    avg_ops = safe_numeric_series(pool, "avg_OPS", 0)
-    power_history = normalize_series(avg_hr * 0.55 + max_hr * 0.45)
-    production_history = normalize_series(avg_ops)
-    multi_season_strength = ((years >= 3).astype(float) * 0.22 + (years >= 2).astype(float) * 0.10)
-    playing_time_strength = (projected_g / 145).clip(0, 1)
-    elite_star_score = (
-        power_history * 0.30 +
-        production_history * 0.24 +
-        consistency * 0.22 +
-        multi_season_strength +
-        playing_time_strength * 0.14
-    ).clip(0, 1)
-    stable_veteran = (years >= 3) & (consistency >= 0.58) & (volatility < 0.48)
-    injury_risk = (projected_g < avg_g * 0.82) | (durability < 0.55)
-    star_protected = (elite_star_score >= 0.68) & (consistency >= 0.55) & (playing_time_strength >= 0.72)
-    confidence_score = (
-        sample_score * 0.28 +
-        games_score * 0.20 +
-        consistency * 0.30 +
-        (years / 3).clip(0, 1) * 0.12 +
-        elite_star_score * 0.10
-    ).clip(0, 1)
-    pool["Elite Star Score"] = elite_star_score.round(4)
-    pool["Projection Confidence Score"] = confidence_score
-    pool["Projection Confidence"] = np.select(
-        [confidence_score >= 0.70, confidence_score >= 0.46],
-        ["High Confidence", "Medium Confidence"],
-        default="Risky Projection",
-    )
-    pool["Projection Warning"] = np.select(
-        [very_limited_data, limited_data & ~star_protected, volatility >= 0.70],
-        [
-            "Small sample: projection heavily regressed and capped",
-            "Limited data: projection regressed toward recent averages",
-            "Volatile profile: projection confidence reduced",
-        ],
-        default="",
-    )
-    pool.loc[star_protected, "Projection Warning"] = np.where(
-        pool.loc[star_protected, "Projection Warning"].astype(str).str.strip() == "",
-        "Star-tier profile: lighter regression and softer ceiling",
-        pool.loc[star_protected, "Projection Warning"],
-    )
-
-    league_rates = {}
-    for stat in ["HR", "RBI", "R", "SB"]:
-        denom = projection_source["PA_est"].sum()
-        league_rates[stat] = float(projection_source[stat].sum() / denom) if denom else 0.0
-    league_ba = float((projection_source["H"].sum() / projection_source["AB"].sum())) if projection_source["AB"].sum() else 0.250
-    league_ops = float(projection_source["OPS"].replace(0, np.nan).median()) if projection_source["OPS"].replace(0, np.nan).notna().any() else 0.720
-
-    # Slightly higher base caps for power/run cats; SB stays tighter.
-    cap_rules = {
-        "HR": ("proj_HR", 62, 8, 1.28, 2.30, True),
-        "RBI": ("proj_RBI", 135, 18, 1.28, 1.95, True),
-        "R": ("proj_R", 135, 18, 1.28, 1.95, True),
-        "SB": ("proj_SB", 62, 10, 1.20, 2.35, False),
-    }
-    base_rate_regression = (380 / (total_pa + 380)).clip(0.20, 0.64)
-    rate_regression = (
-        base_rate_regression
-        + very_limited_data.astype(float) * 0.10
-        + volatility * 0.06
-        + injury_risk.astype(float) * 0.05
-        - elite_star_score * 0.15
-        - stable_veteran.astype(float) * 0.06
-    ).clip(0.14, 0.76)
-    star_weight = elite_star_score.clip(0, 1)
-    for stat, (proj_col, hard_cap, support_pad, avg_cap_mult, league_cap_mult, star_soft_cap) in cap_rules.items():
-        total_rate = (safe_numeric_series(pool, stat, 0) / total_pa.replace(0, np.nan)).fillna(0)
-        latest_rate = (
-            safe_numeric_series(pool, f"latest_support_{stat}", 0) /
-            safe_numeric_series(pool, "latest_support_PA_est", np.nan).replace(0, np.nan)
-        ).fillna(total_rate)
-        rate_trend = safe_numeric_series(pool, f"{stat}_per_PA_trend", 0)
-        trend_rate = (latest_rate + rate_trend).clip(lower=0)
-        blended_rate = (
-            total_rate * (0.50 - star_weight * 0.06) +
-            latest_rate * (0.32 + star_weight * 0.08) +
-            trend_rate * (0.18 + star_weight * 0.02)
-        )
-        stabilized_rate = blended_rate * (1 - rate_regression) + league_rates[stat] * rate_regression
-        avg_stat = safe_numeric_series(pool, f"avg_{stat}", 0)
-        max_stat = safe_numeric_series(pool, f"max_{stat}", np.nan).fillna(avg_stat)
-        star_cap_lift = np.where(star_soft_cap, star_weight * 0.14, star_weight * 0.05)
-        rate_cap = np.maximum(total_rate * (avg_cap_mult + star_cap_lift), league_rates[stat] * (league_cap_mult + star_cap_lift))
-        rate_cap = np.where(very_limited_data, np.maximum(total_rate * 1.08, league_rates[stat] * 1.50), rate_cap)
-        projected = np.minimum(stabilized_rate, rate_cap) * projected_pa
-        hard_cap_eff = hard_cap + np.where(star_soft_cap, star_weight * 10, star_weight * 4)
-        support_pad_eff = support_pad + np.where(star_soft_cap, star_weight * 6, star_weight * 2)
-        support_mult = np.where(very_limited_data, 1.10, 1.25) + np.where(star_soft_cap, star_weight * 0.14, star_weight * 0.06)
-        support_cap = np.maximum(max_stat + support_pad_eff, avg_stat * support_mult)
-        projected = np.minimum(projected, np.minimum(hard_cap_eff, support_cap))
-        if star_soft_cap:
-            talent_floor = (avg_stat * 0.52 + max_stat * 0.48) * (projected_pa / total_pa.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(1)
-            star_floor = talent_floor * (0.90 + star_weight * 0.10)
-            projected = np.maximum(projected, star_floor)
-        if star_protected.any():
-            protected_boost = 1 + star_weight * np.where(star_protected, 0.035, 0.0)
-            projected = projected * protected_boost
-        pool[proj_col] = pd.Series(projected, index=pool.index).clip(lower=0).round(1)
-
-    ba_regression = (400 / (total_ab + 400)).clip(0.18, 0.62)
-    ops_regression = (430 / (total_pa + 430)).clip(0.18, 0.62)
-    ba_regression = (ba_regression - elite_star_score * 0.08 - stable_veteran.astype(float) * 0.03).clip(0.14, 0.62)
-    ops_regression = (ops_regression - elite_star_score * 0.08 - stable_veteran.astype(float) * 0.03).clip(0.14, 0.62)
-    latest_ba = safe_numeric_series(pool, "latest_support_BA", np.nan).fillna(safe_numeric_series(pool, "latest_BA", np.nan))
-    avg_ba = safe_numeric_series(pool, "avg_BA", np.nan).fillna(safe_numeric_series(pool, "BA", np.nan))
-    ba_trend = safe_numeric_series(pool, "BA_trend", 0).clip(-0.025, 0.025)
-    blended_ba = avg_ba.fillna(league_ba) * 0.55 + latest_ba.fillna(avg_ba).fillna(league_ba) * 0.35 + (latest_ba.fillna(avg_ba).fillna(league_ba) + ba_trend) * 0.10
-    pool["proj_BA"] = (blended_ba * (1 - ba_regression) + league_ba * ba_regression).clip(0.185, 0.340)
-    latest_ops = safe_numeric_series(pool, "latest_support_OPS", np.nan).fillna(safe_numeric_series(pool, "latest_OPS", np.nan))
-    avg_ops = safe_numeric_series(pool, "avg_OPS", np.nan).fillna(safe_numeric_series(pool, "OPS", np.nan))
-    ops_trend = safe_numeric_series(pool, "OPS_trend", 0).clip(-0.060, 0.060)
-    blended_ops = avg_ops.fillna(league_ops) * 0.55 + latest_ops.fillna(avg_ops).fillna(league_ops) * 0.35 + (latest_ops.fillna(avg_ops).fillna(league_ops) + ops_trend) * 0.10
-    pool["proj_OPS"] = (blended_ops * (1 - ops_regression) + league_ops * ops_regression).clip(0.560, 1.050)
+    pool = proj_cal.merge_stabilization_support(pool, projection_source)
+    pool = pool.merge(rate_trends, on="playerID", how="left")
+    pool = proj_cal.apply_stabilized_counting_projections(pool, projection_source)
 
     if fantasy_format == "5x5 Roto":
         pool["Projected Production Score"] = (
@@ -6515,8 +6348,8 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         safe_numeric_series(pool, "Realistic Base Projection Score", np.nan).fillna(pool["Projected Production Score"]) * 0.86 +
         safe_numeric_series(pool, "Expected Fantasy Value", np.nan).fillna(pool["Projected Production Score"]) * 0.14
     )
-    elite_preserve = elite_star_score.clip(0, 1)
-    high_conf_elite = elite_preserve * confidence_score.clip(0, 1)
+    elite_preserve = safe_numeric_series(pool, "Elite Star Score", 0).clip(0, 1)
+    high_conf_elite = elite_preserve * safe_numeric_series(pool, "Projection Confidence Score", 0).clip(0, 1)
     pool["Blended Projection Score"] = normalize_series(
         ml_blended * (1 - high_conf_elite * 0.14) + raw_production * (high_conf_elite * 0.14)
     )
@@ -6566,6 +6399,97 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
             pd.to_numeric(pool["Base Decision Score"], errors="coerce").quantile(0.99),
         )
     return pool.sort_values("Base Decision Score", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def build_stabilized_projection_anchors(yearly_source, player_ids_tuple, lookback=5):
+    """Draft-lab stabilization anchors for ML final calibration (cached per player set)."""
+    player_ids = {str(p) for p in (player_ids_tuple or ())}
+    if not player_ids or yearly_source is None or yearly_source.empty:
+        return pd.DataFrame()
+    max_year = int(pd.to_numeric(yearly_source["yearID"], errors="coerce").max())
+    draft_years = list(range(max_year - int(lookback) + 1, max_year + 1))
+    recent = yearly_source[yearly_source["yearID"].isin(draft_years)].copy()
+    recent = recent[recent["playerID"].astype(str).isin(player_ids)].sort_values(["playerID", "yearID"])
+    if recent.empty:
+        return pd.DataFrame()
+    pool = aggregate_recent_player_totals(
+        recent,
+        ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
+    )
+    pool = pool[(safe_numeric_series(pool, "G", 0) >= 10) & (safe_numeric_series(pool, "AB", 0) >= 25)].copy()
+    trends = compute_player_trend_table(recent, ("R", "HR", "RBI", "SB", "BA", "OPS", "BB"))
+    pool = pool.merge(trends, on="playerID", how="left")
+    pool = add_latest_and_projection_columns(pool, recent)
+    projection_source = proj_cal.build_projection_source(recent)
+    rate_trends = compute_player_trend_table(
+        projection_source,
+        ("G", "AB", "PA_est", "HR_per_PA", "RBI_per_PA", "R_per_PA", "SB_per_PA"),
+    )
+    pool = proj_cal.merge_stabilization_support(pool, projection_source)
+    pool = pool.merge(rate_trends, on="playerID", how="left")
+    pool = proj_cal.apply_stabilized_counting_projections(pool, projection_source)
+    anchor_cols = [
+        "playerID",
+        "proj_HR", "proj_RBI", "proj_R", "proj_SB", "proj_BA", "proj_OPS",
+        "proj_G", "proj_PA", "proj_AB",
+        "Elite Star Score", "Projection Confidence Score", "Projection Confidence",
+        "Projection Warning", "Volatility Score", "Star Protected", "Very Limited Data",
+        "avg_H", "avg_2B", "avg_3B", "avg_BB", "max_H", "max_2B", "max_3B", "max_BB",
+    ]
+    keep = [c for c in anchor_cols if c in pool.columns]
+    return pool[keep].drop_duplicates(subset=["playerID"]).reset_index(drop=True)
+
+
+ML_DRAFT_CALIBRATION_COMPARE_STATS = [
+    ("HR", "Predicted HR", "proj_HR"),
+    ("RBI", "Predicted RBI", "proj_RBI"),
+    ("R", "Predicted R", "proj_R"),
+    ("SB", "Predicted SB", "proj_SB"),
+    ("AVG", "Predicted BA", "proj_BA"),
+    ("OPS", "Predicted OPS", "proj_OPS"),
+]
+
+
+def run_ml_draft_projection_compare(pred_df, yearly_source, market_df, test_players=None, *, lookback=5, fantasy_format="5x5 Roto", projection_style="Balanced"):
+    """Developer check: ML calibrated predictions vs Draft Lab stabilized anchors."""
+    test_players = test_players or DRAFT_SCORING_CONSISTENCY_PLAYERS
+    if pred_df is None or pred_df.empty:
+        return pd.DataFrame(), ["No ML predictions to compare."]
+    lab_pool = build_draft_lab_player_pool(
+        yearly_source,
+        market_df,
+        draft_window=int(lookback),
+        fantasy_format=fantasy_format,
+        projection_style=projection_style,
+    )
+    rows = []
+    notes = []
+    for display_name in test_players:
+        resolved = _resolve_consistency_player_name(pred_df, display_name)
+        if resolved is None:
+            notes.append(f"{display_name}: not found in ML predictions.")
+            continue
+        ml_row = pred_df[pred_df["fullName"].astype(str) == resolved].iloc[0]
+        lab_resolved = _resolve_consistency_player_name(lab_pool, display_name)
+        if lab_resolved is None:
+            notes.append(f"{display_name}: not found in Draft Lab pool.")
+            continue
+        lab_row = lab_pool[lab_pool["fullName"].astype(str) == lab_resolved].iloc[0]
+        for stat_label, ml_col, lab_col in ML_DRAFT_CALIBRATION_COMPARE_STATS:
+            ml_val = pd.to_numeric(ml_row.get(ml_col, np.nan), errors="coerce")
+            lab_val = pd.to_numeric(lab_row.get(lab_col, np.nan), errors="coerce")
+            diff = ml_val - lab_val if pd.notna(ml_val) and pd.notna(lab_val) else np.nan
+            pct = (diff / lab_val * 100) if pd.notna(diff) and pd.notna(lab_val) and abs(float(lab_val)) > 1e-9 else np.nan
+            rows.append({
+                "Player": display_name,
+                "Stat": stat_label,
+                "ML Prediction": ml_val,
+                "Draft Lab Anchor": lab_val,
+                "Difference": diff,
+                "Pct vs Draft Lab": pct,
+            })
+    return pd.DataFrame(rows), notes
 
 
 DRAFT_POSITION_REPLACEMENT_DEPTHS = {
@@ -14820,6 +14744,20 @@ if active_page == "ML Predictions":
                         "or click **Generate / Refresh** after changing scope."
                     )
                 else:
+                    with st.expander("How ML projections are stabilized", expanded=False):
+                        st.markdown(
+                            "These projections are adjusted so one-year breakouts do not get inflated too much, "
+                            "while proven stars keep more of their expected value. After the Random Forest model, aging, "
+                            "and similarity adjustments run, a **light final calibration** nudges counting stats and rates "
+                            "toward the same stabilized anchors used in Draft Lab and Live Draft Room—without running "
+                            "a second full regression."
+                        )
+                        st.markdown(
+                            "- **High Confidence** — multi-year track record, stable rates, solid playing time\n"
+                            "- **Medium Confidence** — reasonable sample with some uncertainty\n"
+                            "- **Risky Projection** — small sample, volatility, or limited history (stronger pull toward anchors)"
+                        )
+
                     _style_conf_adj = {"Conservative": 0.05, "Balanced": 0.00, "Aggressive": -0.04}.get(ml_projection_style, 0.00)
                     _style_breakout_mult = {"Conservative": 0.90, "Balanced": 1.00, "Aggressive": 1.12}.get(ml_projection_style, 1.00)
                     _count_value = pd.Series(0.0, index=pred_df.index)
@@ -14837,7 +14775,15 @@ if active_page == "ML Predictions":
                     pred_df["ML Fantasy Value"] = normalize_series(_count_value)
                     pred_df["Model Rank"] = pred_df["ML Fantasy Value"].rank(ascending=False, method="min")
                     _recent_ab = safe_numeric_series(pred_df, "hist_AB_total", 0)
-                    pred_df["Projection Confidence"] = ((_recent_ab / 1200).clip(lower=0.20, upper=1.0) + _style_conf_adj).clip(0.05, 1.0)
+                    pred_df["Sample Strength"] = ((_recent_ab / 1200).clip(lower=0.20, upper=1.0) + _style_conf_adj).clip(0.05, 1.0)
+                    if "Projection Confidence Score" not in pred_df.columns:
+                        pred_df["Projection Confidence Score"] = pred_df["Sample Strength"]
+                    if "Projection Confidence" not in pred_df.columns:
+                        pred_df["Projection Confidence"] = np.select(
+                            [pred_df["Projection Confidence Score"] >= 0.70, pred_df["Projection Confidence Score"] >= 0.46],
+                            ["High Confidence", "Medium Confidence"],
+                            default="Risky Projection",
+                        )
                     _age = safe_numeric_series(pred_df, "age_entering_year", np.nan)
                     _age_upside = pd.Series(np.where((_age >= 22) & (_age <= 27), 1.0, 0.45), index=pred_df.index)
                     _breakout_base = pd.Series(0.0, index=pred_df.index)
@@ -14858,7 +14804,8 @@ if active_page == "ML Predictions":
                         "fullName", "bats", "prediction_year", "age_entering_year",
                         "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
                         "Predicted BA", "Predicted OBP", "Predicted SLG", "Predicted OPS",
-                        "ML Fantasy Value", "Model Rank", "Breakout Score", "Projection Confidence", "Projection Style"
+                        "Projection Confidence", "Projection Confidence Score", "Projection Warning", "Elite Star Score",
+                        "ML Fantasy Value", "Model Rank", "Breakout Score", "Sample Strength", "Projection Style"
                     ]
                     display_cols = [c for c in display_cols if c in pred_df.columns]
                     projection_rename = {
@@ -14868,12 +14815,16 @@ if active_page == "ML Predictions":
                     ml_display = clean_ui_columns(pred_df[display_cols].rename(columns=projection_rename))
 
                     st.subheader("Next-Season ML Projections")
-                    st.caption("Predictions use machine learning with aging, regression-to-the-mean, and similarity adjustments. The table shows the recommended projected stats only.")
+                    st.caption(
+                        "Predictions use machine learning with aging, regression, and similarity adjustments, "
+                        "then a light calibration pass aligned with Draft Lab anchors. "
+                        "**Projection Confidence** reflects sample size, volatility, and star-tier protection."
+                    )
                     for _col in ml_display.columns:
                         if _col.startswith("Predicted "):
                             _stat = _col.replace("Predicted ", "")
                             ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(3 if _stat in RATE_STATS else 0)
-                    for _col in ["ML Fantasy Value", "Breakout Score", "Projection Confidence"]:
+                    for _col in ["ML Fantasy Value", "Breakout Score", "Sample Strength", "Projection Confidence Score", "Elite Star Score"]:
                         if _col in ml_display.columns:
                             ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(4)
                     if "Model Rank" in ml_display.columns:
@@ -14913,6 +14864,36 @@ if active_page == "ML Predictions":
                         render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
                         with st.expander("Feature importance chart", expanded=False):
                             top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
+
+                    if developer_mode_enabled() and not pred_df.empty:
+                        with st.expander("Developer: ML vs Draft Lab projection check", expanded=False):
+                            st.caption(
+                                "Compares calibrated ML outputs to Draft Lab stabilized anchors for sample stars. "
+                                "Large gaps may reflect ML upside/downside beyond the light calibration blend."
+                            )
+                            _cmp_market = load_fantasypros_market_data()
+                            _cmp_df, _cmp_notes = run_ml_draft_projection_compare(
+                                pred_df,
+                                yearly_df,
+                                _cmp_market,
+                                lookback=ml_lookback,
+                                projection_style=ml_projection_style,
+                            )
+                            if not _cmp_df.empty:
+                                _cmp_show = _cmp_df.copy()
+                                for _cc in ["ML Prediction", "Draft Lab Anchor", "Difference"]:
+                                    if _cc in _cmp_show.columns:
+                                        _cmp_show[_cc] = pd.to_numeric(_cmp_show[_cc], errors="coerce").round(3)
+                                if "Pct vs Draft Lab" in _cmp_show.columns:
+                                    _cmp_show["Pct vs Draft Lab"] = pd.to_numeric(_cmp_show["Pct vs Draft Lab"], errors="coerce").round(1)
+                                render_output_table(
+                                    clean_ui_columns(_cmp_show),
+                                    key="ml_draft_calibration_compare",
+                                    file_name="ml_draft_calibration_compare.csv",
+                                    display_rows=60,
+                                )
+                            for _note in _cmp_notes:
+                                st.caption(_note)
 
 if developer_mode_enabled():
     elapsed_ms = (time.perf_counter() - _APP_RENDER_START) * 1000
