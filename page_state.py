@@ -195,8 +195,10 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
         save_page_state(session, prev, store)
         session.pop("_transfer_just_applied_to", None)
 
-    # Restore only when entering via sidebar — never when a contextual transfer targets this page.
-    if prev != curr and pending_target != curr:
+    # Restore only when entering via sidebar — never when a contextual transfer or
+    # player-action button navigates to this page (would overwrite freshly queued players).
+    skip_restore = normalize_page_key(session.pop("_skip_page_restore_for", None) or "")
+    if prev != curr and pending_target != curr and skip_restore != curr:
         restore_page_state(session, curr, store)
 
     session["_page_state_last_active"] = curr

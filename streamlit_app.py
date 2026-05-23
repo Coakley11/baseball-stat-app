@@ -17,6 +17,7 @@ from collections import Counter
 import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
 import app_tutorial
+import player_actions as plr_act
 
 # Live Draft slot widgets (keys must match st.number_input key= in Live Draft Room).
 if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
@@ -757,16 +758,25 @@ def is_users_draft_turn(team_name):
 
 
 def register_players_sent_to_trend_page(full_name, label_map):
-    """Route Send to Trend Page.
+    """Queue one player for Trend Value (single dashboard + up to 3 on multi chart).
 
-    First sent player anchors the single-player dashboard.
-    Last three sent players populate the multi-player trend visualization.
+    Returns (success, user-facing message).
     """
     lbl = resolve_fullname_to_clean_label(full_name, label_map)
     if not lbl:
-        return False
+        return False, "Could not match that name in the database."
 
-    base_fn = fullname_base_from_label(lbl)
+    valid = _valid_trend_chart_labels([lbl], label_map)
+    if not valid:
+        display = fullname_base_from_label(lbl)
+        return (
+            False,
+            f"{display} does not have enough recent seasons for a trend chart. "
+            "Try a player with more recent playing time.",
+        )
+
+    chart_lbl = valid[0]
+    base_fn = fullname_base_from_label(chart_lbl)
 
     if not st.session_state.get("trend_anchor_fullname"):
         st.session_state["trend_anchor_fullname"] = base_fn
@@ -779,24 +789,38 @@ def register_players_sent_to_trend_page(full_name, label_map):
     mq.append(base_fn)
     while len(mq) > 12:
         mq.pop(0)
-
     st.session_state["trend_multi_queue_fullnames"] = mq
 
     anchor = st.session_state.get("trend_anchor_fullname") or base_fn
     anchor_label = resolve_fullname_to_clean_label(anchor, label_map)
-    if anchor_label:
-        st.session_state["trend_force_single_label"] = anchor_label
+    if anchor_label and anchor_label in label_map:
+        valid_anchor = _valid_trend_chart_labels([anchor_label], label_map)
+        anchor_label = valid_anchor[0] if valid_anchor else chart_lbl
+    else:
+        anchor_label = chart_lbl
 
     multi_labels = []
     for name in mq:
         ml = resolve_fullname_to_clean_label(name, label_map)
-        if ml and ml not in multi_labels:
-            multi_labels.append(ml)
+        if not ml:
+            continue
+        ok = _valid_trend_chart_labels([ml], label_map)
+        if ok and ok[0] not in multi_labels:
+            multi_labels.append(ok[0])
 
-    st.session_state["trend_force_multi_labels"] = multi_labels
-    st.session_state["pending_trend_players"] = [fullname_base_from_label(x) for x in multi_labels]
-    st.session_state["pending_trend_player"] = fullname_base_from_label(anchor_label) if anchor_label else base_fn
-    return True
+    if chart_lbl not in multi_labels:
+        multi_labels = plr_act.merge_chart_labels(multi_labels, chart_lbl, max_labels=3)
+    else:
+        multi_labels = plr_act.merge_chart_labels(multi_labels, chart_lbl, max_labels=3)
+
+    st.session_state["trend_force_single_label"] = anchor_label
+    st.session_state["trend_force_multi_labels"] = multi_labels[:3]
+    st.session_state["trend_players_multi"] = multi_labels[:3]
+    st.session_state["single_trend_dashboard_player"] = anchor_label
+    st.session_state["pending_trend_players"] = [fullname_base_from_label(x) for x in multi_labels[:3]]
+    st.session_state["pending_trend_player"] = fullname_base_from_label(anchor_label)
+    display = fullname_base_from_label(chart_lbl)
+    return True, f"Sent {display} to Trends."
 
 
 def append_compare_player_ordered(full_name, label_map):
@@ -7956,70 +7980,205 @@ def player_on_fantasy_team(player_name, fantasy_team):
     return str(player_name).strip() in team_rows["Player"].dropna().astype(str).str.strip().tolist()
 
 
-def execute_player_action_once(selected_player, action, team_name, user_draft_team, label_map_compare):
-    """Apply one action for one player. No Streamlit widgets. Returns a single-line result message."""
-    sp = str(selected_player).strip()
+def _player_display_name(selected_player, label_map) -> str:
+    """Best display string for confirmations."""
+    sp = str(selected_player or "").strip()
+    if not sp:
+        return ""
+    lbl = resolve_fullname_to_clean_label(sp, label_map)
+    if lbl:
+        return fullname_base_from_label(lbl)
+    return fullname_base_from_label(sp) or sp
+
+
+def _schedule_player_action_page_nav(target_page: str) -> None:
+    """Same navigation path as sidebar, but skip restoring stale page snapshot."""
+    tgt = get_sidebar_page_value(target_page)
+    st.session_state["_skip_page_restore_for"] = tgt
+    st.session_state["_navigate_to_page"] = tgt
+
+
+def dispatch_player_action(selected_player, action, team_name, user_draft_team, label_map):
+    """Run one player action. Returns (message, navigate_to_page_or_none)."""
+    sp = str(selected_player or "").strip()
     teams = get_draft_room_team_options()
     if not sp:
-        return "Skipped (empty name)."
+        return "Pick a player first.", None
 
-    record_workflow_recent_player(sp)
+    display = _player_display_name(sp, label_map) or sp
+    record_workflow_recent_player(display)
 
     if action == "Draft player to next pick":
         if not is_users_draft_turn(user_draft_team):
-            return "Skipped — not your team's pick on the board right now."
+            return "Not your pick on the draft board right now.", None
         if not teams:
-            return "Skipped — no Draft Room teams."
-        return add_player_to_next_draft_room_pick(sp, team_name)
+            return "Open Draft Room Simulator first to set up teams.", None
+        return add_player_to_next_draft_room_pick(sp, team_name), None
 
     if action == "Queue player":
-        return add_player_to_queue(sp)
+        q = st.session_state.get("draft_queue", [])
+        if not isinstance(q, list):
+            q = []
+        if display in q or sp in q:
+            return f"{display} is already in your Draft Queue.", None
+        msg = add_player_to_queue(sp)
+        if "Queued" in msg:
+            return f"Added {display} to Draft Queue.", None
+        return msg, None
 
     if action == "Send to Comparison Tool":
-        if append_compare_player_ordered(sp, label_map_compare):
+        if append_compare_player_ordered(sp, label_map):
             pp = st.session_state.get("pending_compare_players")
             if isinstance(pp, list) and len(pp) >= 2:
                 record_workflow_comparison_pair(pp[0], pp[1])
-            return "Sent to Comparison Tool (fills Player A, then Player B; a new send with both filled replaces Player B)."
-        return "Skipped — name could not be matched to the database for Comparison."
+            add_transferred_players_to_tracked_players(
+                [display],
+                st.session_state.get("active_page"),
+                "Comparison Tool",
+                transfer_mode="single",
+            )
+            return f"Added {display} to Comparison Tool.", "Comparison Tool"
+        return f"Could not add {display} to Comparison — name not found in the database.", None
 
     if action == "Send to Trend Page":
-        if register_players_sent_to_trend_page(sp, label_map_compare):
-            return "Sent to Trend Value (single-player anchor + multi chart queue updated)."
-        return "Skipped — name could not be matched for Trend."
+        ok, msg = register_players_sent_to_trend_page(sp, label_map)
+        if ok:
+            add_transferred_players_to_tracked_players(
+                [display],
+                st.session_state.get("active_page"),
+                "Trend Value",
+                transfer_mode="single",
+            )
+            return msg, "Trend Value"
+        return msg, None
 
     if action == "Add to Watchlist":
-        st.session_state["pending_draft_assistant_player"] = sp
+        st.session_state["pending_draft_assistant_player"] = display
         focus = st.session_state.get("draft_assistant_focus_players", [])
         if not isinstance(focus, list):
             focus = []
-        if sp not in focus:
-            focus.append(sp)
-        st.session_state["draft_assistant_focus_players"] = focus[-10:]
-        return "Added to Watchlist."
+        focus = plr_act.dedupe_append_name(focus, display, cap=10)
+        st.session_state["draft_assistant_focus_players"] = focus
+        fav = st.session_state.get("workflow_favorite_targets", [])
+        st.session_state["workflow_favorite_targets"] = plr_act.dedupe_append_name(
+            fav, display, cap=wf_sb.FAVORITES_CAP
+        )
+        return f"Added {display} to Watchlist.", None
 
     if action == "Add as trade target to acquire":
         acquire = st.session_state.get("pending_trade_acquire_players", [])
-        if sp not in acquire:
-            acquire.append(sp)
+        acquire = plr_act.dedupe_append_name(acquire, display)
         st.session_state["pending_trade_acquire_players"] = acquire
-        return "Added to trade targets (acquire) list."
+        return f"Added {display} to trade targets (acquire).", None
 
     if action == "Add as player to trade away":
         give = st.session_state.get("pending_trade_away_players", [])
-        if sp not in give:
-            give.append(sp)
+        give = plr_act.dedupe_append_name(give, display)
         st.session_state["pending_trade_away_players"] = give
-        return "Added to trade-away list."
+        return f"Added {display} to trade-away list.", None
 
     if action == "Simulate drafting this player":
         if not teams:
-            return "Skipped — no Draft Room table / teams."
+            return "Open Draft Room Simulator first.", None
         sim_table, msg = simulate_drafting_player(sp, team_name)
         st.session_state["simulated_draft_room_table"] = sim_table
-        return msg
+        return msg, None
 
-    return f"Unknown action: {action}"
+    return f"Unknown action: {action}", None
+
+
+def execute_player_action_once(selected_player, action, team_name, user_draft_team, label_map_compare):
+    """Apply one action for one player. Returns a single-line result message."""
+    msg, nav = dispatch_player_action(
+        selected_player, action, team_name, user_draft_team, label_map_compare
+    )
+    if nav:
+        _schedule_player_action_page_nav(nav)
+        st.rerun()
+    return msg
+
+
+def _on_player_action_click(
+    action: str,
+    player_raw: str,
+    team_name=None,
+    user_draft_team=None,
+):
+    """Button callback: update action state only (never button widget keys)."""
+    label_map = get_clean_player_label_map_yearly(yearly_df)
+    msg, nav = dispatch_player_action(player_raw, action, team_name, user_draft_team, label_map)
+    st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+    if nav:
+        _schedule_player_action_page_nav(nav)
+    st.rerun()
+
+
+def _render_player_action_button_row(
+    player_raw: str,
+    *,
+    key_prefix: str,
+    label_map,
+    team_name=None,
+    user_draft_team=None,
+    show_queue=True,
+    show_comparison=True,
+    show_trend=True,
+    show_watchlist=True,
+    show_draft=False,
+    show_trade=False,
+    on_my_team=False,
+    can_draft=False,
+):
+    """One-click player actions with stable button keys and shared dispatch."""
+    act_suffix = _qa_key_suffix(f"{key_prefix}|{player_raw}")
+    kwargs_base = {
+        "player_raw": player_raw,
+        "team_name": team_name,
+        "user_draft_team": user_draft_team,
+    }
+
+    primary = []
+    if show_queue:
+        primary.append(("Add to Queue", "Queue player", "add_draft_queue"))
+    if show_comparison:
+        primary.append(("Send to Comparison", "Send to Comparison Tool", "send_comparison"))
+    if show_trend:
+        primary.append(("Send to Trends", "Send to Trend Page", "send_trends"))
+
+    if primary:
+        cols = st.columns(len(primary))
+        for col, (label, action, slug) in zip(cols, primary):
+            with col:
+                st.button(
+                    label,
+                    key=f"plr_act_{act_suffix}_{slug}_button",
+                    use_container_width=True,
+                    on_click=_on_player_action_click,
+                    kwargs={**kwargs_base, "action": action},
+                )
+
+    secondary = []
+    if show_watchlist:
+        secondary.append(("Add to Watchlist", "Add to Watchlist", "add_watchlist"))
+    if show_trade:
+        if on_my_team:
+            secondary.append(("Trade · Away", "Add as player to trade away", "trade_away"))
+        else:
+            secondary.append(("Trade · Acquire", "Add as trade target to acquire", "trade_acquire"))
+    if show_draft and can_draft:
+        secondary.append(("Draft this player", "Draft player to next pick", "draft_player"))
+
+    if secondary:
+        cols2 = st.columns(len(secondary))
+        for col, (label, action, slug) in zip(cols2, secondary):
+            with col:
+                st.button(
+                    label,
+                    key=f"plr_act_{act_suffix}_{slug}_button",
+                    use_container_width=True,
+                    on_click=_on_player_action_click,
+                    kwargs={**kwargs_base, "action": action},
+                )
 
 
 def player_action_menu(
@@ -8225,56 +8384,24 @@ def player_quick_actions_popover(
         on_my = player_on_fantasy_team(pick, team_for_draft) if team_for_draft else False
         can_draft = bool(user_draft_team) and is_users_draft_turn(user_draft_team)
 
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            if st.button("Add to Queue", key=f"plr_act_{sfx}_add_draft_queue_button"):
-                msg = execute_player_action_once(pick, "Queue player", team_for_draft, user_draft_team, label_map)
-                st.session_state["workflow_sidebar_flash"] = msg
-                st.rerun()
-        with b2:
-            if st.button("Send to Comparison", key=f"plr_act_{sfx}_send_comparison_button"):
-                msg = execute_player_action_once(pick, "Send to Comparison Tool", team_for_draft, user_draft_team, label_map)
-                st.session_state["workflow_sidebar_flash"] = msg
-                request_sidebar_page("Comparison Tool")
-        with b3:
-            if st.button("Send to Trend", key=f"{key}_qa_tr_{sfx}"):
-                msg = execute_player_action_once(pick, "Send to Trend Page", team_for_draft, user_draft_team, label_map)
-                st.session_state["workflow_sidebar_flash"] = msg
-                request_sidebar_page("Trend Value")
+        _render_player_action_button_row(
+            pick,
+            key_prefix=f"{key}_qa_{sfx}",
+            label_map=label_map,
+            team_name=team_for_draft,
+            user_draft_team=user_draft_team,
+            show_queue=True,
+            show_comparison=True,
+            show_trend=True,
+            show_watchlist=True,
+            show_draft=True,
+            show_trade=True,
+            on_my_team=on_my,
+            can_draft=can_draft,
+        )
 
-        b4, b5, b6 = st.columns(3)
-        with b4:
-            if st.button("Add to Watchlist", key=f"plr_act_{sfx}_add_watchlist_button"):
-                msg = execute_player_action_once(pick, "Add to Watchlist", team_for_draft, user_draft_team, label_map)
-                st.session_state["workflow_sidebar_flash"] = msg
-                st.rerun()
-        with b5:
-            if not on_my:
-                if st.button("Trade · Acquire", key=f"plr_act_{sfx}_trade_acquire_button"):
-                    msg = execute_player_action_once(pick, "Add as trade target to acquire", team_for_draft, user_draft_team, label_map)
-                    st.session_state["workflow_sidebar_flash"] = msg
-                    st.rerun()
-            else:
-                st.caption("On your roster — *Trade · Acquire* is hidden.")
-        with b6:
-            if on_my:
-                if st.button("Trade · Away", key=f"{key}_qa_taw_{sfx}"):
-                    msg = execute_player_action_once(pick, "Add as player to trade away", team_for_draft, user_draft_team, label_map)
-                    st.session_state["workflow_sidebar_flash"] = msg
-                    st.rerun()
-            else:
-                st.caption("Not on your roster — *Trade · Away* is hidden.")
-
-        b7, b8, b9 = st.columns(3)
-        with b7:
-            if can_draft:
-                if st.button("Draft this player", key=f"plr_act_{sfx}_draft_player_button"):
-                    msg = execute_player_action_once(pick, "Draft player to next pick", team_for_draft, user_draft_team, label_map)
-                    st.session_state["workflow_sidebar_flash"] = msg
-                    st.rerun()
-            else:
-                st.caption("Not your pick — *Draft this player* hidden.")
-        with b8:
+        extra = st.columns(2)
+        with extra[0]:
             if st.button("Simulate Draft Pick", key=f"plr_act_{sfx}_simulate_draft_button"):
                 lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
                 lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
@@ -8285,7 +8412,7 @@ def player_quick_actions_popover(
                     lookup_name_col,
                 )
                 st.session_state[f"{key}_draft_simulation_result"] = result
-        with b9:
+        with extra[1]:
             if st.button("Projection breakdown", key=f"plr_act_{sfx}_projection_breakdown_button"):
                 record_workflow_recent_player(pick)
                 row = None
@@ -8333,26 +8460,27 @@ def render_contextual_player_actions(
     act_id = _qa_key_suffix(f"{key_prefix}|{player_name}")
     with st.popover(f"Actions: {player_name}"):
         st.caption("Active/recent player" if active_recent else "Historical player")
-        if st.button("Add to Watchlist", key=f"plr_act_{act_id}_add_watchlist_button"):
-            msg = execute_player_action_once(player_name, "Add to Watchlist", team_name, team_name, label_map)
-            st.session_state["workflow_sidebar_flash"] = msg
-            st.rerun()
+        _render_player_action_button_row(
+            label,
+            key_prefix=f"ctx_{act_id}",
+            label_map=label_map,
+            team_name=team_name,
+            user_draft_team=team_name,
+            show_queue=active_available,
+            show_comparison=True,
+            show_trend=True,
+            show_watchlist=True,
+            show_draft=active_available and is_users_draft_turn(team_name),
+            show_trade=ownership_known and active_recent,
+            on_my_team=on_my_team,
+            can_draft=active_available and is_users_draft_turn(team_name),
+        )
 
         if not active_recent:
-            st.caption("Fantasy draft, trend, and trade actions are hidden for historical players.")
-            return
+            st.caption("Fantasy draft and trade actions are hidden for historical-only players.")
         if already_drafted:
-            st.caption("Draft queue and simulation are hidden because this player is already drafted.")
+            st.caption("Draft queue is hidden because this player is already drafted.")
 
-        if active_available:
-            if st.button("Add to Draft Queue", key=f"plr_act_{act_id}_add_draft_queue_button"):
-                msg = execute_player_action_once(player_name, "Queue player", team_name, team_name, label_map)
-                st.session_state["workflow_sidebar_flash"] = msg
-                st.rerun()
-        if st.button("Send to Trend Page", key=f"plr_act_{act_id}_send_trend_button"):
-            msg = execute_player_action_once(player_name, "Send to Trend Page", team_name, team_name, label_map)
-            st.session_state["workflow_sidebar_flash"] = msg
-            request_sidebar_page("Trend Value")
         if active_available:
             if st.button("Simulate Draft Pick", key=f"plr_act_{act_id}_simulate_draft_button"):
                 lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
@@ -8365,26 +8493,8 @@ def render_contextual_player_actions(
                 )
                 st.session_state["draft_simulation_result"] = result
                 render_draft_simulation_result(result)
-            if is_users_draft_turn(team_name):
-                if st.button("Draft Player", key=f"plr_act_{act_id}_draft_player_button"):
-                    msg = execute_player_action_once(player_name, "Draft player to next pick", team_name, team_name, label_map)
-                    st.session_state["workflow_sidebar_flash"] = msg
-                    st.rerun()
-            else:
-                st.caption("Draft Player hidden until it is your team's pick.")
-        if ownership_known:
-            if on_my_team:
-                if st.button("Trade Away", key=f"plr_act_{act_id}_trade_away_button"):
-                    msg = execute_player_action_once(player_name, "Add as player to trade away", team_name, team_name, label_map)
-                    st.session_state["workflow_sidebar_flash"] = msg
-                    st.rerun()
-            else:
-                if st.button("Try to Acquire", key=f"plr_act_{act_id}_trade_acquire_button"):
-                    msg = execute_player_action_once(player_name, "Add as trade target to acquire", team_name, team_name, label_map)
-                    st.session_state["workflow_sidebar_flash"] = msg
-                    st.rerun()
-        else:
-            st.caption("Trade actions hidden until a Draft Room team is available.")
+        elif not ownership_known:
+            st.caption("Trade actions need a Draft Room team selected on Comparison Tool.")
 
 
 def clickable_player_draft_table(df, player_col="Player", team_name=None, key="clickable_draft_table", title="Clickable Draft Table"):
@@ -8739,7 +8849,11 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
 
     flash = st.session_state.pop("workflow_sidebar_flash", None)
     if flash:
-        st.sidebar.warning(str(flash))
+        flash_s = str(flash)
+        if flash_s.lower().startswith("skipped") or "could not" in flash_s.lower() or "not found" in flash_s.lower():
+            st.sidebar.warning(flash_s)
+        else:
+            st.sidebar.success(flash_s)
     if removed_drafted:
         st.sidebar.info(
             "Removed drafted player(s) from Draft Queue: "
@@ -9884,6 +9998,18 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    _hist_action_names = []
+    if "fullName" in hist_display_raw.columns:
+        _hist_action_names = list(
+            dict.fromkeys(hist_display_raw["fullName"].dropna().astype(str).str.strip().tolist())
+        )[:25]
+    if _hist_action_names:
+        st.subheader("Player actions")
+        compact_player_action_center(
+            _hist_action_names,
+            key="hist_table_player_actions",
+            help_text="Pick a player from the table above, then send to Trends, Comparison, Watchlist, or Draft Queue.",
+        )
     _hist_xfer_df = hist_display_raw.copy()
     render_contextual_page_nav(
         "Historical Explorer",
