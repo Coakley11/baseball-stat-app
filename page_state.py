@@ -124,6 +124,8 @@ def _is_ephemeral_widget_key(key: str) -> bool:
     """Button/action widget keys must not be snapshotted (causes StreamlitValueAssignmentNotAllowedError)."""
     k = str(key)
     if k.endswith("_button") or k.endswith("_btn"):
+        if k in ("ml_predictions_refresh_button",):
+            return False
         return True
     if k.startswith("plr_act_") or k.startswith("ctx_go_"):
         return True
