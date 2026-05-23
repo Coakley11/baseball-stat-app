@@ -1,0 +1,39 @@
+﻿python : C:\Users\danie\Documents\GitHub\baseball-stat-app\streamlit_app.py:3262: UserWarning: This pattern is 
+interpreted as a regular expression, and has match groups. To actually get the groups, use str.extract.
+At C:\Users\danie\AppData\Local\Temp\ps-script-5301d5c6-b5da-4bcf-a392-d05322631977.ps1:78 char:57
++ ... -stat-app"; python scripts/validate_ml_projection_calibration.py 2>&1 ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\danie\...se str.extract.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  The ADP export can have awkward headers, so this function detects the useful columns.
+Loading data...
+Running ML pipeline (lookback=3, min AB=300)...
+  300 players, 12 models trained
+
+=== Player validation (ML vs Draft Lab) ===
+
+## Shohei Ohtani
+  Conf: High Confidence (0.958) | Elite: 1.000 | Warning: Star-tier profile: lighter regression and softer ceiling
+  ML EFV: 0.9571 | Lab EFV: 1.0000 | Realism: 0.55 ù HR 26% off Draft Lab; OPS 13% off Draft Lab; elite star may be too conservative
+Traceback (most recent call last):
+  File "C:\Users\danie\Documents\GitHub\baseball-stat-app\scripts\validate_ml_projection_calibration.py", line 292, in 
+<module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "C:\Users\danie\Documents\GitHub\baseball-stat-app\scripts\validate_ml_projection_calibration.py", line 263, in 
+main
+    print(
+    ~~~~~^
+        f"  {label:4} ML={mv:{fmt}} Lab={lv:{fmt}} \u0394={diff:{fmt}} ({pct:+.1f}%){flag}"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        if pd.notna(pct)
+        ^^^^^^^^^^^^^^^^
+        else f"  {label:4} ML={mv} Lab={lv}"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\danie\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u0394' in position 24: character maps to <undefined>
