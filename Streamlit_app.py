@@ -11099,16 +11099,7 @@ if active_page == "Trend Value":
         else:
             st.error(make_trend_insight_summary(trend_selected))
 
-    dash_hdr_1, dash_hdr_2 = st.columns([4, 1])
-    with dash_hdr_1:
-        st.subheader("Single-Player Trend Dashboard")
-    with dash_hdr_2:
-        if st.button("Reset trend sends", help="Clears Send-to-Trend anchor and multi-player queue", key="trend_clear_send_queue"):
-            for _k in ("trend_anchor_fullname", "trend_multi_queue_fullnames", "trend_force_single_label", "trend_force_multi_labels"):
-                st.session_state.pop(_k, None)
-            st.session_state.pop("single_trend_dashboard_player", None)
-            st.session_state.pop("trend_players_multi", None)
-            st.rerun()
+    st.subheader("Single-Player Trend Dashboard")
 
     full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
     full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
