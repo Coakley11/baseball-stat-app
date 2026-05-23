@@ -1,4 +1,4 @@
-"""Guided onboarding tutorial — lightweight static content, dialog UI, persisted prefs."""
+"""Guided onboarding tutorial — fan-friendly walkthrough (not developer docs)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ def _save_prefs(prefs: dict[str, Any]) -> None:
 
 
 def init_tutorial_prefs() -> None:
-    """Hydrate session from disk once per run (does not override explicit session choices)."""
     if TUTORIAL_HIDE_BUTTON_KEY not in st.session_state:
         st.session_state[TUTORIAL_HIDE_BUTTON_KEY] = bool(_load_prefs().get("hide_button", False))
 
@@ -71,409 +70,373 @@ def _tutorial_css() -> str:
 }
 .tutorial-card h4 { margin: 0 0 8px 0; color: #12324a; font-size: 15px; }
 .tutorial-card p, .tutorial-card li { color: #2c3e50; font-size: 14px; line-height: 1.45; }
-.tutorial-tagline { color: #4f6475; font-size: 15px; margin: 0 0 12px 0; }
+.tutorial-tagline { color: #4f6475; font-size: 15px; margin: 0 0 12px 0; line-height: 1.5; }
+.tutorial-example {
+    background: #fff8e6; border-left: 4px solid #e6a817; padding: 12px 14px;
+    border-radius: 8px; margin: 10px 0 14px 0; font-size: 14px; color: #3d3d3d; line-height: 1.45;
+}
+.tutorial-example strong { color: #7a5a00; }
 </style>
 """
 
 
 @lru_cache(maxsize=1)
 def get_tutorial_steps() -> tuple[dict[str, Any], ...]:
-    """Static step definitions — cached in-process, rendered one step at a time."""
+    """Fan-focused steps — one screen at a time, short and practical."""
     return (
         {
             "id": "welcome",
+            "kind": "welcome",
             "title": "Welcome",
             "icon": "⚾",
             "page_key": None,
-            "tagline": "Your all-in-one MLB history explorer and fantasy draft companion.",
+            "tagline": (
+                "This app helps you explore baseball history, compare players, find trends, "
+                "discover fantasy sleepers, simulate drafts, and run a live fantasy draft."
+            ),
             "sections": [
                 {
-                    "title": "What this app does",
+                    "title": "What you can do here",
                     "bullets": [
-                        "Explore decades of Lahman MLB stats — filter, rank, compare, and chart.",
-                        "Spot rising and fading players with trend and valuation tools.",
-                        "Prep fantasy drafts with sleepers, busts, draft assistants, and live draft rooms.",
-                        "Track in-season standings and optimize weekly lineups.",
-                    ],
-                },
-                {
-                    "title": "Baseball fans",
-                    "bullets": [
-                        "Hunt legendary seasons, era comparisons, and niche stat lines.",
-                        "Build leaderboards and side-by-side comparisons for debate-ready evidence.",
-                        "Use scatterplots and correlation tools to see how stats relate.",
-                    ],
-                },
-                {
-                    "title": "Fantasy players",
-                    "bullets": [
-                        "Find undervalued sleepers and risky busts vs market ADP.",
-                        "Run mock drafts, test strategies, and get next-pick recommendations.",
-                        "Use Decision Score and roster-fit tools during live drafts.",
-                    ],
-                    "expandable": True,
-                },
-                {
-                    "title": "How pages connect",
-                    "bullets": [
-                        "**Explore** (Historical → Career → Leaderboards) → shortlist names.",
-                        "**Analyze** (Comparison, Trend Value, Valuation) → confirm breakout/decline and rank.",
-                        "**Draft prep** (Sleepers & Busts → Draft Room → Draft Assistant) → build your board.",
-                        "**Draft day** (Simulation Test Mode or Live Draft Room) → practice or run the room.",
-                        "**Season** (Standings Tracker → Lineup Assistant) → score teams and set lineups.",
+                        "Research any era — great seasons, franchise legends, fun stat hunts.",
+                        "Prep for fantasy — sleepers, busts, mock drafts, and live draft help.",
+                        "Follow your season — standings, lineups, and category needs.",
                     ],
                 },
             ],
+        },
+        {
+            "id": "filters",
+            "kind": "normal",
+            "title": "How to use filters",
+            "icon": "🎛️",
+            "page_key": None,
+            "tagline": "Most pages let you narrow the player pool before you look at tables and charts.",
+            "sections": [
+                {
+                    "title": "The basics",
+                    "bullets": [
+                        "**Choose years** — one season or a range (e.g. 1998–2002).",
+                        "**Choose teams** — one club or several.",
+                        "**Choose positions** — SS, OF, C, and more.",
+                        "**Choose batting hand** — left, right, or switch.",
+                        "**Set minimum stats** — e.g. at least 20 HR or a .300 batting average.",
+                    ],
+                },
+            ],
+            "example": (
+                "Want Mets hitters from 1998–2002 with 20+ home runs? "
+                "Pick **Mets**, set the **year range**, and set **minimum HR** to 20."
+            ),
         },
         {
             "id": "historical",
+            "kind": "normal",
             "title": "Historical Explorer",
             "icon": "🔎",
             "page_key": "Historical Explorer",
-            "tagline": "Search individual player-seasons across MLB history.",
+            "tagline": "Search season-by-season baseball history and discover great years.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Explore historical MLB seasons one row per player-year (or per team if split seasons are kept).",
-                        "Compare eras, find breakout years, and build custom leaderboards from filters.",
+                        "Browse individual seasons across MLB history.",
+                        "Find breakout years, compare eras, and spot patterns.",
+                        "Filter by team, year, position, batting hand, and stat minimums.",
+                        "Sort the table and turn on charts when you want a visual look.",
                     ],
-                },
-                {
-                    "title": "Key filters",
-                    "bullets": [
-                        "Year range, team, batting hand, position (season vs career primary).",
-                        "Sort stat and order; optional minimum stat thresholds in Advanced.",
-                        "Combine split seasons toggles one primary-team row per player-year.",
-                    ],
-                },
-                {
-                    "title": "Common workflows",
-                    "bullets": [
-                        "Set filters → scan the table → open charts for the filtered pool.",
-                        "Send players to Comparison, Trend Value, or Valuation via contextual actions.",
-                    ],
-                },
-                {
-                    "title": "Interesting things to try",
-                    "bullets": [
-                        "Mets right-handed hitters, 1998–2002, OPS > .850.",
-                        "30 HR / 30 SB seasons at shortstop.",
-                        "Steroid-era slugger leaderboards with HR and SLG mins.",
-                    ],
-                    "expandable": True,
                 },
             ],
+            "example": "Try finding all right-handed Mets hitters from 1998–2002.",
         },
         {
             "id": "career",
+            "kind": "normal",
             "title": "Career Totals",
             "icon": "📚",
             "page_key": "Career Totals",
-            "tagline": "Roll up counting and rate stats across a year window.",
+            "tagline": "See what players did over the long haul — not just one season.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "See full-career (or windowed) production instead of single seasons.",
-                        "Great for Hall of Fame debates and career-shape comparisons.",
-                    ],
-                },
-                {
-                    "title": "Key filters",
-                    "bullets": [
-                        "Year range, team, position mode, batting hand, sort stat.",
-                        "By-team toggle: one row per franchise stint vs one combined career row.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Set a year window (e.g. 2000–2016) → rank by WAR-proxy stats like OPS or HR.",
-                        "Transfer top names to Comparison or valuation pages.",
+                        "View career totals across the years you pick.",
+                        "Compare long-term production between stars.",
+                        "See totals by team or franchise — great for “best Met ever” debates.",
+                        "Settle Hall of Fame or franchise-greatest arguments with real numbers.",
                     ],
                 },
             ],
+            "example": (
+                "Compare career totals for Mets stars, or see who hit the most home runs "
+                "for a franchise in a given era."
+            ),
         },
         {
             "id": "leaderboards",
+            "kind": "normal",
             "title": "Leaderboards",
             "icon": "🏆",
             "page_key": "Leaderboards",
-            "tagline": "Fast who-leads-in-X rankings.",
+            "tagline": "Quick answer: who led in this stat?",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Single-stat leaderboards with light filters — the quickest rank view.",
+                        "Rank players by HR, RBI, SB, OPS, batting average, and more.",
+                        "See the top seasons or careers for the stat you care about.",
+                        "Use filters to narrow the list (years, position, team, etc.).",
+                    ],
+                },
+            ],
+            "example": "Find the top OPS seasons by shortstops in the 2010s.",
+        },
+        {
+            "id": "comparison",
+            "kind": "normal",
+            "title": "Comparison Tool",
+            "icon": "📈",
+            "page_key": "Comparison Tool",
+            "tagline": "Pick players and compare them side by side.",
+            "sections": [
+                {
+                    "title": "Use this page to…",
+                    "bullets": [
+                        "Choose up to three players and compare their stats directly.",
+                        "See who was better in counting stats, rate stats, and trends.",
+                        "Use charts to compare production year by year.",
                     ],
                 },
                 {
-                    "title": "Key filters",
+                    "title": "Actions for a player",
                     "bullets": [
-                        "Year range, top N, sort stat, team/position/hand as needed.",
+                        "Quickly **send a player** to another page (Trends, Valuation, and more).",
+                        "**Add to your watchlist** while you draft or research.",
+                        "**Compare** or **analyze his trend** without retyping his name.",
                     ],
-                },
-                {
-                    "title": "Interesting things to try",
-                    "bullets": [
-                        "Who led the league in SB in the 1980s?",
-                        "Top OPS seasons for a franchise in a decade.",
-                    ],
-                    "expandable": True,
                 },
             ],
         },
         {
-            "id": "trends",
-            "title": "Trend Value",
+            "id": "trends_valuation",
+            "kind": "normal",
+            "title": "Trends and Valuation",
             "icon": "🔥",
             "page_key": "Trend Value",
-            "tagline": "Trends and Valuation — part 1: who's improving or declining.",
+            "tagline": "See who is heating up, cooling off, or worth a closer look.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use these pages to…",
                     "bullets": [
-                        "Identify improving and declining players using recent-season deltas and slopes.",
-                        "Spot breakout candidates and regression risks before your league mates do.",
+                        "Spot players whose stats are **going up** or **going down**.",
+                        "Use **trend charts** to see whether production is rising or falling.",
+                        "Use **scatterplots** to compare many players at once — each dot is a player.",
+                        "**Valuation** gives you one ranked list mixing recent stats and trend direction.",
                     ],
                 },
                 {
-                    "title": "Important metrics",
+                    "title": "A few terms, in plain English",
                     "bullets": [
-                        "**Slope** — direction/strength of the stat trend over the window.",
-                        "**R²** — how consistent the trend is (higher = steadier pattern, not noisier).",
-                        "**Volatility** — how swingy year-to-year results are.",
-                        "Change columns (Δ) show year-over-year movement in counting and rate stats.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Filter by position/team/year → sort by slope or breakout lists.",
-                        "Send a name to Comparison or add to your draft watchlist.",
-                    ],
-                },
-                {
-                    "title": "Interesting things to try",
-                    "bullets": [
-                        "Find young players with positive OPS slope and high R².",
-                        "Compare two sluggers' HR slopes before a trade offer.",
-                    ],
-                    "expandable": True,
-                },
-            ],
-        },
-        {
-            "id": "valuation",
-            "title": "Valuation",
-            "icon": "💰",
-            "page_key": "Valuation",
-            "tagline": "Trends and Valuation — part 2: one ranked shortlist.",
-            "sections": [
-                {
-                    "title": "Purpose",
-                    "bullets": [
-                        "Blend recent production (Current Score) with trend direction (Trend Score) into Valuation Score.",
-                        "Best single table when you want a draft or trade shortlist.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Sort by Valuation Score → sanity-check HR, RBI, OPS, and components.",
-                        "Confirm on Trend Value or Comparison before drafting or trading.",
+                        "**Slope** — Positive means trending up; negative means trending down.",
+                        "**R²** — Higher means the trend is more steady and reliable (less random noise).",
+                        "**Volatility** — How up-and-down the player has been from year to year.",
+                        "**Scatterplot** — Players farther right or up are stronger on those axes, depending on the chart.",
                     ],
                 },
             ],
+            "example": "Before a trade, check whether a hitter’s OPS slope is positive and his R² is high.",
         },
         {
             "id": "sleepers",
+            "kind": "normal",
             "title": "Fantasy Sleepers & Busts",
-            "icon": "🧠",
+            "icon": "💎",
             "page_key": "Fantasy Sleepers & Busts",
-            "tagline": "Market vs model — find edge before draft day.",
+            "tagline": "Find underrated picks and players who might be overpriced.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Surface sleepers (model likes more than the market) and busts (fade candidates).",
-                        "Compare FantasyPros/ADP-style ranks to the app's model ranks.",
+                        "Find **sleepers** — players the app likes more than the market does.",
+                        "Watch **bust risk** — names that may be drafted too high.",
+                        "**Fantasy Edge** — positive often means “the app likes him more than ADP.”",
+                        "**Sleeper Score** — highlights hidden value.",
                     ],
-                },
-                {
-                    "title": "Important metrics",
-                    "bullets": [
-                        "**Fantasy Edge** — Market Rank minus Model Rank (positive ≈ undervalued).",
-                        "**Expected Fantasy Value (EFV)** — blended projected production score.",
-                    ],
-                },
-                {
-                    "title": "Interesting things to try",
-                    "bullets": [
-                        "Sort sleepers by Fantasy Edge and cross-check Trend Value slopes.",
-                        "Avoid busts with negative edge and rising volatility.",
-                    ],
-                    "expandable": True,
                 },
             ],
+            "example": "Look for players with a high Fantasy Edge and strong projected value.",
         },
         {
             "id": "draft_assistant",
+            "kind": "normal",
             "title": "Fantasy Draft Assistant",
             "icon": "🧩",
             "page_key": "Draft Assistant Simulator",
-            "tagline": "Next-pick recommendations — pair with Draft Room Simulator for logged picks.",
+            "tagline": "Get help building your roster during draft prep.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Optimize roster construction with need, scarcity, and projection-aware ranks.",
-                        "Log picks in **Draft Room Simulator**; get next-pick help here.",
+                        "See who to draft next based on value, position, team needs, and risk.",
+                        "Decide whether a player **fits your roster** right now.",
+                        "Pair with **Draft Room Simulator** to log picks as you go.",
                     ],
                 },
                 {
-                    "title": "Important metrics",
+                    "title": "Scores you’ll see",
                     "bullets": [
-                        "**Draft Fit Score** — how well a player fills your roster needs and categories.",
-                        "**Scarcity Score** — positional supply pressure (grab scarce positions earlier).",
-                        "Market rank vs model rank — same edge idea as Sleepers & Busts.",
+                        "**Expected Fantasy Value** — How valuable the player is projected to be.",
+                        "**Draft Fit Score** — How well he fits your team right now.",
+                        "**Decision Score** — The app’s overall recommendation for this pick.",
+                        "**Scarcity** — How hard it is to find good players at that position.",
                     ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Enter your roster needs → review top available → draft in Draft Room.",
-                        "Toggle projection style (Conservative / Balanced / Aggressive) to taste.",
-                    ],
-                },
-                {
-                    "title": "Interesting things to try",
-                    "bullets": [
-                        "Test scarcity across roto vs points scoring in Draft Simulation Test Mode.",
-                        "Compare two CFs with similar EFV but different category fit.",
-                    ],
-                    "expandable": True,
                 },
             ],
         },
         {
             "id": "draft_sim",
+            "kind": "normal",
             "title": "Draft Simulation Test Mode",
             "icon": "🧪",
             "page_key": "Draft Simulation Test Mode",
-            "tagline": "Run full mock drafts and compare strategies.",
+            "tagline": "Practice a full fantasy draft before the real one.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Simulate snake drafts (portfolio-friendly lab) with Draft Assistant-style scoring.",
-                        "Analyze team strengths, weaknesses, best picks, and positional gaps after the draft.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Pick scoring format and teams → run sim → review grades and trade ideas.",
-                        "Compare aggressive vs balanced projection modes across runs.",
+                        "Run a **mock draft** with the number of teams and rounds you choose.",
+                        "See how each team’s roster turns out.",
+                        "Review **strengths, weaknesses, best picks, risky picks, and position gaps**.",
+                        "Try different strategies (power early vs speed, etc.) and compare results.",
                     ],
                 },
             ],
+            "example": "Run a 4-team draft to see how different strategies play out.",
         },
         {
             "id": "live_draft",
+            "kind": "normal",
             "title": "Live Draft Room",
             "icon": "📡",
             "page_key": "Live Draft Room",
-            "tagline": "Run a live snake draft with timers and smart recommendations.",
+            "tagline": "Run your draft night in the app.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Conduct mock or live drafts in the browser with pick board and rosters.",
-                        "Get pick-by-pick guidance tuned to your slot and roster holes.",
+                        "Draft players **manually** or use **recommendations** and **auto-pick**.",
+                        "Follow the **draft board**, **team rosters**, and **best available** list.",
+                        "See **Decision Score** to compare options on the clock.",
                     ],
                 },
                 {
-                    "title": "Important metrics",
-                    "bullets": [
-                        "**Decision Score** — overall pick quality blending value, need, and urgency.",
-                        "**Survival probability** — how likely a target is to last until your next pick.",
-                        "Auto-pick rules fill picks when you're on the clock under time pressure.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Configure teams and slots → draft manually or with auto-pick → export results.",
-                        "Hand off completed rooms to simulation analysis when needed.",
-                    ],
+                    "title": "Survival probability",
+                    "body": (
+                        "Answers a simple question: **Can I wait another round, or should I draft him now?** "
+                        "Higher means he’s more likely to still be there next time you pick."
+                    ),
                 },
             ],
         },
         {
             "id": "standings",
+            "kind": "normal",
             "title": "Fantasy Standings Tracker",
-            "icon": "🏆",
+            "icon": "📊",
             "page_key": "Fantasy Standings Tracker",
-            "tagline": "Score every team with live category standings.",
+            "tagline": "See how your fantasy teams stack up.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Load rosters and current-season stats to see category ranks and totals.",
-                        "Feeds the Lineup Assistant with the same stat bundle.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Import or enter rosters → review category deficits → plan trades.",
-                        "Send category focus to trade and lineup tools.",
+                        "Track how each fantasy team is doing by category.",
+                        "Spot **strengths** (categories you’re winning) and **weaknesses** (what you need).",
+                        "Figure out whether you need more HR, SB, ERA, or other categories.",
                     ],
                 },
             ],
         },
         {
             "id": "lineup",
+            "kind": "normal",
             "title": "Fantasy Lineup Assistant",
             "icon": "🧠",
             "page_key": "Fantasy Lineup Assistant",
-            "tagline": "Set optimal lineups and bench decisions each scoring period.",
+            "tagline": "Set a stronger lineup each week.",
             "sections": [
                 {
-                    "title": "Purpose",
+                    "title": "Use this page to…",
                     "bullets": [
-                        "Recommend legal starting lineups by position eligibility.",
-                        "Start/sit guidance and trade ideas based on category needs.",
-                    ],
-                },
-                {
-                    "title": "Workflows",
-                    "bullets": [
-                        "Load stats from Standings Tracker → review recommended starters → adjust for matchups.",
+                        "Get help deciding **who to start** and who to bench.",
+                        "Balance categories based on what your team needs.",
+                        "Works best after you’ve loaded teams in **Fantasy Standings Tracker**.",
                     ],
                 },
             ],
         },
         {
-            "id": "metrics",
-            "title": "Key metrics glossary",
-            "icon": "📐",
+            "id": "send_filters",
+            "kind": "normal",
+            "title": "Sending filters to another page",
+            "icon": "↗️",
             "page_key": None,
-            "tagline": "Short definitions for scores you'll see across fantasy pages.",
+            "tagline": "Save time — you don’t have to re-enter the same filters everywhere.",
             "sections": [
                 {
-                    "title": "Metric cheat sheet",
+                    "title": "How it works",
                     "bullets": [
-                        "**Fantasy Edge** — Market Rank − Model Rank; higher often means undervalued.",
-                        "**Draft Fit Score** — Roster/category fit for your team right now.",
-                        "**Decision Score** — Live-draft pick quality (value + need + urgency).",
-                        "**Scarcity Score** — How thin the position is on the remaining board.",
-                        "**Volatility** — Year-to-year unpredictability in production.",
-                        "**Slope** — Trend direction/strength over the selected window.",
-                        "**R²** — Consistency of that trend (not the same as 'good player').",
-                        "**Expected Fantasy Value (EFV)** — Blended projected fantasy production score.",
+                        "Many pages let you **send your current filters** to another page.",
+                        "Your year range, team, position, and minimums carry over automatically.",
+                    ],
+                },
+                {
+                    "title": "Top 3 players checkbox",
+                    "bullets": [
+                        "On some pages you can check **“Also send top 3 players from current results.”**",
+                        "The app sends the top three names from your table or chart to **Comparison** or **Trends**.",
+                    ],
+                },
+            ],
+            "example": (
+                "If you filtered Mets hitters from 1998–2002 in Historical Explorer, "
+                "you can send those filters to Career Totals or Leaderboards in one click."
+            ),
+        },
+        {
+            "id": "tracked",
+            "kind": "normal",
+            "title": "Tracked Players",
+            "icon": "👀",
+            "page_key": None,
+            "tagline": "Keep a short list of names you’re watching.",
+            "sections": [
+                {
+                    "title": "Use this for…",
+                    "bullets": [
+                        "Players you’re studying for a draft, trade, or debate.",
+                        "Names you sent to Comparison or Trends — they can land in your tracked list.",
+                        "Quick access in the sidebar while you jump between pages.",
+                    ],
+                },
+            ],
+        },
+        {
+            "id": "finish",
+            "kind": "end",
+            "title": "You are all set",
+            "icon": "🎉",
+            "page_key": None,
+            "tagline": (
+                "You can use this app as a **baseball research tool**, a **fantasy draft prep tool**, "
+                "or a **live fantasy draft assistant**. Pick a page in the sidebar and start exploring."
+            ),
+            "sections": [
+                {
+                    "title": "Quick reminders",
+                    "bullets": [
+                        "Open **📘 Tutorial** under the header anytime for this tour again.",
+                        "Each page has a short **Quick guide** at the top when you visit it.",
+                        "Use the sidebar **watchlist** and **draft queue** during draft season.",
                     ],
                 },
             ],
@@ -500,13 +463,13 @@ def render_tutorial_header_bar() -> None:
     left, right = st.columns([4, 1])
     with left:
         st.markdown(
-            '<p class="tutorial-bar-text">New here? Take a guided tour of every major tool — '
-            "about three minutes, at your own pace.</p>",
+            '<p class="tutorial-bar-text">New here? Take a quick tour — '
+            "built for baseball fans and fantasy players.</p>",
             unsafe_allow_html=True,
         )
     with right:
         if st.button(
-            "📘 Start Tutorial",
+            "📘 Tutorial",
             key="tutorial_header_open_btn",
             use_container_width=True,
             type="secondary",
@@ -536,7 +499,67 @@ def _render_step_sections(sections: list[dict[str, Any]]) -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
 
-@st.dialog("Daniel Cohen Baseball Explorer — Tutorial", width="large")
+def _render_example(text: str | None) -> None:
+    if text:
+        st.markdown(f'<div class="tutorial-example"><strong>Try this:</strong> {text}</div>', unsafe_allow_html=True)
+
+
+def _render_welcome_buttons() -> None:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Start Tour", key="tutorial_welcome_start", use_container_width=True, type="primary"):
+            _set_step(1)
+            st.rerun()
+    with c2:
+        if st.button("Skip", key="tutorial_welcome_skip", use_container_width=True):
+            _close_tutorial()
+            st.rerun()
+    with c3:
+        if st.button("Don't show again", key="tutorial_welcome_hide", use_container_width=True):
+            hide_tutorial_button_permanently()
+            _close_tutorial()
+            st.rerun()
+
+
+def _render_end_buttons() -> None:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Finish Tour", key="tutorial_end_finish", use_container_width=True, type="primary"):
+            _close_tutorial()
+            st.rerun()
+    with c2:
+        if st.button("Restart Tour", key="tutorial_end_restart", use_container_width=True):
+            _set_step(0)
+            st.rerun()
+    with c3:
+        if st.button("Don't show again", key="tutorial_end_hide", use_container_width=True):
+            hide_tutorial_button_permanently()
+            _close_tutorial()
+            st.rerun()
+
+
+def _render_middle_nav(idx: int, n_steps: int) -> None:
+    nav = st.columns([1, 1, 1, 1])
+    with nav[0]:
+        if st.button("← Previous", key="tutorial_btn_prev", disabled=idx <= 1, use_container_width=True):
+            _set_step(idx - 1)
+            st.rerun()
+    with nav[1]:
+        if st.button("Next →", key="tutorial_btn_next", disabled=idx >= n_steps - 2, use_container_width=True):
+            _set_step(idx + 1)
+            st.rerun()
+    with nav[2]:
+        if st.button("Skip tour", key="tutorial_btn_skip", use_container_width=True):
+            _close_tutorial()
+            st.rerun()
+    with nav[3]:
+        if st.button("Don't show again", key="tutorial_btn_hide", use_container_width=True):
+            hide_tutorial_button_permanently()
+            _close_tutorial()
+            st.rerun()
+
+
+@st.dialog("Baseball Explorer — Quick Tour", width="large")
 def tutorial_dialog() -> None:
     steps = get_tutorial_steps()
     init_tutorial_prefs()
@@ -546,70 +569,41 @@ def tutorial_dialog() -> None:
     idx = int(st.session_state.get(TUTORIAL_STEP_KEY, 0))
     idx = max(0, min(idx, len(steps) - 1))
     step = steps[idx]
+    kind = step.get("kind", "normal")
 
-    st.markdown(
-        f'<span class="tutorial-step-pill">Step {idx + 1} of {len(steps)}</span>',
-        unsafe_allow_html=True,
-    )
+    if kind != "welcome":
+        st.markdown(
+            f'<span class="tutorial-step-pill">Step {idx + 1} of {len(steps)}</span>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown(f"### {step.get('icon', '')} {step.get('title', '')}")
     if step.get("tagline"):
         st.markdown(f'<p class="tutorial-tagline">{step["tagline"]}</p>', unsafe_allow_html=True)
 
     st.divider()
     _render_step_sections(step.get("sections") or [])
+    _render_example(step.get("example"))
 
     page_key = step.get("page_key")
-    if page_key:
-        st.caption(f"Related page: **{page_key}**")
+    if page_key and kind == "normal":
         if st.button(
-            f"Open {page_key}",
+            f"Go to {page_key}",
             key=f"tutorial_open_page_{step.get('id', idx)}",
-            use_container_width=False,
         ):
             st.session_state[TUTORIAL_NAV_PAGE_KEY] = page_key
             _close_tutorial()
             st.rerun()
 
     st.divider()
-    nav = st.columns([1, 1, 1, 1, 1])
-    with nav[0]:
-        if st.button(
-            "← Previous",
-            key="tutorial_btn_prev",
-            disabled=idx <= 0,
-            use_container_width=True,
-        ):
-            _set_step(idx - 1)
-            st.rerun()
-    with nav[1]:
-        if st.button(
-            "Next →",
-            key="tutorial_btn_next",
-            disabled=idx >= len(steps) - 1,
-            use_container_width=True,
-        ):
-            _set_step(idx + 1)
-            st.rerun()
-    with nav[2]:
-        if st.button("Finish Tour", key="tutorial_btn_finish", use_container_width=True):
-            _close_tutorial()
-            st.rerun()
-    with nav[3]:
-        if st.button("Close", key="tutorial_btn_close", use_container_width=True):
-            _close_tutorial()
-            st.rerun()
-    with nav[4]:
-        if st.button("Don't show again", key="tutorial_btn_hide", use_container_width=True):
-            hide_tutorial_button_permanently()
-            _close_tutorial()
-            st.rerun()
-
-    st.caption(
-        "Tip: Each analytics page also has a short **Quick guide** at the top when you visit it."
-    )
+    if kind == "welcome":
+        _render_welcome_buttons()
+    elif kind == "end":
+        _render_end_buttons()
+    else:
+        _render_middle_nav(idx, len(steps))
 
 
 def maybe_open_tutorial_dialog() -> None:
-    """Call once per run after navigation helpers exist."""
     if st.session_state.get(TUTORIAL_OPEN_KEY):
         tutorial_dialog()
