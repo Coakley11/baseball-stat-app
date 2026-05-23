@@ -6678,6 +6678,8 @@ def run_draft_scoring_consistency_check(
 
 def render_shared_scoring_consistency_check(yearly_source, market_df, key_suffix="main"):
     """Temporary validation UI: pool + context scoring parity across draft pages."""
+    if not developer_mode_enabled():
+        return
     with st.expander("Shared Scoring Consistency Check", expanded=False):
         st.caption(
             "Validates canonical pool metrics and `apply_draft_pick_scoring()` using the session's draft settings. "
@@ -7470,6 +7472,8 @@ def calculate_draft_fit_score(available, roster_df, **kwargs):
 
 def render_draft_scoring_breakdown(scored_df, player_name=None, key_suffix=""):
     """Developer/debug expander: component contributions for Draft Fit and Decision scores."""
+    if not developer_mode_enabled():
+        return
     if scored_df is None or scored_df.empty:
         st.caption("No scored players available.")
         return
@@ -8929,6 +8933,24 @@ PAGE_STATE_DEBUG_PREFIXES = {
     "Fantasy Lineup Assistant": ("lineup_",),
 }
 
+DEVELOPER_MODE_KEY = "app_developer_mode"
+
+
+def developer_mode_enabled() -> bool:
+    """When False (default), hide debug/diagnostic UI and skip expensive debug work."""
+    return bool(st.session_state.get(DEVELOPER_MODE_KEY, False))
+
+
+def render_developer_mode_sidebar_toggle():
+    """Single sidebar switch for all developer-only tools (default OFF)."""
+    st.session_state.setdefault(DEVELOPER_MODE_KEY, False)
+    st.sidebar.checkbox(
+        "Developer Mode",
+        value=False,
+        key=DEVELOPER_MODE_KEY,
+        help="Show saved filter state, performance timing, scoring validation, and draft score breakdowns.",
+    )
+
 
 def migrate_legacy_widget_keys():
     """One-time copy from old widget keys to new stable names."""
@@ -9049,6 +9071,8 @@ def _debug_session_value_repr(val):
 
 def render_page_filters_debug(page_name: str):
     """Bottom-of-page debug: confirm filter keys survive sidebar navigation."""
+    if not developer_mode_enabled():
+        return
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
     for k in sorted(st.session_state.keys()):
@@ -9066,7 +9090,7 @@ def render_page_filters_debug(page_name: str):
 
 def render_page_state_debug(page_name: str):
     """Sidebar debug: show persisted keys for the active page."""
-    if not st.session_state.get("show_performance_debug"):
+    if not developer_mode_enabled():
         return
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
@@ -9622,21 +9646,7 @@ def render_contextual_page_nav(
                 "go_target": go_target,
                 "show_top3_checkbox": show_top3_checkbox,
             }
-            xfer_df = st.session_state.get(f"ctx_nav_xfer_df_{source}_{placement_key}")
-            xfer_col = st.session_state.get(f"ctx_nav_xfer_col_{source}_{placement_key}", name_col)
-            ctx_preview = dict(st.session_state.get(f"ctx_nav_base_extra_{source}_{placement_key}") or {})
-            if xfer_df is not None:
-                ctx_preview["transfer_results_df"] = xfer_df
-                ctx_preview["results_df"] = xfer_df
-                ctx_preview["transfer_name_col"] = xfer_col
-                ctx_preview["results_player_col"] = xfer_col
-            if show_top3_checkbox:
-                ctx_preview["send_top_3_players"] = send_top3
-            else:
-                ctx_preview["send_top_3_players"] = False
-            st.session_state[nav_payload_key] = pg_xfer.build_transfer(
-                st.session_state, builder_id, ctx_preview
-            )
+            st.session_state.pop(nav_payload_key, None)
         else:
             st.session_state.pop(nav_target_key, None)
             st.session_state.pop(nav_payload_key, None)
@@ -9703,13 +9713,8 @@ for _ephemeral_key in list(st.session_state.keys()):
         st.session_state.pop(_ephemeral_key, None)
 
 st.sidebar.caption("Filters are remembered as you move between pages.")
+render_developer_mode_sidebar_toggle()
 render_page_state_debug(active_page)
-show_perf_debug = st.sidebar.checkbox(
-    "Show performance debug",
-    value=False,
-    key="show_performance_debug",
-    help="Shows current rerun timing and a short cache/lazy-load summary.",
-)
 with st.sidebar.expander("New here? Quick start", expanded=False):
     st.markdown(
         "**Draft prep**\n"
@@ -12396,15 +12401,16 @@ if active_page == "Draft Assistant Simulator":
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         st.caption("Recommendation table with roster fit, strategy context, and CSV export.")
         render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
-        with st.expander("Draft Scoring Breakdown", expanded=False):
-            st.caption("Developer view: per-component contributions from the centralized `apply_draft_pick_scoring()` engine.")
-            _da_brk_opts = [""] + recs["fullName"].astype(str).tolist()
-            _da_brk_player = st.selectbox("Inspect player", _da_brk_opts, key="draft_assistant_breakdown_player")
-            render_draft_scoring_breakdown(
-                available,
-                player_name=_da_brk_player if _da_brk_player else None,
-                key_suffix="assistant",
-            )
+        if developer_mode_enabled():
+            with st.expander("Draft Scoring Breakdown", expanded=False):
+                st.caption("Per-component contributions from the draft scoring engine.")
+                _da_brk_opts = [""] + recs["fullName"].astype(str).tolist()
+                _da_brk_player = st.selectbox("Inspect player", _da_brk_opts, key="draft_assistant_breakdown_player")
+                render_draft_scoring_breakdown(
+                    available,
+                    player_name=_da_brk_player if _da_brk_player else None,
+                    key_suffix="assistant",
+                )
         render_contextual_page_nav(
             "Draft Assistant Simulator",
             "after_recommendations",
@@ -13010,15 +13016,16 @@ if active_page == "Draft Simulation Test Mode":
                 display_rows=80,
                 style_cols=["Fantasy Edge", "Expected Fantasy Value", "Sleeper Score", "Scarcity Score", "Draft Fit Score", "Decision Score", "Best Player Available Score", "Best Value Sleeper Score"],
             )
-            with st.expander("Draft Scoring Breakdown", expanded=False):
-                st.caption("Developer view: pick-level component contributions from `apply_draft_pick_scoring()`.")
-                _lab_brk_opts = [""] + lab_draft["fullName"].astype(str).head(25).tolist()
-                _lab_brk_player = st.selectbox("Inspect player", _lab_brk_opts, key="draft_lab_breakdown_player")
-                render_draft_scoring_breakdown(
-                    lab_draft,
-                    player_name=_lab_brk_player if _lab_brk_player else None,
-                    key_suffix="lab",
-                )
+            if developer_mode_enabled():
+                with st.expander("Draft Scoring Breakdown", expanded=False):
+                    st.caption("Pick-level component contributions from the draft scoring engine.")
+                    _lab_brk_opts = [""] + lab_draft["fullName"].astype(str).head(25).tolist()
+                    _lab_brk_player = st.selectbox("Inspect player", _lab_brk_opts, key="draft_lab_breakdown_player")
+                    render_draft_scoring_breakdown(
+                        lab_draft,
+                        player_name=_lab_brk_player if _lab_brk_player else None,
+                        key_suffix="lab",
+                    )
 
         roster_cols = [
             "Fantasy Team", "Round", "Pick", "fullName", "Primary Position", "Team",
@@ -13409,15 +13416,16 @@ if active_page == "Live Draft Room":
                         file_name="live_draft_value_sleepers.csv",
                         display_rows=10,
                     )
-                with st.expander("Draft Scoring Breakdown", expanded=False):
-                    st.caption("Developer view: component contributions from `apply_draft_pick_scoring()`.")
-                    _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
-                    _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
-                    render_draft_scoring_breakdown(
-                        top_rec if not top_rec.empty else pd.DataFrame(),
-                        player_name=_ld_brk_player if _ld_brk_player else None,
-                        key_suffix="live",
-                    )
+                if developer_mode_enabled():
+                    with st.expander("Draft Scoring Breakdown", expanded=False):
+                        st.caption("Component contributions from the draft scoring engine.")
+                        _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
+                        _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
+                        render_draft_scoring_breakdown(
+                            top_rec if not top_rec.empty else pd.DataFrame(),
+                            player_name=_ld_brk_player if _ld_brk_player else None,
+                            key_suffix="live",
+                        )
 
                 st.subheader("Manual Draft")
                 available = live_draft_get_available(room)
@@ -13469,11 +13477,12 @@ if active_page == "Live Draft Room":
                 label="Draft workflow…",
             )
 
-        with st.expander("Future multiplayer architecture (local preview)", expanded=False):
-            st.caption(
-                "Room state is session-local today. This snapshot is the shape a future sync service would persist."
-            )
-            st.json(serialize_live_draft_room(room))
+        if developer_mode_enabled():
+            with st.expander("Future multiplayer architecture (local preview)", expanded=False):
+                st.caption(
+                    "Room state is session-local today. This snapshot is the shape a future sync service would persist."
+                )
+                st.json(serialize_live_draft_room(room))
 
         st.subheader("Team Rosters")
         roster_df = live_draft_rosters_df(room)
@@ -14559,9 +14568,9 @@ if active_page == "ML Predictions":
                         with st.expander("Feature importance chart", expanded=False):
                             top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
 
-if show_perf_debug:
+if developer_mode_enabled():
     elapsed_ms = (time.perf_counter() - _APP_RENDER_START) * 1000
-    with st.sidebar.expander("Performance Debug", expanded=True):
+    with st.sidebar.expander("Performance Debug", expanded=False):
         st.caption(f"Current page: **{page_option_label(active_page)}**")
         st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
         st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
