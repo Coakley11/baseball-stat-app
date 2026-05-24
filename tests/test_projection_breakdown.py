@@ -28,28 +28,42 @@ def test_row_has_stabilized_projection():
     assert pb.row_has_stabilized_projection(stabilized)
 
 
-def test_build_trend_cards_includes_r_and_rbi():
+def test_format_trimmed_signed():
+    assert pb.format_trimmed_signed(2.0) == "+2"
+    assert pb.format_trimmed_signed(2.4) == "+2.4"
+    assert pb.format_trimmed_signed(-0.018) == "-0.018"
+    assert pb.format_trimmed_signed(0.007) == "+0.007"
+    assert pb.format_trimmed_signed(0.0) == "+0"
+
+
+def test_trend_slope_line_and_slight_labels():
+    assert pb.format_trend_slope_line(2.4, "HR", "HR", kind="counting") == "Slope: +2.4 HR/year"
+    assert pb.format_trend_slope_line(-0.018, "OPS", "OPS", kind="rate") == "Slope: -0.018 OPS/year"
+    assert pb.trend_direction_display_label("declining", -1.2, kind="counting") == "Slight decline"
+    assert pb.trend_direction_display_label("declining", -5.0, kind="counting") == "Declining"
+
+
+def test_build_trend_cards_includes_r_and_rbi_no_sparkline():
     row = pd.Series({
         "HR_trend": 1.5,
         "R_trend": 2.0,
         "RBI_trend": -0.5,
         "SB_trend": 0.1,
-        "2B_trend": 0.3,
-        "3B_trend": -0.1,
+        "2B_trend": -1.2,
+        "3B_trend": 0.0,
         "BA_trend": 0.012,
         "OPS_trend": 0.025,
     })
-    hist = pd.DataFrame({
-        "yearID": [2023, 2024, 2025],
-        "HR": [30, 35, 40],
-        "R": [80, 85, 90],
-    })
-    cards = pb.build_trend_cards(row, hist)
+    cards = pb.build_trend_cards(row)
     ids = {c["id"] for c in cards}
     assert {"HR", "R", "RBI", "SB", "2B", "3B", "BA", "OPS"} <= ids
     hr = next(c for c in cards if c["id"] == "HR")
     assert hr["direction"] == "improving"
     assert hr["arrow"] == "↑"
+    assert hr["title"] == "HR Trend"
+    assert "sparkline" not in hr
+    twob = next(c for c in cards if c["id"] == "2B")
+    assert twob["direction_label"] == "Slight decline"
 
 
 def test_build_projection_breakdown_bundle_stabilized_flag():

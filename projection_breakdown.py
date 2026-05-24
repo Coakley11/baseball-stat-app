@@ -142,24 +142,92 @@ def classify_trend_direction(value, *, kind: str = "counting") -> str:
     return "improving" if v > 0 else "declining"
 
 
-def trend_direction_ui(direction: str) -> dict[str, str]:
-    """Arrow label and HTML color for trend cards."""
-    mapping = {
-        "improving": {"arrow": "↑", "label": "Improving", "color": "#1a7f37"},
-        "declining": {"arrow": "↓", "label": "Declining", "color": "#b42318"},
-        "stable": {"arrow": "→", "label": "Stable", "color": "#57606a"},
-        "unknown": {"arrow": "?", "label": "Limited data", "color": "#6e7781"},
-    }
-    return mapping.get(direction, mapping["unknown"])
-
-
-def format_trend_slope(value, *, kind: str = "counting") -> str:
+def format_trimmed_signed(value) -> str:
+    """Signed slope with trimmed decimals (e.g. +2, +2.4, -0.018, +0.007)."""
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return "n/a"
     v = float(value)
-    if kind == "rate":
-        return f"{v:+.3f}/yr"
-    return f"{v:+.2f}/yr"
+    if abs(v) < 1e-9:
+        return "+0"
+    av = abs(v)
+    if av >= 10:
+        decimals = 0
+    elif av >= 1:
+        decimals = 1
+    else:
+        decimals = 3
+    text = f"{v:+.{decimals}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+        if text in ("+", "-"):
+            text += "0"
+    return text
+
+
+def _slope_unit(metric_id: str, display_label: str) -> str:
+    if metric_id == "BA":
+        return "AVG"
+    return display_label
+
+
+def format_trend_slope_line(value, metric_id: str, display_label: str, *, kind: str = "counting") -> str:
+    """Human-readable slope line, e.g. ``Slope: +2.4 HR/year``."""
+    num = format_trimmed_signed(value)
+    if num == "n/a":
+        return "Slope: n/a"
+    unit = _slope_unit(metric_id, display_label)
+    suffix = "/year"
+    return f"Slope: {num} {unit}{suffix}"
+
+
+def trend_direction_display_label(direction: str, value, *, kind: str = "counting") -> str:
+    """Plain label: Improving, Stable, Declining, Slight decline, etc."""
+    if direction == "unknown":
+        return "Limited data"
+    if direction == "stable":
+        return "Stable"
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "Stable" if direction == "stable" else direction.title()
+    v = float(value)
+    av = abs(v)
+    if direction == "improving":
+        if kind == "rate" and av < 0.015:
+            return "Slight improvement"
+        if kind == "counting" and av < 2.5:
+            return "Slight improvement"
+        return "Improving"
+    if direction == "declining":
+        if kind == "rate" and av < 0.015:
+            return "Slight decline"
+        if kind == "counting" and av < 2.5:
+            return "Slight decline"
+        return "Declining"
+    return direction.title()
+
+
+def trend_direction_ui(direction: str, value=None, *, kind: str = "counting") -> dict[str, str]:
+    """Arrow, label, and HTML color for trend rows."""
+    label = trend_direction_display_label(direction, value, kind=kind)
+    if direction == "improving":
+        color = "#1a7f37"
+        arrow = "↑"
+    elif direction == "declining":
+        color = "#b42318"
+        arrow = "↓"
+    elif direction == "stable":
+        color = "#57606a"
+        arrow = "→"
+    else:
+        color = "#6e7781"
+        arrow = "?"
+    return {"arrow": arrow, "label": label, "color": color}
+
+
+def format_trend_slope(value, *, kind: str = "counting") -> str:
+    """Legacy alias — prefer ``format_trend_slope_line``."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "n/a"
+    return format_trimmed_signed(value) + "/yr"
 
 
 def player_season_history(
@@ -185,28 +253,28 @@ def player_season_history(
 
 
 def build_trend_cards(row, season_history: pd.DataFrame | None = None) -> list[dict[str, Any]]:
+    """Compact trend rows (direction + slope + explanation). ``season_history`` is ignored (no charts)."""
+    del season_history  # kept for call-site compatibility
     cards = []
-    hist = season_history if season_history is not None else pd.DataFrame()
     for spec in TREND_METRICS:
         val = _num(row, spec["col"])
         direction = classify_trend_direction(val, kind=spec["kind"])
-        ui = trend_direction_ui(direction)
-        spark = pd.DataFrame()
-        sc = spec.get("season_col")
-        if not hist.empty and sc in hist.columns:
-            spark = hist[["yearID", sc]].dropna(subset=[sc]).rename(columns={"yearID": "Year", sc: spec["label"]})
+        ui = trend_direction_ui(direction, val, kind=spec["kind"])
+        trend_name = _slope_unit(spec["id"], spec["label"])
+        title = f"{trend_name} Trend"
         cards.append({
             "id": spec["id"],
+            "title": title,
             "label": spec["label"],
             "col": spec["col"],
             "value": val,
-            "slope_display": format_trend_slope(val, kind=spec["kind"]),
+            "slope_line": format_trend_slope_line(val, spec["id"], spec["label"], kind=spec["kind"]),
+            "slope_display": format_trimmed_signed(val),
             "direction": direction,
             "arrow": ui["arrow"],
             "direction_label": ui["label"],
             "color": ui["color"],
             "explain": spec["explain"],
-            "sparkline": spark,
         })
     return cards
 

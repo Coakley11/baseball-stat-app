@@ -6376,7 +6376,7 @@ def assemble_projection_breakdown_bundle(
     projection_lookup_df=None,
     projection_lookup_name_col: str = "fullName",
 ):
-    """Build dialog payload: stabilized projections + trend cards + season sparklines."""
+    """Build dialog payload: stabilized projections + compact text trend cards."""
     kw = _draft_projection_session_kwargs()
     row, source, _pool = resolve_projection_breakdown_row(
         player_display_name,
@@ -8667,27 +8667,25 @@ def _render_projection_breakdown_dialog(bundle: dict):
     trend_cards = bundle.get("trend_cards") or []
     if trend_cards:
         st.markdown("#### Recent-season trends")
-        st.caption(proj_bd.TREND_METHOD_NOTE)
         grid_cols = st.columns(2)
         for i, card in enumerate(trend_cards):
             with grid_cols[i % 2]:
                 color = card.get("color", "#57606a")
                 arrow = card.get("arrow", "?")
                 dir_lbl = card.get("direction_label", "")
-                slope = card.get("slope_display", "n/a")
+                slope_line = card.get("slope_line") or f"Slope: {card.get('slope_display', 'n/a')}"
+                title = card.get("title") or f"{card.get('label', '')} Trend"
+                explain = card.get("explain", "")
                 st.markdown(
-                    f"<div style='border:1px solid #e6e8eb;border-radius:8px;padding:10px 12px;margin-bottom:8px;'>"
-                    f"<span style='color:{color};font-size:1.25rem;font-weight:700;'>{arrow}</span> "
-                    f"<strong>{card.get('label', '')}</strong> "
-                    f"<span style='color:{color};font-weight:600;'>{dir_lbl}</span><br/>"
-                    f"<span style='color:#57606a;font-size:0.85rem;'>Slope: {slope}</span><br/>"
-                    f"<span style='color:#6e7781;font-size:0.8rem;'>{card.get('explain', '')}</span>"
+                    f"<div style='border:1px solid #e6e8eb;border-radius:8px;padding:8px 10px;margin-bottom:6px;'>"
+                    f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:4px;'>{title}</div>"
+                    f"<div style='color:{color};font-weight:600;font-size:0.9rem;'>"
+                    f"{arrow} {dir_lbl}</div>"
+                    f"<div style='color:#24292f;font-size:0.85rem;margin-top:2px;'>{slope_line}</div>"
+                    f"<div style='color:#6e7781;font-size:0.75rem;margin-top:4px;line-height:1.3;'>{explain}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-                spark = card.get("sparkline")
-                if isinstance(spark, pd.DataFrame) and not spark.empty and len(spark) >= 2:
-                    st.line_chart(spark.set_index("Year"), height=120)
 
     with st.expander("How these numbers are built", expanded=False):
         for note in bundle.get("method_notes") or []:
