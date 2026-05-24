@@ -3830,6 +3830,38 @@ def _ensure_ml_base_pack_precomputed(base_pack, yearly_source, ml_lookback, year
     return _finalize_ml_base_pack(base_pack, yearly_source, ml_lookback, year_pool_sig, refresh_token)
 
 
+def _ml_is_nonempty_dataframe(obj) -> bool:
+    return isinstance(obj, pd.DataFrame) and not obj.empty
+
+
+def _ml_get_train_companions(base_pack, ml_training_df: pd.DataFrame) -> pd.DataFrame:
+    """Never use `df or other` — empty/nonempty DataFrames are ambiguous in boolean context."""
+    if isinstance(base_pack, dict):
+        val = base_pack.get("train_companions")
+        if _ml_is_nonempty_dataframe(val):
+            return val
+    train = _ml_training_companion_rows(ml_training_df)
+    if isinstance(base_pack, dict):
+        base_pack["train_companions"] = train
+    return train
+
+
+def _ml_get_baselines_from_pack(base_pack, ml_training_df: pd.DataFrame) -> dict:
+    if isinstance(base_pack, dict):
+        val = base_pack.get("baselines")
+        if isinstance(val, dict) and val:
+            return val
+    return get_target_baselines(ml_training_df, tuple(ML_TARGET_STATS))
+
+
+def _ml_get_age_curve_from_pack(base_pack, ml_training_df: pd.DataFrame) -> pd.DataFrame:
+    if isinstance(base_pack, dict):
+        val = base_pack.get("age_curve_df")
+        if _ml_is_nonempty_dataframe(val):
+            return val
+    return get_age_curve_adjustments(ml_training_df, tuple(ML_TARGET_STATS))
+
+
 def _ml_training_companion_rows(ml_training_df: pd.DataFrame) -> pd.DataFrame:
     """One row per player for similarity search (much smaller than all training seasons)."""
     if ml_training_df.empty:
@@ -3976,9 +4008,8 @@ def _run_ml_base_training_phase(
     target_stats_tuple = tuple(ML_TARGET_STATS)
 
     if (
-        bundle
-        and isinstance(bundle.get("df"), pd.DataFrame)
-        and not bundle["df"].empty
+        isinstance(bundle, dict)
+        and _ml_is_nonempty_dataframe(bundle.get("df"))
         and bundle.get("feature_cols")
     ):
         ml_training_df = bundle["df"]
@@ -4115,19 +4146,16 @@ def _get_or_build_ml_comp_df(base_pack, current_rows, ml_training_df, feature_co
         return comp_cache[k_key]
     sim_index = base_pack.get("similarity_index")
     if sim_index is None:
-        train_comp = base_pack.get("train_companions")
-        if train_comp is None or train_comp.empty:
-            train_comp = _ml_training_companion_rows(ml_training_df)
-            base_pack["train_companions"] = train_comp
+        train_comp = _ml_get_train_companions(base_pack, ml_training_df)
         sim_index = _build_ml_similarity_index(train_comp, tuple(feature_cols))
         base_pack["similarity_index"] = sim_index
-    comp_df = _query_ml_similarity_comps(
-        sim_index,
-        current_rows,
-        k_neighbors=k_key,
-    ) if sim_index else pd.DataFrame()
+    comp_df = (
+        _query_ml_similarity_comps(sim_index, current_rows, k_neighbors=k_key)
+        if sim_index is not None
+        else pd.DataFrame()
+    )
     if comp_df.empty:
-        train_comp = base_pack.get("train_companions") or _ml_training_companion_rows(ml_training_df)
+        train_comp = _ml_get_train_companions(base_pack, ml_training_df)
         comp_df = build_similar_player_predictions(
             current_rows,
             train_comp,
@@ -4206,11 +4234,17 @@ def _run_ml_tuning_fast(
     status["timing"] = dict(base_pack.get("timing") or {})
     status["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     t_total = time.perf_counter()
+    stage = "initialization"
     try:
-        base_pred_df = base_pack["base_pred_df"]
-        current_rows = base_pack["current_rows"]
-        ml_training_df = base_pack["ml_training_df"]
-        feature_cols = base_pack["ml_feature_cols"]
+        if not isinstance(base_pack, dict):
+            raise ValueError("ML base pack is missing or invalid. Click **Generate / Refresh ML Predictions** first.")
+        base_pred_df = base_pack.get("base_pred_df")
+        current_rows = base_pack.get("current_rows")
+        ml_training_df = base_pack.get("ml_training_df")
+        feature_cols = base_pack.get("ml_feature_cols")
+        if not _ml_is_nonempty_dataframe(base_pred_df):
+            raise ValueError("Base ML predictions are empty. Run **Generate / Refresh** first.")
+        stage = "AB filter"
         ab_ok = pd.to_numeric(base_pred_df["hist_AB_total"], errors="coerce").fillna(0) >= float(ml_min_ab)
         base_f = base_pred_df.loc[ab_ok].reset_index(drop=True)
         if base_f.empty:
@@ -4219,21 +4253,26 @@ def _run_ml_tuning_fast(
                 "Lower that threshold and click **Generate / Refresh** again."
             )
             status["fallback"] = "ab_filter_empty"
+            status["timing"]["failed_stage"] = stage
             return status
         pids = set(base_f["playerID"].astype(str))
+        if not _ml_is_nonempty_dataframe(current_rows):
+            raise ValueError("Current player feature rows are missing from the base pack.")
         cur_f = current_rows[current_rows["playerID"].astype(str).isin(pids)].reset_index(drop=True)
         pred_df = base_f.copy()
-        t_blend = time.perf_counter()
         comp_df = pd.DataFrame()
+        t_blend = time.perf_counter()
         if float(effective_comp_weight or 0) > 0:
+            stage = "similarity adjustment"
             comp_df = _get_or_build_ml_comp_df(
                 base_pack, cur_f, ml_training_df, feature_cols, k_neighbors, refresh_token
             )
             status["timing"]["similarity_sec"] = round(time.perf_counter() - t_blend, 3)
+        stage = "aging / regression blend"
         pred_df = apply_ml_stat_blend(
             pred_df,
-            baselines=base_pack.get("baselines") or get_target_baselines(ml_training_df, tuple(ML_TARGET_STATS)),
-            age_curve_df=base_pack.get("age_curve_df") or get_age_curve_adjustments(ml_training_df, tuple(ML_TARGET_STATS)),
+            baselines=_ml_get_baselines_from_pack(base_pack, ml_training_df),
+            age_curve_df=_ml_get_age_curve_from_pack(base_pack, ml_training_df),
             comp_df=comp_df if float(effective_comp_weight or 0) > 0 else None,
             target_stats=ML_TARGET_STATS,
             regression_strength=effective_regression_strength,
@@ -4242,18 +4281,22 @@ def _run_ml_tuning_fast(
         )
         status["timing"]["blend_sec"] = round(time.perf_counter() - t_blend, 3)
         t_cal = time.perf_counter()
+        stage = "stabilization calibration"
         anchor_pool = base_pack.get("anchor_pool")
-        if isinstance(anchor_pool, pd.DataFrame) and not anchor_pool.empty:
+        if _ml_is_nonempty_dataframe(anchor_pool):
             anchors = anchor_pool[anchor_pool["playerID"].astype(str).isin(pids)].copy()
         else:
             anchor_ids = tuple(sorted(pids))
             anchors = build_stabilized_projection_anchors(yearly_source, anchor_ids, int(ml_lookback))
-        if not anchors.empty:
+        if _ml_is_nonempty_dataframe(anchors):
             pred_df = proj_cal.apply_ml_final_output_calibration(pred_df, anchors)
         status["timing"]["calibration_sec"] = round(time.perf_counter() - t_cal, 3)
+        age_curve_out = base_pack.get("age_curve_df")
+        if not _ml_is_nonempty_dataframe(age_curve_out):
+            age_curve_out = _ml_get_age_curve_from_pack(base_pack, ml_training_df)
         status["pred_df"] = pred_df
-        status["age_curve_df"] = base_pack.get("age_curve_df", pd.DataFrame())
-        status["comp_df"] = comp_df
+        status["age_curve_df"] = age_curve_out if isinstance(age_curve_out, pd.DataFrame) else pd.DataFrame()
+        status["comp_df"] = comp_df if isinstance(comp_df, pd.DataFrame) else pd.DataFrame()
         status["player_count"] = int(len(pred_df))
         status["ok"] = True
         status["runtime_sec"] = round(time.perf_counter() - t_total, 2)
@@ -4265,8 +4308,9 @@ def _run_ml_tuning_fast(
         )
         return status
     except Exception as exc:
-        status["message"] = f"ML tuning update failed: {exc}"
+        status["message"] = f"ML tuning update failed during **{stage}**: {exc}"
         status["fallback"] = "exception"
+        status["timing"]["failed_stage"] = stage
         status["runtime_sec"] = round(time.perf_counter() - t_total, 2)
         return status
 
@@ -4389,7 +4433,7 @@ def _run_ml_projection_pipeline(
     t_total = time.perf_counter()
     try:
         year_pool_sig = _ml_year_pool_signature(yearly_source)
-        if base_pack:
+        if isinstance(base_pack, dict):
             ml_training_df = base_pack.get("ml_training_df", pd.DataFrame())
             ml_feature_cols = base_pack.get("ml_feature_cols", [])
             ml_models = base_pack.get("ml_models", {})
