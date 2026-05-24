@@ -5278,6 +5278,106 @@ def _split_primary_positions(primary_val):
     return list(dict.fromkeys(out))
 
 
+FANTASY_POSITION_FILTER_OPTIONS = [
+    "All positions",
+    "C",
+    "1B",
+    "2B",
+    "3B",
+    "SS",
+    "OF",
+    "DH/UTIL",
+]
+
+
+def _fantasy_position_display_tokens(career_pos, season_pos=None):
+    """Fantasy-facing position label (LF/CF/RF → OF, DH → DH/UTIL) and normalized tokens."""
+    primary_raw = career_pos
+    if primary_raw is None or (isinstance(primary_raw, float) and np.isnan(primary_raw)) or not str(primary_raw).strip():
+        primary_raw = season_pos
+    tokens = _split_primary_positions(primary_raw)
+    if not tokens:
+        tokens = ["DH"]
+    display_parts = ["DH/UTIL" if t == "DH" else t for t in tokens]
+    display = "/".join(dict.fromkeys(display_parts))
+    return display, tokens
+
+
+def _positions_played_in_recent_window(recent_source: pd.DataFrame, *, min_g: int = 20) -> dict:
+    """playerID → deduped fantasy position tokens from seasons in the active window."""
+    if recent_source is None or recent_source.empty or "playerID" not in recent_source.columns:
+        return {}
+    sub = recent_source.copy()
+    if "primaryPos" not in sub.columns:
+        return {}
+    if "G" in sub.columns:
+        sub = sub[pd.to_numeric(sub["G"], errors="coerce").fillna(0) >= int(min_g)]
+    out = {}
+    for pid, grp in sub.groupby("playerID"):
+        tokens = []
+        for pos_val in grp["primaryPos"].dropna().astype(str):
+            tokens.extend(_split_primary_positions(pos_val))
+        if tokens:
+            out[str(pid)] = list(dict.fromkeys(tokens))
+    return out
+
+
+def attach_fantasy_position_columns(player_df: pd.DataFrame, recent_source: pd.DataFrame) -> pd.DataFrame:
+    """Attach Position column + token list using career/season fielding (same rules as draft tools)."""
+    if player_df is None or player_df.empty:
+        return player_df
+    out = player_df.copy()
+    ctx_cols = [c for c in ("playerID", "careerPrimaryPos", "primaryPos") if recent_source is not None and c in recent_source.columns]
+    if "playerID" in out.columns and len(ctx_cols) > 1:
+        ctx = get_latest_player_context(recent_source, tuple(ctx_cols))
+        for drop_c in ("careerPrimaryPos", "primaryPos", "Position", "_position_tokens"):
+            if drop_c in out.columns:
+                out = out.drop(columns=[drop_c])
+        out = out.merge(ctx, on="playerID", how="left")
+    window_pos = _positions_played_in_recent_window(recent_source)
+    displays, token_lists = [], []
+    for _, row in out.iterrows():
+        _, career_toks = _fantasy_position_display_tokens(row.get("careerPrimaryPos"), row.get("primaryPos"))
+        pid = str(row.get("playerID", ""))
+        window_toks = window_pos.get(pid, [])
+        tokens = list(dict.fromkeys(list(career_toks) + list(window_toks)))
+        if not tokens:
+            tokens = ["DH"]
+        display_parts = ["DH/UTIL" if t == "DH" else t for t in tokens]
+        displays.append("/".join(display_parts))
+        token_lists.append(tokens)
+    out["Position"] = displays
+    out["_position_tokens"] = token_lists
+    return out
+
+
+def player_matches_fantasy_position_filter(row, filter_choice: str) -> bool:
+    """True when player is eligible for the selected fantasy slot filter."""
+    choice = str(filter_choice or "").strip()
+    if not choice or choice in ("All positions", "All"):
+        return True
+    tokens = row.get("_position_tokens") if hasattr(row, "get") else None
+    if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
+        tokens = _fantasy_position_display_tokens(row.get("careerPrimaryPos"), row.get("primaryPos"))[1]
+    elif isinstance(tokens, str):
+        tokens = _split_primary_positions(tokens)
+    if choice == "DH/UTIL":
+        return "DH" in tokens or _player_eligible_for_slot(tokens, "UTIL")
+    if choice == "OF":
+        return any(t == "OF" for t in tokens)
+    return _player_eligible_for_slot(tokens, choice)
+
+
+def filter_players_by_fantasy_position(df: pd.DataFrame, filter_choice: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    choice = str(filter_choice or "").strip()
+    if not choice or choice in ("All positions", "All"):
+        return df
+    mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choice), axis=1)
+    return df.loc[mask].copy()
+
+
 def _player_eligible_for_slot(pos_tokens, slot):
     """slot is C,1B,2B,3B,SS,OF, or UTIL (UTIL = any non-pitcher)."""
     if slot == "UTIL":
@@ -9802,11 +9902,13 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
         "compare_smooth_window", "compare_age_range",
     }),
     "Trend Value": frozenset({
-        "trend_lag", "trend_min_g", "trend_sort_col", "trend_use_draft_room_sync", "trend_sync_team_for_draft",
+        "trend_lag", "trend_min_g", "trend_sort_col", "trend_position_filter",
+        "trend_use_draft_room_sync", "trend_sync_team_for_draft",
         *_transfer_stat_min_keys("trend"),
     }),
     "Valuation": frozenset({
-        "value_lag", "value_min_g", "value_use_draft_room_sync", "value_sync_team_for_draft",
+        "value_lag", "value_min_g", "value_position_filter",
+        "value_use_draft_room_sync", "value_sync_team_for_draft",
         "value_w_current", "value_w_trend",
         *_transfer_stat_min_keys("value"),
     }),
@@ -11517,7 +11619,7 @@ if active_page == "Trend Value":
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _trend_lag_options = [3, 4, 5]
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("trend_lag", _trend_lag_options, 3)
         lag_trend = st.selectbox("Trend Window (Years)", _trend_lag_options, key="trend_lag")
@@ -11528,6 +11630,14 @@ if active_page == "Trend Value":
             min_value=0,
             max_value=800,
             key="trend_min_g",
+        )
+    with c3:
+        validate_state_option("trend_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+        trend_position_filter = st.selectbox(
+            "Fantasy Position",
+            FANTASY_POSITION_FILTER_OPTIONS,
+            key="trend_position_filter",
+            help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
         )
 
     max_year_trend = int(yearly_df["yearID"].max())
@@ -11585,13 +11695,17 @@ if active_page == "Trend Value":
 
     trend_value_df = agg_trend.merge(trend_table, on="playerID", how="left")
     trend_value_df = add_latest_and_projection_columns(trend_value_df, recent_data_trend)
+    trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)
+    trend_value_df = filter_players_by_fantasy_position(trend_value_df, trend_position_filter)
 
-    trend_display = trend_value_df[["fullName", "bats", "R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend", "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend"]].copy()
-    trend_display.columns = ["Player", "Bats", "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
+    trend_display = trend_value_df[
+        ["fullName", "Position", "bats", "R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend", "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend"]
+    ].copy()
+    trend_display.columns = ["Player", "Position", "Bats", "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
 
     _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
     validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
-    sort_col = st.selectbox("Sort By Trend", _trend_sort_options, key="trend_sort_col")
+    sort_col = st.selectbox("Sort By Trend Stat", _trend_sort_options, key="trend_sort_col")
     trend_label_to_column = {"R Δ": "R_trend", "H Δ": "H_trend", "2B Δ": "2B_trend", "3B Δ": "3B_trend", "HR Δ": "HR_trend", "RBI Δ": "RBI_trend", "SB Δ": "SB_trend", "BB Δ": "BB_trend", "BA Δ": "BA_trend", "OBP Δ": "OBP_trend", "SLG Δ": "SLG_trend", "OPS Δ": "OPS_trend"}
     selected_trend_col = trend_label_to_column[sort_col]
     selected_trend_name = sort_col.replace(" Δ", "")
@@ -11609,7 +11723,11 @@ if active_page == "Trend Value":
 
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
-    st.caption("Top 250 rows · **Green** = improving · **Red** = declining · Open **Stat minimum filters** above to narrow further. Export includes all rows.")
+    pos_note = f" · **Position: {trend_position_filter}**" if trend_position_filter not in ("All positions", "All") else ""
+    st.caption(
+        f"Top 250 rows{pos_note} · **Position** uses fantasy eligibility (OF = LF/CF/RF, DH/UTIL = DH or utility bats) · "
+        "**Green** = improving · **Red** = declining. Export includes all filtered rows."
+    )
     trend_heat_cols = [c for c in TREND_COUNT_COLS + TREND_RATE_COLS if c in trend_sorted.columns]
     trend_sorted_display = trend_sorted.head(250).copy()
     for col in trend_heat_cols:
@@ -11652,11 +11770,22 @@ if active_page == "Trend Value":
         help_text="Trend leaderboard — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick without retyping names.",
     )
 
-    breakout_df = trend_value_df[["fullName", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]].copy()
+    breakout_df = trend_value_df[
+        ["fullName", "Position", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]
+    ].copy()
     top_breakouts = breakout_df.sort_values("OPS_trend", ascending=False).head(10)
     biggest_declines = breakout_df.sort_values("OPS_trend", ascending=True).head(10)
 
-    rename_breakout = {"fullName": "Player", "bats": "Bats", "OPS_trend": "OPS Δ", "HR_trend": "HR Δ", "XBH_noHR_trend": "2B+3B Δ", "RBI_trend": "RBI Δ", "SB_trend": "SB Δ"}
+    rename_breakout = {
+        "fullName": "Player",
+        "Position": "Position",
+        "bats": "Bats",
+        "OPS_trend": "OPS Δ",
+        "HR_trend": "HR Δ",
+        "XBH_noHR_trend": "2B+3B Δ",
+        "RBI_trend": "RBI Δ",
+        "SB_trend": "SB Δ",
+    }
     top_breakouts_display = clean_ui_columns(top_breakouts.rename(columns=rename_breakout))
     biggest_declines_display = clean_ui_columns(biggest_declines.rename(columns=rename_breakout))
 
@@ -14739,7 +14868,7 @@ if active_page == "Valuation":
     apply_pending_page_transfer(active_page)
 
     _value_lag_options = [3, 4, 5]
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
         lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag")
@@ -14750,6 +14879,14 @@ if active_page == "Valuation":
             min_value=0,
             max_value=800,
             key="value_min_g",
+        )
+    with c3:
+        validate_state_option("value_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+        value_position_filter = st.selectbox(
+            "Fantasy Position",
+            FANTASY_POSITION_FILTER_OPTIONS,
+            key="value_position_filter",
+            help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
         )
 
     max_year_value = int(yearly_df["yearID"].max())
@@ -14806,6 +14943,8 @@ if active_page == "Valuation":
 
     valuation_df = agg_value.merge(trend_value, on="playerID", how="left")
     valuation_df = add_latest_and_projection_columns(valuation_df, recent_data_value)
+    valuation_df = attach_fantasy_position_columns(valuation_df, recent_data_value)
+    valuation_df = filter_players_by_fantasy_position(valuation_df, value_position_filter)
 
     with st.expander("Valuation blend weights", expanded=False):
         st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
@@ -14853,9 +14992,21 @@ if active_page == "Valuation":
         "They are not standalone 2026 stat projections."
     )
 
-    valuation_display = valuation_df[["fullName", "bats", "R", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS", "Trend_Score", "Perf_Score", "Valuation_Score"]].sort_values("Valuation_Score", ascending=False).rename(columns={
-        "fullName": "Player", "bats": "Bats", "Trend_Score": "Trend Score", "Perf_Score": "Current Score", "Valuation_Score": "Valuation Score"
+    valuation_display = valuation_df[
+        ["fullName", "Position", "bats", "R", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS", "Trend_Score", "Perf_Score", "Valuation_Score"]
+    ].sort_values("Valuation_Score", ascending=False).rename(columns={
+        "fullName": "Player",
+        "Position": "Position",
+        "bats": "Bats",
+        "Trend_Score": "Trend Score",
+        "Perf_Score": "Current Score",
+        "Valuation_Score": "Valuation Score",
     })
+    val_pos_note = f" · **Position: {value_position_filter}**" if value_position_filter not in ("All positions", "All") else ""
+    st.caption(
+        f"Sorted by **Valuation Score** (highest first){val_pos_note}. "
+        "**Position** shows fantasy eligibility (OF = LF/CF/RF, DH/UTIL = DH or utility)."
+    )
     valuation_table = format_display_table(
         clean_ui_columns(valuation_display),
         count_cols=["R", "H", "2B", "3B", "HR", "RBI", "SB"],

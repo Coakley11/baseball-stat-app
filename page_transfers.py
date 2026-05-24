@@ -851,6 +851,9 @@ def _trend_to_valuation(session, extra):
     lag = session.get("trend_lag")
     if lag in (3, 4, 5):
         keys["value_lag"] = int(lag)
+    pos = session.get("trend_position_filter")
+    if pos and str(pos).strip() not in ("", "All positions", "All"):
+        keys["value_position_filter"] = str(pos).strip()
     copy_prefix_stat_mins(session, "trend", "value", keys)
     return {"session_keys": keys}
 
@@ -870,6 +873,9 @@ def _valuation_to_trend(session, extra):
     lag = session.get("value_lag")
     if lag in (3, 4, 5):
         keys["trend_lag"] = int(lag)
+    pos = session.get("value_position_filter")
+    if pos and str(pos).strip() not in ("", "All positions", "All"):
+        keys["trend_position_filter"] = str(pos).strip()
     copy_prefix_stat_mins(session, "value", "trend", keys)
     return {"session_keys": keys}
 

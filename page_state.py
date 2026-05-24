@@ -43,7 +43,8 @@ PAGE_STATE_REGISTRY = {
     },
     "Trend Value": {
         "exact": [
-            "trend_lag", "trend_min_g", "trend_use_draft_room_sync", "trend_sync_team_for_draft",
+            "trend_lag", "trend_min_g", "trend_position_filter",
+            "trend_use_draft_room_sync", "trend_sync_team_for_draft",
             "trend_sort_col", "trend_players_multi", "single_trend_dashboard_player",
             "trend_plot_stat", "trend_chart_mode", "trend_smooth_window",
             "trend_anchor_fullname", "trend_multi_queue_fullnames",
@@ -52,7 +53,8 @@ PAGE_STATE_REGISTRY = {
     },
     "Valuation": {
         "exact": [
-            "value_lag", "value_min_g", "value_use_draft_room_sync", "value_sync_team_for_draft",
+            "value_lag", "value_min_g", "value_position_filter",
+            "value_use_draft_room_sync", "value_sync_team_for_draft",
             "value_w_current", "value_w_trend",
         ],
         "prefixes": ["value_"],
