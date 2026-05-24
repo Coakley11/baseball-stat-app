@@ -202,6 +202,55 @@ def test_valuation_to_ml_uses_transfer_position():
     assert payload["transfer_filters"]["transfer_position"] == "1B"
 
 
+def test_ml_to_draft_assistant_transfers_window_and_style():
+    session = {
+        "ml_lookback": 4,
+        "ml_min_games": 120,
+        "ml_projection_style": "Aggressive",
+    }
+    payload = pg.build_transfer(
+        session,
+        "ml_to_draft_assistant",
+        {"target_page": "Draft Assistant Simulator", "ml_lookback": 4, "ml_min_games": 120, "ml_projection_style": "Aggressive"},
+    )
+    assert payload["transfer_filters"]["draft_window"] == 4
+    assert payload["transfer_filters"]["fantasy_draft_projection_style"] == "Aggressive"
+    assert payload["transfer_filters"]["draft_ml_min_games_signal"] == 120
+    assert payload["transfer_filters"]["draft_use_ml_blend"] is True
+    assert payload["transfer_players"]["mode"] == "none"
+
+
+def test_draft_assistant_to_ml_transfers_window():
+    session = {
+        "draft_window": 5,
+        "fantasy_draft_projection_style": "Balanced",
+        "draft_ml_min_games_signal": 200,
+    }
+    payload = pg.build_transfer(session, "draft_assistant_to_ml", {"target_page": "ML Predictions"})
+    assert payload["transfer_filters"]["ml_lookback"] == 5
+    assert payload["transfer_filters"]["ml_projection_style"] == "Balanced"
+    assert payload["transfer_filters"]["ml_min_games"] == 200
+
+
+def test_ml_to_sleepers_includes_min_ab_and_position():
+    session = {"ml_lookback": 3, "ml_min_games": 100, "ml_min_ab": 250, "ml_position_filter": "OF"}
+    payload = pg.build_transfer(
+        session,
+        "ml_to_sleepers",
+        {
+            "target_page": "Fantasy Sleepers & Busts",
+            "transfer_position": "OF",
+            "ml_lookback": 3,
+            "ml_min_games": 100,
+            "ml_min_ab": 250,
+        },
+    )
+    assert payload["transfer_filters"]["fantasy_market_window"] == 3
+    assert payload["transfer_filters"]["fantasy_market_min_g"] == 100
+    assert payload["transfer_filters"]["fantasy_market_min_ab"] == 250
+    assert payload["transfer_filters"]["fantasy_market_positions"] == ["OF", "LF", "CF", "RF"]
+
+
 def test_ml_top3_checkbox_for_compare_and_trend_not_sleepers():
     df = pd.DataFrame({"Player": ["A", "B", "C"], "Predicted HR": [40, 35, 30]})
     assert pg.should_show_top3_checkbox("ml_to_compare", "Comparison Tool", df, "Player")

@@ -303,6 +303,8 @@ def top3_checkbox_label(source_page: str | None = None, builder_id: str | None =
         return _VALUATION_TOP3_CHECKBOX_LABEL
     if src == "Trend Value":
         return _TREND_TOP3_CHECKBOX_LABEL
+    if src == "ML Predictions":
+        return "Also send top 3 players from current ML projections"
     return TOP3_CHECKBOX_LABEL
 
 
@@ -676,16 +678,22 @@ def _sanitize_value(key: str, value):
             iv = _safe_int(value, None)
             return iv if iv is not None and iv >= 0 else None
         if key.endswith("_min") or key in ("fantasy_market_min_g", "fantasy_market_min_ab", "leaders_top_n_filter"):
-            if key in ("fantasy_market_min_g", "fantasy_market_min_ab", "trend_min_g", "value_min_g", "leaders_top_n_filter",
-                       "draft_lab_picks_per_team", "live_draft_picks_per_team", "standings_api_season"):
+            if key in (
+                "fantasy_market_min_g", "fantasy_market_min_ab", "trend_min_g", "value_min_g",
+                "ml_min_games", "ml_min_ab", "draft_ml_min_games_signal",
+                "leaders_top_n_filter", "draft_lab_picks_per_team", "live_draft_picks_per_team", "standings_api_season",
+            ):
                 iv = _safe_int(value, None)
                 return iv if iv is not None else None
             fv = _safe_float(value, None)
             return fv if fv is not None else None
-    if key in ("trend_lag", "value_lag", "draft_lab_window", "draft_window", "fantasy_market_window", "live_draft_proj_window"):
+    if key in (
+        "trend_lag", "value_lag", "draft_lab_window", "draft_window", "fantasy_market_window",
+        "live_draft_proj_window", "ml_lookback", "room_window",
+    ):
         iv = _safe_int(value, None)
         return iv if iv in (3, 4, 5) else None
-    if key in _DRAFT_LAB_FORMAT_KEYS or key in ("draft_format", "fantasy_market_format", "standings_scoring_format"):
+    if key in _DRAFT_LAB_FORMAT_KEYS or key in ("draft_format", "fantasy_market_format", "standings_scoring_format", "room_format"):
         s = str(value)
         return s if s in _FANTASY_FORMAT_VALUES else None
     if key == "live_draft_scoring":
@@ -1050,33 +1058,57 @@ def _valuation_to_compare(session, extra):
     return {"session_keys": keys}
 
 
-@_register_builder("ml_to_trend")
-def _ml_to_trend(session, extra):
-    keys = {}
+def _ml_source_settings(session, extra) -> dict:
+    """ML lookback, sample filters, projection style, and fantasy position from extra or session."""
+    extra = extra if isinstance(extra, dict) else {}
+    out: dict = {}
     lag = extra.get("ml_lookback", session.get("ml_lookback"))
     if lag in (3, 4, 5):
-        keys["trend_lag"] = int(lag)
+        out["lookback"] = int(lag)
     mg = _safe_int(extra.get("ml_min_games", session.get("ml_min_games")), None)
     if mg is not None:
-        keys["trend_min_g"] = mg
+        out["min_games"] = mg
+    ab = _safe_int(extra.get("ml_min_ab", session.get("ml_min_ab")), None)
+    if ab is not None:
+        out["min_ab"] = ab
+    style = extra.get("ml_projection_style", session.get("ml_projection_style"))
+    if style in _PROJECTION_STYLES:
+        out["projection_style"] = style
     pos = normalize_fantasy_position_filter(extra.get("transfer_position"))
+    if not pos:
+        pos = normalize_fantasy_position_filter(session.get("ml_position_filter"))
     if pos:
-        keys["transfer_position"] = pos
+        out["transfer_position"] = pos
+    return out
+
+
+def _ml_position_transfer_keys(pos: str | None) -> dict:
+    if not pos:
+        return {}
+    return {"transfer_position": pos}
+
+
+@_register_builder("ml_to_trend")
+def _ml_to_trend(session, extra):
+    src = _ml_source_settings(session, extra)
+    keys = {}
+    if "lookback" in src:
+        keys["trend_lag"] = src["lookback"]
+    if "min_games" in src:
+        keys["trend_min_g"] = src["min_games"]
+    keys.update(_ml_position_transfer_keys(src.get("transfer_position")))
     return {"session_keys": keys}
 
 
 @_register_builder("ml_to_valuation")
 def _ml_to_valuation(session, extra):
+    src = _ml_source_settings(session, extra)
     keys = {}
-    lag = extra.get("ml_lookback", session.get("ml_lookback"))
-    if lag in (3, 4, 5):
-        keys["value_lag"] = int(lag)
-    mg = _safe_int(extra.get("ml_min_games", session.get("ml_min_games")), None)
-    if mg is not None:
-        keys["value_min_g"] = mg
-    pos = normalize_fantasy_position_filter(extra.get("transfer_position"))
-    if pos:
-        keys["transfer_position"] = pos
+    if "lookback" in src:
+        keys["value_lag"] = src["lookback"]
+    if "min_games" in src:
+        keys["value_min_g"] = src["min_games"]
+    keys.update(_ml_position_transfer_keys(src.get("transfer_position")))
     return {"session_keys": keys}
 
 
@@ -1084,27 +1116,274 @@ def _ml_to_valuation(session, extra):
 def _ml_to_compare(session, extra):
     keys = {}
     max_y = extra.get("dataset_max_year") or session.get("_lahman_max_year")
-    lag = extra.get("ml_lookback", session.get("ml_lookback"))
+    src = _ml_source_settings(session, extra)
     try:
         max_y = int(max_y)
-        lag = int(lag)
+        lag = int(src.get("lookback", 0))
     except (TypeError, ValueError):
         return {"session_keys": keys}
     if lag in (3, 4, 5) and max_y > 0:
         keys["compare_year_range"] = (max_y - lag + 1, max_y)
+    keys.update(_ml_position_transfer_keys(src.get("transfer_position")))
     return {"session_keys": keys}
 
 
 @_register_builder("ml_to_sleepers")
 def _ml_to_sleepers(session, extra):
+    src = _ml_source_settings(session, extra)
     keys = {}
-    lag = extra.get("ml_lookback", session.get("ml_lookback"))
-    if lag in (3, 4, 5):
-        keys["fantasy_market_window"] = int(lag)
-    pos = normalize_fantasy_position_filter(extra.get("transfer_position"))
-    if pos:
-        keys["transfer_position"] = pos
-    style = session.get("ml_projection_style")
+    if "lookback" in src:
+        keys["fantasy_market_window"] = src["lookback"]
+    if "min_games" in src:
+        keys["fantasy_market_min_g"] = src["min_games"]
+    if "min_ab" in src:
+        keys["fantasy_market_min_ab"] = src["min_ab"]
+    if "projection_style" in src:
+        keys["fantasy_draft_projection_style"] = src["projection_style"]
+    keys.update(_ml_position_transfer_keys(src.get("transfer_position")))
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_draft_assistant")
+def _ml_to_draft_assistant(session, extra):
+    src = _ml_source_settings(session, extra)
+    keys = {}
+    if "lookback" in src:
+        keys["draft_window"] = src["lookback"]
+    if "projection_style" in src:
+        keys["fantasy_draft_projection_style"] = src["projection_style"]
+    if "min_games" in src:
+        keys["draft_ml_min_games_signal"] = src["min_games"]
+    keys["draft_use_ml_blend"] = True
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_draft_lab")
+def _ml_to_draft_lab(session, extra):
+    src = _ml_source_settings(session, extra)
+    keys = {}
+    if "lookback" in src:
+        keys["draft_lab_window"] = src["lookback"]
+    if "projection_style" in src:
+        keys["draft_lab_projection_style"] = src["projection_style"]
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_live_draft")
+def _ml_to_live_draft(session, extra):
+    src = _ml_source_settings(session, extra)
+    keys = {}
+    if "lookback" in src:
+        keys["live_draft_proj_window"] = src["lookback"]
+    if "projection_style" in src:
+        keys["live_draft_proj_style"] = src["projection_style"]
+    if "min_games" in src:
+        keys["draft_ml_min_games_signal"] = src["min_games"]
+    keys["draft_use_ml_blend"] = True
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_draft_room")
+def _ml_to_draft_room(session, extra):
+    src = _ml_source_settings(session, extra)
+    keys = {}
+    if "lookback" in src:
+        keys["room_window"] = src["lookback"]
+    if "projection_style" in src:
+        keys["fantasy_draft_projection_style"] = src["projection_style"]
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_assistant_to_ml")
+def _draft_assistant_to_ml(session, extra):
+    keys = {}
+    window = session.get("draft_window")
+    if window in (3, 4, 5):
+        keys["ml_lookback"] = int(window)
+    mg = _safe_int(session.get("draft_ml_min_games_signal"), None)
+    if mg is not None:
+        keys["ml_min_games"] = mg
+    style = session.get("fantasy_draft_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["ml_projection_style"] = style
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_lab_to_ml")
+def _draft_lab_to_ml(session, extra):
+    keys = {}
+    window = session.get("draft_lab_window")
+    if window in (3, 4, 5):
+        keys["ml_lookback"] = int(window)
+    style = session.get("draft_lab_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["ml_projection_style"] = style
+    return {"session_keys": keys}
+
+
+@_register_builder("live_draft_to_ml")
+def _live_draft_to_ml(session, extra):
+    keys = {}
+    window = session.get("live_draft_proj_window")
+    if window in (3, 4, 5):
+        keys["ml_lookback"] = int(window)
+    style = session.get("live_draft_proj_style")
+    if style in _PROJECTION_STYLES:
+        keys["ml_projection_style"] = style
+    mg = _safe_int(session.get("draft_ml_min_games_signal"), None)
+    if mg is not None:
+        keys["ml_min_games"] = mg
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_room_to_ml")
+def _draft_room_to_ml(session, extra):
+    keys = {}
+    window = session.get("room_window")
+    if window in (3, 4, 5):
+        keys["ml_lookback"] = int(window)
+    style = session.get("fantasy_draft_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["ml_projection_style"] = style
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_assistant_to_draft_lab")
+def _draft_assistant_to_draft_lab(session, extra):
+    keys = fantasy_format_window_keys(
+        session,
+        "draft_format", "draft_lab_scoring_type",
+        "draft_window", "draft_lab_window",
+        "fantasy_draft_projection_style", "draft_lab_projection_style",
+    )
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_assistant_to_trend")
+def _draft_assistant_to_trend(session, extra):
+    keys = {}
+    window = session.get("draft_window")
+    if window in (3, 4, 5):
+        keys["trend_lag"] = int(window)
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_assistant_to_valuation")
+def _draft_assistant_to_valuation(session, extra):
+    keys = {}
+    window = session.get("draft_window")
+    if window in (3, 4, 5):
+        keys["value_lag"] = int(window)
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_lab_to_draft_assistant")
+def _draft_lab_to_draft_assistant(session, extra):
+    keys = fantasy_format_window_keys(
+        session,
+        "draft_lab_scoring_type", "draft_format",
+        "draft_lab_window", "draft_window",
+        "draft_lab_projection_style", "fantasy_draft_projection_style",
+    )
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_lab_to_sleepers")
+def _draft_lab_to_sleepers(session, extra):
+    keys = fantasy_format_window_keys(
+        session,
+        "draft_lab_scoring_type", "fantasy_market_format",
+        "draft_lab_window", "fantasy_market_window",
+        "draft_lab_projection_style", "fantasy_draft_projection_style",
+    )
+    return {"session_keys": keys}
+
+
+@_register_builder("live_draft_to_draft_assistant")
+def _live_draft_to_draft_assistant(session, extra):
+    keys = {}
+    window = session.get("live_draft_proj_window")
+    if window in (3, 4, 5):
+        keys["draft_window"] = int(window)
+    style = session.get("live_draft_proj_style")
+    if style in _PROJECTION_STYLES:
+        keys["fantasy_draft_projection_style"] = style
+    scoring = session.get("live_draft_scoring")
+    if scoring:
+        keys["draft_format"] = _lab_format_from_live(scoring)
+    return {"session_keys": keys}
+
+
+@_register_builder("live_draft_to_sleepers")
+def _live_draft_to_sleepers(session, extra):
+    keys = {}
+    window = session.get("live_draft_proj_window")
+    if window in (3, 4, 5):
+        keys["fantasy_market_window"] = int(window)
+    style = session.get("live_draft_proj_style")
+    if style in _PROJECTION_STYLES:
+        keys["fantasy_draft_projection_style"] = style
+    scoring = session.get("live_draft_scoring")
+    if scoring:
+        keys["fantasy_market_format"] = _lab_format_from_live(scoring)
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_room_to_draft_assistant")
+def _draft_room_to_draft_assistant(session, extra):
+    keys = {}
+    window = session.get("room_window")
+    if window in (3, 4, 5):
+        keys["draft_window"] = int(window)
+    fmt = session.get("room_format")
+    if fmt in _FANTASY_FORMAT_VALUES:
+        keys["draft_format"] = fmt
+    style = session.get("fantasy_draft_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["fantasy_draft_projection_style"] = style
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_room_to_draft_lab")
+def _draft_room_to_draft_lab(session, extra):
+    keys = {}
+    window = session.get("room_window")
+    if window in (3, 4, 5):
+        keys["draft_lab_window"] = int(window)
+    fmt = session.get("room_format")
+    if fmt in _FANTASY_FORMAT_VALUES:
+        keys["draft_lab_scoring_type"] = fmt
+    style = session.get("fantasy_draft_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["draft_lab_projection_style"] = style
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_room_to_live_draft")
+def _draft_room_to_live_draft(session, extra):
+    keys = {}
+    window = session.get("room_window")
+    if window in (3, 4, 5):
+        keys["live_draft_proj_window"] = int(window)
+    fmt = session.get("room_format")
+    if fmt in _FANTASY_FORMAT_VALUES:
+        keys["live_draft_scoring"] = _live_scoring_from_lab(fmt)
+    style = session.get("fantasy_draft_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["live_draft_proj_style"] = style
+    return {"session_keys": keys}
+
+
+@_register_builder("draft_room_to_sleepers")
+def _draft_room_to_sleepers(session, extra):
+    keys = {}
+    window = session.get("room_window")
+    if window in (3, 4, 5):
+        keys["fantasy_market_window"] = int(window)
+    fmt = session.get("room_format")
+    if fmt in _FANTASY_FORMAT_VALUES:
+        keys["fantasy_market_format"] = fmt
+    style = session.get("fantasy_draft_projection_style")
     if style in _PROJECTION_STYLES:
         keys["fantasy_draft_projection_style"] = style
     return {"session_keys": keys}
@@ -1489,12 +1768,33 @@ CONTEXTUAL_NAV_REGISTRY = {
     ("Draft Assistant Simulator", "after_recommendations"): [
         {"target": "Fantasy Sleepers & Busts", "builder": "draft_assistant_to_sleepers", "label": "Sleepers & Busts — format & window"},
         {"target": "Live Draft Room", "builder": "draft_assistant_to_live", "label": "Live Draft Room — scoring & projection from assistant"},
+        {"target": "ML Predictions", "builder": "draft_assistant_to_ml", "label": "ML Predictions — projection window & style"},
+        {"target": "Draft Simulation Test Mode", "builder": "draft_assistant_to_draft_lab", "label": "Draft Lab — projection window & style"},
+        {"target": "Trend Value", "builder": "draft_assistant_to_trend", "label": "Trend Value — projection window"},
+        {"target": "Valuation", "builder": "draft_assistant_to_valuation", "label": "Valuation — projection window"},
     ],
     ("Draft Simulation Test Mode", "after_results"): [
         {"target": "Live Draft Room", "builder": "lab_to_live_draft", "label": "Live Draft Room — league size, scoring, roster slots, picks"},
+        {"target": "ML Predictions", "builder": "draft_lab_to_ml", "label": "ML Predictions — projection window & style"},
+        {"target": "Draft Assistant Simulator", "builder": "draft_lab_to_draft_assistant", "label": "Draft Assistant — projection window & style"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "draft_lab_to_sleepers", "label": "Sleepers & Busts — window & format"},
     ],
     ("Live Draft Room", "after_draft"): [
         {"target": "Draft Simulation Test Mode", "builder": "live_to_draft_lab_settings", "label": "Draft Lab — copy live draft settings (no draft board)"},
+        {"target": "ML Predictions", "builder": "live_draft_to_ml", "label": "ML Predictions — projection window & style"},
+        {"target": "Draft Assistant Simulator", "builder": "live_draft_to_draft_assistant", "label": "Draft Assistant — projection window & style"},
+    ],
+    ("Live Draft Room", "after_board"): [
+        {"target": "ML Predictions", "builder": "live_draft_to_ml", "label": "ML Predictions — projection window & style"},
+        {"target": "Draft Assistant Simulator", "builder": "live_draft_to_draft_assistant", "label": "Draft Assistant — projection window & style"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "live_draft_to_sleepers", "label": "Sleepers & Busts — projection window"},
+    ],
+    ("Draft Room Simulator", "after_board"): [
+        {"target": "ML Predictions", "builder": "draft_room_to_ml", "label": "ML Predictions — projection window & style"},
+        {"target": "Draft Assistant Simulator", "builder": "draft_room_to_draft_assistant", "label": "Draft Assistant — window & scoring format"},
+        {"target": "Draft Simulation Test Mode", "builder": "draft_room_to_draft_lab", "label": "Draft Lab — projection window & style"},
+        {"target": "Live Draft Room", "builder": "draft_room_to_live_draft", "label": "Live Draft Room — projection window & style"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "draft_room_to_sleepers", "label": "Sleepers & Busts — projection window"},
     ],
     ("Fantasy Standings Tracker", "after_standings"): [
         {"target": "Fantasy Lineup Assistant", "builder": "standings_to_lineup", "label": "Lineup Assistant — team, scoring, category needs"},
@@ -1503,9 +1803,13 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Fantasy Standings Tracker", "builder": "lineup_to_standings", "label": "Standings Tracker — scoring & team"},
     ],
     ("ML Predictions", "after_table"): [
-        {"target": "Trend Value", "builder": "ml_to_trend", "label": "Trend Value — lookback window & position"},
-        {"target": "Valuation", "builder": "ml_to_valuation", "label": "Valuation — lookback window & position"},
-        {"target": "Comparison Tool", "builder": "ml_to_compare", "label": "Comparison Tool — projection year window"},
-        {"target": "Fantasy Sleepers & Busts", "builder": "ml_to_sleepers", "label": "Sleepers & Busts — lookback window & position"},
+        {"target": "Trend Value", "builder": "ml_to_trend", "label": "Trend Value — window, position & min games"},
+        {"target": "Valuation", "builder": "ml_to_valuation", "label": "Valuation — window, position & min games"},
+        {"target": "Comparison Tool", "builder": "ml_to_compare", "label": "Comparison Tool — year window & top players"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "ml_to_sleepers", "label": "Sleepers & Busts — window, position & style"},
+        {"target": "Draft Assistant Simulator", "builder": "ml_to_draft_assistant", "label": "Draft Assistant — window & projection style"},
+        {"target": "Draft Simulation Test Mode", "builder": "ml_to_draft_lab", "label": "Draft Lab — projection window & style"},
+        {"target": "Live Draft Room", "builder": "ml_to_live_draft", "label": "Live Draft Room — projection window & style"},
+        {"target": "Draft Room Simulator", "builder": "ml_to_draft_room", "label": "Draft Room — projection window & style"},
     ],
 }

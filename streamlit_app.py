@@ -10958,6 +10958,10 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
         "ml_projection_style", "ml_regression_strength", "ml_age_strength",
         "ml_comp_weight", "ml_k_neighbors",
     }),
+    "Draft Room Simulator": frozenset({
+        "room_your_team", "room_team_count", "room_rounds", "room_format", "room_window",
+        "fantasy_draft_projection_style", "room_team_names",
+    }),
 }
 
 
@@ -14174,10 +14178,24 @@ if active_page == "Draft Assistant Simulator":
                     player_name=_da_brk_player if _da_brk_player else None,
                     key_suffix="assistant",
                 )
+        _da_xfer_df = (
+            recs.sort_values("Draft Fit Score", ascending=False, na_position="last").copy()
+            if not recs.empty
+            else pd.DataFrame()
+        )
         render_contextual_page_nav(
             "Draft Assistant Simulator",
             "after_recommendations",
-            label="Continue draft prep in…",
+            label="Use these filters in another tool…",
+            transfer_results_df=_da_xfer_df,
+            transfer_name_col="fullName",
+            default_rank_stat="Draft Fit Score",
+            extra_context={
+                "dataset_max_year": year_max,
+                "ml_lookback": st.session_state.get("draft_window"),
+                "ml_min_games": st.session_state.get("draft_ml_min_games_signal"),
+                "ml_projection_style": st.session_state.get("fantasy_draft_projection_style"),
+            },
         )
         st.subheader("Selected Player Insight")
         selected_draft_row = _select_insight_row(
@@ -14488,6 +14506,23 @@ if active_page == "Draft Room Simulator":
             )
             st.rerun()
         st.caption("Same board is used by **Fantasy Standings Tracker** when you score this league.")
+
+        _dr_pool_xfer = room_df.copy()
+        if not _dr_pool_xfer.empty and "fullName" in _dr_pool_xfer.columns:
+            _dr_pool_xfer = _dr_pool_xfer.sort_values("Expected Fantasy Value", ascending=False, na_position="last")
+        render_contextual_page_nav(
+            "Draft Room Simulator",
+            "after_board",
+            label="Use these filters in another tool…",
+            transfer_results_df=_dr_pool_xfer,
+            transfer_name_col="fullName",
+            default_rank_stat="Expected Fantasy Value",
+            extra_context={
+                "dataset_max_year": year_max,
+                "ml_lookback": st.session_state.get("room_window"),
+                "ml_projection_style": st.session_state.get("fantasy_draft_projection_style"),
+            },
+        )
 
         pick_info = room_df[[
             "fullName", "Team", "Primary Position", "Market Rank", "Model Rank", "Fantasy Edge",
@@ -16483,6 +16518,7 @@ if active_page == "ML Predictions":
                         "ml_lookback": ml_lookback,
                         "ml_min_games": ml_min_games,
                         "ml_min_ab": ml_min_ab,
+                        "ml_projection_style": ml_projection_style,
                         "ml_display_sort": ml_sort_by,
                         "ml_sort_by": ml_sort_by,
                     },
