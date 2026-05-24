@@ -693,6 +693,86 @@ def get_player_career_span(df, player_id):
     return int(player_years.min()), int(player_years.max())
 
 
+def player_last_name(full_name):
+    parts = str(full_name).strip().split()
+    return parts[-1] if parts else str(full_name)
+
+
+def _compare_available_year_range(df, player_ids):
+    if not player_ids:
+        return None
+    years = pd.to_numeric(df.loc[df["playerID"].isin(player_ids), "yearID"], errors="coerce").dropna()
+    if years.empty:
+        return None
+    return int(years.min()), int(years.max())
+
+
+def _is_full_compare_year_range(df, player_ids, compare_year_range):
+    avail = _compare_available_year_range(df, player_ids)
+    if avail is None:
+        return True
+    try:
+        lo, hi = int(compare_year_range[0]), int(compare_year_range[1])
+    except Exception:
+        return True
+    return (lo, hi) == avail
+
+
+def _compare_sig_sync_caption(compare_x_axis_mode, compare_year_range, compare_age_range, df, player_ids):
+    if compare_x_axis_mode == "Player Age":
+        return f"Synced to comparison age range: {int(compare_age_range[0])}–{int(compare_age_range[1])}"
+    if _is_full_compare_year_range(df, player_ids, compare_year_range):
+        return "Using full available career range"
+    return f"Synced to comparison year range: {int(compare_year_range[0])}–{int(compare_year_range[1])}"
+
+
+def _compare_sig_player_range_tuple(
+    career_min,
+    career_max,
+    *,
+    compare_x_axis_mode,
+    compare_year_range,
+    compare_age_range,
+    use_full_career,
+):
+    if compare_x_axis_mode == "Player Age":
+        return int(compare_age_range[0]), int(compare_age_range[1])
+    if use_full_career:
+        return int(career_min), int(career_max)
+    return max(int(career_min), int(compare_year_range[0])), min(int(career_max), int(compare_year_range[1]))
+
+
+def _format_sig_range_display(range_tuple):
+    return f"{int(range_tuple[0])}–{int(range_tuple[1])}"
+
+
+def _compare_sig_range_column_label(last_name, compare_x_axis_mode):
+    suffix = "ages" if compare_x_axis_mode == "Player Age" else "years"
+    return f"{last_name} {suffix}"
+
+
+def _attach_season_age_column(df):
+    out = df.copy()
+    out["Age"] = out.apply(
+        lambda r: baseball_age_for_season(
+            r.get("yearID"),
+            r.get("birthYear", np.nan),
+            r.get("birthMonth", np.nan),
+            r.get("birthDay", np.nan),
+        ),
+        axis=1,
+    )
+    return out
+
+
+def _filter_player_seasons_for_sig(df, player_id, compare_x_axis_mode, range_tuple):
+    data = df[df["playerID"] == player_id].copy()
+    if compare_x_axis_mode == "Season Year":
+        years = pd.to_numeric(data["yearID"], errors="coerce")
+        return data[(years >= range_tuple[0]) & (years <= range_tuple[1])].copy()
+    data = _attach_season_age_column(data)
+    ages = pd.to_numeric(data["Age"], errors="coerce")
+    return data[(ages >= range_tuple[0]) & (ages <= range_tuple[1])].copy()
 
 
 def build_pid_to_clean_label_map(df):
@@ -10986,7 +11066,8 @@ def _format_sig_table(df):
 
         return f"{v:.4f}".rstrip("0").rstrip(".")
 
-    for c in ["Player A Avg", "Player B Avg", "Difference"]:
+    avg_cols = [c for c in df.columns if str(c).endswith(" Avg") or str(c).endswith(" AVG")]
+    for c in avg_cols + ["Difference"]:
         if c in df.columns and "Stat" in df.columns:
             df[c] = df.apply(lambda r: fmt_by_stat(r["Stat"], r[c]), axis=1)
 
@@ -11208,7 +11289,7 @@ if active_page == "Comparison Tool":
                 max_value=50,
                 key="compare_age_range",
                 on_change=compare_settings_changed,
-                help="Filters the comparison chart, year-by-year table, and trend intelligence by season age.",
+                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests by season age.",
             )
         _compare_mode_options = ["Actual Values", "Smoothed Moving Average"]
         validate_state_option("compare_trend_mode", _compare_mode_options, "Actual Values")
@@ -11339,10 +11420,27 @@ if active_page == "Comparison Tool":
 
     st.divider()
     with st.expander("Advanced: Statistical significance test", expanded=False):
-        st.caption(
-            "Compare two players over chosen year ranges. Green/red cells highlight meaningful differences; "
-            "the multiselect above stays in sync with Player A/B on the next rerun."
+        _sig_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
+        _sig_year_range = st.session_state.get("compare_year_range", (year_min, year_max))
+        _sig_age_range = st.session_state.get("compare_age_range", (16, 50))
+        if isinstance(_sig_year_range, list):
+            _sig_year_range = tuple(_sig_year_range)
+        if isinstance(_sig_age_range, list):
+            _sig_age_range = tuple(_sig_age_range)
+        _sig_player_ids = selected_ids_compare if selected_ids_compare else []
+        _sig_sync_caption = _compare_sig_sync_caption(
+            _sig_axis_mode, _sig_year_range, _sig_age_range, yearly_df, _sig_player_ids
         )
+        _sig_use_full_career = (
+            _sig_axis_mode == "Season Year"
+            and _is_full_compare_year_range(yearly_df, _sig_player_ids, _sig_year_range)
+        )
+        st.caption(
+            "Welch-style tests on the same season window as the comparison chart above. "
+            "Green/red cells highlight meaningful differences; the multiselect above stays in sync with Player A/B."
+        )
+        st.markdown(f"**Comparison mode:** {_sig_axis_mode}")
+        st.caption(_sig_sync_caption)
         sig_col1, sig_col2 = st.columns(2)
         clean_label_map_sig = clean_label_map_compare
         all_player_options_sig = compare_player_options
@@ -11386,34 +11484,27 @@ if active_page == "Comparison Tool":
             )
             pid_a_preview = clean_label_map_sig[sig_player_a_label]
             a_min_year, a_max_year = get_player_career_span(yearly_df, pid_a_preview)
+            _sig_a_name = (
+                yearly_df.loc[yearly_df["playerID"] == pid_a_preview, "fullName"].dropna().iloc[0]
+                if not yearly_df.loc[yearly_df["playerID"] == pid_a_preview, "fullName"].dropna().empty
+                else sig_player_a_label
+            )
+            _sig_a_last = player_last_name(_sig_a_name)
             st.caption(f"Career span: {a_min_year}–{a_max_year}")
-            if compare_x_axis_mode == "Season Year":
-                sig_years_a = (max(a_min_year, compare_year_range[0]), min(a_max_year, compare_year_range[1]))
-                st.caption(f"Synced to comparison year range: {sig_years_a[0]}–{sig_years_a[1]}")
-            elif a_min_year == a_max_year:
-                st.info(f"Player A only has one available season in the data: {a_min_year}.")
-                sig_years_a = (a_min_year, a_max_year)
-            else:
-                _sig_a_key = f"sig_years_a_{pid_a_preview}"
-                _sig_a_saved = st.session_state.get(f"{_sig_a_key}_saved", (a_min_year, a_max_year))
-                if (
-                    not isinstance(_sig_a_saved, tuple)
-                    or len(_sig_a_saved) != 2
-                    or _sig_a_saved[0] < a_min_year
-                    or _sig_a_saved[1] > a_max_year
-                ):
-                    _sig_a_saved = (a_min_year, a_max_year)
-                if _sig_a_key not in st.session_state:
-                    st.session_state[_sig_a_key] = _sig_a_saved
-                sig_years_a = st.slider(
-                    "Player A Year Range",
-                    min_value=a_min_year,
-                    max_value=a_max_year,
-                    value=_sig_a_saved,
-                    key=_sig_a_key,
-                    on_change=_sig_years_changed,
-                    args=(_sig_a_key,),
-                )
+            sig_range_a = _compare_sig_player_range_tuple(
+                a_min_year,
+                a_max_year,
+                compare_x_axis_mode=_sig_axis_mode,
+                compare_year_range=_sig_year_range,
+                compare_age_range=_sig_age_range,
+                use_full_career=_sig_use_full_career,
+            )
+            if _sig_axis_mode == "Season Year" and a_min_year == a_max_year:
+                st.info(f"{_sig_a_last} only has one available season in the data: {a_min_year}.")
+            st.caption(
+                f"{_compare_sig_range_column_label(_sig_a_last, _sig_axis_mode)}: "
+                f"{_format_sig_range_display(sig_range_a)}"
+            )
 
         with sig_col2:
             sig_player_b_label = st.selectbox(
@@ -11425,34 +11516,27 @@ if active_page == "Comparison Tool":
             )
             pid_b_preview = clean_label_map_sig[sig_player_b_label]
             b_min_year, b_max_year = get_player_career_span(yearly_df, pid_b_preview)
+            _sig_b_name = (
+                yearly_df.loc[yearly_df["playerID"] == pid_b_preview, "fullName"].dropna().iloc[0]
+                if not yearly_df.loc[yearly_df["playerID"] == pid_b_preview, "fullName"].dropna().empty
+                else sig_player_b_label
+            )
+            _sig_b_last = player_last_name(_sig_b_name)
             st.caption(f"Career span: {b_min_year}–{b_max_year}")
-            if compare_x_axis_mode == "Season Year":
-                sig_years_b = (max(b_min_year, compare_year_range[0]), min(b_max_year, compare_year_range[1]))
-                st.caption(f"Synced to comparison year range: {sig_years_b[0]}–{sig_years_b[1]}")
-            elif b_min_year == b_max_year:
-                st.info(f"Player B only has one available season in the data: {b_min_year}.")
-                sig_years_b = (b_min_year, b_max_year)
-            else:
-                _sig_b_key = f"sig_years_b_{pid_b_preview}"
-                _sig_b_saved = st.session_state.get(f"{_sig_b_key}_saved", (b_min_year, b_max_year))
-                if (
-                    not isinstance(_sig_b_saved, tuple)
-                    or len(_sig_b_saved) != 2
-                    or _sig_b_saved[0] < b_min_year
-                    or _sig_b_saved[1] > b_max_year
-                ):
-                    _sig_b_saved = (b_min_year, b_max_year)
-                if _sig_b_key not in st.session_state:
-                    st.session_state[_sig_b_key] = _sig_b_saved
-                sig_years_b = st.slider(
-                    "Player B Year Range",
-                    min_value=b_min_year,
-                    max_value=b_max_year,
-                    value=_sig_b_saved,
-                    key=_sig_b_key,
-                    on_change=_sig_years_changed,
-                    args=(_sig_b_key,),
-                )
+            sig_range_b = _compare_sig_player_range_tuple(
+                b_min_year,
+                b_max_year,
+                compare_x_axis_mode=_sig_axis_mode,
+                compare_year_range=_sig_year_range,
+                compare_age_range=_sig_age_range,
+                use_full_career=_sig_use_full_career,
+            )
+            if _sig_axis_mode == "Season Year" and b_min_year == b_max_year:
+                st.info(f"{_sig_b_last} only has one available season in the data: {b_min_year}.")
+            st.caption(
+                f"{_compare_sig_range_column_label(_sig_b_last, _sig_axis_mode)}: "
+                f"{_format_sig_range_display(sig_range_b)}"
+            )
 
         sig_stats = st.multiselect(
             "Stats to Test",
@@ -11485,42 +11569,35 @@ if active_page == "Comparison Tool":
                     team_name=comparison_action_team,
                     label_map=clean_label_map_sig,
                 )
-            player_a_name = yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().empty else sig_player_a_label
-            player_b_name = yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().iloc[0] if not yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().empty else sig_player_b_label
+            player_a_name = (
+                yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().iloc[0]
+                if not yearly_df.loc[yearly_df["playerID"] == pid_a, "fullName"].dropna().empty
+                else sig_player_a_label
+            )
+            player_b_name = (
+                yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().iloc[0]
+                if not yearly_df.loc[yearly_df["playerID"] == pid_b, "fullName"].dropna().empty
+                else sig_player_b_label
+            )
+            last_a = player_last_name(player_a_name)
+            last_b = player_last_name(player_b_name)
+            col_a_range = _compare_sig_range_column_label(last_a, _sig_axis_mode)
+            col_b_range = _compare_sig_range_column_label(last_b, _sig_axis_mode)
+            col_a_avg = f"{last_a} AVG"
+            col_b_avg = f"{last_b} AVG"
 
-            data_a = yearly_df[
-                (yearly_df["playerID"] == pid_a) &
-                (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_a[0]) &
-                (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_a[1])
-            ].copy()
-            data_b = yearly_df[
-                (yearly_df["playerID"] == pid_b) &
-                (pd.to_numeric(yearly_df["yearID"], errors="coerce") >= sig_years_b[0]) &
-                (pd.to_numeric(yearly_df["yearID"], errors="coerce") <= sig_years_b[1])
-            ].copy()
-            if compare_x_axis_mode == "Player Age":
-                for _df in (data_a, data_b):
-                    _df["Age"] = _df.apply(
-                        lambda r: baseball_age_for_season(
-                            r.get("yearID"),
-                            r.get("birthYear", np.nan),
-                            r.get("birthMonth", np.nan),
-                            r.get("birthDay", np.nan),
-                        ),
-                        axis=1,
-                    )
-                data_a = data_a[
-                    (pd.to_numeric(data_a["Age"], errors="coerce") >= compare_age_range[0]) &
-                    (pd.to_numeric(data_a["Age"], errors="coerce") <= compare_age_range[1])
-                ].copy()
-                data_b = data_b[
-                    (pd.to_numeric(data_b["Age"], errors="coerce") >= compare_age_range[0]) &
-                    (pd.to_numeric(data_b["Age"], errors="coerce") <= compare_age_range[1])
-                ].copy()
+            data_a = _filter_player_seasons_for_sig(yearly_df, pid_a, _sig_axis_mode, sig_range_a)
+            data_b = _filter_player_seasons_for_sig(yearly_df, pid_b, _sig_axis_mode, sig_range_b)
 
             if data_a.empty or data_b.empty:
-                st.warning("One of the selected players has no data in the selected year/age range.")
+                _range_word = "age" if _sig_axis_mode == "Player Age" else "year"
+                st.warning(f"One of the selected players has no data in the selected {_range_word} range.")
             else:
+                st.caption(
+                    f"**Players:** {last_a} vs {last_b} · "
+                    f"**Range:** {_format_sig_range_display(sig_range_a)} ({_sig_sync_caption}) · "
+                    f"**Significance level:** α = {alpha}"
+                )
                 sig_rows = []
                 overall_z_values = []
                 for stat in sig_stats:
@@ -11534,16 +11611,16 @@ if active_page == "Comparison Tool":
                         overall_z_values.append(test_stat)
                     sig_rows.append({
                         "Stat": stat,
-                        f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
-                        f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
-                        "Player A Avg": result["mean1"],
-                        "Player B Avg": result["mean2"],
+                        col_a_range: _format_sig_range_display(sig_range_a),
+                        col_b_range: _format_sig_range_display(sig_range_b),
+                        col_a_avg: result["mean1"],
+                        col_b_avg: result["mean2"],
                         "Difference": diff,
                         "Test Statistic": test_stat,
                         "p-value": p_value,
                         "Winner": (
-                            player_a_name if pd.notna(diff) and diff > 0 else
-                            player_b_name if pd.notna(diff) and diff < 0 else
+                            last_a if pd.notna(diff) and diff > 0 else
+                            last_b if pd.notna(diff) and diff < 0 else
                             "Tie"
                         ),
                         "Significance Result": (
@@ -11551,7 +11628,7 @@ if active_page == "Comparison Tool":
                             "Borderline" if pd.notna(p_value) and p_value < 0.10 else
                             "Not significant"
                         ),
-                        "Interpretation": _interpret_significance(player_a_name, player_b_name, stat, diff, p_value, alpha)
+                        "Interpretation": _interpret_significance(player_a_name, player_b_name, stat, diff, p_value, alpha),
                     })
 
                 sig_df = pd.DataFrame(sig_rows)
@@ -11566,12 +11643,12 @@ if active_page == "Comparison Tool":
                         overall_strength = abs(overall_score)
 
                         if overall_strength >= 1.96:
-                            overall_winner = player_a_name if overall_score > 0 else player_b_name
+                            overall_winner = last_a if overall_score > 0 else last_b
                             overall_interpretation = (
                                 f"{overall_winner} has the stronger overall profile across the selected stats, and the combined result is statistically significant."
                             )
                         elif overall_strength >= 1.00:
-                            overall_winner = player_a_name if overall_score > 0 else player_b_name
+                            overall_winner = last_a if overall_score > 0 else last_b
                             overall_interpretation = (
                                 f"{overall_winner} has the better overall profile across the selected stats, but the combined edge is not statistically significant."
                             )
@@ -11583,38 +11660,40 @@ if active_page == "Comparison Tool":
 
                         overall_row = {
                             "Stat": "OVERALL",
-                            f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
-                            f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
-                            "Player A Avg": np.nan,
-                            "Player B Avg": np.nan,
+                            col_a_range: _format_sig_range_display(sig_range_a),
+                            col_b_range: _format_sig_range_display(sig_range_b),
+                            col_a_avg: np.nan,
+                            col_b_avg: np.nan,
                             "Difference": overall_score,
                             "Test Statistic": overall_score,
                             "p-value": _normal_two_sided_p_from_z(overall_score),
                             "Winner": overall_winner,
-                            "Significance Result": ("Significant" if _normal_two_sided_p_from_z(overall_score) < alpha else "Not significant"),
-                            "Interpretation": overall_interpretation
+                            "Significance Result": (
+                                "Significant" if _normal_two_sided_p_from_z(overall_score) < alpha else "Not significant"
+                            ),
+                            "Interpretation": overall_interpretation,
                         }
                     else:
                         overall_row = {
                             "Stat": "OVERALL",
-                            f"{player_a_name} Years": f"{sig_years_a[0]}-{sig_years_a[1]}",
-                            f"{player_b_name} Years": f"{sig_years_b[0]}-{sig_years_b[1]}",
-                            "Player A Avg": np.nan,
-                            "Player B Avg": np.nan,
+                            col_a_range: _format_sig_range_display(sig_range_a),
+                            col_b_range: _format_sig_range_display(sig_range_b),
+                            col_a_avg: np.nan,
+                            col_b_avg: np.nan,
                             "Difference": np.nan,
                             "Test Statistic": np.nan,
                             "p-value": np.nan,
                             "Winner": "Not enough data",
                             "Significance Result": "Not enough data",
-                            "Interpretation": "Not enough valid stat tests to make an overall comparison."
+                            "Interpretation": "Not enough valid stat tests to make an overall comparison.",
                         }
 
                     sig_df = pd.concat([sig_df, pd.DataFrame([overall_row])], ignore_index=True)
 
                     st.caption(
-                        "Color guide: Difference/Test Statistic/p-value are green when Player A is significantly higher, "
-                        "red when Player B is significantly higher, and gray when the result is not statistically significant. "
-                        "The Winner column shows who had the higher average stat, while Significance Result tells whether that difference is statistically meaningful."
+                        f"Color guide: Difference/Test Statistic/p-value are green when {last_a} is significantly higher, "
+                        f"red when {last_b} is significantly higher, and gray when the result is not statistically significant. "
+                        "Winner shows who had the higher average for that stat; Significance Result is whether the gap is statistically meaningful."
                     )
 
                     render_output_table(
