@@ -16,6 +16,8 @@ _spec.loader.exec_module(_mod)
 _nearest = _mod._nearest_age_adjustment_series
 _base_sig = _mod._ml_base_run_signature
 _tuning_sig = _mod._ml_tuning_run_signature
+_build_sim_index = _mod._build_ml_similarity_index
+_query_sim = _mod._query_ml_similarity_comps
 
 
 def test_nearest_age_adjustment_series():
@@ -29,6 +31,28 @@ def test_nearest_age_adjustment_series():
     assert out.iloc[0] == 1.0  # age 25 nearest to bucket 24
     assert out.iloc[1] == -0.5
     assert out.iloc[2] == 0.0
+
+
+def test_ml_similarity_index_reuse_across_k():
+    train = pd.DataFrame({
+        "playerID": [f"p{i}" for i in range(8)],
+        "age_entering_year": [25, 26, 27, 28, 29, 30, 31, 32],
+        "age_squared": [625, 676, 729, 784, 841, 900, 961, 1024],
+        "hist_AB_total": [500] * 8,
+        "G_last": [140] * 8,
+        "AB_last": [500] * 8,
+        "HR_last": [10 + i for i in range(8)],
+        "target_HR": [12 + i for i in range(8)],
+    })
+    current = train.iloc[:2].copy()
+    feature_cols = ("age_entering_year", "age_squared", "hist_AB_total", "G_last", "AB_last", "HR_last")
+    idx = _build_sim_index(train, feature_cols)
+    assert idx is not None
+    c5 = _query_sim(idx, current, k_neighbors=5)
+    c3 = _query_sim(idx, current, k_neighbors=3)
+    assert len(c5) == 2
+    assert len(c3) == 2
+    assert (c5["Similar Player Sample"] >= c3["Similar Player Sample"]).all()
 
 
 def test_ml_signatures_split_tuning_from_base():
