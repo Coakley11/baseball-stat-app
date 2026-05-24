@@ -76,6 +76,7 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
             "career_to_compare", "career_to_trend", "career_to_valuation",
             "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
             "sleepers_to_compare", "sleepers_to_trend", "sleepers_to_valuation",
+            "trend_to_compare", "valuation_to_compare", "valuation_to_trend",
         }
     )
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
@@ -87,7 +88,7 @@ _BUILDER_TOP3_CHECKBOX_FALLBACK = frozenset({
     "career_to_compare", "career_to_trend", "career_to_valuation",
     "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
     "sleepers_to_compare", "sleepers_to_trend", "sleepers_to_valuation",
-    "trend_to_compare", "valuation_to_compare",
+    "trend_to_compare", "valuation_to_compare", "valuation_to_trend",
 })
 _BUILDER_COMPARE_SELECTED_FALLBACK = frozenset({"compare_to_trend", "compare_to_valuation"})
 
@@ -10326,13 +10327,22 @@ def render_contextual_page_nav(
         show_top3_checkbox = bool(
             ent
             and pg_xfer.should_show_top3_checkbox(
-                builder_id, target_page or "", main_xfer_df, name_col
+                builder_id,
+                target_page or "",
+                main_xfer_df,
+                name_col,
+                source_page=source,
             )
         )
         if show_top3_checkbox:
             chk_key = f"{source}_{target_page}_send_top_3_players"
+            _top3_label = (
+                pg_xfer.top3_checkbox_label(source, builder_id)
+                if hasattr(pg_xfer, "top3_checkbox_label")
+                else CONTEXTUAL_TOP3_CHECKBOX_LABEL
+            )
             send_top3 = st.checkbox(
-                CONTEXTUAL_TOP3_CHECKBOX_LABEL,
+                _top3_label,
                 value=False,
                 key=chk_key,
             )
@@ -10366,7 +10376,13 @@ def render_contextual_page_nav(
             if _cmp_preview:
                 st.caption(f"Sending comparison players: {', '.join(_cmp_preview)}")
         elif show_top3_checkbox and send_top3 and preview_names:
-            st.caption(f"Sending top 3 players: {', '.join(preview_names[:3])}")
+            _top3_cap = (
+                pg_xfer.top3_transfer_caption(source, preview_names)
+                if hasattr(pg_xfer, "top3_transfer_caption")
+                else f"Sending top 3 players: {', '.join(preview_names[:3])}"
+            )
+            if _top3_cap:
+                st.caption(_top3_cap)
 
         st.button(
             "Open selected tool",
@@ -15027,7 +15043,7 @@ if active_page == "Valuation":
             projection_lookup_name_col="fullName",
             help_text="Valuation table — Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick. Projection breakdown uses recent-window stats and trends.",
         )
-    _val_xfer_df = valuation_display.copy()
+    _val_xfer_df = valuation_display.sort_values("Valuation Score", ascending=False).copy()
     if "Player" in _val_xfer_df.columns and "fullName" not in _val_xfer_df.columns:
         _val_xfer_df = _val_xfer_df.rename(columns={"Player": "fullName"})
     render_contextual_page_nav(
@@ -15037,6 +15053,7 @@ if active_page == "Valuation":
         transfer_results_df=_val_xfer_df,
         transfer_name_col="fullName",
         default_rank_stat="Valuation Score",
+        extra_context={"valuation_table_sort": "Valuation Score"},
     )
 
     st.subheader("Valuation Insight Summaries")

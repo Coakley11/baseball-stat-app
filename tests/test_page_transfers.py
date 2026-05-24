@@ -107,3 +107,77 @@ def test_sanitize_trend_position_filter_string():
     assert pg._sanitize_value("trend_position_filter", "OF") == "OF"
     assert pg._sanitize_value("trend_position_filter", "All positions") is None
     assert pg._sanitize_value("trend_position_filter", ["OF"]) is None
+
+
+def test_valuation_top3_checkbox_label():
+    assert "valuation" in pg.top3_checkbox_label("Valuation").lower()
+
+
+def test_valuation_top3_checkbox_targets():
+    df = pd.DataFrame({
+        "fullName": ["A", "B", "C"],
+        "Valuation Score": [0.8, 1.0, 0.6],
+    })
+    assert pg.should_show_top3_checkbox("valuation_to_compare", "Comparison Tool", df, "fullName")
+    assert pg.should_show_top3_checkbox("valuation_to_trend", "Trend Value", df, "fullName")
+    assert not pg.should_show_top3_checkbox("valuation_to_hist", "Historical Explorer", df, "fullName")
+    assert not pg.should_show_top3_checkbox("valuation_to_leaders", "Leaderboards", df, "fullName")
+
+
+def _valuation_xfer_extra(df, *, send_top3: bool, target_page: str):
+    return {
+        "send_top_3_players": send_top3,
+        "target_page": target_page,
+        "transfer_results_df": df,
+        "transfer_name_col": "fullName",
+        "rank_stat": "Valuation Score",
+        "default_rank_stat": "Valuation Score",
+    }
+
+
+def test_valuation_to_compare_sends_top3_in_table_order():
+    df = pd.DataFrame({
+        "fullName": ["Alice", "Bob", "Carol", "Dave"],
+        "Valuation Score": [0.9, 1.0, 0.5, 0.3],
+    })
+    session = {"value_lag": 3, "value_position_filter": "OF"}
+    payload = pg.build_transfer(
+        session,
+        "valuation_to_compare",
+        _valuation_xfer_extra(df, send_top3=True, target_page="Comparison Tool"),
+    )
+    assert payload["transfer_players"]["mode"] == "top_3"
+    assert payload["transfer_players"]["names"] == ["Alice", "Bob", "Carol"]
+
+
+def test_valuation_to_trend_sends_top3_1b_filtered_order():
+    df = pd.DataFrame({
+        "fullName": ["First", "Second", "Third", "Fourth"],
+        "Valuation Score": [0.4, 1.0, 0.7, 0.2],
+    })
+    session = {"value_lag": 5, "value_position_filter": "1B"}
+    payload = pg.build_transfer(
+        session,
+        "valuation_to_trend",
+        _valuation_xfer_extra(df, send_top3=True, target_page="Trend Value"),
+    )
+    assert payload["transfer_players"]["mode"] == "top_3"
+    assert payload["transfer_players"]["names"] == ["First", "Second", "Third"]
+    assert payload["transfer_filters"]["trend_position_filter"] == "1B"
+    assert payload["transfer_filters"]["trend_lag"] == 5
+
+
+def test_valuation_top3_off_sends_no_players():
+    df = pd.DataFrame({"fullName": ["A", "B", "C"], "Valuation Score": [1.0, 0.5, 0.2]})
+    payload = pg.build_transfer(
+        {"value_lag": 3},
+        "valuation_to_compare",
+        _valuation_xfer_extra(df, send_top3=False, target_page="Comparison Tool"),
+    )
+    assert payload["transfer_players"]["mode"] == "none"
+    assert not payload["transfer_players"]["names"]
+
+
+def test_valuation_top3_caption():
+    cap = pg.top3_transfer_caption("Valuation", ["Player A", "Player B", "Player C"])
+    assert cap == "Sending top 3 valuation players: Player A, Player B, Player C"

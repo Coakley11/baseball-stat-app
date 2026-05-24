@@ -55,6 +55,8 @@ __all__ = [
     "should_show_top3_checkbox",
     "contextual_nav_option_label",
     "TOP3_CHECKBOX_LABEL",
+    "top3_checkbox_label",
+    "top3_transfer_caption",
     "normalize_fantasy_position_filter",
     "fantasy_filter_to_raw_positions",
     "raw_positions_to_fantasy_filter",
@@ -110,10 +112,11 @@ _BUILDER_COMPARE_SELECTED_PLAYERS = frozenset({
     "compare_to_trend",
 })
 
-# Trend / Valuation → Comparison: top 3 from main table via checkbox.
+# Trend / Valuation → Comparison or Trend: top 3 from main table when checkbox is on.
 _BUILDER_TABLE_TOP3_PLAYERS = frozenset({
     "trend_to_compare",
     "valuation_to_compare",
+    "valuation_to_trend",
 })
 
 _BUILDER_TOP3_CHECKBOX = _BUILDER_ALLOWS_TOP3 | _BUILDER_TABLE_TOP3_PLAYERS
@@ -121,6 +124,8 @@ _BUILDER_TOP3_CHECKBOX = _BUILDER_ALLOWS_TOP3 | _BUILDER_TABLE_TOP3_PLAYERS
 BUILDER_SHOW_TOP3_CHECKBOX = _BUILDER_TOP3_CHECKBOX
 
 TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
+_VALUATION_TOP3_CHECKBOX_LABEL = "Also send top 3 players from current valuation results"
+_TREND_TOP3_CHECKBOX_LABEL = "Also send top 3 players from current trend results"
 
 
 def empty_transfer_payload():
@@ -288,17 +293,39 @@ def resolve_compare_selected_players(session, extra):
     return {"mode": "compare_selected", "names": [], "labels": labels, "rank_stat": None}
 
 
+def top3_checkbox_label(source_page: str | None = None, builder_id: str | None = None) -> str:
+    """Checkbox label for contextual transfer; Valuation/Trend use page-specific wording."""
+    src = str(source_page or "").strip()
+    if src == "Valuation":
+        return _VALUATION_TOP3_CHECKBOX_LABEL
+    if src == "Trend Value":
+        return _TREND_TOP3_CHECKBOX_LABEL
+    return TOP3_CHECKBOX_LABEL
+
+
+def top3_transfer_caption(source_page: str | None, names: list) -> str | None:
+    """Short confirmation when top-3 players will be sent (no full preview panel)."""
+    clean = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not clean:
+        return None
+    display = ", ".join(clean[:3])
+    src = str(source_page or "").strip()
+    if src == "Valuation":
+        return f"Sending top 3 valuation players: {display}"
+    return f"Sending top 3 players: {display}"
+
+
 def resolve_players_from_extra(session, extra):
-    """Top-3 from pre-sorted main table when checkbox is on (Explorer/Career/Leaders)."""
+    """Top-3 from pre-sorted main table when checkbox is on (Explorer/Career/Leaders/Trend/Valuation)."""
     if not isinstance(extra, dict) or not extra.get("send_top_3_players"):
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     df = _transfer_df_from_extra(extra)
     if df is None:
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     name_col = _name_col_from_extra(extra, "Player")
-    rank_stat = str(extra.get("rank_stat"))
+    rank_stat = str(extra.get("rank_stat") or extra.get("default_rank_stat") or "").strip()
     if not rank_stat:
-        rank_stat = str(extra.get("default_rank_stat") or "OPS")
+        rank_stat = "OPS"
     names = top_players_in_display_order(df, player_col=name_col, limit=3)
     if not names:
         return {"mode": "none", "names": [], "labels": [], "rank_stat": None}
@@ -364,8 +391,11 @@ def should_show_top3_checkbox(
     target_page: str,
     df,
     name_col: str = "fullName",
+    *,
+    source_page: str | None = None,
 ) -> bool:
     """Checkbox only when source table has players and target can use them."""
+    del source_page  # reserved for future source-specific rules
     if builder_id in _BUILDER_COMPARE_SELECTED_PLAYERS:
         return False
     if builder_id not in _BUILDER_TOP3_CHECKBOX:
