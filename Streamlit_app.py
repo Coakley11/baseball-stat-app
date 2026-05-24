@@ -3496,10 +3496,12 @@ def _select_insight_row(df, *, key, label="Select player for insight", default_n
     if not options:
         return None
     saved = st.session_state.get(key)
+    if saved and str(saved).strip() and str(saved).strip() not in options:
+        options = [str(saved).strip()] + options
     if saved not in options:
         saved = default_name if default_name in options else options[0]
         st.session_state[key] = saved
-    selected = st.selectbox(label, options, index=options.index(saved), key=key)
+    selected = st.selectbox(label, options, key=key)
     st.markdown(f"**Selected:** <span style='color:#b42318;font-weight:800'>{selected}</span>", unsafe_allow_html=True)
     match = df[df[name_col].astype(str).str.strip().eq(str(selected).strip())]
     return match.iloc[0] if not match.empty else None
@@ -10622,6 +10624,8 @@ LEGACY_WIDGET_KEY_MIGRATIONS = {
     "leaders_sort_stat_filter": "leaders_sort",
     "draft_lab_scoring_type": "draft_lab_format",
     "live_draft_team_count": "live_draft_num_teams",
+    "ml_sort_by": "ml_display_sort",
+    "ml_projection_insight_player": "ml_predictions_selected_player",
 }
 
 PAGE_STATE_DEBUG_PREFIXES = {
@@ -10637,6 +10641,7 @@ PAGE_STATE_DEBUG_PREFIXES = {
     "Live Draft Room": ("live_draft_", "live_slot_"),
     "Fantasy Standings Tracker": ("standings_",),
     "Fantasy Lineup Assistant": ("lineup_",),
+    "ML Predictions": ("ml_",),
 }
 
 DEVELOPER_MODE_KEY = "app_developer_mode"
@@ -10949,7 +10954,7 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
     }),
     "ML Predictions": frozenset({
         "ml_lookback", "ml_min_games", "ml_min_ab", "ml_max_players",
-        "ml_position_filter", "transfer_position", "ml_display_sort",
+        "ml_position_filter", "transfer_position", "ml_display_sort", "ml_sort_by",
         "ml_projection_style", "ml_regression_strength", "ml_age_strength",
         "ml_comp_weight", "ml_k_neighbors",
     }),
@@ -11638,6 +11643,7 @@ if active_page == "Historical Explorer":
         transfer_name_col="fullName",
         default_rank_stat=hist_sort_stat,
     )
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
     hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
@@ -11819,6 +11825,7 @@ if active_page == "Career Totals":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_career,
     )
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
     career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
@@ -11909,6 +11916,7 @@ if active_page == "Leaderboards":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_leaders,
     )
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -13051,6 +13059,7 @@ if active_page == "Trend Value":
     else:
         st.info("Select one to three players to view trend charts.")
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -13653,6 +13662,7 @@ if active_page == "Fantasy Sleepers & Busts":
         default_rank_stat="Fantasy Edge",
     )
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -14282,7 +14292,8 @@ if active_page == "Draft Assistant Simulator":
                     hide_index=True
                 )
 
-        render_page_filters_debug(active_page)
+        save_page_state(active_page)
+    render_page_filters_debug(active_page)
 
 
 if active_page == "Draft Room Simulator":
@@ -14896,6 +14907,7 @@ if active_page == "Draft Simulation Test Mode":
             label="Send draft settings to…",
         )
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -15319,6 +15331,7 @@ if active_page == "Live Draft Room":
                 """
             )
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -15456,6 +15469,7 @@ if active_page == "Fantasy Standings Tracker":
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -15891,6 +15905,7 @@ if active_page == "Fantasy Lineup Assistant":
                                 style_cols=["Trade Fit Score", "Fairness Gap"]
                             )
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -16084,6 +16099,7 @@ if active_page == "Valuation":
     if not best_value_row.empty:
         st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
 
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -16097,6 +16113,19 @@ if active_page == "ML Predictions":
     if not SKLEARN_AVAILABLE:
         st.error("Scikit-learn is not installed. In Command Prompt, run: pip install scikit-learn")
     else:
+        init_state_once("ml_lookback", 3)
+        init_state_once("ml_min_games", 150)
+        init_state_once("ml_min_ab", 300)
+        init_state_once("ml_max_players", 150)
+        init_state_once("ml_projection_style", "Balanced")
+        init_state_once("ml_regression_strength", 0.20)
+        init_state_once("ml_age_strength", 0.50)
+        init_state_once("ml_comp_weight", 0.10)
+        init_state_once("ml_k_neighbors", 10)
+        init_state_once("ml_auto_apply_tuning", True)
+        init_state_once("ml_position_filter", "All positions")
+        init_state_once("ml_sort_by", "Predicted OPS")
+
         c1, c2, c3 = st.columns(3)
         with c1:
             ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback")
@@ -16289,6 +16318,28 @@ if active_page == "ML Predictions":
                     metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
+            ml_position_filter = st.session_state.get("ml_position_filter", "All positions")
+            ml_sort_by = st.session_state.get("ml_sort_by", "Predicted OPS")
+            if st.session_state.get("ml_predictions_have_run", False):
+                st.subheader("Next-Season ML Projections")
+                _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+                with _ml_tbl_c1:
+                    validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+                    ml_position_filter = st.selectbox(
+                        "Fantasy Position",
+                        FANTASY_POSITION_FILTER_OPTIONS,
+                        key="ml_position_filter",
+                        help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                    )
+                with _ml_tbl_c2:
+                    validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
+                    ml_sort_by = st.selectbox(
+                        "Sort Projections By",
+                        ML_DISPLAY_SORT_OPTIONS,
+                        key="ml_sort_by",
+                        help="Display-only — does not regenerate ML projections.",
+                    )
+
             if not _ml_is_nonempty_dataframe(stored_df):
                 if st.session_state.get("ml_predictions_have_run", False):
                     st.warning(
@@ -16310,26 +16361,7 @@ if active_page == "ML Predictions":
                         "- **Risky Projection** — small sample, volatility, or limited history (stronger pull toward anchors)"
                     )
 
-                st.subheader("Next-Season ML Projections")
-                _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
-                with _ml_tbl_c1:
-                    validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-                    ml_position_filter = st.selectbox(
-                        "Fantasy Position",
-                        FANTASY_POSITION_FILTER_OPTIONS,
-                        key="ml_position_filter",
-                        help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-                    )
-                with _ml_tbl_c2:
-                    validate_state_option("ml_display_sort", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
-                    ml_display_sort = st.selectbox(
-                        "Sort Projections By",
-                        ML_DISPLAY_SORT_OPTIONS,
-                        key="ml_display_sort",
-                        help="Display-only — does not regenerate ML projections.",
-                    )
-
-                view_df = _ml_apply_display_view(stored_df, ml_position_filter, ml_display_sort)
+                view_df = _ml_apply_display_view(stored_df, ml_position_filter, ml_sort_by)
                 display_cols = [
                     "fullName", "Position", "primaryTeamID", "bats", "prediction_year", "age_entering_year",
                     "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
@@ -16356,7 +16388,7 @@ if active_page == "ML Predictions":
                 st.caption(
                     f"Predictions use machine learning with aging, regression, and similarity adjustments, "
                     f"then a light calibration pass aligned with Draft Lab anchors{_ml_pos_note}. "
-                    f"Sorted by **{ml_display_sort}** (display-only). "
+                    f"Sorted by **{ml_sort_by}** (display-only). "
                     "**Projection Confidence** reflects sample size, volatility, and star-tier protection."
                 )
                 for _col in ml_display.columns:
@@ -16375,12 +16407,12 @@ if active_page == "ML Predictions":
                 if not ml_display.empty:
                     selected_ml_row = _select_insight_row(
                         ml_display,
-                        key="ml_predictions_selected_player",
+                        key="ml_projection_insight_player",
                         label="Selected Projection Insight player",
                         default_name=ml_display.iloc[0]["Player"] if "Player" in ml_display.columns else None,
                     )
                     if selected_ml_row is not None:
-                        st.success(make_ml_prediction_summary(selected_ml_row, _ml_insight_stat_from_sort(ml_display_sort)))
+                        st.success(make_ml_prediction_summary(selected_ml_row, _ml_insight_stat_from_sort(ml_sort_by)))
 
                 with st.expander("Show age curve details", expanded=False):
                     st.write("The age curve estimates typical year-to-year changes by age.")
@@ -16445,16 +16477,18 @@ if active_page == "ML Predictions":
                     label="Continue analysis in…",
                     transfer_results_df=_ml_xfer_df,
                     transfer_name_col="Player",
-                    default_rank_stat=ml_display_sort if ml_display_sort not in ("Position", "Team") else "Predicted OPS",
+                    default_rank_stat=ml_sort_by if ml_sort_by not in ("Position", "Team") else "Predicted OPS",
                     extra_context={
                         "transfer_position": _xfer_pos_norm,
                         "ml_lookback": ml_lookback,
                         "ml_min_games": ml_min_games,
                         "ml_min_ab": ml_min_ab,
-                        "ml_display_sort": ml_display_sort,
+                        "ml_display_sort": ml_sort_by,
+                        "ml_sort_by": ml_sort_by,
                     },
                 )
 
+        save_page_state(active_page)
         render_page_filters_debug(active_page)
 
 if developer_mode_enabled():

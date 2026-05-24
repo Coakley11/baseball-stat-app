@@ -56,8 +56,22 @@ PAGE_STATE_REGISTRY = {
             "value_lag", "value_min_g", "value_position_filter",
             "value_use_draft_room_sync", "value_sync_team_for_draft",
             "value_w_current", "value_w_trend",
+            "valuation_selected_player",
         ],
         "prefixes": ["value_"],
+    },
+    "ML Predictions": {
+        "exact": [
+            "ml_lookback", "ml_min_games", "ml_min_ab", "ml_max_players",
+            "ml_projection_style", "ml_regression_strength", "ml_age_strength",
+            "ml_comp_weight", "ml_k_neighbors", "ml_auto_apply_tuning",
+            "ml_position_filter", "ml_sort_by", "ml_display_sort",
+            "ml_projection_insight_player", "ml_predictions_selected_player",
+            "ml_search_filter", "ml_table_row_count", "ml_confidence_filter",
+            "ml_age_curve_stat", "ml_importance_stat",
+            "ml_predictions_have_run",
+        ],
+        "prefixes": [],
     },
     "Fantasy Sleepers & Busts": {
         "exact": [
@@ -141,13 +155,23 @@ def _is_ephemeral_widget_key(key: str) -> bool:
     return False
 
 
+# Session keys that must never be snapshotted (action flags / large derived data).
+_PAGE_STATE_SKIP_KEYS = frozenset({
+    "ml_full_generation_requested",
+    "ml_tuning_apply_requested",
+    "ml_predictions_df",
+})
+
+
 def _collect_keys_for_page(session, page_name: str) -> list:
     spec = PAGE_STATE_REGISTRY.get(page_name, {})
     keys = set(spec.get("exact", []))
     for prefix in spec.get("prefixes", []):
         for k in session:
             if isinstance(k, str) and k.startswith(prefix) and not _is_ephemeral_widget_key(k):
-                keys.add(k)
+                if k not in _PAGE_STATE_SKIP_KEYS:
+                    keys.add(k)
+    keys -= _PAGE_STATE_SKIP_KEYS
     return sorted(k for k in keys if not _is_ephemeral_widget_key(k))
 
 

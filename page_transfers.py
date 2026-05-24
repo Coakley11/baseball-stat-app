@@ -654,7 +654,7 @@ def _sanitize_value(key: str, value):
         return yr
     if key in ("trend_position_filter", "value_position_filter", "ml_position_filter", "transfer_position"):
         return normalize_fantasy_position_filter(value)
-    if key == "ml_display_sort":
+    if key in ("ml_display_sort", "ml_sort_by"):
         s = str(value).strip()
         return s if s else None
     if key.endswith("_filter") and key not in (
