@@ -548,7 +548,7 @@ def raw_positions_to_fantasy_filter(raw_positions) -> str | None:
 
 def session_fantasy_position_filter(session) -> str | None:
     """Read the active fantasy position filter from any supported source page."""
-    for key in ("trend_position_filter", "value_position_filter"):
+    for key in ("trend_position_filter", "value_position_filter", "ml_position_filter"):
         pos = normalize_fantasy_position_filter(session.get(key))
         if pos:
             return pos
@@ -574,6 +574,8 @@ def fantasy_position_transfer_keys_for_target(target_page: str, fantasy_pos: str
         out["trend_position_filter"] = slot
     elif target_page == "Valuation":
         out["value_position_filter"] = slot
+    elif target_page == "ML Predictions":
+        out["ml_position_filter"] = slot
     elif target_page == "Historical Explorer":
         raw = fantasy_filter_to_raw_positions(slot)
         if raw:
@@ -641,8 +643,11 @@ def _sanitize_value(key: str, value):
     if key.endswith("_year_range_filter") or key in ("hist_year", "career_year", "leaders_year", "compare_year_range"):
         yr = year_tuple(value)
         return yr
-    if key in ("trend_position_filter", "value_position_filter"):
+    if key in ("trend_position_filter", "value_position_filter", "ml_position_filter"):
         return normalize_fantasy_position_filter(value)
+    if key == "ml_display_sort":
+        s = str(value).strip()
+        return s if s else None
     if key.endswith("_filter") and key not in (
         "historical_position_filter_mode", "career_position_filter_mode",
         "historical_combine_split_seasons_filter", "career_by_team_toggle_filter",
@@ -1036,6 +1041,78 @@ def _valuation_to_compare(session, extra):
     return {"session_keys": keys}
 
 
+@_register_builder("ml_to_trend")
+def _ml_to_trend(session, extra):
+    keys = {}
+    lag = session.get("ml_lookback")
+    if lag in (3, 4, 5):
+        keys["trend_lag"] = int(lag)
+    mg = _safe_int(session.get("ml_min_games"), None)
+    if mg is not None:
+        keys["trend_min_g"] = mg
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_valuation")
+def _ml_to_valuation(session, extra):
+    keys = {}
+    lag = session.get("ml_lookback")
+    if lag in (3, 4, 5):
+        keys["value_lag"] = int(lag)
+    mg = _safe_int(session.get("ml_min_games"), None)
+    if mg is not None:
+        keys["value_min_g"] = mg
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_compare")
+def _ml_to_compare(session, extra):
+    keys = {}
+    max_y = extra.get("dataset_max_year") or session.get("_lahman_max_year")
+    lag = session.get("ml_lookback")
+    try:
+        max_y = int(max_y)
+        lag = int(lag)
+    except (TypeError, ValueError):
+        return {"session_keys": keys}
+    if lag in (3, 4, 5) and max_y > 0:
+        keys["compare_year_range"] = (max_y - lag + 1, max_y)
+    return {"session_keys": keys}
+
+
+@_register_builder("ml_to_sleepers")
+def _ml_to_sleepers(session, extra):
+    keys = {}
+    lag = session.get("ml_lookback")
+    if lag in (3, 4, 5):
+        keys["fantasy_market_window"] = int(lag)
+    return {"session_keys": keys}
+
+
+@_register_builder("trend_to_ml")
+def _trend_to_ml(session, extra):
+    keys = {}
+    lag = session.get("trend_lag")
+    if lag in (3, 4, 5):
+        keys["ml_lookback"] = int(lag)
+    mg = _safe_int(session.get("trend_min_g"), None)
+    if mg is not None:
+        keys["ml_min_games"] = mg
+    return {"session_keys": keys}
+
+
+@_register_builder("valuation_to_ml")
+def _valuation_to_ml(session, extra):
+    keys = {}
+    lag = session.get("value_lag")
+    if lag in (3, 4, 5):
+        keys["ml_lookback"] = int(lag)
+    mg = _safe_int(session.get("value_min_g"), None)
+    if mg is not None:
+        keys["ml_min_games"] = mg
+    return {"session_keys": keys}
+
+
 @_register_builder("valuation_to_trend")
 def _valuation_to_trend(session, extra):
     keys = {}
@@ -1346,6 +1423,7 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Career Totals", "builder": "trend_to_career", "label": "Career Totals — window, position & stat minimums"},
         {"target": "Leaderboards", "builder": "trend_to_leaders", "label": "Leaderboards — window & stat minimums"},
         {"target": "Fantasy Sleepers & Busts", "builder": "trend_to_sleepers", "label": "Sleepers & Busts — projection window & position"},
+        {"target": "ML Predictions", "builder": "trend_to_ml", "label": "ML Predictions — window & position"},
     ],
     ("Valuation", "after_table"): [
         {"target": "Comparison Tool", "builder": "valuation_to_compare", "label": "Comparison Tool"},
@@ -1354,6 +1432,7 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Career Totals", "builder": "valuation_to_career", "label": "Career Totals — window, position & stat minimums"},
         {"target": "Leaderboards", "builder": "valuation_to_leaders", "label": "Leaderboards — window & stat minimums"},
         {"target": "Fantasy Sleepers & Busts", "builder": "valuation_to_sleepers", "label": "Sleepers & Busts — projection window & position"},
+        {"target": "ML Predictions", "builder": "valuation_to_ml", "label": "ML Predictions — window & position"},
     ],
     ("Fantasy Sleepers & Busts", "after_tables"): [
         {"target": "Comparison Tool", "builder": "sleepers_to_compare", "label": "Comparison Tool — projection window"},
@@ -1376,5 +1455,11 @@ CONTEXTUAL_NAV_REGISTRY = {
     ],
     ("Fantasy Lineup Assistant", "after_lineup"): [
         {"target": "Fantasy Standings Tracker", "builder": "lineup_to_standings", "label": "Standings Tracker — scoring & team"},
+    ],
+    ("ML Predictions", "after_table"): [
+        {"target": "Trend Value", "builder": "ml_to_trend", "label": "Trend Value — lookback window & position"},
+        {"target": "Valuation", "builder": "ml_to_valuation", "label": "Valuation — lookback window & position"},
+        {"target": "Comparison Tool", "builder": "ml_to_compare", "label": "Comparison Tool — projection year window"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "ml_to_sleepers", "label": "Sleepers & Busts — lookback window & position"},
     ],
 }

@@ -3834,6 +3834,47 @@ def _ml_is_nonempty_dataframe(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
 
 
+def safe_get_dataframe(primary, fallback=None) -> pd.DataFrame:
+    """Coalesce DataFrames without using ambiguous `df or other` truthiness."""
+    if primary is not None and hasattr(primary, "empty") and not primary.empty:
+        return primary
+    if fallback is not None and hasattr(fallback, "empty"):
+        return fallback
+    return pd.DataFrame()
+
+
+def safe_get_list(primary, fallback=None) -> list:
+    if isinstance(primary, list) and primary:
+        return primary
+    if isinstance(fallback, list) and fallback:
+        return fallback
+    return []
+
+
+def safe_get_dict(primary, fallback=None) -> dict:
+    if isinstance(primary, dict) and primary:
+        return primary
+    if isinstance(fallback, dict) and fallback:
+        return fallback
+    return {}
+
+
+def _ml_resolve_tuning_session_artifacts(result, base_pack):
+    """Safe merge of tuning `result` and session `base_pack` (no DataFrame `or`)."""
+    result = result if isinstance(result, dict) else {}
+    base_pack = base_pack if isinstance(base_pack, dict) else {}
+    ml_training_df = safe_get_dataframe(
+        result.get("ml_training_df"),
+        base_pack.get("ml_training_df"),
+    )
+    ml_feature_cols = safe_get_list(result.get("ml_feature_cols"), base_pack.get("ml_feature_cols"))
+    ml_models = safe_get_dict(result.get("ml_models"), base_pack.get("ml_models"))
+    pred_df = safe_get_dataframe(result.get("pred_df"))
+    age_curve_df = safe_get_dataframe(result.get("age_curve_df"))
+    comp_df = safe_get_dataframe(result.get("comp_df"))
+    return ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df
+
+
 def _ml_get_train_companions(base_pack, ml_training_df: pd.DataFrame) -> pd.DataFrame:
     """Never use `df or other` — empty/nonempty DataFrames are ambiguous in boolean context."""
     if isinstance(base_pack, dict):
@@ -15738,6 +15779,37 @@ if active_page == "ML Predictions":
             help="Filters players before similarity + aging adjustments so unused low-AB rows are not computed.",
         )
 
+        _ml_pos_c1, _ml_pos_c2 = st.columns(2)
+        with _ml_pos_c1:
+            validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+            ml_position_filter = st.selectbox(
+                "Fantasy Position",
+                FANTASY_POSITION_FILTER_OPTIONS,
+                key="ml_position_filter",
+                help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+            )
+        with _ml_pos_c2:
+            _ml_sort_options = [
+                "Predicted HR",
+                "Predicted RBI",
+                "Predicted R",
+                "Predicted SB",
+                "Predicted 2B",
+                "Predicted 3B",
+                "Predicted BA",
+                "Predicted OPS",
+                "ML Fantasy Value",
+                "Projection Confidence Score",
+                "Position",
+            ]
+            validate_state_option("ml_display_sort", _ml_sort_options, f"Predicted {ml_sort_stat}")
+            ml_display_sort = st.selectbox(
+                "Sort Projections By",
+                _ml_sort_options,
+                key="ml_display_sort",
+                help="Applies after position filter. Table remains sortable in the grid.",
+            )
+
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
             ml_projection_style = st.selectbox(
@@ -15909,12 +15981,9 @@ if active_page == "ML Predictions":
                                 for old_key in list(tuning_cache.keys())[:-12]:
                                     tuning_cache.pop(old_key, None)
                     st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
-                    ml_training_df = result.get("ml_training_df", pd.DataFrame()) or base_pack.get("ml_training_df", pd.DataFrame())
-                    ml_feature_cols = result.get("ml_feature_cols", []) or base_pack.get("ml_feature_cols", [])
-                    ml_models = result.get("ml_models", {}) or base_pack.get("ml_models", {})
-                    pred_df = result.get("pred_df", pd.DataFrame())
-                    age_curve_df = result.get("age_curve_df", pd.DataFrame())
-                    comp_df = result.get("comp_df", pd.DataFrame())
+                    ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df = _ml_resolve_tuning_session_artifacts(
+                        result, base_pack
+                    )
                     if result.get("ok"):
                         st.session_state["_ml_proj_sig"] = run_sig
                         st.session_state["_ml_proj_pred_df"] = pred_df.copy()
@@ -15935,12 +16004,9 @@ if active_page == "ML Predictions":
                     refresh_token=refresh_token,
                 )
                 st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
-                ml_training_df = result.get("ml_training_df", pd.DataFrame())
-                ml_feature_cols = result.get("ml_feature_cols", [])
-                ml_models = result.get("ml_models", {})
-                pred_df = result.get("pred_df", pd.DataFrame())
-                age_curve_df = result.get("age_curve_df", pd.DataFrame())
-                comp_df = result.get("comp_df", pd.DataFrame())
+                ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df = _ml_resolve_tuning_session_artifacts(
+                    result, st.session_state.get("_ml_base_pack")
+                )
                 if result.get("ok"):
                     st.session_state["_ml_proj_sig"] = run_sig
                     st.session_state["_ml_proj_pred_df"] = pred_df.copy()
@@ -16107,32 +16173,58 @@ if active_page == "ML Predictions":
                             _breakout_base += normalize_series(pd.to_numeric(pred_df[_col], errors="coerce").fillna(0)) / 3.0
                     pred_df["Breakout Score"] = normalize_series((_breakout_base * 0.75 + _age_upside * 0.25) * _style_breakout_mult)
                     pred_df["Projection Style"] = ml_projection_style
+                    pred_df["Expected Fantasy Value"] = pred_df["ML Fantasy Value"]
 
-                    sort_col = f"Predicted {ml_sort_stat}"
-                    if sort_col in pred_df.columns:
-                        pred_df = pred_df.sort_values(sort_col, ascending=False)
+                    _ml_max_year = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").max())
+                    _ml_recent_years = list(range(_ml_max_year - int(ml_lookback) + 1, _ml_max_year + 1))
+                    _ml_recent_source = yearly_df[yearly_df["yearID"].isin(_ml_recent_years)].copy()
+                    pred_df = attach_fantasy_position_columns(pred_df, _ml_recent_source)
+                    if "Position" not in pred_df.columns:
+                        pred_df["Position"] = "—"
+                    pred_df = filter_players_by_fantasy_position(pred_df, ml_position_filter)
+
+                    _sort_col = ml_display_sort
+                    if _sort_col == "Position" and "Position" in pred_df.columns:
+                        pred_df = pred_df.sort_values("Position", ascending=True, na_position="last")
+                    elif _sort_col in pred_df.columns:
+                        pred_df = pred_df.sort_values(_sort_col, ascending=False, na_position="last")
+                    else:
+                        _fallback_sort = f"Predicted {ml_sort_stat}"
+                        if _fallback_sort in pred_df.columns:
+                            pred_df = pred_df.sort_values(_fallback_sort, ascending=False, na_position="last")
 
                     # User-facing ML output: show only identifying info and the recommended predicted stats.
                     # Historical/diagnostic columns such as Last Year, Last HR, Recent AB, Final, raw model outputs,
                     # and similar-player columns are intentionally hidden from the main table.
                     display_cols = [
-                        "fullName", "bats", "prediction_year", "age_entering_year",
+                        "fullName", "Position", "primaryTeamID", "bats", "prediction_year", "age_entering_year",
                         "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
                         "Predicted BA", "Predicted OBP", "Predicted SLG", "Predicted OPS",
                         "Projection Confidence", "Projection Confidence Score", "Projection Warning", "Elite Star Score",
-                        "ML Fantasy Value", "Model Rank", "Breakout Score", "Sample Strength", "Projection Style"
+                        "Expected Fantasy Value", "ML Fantasy Value", "Model Rank", "Breakout Score", "Sample Strength", "Projection Style",
                     ]
                     display_cols = [c for c in display_cols if c in pred_df.columns]
                     projection_rename = {
-                        "fullName": "Player", "bats": "Bats", "prediction_year": "Prediction Year",
-                        "age_entering_year": "Age"
+                        "fullName": "Player",
+                        "Position": "Position",
+                        "primaryTeamID": "Team",
+                        "bats": "Bats",
+                        "prediction_year": "Prediction Year",
+                        "age_entering_year": "Age",
+                        "Expected Fantasy Value": "Expected Fantasy Value",
                     }
                     ml_display = clean_ui_columns(pred_df[display_cols].rename(columns=projection_rename))
 
                     st.subheader("Next-Season ML Projections")
+                    _ml_pos_note = (
+                        f" · **Position: {ml_position_filter}**"
+                        if ml_position_filter not in ("All positions", "All")
+                        else ""
+                    )
                     st.caption(
-                        "Predictions use machine learning with aging, regression, and similarity adjustments, "
-                        "then a light calibration pass aligned with Draft Lab anchors. "
+                        f"Predictions use machine learning with aging, regression, and similarity adjustments, "
+                        f"then a light calibration pass aligned with Draft Lab anchors{_ml_pos_note}. "
+                        f"Sorted by **{ml_display_sort}**. "
                         "**Projection Confidence** reflects sample size, volatility, and star-tier protection."
                     )
                     for _col in ml_display.columns:
@@ -16209,6 +16301,23 @@ if active_page == "ML Predictions":
                                 )
                             for _note in _cmp_notes:
                                 st.caption(_note)
+
+                    _ml_xfer_df = pred_df.copy()
+                    if "fullName" in _ml_xfer_df.columns and "Player" not in _ml_xfer_df.columns:
+                        _ml_xfer_df = _ml_xfer_df.rename(columns={"fullName": "Player"})
+                    render_contextual_page_nav(
+                        "ML Predictions",
+                        "after_table",
+                        label="Continue analysis in…",
+                        transfer_results_df=_ml_xfer_df,
+                        transfer_name_col="Player",
+                        default_rank_stat=ml_display_sort if ml_display_sort != "Position" else "Predicted OPS",
+                        extra_context={
+                            "ml_position_filter": ml_position_filter,
+                            "ml_display_sort": ml_display_sort,
+                            "ml_lookback": ml_lookback,
+                        },
+                    )
 
 if developer_mode_enabled():
     elapsed_ms = (time.perf_counter() - _APP_RENDER_START) * 1000

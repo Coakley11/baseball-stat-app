@@ -20,6 +20,8 @@ _build_sim_index = _mod._build_ml_similarity_index
 _query_sim = _mod._query_ml_similarity_comps
 _get_age = _mod._ml_get_age_curve_from_pack
 _get_comp = _mod._ml_get_train_companions
+_safe_df = _mod.safe_get_dataframe
+_resolve = _mod._ml_resolve_tuning_session_artifacts
 
 
 def test_nearest_age_adjustment_series():
@@ -55,6 +57,28 @@ def test_ml_similarity_index_reuse_across_k():
     assert len(c5) == 2
     assert len(c3) == 2
     assert (c5["Similar Player Sample"] >= c3["Similar Player Sample"]).all()
+
+
+def test_safe_get_dataframe_avoids_or_truthiness():
+    full = pd.DataFrame({"a": [1, 2]})
+    empty = pd.DataFrame()
+    out = _safe_df(empty, full)
+    assert len(out) == 2
+    out2 = _safe_df(None, empty)
+    assert out2.empty
+
+
+def test_ml_resolve_tuning_session_artifacts():
+    primary = pd.DataFrame({"playerID": ["a"], "Predicted HR": [40]})
+    fallback = pd.DataFrame({"playerID": ["b"], "Predicted HR": [30]})
+    result = {"ml_training_df": primary, "pred_df": primary}
+    base = {"ml_training_df": fallback, "ml_feature_cols": ["x"], "ml_models": {"HR": {}}}
+    train, cols, models, pred, age, comp = _resolve(result, base)
+    assert len(train) == 1
+    assert train.iloc[0]["playerID"] == "a"
+    assert cols == ["x"]
+    assert "HR" in models
+    assert len(pred) == 1
 
 
 def test_ml_pack_helpers_avoid_dataframe_truthiness():
