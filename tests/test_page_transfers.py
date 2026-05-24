@@ -181,3 +181,29 @@ def test_valuation_top3_off_sends_no_players():
 def test_valuation_top3_caption():
     cap = pg.top3_transfer_caption("Valuation", ["Player A", "Player B", "Player C"])
     assert cap == "Sending top 3 valuation players: Player A, Player B, Player C"
+
+
+def test_ml_to_trend_transfers_position_and_window():
+    session = {"ml_lookback": 4, "ml_min_games": 120, "ml_position_filter": "OF"}
+    payload = pg.build_transfer(
+        session,
+        "ml_to_trend",
+        {"target_page": "Trend Value", "transfer_position": "OF", "ml_lookback": 4, "ml_min_games": 120},
+    )
+    assert payload["transfer_filters"]["trend_position_filter"] == "OF"
+    assert payload["transfer_filters"]["trend_lag"] == 4
+    assert payload["transfer_filters"]["trend_min_g"] == 120
+
+
+def test_valuation_to_ml_uses_transfer_position():
+    session = {"value_lag": 3, "value_position_filter": "1B"}
+    payload = pg.build_transfer(session, "valuation_to_ml", {"target_page": "ML Predictions"})
+    assert payload["transfer_filters"]["ml_lookback"] == 3
+    assert payload["transfer_filters"]["transfer_position"] == "1B"
+
+
+def test_ml_top3_checkbox_for_compare_and_trend_not_sleepers():
+    df = pd.DataFrame({"Player": ["A", "B", "C"], "Predicted HR": [40, 35, 30]})
+    assert pg.should_show_top3_checkbox("ml_to_compare", "Comparison Tool", df, "Player")
+    assert pg.should_show_top3_checkbox("ml_to_trend", "Trend Value", df, "Player")
+    assert not pg.should_show_top3_checkbox("ml_to_sleepers", "Fantasy Sleepers & Busts", df, "Player")

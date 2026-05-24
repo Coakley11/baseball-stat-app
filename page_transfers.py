@@ -117,6 +117,9 @@ _BUILDER_TABLE_TOP3_PLAYERS = frozenset({
     "trend_to_compare",
     "valuation_to_compare",
     "valuation_to_trend",
+    "ml_to_compare",
+    "ml_to_trend",
+    "ml_to_valuation",
 })
 
 _BUILDER_TOP3_CHECKBOX = _BUILDER_ALLOWS_TOP3 | _BUILDER_TABLE_TOP3_PLAYERS
@@ -548,6 +551,9 @@ def raw_positions_to_fantasy_filter(raw_positions) -> str | None:
 
 def session_fantasy_position_filter(session) -> str | None:
     """Read the active fantasy position filter from any supported source page."""
+    pos = normalize_fantasy_position_filter(session.get("transfer_position"))
+    if pos:
+        return pos
     for key in ("trend_position_filter", "value_position_filter", "ml_position_filter"):
         pos = normalize_fantasy_position_filter(session.get(key))
         if pos:
@@ -597,9 +603,12 @@ def merge_fantasy_position_transfer(session, keys: dict, target_page: str) -> di
     """Augment contextual transfer filters with position when source session has one."""
     if not target_page:
         return keys
-    pos = session_fantasy_position_filter(session)
+    pos = normalize_fantasy_position_filter(keys.get("transfer_position"))
+    if not pos:
+        pos = session_fantasy_position_filter(session)
     if not pos:
         return keys
+    keys["transfer_position"] = pos
     mapped = fantasy_position_transfer_keys_for_target(target_page, pos)
     if mapped:
         keys.update(mapped)
@@ -643,7 +652,7 @@ def _sanitize_value(key: str, value):
     if key.endswith("_year_range_filter") or key in ("hist_year", "career_year", "leaders_year", "compare_year_range"):
         yr = year_tuple(value)
         return yr
-    if key in ("trend_position_filter", "value_position_filter", "ml_position_filter"):
+    if key in ("trend_position_filter", "value_position_filter", "ml_position_filter", "transfer_position"):
         return normalize_fantasy_position_filter(value)
     if key == "ml_display_sort":
         s = str(value).strip()
@@ -1044,24 +1053,30 @@ def _valuation_to_compare(session, extra):
 @_register_builder("ml_to_trend")
 def _ml_to_trend(session, extra):
     keys = {}
-    lag = session.get("ml_lookback")
+    lag = extra.get("ml_lookback", session.get("ml_lookback"))
     if lag in (3, 4, 5):
         keys["trend_lag"] = int(lag)
-    mg = _safe_int(session.get("ml_min_games"), None)
+    mg = _safe_int(extra.get("ml_min_games", session.get("ml_min_games")), None)
     if mg is not None:
         keys["trend_min_g"] = mg
+    pos = normalize_fantasy_position_filter(extra.get("transfer_position"))
+    if pos:
+        keys["transfer_position"] = pos
     return {"session_keys": keys}
 
 
 @_register_builder("ml_to_valuation")
 def _ml_to_valuation(session, extra):
     keys = {}
-    lag = session.get("ml_lookback")
+    lag = extra.get("ml_lookback", session.get("ml_lookback"))
     if lag in (3, 4, 5):
         keys["value_lag"] = int(lag)
-    mg = _safe_int(session.get("ml_min_games"), None)
+    mg = _safe_int(extra.get("ml_min_games", session.get("ml_min_games")), None)
     if mg is not None:
         keys["value_min_g"] = mg
+    pos = normalize_fantasy_position_filter(extra.get("transfer_position"))
+    if pos:
+        keys["transfer_position"] = pos
     return {"session_keys": keys}
 
 
@@ -1069,7 +1084,7 @@ def _ml_to_valuation(session, extra):
 def _ml_to_compare(session, extra):
     keys = {}
     max_y = extra.get("dataset_max_year") or session.get("_lahman_max_year")
-    lag = session.get("ml_lookback")
+    lag = extra.get("ml_lookback", session.get("ml_lookback"))
     try:
         max_y = int(max_y)
         lag = int(lag)
@@ -1083,9 +1098,15 @@ def _ml_to_compare(session, extra):
 @_register_builder("ml_to_sleepers")
 def _ml_to_sleepers(session, extra):
     keys = {}
-    lag = session.get("ml_lookback")
+    lag = extra.get("ml_lookback", session.get("ml_lookback"))
     if lag in (3, 4, 5):
         keys["fantasy_market_window"] = int(lag)
+    pos = normalize_fantasy_position_filter(extra.get("transfer_position"))
+    if pos:
+        keys["transfer_position"] = pos
+    style = session.get("ml_projection_style")
+    if style in _PROJECTION_STYLES:
+        keys["fantasy_draft_projection_style"] = style
     return {"session_keys": keys}
 
 
@@ -1098,6 +1119,9 @@ def _trend_to_ml(session, extra):
     mg = _safe_int(session.get("trend_min_g"), None)
     if mg is not None:
         keys["ml_min_games"] = mg
+    pos = session_fantasy_position_filter(session)
+    if pos:
+        keys["transfer_position"] = pos
     return {"session_keys": keys}
 
 
@@ -1110,6 +1134,27 @@ def _valuation_to_ml(session, extra):
     mg = _safe_int(session.get("value_min_g"), None)
     if mg is not None:
         keys["ml_min_games"] = mg
+    pos = session_fantasy_position_filter(session)
+    if pos:
+        keys["transfer_position"] = pos
+    return {"session_keys": keys}
+
+
+@_register_builder("sleepers_to_ml")
+def _sleepers_to_ml(session, extra):
+    keys = {}
+    window = session.get("fantasy_market_window")
+    if window in (3, 4, 5):
+        keys["ml_lookback"] = int(window)
+    mg = _safe_int(session.get("fantasy_market_min_g"), None)
+    if mg is not None:
+        keys["ml_min_games"] = mg
+    ab = _safe_int(session.get("fantasy_market_min_ab"), None)
+    if ab is not None:
+        keys["ml_min_ab"] = ab
+    pos = session_fantasy_position_filter(session)
+    if pos:
+        keys["transfer_position"] = pos
     return {"session_keys": keys}
 
 
@@ -1438,6 +1483,7 @@ CONTEXTUAL_NAV_REGISTRY = {
         {"target": "Comparison Tool", "builder": "sleepers_to_compare", "label": "Comparison Tool — projection window"},
         {"target": "Trend Value", "builder": "sleepers_to_trend", "label": "Trend Value — projection window"},
         {"target": "Valuation", "builder": "sleepers_to_valuation", "label": "Valuation — projection window"},
+        {"target": "ML Predictions", "builder": "sleepers_to_ml", "label": "ML Predictions — window & position"},
         {"target": "Draft Assistant Simulator", "builder": "sleepers_to_draft_assistant", "label": "Draft Assistant — scoring & window"},
     ],
     ("Draft Assistant Simulator", "after_recommendations"): [

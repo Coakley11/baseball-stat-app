@@ -3791,6 +3791,23 @@ _ML_PROJ_SESSION_KEYS = (
 _ML_BASE_SESSION_KEYS = ("_ml_base_sig", "_ml_base_pack")
 ML_PREDICTION_REFRESH_TOKEN_KEY = "ml_prediction_refresh_token"
 ML_PREDICTIONS_STATUS_KEY = "ml_predictions_status"
+ML_PREDICTIONS_DF_KEY = "ml_predictions_df"
+ML_FULL_GENERATION_REQUESTED_KEY = "ml_full_generation_requested"
+ML_LAST_TUNING_SIG_KEY = "ml_last_applied_tuning_sig"
+ML_DISPLAY_SORT_OPTIONS = [
+    "Predicted HR",
+    "Predicted RBI",
+    "Predicted R",
+    "Predicted SB",
+    "Predicted 2B",
+    "Predicted 3B",
+    "Predicted BA",
+    "Predicted OPS",
+    "Expected Fantasy Value",
+    "Projection Confidence Score",
+    "Position",
+    "Team",
+]
 
 
 def _clear_ml_projection_session_cache():
@@ -3952,12 +3969,321 @@ def _clear_ml_data_caches(*, clear_disk: bool = False):
 def _on_ml_predictions_refresh_click():
     """Button callback — never write to the button widget key itself."""
     st.session_state["ml_predictions_have_run"] = True
+    st.session_state[ML_FULL_GENERATION_REQUESTED_KEY] = True
     st.session_state[ML_PREDICTION_REFRESH_TOKEN_KEY] = int(
         st.session_state.get(ML_PREDICTION_REFRESH_TOKEN_KEY, 0)
     ) + 1
     _clear_ml_projection_session_cache()
+    _clear_ml_base_session_cache()
     _clear_ml_tuning_cache()
     st.session_state.pop(ML_PREDICTIONS_STATUS_KEY, None)
+    st.session_state.pop(ML_LAST_TUNING_SIG_KEY, None)
+
+
+def _ml_enrich_predictions_for_storage(pred_df, yearly_source, ml_lookback, ml_projection_style):
+    """Add display columns once when storing (not on every filter/sort rerun)."""
+    if pred_df is None or pred_df.empty:
+        return pred_df
+    out = pred_df.copy()
+    _style_conf_adj = {"Conservative": 0.05, "Balanced": 0.00, "Aggressive": -0.04}.get(ml_projection_style, 0.00)
+    _style_breakout_mult = {"Conservative": 0.90, "Balanced": 1.00, "Aggressive": 1.12}.get(ml_projection_style, 1.00)
+    _count_value = pd.Series(0.0, index=out.index)
+    _value_weights = {
+        "Predicted R": 0.12,
+        "Predicted HR": 0.22,
+        "Predicted RBI": 0.20,
+        "Predicted SB": 0.14,
+        "Predicted BA": 0.12,
+        "Predicted OPS": 0.20,
+    }
+    for _col, _w in _value_weights.items():
+        if _col in out.columns:
+            _count_value += normalize_series(pd.to_numeric(out[_col], errors="coerce").fillna(0)) * _w
+    out["ML Fantasy Value"] = normalize_series(_count_value)
+    out["Expected Fantasy Value"] = out["ML Fantasy Value"]
+    out["Model Rank"] = out["ML Fantasy Value"].rank(ascending=False, method="min")
+    _recent_ab = safe_numeric_series(out, "hist_AB_total", 0)
+    out["Sample Strength"] = ((_recent_ab / 1200).clip(lower=0.20, upper=1.0) + _style_conf_adj).clip(0.05, 1.0)
+    if "Projection Confidence Score" not in out.columns:
+        out["Projection Confidence Score"] = out["Sample Strength"]
+    if "Projection Confidence" not in out.columns:
+        out["Projection Confidence"] = np.select(
+            [out["Projection Confidence Score"] >= 0.70, out["Projection Confidence Score"] >= 0.46],
+            ["High Confidence", "Medium Confidence"],
+            default="Risky Projection",
+        )
+    _age = safe_numeric_series(out, "age_entering_year", np.nan)
+    _age_upside = pd.Series(np.where((_age >= 22) & (_age <= 27), 1.0, 0.45), index=out.index)
+    _breakout_base = pd.Series(0.0, index=out.index)
+    for _col in ["Predicted HR", "Predicted SB", "Predicted OPS"]:
+        if _col in out.columns:
+            _breakout_base += normalize_series(pd.to_numeric(out[_col], errors="coerce").fillna(0)) / 3.0
+    out["Breakout Score"] = normalize_series((_breakout_base * 0.75 + _age_upside * 0.25) * _style_breakout_mult)
+    out["Projection Style"] = ml_projection_style
+    if yearly_source is not None and not yearly_source.empty and "yearID" in yearly_source.columns:
+        _ml_max_year = int(pd.to_numeric(yearly_source["yearID"], errors="coerce").max())
+        _ml_recent_years = list(range(_ml_max_year - int(ml_lookback) + 1, _ml_max_year + 1))
+        _ml_recent_source = yearly_source[yearly_source["yearID"].isin(_ml_recent_years)].copy()
+        out = attach_fantasy_position_columns(out, _ml_recent_source)
+    if "Position" not in out.columns:
+        out["Position"] = "—"
+    return out
+
+
+def _ml_apply_display_view(stored_df, position_filter, sort_col):
+    """Display-only filter/sort — never retrains or recalibrates."""
+    if stored_df is None or stored_df.empty:
+        return stored_df
+    view = stored_df.copy()
+    view = filter_players_by_fantasy_position(view, position_filter)
+    if sort_col == "Position" and "Position" in view.columns:
+        return view.sort_values("Position", ascending=True, na_position="last").reset_index(drop=True)
+    if sort_col == "Team":
+        team_col = "primaryTeamID" if "primaryTeamID" in view.columns else ("Team" if "Team" in view.columns else None)
+        if team_col:
+            return view.sort_values(team_col, ascending=True, na_position="last").reset_index(drop=True)
+    if sort_col in view.columns:
+        return view.sort_values(sort_col, ascending=False, na_position="last").reset_index(drop=True)
+    return view.reset_index(drop=True)
+
+
+def _ml_commit_predictions_to_session(
+    pred_df,
+    *,
+    status,
+    tuning_sig,
+    ml_training_df=None,
+    ml_feature_cols=None,
+    ml_models=None,
+    age_curve_df=None,
+    comp_df=None,
+):
+    """Persist generated projections for instant display-only reruns."""
+    enriched = pred_df.copy() if isinstance(pred_df, pd.DataFrame) else pd.DataFrame()
+    st.session_state[ML_PREDICTIONS_DF_KEY] = enriched
+    st.session_state[ML_PREDICTIONS_STATUS_KEY] = status or {}
+    st.session_state[ML_LAST_TUNING_SIG_KEY] = tuning_sig
+    if isinstance(ml_training_df, pd.DataFrame):
+        st.session_state["_ml_proj_training_df"] = ml_training_df
+    if isinstance(ml_feature_cols, list):
+        st.session_state["_ml_proj_feature_cols"] = ml_feature_cols
+    if isinstance(ml_models, dict):
+        st.session_state["_ml_proj_models"] = ml_models
+    if isinstance(age_curve_df, pd.DataFrame):
+        st.session_state["_ml_proj_age_curve_df"] = age_curve_df
+    if isinstance(comp_df, pd.DataFrame):
+        st.session_state["_ml_proj_comp_df"] = comp_df
+
+
+def _ml_effective_tuning_from_style(ml_projection_style, regression_strength, age_strength, comp_weight):
+    _ml_style_mode = "Aggressive / Upside" if ml_projection_style == "Aggressive" else ml_projection_style
+    _ml_style_factors = get_draft_projection_factors(_ml_style_mode)
+    effective_regression = float(
+        np.clip(regression_strength * float(_ml_style_factors.get("regression_strength_multiplier", 1.0)), 0.0, 0.80)
+    )
+    effective_comp = float(
+        np.clip(comp_weight * (float(_ml_style_factors.get("anchor_player_weight", 0.84)) / 0.84), 0.0, 0.80)
+    )
+    return effective_regression, float(age_strength), effective_comp
+
+
+def _ml_insight_stat_from_sort(sort_col: str) -> str:
+    if str(sort_col).startswith("Predicted "):
+        return str(sort_col).replace("Predicted ", "")
+    return {
+        "Expected Fantasy Value": "OPS",
+        "ML Fantasy Value": "OPS",
+        "Projection Confidence Score": "OPS",
+        "Team": "OPS",
+        "Position": "OPS",
+    }.get(str(sort_col), "OPS")
+
+
+def _ml_execute_pipeline_if_needed(
+    *,
+    yearly_source,
+    ml_lookback,
+    ml_min_games,
+    ml_max_players,
+    ml_min_ab,
+    regression_strength,
+    age_strength,
+    comp_weight,
+    k_neighbors,
+    ml_projection_style,
+) -> bool:
+    """Run expensive ML only on Generate/Refresh or explicit tuning apply. Returns True if pipeline ran."""
+    full_gen = bool(st.session_state.pop(ML_FULL_GENERATION_REQUESTED_KEY, False))
+    have_run = bool(st.session_state.get("ml_predictions_have_run", False))
+    if not full_gen and not have_run:
+        return False
+
+    effective_regression, effective_age, effective_comp = _ml_effective_tuning_from_style(
+        ml_projection_style, regression_strength, age_strength, comp_weight
+    )
+    base_sig = _ml_base_run_signature(yearly_source, ml_lookback, ml_min_games, ml_max_players)
+    tuning_sig = _ml_tuning_run_signature(
+        regression_strength,
+        age_strength,
+        comp_weight,
+        k_neighbors,
+        ml_min_ab,
+        ml_projection_style,
+    )
+    refresh_token = int(st.session_state.get(ML_PREDICTION_REFRESH_TOKEN_KEY, 0))
+
+    if full_gen:
+        st.session_state["_ml_page_last_action"] = "full_generation"
+        result = _run_ml_projection_pipeline(
+            yearly_source=yearly_source,
+            ml_lookback=ml_lookback,
+            ml_min_games=ml_min_games,
+            ml_max_players=ml_max_players,
+            ml_min_ab=ml_min_ab,
+            effective_regression_strength=effective_regression,
+            effective_age_strength=effective_age,
+            effective_comp_weight=effective_comp,
+            k_neighbors=k_neighbors,
+            ml_projection_style=ml_projection_style,
+            refresh_token=refresh_token,
+        )
+        st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
+        ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df = _ml_resolve_tuning_session_artifacts(
+            result, st.session_state.get("_ml_base_pack")
+        )
+        if result.get("ok"):
+            enriched = _ml_enrich_predictions_for_storage(
+                pred_df, yearly_source, ml_lookback, ml_projection_style
+            )
+            _ml_commit_predictions_to_session(
+                enriched,
+                status=result,
+                tuning_sig=tuning_sig,
+                ml_training_df=ml_training_df,
+                ml_feature_cols=ml_feature_cols,
+                ml_models=ml_models,
+                age_curve_df=age_curve_df,
+                comp_df=comp_df,
+            )
+            st.session_state["_ml_proj_sig"] = base_sig + tuning_sig
+            st.session_state["_ml_proj_pred_df"] = enriched.copy()
+            _bp = result.get("base_pack") if isinstance(result.get("base_pack"), dict) else {}
+            if not _bp:
+                _bp = {
+                    "ml_training_df": ml_training_df,
+                    "ml_feature_cols": ml_feature_cols,
+                    "ml_models": ml_models,
+                    "current_rows": result.get("current_rows", pd.DataFrame()),
+                    "base_pred_df": result.get("base_pred_df", pd.DataFrame()),
+                    "timing": dict(result.get("timing") or {}),
+                }
+            _store_ml_base_pack(base_sig, _bp, clear_tuning_cache=False)
+            tuning_cache = st.session_state.setdefault("_ml_tuning_cache", {})
+            tuning_cache[tuning_sig] = {
+                "pred_df": enriched.copy(),
+                "age_curve_df": age_curve_df.copy() if isinstance(age_curve_df, pd.DataFrame) else pd.DataFrame(),
+                "comp_df": comp_df.copy() if isinstance(comp_df, pd.DataFrame) else pd.DataFrame(),
+            }
+        return True
+
+    last_sig = st.session_state.get(ML_LAST_TUNING_SIG_KEY)
+    apply = bool(st.session_state.pop("ml_tuning_apply_requested", False))
+    auto_tune = bool(st.session_state.get("ml_auto_apply_tuning", True))
+    tuning_needed = apply or (auto_tune and last_sig is not None and tuning_sig != last_sig)
+    if not tuning_needed:
+        return False
+
+    base_pack = st.session_state.get("_ml_base_pack")
+    base_cached_ok = (
+        st.session_state.get("_ml_base_sig") == base_sig
+        and isinstance(base_pack, dict)
+        and _ml_is_nonempty_dataframe(base_pack.get("base_pred_df"))
+    )
+    if not base_cached_ok:
+        return False
+
+    if not auto_tune and not apply:
+        stored_n = len(st.session_state.get(ML_PREDICTIONS_DF_KEY, pd.DataFrame()))
+        st.session_state[ML_PREDICTIONS_STATUS_KEY] = {
+            "ok": bool(stored_n),
+            "message": "Slider changes pending — click **Apply tuning changes** to update projections.",
+            "generated_at": "pending tuning",
+            "player_count": stored_n,
+            "model_type": "Random Forest (scikit-learn)",
+            "fallback": "tuning_pending",
+            "timing": {"tuning_pending": True},
+        }
+        return False
+
+    st.session_state["_ml_page_last_action"] = "tuning"
+    base_pack = _ensure_ml_base_pack_precomputed(
+        base_pack,
+        yearly_source,
+        ml_lookback,
+        _ml_year_pool_signature(yearly_source),
+        refresh_token,
+    )
+    st.session_state["_ml_base_pack"] = base_pack
+    tuning_cache = st.session_state.setdefault("_ml_tuning_cache", {})
+    if tuning_sig in tuning_cache and not apply:
+        cached_tune = tuning_cache[tuning_sig]
+        result = {
+            "ok": True,
+            "pred_df": cached_tune["pred_df"],
+            "age_curve_df": cached_tune.get("age_curve_df", pd.DataFrame()),
+            "comp_df": cached_tune.get("comp_df", pd.DataFrame()),
+            "ml_training_df": base_pack.get("ml_training_df", pd.DataFrame()),
+            "ml_feature_cols": base_pack.get("ml_feature_cols", []),
+            "ml_models": base_pack.get("ml_models", {}),
+            "player_count": len(cached_tune["pred_df"]),
+            "runtime_sec": 0.0,
+            "timing": {"tuning_cache_hit": True},
+            "message": f"Showing cached tuning result ({len(cached_tune['pred_df']):,} players).",
+            "generated_at": "tuning cache",
+        }
+    else:
+        result = _run_ml_tuning_fast(
+            yearly_source=yearly_source,
+            ml_lookback=ml_lookback,
+            ml_min_ab=ml_min_ab,
+            base_pack=base_pack,
+            effective_regression_strength=effective_regression,
+            effective_age_strength=effective_age,
+            effective_comp_weight=effective_comp,
+            k_neighbors=k_neighbors,
+            refresh_token=refresh_token,
+        )
+        if result.get("ok"):
+            tuning_cache[tuning_sig] = {
+                "pred_df": result["pred_df"].copy(),
+                "age_curve_df": result.get("age_curve_df", pd.DataFrame()).copy(),
+                "comp_df": result.get("comp_df", pd.DataFrame()).copy(),
+            }
+            if len(tuning_cache) > 12:
+                for old_key in list(tuning_cache.keys())[:-12]:
+                    tuning_cache.pop(old_key, None)
+
+    st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
+    ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df = _ml_resolve_tuning_session_artifacts(
+        result, base_pack
+    )
+    if result.get("ok"):
+        enriched = _ml_enrich_predictions_for_storage(
+            pred_df, yearly_source, ml_lookback, ml_projection_style
+        )
+        _ml_commit_predictions_to_session(
+            enriched,
+            status=result,
+            tuning_sig=tuning_sig,
+            ml_training_df=ml_training_df,
+            ml_feature_cols=ml_feature_cols,
+            ml_models=ml_models,
+            age_curve_df=age_curve_df,
+            comp_df=comp_df,
+        )
+        st.session_state["_ml_proj_sig"] = base_sig + tuning_sig
+        st.session_state["_ml_proj_pred_df"] = enriched.copy()
+    return True
 
 
 def _ml_base_run_signature(yl_df, lookback, min_games, max_players):
@@ -10621,6 +10947,12 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
         "lineup_format", "lineup_team", "lineup_bench_rows", "lineup_include_util", "lineup_custom_slots",
         "lineup_diagnosis_rate_col", "lineup_context_category_needs", "room_your_team",
     }),
+    "ML Predictions": frozenset({
+        "ml_lookback", "ml_min_games", "ml_min_ab", "ml_max_players",
+        "ml_position_filter", "transfer_position", "ml_display_sort",
+        "ml_projection_style", "ml_regression_strength", "ml_age_strength",
+        "ml_comp_weight", "ml_k_neighbors",
+    }),
 }
 
 
@@ -10663,6 +10995,11 @@ def _expand_transfer_filter_keys(page: str, keys: dict) -> dict:
             out["compare_year_range"] = (max_y - int(lag_trend) + 1, max_y)
         except Exception:
             pass
+    xfer_pos = out.pop("transfer_position", None)
+    if xfer_pos:
+        pos = pg_xfer.normalize_fantasy_position_filter(xfer_pos)
+        if pos:
+            out.update(pg_xfer.fantasy_position_transfer_keys_for_target(page, pos))
     return out
 
 
@@ -15760,14 +16097,12 @@ if active_page == "ML Predictions":
     if not SKLEARN_AVAILABLE:
         st.error("Scikit-learn is not installed. In Command Prompt, run: pip install scikit-learn")
     else:
-        c1, c2, c3, c4top = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         with c1:
             ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback")
         with c2:
             ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 150, key="ml_min_games")
         with c3:
-            ml_sort_stat = st.selectbox("Rank Predictions By", ["OPS", "HR", "RBI", "SB", "R", "H", "BA", "OBP", "SLG", "BB"], index=0, key="ml_sort_stat")
-        with c4top:
             ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=1, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud.")
 
         ml_min_ab = st.number_input(
@@ -15778,37 +16113,6 @@ if active_page == "ML Predictions":
             key="ml_min_ab",
             help="Filters players before similarity + aging adjustments so unused low-AB rows are not computed.",
         )
-
-        _ml_pos_c1, _ml_pos_c2 = st.columns(2)
-        with _ml_pos_c1:
-            validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-            ml_position_filter = st.selectbox(
-                "Fantasy Position",
-                FANTASY_POSITION_FILTER_OPTIONS,
-                key="ml_position_filter",
-                help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-            )
-        with _ml_pos_c2:
-            _ml_sort_options = [
-                "Predicted HR",
-                "Predicted RBI",
-                "Predicted R",
-                "Predicted SB",
-                "Predicted 2B",
-                "Predicted 3B",
-                "Predicted BA",
-                "Predicted OPS",
-                "ML Fantasy Value",
-                "Projection Confidence Score",
-                "Position",
-            ]
-            validate_state_option("ml_display_sort", _ml_sort_options, f"Predicted {ml_sort_stat}")
-            ml_display_sort = st.selectbox(
-                "Sort Projections By",
-                _ml_sort_options,
-                key="ml_display_sort",
-                help="Applies after position filter. Table remains sortable in the grid.",
-            )
 
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
@@ -15874,178 +16178,36 @@ if active_page == "ML Predictions":
             st.info(
                 "Choose settings, then click **Generate / Refresh ML Predictions**."
             )
-        else:
-            base_sig = _ml_base_run_signature(yearly_df, ml_lookback, ml_min_games, ml_max_players)
-            tuning_sig = _ml_tuning_run_signature(
-                regression_strength,
-                age_strength,
-                comp_weight,
-                k_neighbors,
-                ml_min_ab,
-                ml_projection_style,
-            )
-            run_sig = base_sig + tuning_sig
-            refresh_token = int(st.session_state.get(ML_PREDICTION_REFRESH_TOKEN_KEY, 0))
 
-            ml_training_df = pd.DataFrame()
-            ml_feature_cols = []
-            ml_models = {}
-            pred_df = pd.DataFrame()
-            age_curve_df = pd.DataFrame()
-            comp_df = pd.DataFrame()
+        _ml_pipeline_ran = _ml_execute_pipeline_if_needed(
+            yearly_source=yearly_df,
+            ml_lookback=ml_lookback,
+            ml_min_games=ml_min_games,
+            ml_max_players=ml_max_players,
+            ml_min_ab=ml_min_ab,
+            regression_strength=regression_strength,
+            age_strength=age_strength,
+            comp_weight=comp_weight,
+            k_neighbors=k_neighbors,
+            ml_projection_style=ml_projection_style,
+        )
+        if not _ml_pipeline_ran and _ml_is_nonempty_dataframe(st.session_state.get(ML_PREDICTIONS_DF_KEY)):
+            st.session_state["_ml_page_last_action"] = "display_only"
 
-            cached_ok = (
-                st.session_state.get("_ml_proj_sig") == run_sig
-                and isinstance(st.session_state.get("_ml_proj_pred_df"), pd.DataFrame)
-                and not st.session_state["_ml_proj_pred_df"].empty
-            )
-            base_pack = st.session_state.get("_ml_base_pack")
-            base_cached_ok = (
-                st.session_state.get("_ml_base_sig") == base_sig
-                and isinstance(base_pack, dict)
-                and isinstance(base_pack.get("base_pred_df"), pd.DataFrame)
-                and not base_pack["base_pred_df"].empty
-            )
+        stored_df = st.session_state.get(ML_PREDICTIONS_DF_KEY, pd.DataFrame())
+        ml_training_df = st.session_state.get("_ml_proj_training_df", pd.DataFrame())
+        ml_feature_cols = st.session_state.get("_ml_proj_feature_cols", [])
+        ml_models = st.session_state.get("_ml_proj_models", {})
+        age_curve_df = st.session_state.get("_ml_proj_age_curve_df", pd.DataFrame())
+        status = st.session_state.get(ML_PREDICTIONS_STATUS_KEY) or {}
 
-            if cached_ok:
-                ml_training_df = st.session_state.get("_ml_proj_training_df", pd.DataFrame())
-                ml_feature_cols = st.session_state.get("_ml_proj_feature_cols", [])
-                ml_models = st.session_state.get("_ml_proj_models", {})
-                pred_df = st.session_state["_ml_proj_pred_df"].copy()
-                age_curve_df = st.session_state.get("_ml_proj_age_curve_df", pd.DataFrame()).copy()
-                comp_df = st.session_state.get("_ml_proj_comp_df", pd.DataFrame()).copy()
-            elif base_cached_ok:
-                auto_tune = st.session_state.get("ml_auto_apply_tuning", True)
-                apply_requested = bool(st.session_state.pop("ml_tuning_apply_requested", False))
-                base_pack = _ensure_ml_base_pack_precomputed(
-                    base_pack,
-                    yearly_df,
-                    ml_lookback,
-                    _ml_year_pool_signature(yearly_df),
-                    refresh_token,
-                )
-                st.session_state["_ml_base_pack"] = base_pack
-                if not auto_tune and not apply_requested and not cached_ok:
-                    ml_training_df = base_pack.get("ml_training_df", pd.DataFrame())
-                    ml_feature_cols = base_pack.get("ml_feature_cols", [])
-                    ml_models = base_pack.get("ml_models", {})
-                    pred_df = st.session_state.get("_ml_proj_pred_df", pd.DataFrame()).copy()
-                    age_curve_df = st.session_state.get("_ml_proj_age_curve_df", pd.DataFrame()).copy()
-                    comp_df = st.session_state.get("_ml_proj_comp_df", pd.DataFrame()).copy()
-                    st.session_state[ML_PREDICTIONS_STATUS_KEY] = {
-                        "ok": bool(not pred_df.empty),
-                        "message": "Slider changes pending — click **Apply tuning changes** to update projections.",
-                        "generated_at": "pending tuning",
-                        "player_count": len(pred_df),
-                        "model_type": "Random Forest (scikit-learn)",
-                        "fallback": "tuning_pending",
-                        "timing": {"tuning_pending": True},
-                    }
-                else:
-                    tuning_cache = st.session_state.setdefault("_ml_tuning_cache", {})
-                    if tuning_sig in tuning_cache and not apply_requested:
-                        cached_tune = tuning_cache[tuning_sig]
-                        result = {
-                            "ok": True,
-                            "pred_df": cached_tune["pred_df"],
-                            "age_curve_df": cached_tune.get("age_curve_df", pd.DataFrame()),
-                            "comp_df": cached_tune.get("comp_df", pd.DataFrame()),
-                            "ml_training_df": base_pack.get("ml_training_df", pd.DataFrame()),
-                            "ml_feature_cols": base_pack.get("ml_feature_cols", []),
-                            "ml_models": base_pack.get("ml_models", {}),
-                            "player_count": len(cached_tune["pred_df"]),
-                            "runtime_sec": 0.0,
-                            "timing": {"tuning_cache_hit": True},
-                            "message": f"Showing cached tuning result ({len(cached_tune['pred_df']):,} players).",
-                            "generated_at": "tuning cache",
-                        }
-                    else:
-                        result = _run_ml_tuning_fast(
-                            yearly_source=yearly_df,
-                            ml_lookback=ml_lookback,
-                            ml_min_ab=ml_min_ab,
-                            base_pack=base_pack,
-                            effective_regression_strength=effective_regression_strength,
-                            effective_age_strength=effective_age_strength,
-                            effective_comp_weight=effective_comp_weight,
-                            k_neighbors=k_neighbors,
-                            refresh_token=refresh_token,
-                        )
-                        if result.get("ok"):
-                            tuning_cache[tuning_sig] = {
-                                "pred_df": result["pred_df"].copy(),
-                                "age_curve_df": result.get("age_curve_df", pd.DataFrame()).copy(),
-                                "comp_df": result.get("comp_df", pd.DataFrame()).copy(),
-                            }
-                            if len(tuning_cache) > 12:
-                                for old_key in list(tuning_cache.keys())[:-12]:
-                                    tuning_cache.pop(old_key, None)
-                    st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
-                    ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df = _ml_resolve_tuning_session_artifacts(
-                        result, base_pack
-                    )
-                    if result.get("ok"):
-                        st.session_state["_ml_proj_sig"] = run_sig
-                        st.session_state["_ml_proj_pred_df"] = pred_df.copy()
-                        st.session_state["_ml_proj_age_curve_df"] = age_curve_df.copy()
-                        st.session_state["_ml_proj_comp_df"] = comp_df.copy()
-            else:
-                result = _run_ml_projection_pipeline(
-                    yearly_source=yearly_df,
-                    ml_lookback=ml_lookback,
-                    ml_min_games=ml_min_games,
-                    ml_max_players=ml_max_players,
-                    ml_min_ab=ml_min_ab,
-                    effective_regression_strength=effective_regression_strength,
-                    effective_age_strength=effective_age_strength,
-                    effective_comp_weight=effective_comp_weight,
-                    k_neighbors=k_neighbors,
-                    ml_projection_style=ml_projection_style,
-                    refresh_token=refresh_token,
-                )
-                st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
-                ml_training_df, ml_feature_cols, ml_models, pred_df, age_curve_df, comp_df = _ml_resolve_tuning_session_artifacts(
-                    result, st.session_state.get("_ml_base_pack")
-                )
-                if result.get("ok"):
-                    st.session_state["_ml_proj_sig"] = run_sig
-                    st.session_state["_ml_proj_pred_df"] = pred_df.copy()
-                    st.session_state["_ml_proj_age_curve_df"] = age_curve_df.copy()
-                    st.session_state["_ml_proj_comp_df"] = comp_df.copy()
-                    _bp = result.get("base_pack") if isinstance(result.get("base_pack"), dict) else {}
-                    if not _bp:
-                        _bp = {
-                            "ml_training_df": ml_training_df,
-                            "ml_feature_cols": ml_feature_cols,
-                            "ml_models": ml_models,
-                            "current_rows": result.get("current_rows", pd.DataFrame()),
-                            "base_pred_df": result.get("base_pred_df", pd.DataFrame()),
-                            "timing": dict(result.get("timing") or {}),
-                        }
-                    _store_ml_base_pack(base_sig, _bp, clear_tuning_cache=False)
-                    tuning_cache = st.session_state.setdefault("_ml_tuning_cache", {})
-                    tuning_cache[tuning_sig] = {
-                        "pred_df": pred_df.copy(),
-                        "age_curve_df": age_curve_df.copy(),
-                        "comp_df": comp_df.copy(),
-                    }
-
-            status = st.session_state.get(ML_PREDICTIONS_STATUS_KEY) or {}
-            if cached_ok and not status:
-                status = {
-                    "ok": True,
-                    "message": f"Showing {len(pred_df):,} cached projections.",
-                    "generated_at": "cached session",
-                    "player_count": len(pred_df),
-                    "model_type": "Random Forest (scikit-learn)",
-                    "fallback": None,
-                }
+        if st.session_state.get("ml_predictions_have_run", False):
             if status:
                 st1, st2, st3, st4 = st.columns(4)
                 st1.caption("Last generated")
                 st1.write(status.get("generated_at", "—"))
                 st2.caption("Players projected")
-                st2.write(f"{int(status.get('player_count', len(pred_df))):,}")
+                st2.write(f"{int(status.get('player_count', len(stored_df))):,}")
                 st3.caption("Model")
                 st3.write(status.get("model_type", "Random Forest"))
                 st4.caption("Notes")
@@ -16056,27 +16218,34 @@ if active_page == "ML Predictions":
                     else ("—" if not _fb else str(_fb).replace("_", " "))
                 )
 
-            if status and not status.get("ok") and not cached_ok:
+            if status and not status.get("ok") and _ml_pipeline_ran:
                 st.error(status.get("message", "ML predictions could not be generated."))
-            elif ml_training_df.empty or not ml_feature_cols:
+            elif _ml_pipeline_ran and (ml_training_df.empty or not ml_feature_cols):
                 st.warning(
                     status.get("message")
                     if status and status.get("message")
                     else "Not enough historical data to train the model with these settings. "
                     "Lower the minimum games or use a shorter lookback window."
                 )
-            else:
-                if status and status.get("ok"):
-                    _rt = status.get("runtime_sec")
-                    if _rt is not None:
-                        st.success(
-                            status.get("message")
-                            or f"Predictions updated in {_rt:.1f} seconds ({len(pred_df):,} players)."
-                        )
-                    else:
-                        st.success(status.get("message", f"Generated {len(pred_df):,} player projections."))
+            elif _ml_pipeline_ran and status and status.get("ok"):
+                _rt = status.get("runtime_sec")
+                if _rt is not None:
+                    st.success(
+                        status.get("message")
+                        or f"Predictions updated in {_rt:.1f} seconds ({len(stored_df):,} players)."
+                    )
+                else:
+                    st.success(status.get("message", f"Generated {len(stored_df):,} player projections."))
+            elif status and status.get("fallback") == "tuning_pending":
+                st.info(status.get("message", "Slider changes pending — click **Apply tuning changes**."))
 
-                if developer_mode_enabled():
+            if developer_mode_enabled() and st.session_state.get("ml_predictions_have_run", False):
+                _last_action = st.session_state.get("_ml_page_last_action", "display_only")
+                st.caption(
+                    f"Developer: last action **{_last_action}**"
+                    + (" — no RF retrain, no calibration rerun." if _last_action == "display_only" else "")
+                )
+                if _last_action != "display_only":
                     _timing = (status or {}).get("timing") or {}
                     with st.expander("Developer: ML pipeline timing", expanded=False):
                         st.caption("Breakdown from the last full or tuning-only run.")
@@ -16098,12 +16267,13 @@ if active_page == "ML Predictions":
                         _src = _timing.get("training_data_source", "—")
                         st.caption(
                             f"Mode: **{_mode}** · Training source: **{_src}** · "
-                            f"Players: **{int((status or {}).get('player_count', len(pred_df))):,}** · "
+                            f"Players: **{int((status or {}).get('player_count', len(stored_df))):,}** · "
                             f"Training rows: **{len(ml_training_df):,}** · "
                             f"Companion rows: **{len(_ml_training_companion_rows(ml_training_df)):,}** · "
                             f"Models: **{len(ml_models):,}**"
                         )
 
+            if st.session_state.get("ml_predictions_have_run", False) and not ml_training_df.empty and ml_feature_cols:
                 c4, c5, c6 = st.columns(3)
                 c4.metric("Training Examples", f"{len(ml_training_df):,}")
                 c5.metric("Features Used", f"{len(ml_feature_cols):,}")
@@ -16119,205 +16289,173 @@ if active_page == "ML Predictions":
                     metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
-                if pred_df.empty:
+            if not _ml_is_nonempty_dataframe(stored_df):
+                if st.session_state.get("ml_predictions_have_run", False):
                     st.warning(
                         "No player projections to display. Raise **Minimum Recent AB** or **Minimum Games**, "
                         "or click **Generate / Refresh** after changing scope."
                     )
+            else:
+                with st.expander("How ML projections are stabilized", expanded=False):
+                    st.markdown(
+                        "These projections are adjusted so one-year breakouts do not get inflated too much, "
+                        "while proven stars keep more of their expected value. After the Random Forest model, aging, "
+                        "and similarity adjustments run, a **light final calibration** nudges counting stats and rates "
+                        "toward the same stabilized anchors used in Draft Lab and Live Draft Room—without running "
+                        "a second full regression."
+                    )
+                    st.markdown(
+                        "- **High Confidence** — multi-year track record, stable rates, solid playing time\n"
+                        "- **Medium Confidence** — reasonable sample with some uncertainty\n"
+                        "- **Risky Projection** — small sample, volatility, or limited history (stronger pull toward anchors)"
+                    )
+
+                st.subheader("Next-Season ML Projections")
+                _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+                with _ml_tbl_c1:
+                    validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+                    ml_position_filter = st.selectbox(
+                        "Fantasy Position",
+                        FANTASY_POSITION_FILTER_OPTIONS,
+                        key="ml_position_filter",
+                        help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                    )
+                with _ml_tbl_c2:
+                    validate_state_option("ml_display_sort", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
+                    ml_display_sort = st.selectbox(
+                        "Sort Projections By",
+                        ML_DISPLAY_SORT_OPTIONS,
+                        key="ml_display_sort",
+                        help="Display-only — does not regenerate ML projections.",
+                    )
+
+                view_df = _ml_apply_display_view(stored_df, ml_position_filter, ml_display_sort)
+                display_cols = [
+                    "fullName", "Position", "primaryTeamID", "bats", "prediction_year", "age_entering_year",
+                    "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
+                    "Predicted BA", "Predicted OBP", "Predicted SLG", "Predicted OPS",
+                    "Projection Confidence", "Projection Confidence Score", "Projection Warning", "Elite Star Score",
+                    "Expected Fantasy Value", "ML Fantasy Value", "Model Rank", "Breakout Score", "Sample Strength", "Projection Style",
+                ]
+                display_cols = [c for c in display_cols if c in view_df.columns]
+                projection_rename = {
+                    "fullName": "Player",
+                    "Position": "Position",
+                    "primaryTeamID": "Team",
+                    "bats": "Bats",
+                    "prediction_year": "Prediction Year",
+                    "age_entering_year": "Age",
+                    "Expected Fantasy Value": "Expected Fantasy Value",
+                }
+                ml_display = clean_ui_columns(view_df[display_cols].rename(columns=projection_rename))
+                _ml_pos_note = (
+                    f" · **Position: {ml_position_filter}**"
+                    if ml_position_filter not in ("All positions", "All")
+                    else ""
+                )
+                st.caption(
+                    f"Predictions use machine learning with aging, regression, and similarity adjustments, "
+                    f"then a light calibration pass aligned with Draft Lab anchors{_ml_pos_note}. "
+                    f"Sorted by **{ml_display_sort}** (display-only). "
+                    "**Projection Confidence** reflects sample size, volatility, and star-tier protection."
+                )
+                for _col in ml_display.columns:
+                    if _col.startswith("Predicted "):
+                        _stat = _col.replace("Predicted ", "")
+                        ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(3 if _stat in RATE_STATS else 0)
+                for _col in ["ML Fantasy Value", "Breakout Score", "Sample Strength", "Projection Confidence Score", "Elite Star Score"]:
+                    if _col in ml_display.columns:
+                        ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(4)
+                if "Model Rank" in ml_display.columns:
+                    ml_display["Model Rank"] = pd.to_numeric(ml_display["Model Rank"], errors="coerce").round(0).astype("Int64")
+                if "Age" in ml_display.columns:
+                    ml_display["Age"] = pd.to_numeric(ml_display["Age"], errors="coerce").round(0)
+                render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv")
+
+                if not ml_display.empty:
+                    selected_ml_row = _select_insight_row(
+                        ml_display,
+                        key="ml_predictions_selected_player",
+                        label="Selected Projection Insight player",
+                        default_name=ml_display.iloc[0]["Player"] if "Player" in ml_display.columns else None,
+                    )
+                    if selected_ml_row is not None:
+                        st.success(make_ml_prediction_summary(selected_ml_row, _ml_insight_stat_from_sort(ml_display_sort)))
+
+                with st.expander("Show age curve details", expanded=False):
+                    st.write("The age curve estimates typical year-to-year changes by age.")
+                    if not age_curve_df.empty:
+                        age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
+                        if age_stats:
+                            age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat")
+                            age_view = age_curve_df[age_curve_df["Stat"] == age_view_stat].rename(columns={"Age Adjustment": "Expected Age Change"})
+                            age_curve_table = format_display_table(age_view, rate_cols=["Expected Age Change"])
+                            render_output_table(age_curve_table, key="ml_age_curve", file_name="ml_age_curve.csv")
+
+                st.subheader("What Stats Matter Most?")
+                importance_options = [s for s in ML_TARGET_STATS if s in ml_models]
+                if importance_options:
+                    importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat")
+                    importance_df = ml_models[importance_stat]["importance"].head(15).copy()
+                    importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
+                    importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
+                    render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
+                    with st.expander("Feature importance chart", expanded=False):
+                        top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
+
+                if developer_mode_enabled() and _ml_is_nonempty_dataframe(stored_df):
+                    with st.expander("Developer: ML vs Draft Lab projection check", expanded=False):
+                        st.caption(
+                            "Compares calibrated ML outputs to Draft Lab stabilized anchors for sample stars. "
+                            "Large gaps may reflect ML upside/downside beyond the light calibration blend."
+                        )
+                        _cmp_market = load_fantasypros_market_data()
+                        _cmp_df, _cmp_notes = run_ml_draft_projection_compare(
+                            stored_df,
+                            yearly_df,
+                            _cmp_market,
+                            lookback=ml_lookback,
+                            projection_style=ml_projection_style,
+                        )
+                        if not _cmp_df.empty:
+                            _cmp_show = _cmp_df.copy()
+                            for _cc in ["ML Prediction", "Draft Lab Anchor", "Difference"]:
+                                if _cc in _cmp_show.columns:
+                                    _cmp_show[_cc] = pd.to_numeric(_cmp_show[_cc], errors="coerce").round(3)
+                            if "Pct vs Draft Lab" in _cmp_show.columns:
+                                _cmp_show["Pct vs Draft Lab"] = pd.to_numeric(_cmp_show["Pct vs Draft Lab"], errors="coerce").round(1)
+                            render_output_table(
+                                clean_ui_columns(_cmp_show),
+                                key="ml_draft_calibration_compare",
+                                file_name="ml_draft_calibration_compare.csv",
+                                display_rows=60,
+                            )
+                        for _note in _cmp_notes:
+                            st.caption(_note)
+
+                _ml_xfer_df = ml_display.copy()
+                _xfer_pos = ml_position_filter
+                if _xfer_pos not in ("All positions", "All"):
+                    _xfer_pos_norm = pg_xfer.normalize_fantasy_position_filter(_xfer_pos)
                 else:
-                    with st.expander("How ML projections are stabilized", expanded=False):
-                        st.markdown(
-                            "These projections are adjusted so one-year breakouts do not get inflated too much, "
-                            "while proven stars keep more of their expected value. After the Random Forest model, aging, "
-                            "and similarity adjustments run, a **light final calibration** nudges counting stats and rates "
-                            "toward the same stabilized anchors used in Draft Lab and Live Draft Room—without running "
-                            "a second full regression."
-                        )
-                        st.markdown(
-                            "- **High Confidence** — multi-year track record, stable rates, solid playing time\n"
-                            "- **Medium Confidence** — reasonable sample with some uncertainty\n"
-                            "- **Risky Projection** — small sample, volatility, or limited history (stronger pull toward anchors)"
-                        )
+                    _xfer_pos_norm = None
+                render_contextual_page_nav(
+                    "ML Predictions",
+                    "after_table",
+                    label="Continue analysis in…",
+                    transfer_results_df=_ml_xfer_df,
+                    transfer_name_col="Player",
+                    default_rank_stat=ml_display_sort if ml_display_sort not in ("Position", "Team") else "Predicted OPS",
+                    extra_context={
+                        "transfer_position": _xfer_pos_norm,
+                        "ml_lookback": ml_lookback,
+                        "ml_min_games": ml_min_games,
+                        "ml_min_ab": ml_min_ab,
+                        "ml_display_sort": ml_display_sort,
+                    },
+                )
 
-                    _style_conf_adj = {"Conservative": 0.05, "Balanced": 0.00, "Aggressive": -0.04}.get(ml_projection_style, 0.00)
-                    _style_breakout_mult = {"Conservative": 0.90, "Balanced": 1.00, "Aggressive": 1.12}.get(ml_projection_style, 1.00)
-                    _count_value = pd.Series(0.0, index=pred_df.index)
-                    _value_weights = {
-                        "Predicted R": 0.12,
-                        "Predicted HR": 0.22,
-                        "Predicted RBI": 0.20,
-                        "Predicted SB": 0.14,
-                        "Predicted BA": 0.12,
-                        "Predicted OPS": 0.20,
-                    }
-                    for _col, _w in _value_weights.items():
-                        if _col in pred_df.columns:
-                            _count_value += normalize_series(pd.to_numeric(pred_df[_col], errors="coerce").fillna(0)) * _w
-                    pred_df["ML Fantasy Value"] = normalize_series(_count_value)
-                    pred_df["Model Rank"] = pred_df["ML Fantasy Value"].rank(ascending=False, method="min")
-                    _recent_ab = safe_numeric_series(pred_df, "hist_AB_total", 0)
-                    pred_df["Sample Strength"] = ((_recent_ab / 1200).clip(lower=0.20, upper=1.0) + _style_conf_adj).clip(0.05, 1.0)
-                    if "Projection Confidence Score" not in pred_df.columns:
-                        pred_df["Projection Confidence Score"] = pred_df["Sample Strength"]
-                    if "Projection Confidence" not in pred_df.columns:
-                        pred_df["Projection Confidence"] = np.select(
-                            [pred_df["Projection Confidence Score"] >= 0.70, pred_df["Projection Confidence Score"] >= 0.46],
-                            ["High Confidence", "Medium Confidence"],
-                            default="Risky Projection",
-                        )
-                    _age = safe_numeric_series(pred_df, "age_entering_year", np.nan)
-                    _age_upside = pd.Series(np.where((_age >= 22) & (_age <= 27), 1.0, 0.45), index=pred_df.index)
-                    _breakout_base = pd.Series(0.0, index=pred_df.index)
-                    for _col in ["Predicted HR", "Predicted SB", "Predicted OPS"]:
-                        if _col in pred_df.columns:
-                            _breakout_base += normalize_series(pd.to_numeric(pred_df[_col], errors="coerce").fillna(0)) / 3.0
-                    pred_df["Breakout Score"] = normalize_series((_breakout_base * 0.75 + _age_upside * 0.25) * _style_breakout_mult)
-                    pred_df["Projection Style"] = ml_projection_style
-                    pred_df["Expected Fantasy Value"] = pred_df["ML Fantasy Value"]
-
-                    _ml_max_year = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").max())
-                    _ml_recent_years = list(range(_ml_max_year - int(ml_lookback) + 1, _ml_max_year + 1))
-                    _ml_recent_source = yearly_df[yearly_df["yearID"].isin(_ml_recent_years)].copy()
-                    pred_df = attach_fantasy_position_columns(pred_df, _ml_recent_source)
-                    if "Position" not in pred_df.columns:
-                        pred_df["Position"] = "—"
-                    pred_df = filter_players_by_fantasy_position(pred_df, ml_position_filter)
-
-                    _sort_col = ml_display_sort
-                    if _sort_col == "Position" and "Position" in pred_df.columns:
-                        pred_df = pred_df.sort_values("Position", ascending=True, na_position="last")
-                    elif _sort_col in pred_df.columns:
-                        pred_df = pred_df.sort_values(_sort_col, ascending=False, na_position="last")
-                    else:
-                        _fallback_sort = f"Predicted {ml_sort_stat}"
-                        if _fallback_sort in pred_df.columns:
-                            pred_df = pred_df.sort_values(_fallback_sort, ascending=False, na_position="last")
-
-                    # User-facing ML output: show only identifying info and the recommended predicted stats.
-                    # Historical/diagnostic columns such as Last Year, Last HR, Recent AB, Final, raw model outputs,
-                    # and similar-player columns are intentionally hidden from the main table.
-                    display_cols = [
-                        "fullName", "Position", "primaryTeamID", "bats", "prediction_year", "age_entering_year",
-                        "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
-                        "Predicted BA", "Predicted OBP", "Predicted SLG", "Predicted OPS",
-                        "Projection Confidence", "Projection Confidence Score", "Projection Warning", "Elite Star Score",
-                        "Expected Fantasy Value", "ML Fantasy Value", "Model Rank", "Breakout Score", "Sample Strength", "Projection Style",
-                    ]
-                    display_cols = [c for c in display_cols if c in pred_df.columns]
-                    projection_rename = {
-                        "fullName": "Player",
-                        "Position": "Position",
-                        "primaryTeamID": "Team",
-                        "bats": "Bats",
-                        "prediction_year": "Prediction Year",
-                        "age_entering_year": "Age",
-                        "Expected Fantasy Value": "Expected Fantasy Value",
-                    }
-                    ml_display = clean_ui_columns(pred_df[display_cols].rename(columns=projection_rename))
-
-                    st.subheader("Next-Season ML Projections")
-                    _ml_pos_note = (
-                        f" · **Position: {ml_position_filter}**"
-                        if ml_position_filter not in ("All positions", "All")
-                        else ""
-                    )
-                    st.caption(
-                        f"Predictions use machine learning with aging, regression, and similarity adjustments, "
-                        f"then a light calibration pass aligned with Draft Lab anchors{_ml_pos_note}. "
-                        f"Sorted by **{ml_display_sort}**. "
-                        "**Projection Confidence** reflects sample size, volatility, and star-tier protection."
-                    )
-                    for _col in ml_display.columns:
-                        if _col.startswith("Predicted "):
-                            _stat = _col.replace("Predicted ", "")
-                            ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(3 if _stat in RATE_STATS else 0)
-                    for _col in ["ML Fantasy Value", "Breakout Score", "Sample Strength", "Projection Confidence Score", "Elite Star Score"]:
-                        if _col in ml_display.columns:
-                            ml_display[_col] = pd.to_numeric(ml_display[_col], errors="coerce").round(4)
-                    if "Model Rank" in ml_display.columns:
-                        ml_display["Model Rank"] = pd.to_numeric(ml_display["Model Rank"], errors="coerce").round(0).astype("Int64")
-                    if "Age" in ml_display.columns:
-                        ml_display["Age"] = pd.to_numeric(ml_display["Age"], errors="coerce").round(0)
-                    render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv")
-
-                    if not ml_display.empty:
-                        st.subheader("Selected Projection Insight")
-                        selected_ml_row = _select_insight_row(
-                            ml_display,
-                            key="ml_predictions_selected_player",
-                            label="Choose a projected player",
-                            default_name=ml_display.iloc[0]["Player"] if "Player" in ml_display.columns else None,
-                        )
-                        if selected_ml_row is not None:
-                            st.success(make_ml_prediction_summary(selected_ml_row, ml_sort_stat))
-
-                    with st.expander("Show age curve details", expanded=False):
-                        st.write("The age curve estimates typical year-to-year changes by age.")
-                        if not age_curve_df.empty:
-                            age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
-                            if age_stats:
-                                age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat")
-                                age_view = age_curve_df[age_curve_df["Stat"] == age_view_stat].rename(columns={"Age Adjustment": "Expected Age Change"})
-                                age_curve_table = format_display_table(age_view, rate_cols=["Expected Age Change"])
-                                render_output_table(age_curve_table, key="ml_age_curve", file_name="ml_age_curve.csv")
-
-                    st.subheader("What Stats Matter Most?")
-                    importance_options = [s for s in ML_TARGET_STATS if s in ml_models]
-                    if importance_options:
-                        importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat")
-                        importance_df = ml_models[importance_stat]["importance"].head(15).copy()
-                        importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
-                        importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
-                        render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
-                        with st.expander("Feature importance chart", expanded=False):
-                            top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
-
-                    if developer_mode_enabled() and not pred_df.empty:
-                        with st.expander("Developer: ML vs Draft Lab projection check", expanded=False):
-                            st.caption(
-                                "Compares calibrated ML outputs to Draft Lab stabilized anchors for sample stars. "
-                                "Large gaps may reflect ML upside/downside beyond the light calibration blend."
-                            )
-                            _cmp_market = load_fantasypros_market_data()
-                            _cmp_df, _cmp_notes = run_ml_draft_projection_compare(
-                                pred_df,
-                                yearly_df,
-                                _cmp_market,
-                                lookback=ml_lookback,
-                                projection_style=ml_projection_style,
-                            )
-                            if not _cmp_df.empty:
-                                _cmp_show = _cmp_df.copy()
-                                for _cc in ["ML Prediction", "Draft Lab Anchor", "Difference"]:
-                                    if _cc in _cmp_show.columns:
-                                        _cmp_show[_cc] = pd.to_numeric(_cmp_show[_cc], errors="coerce").round(3)
-                                if "Pct vs Draft Lab" in _cmp_show.columns:
-                                    _cmp_show["Pct vs Draft Lab"] = pd.to_numeric(_cmp_show["Pct vs Draft Lab"], errors="coerce").round(1)
-                                render_output_table(
-                                    clean_ui_columns(_cmp_show),
-                                    key="ml_draft_calibration_compare",
-                                    file_name="ml_draft_calibration_compare.csv",
-                                    display_rows=60,
-                                )
-                            for _note in _cmp_notes:
-                                st.caption(_note)
-
-                    _ml_xfer_df = pred_df.copy()
-                    if "fullName" in _ml_xfer_df.columns and "Player" not in _ml_xfer_df.columns:
-                        _ml_xfer_df = _ml_xfer_df.rename(columns={"fullName": "Player"})
-                    render_contextual_page_nav(
-                        "ML Predictions",
-                        "after_table",
-                        label="Continue analysis in…",
-                        transfer_results_df=_ml_xfer_df,
-                        transfer_name_col="Player",
-                        default_rank_stat=ml_display_sort if ml_display_sort != "Position" else "Predicted OPS",
-                        extra_context={
-                            "ml_position_filter": ml_position_filter,
-                            "ml_display_sort": ml_display_sort,
-                            "ml_lookback": ml_lookback,
-                        },
-                    )
+        render_page_filters_debug(active_page)
 
 if developer_mode_enabled():
     elapsed_ms = (time.perf_counter() - _APP_RENDER_START) * 1000
