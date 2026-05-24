@@ -19,6 +19,7 @@ import page_transfers as pg_xfer
 import app_tutorial
 import player_actions as plr_act
 import projection_calibration as proj_cal
+import projection_breakdown as proj_bd
 
 # Live Draft slot widgets (keys must match st.number_input key= in Live Draft Room).
 if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
@@ -6260,18 +6261,173 @@ def build_draft_simulation_result(player_name, team_name, lookup_df, name_col="f
 
 
 def default_draft_simulation_lookup():
-    """Fallback projection-like lookup for pages without their own projection table."""
+    """Fallback lookup using the same unified stabilized draft pool as Draft Lab / Assistant."""
     try:
-        latest_year = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().max())
-        recent_years = list(range(latest_year - 2, latest_year + 1))
-        recent = yearly_df[yearly_df["yearID"].isin(recent_years)].copy().sort_values(["playerID", "yearID"])
-        lookup = aggregate_recent_player_totals(
-            recent,
-            ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
-        )
-        return add_latest_and_projection_columns(lookup, recent)
+        return get_cached_unified_projection_pool()
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_unified_projection_pool(
+    lahman_max_year: int,
+    draft_window: int,
+    fantasy_format: str,
+    projection_style: str,
+    use_ml_blend: bool,
+    ml_blend_weight: float,
+    ml_min_games_for_signal: int,
+):
+    """Canonical stabilized projection pool (shared across draft tools and Projection Breakdown)."""
+    market_df = load_fantasypros_market_data()
+    return build_unified_draft_player_pool(
+        yearly_df,
+        market_df,
+        draft_window=int(draft_window),
+        fantasy_format=str(fantasy_format),
+        projection_style=str(projection_style),
+        use_ml_blend=bool(use_ml_blend),
+        ml_blend_weight=float(ml_blend_weight),
+        ml_min_games_for_signal=int(ml_min_games_for_signal),
+    )
+
+
+def _draft_projection_session_kwargs() -> dict:
+    """Read draft projection settings from session (same keys as Draft Assistant / Draft Room)."""
+    return {
+        "draft_window": int(st.session_state.get("draft_window", st.session_state.get("draft_lab_window", 3))),
+        "fantasy_format": str(
+            st.session_state.get("draft_format", st.session_state.get("draft_lab_format", "5x5 Roto"))
+        ),
+        "projection_style": str(
+            st.session_state.get(
+                "fantasy_draft_projection_style",
+                st.session_state.get("draft_lab_projection_style", "Balanced"),
+            )
+        ),
+        "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", True)),
+        "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12)),
+        "ml_min_games_for_signal": int(st.session_state.get("draft_ml_min_games_signal", 50)),
+    }
+
+
+def get_cached_unified_projection_pool_live():
+    """Session-aware wrapper for the cached unified pool."""
+    kw = _draft_projection_session_kwargs()
+    max_y = int(st.session_state.get("_lahman_max_year", year_max))
+    return get_cached_unified_projection_pool(
+        max_y,
+        kw["draft_window"],
+        kw["fantasy_format"],
+        kw["projection_style"],
+        kw["use_ml_blend"],
+        kw["ml_blend_weight"],
+        kw["ml_min_games_for_signal"],
+    )
+
+
+def resolve_projection_breakdown_row(
+    player_display_name: str,
+    *,
+    pool_row=None,
+    projection_lookup_df=None,
+    projection_lookup_name_col: str = "fullName",
+):
+    """
+    Prefer unified stabilized pool; use page row only when already stabilized.
+    Returns (row, data_source_label, pool_df_used).
+    """
+    name = str(player_display_name).split(" (")[0].strip()
+    if pool_row is not None and proj_bd.row_has_stabilized_projection(pool_row):
+        return pool_row, "current_page_stabilized", None
+
+    try:
+        pool = get_cached_unified_projection_pool_live()
+    except Exception:
+        pool = pd.DataFrame()
+
+    if not pool.empty and "fullName" in pool.columns:
+        canonical = _resolve_consistency_player_name(pool, name) or name
+        match = pool[pool["fullName"].astype(str).str.strip() == str(canonical).strip()]
+        if match.empty:
+            key = normalize_player_name_for_merge(name)
+            if "Player Key" in pool.columns:
+                match = pool[pool["Player Key"].astype(str).str.strip() == key]
+        if not match.empty:
+            return match.iloc[0], "unified_stabilized_pool", pool
+
+    if (
+        pool_row is not None
+        and projection_lookup_df is not None
+        and projection_lookup_name_col in getattr(projection_lookup_df, "columns", [])
+    ):
+        return pool_row, "current_page_legacy", None
+
+    if pool_row is not None:
+        return pool_row, "inline_row", None
+
+    return None, "not_found", pool if not pool.empty else None
+
+
+def assemble_projection_breakdown_bundle(
+    player_display_name: str,
+    *,
+    pool_row=None,
+    projection_lookup_df=None,
+    projection_lookup_name_col: str = "fullName",
+):
+    """Build dialog payload: stabilized projections + trend cards + season sparklines."""
+    kw = _draft_projection_session_kwargs()
+    row, source, _pool = resolve_projection_breakdown_row(
+        player_display_name,
+        pool_row=pool_row,
+        projection_lookup_df=projection_lookup_df,
+        projection_lookup_name_col=projection_lookup_name_col,
+    )
+
+    season_history = pd.DataFrame()
+    player_id = None
+    if row is not None and hasattr(row, "get"):
+        player_id = row.get("playerID")
+    if player_id is None and yearly_df is not None and "fullName" in yearly_df.columns:
+        base = str(player_display_name).split(" (")[0].strip()
+        m = yearly_df[yearly_df["fullName"].astype(str).str.strip() == base]
+        if not m.empty:
+            player_id = m.iloc[-1].get("playerID")
+    if player_id is not None:
+        max_y = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().max())
+        yrs = list(range(max_y - int(kw["draft_window"]) + 1, max_y + 1))
+        recent = yearly_df[yearly_df["yearID"].isin(yrs)].copy()
+        season_history = proj_bd.player_season_history(
+            recent, str(player_id), window_years=kw["draft_window"]
+        )
+
+    lahman_fallback = None
+    if row is None and yearly_df is not None and "fullName" in yearly_df.columns:
+        base = str(player_display_name).split(" (")[0].strip()
+        sub = yearly_df[yearly_df["fullName"].astype(str).str.strip() == base]
+        if not sub.empty:
+            last = sub.sort_values("yearID").tail(1).iloc[0]
+            lahman_fallback = {
+                "year": int(last.get("yearID")),
+                "HR": last.get("HR"),
+                "RBI": last.get("RBI"),
+                "R": last.get("R"),
+                "SB": last.get("SB"),
+                "OPS": last.get("OPS"),
+            }
+
+    return proj_bd.build_projection_breakdown_bundle(
+        player_display_name,
+        row,
+        data_source=source,
+        projection_system=proj_bd.PROJECTION_SYSTEM_LABEL,
+        window_years=kw["draft_window"],
+        projection_style=kw["projection_style"],
+        fantasy_format=kw["fantasy_format"],
+        season_history=season_history,
+        lahman_fallback=lahman_fallback,
+    )
 
 
 def _format_sim_value(category, value):
@@ -8407,127 +8563,148 @@ def _qa_key_suffix(text):
     return h
 
 
-def build_projection_breakdown_markdown(player_display_name, draft_row=None, yearly_df_local=None):
-    """Narrative projection breakdown using existing model fields only (no new formulas)."""
-    lines = [f"### Projection breakdown: {player_display_name}", ""]
-    if draft_row is not None and hasattr(draft_row, "index"):
-        def _g(col):
-            try:
-                if col in draft_row.index:
-                    return draft_row[col]
-            except Exception:
-                return None
-            return None
+def _format_projection_stat(label: str, value) -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "n/a"
+    if label in ("AVG", "OPS"):
+        return fmt_rate_3(value)
+    return fmt_int(value)
 
-        proj_bits = []
-        for label, col in [
-            ("HR", "proj_HR"),
-            ("RBI", "proj_RBI"),
-            ("R", "proj_R"),
-            ("SB", "proj_SB"),
-            ("AVG", "proj_BA"),
-            ("OPS", "proj_OPS"),
-        ]:
-            val = _g(col)
-            if val is not None and pd.notna(val):
-                fmt = fmt_rate_3 if label in ("AVG", "OPS") else fmt_int
-                proj_bits.append(f"**{label}** `{fmt(val)}`")
-        if proj_bits:
-            lines.append("- **Projected counting stats:** " + ", ".join(proj_bits))
 
-        conf = _g("Projection Confidence")
-        conf_score = _g("Projection Confidence Score")
-        warning = _g("Projection Warning")
-        conf_parts = []
-        if conf is not None and pd.notna(conf) and str(conf).strip():
-            conf_parts.append(f"confidence **{conf}**")
-        elif conf_score is not None and pd.notna(conf_score):
-            conf_parts.append(f"confidence score **{fmt_rate_4(conf_score)}**")
-        if warning is not None and str(warning).strip():
-            conf_parts.append(f"warning: *{str(warning).strip()}*")
-        if conf_parts:
-            lines.append("- **Projection quality:** " + "; ".join(conf_parts) + ".")
-        lines.append("")
+@st.dialog("Projection breakdown", width="large")
+def _render_projection_breakdown_dialog(bundle: dict):
+    """Scouting-style projection dashboard (stabilized pipeline when available)."""
+    if not isinstance(bundle, dict):
+        st.warning("No projection breakdown data.")
+        return
 
-        pos = _g("Primary Position")
-        age = _g("Age")
-        g = _g("G")
-        ab = _g("AB")
-        if pos is not None or pd.notna(age):
-            lines.append(
-                f"- **Profile:** position `{pos}`, age `{fmt_int(age) if pd.notna(age) else 'n/a'}`, "
-                f"recent volume **G={fmt_int(g)}**, **AB={fmt_int(ab)}** (from the projection window inputs)."
-            )
-        mr = _g("Market Rank")
-        mdl = _g("Model Rank")
-        fe = _g("Fantasy Edge")
-        if any(pd.notna(x) for x in (mr, mdl, fe)):
-            lines.append(
-                f"- **Market vs model:** Market rank `{fmt_int(mr)}`, model rank `{fmt_int(mdl)}`, "
-                f"fantasy edge `{fmt_int(fe)}` (positive means your model is higher on the player than ADP/market)."
-            )
-        efv = _g("Expected Fantasy Value")
-        rbase = _g("Realistic Base Projection Score")
-        ml_adj = _g("ML Adjustment")
-        ml_score = _g("ML Projection Score")
-        if rbase is not None or efv is not None:
-            lines.append(
-                f"- **Value stack:** realistic base projection score `{fmt_rate_4(rbase)}` feeds expected fantasy value "
-                f"`{fmt_rate_4(efv)}` after the small ML/context layer."
-            )
-        if ml_adj is not None and pd.notna(ml_adj):
-            lines.append(
-                f"- **ML/context layer:** ML adjustment `{float(ml_adj):+.4f}` (capped in the model) with "
-                f"ML projection score `{fmt_rate_4(ml_score)}` — this nudges the baseline for breakout/risk/playing-time signals, not a full re-rank."
-            )
-        brk = _g("Breakout Probability")
-        risk = _g("Risk Score")
-        if brk is not None or risk is not None:
-            lines.append(
-                f"- **Shape signals:** breakout probability `{fmt_rate_4(brk)}`, risk score `{fmt_rate_4(risk)}` "
-                "(from capped trends, age curve, and similar-player anchoring inside the realistic projection builder)."
-            )
-        for tlab, tcol in [
-            ("HR trend", "HR_trend"),
-            ("OPS trend", "OPS_trend"),
-            ("SB trend", "SB_trend"),
-            ("BA trend", "BA_trend"),
-        ]:
-            tv = _g(tcol)
-            if tv is not None and pd.notna(tv):
-                lines.append(f"- **{tlab} (window slope):** `{float(tv):+.4f}` — used in capped form so one hot year does not dominate.")
-        lines.append("")
-        lines.append(
-            "*This text summarizes fields already computed by `build_realistic_draft_ml_adjustments` and related "
-            "draft scoring — it does not re-fit or change any formulas.*"
-        )
-        return "\n".join(lines)
-
-    if yearly_df_local is not None and "fullName" in yearly_df_local.columns:
-        base = str(player_display_name).split(" (")[0].strip()
-        sub = yearly_df_local[yearly_df_local["fullName"].astype(str).str.strip().eq(base)]
-        if sub.empty:
-            lines.append("No matching Lahman rows for this name — open Historical Explorer to verify spelling or duplicates.")
-        else:
-            last = sub.sort_values("yearID").tail(1).iloc[0]
-            yr = last.get("yearID")
-            lines.append(
-                f"- **Latest season on file ({yr}):** HR `{fmt_int(last.get('HR'))}`, RBI `{fmt_int(last.get('RBI'))}`, "
-                f"R `{fmt_int(last.get('R'))}`, SB `{fmt_int(last.get('SB'))}`, OPS `{fmt_rate_3(last.get('OPS'))}`."
-            )
-            lines.append("- Draft Assistant / fantasy pages add market + model layers on top of this history.")
-        return "\n".join(lines)
-
-    lines.append(
-        "No projection details are available for this player on this page. "
-        "Try **Fantasy Sleepers & Busts**, **Draft Assistant**, or **ML Predictions** for richer projection fields."
+    player = bundle.get("player_name", "Player")
+    st.markdown(f"### {player}")
+    st.caption(
+        f"**{bundle.get('projection_style', 'Balanced')}** style · "
+        f"**{bundle.get('window_years', 3)}-year** window · "
+        f"**{bundle.get('fantasy_format', '5x5 Roto')}**"
     )
-    return "\n".join(lines)
 
+    if bundle.get("stabilized"):
+        st.success("Using stabilized draft-lab projections (matches Draft Lab / Live Draft Room / Draft Assistant).")
+    else:
+        st.warning(
+            "Showing limited or legacy page data. For full stabilized projections, open this from "
+            "**Draft Assistant**, **Fantasy Sleepers**, or **Draft Room** — or ensure Lahman data loaded."
+        )
 
-@st.dialog("Projection breakdown")
-def _projection_breakdown_dialog(body_md: str):
-    st.markdown(body_md)
+    snapshot = bundle.get("snapshot") or {}
+    projections = snapshot.get("projections") or {}
+    if projections:
+        st.markdown("#### Stabilized counting projections")
+        pcols = st.columns(len(projections))
+        for col, (label, val) in zip(pcols, projections.items()):
+            with col:
+                st.metric(label, _format_projection_stat(label, val))
+    elif bundle.get("lahman_fallback"):
+        fb = bundle["lahman_fallback"]
+        st.markdown(f"#### Latest Lahman season ({fb.get('year', 'n/a')})")
+        st.caption(
+            f"HR {fmt_int(fb.get('HR'))} · RBI {fmt_int(fb.get('RBI'))} · R {fmt_int(fb.get('R'))} · "
+            f"SB {fmt_int(fb.get('SB'))} · OPS {fmt_rate_3(fb.get('OPS'))}"
+        )
+    else:
+        st.info(
+            "No projection row found for this player. Check spelling or try **Draft Assistant** after loading market CSVs."
+        )
+
+    conf_lbl = snapshot.get("confidence_label")
+    conf_score = snapshot.get("confidence_score")
+    warning = snapshot.get("warning") or ""
+    if conf_lbl or conf_score is not None or warning:
+        st.markdown("#### Confidence & warnings")
+        if conf_lbl:
+            st.markdown(f"**{conf_lbl}**" + (f" (score `{fmt_rate_4(conf_score)}`)" if conf_score is not None else ""))
+        elif conf_score is not None:
+            st.markdown(f"Confidence score: **{fmt_rate_4(conf_score)}**")
+        if warning:
+            st.warning(warning)
+        if snapshot.get("star_protected"):
+            st.caption("Elite-star protection active — lighter regression and softer ceilings on counting stats.")
+        if snapshot.get("very_limited_data"):
+            st.caption("Small-sample profile: projections are heavily regressed toward recent averages.")
+
+    pos = snapshot.get("primary_position")
+    age = snapshot.get("age")
+    if pos or (age is not None and not np.isnan(age)):
+        g_txt = fmt_int(snapshot.get("games")) if snapshot.get("games") is not None else "n/a"
+        ab_txt = fmt_int(snapshot.get("ab")) if snapshot.get("ab") is not None else "n/a"
+        pg = snapshot.get("proj_g")
+        pab = snapshot.get("proj_ab")
+        vol = snapshot.get("volatility_score")
+        st.markdown(
+            f"**Profile:** {pos or 'n/a'} · age **{fmt_int(age) if age is not None and not np.isnan(age) else 'n/a'}** · "
+            f"recent **G={g_txt}** / **AB={ab_txt}** · "
+            f"projected playing time **G≈{fmt_int(pg) if pg is not None and not np.isnan(pg) else 'n/a'}**, "
+            f"**AB≈{fmt_int(pab) if pab is not None and not np.isnan(pab) else 'n/a'}**"
+            + (f" · volatility `{fmt_rate_4(vol)}`" if vol is not None and not np.isnan(vol) else "")
+        )
+
+    mr, mdl, fe = snapshot.get("market_rank"), snapshot.get("model_rank"), snapshot.get("fantasy_edge")
+    if any(x is not None and not (isinstance(x, float) and np.isnan(x)) for x in (mr, mdl, fe)):
+        st.caption(
+            f"Market rank **{fmt_int(mr) if mr is not None and not np.isnan(mr) else 'n/a'}** · "
+            f"Model rank **{fmt_int(mdl) if mdl is not None and not np.isnan(mdl) else 'n/a'}** · "
+            f"Fantasy edge **{fmt_int(fe) if fe is not None and not np.isnan(fe) else 'n/a'}**"
+        )
+
+    efv = snapshot.get("expected_fantasy_value")
+    rbase = snapshot.get("realistic_base")
+    ml_adj = snapshot.get("ml_adjustment")
+    if efv is not None and not np.isnan(efv):
+        st.caption(
+            f"Expected fantasy value **{fmt_rate_4(efv)}**"
+            + (f" (base **{fmt_rate_4(rbase)}**)" if rbase is not None and not np.isnan(rbase) else "")
+            + (f" · ML adj **{float(ml_adj):+.4f}**" if ml_adj is not None and not np.isnan(ml_adj) else "")
+        )
+
+    trend_cards = bundle.get("trend_cards") or []
+    if trend_cards:
+        st.markdown("#### Recent-season trends")
+        st.caption(proj_bd.TREND_METHOD_NOTE)
+        grid_cols = st.columns(2)
+        for i, card in enumerate(trend_cards):
+            with grid_cols[i % 2]:
+                color = card.get("color", "#57606a")
+                arrow = card.get("arrow", "?")
+                dir_lbl = card.get("direction_label", "")
+                slope = card.get("slope_display", "n/a")
+                st.markdown(
+                    f"<div style='border:1px solid #e6e8eb;border-radius:8px;padding:10px 12px;margin-bottom:8px;'>"
+                    f"<span style='color:{color};font-size:1.25rem;font-weight:700;'>{arrow}</span> "
+                    f"<strong>{card.get('label', '')}</strong> "
+                    f"<span style='color:{color};font-weight:600;'>{dir_lbl}</span><br/>"
+                    f"<span style='color:#57606a;font-size:0.85rem;'>Slope: {slope}</span><br/>"
+                    f"<span style='color:#6e7781;font-size:0.8rem;'>{card.get('explain', '')}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                spark = card.get("sparkline")
+                if isinstance(spark, pd.DataFrame) and not spark.empty and len(spark) >= 2:
+                    st.line_chart(spark.set_index("Year"), height=120)
+
+    with st.expander("How these numbers are built", expanded=False):
+        for note in bundle.get("method_notes") or []:
+            st.markdown(f"- {note}")
+        st.markdown(
+            "- **Projected HR/RBI/R/SB/AVG/OPS:** stabilized counting/rate blend from recent per-PA rates, "
+            "playing-time projection, regression to league, elite caps, and star protection (`apply_stabilized_counting_projections`)."
+        )
+        st.markdown(
+            "- **Trend slopes:** linear regression on season totals/rates across the projection window; "
+            "fed into stabilization and `build_realistic_draft_ml_adjustments` (capped before scoring)."
+        )
+        st.markdown(
+            "- **ML Predictions page** uses the separate Random Forest + calibration stack; "
+            "draft tools share this draft-lab stabilization layer for fantasy rankings."
+        )
+        st.caption(f"Data resolved from: `{bundle.get('data_source', 'unknown')}`")
 
 
 def _on_simulate_draft_pick_click(
@@ -8555,7 +8732,7 @@ def _on_projection_breakdown_click(
     projection_lookup_df,
     projection_lookup_name_col: str,
 ):
-    """Button callback: queue projection dialog content for the next render."""
+    """Button callback: queue projection bundle for the next render (never the button widget key)."""
     row = None
     if (
         projection_lookup_df is not None
@@ -8568,15 +8745,20 @@ def _on_projection_breakdown_click(
         ]
         if not m.empty:
             row = m.iloc[0]
-    md = build_projection_breakdown_markdown(player_raw, draft_row=row, yearly_df_local=yearly_df)
-    st.session_state[dialog_state_key] = md
+    bundle = assemble_projection_breakdown_bundle(
+        player_raw,
+        pool_row=row,
+        projection_lookup_df=projection_lookup_df,
+        projection_lookup_name_col=projection_lookup_name_col,
+    )
+    st.session_state[dialog_state_key] = bundle
     record_workflow_recent_player(player_raw)
 
 
 def _maybe_show_projection_breakdown_dialog(dialog_state_key: str):
-    body = st.session_state.pop(dialog_state_key, None)
-    if body:
-        _projection_breakdown_dialog(body)
+    bundle = st.session_state.pop(dialog_state_key, None)
+    if bundle:
+        _render_projection_breakdown_dialog(bundle)
 
 
 def player_quick_actions_popover(
