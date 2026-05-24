@@ -66,7 +66,7 @@ if not hasattr(pg_xfer, "sanitize_session_keys"):
 
 if not hasattr(pg_xfer, "target_allows_top3_players"):
     pg_xfer.target_allows_top3_players = lambda target: str(target or "").strip() in {
-        "Comparison Tool", "Trend Value",
+        "Comparison Tool", "Trend Value", "Valuation",
     }
 if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
     pg_xfer.builder_allows_top3_checkbox = lambda builder_id, target_page=None: (
@@ -83,13 +83,14 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
     pg_xfer.TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
-_CONTEXTUAL_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value"})
+_CONTEXTUAL_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
 _BUILDER_TOP3_CHECKBOX_FALLBACK = frozenset({
     "hist_to_compare", "hist_to_trend", "hist_to_valuation",
     "career_to_compare", "career_to_trend", "career_to_valuation",
     "leaders_to_compare", "leaders_to_trend", "leaders_to_valuation",
     "sleepers_to_compare", "sleepers_to_trend", "sleepers_to_valuation",
     "trend_to_compare", "valuation_to_compare", "valuation_to_trend",
+    "ml_to_compare", "ml_to_trend", "ml_to_valuation",
 })
 _BUILDER_COMPARE_SELECTED_FALLBACK = frozenset({"compare_to_trend", "compare_to_valuation"})
 
@@ -4030,6 +4031,49 @@ def _ml_enrich_predictions_for_storage(pred_df, yearly_source, ml_lookback, ml_p
     if "Position" not in out.columns:
         out["Position"] = "—"
     return out
+
+
+def _build_ml_nav_results_df(stored_df, position_filter, sort_by):
+    """Filtered/sorted display table for contextual top-3 transfer (no ML pipeline)."""
+    if not _ml_is_nonempty_dataframe(stored_df):
+        return None
+    view = _ml_apply_display_view(stored_df, position_filter, sort_by)
+    if view.empty or "fullName" not in view.columns:
+        return None
+    display_cols = [
+        "fullName", "Position", "primaryTeamID",
+        "Predicted HR", "Predicted RBI", "Predicted R", "Predicted SB",
+        "Predicted BA", "Predicted OPS", "Expected Fantasy Value", "ML Fantasy Value",
+    ]
+    display_cols = [c for c in display_cols if c in view.columns]
+    out = view[display_cols].copy()
+    return out.rename(columns={"fullName": "Player", "primaryTeamID": "Team"})
+
+
+def _ml_transfer_extra_context(
+    *,
+    ml_lookback,
+    ml_min_games,
+    ml_min_ab,
+    ml_projection_style,
+    ml_position_filter,
+    ml_sort_by,
+):
+    pos = ml_position_filter
+    xfer_pos = (
+        pg_xfer.normalize_fantasy_position_filter(pos)
+        if pos not in ("All positions", "All")
+        else None
+    )
+    return {
+        "transfer_position": xfer_pos,
+        "ml_lookback": ml_lookback,
+        "ml_min_games": ml_min_games,
+        "ml_min_ab": ml_min_ab,
+        "ml_projection_style": ml_projection_style,
+        "ml_sort_by": ml_sort_by,
+        "ml_display_sort": ml_sort_by,
+    }
 
 
 def _ml_apply_display_view(stored_df, position_filter, sort_col):
@@ -10553,7 +10597,7 @@ PAGE_OPTIONS = [
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
 # Contextual transfer: optional top-3 players (Comparison, Trend Value).
-CONTEXTUAL_TOP3_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value"})
+CONTEXTUAL_TOP3_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
 CONTEXTUAL_TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
 # Sidebar display labels — emojis match each page's section header title.
@@ -12653,7 +12697,7 @@ if active_page == "Comparison Tool":
     render_contextual_page_nav(
         "Comparison Tool",
         "after_analysis",
-        label="Continue analysis in…",
+        label="Use these filters in another tool…",
         extra_context={"compare_selected_labels": selected_labels_compare},
     )
 
@@ -12798,7 +12842,7 @@ if active_page == "Trend Value":
     render_contextual_page_nav(
         "Trend Value",
         "after_table",
-        label="Continue analysis in…",
+        label="Use these filters in another tool…",
         transfer_results_df=_trend_xfer_df,
         transfer_name_col="fullName",
         default_rank_stat=sort_col,
@@ -14178,25 +14222,6 @@ if active_page == "Draft Assistant Simulator":
                     player_name=_da_brk_player if _da_brk_player else None,
                     key_suffix="assistant",
                 )
-        _da_xfer_df = (
-            recs.sort_values("Draft Fit Score", ascending=False, na_position="last").copy()
-            if not recs.empty
-            else pd.DataFrame()
-        )
-        render_contextual_page_nav(
-            "Draft Assistant Simulator",
-            "after_recommendations",
-            label="Use these filters in another tool…",
-            transfer_results_df=_da_xfer_df,
-            transfer_name_col="fullName",
-            default_rank_stat="Draft Fit Score",
-            extra_context={
-                "dataset_max_year": year_max,
-                "ml_lookback": st.session_state.get("draft_window"),
-                "ml_min_games": st.session_state.get("draft_ml_min_games_signal"),
-                "ml_projection_style": st.session_state.get("fantasy_draft_projection_style"),
-            },
-        )
         st.subheader("Selected Player Insight")
         selected_draft_row = _select_insight_row(
             recs,
@@ -14310,7 +14335,21 @@ if active_page == "Draft Assistant Simulator":
                     hide_index=True
                 )
 
-        save_page_state(active_page)
+    render_contextual_page_nav(
+        "Draft Assistant Simulator",
+        "after_recommendations",
+        label="Use these filters in another tool…",
+        transfer_results_df=pd.DataFrame(),
+        transfer_name_col="fullName",
+        default_rank_stat="Draft Fit Score",
+        extra_context={
+            "dataset_max_year": year_max,
+            "ml_lookback": st.session_state.get("draft_window"),
+            "ml_min_games": st.session_state.get("draft_ml_min_games_signal"),
+            "ml_projection_style": st.session_state.get("fantasy_draft_projection_style"),
+        },
+    )
+    save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
@@ -16113,7 +16152,7 @@ if active_page == "Valuation":
     render_contextual_page_nav(
         "Valuation",
         "after_table",
-        label="Continue analysis in…",
+        label="Use these filters in another tool…",
         transfer_results_df=_val_xfer_df,
         transfer_name_col="fullName",
         default_rank_stat="Valuation Score",
@@ -16144,6 +16183,7 @@ if active_page == "ML Predictions":
         "Generate next-season projections using machine learning, aging curves, regression-to-the-mean, and similar-player comparisons."
     )
     render_page_guide(active_page)
+    apply_pending_page_transfer(active_page)
 
     if not SKLEARN_AVAILABLE:
         st.error("Scikit-learn is not installed. In Command Prompt, run: pip install scikit-learn")
@@ -16353,34 +16393,31 @@ if active_page == "ML Predictions":
                     metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
-            ml_position_filter = st.session_state.get("ml_position_filter", "All positions")
-            ml_sort_by = st.session_state.get("ml_sort_by", "Predicted OPS")
-            if st.session_state.get("ml_predictions_have_run", False):
-                st.subheader("Next-Season ML Projections")
-                _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
-                with _ml_tbl_c1:
-                    validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-                    ml_position_filter = st.selectbox(
-                        "Fantasy Position",
-                        FANTASY_POSITION_FILTER_OPTIONS,
-                        key="ml_position_filter",
-                        help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-                    )
-                with _ml_tbl_c2:
-                    validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
-                    ml_sort_by = st.selectbox(
-                        "Sort Projections By",
-                        ML_DISPLAY_SORT_OPTIONS,
-                        key="ml_sort_by",
-                        help="Display-only — does not regenerate ML projections.",
-                    )
+        st.subheader("Next-Season ML Projections")
+        _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+        with _ml_tbl_c1:
+            validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+            ml_position_filter = st.selectbox(
+                "Fantasy Position",
+                FANTASY_POSITION_FILTER_OPTIONS,
+                key="ml_position_filter",
+                help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+            )
+        with _ml_tbl_c2:
+            validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
+            ml_sort_by = st.selectbox(
+                "Sort Projections By",
+                ML_DISPLAY_SORT_OPTIONS,
+                key="ml_sort_by",
+                help="Display-only — does not regenerate ML projections.",
+            )
 
+        if st.session_state.get("ml_predictions_have_run", False):
             if not _ml_is_nonempty_dataframe(stored_df):
-                if st.session_state.get("ml_predictions_have_run", False):
-                    st.warning(
-                        "No player projections to display. Raise **Minimum Recent AB** or **Minimum Games**, "
-                        "or click **Generate / Refresh** after changing scope."
-                    )
+                st.warning(
+                    "No player projections to display. Raise **Minimum Recent AB** or **Minimum Games**, "
+                    "or click **Generate / Refresh** after changing scope."
+                )
             else:
                 with st.expander("How ML projections are stabilized", expanded=False):
                     st.markdown(
@@ -16500,29 +16537,24 @@ if active_page == "ML Predictions":
                         for _note in _cmp_notes:
                             st.caption(_note)
 
-                _ml_xfer_df = ml_display.copy()
-                _xfer_pos = ml_position_filter
-                if _xfer_pos not in ("All positions", "All"):
-                    _xfer_pos_norm = pg_xfer.normalize_fantasy_position_filter(_xfer_pos)
-                else:
-                    _xfer_pos_norm = None
-                render_contextual_page_nav(
-                    "ML Predictions",
-                    "after_table",
-                    label="Continue analysis in…",
-                    transfer_results_df=_ml_xfer_df,
-                    transfer_name_col="Player",
-                    default_rank_stat=ml_sort_by if ml_sort_by not in ("Position", "Team") else "Predicted OPS",
-                    extra_context={
-                        "transfer_position": _xfer_pos_norm,
-                        "ml_lookback": ml_lookback,
-                        "ml_min_games": ml_min_games,
-                        "ml_min_ab": ml_min_ab,
-                        "ml_projection_style": ml_projection_style,
-                        "ml_display_sort": ml_sort_by,
-                        "ml_sort_by": ml_sort_by,
-                    },
-                )
+        _ml_nav_df = _build_ml_nav_results_df(stored_df, ml_position_filter, ml_sort_by)
+        _ml_rank = ml_sort_by if ml_sort_by not in ("Position", "Team") else "Predicted OPS"
+        render_contextual_page_nav(
+            "ML Predictions",
+            "after_table",
+            label="Use these filters in another tool…",
+            transfer_results_df=_ml_nav_df,
+            transfer_name_col="Player",
+            default_rank_stat=_ml_rank,
+            extra_context=_ml_transfer_extra_context(
+                ml_lookback=ml_lookback,
+                ml_min_games=ml_min_games,
+                ml_min_ab=ml_min_ab,
+                ml_projection_style=ml_projection_style,
+                ml_position_filter=ml_position_filter,
+                ml_sort_by=ml_sort_by,
+            ),
+        )
 
         save_page_state(active_page)
         render_page_filters_debug(active_page)

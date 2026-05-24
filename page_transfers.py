@@ -89,7 +89,7 @@ _FANTASY_SLOT_RAW_CODES = {
 }
 
 # Contextual transfers to these pages may offer the top-3 players checkbox.
-_TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value"})
+_TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
 
 # Explorer / Career / Leaderboards: optional top-3 via checkbox only.
 _BUILDER_ALLOWS_TOP3 = frozenset({
@@ -1389,6 +1389,20 @@ def _draft_room_to_sleepers(session, extra):
     return {"session_keys": keys}
 
 
+@_register_builder("compare_to_ml")
+def _compare_to_ml(session, extra):
+    keys = {}
+    yr = session.get("compare_year_range")
+    if isinstance(yr, (list, tuple)) and len(yr) == 2:
+        try:
+            lag = int(yr[1]) - int(yr[0]) + 1
+            if lag in (3, 4, 5):
+                keys["ml_lookback"] = lag
+        except (TypeError, ValueError):
+            pass
+    return {"session_keys": keys}
+
+
 @_register_builder("trend_to_ml")
 def _trend_to_ml(session, extra):
     keys = {}
@@ -1737,6 +1751,7 @@ CONTEXTUAL_NAV_REGISTRY = {
     ("Comparison Tool", "after_analysis"): [
         {"target": "Trend Value", "builder": "compare_to_trend", "label": "Trend Value — players & year window"},
         {"target": "Valuation", "builder": "compare_to_valuation", "label": "Valuation — year window"},
+        {"target": "ML Predictions", "builder": "compare_to_ml", "label": "ML Predictions — projection window"},
         {"target": "Historical Explorer", "builder": "compare_to_hist", "label": "Historical Explorer — year range"},
         {"target": "Career Totals", "builder": "compare_to_career", "label": "Career Totals — year range"},
     ],

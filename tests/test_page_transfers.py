@@ -5,9 +5,9 @@ import pandas as pd
 import page_transfers as pg
 
 
-def test_valuation_does_not_accept_transferred_players():
-    assert not pg.target_accepts_transferred_players("Valuation")
-    assert not pg.target_allows_top3_players("Valuation")
+def test_valuation_accepts_transferred_players():
+    assert pg.target_accepts_transferred_players("Valuation")
+    assert pg.target_allows_top3_players("Valuation")
 
 
 def test_comparison_and_trend_accept_players():
@@ -15,10 +15,11 @@ def test_comparison_and_trend_accept_players():
     assert pg.target_accepts_transferred_players("Trend Value")
 
 
-def test_top3_checkbox_hidden_for_valuation_target():
+def test_top3_checkbox_for_valuation_from_hist_and_ml():
     df = pd.DataFrame({"fullName": ["A", "B", "C"], "OPS": [1.0, 0.9, 0.8]})
-    assert not pg.should_show_top3_checkbox("hist_to_valuation", "Valuation", df, "fullName")
+    assert pg.should_show_top3_checkbox("hist_to_valuation", "Valuation", df, "fullName")
     assert pg.should_show_top3_checkbox("hist_to_compare", "Comparison Tool", df, "fullName")
+    assert not pg.should_show_top3_checkbox("hist_to_leaders", "Leaderboards", df, "fullName")
 
 
 def test_compare_to_valuation_does_not_auto_send_players():
@@ -251,8 +252,31 @@ def test_ml_to_sleepers_includes_min_ab_and_position():
     assert payload["transfer_filters"]["fantasy_market_positions"] == ["OF", "LF", "CF", "RF"]
 
 
-def test_ml_top3_checkbox_for_compare_and_trend_not_sleepers():
+def test_ml_top3_checkbox_for_compare_trend_valuation_not_sleepers():
     df = pd.DataFrame({"Player": ["A", "B", "C"], "Predicted HR": [40, 35, 30]})
     assert pg.should_show_top3_checkbox("ml_to_compare", "Comparison Tool", df, "Player")
     assert pg.should_show_top3_checkbox("ml_to_trend", "Trend Value", df, "Player")
+    assert pg.should_show_top3_checkbox("ml_to_valuation", "Valuation", df, "Player")
     assert not pg.should_show_top3_checkbox("ml_to_sleepers", "Fantasy Sleepers & Busts", df, "Player")
+
+
+def test_ml_predictions_registry_lists_all_fantasy_hub_targets():
+    entries = pg.CONTEXTUAL_NAV_REGISTRY[("ML Predictions", "after_table")]
+    targets = {e["target"] for e in entries}
+    expected = {
+        "Trend Value",
+        "Valuation",
+        "Comparison Tool",
+        "Fantasy Sleepers & Busts",
+        "Draft Assistant Simulator",
+        "Draft Simulation Test Mode",
+        "Live Draft Room",
+        "Draft Room Simulator",
+    }
+    assert targets == expected
+
+
+def test_compare_to_ml_maps_year_range_to_lookback():
+    session = {"compare_year_range": (2020, 2024)}
+    payload = pg.build_transfer(session, "compare_to_ml", {"target_page": "ML Predictions"})
+    assert payload["transfer_filters"]["ml_lookback"] == 5
