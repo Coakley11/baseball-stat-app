@@ -3803,13 +3803,14 @@ def build_current_prediction_rows(
     df = df.dropna(subset=["playerID", "yearID"]).copy()
     df["yearID"] = df["yearID"].astype(int)
     max_data_year = int(df["yearID"].max())
+    latest_by_player = df.groupby("playerID", sort=False)["yearID"].max()
+    active_ids = latest_by_player.index[latest_by_player >= max_data_year - 1]
+    df = df[df["playerID"].isin(active_ids)]
     rows = []
     all_feature_stats = ML_BASE_FEATURE_STATS + ML_DERIVED_FEATURE_STATS
     for player_id, g in df.groupby("playerID", sort=False):
         g = g.sort_values("yearID").reset_index(drop=True)
         latest_year = int(g["yearID"].max())
-        if latest_year < max_data_year - 1:
-            continue
         latest = g[g["yearID"] == latest_year].iloc[0]
         history = g[g["yearID"] <= latest_year].tail(lookback_years).copy()
         if len(history) < lookback_years:
@@ -3881,6 +3882,8 @@ def _ml_year_pool_signature(yl_df):
 
 _ML_PROJ_SESSION_KEYS = (
     "_ml_proj_sig",
+    "_ml_base_sig",
+    "_ml_base_pack",
     "_ml_proj_pred_df",
     "_ml_proj_age_curve_df",
     "_ml_proj_comp_df",
@@ -3888,6 +3891,7 @@ _ML_PROJ_SESSION_KEYS = (
     "_ml_proj_feature_cols",
     "_ml_proj_models",
     "_ml_proj_current_rows",
+    "_ml_proj_base_pred_df",
 )
 ML_PREDICTION_REFRESH_TOKEN_KEY = "ml_prediction_refresh_token"
 ML_PREDICTIONS_STATUS_KEY = "ml_predictions_status"
@@ -3898,9 +3902,20 @@ def _clear_ml_projection_session_cache():
         st.session_state.pop(k, None)
 
 
+def _store_ml_base_pack(base_sig, pack: dict):
+    st.session_state["_ml_base_sig"] = base_sig
+    st.session_state["_ml_base_pack"] = pack
+    st.session_state["_ml_proj_training_df"] = pack.get("ml_training_df", pd.DataFrame())
+    st.session_state["_ml_proj_feature_cols"] = pack.get("ml_feature_cols", [])
+    st.session_state["_ml_proj_models"] = pack.get("ml_models", {})
+    st.session_state["_ml_proj_current_rows"] = pack.get("current_rows", pd.DataFrame())
+    st.session_state["_ml_proj_base_pred_df"] = pack.get("base_pred_df", pd.DataFrame())
+
+
 def _clear_ml_data_caches():
-    """Force ML pipeline layers to recompute (used on Generate / Refresh)."""
+    """Targeted ML cache invalidation on Generate / Refresh (not st.cache_data.clear())."""
     for fn in (
+        prepare_ml_yearly_source,
         build_ml_training_set,
         build_current_prediction_rows,
         build_base_ml_predictions,
@@ -3908,6 +3923,7 @@ def _clear_ml_data_caches():
         get_age_curve_adjustments,
         get_target_baselines,
         build_stabilized_projection_anchors,
+        train_random_forest_models,
     ):
         try:
             fn.clear()
@@ -3926,21 +3942,168 @@ def _on_ml_predictions_refresh_click():
     st.session_state.pop(ML_PREDICTIONS_STATUS_KEY, None)
 
 
-def _ml_projection_run_signature(yl_df, lookback, min_games, max_players, reg, age_s, comp_w, k_nei, min_ab, projection_style="Balanced"):
-    """Inputs that affect base ML + adjustment layer; used to skip redundant work on Streamlit reruns."""
+def _ml_base_run_signature(yl_df, lookback, min_games, max_players):
+    """Training + RF inference signature (unchanged when tuning sliders move)."""
     return (
         _ml_year_pool_signature(yl_df),
         int(lookback),
         int(min_games),
         int(max_players),
+        int(st.session_state.get(ML_PREDICTION_REFRESH_TOKEN_KEY, 0)),
+    )
+
+
+def _ml_tuning_run_signature(reg, age_s, comp_w, k_nei, min_ab, projection_style="Balanced"):
+    """Adjustment/calibration signature (fast re-run without retraining)."""
+    return (
         float(reg),
         float(age_s),
         float(comp_w),
         int(k_nei),
         int(min_ab),
         str(projection_style),
-        int(st.session_state.get(ML_PREDICTION_REFRESH_TOKEN_KEY, 0)),
     )
+
+
+def _ml_projection_run_signature(yl_df, lookback, min_games, max_players, reg, age_s, comp_w, k_nei, min_ab, projection_style="Balanced"):
+    """Full pipeline signature for session cache."""
+    return _ml_base_run_signature(yl_df, lookback, min_games, max_players) + _ml_tuning_run_signature(
+        reg, age_s, comp_w, k_nei, min_ab, projection_style
+    )
+
+
+def _nearest_age_adjustment_series(ages, age_curve_df, stat):
+    """Nearest-bucket age adjustment for one stat (no per-row apply)."""
+    out = pd.Series(0.0, index=ages.index, dtype=float)
+    if age_curve_df.empty or ages.empty:
+        return out
+    stat_curve = age_curve_df.loc[age_curve_df["Stat"] == stat, ["Age", "Age Adjustment"]].sort_values("Age")
+    if stat_curve.empty:
+        return out
+    age_vals = stat_curve["Age"].to_numpy(dtype=int)
+    adj_vals = pd.to_numeric(stat_curve["Age Adjustment"], errors="coerce").fillna(0).to_numpy()
+    rounded = pd.to_numeric(ages, errors="coerce").round()
+    valid = rounded.notna()
+    if valid.any():
+        a_int = rounded[valid].astype(int).to_numpy()
+        nearest_idx = np.abs(age_vals[:, None] - a_int[None, :]).argmin(axis=0)
+        out.loc[valid] = adj_vals[nearest_idx]
+    return out
+
+
+def _empty_ml_pipeline_status():
+    from datetime import datetime
+
+    return {
+        "ok": False,
+        "message": "",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "player_count": 0,
+        "model_type": "Random Forest (scikit-learn)",
+        "fallback": None,
+        "ml_training_df": pd.DataFrame(),
+        "ml_feature_cols": [],
+        "ml_models": {},
+        "current_rows": pd.DataFrame(),
+        "base_pred_df": pd.DataFrame(),
+        "pred_df": pd.DataFrame(),
+        "age_curve_df": pd.DataFrame(),
+        "comp_df": pd.DataFrame(),
+        "timing": {},
+        "runtime_sec": None,
+    }
+
+
+def _run_ml_base_training_phase(
+    *,
+    yearly_source,
+    ml_lookback,
+    ml_min_games,
+    ml_max_players,
+    refresh_token,
+):
+    """Train RF models and raw predictions (cached by refresh_token + scope)."""
+    t0 = time.perf_counter()
+    ml_training_df, ml_feature_cols, ml_models, current_rows, base_pred_df = build_base_ml_predictions(
+        yearly_source,
+        ml_lookback,
+        ml_min_games,
+        max_player_pool=ml_max_players,
+        refresh_token=refresh_token,
+    )
+    train_sec = time.perf_counter() - t0
+    return {
+        "ml_training_df": ml_training_df,
+        "ml_feature_cols": ml_feature_cols,
+        "ml_models": ml_models,
+        "current_rows": current_rows,
+        "base_pred_df": base_pred_df,
+        "timing": {"model_training_sec": round(train_sec, 3)},
+    }
+
+
+def _run_ml_adjustment_and_calibration(
+    *,
+    yearly_source,
+    ml_lookback,
+    ml_min_ab,
+    base_pred_df,
+    current_rows,
+    ml_training_df,
+    ml_feature_cols,
+    effective_regression_strength,
+    effective_age_strength,
+    effective_comp_weight,
+    k_neighbors,
+    refresh_token,
+):
+    """Apply similarity/aging/regression + stabilized calibration (no RF retrain)."""
+    timing = {}
+    t0 = time.perf_counter()
+    ab_ok = pd.to_numeric(base_pred_df["hist_AB_total"], errors="coerce").fillna(0) >= float(ml_min_ab)
+    base_f = base_pred_df.loc[ab_ok].reset_index(drop=True)
+    if base_f.empty:
+        return None, timing, "ab_filter_empty", (
+            f"No players met **Minimum Recent AB** ({int(ml_min_ab)}). "
+            "Lower that threshold and click **Generate / Refresh** again."
+        )
+    pids = set(base_f["playerID"].astype(str))
+    cur_f = current_rows[current_rows["playerID"].astype(str).isin(pids)].reset_index(drop=True)
+    pred_df = base_f.copy()
+    t1 = time.perf_counter()
+    pred_df, age_curve_df, comp_df = apply_advanced_projection_adjustments(
+        pred_df,
+        cur_f,
+        ml_training_df,
+        ml_feature_cols,
+        ML_TARGET_STATS,
+        regression_strength=effective_regression_strength,
+        age_strength=effective_age_strength,
+        comp_weight=effective_comp_weight,
+        k_neighbors=k_neighbors,
+        refresh_token=refresh_token,
+    )
+    timing["adjustment_sec"] = round(time.perf_counter() - t1, 3)
+    if pred_df.empty:
+        return None, timing, "adjustment_empty", "Projection adjustment returned no rows. Try different tuning sliders."
+
+    t2 = time.perf_counter()
+    anchor_ids = tuple(sorted(str(x) for x in pred_df["playerID"].unique()))
+    anchors = build_stabilized_projection_anchors(
+        yearly_source,
+        anchor_ids,
+        int(ml_lookback),
+    )
+    if not anchors.empty:
+        pred_df = proj_cal.apply_ml_final_output_calibration(pred_df, anchors)
+    timing["calibration_sec"] = round(time.perf_counter() - t2, 3)
+    timing["filter_and_adjust_sec"] = round(time.perf_counter() - t0, 3)
+    return {
+        "pred_df": pred_df,
+        "age_curve_df": age_curve_df if age_curve_df is not None else pd.DataFrame(),
+        "comp_df": comp_df if comp_df is not None and not comp_df.empty else pd.DataFrame(),
+        "player_count": int(len(pred_df)),
+    }, timing, None, None
 
 
 def _run_ml_projection_pipeline(
@@ -3956,36 +4119,41 @@ def _run_ml_projection_pipeline(
     k_neighbors,
     ml_projection_style,
     refresh_token,
+    base_pack=None,
 ):
     """Train + adjust ML projections; return status dict (never raises to caller)."""
-    from datetime import datetime
-
-    status = {
-        "ok": False,
-        "message": "",
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "player_count": 0,
-        "model_type": "Random Forest (scikit-learn)",
-        "fallback": None,
-        "ml_training_df": pd.DataFrame(),
-        "ml_feature_cols": [],
-        "ml_models": {},
-        "pred_df": pd.DataFrame(),
-        "age_curve_df": pd.DataFrame(),
-        "comp_df": pd.DataFrame(),
-    }
+    status = _empty_ml_pipeline_status()
+    del ml_projection_style  # included in tuning signature at page layer
+    t_total = time.perf_counter()
     try:
-        with st.spinner("Generating ML predictions… training models and building projections."):
-            ml_training_df, ml_feature_cols, ml_models, current_rows, base_pred_df = build_base_ml_predictions(
-                yearly_source,
-                ml_lookback,
-                ml_min_games,
-                max_player_pool=ml_max_players,
-                refresh_token=refresh_token,
-            )
+        if base_pack:
+            ml_training_df = base_pack.get("ml_training_df", pd.DataFrame())
+            ml_feature_cols = base_pack.get("ml_feature_cols", [])
+            ml_models = base_pack.get("ml_models", {})
+            current_rows = base_pack.get("current_rows", pd.DataFrame())
+            base_pred_df = base_pack.get("base_pred_df", pd.DataFrame())
+            status["timing"] = dict(base_pack.get("timing") or {})
+        else:
+            with st.spinner("Training models and building base ML projections…"):
+                base_out = _run_ml_base_training_phase(
+                    yearly_source=yearly_source,
+                    ml_lookback=ml_lookback,
+                    ml_min_games=ml_min_games,
+                    ml_max_players=ml_max_players,
+                    refresh_token=refresh_token,
+                )
+            ml_training_df = base_out["ml_training_df"]
+            ml_feature_cols = base_out["ml_feature_cols"]
+            ml_models = base_out["ml_models"]
+            current_rows = base_out["current_rows"]
+            base_pred_df = base_out["base_pred_df"]
+            status["timing"] = dict(base_out.get("timing") or {})
+
         status["ml_training_df"] = ml_training_df
         status["ml_feature_cols"] = ml_feature_cols
         status["ml_models"] = ml_models
+        status["current_rows"] = current_rows
+        status["base_pred_df"] = base_pred_df
 
         if ml_training_df.empty or not ml_feature_cols:
             status["message"] = (
@@ -4011,61 +4179,46 @@ def _run_ml_projection_pipeline(
             status["fallback"] = "no_current_players"
             return status
 
-        ab_ok = pd.to_numeric(base_pred_df["hist_AB_total"], errors="coerce").fillna(0) >= float(ml_min_ab)
-        base_f = base_pred_df.loc[ab_ok].reset_index(drop=True)
-        if base_f.empty:
-            status["message"] = (
-                f"No players met **Minimum Recent AB** ({int(ml_min_ab)}). "
-                "Lower that threshold and click **Generate / Refresh** again."
-            )
-            status["fallback"] = "ab_filter_empty"
-            return status
-
-        pids = set(base_f["playerID"].astype(str))
-        cur_f = current_rows[current_rows["playerID"].astype(str).isin(pids)].reset_index(drop=True)
-        pred_df = base_f.copy()
-
-        with st.spinner("Applying aging curves, regression, and similar-player adjustments…"):
-            pred_df, age_curve_df, comp_df = apply_advanced_projection_adjustments(
-                pred_df,
-                cur_f,
-                ml_training_df,
-                ml_feature_cols,
-                ML_TARGET_STATS,
-                regression_strength=effective_regression_strength,
-                age_strength=effective_age_strength,
-                comp_weight=effective_comp_weight,
+        with st.spinner("Applying aging curves, regression, similar-player blend, and calibration…"):
+            adj_out, adj_timing, fb, fb_msg = _run_ml_adjustment_and_calibration(
+                yearly_source=yearly_source,
+                ml_lookback=ml_lookback,
+                ml_min_ab=ml_min_ab,
+                base_pred_df=base_pred_df,
+                current_rows=current_rows,
+                ml_training_df=ml_training_df,
+                ml_feature_cols=ml_feature_cols,
+                effective_regression_strength=effective_regression_strength,
+                effective_age_strength=effective_age_strength,
+                effective_comp_weight=effective_comp_weight,
                 k_neighbors=k_neighbors,
                 refresh_token=refresh_token,
             )
-
-        if pred_df.empty:
-            status["message"] = "Projection adjustment returned no rows. Try different tuning sliders."
-            status["fallback"] = "adjustment_empty"
+        status["timing"].update(adj_timing or {})
+        if fb:
+            status["message"] = fb_msg
+            status["fallback"] = fb
             return status
 
-        with st.spinner("Applying final projection calibration…"):
-            anchor_ids = tuple(sorted(str(x) for x in pred_df["playerID"].unique()))
-            anchors = build_stabilized_projection_anchors(
-                yearly_source,
-                anchor_ids,
-                int(ml_lookback),
-            )
-            if not anchors.empty:
-                pred_df = proj_cal.apply_ml_final_output_calibration(pred_df, anchors)
-
-        status["pred_df"] = pred_df
-        status["age_curve_df"] = age_curve_df if age_curve_df is not None else pd.DataFrame()
-        status["comp_df"] = comp_df if comp_df is not None and not comp_df.empty else pd.DataFrame()
-        status["player_count"] = int(len(pred_df))
+        status["pred_df"] = adj_out["pred_df"]
+        status["age_curve_df"] = adj_out["age_curve_df"]
+        status["comp_df"] = adj_out["comp_df"]
+        status["player_count"] = adj_out["player_count"]
         status["ok"] = True
-        status["message"] = f"Generated {status['player_count']:,} player projections."
+        total_sec = time.perf_counter() - t_total
+        status["runtime_sec"] = round(total_sec, 2)
+        status["timing"]["total_sec"] = status["runtime_sec"]
+        status["message"] = (
+            f"Generated {status['player_count']:,} player projections "
+            f"in {status['runtime_sec']:.1f} seconds."
+        )
         if float(effective_comp_weight or 0) <= 0:
             status["fallback"] = "similar_players_disabled"
         return status
     except Exception as exc:
         status["message"] = f"ML predictions could not be generated: {exc}"
         status["fallback"] = "exception"
+        status["runtime_sec"] = round(time.perf_counter() - t_total, 2)
         return status
 
 
@@ -4177,42 +4330,60 @@ def build_similar_player_predictions(
     current_X = current_rows.reindex(columns=sim_cols).replace([np.inf, -np.inf], np.nan).fillna(0).astype(float)
     means = train_X.mean(axis=0)
     stds = train_X.std(axis=0).replace(0, 1)
-    train_Z = ((train_X - means) / stds).to_numpy()
-    current_Z = ((current_X - means) / stds).to_numpy()
+    train_Z = ((train_X - means) / stds).to_numpy(dtype=np.float32)
+    current_Z = ((current_X - means) / stds).to_numpy(dtype=np.float32)
     train_ages = safe_numeric_series(ml_training_df, "age_entering_year", np.nan).to_numpy()
     current_ages = safe_numeric_series(current_rows, "age_entering_year", np.nan).to_numpy()
     train_player_ids = ml_training_df.get("playerID", pd.Series([""] * len(ml_training_df))).astype(str).to_numpy()
     out_rows = []
     current_reset = current_rows.reset_index(drop=True)
+    k_fetch = min(max(int(k_neighbors) * 5, int(k_neighbors) + 10), len(train_Z))
+    if k_fetch < 1:
+        return pd.DataFrame()
+    try:
+        from sklearn.neighbors import BallTree
+
+        dist_mat, idx_mat = BallTree(train_Z).query(current_Z, k=k_fetch)
+    except Exception:
+        dist_mat, idx_mat = None, None
     for i, row in current_reset.iterrows():
-        diff = train_Z - current_Z[i]
-        distances = np.sqrt(np.einsum("ij,ij->i", diff, diff))
+        if dist_mat is not None:
+            row_dists = np.asarray(dist_mat[i]).ravel()
+            row_idx = np.asarray(idx_mat[i]).ravel()
+        else:
+            diff = train_Z - current_Z[i]
+            row_dists = np.sqrt(np.einsum("ij,ij->i", diff, diff))
+            row_idx = np.arange(len(row_dists))
         age = current_ages[i] if i < len(current_ages) else np.nan
-        candidate_mask = np.ones(len(distances), dtype=bool)
-        if pd.notna(row.get("playerID")):
-            candidate_mask &= (train_player_ids != str(row.get("playerID")))
-        if pd.notna(age):
-            age_mask = np.abs(train_ages - age) <= max_age_gap
-            if (candidate_mask & age_mask).sum() >= max(k_neighbors, 10):
-                candidate_mask &= age_mask
-        candidate_idx = np.where(candidate_mask)[0]
-        if len(candidate_idx) == 0:
-            continue
-        # Pick nearest UNIQUE comparable players. The training set can contain multiple
-        # seasons for the same historical player, so a simple top-k can repeat names.
-        # Keep only the closest season for each comparable player.
-        sorted_candidates = candidate_idx[np.argsort(distances[candidate_idx])]
+        target_pid = str(row.get("playerID")) if pd.notna(row.get("playerID")) else ""
         unique_nearest = []
         seen_comp_players = set()
-        target_pid = str(row.get("playerID")) if pd.notna(row.get("playerID")) else ""
-        for idx in sorted_candidates:
-            comp_pid = str(train_player_ids[idx]) if idx < len(train_player_ids) else ""
+        order = np.argsort(row_dists)
+        for pos in order:
+            idx = int(row_idx[pos]) if dist_mat is not None else int(pos)
+            if idx < 0 or idx >= len(train_player_ids):
+                continue
+            comp_pid = str(train_player_ids[idx])
             if not comp_pid or comp_pid == target_pid or comp_pid in seen_comp_players:
+                continue
+            if pd.notna(age) and abs(train_ages[idx] - age) > max_age_gap:
                 continue
             unique_nearest.append(idx)
             seen_comp_players.add(comp_pid)
             if len(unique_nearest) >= k_neighbors:
                 break
+        if not unique_nearest and pd.notna(age):
+            for pos in order:
+                idx = int(row_idx[pos]) if dist_mat is not None else int(pos)
+                if idx < 0 or idx >= len(train_player_ids):
+                    continue
+                comp_pid = str(train_player_ids[idx])
+                if not comp_pid or comp_pid == target_pid or comp_pid in seen_comp_players:
+                    continue
+                unique_nearest.append(idx)
+                seen_comp_players.add(comp_pid)
+                if len(unique_nearest) >= k_neighbors:
+                    break
         if not unique_nearest:
             continue
         comps = ml_training_df.iloc[unique_nearest]
@@ -4275,7 +4446,7 @@ def apply_advanced_projection_adjustments(
         else:
             blended = rf_pred.copy()
         if "age_entering_year" in adjusted.columns:
-            age_adj = adjusted["age_entering_year"].apply(lambda a: lookup_age_adjustment(age_curve_df, stat, a))
+            age_adj = _nearest_age_adjustment_series(adjusted["age_entering_year"], age_curve_df, stat)
             blended = blended + age_strength * pd.to_numeric(age_adj, errors="coerce").fillna(0)
         recent_ab = safe_numeric_series(adjusted, "hist_AB_total", np.nan)
         reliability = (recent_ab / 1200).clip(lower=0.20, upper=1.0).fillna(0.50)
@@ -15228,11 +15399,8 @@ if active_page == "ML Predictions":
                 "Choose settings, then click **Generate / Refresh ML Predictions**."
             )
         else:
-            run_sig = _ml_projection_run_signature(
-                yearly_df,
-                ml_lookback,
-                ml_min_games,
-                ml_max_players,
+            base_sig = _ml_base_run_signature(yearly_df, ml_lookback, ml_min_games, ml_max_players)
+            tuning_sig = _ml_tuning_run_signature(
                 regression_strength,
                 age_strength,
                 comp_weight,
@@ -15240,6 +15408,7 @@ if active_page == "ML Predictions":
                 ml_min_ab,
                 ml_projection_style,
             )
+            run_sig = base_sig + tuning_sig
             refresh_token = int(st.session_state.get(ML_PREDICTION_REFRESH_TOKEN_KEY, 0))
 
             ml_training_df = pd.DataFrame()
@@ -15254,6 +15423,13 @@ if active_page == "ML Predictions":
                 and isinstance(st.session_state.get("_ml_proj_pred_df"), pd.DataFrame)
                 and not st.session_state["_ml_proj_pred_df"].empty
             )
+            base_pack = st.session_state.get("_ml_base_pack")
+            base_cached_ok = (
+                st.session_state.get("_ml_base_sig") == base_sig
+                and isinstance(base_pack, dict)
+                and isinstance(base_pack.get("base_pred_df"), pd.DataFrame)
+                and not base_pack["base_pred_df"].empty
+            )
 
             if cached_ok:
                 ml_training_df = st.session_state.get("_ml_proj_training_df", pd.DataFrame())
@@ -15262,6 +15438,33 @@ if active_page == "ML Predictions":
                 pred_df = st.session_state["_ml_proj_pred_df"].copy()
                 age_curve_df = st.session_state.get("_ml_proj_age_curve_df", pd.DataFrame()).copy()
                 comp_df = st.session_state.get("_ml_proj_comp_df", pd.DataFrame()).copy()
+            elif base_cached_ok:
+                result = _run_ml_projection_pipeline(
+                    yearly_source=yearly_df,
+                    ml_lookback=ml_lookback,
+                    ml_min_games=ml_min_games,
+                    ml_max_players=ml_max_players,
+                    ml_min_ab=ml_min_ab,
+                    effective_regression_strength=effective_regression_strength,
+                    effective_age_strength=effective_age_strength,
+                    effective_comp_weight=effective_comp_weight,
+                    k_neighbors=k_neighbors,
+                    ml_projection_style=ml_projection_style,
+                    refresh_token=refresh_token,
+                    base_pack=base_pack,
+                )
+                st.session_state[ML_PREDICTIONS_STATUS_KEY] = result
+                ml_training_df = result.get("ml_training_df", pd.DataFrame())
+                ml_feature_cols = result.get("ml_feature_cols", [])
+                ml_models = result.get("ml_models", {})
+                pred_df = result.get("pred_df", pd.DataFrame())
+                age_curve_df = result.get("age_curve_df", pd.DataFrame())
+                comp_df = result.get("comp_df", pd.DataFrame())
+                if result.get("ok"):
+                    st.session_state["_ml_proj_sig"] = run_sig
+                    st.session_state["_ml_proj_pred_df"] = pred_df.copy()
+                    st.session_state["_ml_proj_age_curve_df"] = age_curve_df.copy()
+                    st.session_state["_ml_proj_comp_df"] = comp_df.copy()
             else:
                 result = _run_ml_projection_pipeline(
                     yearly_source=yearly_df,
@@ -15288,9 +15491,19 @@ if active_page == "ML Predictions":
                     st.session_state["_ml_proj_pred_df"] = pred_df.copy()
                     st.session_state["_ml_proj_age_curve_df"] = age_curve_df.copy()
                     st.session_state["_ml_proj_comp_df"] = comp_df.copy()
-                    st.session_state["_ml_proj_training_df"] = ml_training_df
-                    st.session_state["_ml_proj_feature_cols"] = ml_feature_cols
-                    st.session_state["_ml_proj_models"] = ml_models
+                    _store_ml_base_pack(
+                        base_sig,
+                        {
+                            "ml_training_df": ml_training_df,
+                            "ml_feature_cols": ml_feature_cols,
+                            "ml_models": ml_models,
+                            "current_rows": result.get("current_rows", pd.DataFrame()),
+                            "base_pred_df": result.get("base_pred_df", pd.DataFrame()),
+                            "timing": {
+                                "model_training_sec": (result.get("timing") or {}).get("model_training_sec"),
+                            },
+                        },
+                    )
 
             status = st.session_state.get(ML_PREDICTIONS_STATUS_KEY) or {}
             if cached_ok and not status:
@@ -15329,7 +15542,29 @@ if active_page == "ML Predictions":
                 )
             else:
                 if status and status.get("ok"):
-                    st.success(status.get("message", f"Generated {len(pred_df):,} player projections."))
+                    _rt = status.get("runtime_sec")
+                    if _rt is not None:
+                        st.success(
+                            status.get("message")
+                            or f"Predictions updated in {_rt:.1f} seconds ({len(pred_df):,} players)."
+                        )
+                    else:
+                        st.success(status.get("message", f"Generated {len(pred_df):,} player projections."))
+
+                if developer_mode_enabled():
+                    _timing = (status or {}).get("timing") or {}
+                    with st.expander("Developer: ML pipeline timing", expanded=False):
+                        st.caption("Breakdown from the last full or tuning-only run.")
+                        t1, t2, t3, t4 = st.columns(4)
+                        t1.metric("Total", f"{(status or {}).get('runtime_sec', '—')} s")
+                        t2.metric("Model training", f"{_timing.get('model_training_sec', '—')} s")
+                        t3.metric("Adjustments", f"{_timing.get('adjustment_sec', '—')} s")
+                        t4.metric("Calibration", f"{_timing.get('calibration_sec', '—')} s")
+                        st.caption(
+                            f"Players processed: **{int((status or {}).get('player_count', len(pred_df))):,}** · "
+                            f"Training rows: **{len(ml_training_df):,}** · "
+                            f"Models: **{len(ml_models):,}**"
+                        )
 
                 c4, c5, c6 = st.columns(3)
                 c4.metric("Training Examples", f"{len(ml_training_df):,}")
