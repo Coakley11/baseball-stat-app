@@ -92,14 +92,18 @@ def main():
     _, yearly_df, _ = app.load_data()
     print(f"  rows={len(yearly_df):,}")
 
-    lookback, min_games, max_players, min_ab = 3, 150, 150, 300
+    lookback, min_games, max_players, min_ab = 3, 150, 150, 150
     refresh = 0
     year_sig = app._ml_year_pool_signature(yearly_df)
 
     print("\n=== Full base training ===")
-    out, _ = _timed(
-        "build_base_ml_predictions",
-        lambda: app.build_base_ml_predictions(yearly_df, lookback, min_games, max_players, refresh),
+    out, t_build = _timed(
+        "build_base_ml_predictions (1st)",
+        lambda: app.build_base_ml_predictions(yearly_df, lookback, min_games, max_players),
+    )
+    _, t_build2 = _timed(
+        "build_base_ml_predictions (2nd cached)",
+        lambda: app.build_base_ml_predictions(yearly_df, lookback, min_games, max_players),
     )
     base_pack = dict(
         zip(
@@ -157,6 +161,9 @@ def main():
         refresh_token=refresh,
     )
     pred = status.get("pred_df", pd.DataFrame())
+    if pred.empty or "fullName" not in pred.columns:
+        print("  (no predictions to spot-check — try lowering min_ab)")
+        return
     for name in app.DRAFT_SCORING_CONSISTENCY_PLAYERS:
         sub = pred[pred["fullName"].astype(str).str.contains(name.split()[-1], case=False, na=False)]
         if sub.empty:
