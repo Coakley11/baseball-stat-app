@@ -6326,6 +6326,53 @@ def get_cached_unified_projection_pool_live():
     )
 
 
+# Fixed profile so Projection Breakdown matches across every page (not per-page session sliders).
+PROJECTION_BREAKDOWN_PROFILE = {
+    "draft_window": 3,
+    "fantasy_format": "5x5 Roto",
+    "projection_style": "Balanced",
+    "use_ml_blend": True,
+    "ml_blend_weight": 0.12,
+    "ml_min_games_for_signal": 50,
+}
+
+
+@st.cache_data(show_spinner=False)
+def get_projection_breakdown_pool(lahman_max_year: int):
+    """Canonical stabilized pool for Projection Breakdown (consistent across all pages)."""
+    p = PROJECTION_BREAKDOWN_PROFILE
+    market_df = load_fantasypros_market_data()
+    return build_unified_draft_player_pool(
+        yearly_df,
+        market_df,
+        draft_window=int(p["draft_window"]),
+        fantasy_format=str(p["fantasy_format"]),
+        projection_style=str(p["projection_style"]),
+        use_ml_blend=bool(p["use_ml_blend"]),
+        ml_blend_weight=float(p["ml_blend_weight"]),
+        ml_min_games_for_signal=int(p["ml_min_games_for_signal"]),
+    )
+
+
+def get_projection_breakdown_pool_live():
+    max_y = int(st.session_state.get("_lahman_max_year", year_max))
+    return get_projection_breakdown_pool(max_y)
+
+
+def _find_player_in_pool(pool: pd.DataFrame, display_name: str):
+    """Match a display name to a row in the unified breakdown pool."""
+    if pool is None or pool.empty or "fullName" not in pool.columns:
+        return pd.DataFrame()
+    name = str(display_name).split(" (")[0].strip()
+    canonical = _resolve_consistency_player_name(pool, name) or name
+    match = pool[pool["fullName"].astype(str).str.strip() == str(canonical).strip()]
+    if match.empty:
+        key = normalize_player_name_for_merge(name)
+        if "Player Key" in pool.columns:
+            match = pool[pool["Player Key"].astype(str).str.strip() == key]
+    return match
+
+
 def resolve_projection_breakdown_row(
     player_display_name: str,
     *,
@@ -6334,37 +6381,20 @@ def resolve_projection_breakdown_row(
     projection_lookup_name_col: str = "fullName",
 ):
     """
-    Prefer unified stabilized pool; use page row only when already stabilized.
+    Always prefer the fixed-profile breakdown pool so numbers match on every page.
+    Never use legacy page tables (Trends/Valuation simple projections).
     Returns (row, data_source_label, pool_df_used).
     """
-    name = str(player_display_name).split(" (")[0].strip()
-    if pool_row is not None and proj_bd.row_has_stabilized_projection(pool_row):
-        return pool_row, "current_page_stabilized", None
+    del projection_lookup_df, projection_lookup_name_col, pool_row  # legacy tables ignored
 
     try:
-        pool = get_cached_unified_projection_pool_live()
+        pool = get_projection_breakdown_pool_live()
     except Exception:
         pool = pd.DataFrame()
 
-    if not pool.empty and "fullName" in pool.columns:
-        canonical = _resolve_consistency_player_name(pool, name) or name
-        match = pool[pool["fullName"].astype(str).str.strip() == str(canonical).strip()]
-        if match.empty:
-            key = normalize_player_name_for_merge(name)
-            if "Player Key" in pool.columns:
-                match = pool[pool["Player Key"].astype(str).str.strip() == key]
-        if not match.empty:
-            return match.iloc[0], "unified_stabilized_pool", pool
-
-    if (
-        pool_row is not None
-        and projection_lookup_df is not None
-        and projection_lookup_name_col in getattr(projection_lookup_df, "columns", [])
-    ):
-        return pool_row, "current_page_legacy", None
-
-    if pool_row is not None:
-        return pool_row, "inline_row", None
+    match = _find_player_in_pool(pool, player_display_name)
+    if not match.empty:
+        return match.iloc[0], "unified_stabilized_pool", pool
 
     return None, "not_found", pool if not pool.empty else None
 
@@ -6377,13 +6407,9 @@ def assemble_projection_breakdown_bundle(
     projection_lookup_name_col: str = "fullName",
 ):
     """Build dialog payload: stabilized projections + compact text trend cards."""
-    kw = _draft_projection_session_kwargs()
-    row, source, _pool = resolve_projection_breakdown_row(
-        player_display_name,
-        pool_row=pool_row,
-        projection_lookup_df=projection_lookup_df,
-        projection_lookup_name_col=projection_lookup_name_col,
-    )
+    del pool_row, projection_lookup_df, projection_lookup_name_col
+    profile = PROJECTION_BREAKDOWN_PROFILE
+    row, source, _pool = resolve_projection_breakdown_row(player_display_name)
 
     season_history = pd.DataFrame()
     player_id = None
@@ -6396,10 +6422,10 @@ def assemble_projection_breakdown_bundle(
             player_id = m.iloc[-1].get("playerID")
     if player_id is not None:
         max_y = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().max())
-        yrs = list(range(max_y - int(kw["draft_window"]) + 1, max_y + 1))
+        yrs = list(range(max_y - int(profile["draft_window"]) + 1, max_y + 1))
         recent = yearly_df[yearly_df["yearID"].isin(yrs)].copy()
         season_history = proj_bd.player_season_history(
-            recent, str(player_id), window_years=kw["draft_window"]
+            recent, str(player_id), window_years=profile["draft_window"]
         )
 
     lahman_fallback = None
@@ -6422,9 +6448,9 @@ def assemble_projection_breakdown_bundle(
         row,
         data_source=source,
         projection_system=proj_bd.PROJECTION_SYSTEM_LABEL,
-        window_years=kw["draft_window"],
-        projection_style=kw["projection_style"],
-        fantasy_format=kw["fantasy_format"],
+        window_years=profile["draft_window"],
+        projection_style=profile["projection_style"],
+        fantasy_format=profile["fantasy_format"],
         season_history=season_history,
         lahman_fallback=lahman_fallback,
     )
@@ -8587,11 +8613,14 @@ def _render_projection_breakdown_dialog(bundle: dict):
     )
 
     if bundle.get("stabilized"):
-        st.success("Using stabilized draft-lab projections (matches Draft Lab / Live Draft Room / Draft Assistant).")
+        st.success(
+            "Stabilized draft-lab projections — same core system as Draft Assistant and Live Draft Room. "
+            "Uses a standard **3-year Balanced** profile so numbers stay consistent on every page."
+        )
     else:
         st.warning(
-            "Showing limited or legacy page data. For full stabilized projections, open this from "
-            "**Draft Assistant**, **Fantasy Sleepers**, or **Draft Room** — or ensure Lahman data loaded."
+            "Could not load a stabilized projection row for this player. "
+            "Check the name spelling or try again after Lahman data finishes loading."
         )
 
     snapshot = bundle.get("snapshot") or {}
@@ -8687,22 +8716,26 @@ def _render_projection_breakdown_dialog(bundle: dict):
                     unsafe_allow_html=True,
                 )
 
+    seasons_used = bundle.get("trend_seasons_used", 0)
+    if seasons_used:
+        st.caption(f"Trend cards used **{seasons_used}** recent season(s) with enough playing time (40+ games when available).")
+
     with st.expander("How these numbers are built", expanded=False):
         for note in bundle.get("method_notes") or []:
             st.markdown(f"- {note}")
         st.markdown(
-            "- **Projected HR/RBI/R/SB/AVG/OPS:** stabilized counting/rate blend from recent per-PA rates, "
-            "playing-time projection, regression to league, elite caps, and star protection (`apply_stabilized_counting_projections`)."
+            "- **Projected stats:** blended from recent production, expected playing time, league averages, "
+            "and star-tier protection so one hot year does not blow up the forecast."
         )
         st.markdown(
-            "- **Trend slopes:** linear regression on season totals/rates across the projection window; "
-            "fed into stabilization and `build_realistic_draft_ml_adjustments` (capped before scoring)."
+            "- **Trend arrows:** recent full-season direction (home runs, OPS, speed, etc.), "
+            "softened when playing time in the window is thin."
         )
         st.markdown(
-            "- **ML Predictions page** uses the separate Random Forest + calibration stack; "
-            "draft tools share this draft-lab stabilization layer for fantasy rankings."
+            "- **ML Predictions** uses a separate machine-learning page; draft tools and this breakdown "
+            "share the draft-lab stabilization layer."
         )
-        st.caption(f"Data resolved from: `{bundle.get('data_source', 'unknown')}`")
+        st.caption(f"Data source: `{bundle.get('data_source', 'unknown')}`")
 
 
 def _on_simulate_draft_pick_click(
@@ -8731,32 +8764,25 @@ def _on_projection_breakdown_click(
     projection_lookup_name_col: str,
 ):
     """Button callback: queue projection bundle for the next render (never the button widget key)."""
-    row = None
-    if (
-        projection_lookup_df is not None
-        and not getattr(projection_lookup_df, "empty", True)
-        and projection_lookup_name_col in projection_lookup_df.columns
-    ):
-        m = projection_lookup_df[
-            projection_lookup_df[projection_lookup_name_col].astype(str).str.strip()
-            == str(player_raw).strip()
-        ]
-        if not m.empty:
-            row = m.iloc[0]
     bundle = assemble_projection_breakdown_bundle(
         player_raw,
-        pool_row=row,
-        projection_lookup_df=projection_lookup_df,
+        pool_row=None,
+        projection_lookup_df=None,
         projection_lookup_name_col=projection_lookup_name_col,
     )
+    bundle["requested_player"] = str(player_raw).strip()
     st.session_state[dialog_state_key] = bundle
     record_workflow_recent_player(player_raw)
 
 
 def _maybe_show_projection_breakdown_dialog(dialog_state_key: str):
     bundle = st.session_state.pop(dialog_state_key, None)
-    if bundle:
-        _render_projection_breakdown_dialog(bundle)
+    if not bundle:
+        return
+    if not isinstance(bundle, dict):
+        st.warning("Projection breakdown could not be loaded. Please try again.")
+        return
+    _render_projection_breakdown_dialog(bundle)
 
 
 def player_quick_actions_popover(

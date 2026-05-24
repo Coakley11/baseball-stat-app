@@ -19,9 +19,14 @@ PROJECTION_SYSTEM_LABEL = (
 )
 
 TREND_METHOD_NOTE = (
-    "Trend slopes: ordinary least-squares line through recent seasons (minimum 2 seasons with data). "
-    "Slopes are capped inside the stabilization layer so one spike year does not dominate."
+    "Trends use recent full seasons (40+ games when possible). Slopes show per-year change; "
+    "big spikes are softened in the actual projection math."
 )
+
+# Display caps so one partial year or tiny samples do not show absurd slopes in the popup.
+DISPLAY_COUNT_SLOPE_CAP = 10.0
+DISPLAY_RATE_SLOPE_CAP = 0.045
+MIN_SEASON_GAMES_FOR_TREND = 40
 
 STABILIZED_ROW_MARKERS = frozenset({
     "Projection Confidence Score",
@@ -38,7 +43,7 @@ TREND_METRICS = (
         "season_col": "HR",
         "label": "HR",
         "kind": "counting",
-        "explain": "Whether the player's home run production has recently been improving or declining.",
+        "explain": "Recent trend in home run production.",
     },
     {
         "id": "R",
@@ -46,7 +51,7 @@ TREND_METRICS = (
         "season_col": "R",
         "label": "Runs",
         "kind": "counting",
-        "explain": "Whether the player is scoring more or fewer runs over recent seasons.",
+        "explain": "Recent trend in runs scored.",
     },
     {
         "id": "RBI",
@@ -54,7 +59,7 @@ TREND_METRICS = (
         "season_col": "RBI",
         "label": "RBI",
         "kind": "counting",
-        "explain": "Whether the player is driving in more or fewer runs over recent seasons.",
+        "explain": "Recent trend in runs batted in.",
     },
     {
         "id": "SB",
@@ -62,7 +67,7 @@ TREND_METRICS = (
         "season_col": "SB",
         "label": "SB",
         "kind": "counting",
-        "explain": "Whether stolen-base production has been trending up or down.",
+        "explain": "Recent trend in stolen bases.",
     },
     {
         "id": "2B",
@@ -70,7 +75,7 @@ TREND_METRICS = (
         "season_col": "2B",
         "label": "2B",
         "kind": "counting",
-        "explain": "Whether doubles production has been rising or falling in recent seasons.",
+        "explain": "Recent trend in doubles.",
     },
     {
         "id": "3B",
@@ -78,7 +83,7 @@ TREND_METRICS = (
         "season_col": "3B",
         "label": "3B",
         "kind": "counting",
-        "explain": "Whether triples production has been rising or falling in recent seasons.",
+        "explain": "Recent trend in triples.",
     },
     {
         "id": "BA",
@@ -86,7 +91,7 @@ TREND_METRICS = (
         "season_col": "BA",
         "label": "AVG",
         "kind": "rate",
-        "explain": "Whether batting average has been trending up or down (rate per season).",
+        "explain": "Recent trend in batting average.",
     },
     {
         "id": "OPS",
@@ -94,7 +99,7 @@ TREND_METRICS = (
         "season_col": "OPS",
         "label": "OPS",
         "kind": "rate",
-        "explain": "Whether overall offensive production (OPS) has been trending up or down.",
+        "explain": "Recent trend in overall offensive production (OPS).",
     },
 )
 
@@ -140,6 +145,59 @@ def classify_trend_direction(value, *, kind: str = "counting") -> str:
     if abs(v) < 0.75:
         return "stable"
     return "improving" if v > 0 else "declining"
+
+
+def cap_slope_for_display(value, *, kind: str = "counting"):
+    """Clip extreme slopes for fan-facing trend cards."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return np.nan
+    v = float(value)
+    if kind == "rate":
+        return float(np.clip(v, -DISPLAY_RATE_SLOPE_CAP, DISPLAY_RATE_SLOPE_CAP))
+    return float(np.clip(v, -DISPLAY_COUNT_SLOPE_CAP, DISPLAY_COUNT_SLOPE_CAP))
+
+
+def compute_season_trend_slope(season_df: pd.DataFrame, stat_col: str):
+    """Per-season linear trend (same method as the app's ``compute_trend_slope``)."""
+    if season_df is None or season_df.empty or stat_col not in season_df.columns:
+        return np.nan
+    group = season_df.sort_values("yearID")
+    x = pd.to_numeric(group["yearID"], errors="coerce").values
+    y = pd.to_numeric(group[stat_col], errors="coerce").values
+    mask = ~np.isnan(y)
+    x, y = x[mask], y[mask]
+    if len(x) < 2:
+        return np.nan
+    return float(np.polyfit(x, y, 1)[0])
+
+
+def compute_display_trends_from_seasons(
+    season_df: pd.DataFrame | None,
+    *,
+    min_games: int = MIN_SEASON_GAMES_FOR_TREND,
+) -> tuple[dict[str, float], int]:
+    """
+    Trend slopes from qualifying recent seasons only.
+    Returns (col -> slope, seasons_used).
+    """
+    if season_df is None or season_df.empty:
+        return {}, 0
+    df = season_df.copy()
+    if "G" in df.columns:
+        df = df[pd.to_numeric(df["G"], errors="coerce").fillna(0) >= int(min_games)]
+    seasons_used = len(df)
+    if seasons_used < 2:
+        return {}, seasons_used
+    out = {}
+    for spec in TREND_METRICS:
+        sc = spec["season_col"]
+        if sc not in df.columns:
+            continue
+        slope = compute_season_trend_slope(df, sc)
+        if slope is None or (isinstance(slope, float) and np.isnan(slope)):
+            continue
+        out[spec["col"]] = cap_slope_for_display(slope, kind=spec["kind"])
+    return out, seasons_used
 
 
 def format_trimmed_signed(value) -> str:
@@ -252,16 +310,36 @@ def player_season_history(
     return out
 
 
-def build_trend_cards(row, season_history: pd.DataFrame | None = None) -> list[dict[str, Any]]:
-    """Compact trend rows (direction + slope + explanation). ``season_history`` is ignored (no charts)."""
-    del season_history  # kept for call-site compatibility
+def build_trend_cards(
+    row,
+    season_history: pd.DataFrame | None = None,
+    *,
+    season_overrides: dict[str, float] | None = None,
+    seasons_used: int = 0,
+) -> list[dict[str, Any]]:
+    """Compact trend rows (direction + slope + explanation); prefers season-based slopes when available."""
+    overrides = dict(season_overrides or {})
+    if not overrides and season_history is not None and not season_history.empty:
+        overrides, seasons_used = compute_display_trends_from_seasons(season_history)
+
     cards = []
     for spec in TREND_METRICS:
-        val = _num(row, spec["col"])
+        val = overrides.get(spec["col"])
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            val = cap_slope_for_display(_num(row, spec["col"]), kind=spec["kind"])
+        else:
+            val = cap_slope_for_display(val, kind=spec["kind"])
+
         direction = classify_trend_direction(val, kind=spec["kind"])
         ui = trend_direction_ui(direction, val, kind=spec["kind"])
         trend_name = _slope_unit(spec["id"], spec["label"])
         title = f"{trend_name} Trend"
+        explain = spec["explain"]
+        if seasons_used > 0 and seasons_used < 2:
+            explain = f"{explain} Limited playing time in the window — treat as a soft read."
+        elif spec["col"] not in overrides and seasons_used >= 2:
+            explain = f"{explain} Based on the model's recent-season blend."
+
         cards.append({
             "id": spec["id"],
             "title": title,
@@ -274,7 +352,7 @@ def build_trend_cards(row, season_history: pd.DataFrame | None = None) -> list[d
             "arrow": ui["arrow"],
             "direction_label": ui["label"],
             "color": ui["color"],
-            "explain": spec["explain"],
+            "explain": explain,
         })
     return cards
 
@@ -353,7 +431,14 @@ def build_projection_breakdown_bundle(
     }
     if row is not None and hasattr(row, "index"):
         bundle["snapshot"] = build_projection_snapshot(row)
-        bundle["trend_cards"] = build_trend_cards(row, season_history)
+        season_overrides, seasons_used = compute_display_trends_from_seasons(season_history)
+        bundle["trend_cards"] = build_trend_cards(
+            row,
+            season_history,
+            season_overrides=season_overrides,
+            seasons_used=seasons_used,
+        )
+        bundle["trend_seasons_used"] = seasons_used
         if stabilized:
             bundle["method_notes"].insert(0, PROJECTION_SYSTEM_LABEL)
     return bundle

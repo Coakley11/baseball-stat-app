@@ -66,6 +66,18 @@ def test_build_trend_cards_includes_r_and_rbi_no_sparkline():
     assert twob["direction_label"] == "Slight decline"
 
 
+def test_cap_slope_for_display():
+    assert pb.cap_slope_for_display(25.0, kind="counting") == 10.0
+    assert pb.cap_slope_for_display(-0.09, kind="rate") == -0.045
+
+
+def test_compute_display_trends_requires_two_seasons():
+    one = pd.DataFrame({"yearID": [2025], "G": [140], "HR": [40]})
+    slopes, n = pb.compute_display_trends_from_seasons(one)
+    assert n == 1
+    assert slopes == {}
+
+
 def test_build_projection_breakdown_bundle_stabilized_flag():
     row = pd.Series({
         "proj_HR": 40,
