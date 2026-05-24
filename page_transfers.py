@@ -55,6 +55,12 @@ __all__ = [
     "should_show_top3_checkbox",
     "contextual_nav_option_label",
     "TOP3_CHECKBOX_LABEL",
+    "normalize_fantasy_position_filter",
+    "fantasy_filter_to_raw_positions",
+    "raw_positions_to_fantasy_filter",
+    "session_fantasy_position_filter",
+    "fantasy_position_transfer_keys_for_target",
+    "merge_fantasy_position_transfer",
 ]
 
 _FANTASY_FORMAT_VALUES = frozenset({"5x5 Roto", "Points League"})
@@ -64,6 +70,21 @@ _TREND_SORT_COLS = frozenset({
     "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ",
     "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ",
 })
+
+_FANTASY_POSITION_FILTER_VALUES = frozenset({
+    "All positions", "C", "1B", "2B", "3B", "SS", "OF", "DH/UTIL",
+})
+_RAW_OF_CODES = frozenset({"OF", "LF", "CF", "RF"})
+_RAW_DH_UTIL_CODES = frozenset({"DH", "PH", "PR", "UTIL"})
+_FANTASY_SLOT_RAW_CODES = {
+    "C": ["C"],
+    "1B": ["1B"],
+    "2B": ["2B"],
+    "3B": ["3B"],
+    "SS": ["SS"],
+    "OF": ["OF", "LF", "CF", "RF"],
+    "DH/UTIL": ["DH", "PH", "PR"],
+}
 
 # Contextual transfers to these pages may offer the top-3 players checkbox.
 _TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value"})
@@ -453,6 +474,122 @@ def _session_list(session, *key_candidates):
     return None
 
 
+def normalize_fantasy_position_filter(value) -> str | None:
+    """Return a validated fantasy slot filter, or None for All / invalid."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s in ("All positions", "All"):
+        return None
+    if s in _FANTASY_POSITION_FILTER_VALUES:
+        return s
+    return None
+
+
+def fantasy_filter_to_raw_positions(fantasy_choice: str) -> list[str]:
+    """Map Trends/Valuation selectbox value to Lahman-style multiselect codes."""
+    slot = normalize_fantasy_position_filter(fantasy_choice)
+    if not slot:
+        return []
+    return list(_FANTASY_SLOT_RAW_CODES.get(slot, [slot]))
+
+
+def raw_positions_to_fantasy_filter(raw_positions) -> str | None:
+    """Infer a single fantasy slot from explorer/career/sleeper multiselect values."""
+    if not raw_positions:
+        return None
+    tokens = [str(x).strip().upper() for x in raw_positions if str(x).strip()]
+    if not tokens:
+        return None
+    slots: set[str] = set()
+    for t in tokens:
+        if t in _RAW_OF_CODES:
+            slots.add("OF")
+        elif t in _RAW_DH_UTIL_CODES:
+            slots.add("DH/UTIL")
+        elif t in _FANTASY_SLOT_RAW_CODES:
+            slots.add(t)
+    if len(slots) == 1:
+        return slots.pop()
+    if slots == {"OF"} or (set(tokens) <= _RAW_OF_CODES):
+        return "OF"
+    return None
+
+
+def session_fantasy_position_filter(session) -> str | None:
+    """Read the active fantasy position filter from any supported source page."""
+    for key in ("trend_position_filter", "value_position_filter"):
+        pos = normalize_fantasy_position_filter(session.get(key))
+        if pos:
+            return pos
+    for pos_keys in (_HIST_POS_KEYS, _CAREER_POS_KEYS):
+        raw = _session_list(session, *pos_keys)
+        if raw:
+            inferred = raw_positions_to_fantasy_filter(raw)
+            if inferred:
+                return inferred
+    market = _session_list(session, "fantasy_market_positions")
+    if market:
+        return raw_positions_to_fantasy_filter(market)
+    return None
+
+
+def fantasy_position_transfer_keys_for_target(target_page: str, fantasy_pos: str) -> dict:
+    """Map a fantasy slot to target-page session keys (empty if unsupported)."""
+    slot = normalize_fantasy_position_filter(fantasy_pos)
+    if not slot:
+        return {}
+    out: dict = {}
+    if target_page == "Trend Value":
+        out["trend_position_filter"] = slot
+    elif target_page == "Valuation":
+        out["value_position_filter"] = slot
+    elif target_page == "Historical Explorer":
+        raw = fantasy_filter_to_raw_positions(slot)
+        if raw:
+            out["historical_position_filter"] = raw
+            out["hist_pos"] = raw
+    elif target_page == "Career Totals":
+        raw = fantasy_filter_to_raw_positions(slot)
+        if raw:
+            out["career_position_filter"] = raw
+            out["career_pos"] = raw
+    elif target_page == "Fantasy Sleepers & Busts":
+        raw = fantasy_filter_to_raw_positions(slot)
+        if raw:
+            out["fantasy_market_positions"] = raw
+    return out
+
+
+def merge_fantasy_position_transfer(session, keys: dict, target_page: str) -> dict:
+    """Augment contextual transfer filters with position when source session has one."""
+    if not target_page:
+        return keys
+    pos = session_fantasy_position_filter(session)
+    if not pos:
+        return keys
+    mapped = fantasy_position_transfer_keys_for_target(target_page, pos)
+    if mapped:
+        keys.update(mapped)
+    return keys
+
+
+def _lag_year_range_keys(session, extra, lag_key: str, dest_year_key: str) -> dict:
+    keys = {}
+    lag = session.get(lag_key)
+    max_y = extra.get("dataset_max_year")
+    if max_y is None:
+        max_y = session.get("_lahman_max_year")
+    try:
+        lag = int(lag)
+        max_y = int(max_y)
+    except (TypeError, ValueError):
+        return keys
+    if lag in (3, 4, 5) and max_y > 0:
+        keys[dest_year_key] = (max_y - lag + 1, max_y)
+    return keys
+
+
 def _safe_int(val, default=None):
     try:
         return int(val)
@@ -474,6 +611,8 @@ def _sanitize_value(key: str, value):
     if key.endswith("_year_range_filter") or key in ("hist_year", "career_year", "leaders_year", "compare_year_range"):
         yr = year_tuple(value)
         return yr
+    if key in ("trend_position_filter", "value_position_filter"):
+        return normalize_fantasy_position_filter(value)
     if key.endswith("_filter") and key not in (
         "historical_position_filter_mode", "career_position_filter_mode",
         "historical_combine_split_seasons_filter", "career_by_team_toggle_filter",
@@ -715,6 +854,9 @@ def build_transfer(session, builder_id: str, extra_context=None) -> dict:
     if not b:
         return empty_transfer_payload()
     payload = normalize_transfer_payload(b(session, extra))
+    target_page = extra.get("target_page")
+    if target_page:
+        merge_fantasy_position_transfer(session, payload["transfer_filters"], str(target_page))
     payload["transfer_players"] = {"mode": "none", "names": [], "labels": [], "rank_stat": None}
     if builder_id in _BUILDER_COMPARE_SELECTED_PLAYERS:
         payload["transfer_players"] = resolve_compare_selected_players(session, extra)
@@ -851,9 +993,6 @@ def _trend_to_valuation(session, extra):
     lag = session.get("trend_lag")
     if lag in (3, 4, 5):
         keys["value_lag"] = int(lag)
-    pos = session.get("trend_position_filter")
-    if pos and str(pos).strip() not in ("", "All positions", "All"):
-        keys["value_position_filter"] = str(pos).strip()
     copy_prefix_stat_mins(session, "trend", "value", keys)
     return {"session_keys": keys}
 
@@ -873,10 +1012,67 @@ def _valuation_to_trend(session, extra):
     lag = session.get("value_lag")
     if lag in (3, 4, 5):
         keys["trend_lag"] = int(lag)
-    pos = session.get("value_position_filter")
-    if pos and str(pos).strip() not in ("", "All positions", "All"):
-        keys["trend_position_filter"] = str(pos).strip()
     copy_prefix_stat_mins(session, "value", "trend", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("trend_to_hist")
+def _trend_to_hist(session, extra):
+    keys = _lag_year_range_keys(session, extra, "trend_lag", _HIST_YEAR_KEYS[0])
+    copy_prefix_stat_mins(session, "trend", "hist", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("trend_to_career")
+def _trend_to_career(session, extra):
+    keys = _lag_year_range_keys(session, extra, "trend_lag", _CAREER_YEAR_KEYS[0])
+    copy_prefix_stat_mins(session, "trend", "career", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("trend_to_leaders")
+def _trend_to_leaders(session, extra):
+    keys = _lag_year_range_keys(session, extra, "trend_lag", _LEADERS_YEAR_KEYS[0])
+    copy_prefix_stat_mins(session, "trend", "leaders", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("trend_to_sleepers")
+def _trend_to_sleepers(session, extra):
+    keys = {}
+    lag = session.get("trend_lag")
+    if lag in (3, 4, 5):
+        keys["fantasy_market_window"] = int(lag)
+    return {"session_keys": keys}
+
+
+@_register_builder("valuation_to_hist")
+def _valuation_to_hist(session, extra):
+    keys = _lag_year_range_keys(session, extra, "value_lag", _HIST_YEAR_KEYS[0])
+    copy_prefix_stat_mins(session, "value", "hist", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("valuation_to_career")
+def _valuation_to_career(session, extra):
+    keys = _lag_year_range_keys(session, extra, "value_lag", _CAREER_YEAR_KEYS[0])
+    copy_prefix_stat_mins(session, "value", "career", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("valuation_to_leaders")
+def _valuation_to_leaders(session, extra):
+    keys = _lag_year_range_keys(session, extra, "value_lag", _LEADERS_YEAR_KEYS[0])
+    copy_prefix_stat_mins(session, "value", "leaders", keys)
+    return {"session_keys": keys}
+
+
+@_register_builder("valuation_to_sleepers")
+def _valuation_to_sleepers(session, extra):
+    keys = {}
+    lag = session.get("value_lag")
+    if lag in (3, 4, 5):
+        keys["fantasy_market_window"] = int(lag)
     return {"session_keys": keys}
 
 
@@ -1115,11 +1311,19 @@ CONTEXTUAL_NAV_REGISTRY = {
     ],
     ("Trend Value", "after_table"): [
         {"target": "Comparison Tool", "builder": "trend_to_compare", "label": "Comparison Tool — players & window"},
-        {"target": "Valuation", "builder": "trend_to_valuation", "label": "Valuation — window & stat minimums"},
+        {"target": "Valuation", "builder": "trend_to_valuation", "label": "Valuation — window, position & stat minimums"},
+        {"target": "Historical Explorer", "builder": "trend_to_hist", "label": "Historical Explorer — window, position & stat minimums"},
+        {"target": "Career Totals", "builder": "trend_to_career", "label": "Career Totals — window, position & stat minimums"},
+        {"target": "Leaderboards", "builder": "trend_to_leaders", "label": "Leaderboards — window & stat minimums"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "trend_to_sleepers", "label": "Sleepers & Busts — projection window & position"},
     ],
     ("Valuation", "after_table"): [
         {"target": "Comparison Tool", "builder": "valuation_to_compare", "label": "Comparison Tool"},
-        {"target": "Trend Value", "builder": "valuation_to_trend", "label": "Trend Value — window & stat minimums"},
+        {"target": "Trend Value", "builder": "valuation_to_trend", "label": "Trend Value — window, position & stat minimums"},
+        {"target": "Historical Explorer", "builder": "valuation_to_hist", "label": "Historical Explorer — window, position & stat minimums"},
+        {"target": "Career Totals", "builder": "valuation_to_career", "label": "Career Totals — window, position & stat minimums"},
+        {"target": "Leaderboards", "builder": "valuation_to_leaders", "label": "Leaderboards — window & stat minimums"},
+        {"target": "Fantasy Sleepers & Busts", "builder": "valuation_to_sleepers", "label": "Sleepers & Busts — projection window & position"},
     ],
     ("Fantasy Sleepers & Busts", "after_tables"): [
         {"target": "Comparison Tool", "builder": "sleepers_to_compare", "label": "Comparison Tool — projection window"},

@@ -10061,6 +10061,8 @@ def _ctx_nav_on_open_tool(nav_target_key: str, nav_payload_key: str, source_page
         )
     else:
         ctx["send_top_3_players"] = False
+    if target:
+        ctx["target_page"] = normalize_page_key(target)
     payload = pg_xfer.build_transfer(st.session_state, builder_id, ctx) if builder_id else None
     navigate_to_page(target, payload, source_page=source_page, from_callback=True)
 

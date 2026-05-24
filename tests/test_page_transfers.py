@@ -34,3 +34,76 @@ def test_compare_to_trend_sends_selected_players():
     payload = pg.build_transfer(session, "compare_to_trend", {})
     assert payload["transfer_players"]["mode"] == "compare_selected"
     assert payload["transfer_players"]["labels"] == ["Player A (2020-2024)"]
+
+
+def test_fantasy_filter_to_raw_of_includes_outfield_codes():
+    assert pg.fantasy_filter_to_raw_positions("OF") == ["OF", "LF", "CF", "RF"]
+    assert pg.fantasy_filter_to_raw_positions("1B") == ["1B"]
+    assert pg.fantasy_filter_to_raw_positions("All positions") == []
+
+
+def test_raw_positions_to_fantasy_filter_of_family():
+    assert pg.raw_positions_to_fantasy_filter(["LF", "CF"]) == "OF"
+    assert pg.raw_positions_to_fantasy_filter(["1B"]) == "1B"
+    assert pg.raw_positions_to_fantasy_filter(["DH"]) == "DH/UTIL"
+
+
+def test_trend_to_valuation_transfers_position_via_target_page():
+    session = {
+        "trend_lag": 5,
+        "trend_position_filter": "OF",
+        "_lahman_max_year": 2024,
+    }
+    payload = pg.build_transfer(
+        session,
+        "trend_to_valuation",
+        {"target_page": "Valuation", "dataset_max_year": 2024},
+    )
+    assert payload["transfer_filters"]["value_position_filter"] == "OF"
+    assert payload["transfer_filters"]["value_lag"] == 5
+
+
+def test_valuation_to_hist_transfers_position_multiselect():
+    session = {
+        "value_lag": 3,
+        "value_position_filter": "1B",
+        "_lahman_max_year": 2024,
+    }
+    payload = pg.build_transfer(
+        session,
+        "valuation_to_hist",
+        {"target_page": "Historical Explorer", "dataset_max_year": 2024},
+    )
+    assert payload["transfer_filters"]["historical_position_filter"] == ["1B"]
+    assert payload["transfer_filters"]["hist_pos"] == ["1B"]
+    assert payload["transfer_filters"]["historical_year_range_filter"] == (2022, 2024)
+
+
+def test_valuation_to_trend_transfers_catcher():
+    session = {"value_lag": 4, "value_position_filter": "C"}
+    payload = pg.build_transfer(
+        session,
+        "valuation_to_trend",
+        {"target_page": "Trend Value"},
+    )
+    assert payload["transfer_filters"]["trend_position_filter"] == "C"
+
+
+def test_hist_to_trend_infers_position_from_hist_pos():
+    session = {
+        "historical_year_range_filter": (2020, 2024),
+        "historical_position_filter": ["SS"],
+    }
+    payload = pg.build_transfer(
+        session,
+        "hist_to_trend",
+        {"target_page": "Trend Value"},
+    )
+    assert payload["transfer_filters"]["trend_position_filter"] == "SS"
+    assert payload["transfer_filters"]["trend_lag"] == 5
+
+
+def test_sanitize_trend_position_filter_string():
+    assert pg._sanitize_value("trend_position_filter", "OF") == "OF"
+    assert pg._sanitize_value("trend_position_filter", "All positions") is None
+    assert pg._sanitize_value("trend_position_filter", ["OF"]) is None
