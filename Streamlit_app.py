@@ -64,7 +64,7 @@ if not hasattr(pg_xfer, "sanitize_session_keys"):
 
 if not hasattr(pg_xfer, "target_allows_top3_players"):
     pg_xfer.target_allows_top3_players = lambda target: str(target or "").strip() in {
-        "Comparison Tool", "Trend Value", "Valuation",
+        "Comparison Tool", "Trend Value",
     }
 if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
     pg_xfer.builder_allows_top3_checkbox = lambda builder_id, target_page=None: (
@@ -80,7 +80,7 @@ if not hasattr(pg_xfer, "builder_allows_top3_checkbox"):
 if not hasattr(pg_xfer, "TOP3_CHECKBOX_LABEL"):
     pg_xfer.TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
-_CONTEXTUAL_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
+_CONTEXTUAL_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value"})
 _BUILDER_TOP3_CHECKBOX_FALLBACK = frozenset({
     "hist_to_compare", "hist_to_trend", "hist_to_valuation",
     "career_to_compare", "career_to_trend", "career_to_valuation",
@@ -6054,10 +6054,18 @@ def add_player_to_queue(player_name):
     return f"Queued {player_name}."
 
 
+_NO_DRAFT_CONTEXT_MSG = "Start or load a draft first to simulate this pick."
+
+
+def has_draft_room_context() -> bool:
+    """True when Draft Room has a usable board for pick simulation."""
+    return bool(get_draft_room_team_options())
+
+
 def simulate_drafting_player(player_name, team_name):
     table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
     if table.empty or "Player" not in table.columns or "Team" not in table.columns:
-        return pd.DataFrame(), "No Draft Room table exists yet."
+        return pd.DataFrame(), _NO_DRAFT_CONTEXT_MSG
 
     sim_table = table.copy()
     player_name = str(player_name).strip()
@@ -6227,9 +6235,18 @@ def draft_simulation_summary(player_name, impact_df):
 
 
 def build_draft_simulation_result(player_name, team_name, lookup_df, name_col="fullName"):
+    if not has_draft_room_context():
+        return {
+            "message": _NO_DRAFT_CONTEXT_MSG,
+            "no_context": True,
+            "player": str(player_name).strip(),
+            "team": str(team_name or "").strip(),
+        }
     sim_table, msg = simulate_drafting_player(player_name, team_name)
     st.session_state["simulated_draft_room_table"] = sim_table
-    impact_df, roster_df, candidate_summary, rate_estimated = build_simulated_draft_impact(player_name, team_name, lookup_df, name_col)
+    impact_df, roster_df, candidate_summary, rate_estimated = build_simulated_draft_impact(
+        player_name, team_name, lookup_df, name_col
+    )
     return {
         "message": msg,
         "player": str(player_name).strip(),
@@ -6263,6 +6280,9 @@ def _format_sim_value(category, value):
 
 def render_draft_simulation_result(result):
     if not isinstance(result, dict):
+        return
+    if result.get("no_context"):
+        st.info(result.get("message", _NO_DRAFT_CONTEXT_MSG))
         return
     st.success(result.get("message", "Simulation complete."))
     if result.get("summary"):
@@ -8204,7 +8224,7 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
 
     if action == "Simulate drafting this player":
         if not teams:
-            return "Open Draft Room Simulator first.", None
+            return _NO_DRAFT_CONTEXT_MSG, None
         sim_table, msg = simulate_drafting_player(sp, team_name)
         st.session_state["simulated_draft_room_table"] = sim_table
         return msg, None
@@ -8262,10 +8282,12 @@ def _render_player_action_button_row(
         "user_draft_team": user_draft_team,
     }
 
+    on_comparison_page = normalize_page_key(st.session_state.get("active_page") or "") == "Comparison Tool"
+
     primary = []
     if show_queue:
         primary.append(("Add to Queue", "Queue player", "add_draft_queue"))
-    if show_comparison:
+    if show_comparison and not on_comparison_page:
         primary.append(("Send to Comparison", "Send to Comparison Tool", "send_comparison"))
     if show_trend:
         primary.append(("Send to Trends", "Send to Trend Page", "send_trends"))
@@ -8375,6 +8397,8 @@ def compact_player_action_center(
             st.session_state.pop(f"{key}_draft_simulation_result", None)
             st.rerun()
 
+    _maybe_show_projection_breakdown_dialog(f"{key}_projection_breakdown_pending")
+
     return ctx[0] if ctx else None
 
 
@@ -8394,6 +8418,36 @@ def build_projection_breakdown_markdown(player_display_name, draft_row=None, yea
             except Exception:
                 return None
             return None
+
+        proj_bits = []
+        for label, col in [
+            ("HR", "proj_HR"),
+            ("RBI", "proj_RBI"),
+            ("R", "proj_R"),
+            ("SB", "proj_SB"),
+            ("AVG", "proj_BA"),
+            ("OPS", "proj_OPS"),
+        ]:
+            val = _g(col)
+            if val is not None and pd.notna(val):
+                fmt = fmt_rate_3 if label in ("AVG", "OPS") else fmt_int
+                proj_bits.append(f"**{label}** `{fmt(val)}`")
+        if proj_bits:
+            lines.append("- **Projected counting stats:** " + ", ".join(proj_bits))
+
+        conf = _g("Projection Confidence")
+        conf_score = _g("Projection Confidence Score")
+        warning = _g("Projection Warning")
+        conf_parts = []
+        if conf is not None and pd.notna(conf) and str(conf).strip():
+            conf_parts.append(f"confidence **{conf}**")
+        elif conf_score is not None and pd.notna(conf_score):
+            conf_parts.append(f"confidence score **{fmt_rate_4(conf_score)}**")
+        if warning is not None and str(warning).strip():
+            conf_parts.append(f"warning: *{str(warning).strip()}*")
+        if conf_parts:
+            lines.append("- **Projection quality:** " + "; ".join(conf_parts) + ".")
+        lines.append("")
 
         pos = _g("Primary Position")
         age = _g("Age")
@@ -8464,13 +8518,65 @@ def build_projection_breakdown_markdown(player_display_name, draft_row=None, yea
             lines.append("- Draft Assistant / fantasy pages add market + model layers on top of this history.")
         return "\n".join(lines)
 
-    lines.append("No projection row available for this player on this page.")
+    lines.append(
+        "No projection details are available for this player on this page. "
+        "Try **Fantasy Sleepers & Busts**, **Draft Assistant**, or **ML Predictions** for richer projection fields."
+    )
     return "\n".join(lines)
 
 
 @st.dialog("Projection breakdown")
 def _projection_breakdown_dialog(body_md: str):
     st.markdown(body_md)
+
+
+def _on_simulate_draft_pick_click(
+    *,
+    state_key: str,
+    player_raw: str,
+    team_name,
+    lookup_df,
+    lookup_name_col: str,
+):
+    """Button callback: store simulation result under a dedicated state key (not the button key)."""
+    result = build_draft_simulation_result(
+        player_raw,
+        team_name,
+        lookup_df,
+        lookup_name_col,
+    )
+    st.session_state[state_key] = result
+
+
+def _on_projection_breakdown_click(
+    *,
+    dialog_state_key: str,
+    player_raw: str,
+    projection_lookup_df,
+    projection_lookup_name_col: str,
+):
+    """Button callback: queue projection dialog content for the next render."""
+    row = None
+    if (
+        projection_lookup_df is not None
+        and not getattr(projection_lookup_df, "empty", True)
+        and projection_lookup_name_col in projection_lookup_df.columns
+    ):
+        m = projection_lookup_df[
+            projection_lookup_df[projection_lookup_name_col].astype(str).str.strip()
+            == str(player_raw).strip()
+        ]
+        if not m.empty:
+            row = m.iloc[0]
+    md = build_projection_breakdown_markdown(player_raw, draft_row=row, yearly_df_local=yearly_df)
+    st.session_state[dialog_state_key] = md
+    record_workflow_recent_player(player_raw)
+
+
+def _maybe_show_projection_breakdown_dialog(dialog_state_key: str):
+    body = st.session_state.pop(dialog_state_key, None)
+    if body:
+        _projection_breakdown_dialog(body)
 
 
 def player_quick_actions_popover(
@@ -8525,28 +8631,45 @@ def player_quick_actions_popover(
             can_draft=can_draft,
         )
 
+        sim_lookup_df = (
+            projection_lookup_df
+            if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True)
+            else default_draft_simulation_lookup()
+        )
+        sim_lookup_col = (
+            projection_lookup_name_col
+            if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True)
+            else "fullName"
+        )
+        sim_state_key = f"{key}_draft_simulation_result"
+        proj_dialog_key = f"{key}_projection_breakdown_pending"
+
         extra = st.columns(2)
         with extra[0]:
-            if st.button("Simulate Draft Pick", key=f"plr_act_{sfx}_simulate_draft_button"):
-                lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
-                lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
-                result = build_draft_simulation_result(
-                    pick,
-                    team_for_draft,
-                    lookup_df,
-                    lookup_name_col,
-                )
-                st.session_state[f"{key}_draft_simulation_result"] = result
+            st.button(
+                "Simulate Draft Pick",
+                key=f"plr_act_{sfx}_simulate_draft_button",
+                on_click=_on_simulate_draft_pick_click,
+                kwargs={
+                    "state_key": sim_state_key,
+                    "player_raw": pick,
+                    "team_name": team_for_draft,
+                    "lookup_df": sim_lookup_df,
+                    "lookup_name_col": sim_lookup_col,
+                },
+            )
         with extra[1]:
-            if st.button("Projection breakdown", key=f"plr_act_{sfx}_projection_breakdown_button"):
-                record_workflow_recent_player(pick)
-                row = None
-                if projection_lookup_df is not None and projection_lookup_name_col in projection_lookup_df.columns:
-                    m = projection_lookup_df[projection_lookup_df[projection_lookup_name_col].astype(str).str.strip() == str(pick).strip()]
-                    if not m.empty:
-                        row = m.iloc[0]
-                md = build_projection_breakdown_markdown(pick, draft_row=row, yearly_df_local=yearly_df)
-                _projection_breakdown_dialog(md)
+            st.button(
+                "Projection breakdown",
+                key=f"plr_act_{sfx}_projection_breakdown_button",
+                on_click=_on_projection_breakdown_click,
+                kwargs={
+                    "dialog_state_key": proj_dialog_key,
+                    "player_raw": pick,
+                    "projection_lookup_df": projection_lookup_df,
+                    "projection_lookup_name_col": projection_lookup_name_col,
+                },
+            )
 
 
 def is_active_recent_player(player_id, source_df):
@@ -8606,18 +8729,48 @@ def render_contextual_player_actions(
         if already_drafted:
             st.caption("Draft queue is hidden because this player is already drafted.")
 
+        ctx_sim_key = f"ctx_{act_id}_draft_simulation_result"
+        ctx_proj_key = f"ctx_{act_id}_projection_breakdown_pending"
+        ctx_sim_lookup = (
+            projection_lookup_df
+            if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True)
+            else default_draft_simulation_lookup()
+        )
+        ctx_sim_col = (
+            projection_lookup_name_col
+            if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True)
+            else "fullName"
+        )
+
+        st.button(
+            "Projection breakdown",
+            key=f"plr_act_{act_id}_projection_breakdown_button",
+            on_click=_on_projection_breakdown_click,
+            kwargs={
+                "dialog_state_key": ctx_proj_key,
+                "player_raw": player_name,
+                "projection_lookup_df": projection_lookup_df,
+                "projection_lookup_name_col": projection_lookup_name_col,
+            },
+        )
+        _maybe_show_projection_breakdown_dialog(ctx_proj_key)
+
         if active_available:
-            if st.button("Simulate Draft Pick", key=f"plr_act_{act_id}_simulate_draft_button"):
-                lookup_df = projection_lookup_df if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else default_draft_simulation_lookup()
-                lookup_name_col = projection_lookup_name_col if projection_lookup_df is not None and not getattr(projection_lookup_df, "empty", True) else "fullName"
-                result = build_draft_simulation_result(
-                    player_name,
-                    team_name,
-                    lookup_df,
-                    lookup_name_col,
-                )
-                st.session_state["draft_simulation_result"] = result
-                render_draft_simulation_result(result)
+            st.button(
+                "Simulate Draft Pick",
+                key=f"plr_act_{act_id}_simulate_draft_button",
+                on_click=_on_simulate_draft_pick_click,
+                kwargs={
+                    "state_key": ctx_sim_key,
+                    "player_raw": player_name,
+                    "team_name": team_name,
+                    "lookup_df": ctx_sim_lookup,
+                    "lookup_name_col": ctx_sim_col,
+                },
+            )
+            sim_result = st.session_state.get(ctx_sim_key)
+            if isinstance(sim_result, dict):
+                render_draft_simulation_result(sim_result)
         elif not ownership_known:
             st.caption("Trade actions need a Draft Room team selected on Comparison Tool.")
 
@@ -9086,8 +9239,8 @@ PAGE_OPTIONS = [
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
-# Contextual transfer: optional top-3 players (Comparison, Trend Value, Valuation).
-CONTEXTUAL_TOP3_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
+# Contextual transfer: optional top-3 players (Comparison, Trend Value).
+CONTEXTUAL_TOP3_PLAYER_TARGETS = frozenset({"Comparison Tool", "Trend Value"})
 CONTEXTUAL_TOP3_CHECKBOX_LABEL = "Also send top 3 players from current results"
 
 # Sidebar display labels — emojis match each page's section header title.
@@ -9099,12 +9252,12 @@ PAGE_OPTION_LABELS = {
     "Trend Value": "🔥 Trend Value",
     "Valuation": "💰 Valuation",
     "ML Predictions": "🤖 ML Predictions",
-    "Fantasy Sleepers & Busts": "🧠 Fantasy Sleepers & Busts",
+    "Fantasy Sleepers & Busts": "💎 Fantasy Sleepers & Busts",
     "Draft Room Simulator": "🧾 Draft Room Simulator",
     "Draft Assistant Simulator": "🧩 Draft Assistant Simulator",
     "Draft Simulation Test Mode": "🧪 Draft Simulation Test Mode",
     "Live Draft Room": "📡 Live Draft Room",
-    "Fantasy Standings Tracker": "🏆 Fantasy Standings Tracker",
+    "Fantasy Standings Tracker": "📊 Fantasy Standings Tracker",
     "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
 }
 _PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
@@ -11536,7 +11689,7 @@ if active_page == "Trend Value":
 
 if active_page == "Fantasy Sleepers & Busts":
     render_section_header(
-        "🧠 Fantasy Sleepers & Busts",
+        "💎 Fantasy Sleepers & Busts",
         "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
     )
     render_page_guide(active_page)
@@ -13804,7 +13957,7 @@ if active_page == "Live Draft Room":
 
 if active_page == "Fantasy Standings Tracker":
     render_section_header(
-        "🏆 Fantasy Standings Tracker",
+        "📊 Fantasy Standings Tracker",
         "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
     )
     render_page_guide(active_page)

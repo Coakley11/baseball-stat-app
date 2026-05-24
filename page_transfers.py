@@ -66,7 +66,7 @@ _TREND_SORT_COLS = frozenset({
 })
 
 # Contextual transfers to these pages may offer the top-3 players checkbox.
-_TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value", "Valuation"})
+_TOP3_TRANSFER_TARGET_PAGES = frozenset({"Comparison Tool", "Trend Value"})
 
 # Explorer / Career / Leaderboards: optional top-3 via checkbox only.
 _BUILDER_ALLOWS_TOP3 = frozenset({
@@ -84,10 +84,9 @@ _BUILDER_ALLOWS_TOP3 = frozenset({
     "sleepers_to_valuation",
 })
 
-# Comparison Tool → Trend / Valuation: all players selected in Comparison multiselect.
+# Comparison Tool → Trend: all players selected in Comparison multiselect (filters-only to Valuation).
 _BUILDER_COMPARE_SELECTED_PLAYERS = frozenset({
     "compare_to_trend",
-    "compare_to_valuation",
 })
 
 # Trend / Valuation → Comparison: top 3 from main table via checkbox.
@@ -305,7 +304,7 @@ def target_allows_top3_players(target_page: str) -> bool:
 
 
 def target_accepts_transferred_players(target_page: str) -> bool:
-    """Pages that can apply transferred player selections (Trends, Comparison, Valuation)."""
+    """Pages that can apply transferred player selections (Comparison, Trend Value)."""
     return target_allows_top3_players(target_page)
 
 
