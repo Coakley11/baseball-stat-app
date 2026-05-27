@@ -137,19 +137,29 @@ def apply_stabilized_counting_projections(pool: pd.DataFrame, projection_source:
     ).clip(0, 1)
     stable_veteran = (years >= 3) & (consistency >= 0.58) & (volatility < 0.48)
     injury_risk = (projected_g < avg_g * 0.82) | (durability < 0.55)
-    star_protected = (elite_star_score >= 0.68) & (consistency >= 0.55) & (playing_time_strength >= 0.72)
+    star_protected = (
+        (elite_star_score >= 0.82)
+        & (consistency >= 0.65)
+        & (playing_time_strength >= 0.80)
+        & (years >= 3)
+        & ((power_history >= 0.62) | (production_history >= 0.62))
+    )
     confidence_score = (
-        sample_score * 0.28
-        + games_score * 0.20
-        + consistency * 0.30
-        + (years / 3).clip(0, 1) * 0.12
-        + elite_star_score * 0.10
+        sample_score * 0.32
+        + games_score * 0.22
+        + consistency * 0.32
+        + (years / 4).clip(0, 1) * 0.10
+        + elite_star_score * 0.04
     ).clip(0, 1)
+    confidence_score = (confidence_score * (1 - volatility * 0.22)).clip(0, 1)
+    confidence_score = confidence_score - very_limited_data.astype(float) * 0.12
+    confidence_score = confidence_score - (volatility >= 0.70).astype(float) * 0.10
+    confidence_score = pd.Series(confidence_score, index=out.index).clip(0, 1)
 
     out["Elite Star Score"] = elite_star_score.round(4)
     out["Projection Confidence Score"] = confidence_score
     out["Projection Confidence"] = np.select(
-        [confidence_score >= 0.70, confidence_score >= 0.46],
+        [confidence_score >= 0.78, confidence_score >= 0.52],
         ["High Confidence", "Medium Confidence"],
         default="Risky Projection",
     )
@@ -312,33 +322,48 @@ def apply_ml_final_output_calibration(pred_df: pd.DataFrame, anchors: pd.DataFra
     very_lim = out.get("Very Limited Data", pd.Series(False, index=out.index)).fillna(False)
 
     count_map = {
-        "Predicted HR": "proj_HR",
-        "Predicted RBI": "proj_RBI",
-        "Predicted R": "proj_R",
-        "Predicted SB": "proj_SB",
+        "Predicted HR": ("proj_HR", {"min_elite": 0.75, "min_conf": 0.74, "floor_pct": 0.90, "undershoot_w": 0.68, "require_star": True}),
+        "Predicted RBI": ("proj_RBI", {"min_elite": 0.75, "min_conf": 0.72, "floor_pct": 0.86, "undershoot_w": 0.52, "require_star": True}),
+        "Predicted R": ("proj_R", {"min_elite": 0.75, "min_conf": 0.72, "floor_pct": 0.86, "undershoot_w": 0.52, "require_star": True}),
+        "Predicted SB": ("proj_SB", {"min_elite": 0.82, "min_conf": 0.76, "floor_pct": 0.82, "undershoot_w": 0.30, "require_star": False}),
     }
-    for ml_col, stab_col in count_map.items():
+    for ml_col, (stab_col, guard_cfg) in count_map.items():
         if ml_col not in out.columns or stab_col not in out.columns:
             continue
         ml_val = _num(out[ml_col], 0)
         stab_val = _num(out[stab_col], ml_val)
         w = calibration_blend_weight(conf, elite, vol, star_prot, very_lim, counting=True)
-        elite_guard = (elite >= 0.72) & (conf >= 0.62) & (~very_lim)
+        star_req = star_prot if guard_cfg.get("require_star", False) else pd.Series(True, index=out.index)
+        elite_guard = (
+            (elite >= guard_cfg["min_elite"])
+            & (conf >= guard_cfg["min_conf"])
+            & (~very_lim)
+            & star_req.fillna(False)
+        )
         stab_safe = stab_val.replace(0, np.nan)
         undershoot = ((stab_val - ml_val) / stab_safe).replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 0.55)
-        w = (w + elite_guard.astype(float) * undershoot * 0.55).clip(0.10, 0.62)
+        w = (w + elite_guard.astype(float) * undershoot * guard_cfg["undershoot_w"]).clip(0.10, 0.66)
         blended = (ml_val * (1 - w) + stab_val * w).clip(lower=0)
-        elite_floor = stab_val * 0.82
+        elite_floor = stab_val * guard_cfg["floor_pct"]
         out[ml_col] = np.where(elite_guard, np.maximum(blended, elite_floor), blended)
 
-    rate_map = {"Predicted BA": "proj_BA", "Predicted OPS": "proj_OPS"}
-    for ml_col, stab_col in rate_map.items():
+    rate_map = {
+        "Predicted BA": ("proj_BA", {"min_elite": 0.80, "min_conf": 0.76, "floor_pct": 0.96, "undershoot_w": 0.18}),
+        "Predicted OPS": ("proj_OPS", {"min_elite": 0.80, "min_conf": 0.76, "floor_pct": 0.96, "undershoot_w": 0.22}),
+    }
+    for ml_col, (stab_col, guard_cfg) in rate_map.items():
         if ml_col not in out.columns or stab_col not in out.columns:
             continue
         ml_val = _num(out[ml_col], np.nan)
         stab_val = _num(out[stab_col], ml_val)
         w = calibration_blend_weight(conf, elite, vol, star_prot, very_lim, counting=False)
-        out[ml_col] = ml_val * (1 - w) + stab_val * w
+        elite_guard = (elite >= guard_cfg["min_elite"]) & (conf >= guard_cfg["min_conf"]) & (~very_lim) & star_prot.fillna(False)
+        stab_safe = stab_val.replace(0, np.nan)
+        undershoot = ((stab_val - ml_val) / stab_safe).replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 0.35)
+        w = (w + elite_guard.astype(float) * undershoot * guard_cfg["undershoot_w"]).clip(0.06, 0.28)
+        blended = ml_val * (1 - w) + stab_val * w
+        elite_floor = stab_val * guard_cfg["floor_pct"]
+        out[ml_col] = np.where(elite_guard, np.maximum(blended, elite_floor), blended)
 
     # Secondary counting stats: soft caps from recent averages (no second regression).
     for ml_col, stat in [("Predicted H", "H"), ("Predicted 2B", "2B"), ("Predicted 3B", "3B"), ("Predicted BB", "BB")]:

@@ -19,6 +19,7 @@ import page_transfers as pg_xfer
 import app_tutorial
 import player_actions as plr_act
 import projection_calibration as proj_cal
+import projection_validation as proj_val
 import projection_breakdown as proj_bd
 import ml_training_build as mltb
 
@@ -4332,6 +4333,24 @@ def _ml_execute_pipeline_if_needed(
     return True
 
 
+def _ml_hist_ab_eligible(df: pd.DataFrame, ml_min_ab: float) -> pd.Series:
+    """Primary AB gate with a lighter fantasy-relevant path for recent breakout profiles."""
+    if df is None or df.empty:
+        return pd.Series(dtype=bool)
+    hist_ab = pd.to_numeric(df.get("hist_AB_total"), errors="coerce").fillna(0)
+    primary = hist_ab >= float(ml_min_ab)
+    if float(ml_min_ab) <= float(mltb.ML_INFERENCE_MIN_LATEST_AB):
+        return primary
+    last_ab = pd.to_numeric(df.get("Last AB"), errors="coerce").fillna(0)
+    last_g = pd.to_numeric(df.get("Last G"), errors="coerce").fillna(0)
+    fantasy = (
+        (hist_ab >= float(mltb.ML_INFERENCE_MIN_LATEST_AB))
+        & (last_ab >= float(mltb.ML_INFERENCE_MIN_LATEST_AB))
+        & (last_g >= float(mltb.ML_INFERENCE_MIN_LATEST_G))
+    )
+    return primary | fantasy
+
+
 def _ml_base_run_signature(yl_df, lookback, min_games, max_players):
     """Training + RF inference signature (unchanged when tuning sliders move or user refreshes)."""
     return (
@@ -4671,7 +4690,7 @@ def _run_ml_tuning_fast(
         if not _ml_is_nonempty_dataframe(base_pred_df):
             raise ValueError("Base ML predictions are empty. Run **Generate / Refresh** first.")
         stage = "AB filter"
-        ab_ok = pd.to_numeric(base_pred_df["hist_AB_total"], errors="coerce").fillna(0) >= float(ml_min_ab)
+        ab_ok = _ml_hist_ab_eligible(base_pred_df, ml_min_ab)
         base_f = base_pred_df.loc[ab_ok].reset_index(drop=True)
         if base_f.empty:
             status["message"] = (
@@ -4786,7 +4805,7 @@ def _run_ml_adjustment_and_calibration(
 
     timing = {}
     t0 = time.perf_counter()
-    ab_ok = pd.to_numeric(base_pred_df["hist_AB_total"], errors="coerce").fillna(0) >= float(ml_min_ab)
+    ab_ok = _ml_hist_ab_eligible(base_pred_df, ml_min_ab)
     base_f = base_pred_df.loc[ab_ok].reset_index(drop=True)
     if base_f.empty:
         return None, timing, "ab_filter_empty", (
@@ -7905,16 +7924,7 @@ def _draft_compute_position_replacement(available, replacement_depths=None):
     return replacement_values, position_summary_rows
 
 
-DRAFT_SCORING_CONSISTENCY_PLAYERS = [
-    "Shohei Ohtani",
-    "Aaron Judge",
-    "Bobby Witt Jr.",
-    "Juan Soto",
-    "Cal Raleigh",
-    "Kyle Tucker",
-    "Francisco Lindor",
-    "Gunnar Henderson",
-]
+DRAFT_SCORING_CONSISTENCY_PLAYERS = list(proj_val.ML_PROJECTION_VALIDATION_PLAYERS)
 
 DRAFT_POOL_CONSISTENCY_COLS = [
     "proj_HR", "proj_RBI", "proj_R", "proj_SB", "proj_BA", "proj_OPS",
@@ -16214,9 +16224,9 @@ if active_page == "ML Predictions":
         st.error("Scikit-learn is not installed. In Command Prompt, run: pip install scikit-learn")
     else:
         init_state_once("ml_lookback", 3)
-        init_state_once("ml_min_games", 150)
-        init_state_once("ml_min_ab", 300)
-        init_state_once("ml_max_players", 150)
+        init_state_once("ml_min_games", 75)
+        init_state_once("ml_min_ab", 200)
+        init_state_once("ml_max_players", 300)
         init_state_once("ml_projection_style", "Balanced")
         init_state_once("ml_regression_strength", 0.20)
         init_state_once("ml_age_strength", 0.50)
@@ -16230,17 +16240,17 @@ if active_page == "ML Predictions":
         with c1:
             ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback")
         with c2:
-            ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 150, key="ml_min_games")
+            ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 75, key="ml_min_games")
         with c3:
-            ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=1, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud.")
+            ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=2, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud. Fantasy-relevant players with recent playing time are still included when possible.")
 
         ml_min_ab = st.number_input(
             "Minimum Recent AB in Lookback Window",
             0,
             2500,
-            300,
+            200,
             key="ml_min_ab",
-            help="Filters players before similarity + aging adjustments so unused low-AB rows are not computed.",
+            help="Primary AB filter. Players with at least 75 recent AB and 30 recent games can still qualify as fantasy-relevant breakouts.",
         )
 
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):

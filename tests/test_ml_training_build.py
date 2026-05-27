@@ -73,6 +73,54 @@ def test_vectorized_training_smaller_than_unfiltered():
     assert train_df["playerID"].nunique() >= 10
 
 
+def test_inference_includes_single_season_breakout_profile():
+    rows = []
+    for y in (2024,):
+        rows.append({
+            "playerID": "ricebe01",
+            "fullName": "Ben Rice",
+            "yearID": y,
+            "birthYear": 1999,
+            "birthMonth": 6,
+            "birthDay": 1,
+            "G": 132,
+            "AB": 410,
+            "R": 70,
+            "H": 105,
+            "2B": 20,
+            "3B": 2,
+            "HR": 24,
+            "RBI": 65,
+            "SB": 3,
+            "CS": 1,
+            "BB": 45,
+            "SO": 110,
+            "BA": 0.256,
+            "OBP": 0.330,
+            "SLG": 0.470,
+            "OPS": 0.800,
+            "bats": "L",
+            "primaryPos": "1B",
+            "primaryTeamID": "NYY",
+            "League": "AL",
+            "Park_Factor": 1.0,
+            "PA_est": 460,
+            "BB_rate": 0.11,
+            "K_rate": 0.24,
+            "SB_rate": 0.5,
+            "XBH": 46,
+            "XBH_rate": 0.11,
+            "HR_rate": 0.058,
+            "Speed_Index": 0.2,
+        })
+    prepared = pd.DataFrame(rows)
+    out = mltb.build_current_rows_vectorized(
+        prepared, 3, 150, BASE_STATS, DERIVED, max_player_pool=300,
+    )
+    assert not out.empty
+    assert out.iloc[0]["playerID"] == "ricebe01"
+
+
 def test_disk_bundle_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(mltb, "ML_CACHE_DIR", tmp_path)
     df = pd.DataFrame({"a": [1, 2]})

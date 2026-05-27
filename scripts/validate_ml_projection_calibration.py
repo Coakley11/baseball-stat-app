@@ -57,6 +57,7 @@ for mod_name in ("workflow_sidebar", "page_transfers", "page_state", "draft_stra
     sys.modules[mod_name] = sys.modules[mod_name]
 
 import projection_calibration as proj_cal  # noqa: E402
+import projection_validation as proj_val  # noqa: E402
 from projection_style import get_draft_projection_factors  # noqa: E402
 
 import app_tutorial  # noqa: E402
@@ -95,20 +96,7 @@ _g: dict = {
 }
 exec(compile(_exec_src, str(SA), "exec"), _g, _g)
 
-VALIDATION_PLAYERS = [
-    "Shohei Ohtani",
-    "Aaron Judge",
-    "Juan Soto",
-    "Bobby Witt Jr.",
-    "Cal Raleigh",
-    "Kyle Tucker",
-    "Gunnar Henderson",
-    "Ronald Acuña Jr.",
-    "Elly De La Cruz",
-    "Jackson Merrill",
-    "Junior Caminero",
-    "Justin Turner",
-]
+VALIDATION_PLAYERS = proj_val.ML_PROJECTION_VALIDATION_PLAYERS
 
 STAT_PAIRS = [
     ("HR", "Predicted HR", "proj_HR", 8),

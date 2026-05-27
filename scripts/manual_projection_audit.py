@@ -85,12 +85,7 @@ _g: dict = {
 exec(compile(_exec_src, str(SA), "exec"), _g, _g)
 
 
-PLAYER_GROUPS = {
-    "elite": ["Aaron Judge", "Shohei Ohtani", "Juan Soto", "Bobby Witt Jr.", "Gunnar Henderson"],
-    "mid_tier": ["Christian Walker", "Seiya Suzuki", "Teoscar Hernández", "Alex Bregman", "Bryan Reynolds"],
-    "breakout_small_sample": ["Ben Rice", "Pete Crow-Armstrong", "Isaac Collins", "Junior Caminero", "Jackson Merrill"],
-    "aging_risky": ["Paul Goldschmidt", "Giancarlo Stanton", "George Springer", "Nolan Arenado"],
-}
+from projection_validation import ML_PROJECTION_VALIDATION_GROUPS, ML_PROJECTION_VALIDATION_PLAYERS
 
 STAT_PAIRS = [
     ("HR", "Predicted HR", "proj_HR"),
@@ -201,7 +196,7 @@ def main() -> int:
     print("=== Manual Projection Audit ===")
     print(f"ML rows={len(pred_df)} | DraftLab rows={len(draft_pool)} | Live rows={len(live_pool)}")
 
-    for group, players in PLAYER_GROUPS.items():
+    for group, players in ML_PROJECTION_VALIDATION_GROUPS.items():
         print(f"\n## Group: {group}")
         for pname in players:
             ml_name = _resolve(pred_df, pname, _resolve_consistency_player_name)

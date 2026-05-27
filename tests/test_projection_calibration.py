@@ -80,7 +80,7 @@ def test_apply_ml_final_output_calibration_elite_undershoot_guard():
         }
     )
     out = proj_cal.apply_ml_final_output_calibration(pred, anchors)
-    assert out.loc[0, "Predicted HR"] >= 44.0
+    assert out.loc[0, "Predicted HR"] >= 48.6
 
 
 def test_apply_stabilized_counting_projections_caps_breakout():
