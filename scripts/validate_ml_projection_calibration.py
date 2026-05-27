@@ -35,9 +35,14 @@ class _StreamlitShim(types.ModuleType):
         if name in ("cache_data", "cache_resource", "dialog"):
             return lambda *a, **kwargs: (lambda fn: fn)
         if name in ("spinner", "expander"):
-            return lambda *a, **k: types.SimpleNamespace(
-                __enter__=lambda s: s, __exit__=lambda *a: None
-            )
+            class _Ctx:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return lambda *a, **k: _Ctx()
         if name == "columns":
             def _columns(spec):
                 n = spec if isinstance(spec, int) else len(spec)
@@ -176,7 +181,7 @@ def run_ml_pipeline(yearly_df, *, lookback=3, min_games=150, max_players=300, mi
     ML_TARGET_STATS = _g["ML_TARGET_STATS"]
 
     ml_training_df, ml_feature_cols, ml_models, current_rows, base_pred_df = build_base_ml_predictions(
-        yearly_df, lookback, min_games, max_player_pool=max_players, refresh_token=1
+        yearly_df, lookback, min_games, max_player_pool=max_players
     )
     if base_pred_df.empty:
         raise RuntimeError("No base ML predictions")
@@ -272,7 +277,7 @@ def main() -> int:
             pd.notna(pd.to_numeric(ml_row.get(m), errors="coerce"))
             and pd.notna(pd.to_numeric(lab_row.get(l), errors="coerce"))
             and abs(float(ml_row[m]) - float(lab_row[l])) < 0.01
-            for _, m, l in STAT_PAIRS[:4]
+            for _, m, l, _ in STAT_PAIRS[:4]
             if m in ml_row and l in lab_row
         )
         if identical:

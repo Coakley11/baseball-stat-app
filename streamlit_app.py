@@ -4530,9 +4530,20 @@ def apply_ml_stat_blend(
             continue
         rf_pred = pd.to_numeric(adjusted[rf_col], errors="coerce")
         baseline = baselines.get(stat, rf_pred.mean())
+        hr_last = safe_numeric_series(adjusted, "HR_last", 0)
+        ops_last = safe_numeric_series(adjusted, "OPS_last", 0)
+        elite_hitter_signal = (
+            (hr_last >= 32).astype(float) * 0.52
+            + (ops_last >= 0.860).astype(float) * 0.28
+            + ((safe_numeric_series(adjusted, "hist_AB_total", 0) / 1350).clip(0, 1)) * 0.20
+        ).clip(0, 1)
         if comp_weight and comp_col in adjusted.columns:
             comp_pred = pd.to_numeric(adjusted[comp_col], errors="coerce")
-            blended = (1 - comp_weight) * rf_pred + comp_weight * comp_pred.fillna(rf_pred)
+            stat_comp_weight = float(comp_weight)
+            if stat in ("HR", "RBI", "OPS"):
+                # Preserve true elite ceilings by softening similar-player pull for proven power bats.
+                stat_comp_weight = (comp_weight * (1 - elite_hitter_signal * 0.45)).clip(0.03, float(comp_weight))
+            blended = (1 - stat_comp_weight) * rf_pred + stat_comp_weight * comp_pred.fillna(rf_pred)
         else:
             blended = rf_pred.copy()
         if "age_entering_year" in adjusted.columns:
@@ -4541,6 +4552,8 @@ def apply_ml_stat_blend(
         recent_ab = safe_numeric_series(adjusted, "hist_AB_total", np.nan)
         reliability = (recent_ab / 1200).clip(lower=0.20, upper=1.0).fillna(0.50)
         dynamic_regression = regression_strength * (1.15 - reliability)
+        if stat in ("HR", "RBI", "OPS"):
+            dynamic_regression = dynamic_regression * (1 - elite_hitter_signal * 0.40)
         final = (1 - dynamic_regression) * blended + dynamic_regression * baseline
         if stat in ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB"]:
             final = final.clip(lower=0)
@@ -5215,9 +5228,19 @@ def apply_advanced_projection_adjustments(
             continue
         rf_pred = pd.to_numeric(adjusted[rf_col], errors="coerce")
         baseline = baselines.get(stat, rf_pred.mean())
+        hr_last = safe_numeric_series(adjusted, "HR_last", 0)
+        ops_last = safe_numeric_series(adjusted, "OPS_last", 0)
+        elite_hitter_signal = (
+            (hr_last >= 32).astype(float) * 0.52
+            + (ops_last >= 0.860).astype(float) * 0.28
+            + ((safe_numeric_series(adjusted, "hist_AB_total", 0) / 1350).clip(0, 1)) * 0.20
+        ).clip(0, 1)
         if comp_col in adjusted.columns:
             comp_pred = pd.to_numeric(adjusted[comp_col], errors="coerce")
-            blended = (1 - comp_weight) * rf_pred + comp_weight * comp_pred.fillna(rf_pred)
+            stat_comp_weight = float(comp_weight)
+            if stat in ("HR", "RBI", "OPS"):
+                stat_comp_weight = (comp_weight * (1 - elite_hitter_signal * 0.45)).clip(0.03, float(comp_weight))
+            blended = (1 - stat_comp_weight) * rf_pred + stat_comp_weight * comp_pred.fillna(rf_pred)
         else:
             blended = rf_pred.copy()
         if "age_entering_year" in adjusted.columns:
@@ -5226,6 +5249,8 @@ def apply_advanced_projection_adjustments(
         recent_ab = safe_numeric_series(adjusted, "hist_AB_total", np.nan)
         reliability = (recent_ab / 1200).clip(lower=0.20, upper=1.0).fillna(0.50)
         dynamic_regression = regression_strength * (1.15 - reliability)
+        if stat in ("HR", "RBI", "OPS"):
+            dynamic_regression = dynamic_regression * (1 - elite_hitter_signal * 0.40)
         final = (1 - dynamic_regression) * blended + dynamic_regression * baseline
         if stat in ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB"]:
             final = final.clip(lower=0)

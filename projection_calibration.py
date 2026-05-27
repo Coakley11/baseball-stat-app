@@ -192,15 +192,16 @@ def apply_stabilized_counting_projections(pool: pd.DataFrame, projection_source:
         "R": ("proj_R", 135, 18, 1.28, 1.95, True),
         "SB": ("proj_SB", 62, 10, 1.20, 2.35, False),
     }
-    base_rate_regression = (380 / (total_pa + 380)).clip(0.20, 0.64)
+    base_rate_regression = (360 / (total_pa + 360)).clip(0.16, 0.62)
     rate_regression = (
         base_rate_regression
         + very_limited_data.astype(float) * 0.10
         + volatility * 0.06
         + injury_risk.astype(float) * 0.05
-        - elite_star_score * 0.15
+        - elite_star_score * 0.20
         - stable_veteran.astype(float) * 0.06
-    ).clip(0.14, 0.76)
+        - star_protected.astype(float) * 0.08
+    ).clip(0.08, 0.74)
     star_weight = elite_star_score.clip(0, 1)
     for stat, (proj_col, hard_cap, support_pad, avg_cap_mult, league_cap_mult, star_soft_cap) in cap_rules.items():
         total_rate = (_num(out, stat, 0) / total_pa.replace(0, np.nan)).fillna(0)
@@ -211,23 +212,30 @@ def apply_stabilized_counting_projections(pool: pd.DataFrame, projection_source:
         rate_trend = _num(out, f"{stat}_per_PA_trend", 0)
         trend_rate = (latest_rate + rate_trend).clip(lower=0)
         blended_rate = (
-            total_rate * (0.50 - star_weight * 0.06)
-            + latest_rate * (0.32 + star_weight * 0.08)
-            + trend_rate * (0.18 + star_weight * 0.02)
+            total_rate * (0.50 - star_weight * 0.10)
+            + latest_rate * (0.32 + star_weight * 0.12)
+            + trend_rate * (0.18 + star_weight * 0.05)
         )
         stabilized_rate = blended_rate * (1 - rate_regression) + league_rates[stat] * rate_regression
         avg_stat = _num(out, f"avg_{stat}", 0)
         max_stat = _num(out, f"max_{stat}", np.nan).fillna(avg_stat)
-        star_cap_lift = np.where(star_soft_cap, star_weight * 0.14, star_weight * 0.05)
+        star_cap_lift = np.where(star_soft_cap, star_weight * 0.20, star_weight * 0.06)
         rate_cap = np.maximum(
             total_rate * (avg_cap_mult + star_cap_lift),
             league_rates[stat] * (league_cap_mult + star_cap_lift),
         )
         rate_cap = np.where(very_limited_data, np.maximum(total_rate * 1.08, league_rates[stat] * 1.50), rate_cap)
+        if star_soft_cap:
+            elite_slugger = star_protected & (
+                (avg_stat >= np.where(stat == "HR", 30, 85))
+                | (max_stat >= np.where(stat == "HR", 38, 105))
+            )
+            elite_rate_floor = np.maximum(total_rate, latest_rate) * (0.92 + star_weight * 0.18)
+            stabilized_rate = np.where(elite_slugger, np.maximum(stabilized_rate, elite_rate_floor), stabilized_rate)
         projected = np.minimum(stabilized_rate, rate_cap) * projected_pa
         hard_cap_eff = hard_cap + np.where(star_soft_cap, star_weight * 10, star_weight * 4)
         support_pad_eff = support_pad + np.where(star_soft_cap, star_weight * 6, star_weight * 2)
-        support_mult = np.where(very_limited_data, 1.10, 1.25) + np.where(star_soft_cap, star_weight * 0.14, star_weight * 0.06)
+        support_mult = np.where(very_limited_data, 1.10, 1.25) + np.where(star_soft_cap, star_weight * 0.22, star_weight * 0.08)
         support_cap = np.maximum(max_stat + support_pad_eff, avg_stat * support_mult)
         projected = np.minimum(projected, np.minimum(hard_cap_eff, support_cap))
         if star_soft_cap:
@@ -315,7 +323,13 @@ def apply_ml_final_output_calibration(pred_df: pd.DataFrame, anchors: pd.DataFra
         ml_val = _num(out[ml_col], 0)
         stab_val = _num(out[stab_col], ml_val)
         w = calibration_blend_weight(conf, elite, vol, star_prot, very_lim, counting=True)
-        out[ml_col] = (ml_val * (1 - w) + stab_val * w).clip(lower=0)
+        elite_guard = (elite >= 0.72) & (conf >= 0.62) & (~very_lim)
+        stab_safe = stab_val.replace(0, np.nan)
+        undershoot = ((stab_val - ml_val) / stab_safe).replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 0.55)
+        w = (w + elite_guard.astype(float) * undershoot * 0.55).clip(0.10, 0.62)
+        blended = (ml_val * (1 - w) + stab_val * w).clip(lower=0)
+        elite_floor = stab_val * 0.82
+        out[ml_col] = np.where(elite_guard, np.maximum(blended, elite_floor), blended)
 
     rate_map = {"Predicted BA": "proj_BA", "Predicted OPS": "proj_OPS"}
     for ml_col, stab_col in rate_map.items():
