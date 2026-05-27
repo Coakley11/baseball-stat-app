@@ -22,6 +22,7 @@ import projection_calibration as proj_cal
 import projection_validation as proj_val
 import projection_breakdown as proj_bd
 import ml_training_build as mltb
+from ml_training_build import ML_INFERENCE_MIN_LATEST_AB, ML_INFERENCE_MIN_LATEST_G
 
 # Live Draft slot widgets (keys must match st.number_input key= in Live Draft Room).
 if not hasattr(pg_xfer, "_LIVE_SLOT_KEYS"):
@@ -4337,16 +4338,18 @@ def _ml_hist_ab_eligible(df: pd.DataFrame, ml_min_ab: float) -> pd.Series:
     """Primary AB gate with a lighter fantasy-relevant path for recent breakout profiles."""
     if df is None or df.empty:
         return pd.Series(dtype=bool)
+    fantasy_min_ab = float(getattr(mltb, "ML_INFERENCE_MIN_LATEST_AB", ML_INFERENCE_MIN_LATEST_AB))
+    fantasy_min_g = float(getattr(mltb, "ML_INFERENCE_MIN_LATEST_G", ML_INFERENCE_MIN_LATEST_G))
     hist_ab = pd.to_numeric(df.get("hist_AB_total"), errors="coerce").fillna(0)
     primary = hist_ab >= float(ml_min_ab)
-    if float(ml_min_ab) <= float(mltb.ML_INFERENCE_MIN_LATEST_AB):
+    if float(ml_min_ab) <= fantasy_min_ab:
         return primary
     last_ab = pd.to_numeric(df.get("Last AB"), errors="coerce").fillna(0)
     last_g = pd.to_numeric(df.get("Last G"), errors="coerce").fillna(0)
     fantasy = (
-        (hist_ab >= float(mltb.ML_INFERENCE_MIN_LATEST_AB))
-        & (last_ab >= float(mltb.ML_INFERENCE_MIN_LATEST_AB))
-        & (last_g >= float(mltb.ML_INFERENCE_MIN_LATEST_G))
+        (hist_ab >= fantasy_min_ab)
+        & (last_ab >= fantasy_min_ab)
+        & (last_g >= fantasy_min_g)
     )
     return primary | fantasy
 

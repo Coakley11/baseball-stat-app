@@ -11,9 +11,23 @@ import pandas as pd
 ML_TRAINING_CACHE_VERSION = 4
 ML_TRAINING_MIN_SEASON_AB = 50
 ML_TRAINING_MIN_SEASON_G = 15
+
+# Fantasy-relevant inference gates (aligned with Draft Lab minimums).
 ML_INFERENCE_MIN_LATEST_G = 30
 ML_INFERENCE_MIN_LATEST_AB = 75
 ML_INFERENCE_POOL_SOFT_CAP = 650
+
+__all__ = [
+    "ML_TRAINING_CACHE_VERSION",
+    "ML_INFERENCE_MIN_LATEST_G",
+    "ML_INFERENCE_MIN_LATEST_AB",
+    "ML_INFERENCE_POOL_SOFT_CAP",
+    "build_training_set_vectorized",
+    "build_current_rows_vectorized",
+    "ml_training_cache_key",
+    "load_training_bundle",
+    "save_training_bundle",
+]
 ML_TRAINING_TARGET_YEAR_SPAN = 18
 ML_TRAINING_MIN_CAREER_AB = 250
 ML_TRAINING_PLAYER_RECENCY_YEARS = 8
