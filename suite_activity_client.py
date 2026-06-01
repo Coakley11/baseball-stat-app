@@ -67,6 +67,16 @@ def _fallback_append(app: str, event: str, page: str, metrics: dict[str, Any], s
 
 def save_local_app_state(app: str, state: dict[str, Any]) -> None:
     """Per-app JSON snapshot for reload persistence within a single deployment."""
+    try:
+        from suite_user_persistence import save_user_state
+
+        if isinstance(state, dict) and "core" in state:
+            save_user_state(app, state)
+        else:
+            save_user_state(app, {"core": state, "session": {}})
+        return
+    except Exception:
+        pass
     LOCAL_FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
     path = LOCAL_FALLBACK_DIR / "app_state.json"
     payload: dict[str, Any] = {}
@@ -85,6 +95,17 @@ def save_local_app_state(app: str, state: dict[str, Any]) -> None:
 
 
 def load_local_app_state(app: str) -> dict[str, Any]:
+    try:
+        from suite_user_persistence import load_user_state
+
+        loaded, _warn = load_user_state(app)
+        if loaded:
+            core = loaded.get("core")
+            if isinstance(core, dict):
+                return core
+            return loaded
+    except Exception:
+        pass
     path = LOCAL_FALLBACK_DIR / "app_state.json"
     if not path.is_file():
         return {}

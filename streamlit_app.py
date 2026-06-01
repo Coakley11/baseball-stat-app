@@ -456,6 +456,25 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
+try:
+    from baseball_persistent_state import (
+        autosave_baseball_state,
+        default_reset_baseball_session,
+        restore_baseball_disk_state_once,
+    )
+    from suite_user_persistence import render_reset_controls, show_persistence_messages
+
+    restore_baseball_disk_state_once(st)
+    show_persistence_messages(st)
+    render_reset_controls(
+        st,
+        "baseball",
+        on_reset=default_reset_baseball_session,
+        help_text="Clears saved page filters and navigation. Player data files are not deleted.",
+    )
+except Exception:
+    pass
+
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
@@ -16621,4 +16640,9 @@ if developer_mode_enabled():
         st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
         st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
         st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
+
+try:
+    autosave_baseball_state(st)
+except Exception:
+    pass
 
