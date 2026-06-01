@@ -5,3 +5,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+**/__pycache__/
+*.pyo
+data/app_state.json
+data/*activity_fallback.json
+data/*_activity_fallback.json
+*.db
+*.sqlite
+*.sqlite3
