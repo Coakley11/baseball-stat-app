@@ -10366,6 +10366,23 @@ def record_workflow_recent_player(display_name):
         return
     lst = st.session_state.get("workflow_recently_viewed", [])
     st.session_state["workflow_recently_viewed"] = wf_sb.merge_mru(lst, name, wf_sb.RECENT_VIEW_CAP)
+    try:
+        from suite_activity_client import record_activity
+
+        page = str(st.session_state.get("active_page") or "")
+        record_activity(
+            "baseball",
+            "page_view",
+            page=page,
+            metrics={"player": name, "report": page},
+            summary=f"Review {name}",
+            resume_key=f"player:{name}",
+            resume_title=f"Continue: {name}",
+            resume_subtitle=page,
+            local_state={"player": name, "active_page": page, "page": page},
+        )
+    except Exception:
+        pass
 
 
 def _short_workflow_page_name(page: str | None) -> str:
