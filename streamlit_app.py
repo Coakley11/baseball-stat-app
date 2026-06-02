@@ -456,25 +456,6 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
-try:
-    from baseball_persistent_state import (
-        autosave_baseball_state,
-        default_reset_baseball_session,
-        restore_baseball_disk_state_once,
-    )
-    from suite_user_persistence import render_reset_controls, show_persistence_messages
-
-    restore_baseball_disk_state_once(st)
-    show_persistence_messages(st)
-    render_reset_controls(
-        st,
-        "baseball",
-        on_reset=default_reset_baseball_session,
-        help_text="Clears saved page filters and navigation. Player data files are not deleted.",
-    )
-except Exception:
-    pass
-
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
@@ -4219,6 +4200,15 @@ def _ml_execute_pipeline_if_needed(
             result, st.session_state.get("_ml_base_pack")
         )
         if result.get("ok"):
+            try:
+                from baseball_activity import log_projection_report
+
+                pc = int(result.get("player_count") or len(pred_df) or 0)
+                if st.session_state.get("_cc_projection_activity_token") != refresh_token:
+                    st.session_state["_cc_projection_activity_token"] = refresh_token
+                    log_projection_report(style=ml_projection_style, player_count=pc)
+            except Exception:
+                pass
             enriched = _ml_enrich_predictions_for_storage(
                 pred_df, yearly_source, ml_lookback, ml_projection_style
             )
@@ -10385,23 +10375,6 @@ def record_workflow_recent_player(display_name):
         return
     lst = st.session_state.get("workflow_recently_viewed", [])
     st.session_state["workflow_recently_viewed"] = wf_sb.merge_mru(lst, name, wf_sb.RECENT_VIEW_CAP)
-    try:
-        from suite_activity_client import record_activity
-
-        page = str(st.session_state.get("active_page") or "")
-        record_activity(
-            "baseball",
-            "page_view",
-            page=page,
-            metrics={"player": name, "report": page},
-            summary=f"Review {name}",
-            resume_key=f"player:{name}",
-            resume_title=f"Continue: {name}",
-            resume_subtitle=page,
-            local_state={"player": name, "active_page": page, "page": page},
-        )
-    except Exception:
-        pass
 
 
 def _short_workflow_page_name(page: str | None) -> str:
@@ -12160,6 +12133,15 @@ def compare_top_changed():
         if len(selected) >= 2:
             st.session_state["pending_sig_player_b"] = selected[1]
             record_workflow_comparison_pair(selected[0], selected[1])
+            try:
+                from baseball_activity import log_player_comparison
+
+                sig = tuple(sorted(selected[:2]))
+                if st.session_state.get("_cc_compare_activity_sig") != sig:
+                    st.session_state["_cc_compare_activity_sig"] = sig
+                    log_player_comparison(selected[0], selected[1])
+            except Exception:
+                pass
 
 
 def compare_settings_changed():
@@ -12991,6 +12973,19 @@ if active_page == "Trend Value":
         else:
             st.error(make_trend_insight_summary(trend_selected))
 
+    try:
+        from baseball_activity import log_breakout_analysis, log_trend_analysis
+
+        trend_sig = (lag_trend, int(min_g_trend), trend_position_filter, max_year_trend)
+        if st.session_state.get("_cc_trend_activity_sig") != trend_sig:
+            st.session_state["_cc_trend_activity_sig"] = trend_sig
+            log_trend_analysis()
+            breakout_n = len(top_breakouts) + len(biggest_declines)
+            if breakout_n > 0:
+                log_breakout_analysis(count=breakout_n)
+    except Exception:
+        pass
+
     st.subheader("Single-Player Trend Dashboard")
 
     full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
@@ -13770,6 +13765,16 @@ if active_page == "Fantasy Sleepers & Busts":
                 st.warning(make_market_selected_insight(selected_market_row))
             else:
                 st.success(make_market_selected_insight(selected_market_row))
+
+        try:
+            from baseball_activity import log_sleeper_research
+
+            sleeper_sig = (fantasy_top_n, year_max, len(sleepers), len(busts))
+            if st.session_state.get("_cc_sleeper_activity_sig") != sleeper_sig:
+                st.session_state["_cc_sleeper_activity_sig"] = sleeper_sig
+                log_sleeper_research(count=len(sleepers))
+        except Exception:
+            pass
 
     _sleepers_xfer_df = pd.DataFrame()
     if not fantasy_df.empty:
@@ -14877,6 +14882,21 @@ if active_page == "Draft Simulation Test Mode":
                 "actual_summary": lab_actual_summary,
                 "trades": lab_trades,
             }
+            if run_lab:
+                try:
+                    from baseball_activity import log_draft_prep, log_roster_build
+
+                    lab_sig = (lab_format, lab_window, int(lab_picks_per_team))
+                    if st.session_state.get("_cc_draft_lab_activity_sig") != lab_sig:
+                        st.session_state["_cc_draft_lab_activity_sig"] = lab_sig
+                        log_draft_prep(context=lab_format, teams="4-team draft lab")
+                        if lab_team_summary is not None and not lab_team_summary.empty:
+                            top_team = str(
+                                lab_team_summary.sort_values("Projected Team Rank").iloc[0]["Fantasy Team"]
+                            )
+                            log_roster_build(team=top_team)
+                except Exception:
+                    pass
 
     lab_state = st.session_state.get("draft_lab_results", {})
     lab_draft = lab_state.get("draft", pd.DataFrame())
@@ -15994,6 +16014,24 @@ if active_page == "Fantasy Lineup Assistant":
                             display_rows=20,
                             style_cols=["Net Gain"]
                         )
+                        try:
+                            from baseball_activity import log_trade_analysis
+
+                            trade_sig = (
+                                my_team_trade,
+                                other_team_trade,
+                                tuple(sorted(give_players)),
+                                tuple(sorted(get_players)),
+                            )
+                            if st.session_state.get("_cc_trade_activity_sig") != trade_sig:
+                                st.session_state["_cc_trade_activity_sig"] = trade_sig
+                                log_trade_analysis(
+                                    give=give_players,
+                                    get=get_players,
+                                    verdict=str(verdict or ""),
+                                )
+                        except Exception:
+                            pass
 
                     st.markdown("##### Generate Trade Ideas")
                     st.caption(
@@ -16640,9 +16678,4 @@ if developer_mode_enabled():
         st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
         st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
         st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
-
-try:
-    autosave_baseball_state(st)
-except Exception:
-    pass
 
