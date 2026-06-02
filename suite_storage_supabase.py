@@ -85,6 +85,62 @@ def normalize_app_key(app: str) -> str:
     return cleaned
 
 
+def _scoped_user_id() -> str:
+    from suite_user import get_account_user_id
+
+    return get_account_user_id()
+
+
+def _cloud_user_id() -> str | None:
+    uid = _scoped_user_id()
+    if not uid or uid.startswith("local:"):
+        return None
+    return uid
+
+
+def ensure_user_row(
+    external_id: str,
+    *,
+    email: str = "",
+    display_name: str = "",
+) -> str:
+    """Create or fetch suite_users row; returns Supabase UUID."""
+    ext = str(external_id or "default").strip() or "default"
+    existing = _request(
+        "GET",
+        _TABLE_USERS,
+        params={
+            "select": "id",
+            "external_id": f"eq.{ext}",
+            "limit": "1",
+        },
+        prefer="return=representation",
+    )
+    if isinstance(existing, list) and existing and isinstance(existing[0], dict):
+        row_id = str(existing[0].get("id") or "").strip()
+        if row_id:
+            return row_id
+    created = _request(
+        "POST",
+        _TABLE_USERS,
+        json_body={
+            "external_id": ext,
+            "email": email or "",
+            "display_name": display_name or ext.replace("_", " ").title(),
+        },
+        prefer="return=representation",
+    )
+    if isinstance(created, list) and created and isinstance(created[0], dict):
+        row_id = str(created[0].get("id") or "").strip()
+        if row_id:
+            return row_id
+    if isinstance(created, dict):
+        row_id = str(created.get("id") or "").strip()
+        if row_id:
+            return row_id
+    raise RuntimeError(f"Could not resolve suite_users row for external_id={ext!r}")
+
+
 def ping() -> bool:
     cfg = get_cloud_config()
     if cfg is None:
@@ -106,17 +162,17 @@ def append_event(
     app_key = normalize_app_key(app)
     if not app_key:
         return
-    _request(
-        "POST",
-        _TABLE_EVENTS,
-        json_body={
-            "app": app_key,
-            "event": event,
-            "page": page or "",
-            "timestamp": _now_iso(),
-            "metrics": metrics or {},
-        },
-    )
+    body: dict[str, Any] = {
+        "app": app_key,
+        "event": event,
+        "page": page or "",
+        "timestamp": _now_iso(),
+        "metrics": metrics or {},
+    }
+    uid = _cloud_user_id()
+    if uid:
+        body["user_id"] = uid
+    _request("POST", _TABLE_EVENTS, json_body=body)
 
 
 def save_current_state(
@@ -129,16 +185,20 @@ def save_current_state(
     app_key = normalize_app_key(app)
     if app_key not in ACTIVE_APP_KEYS:
         return
+    body: dict[str, Any] = {
+        "app": app_key,
+        "page": page or "",
+        "summary": summary or "",
+        "metrics": metrics or {},
+        "updated_at": _now_iso(),
+    }
+    uid = _cloud_user_id()
+    if uid:
+        body["user_id"] = uid
     _request(
         "POST",
         _TABLE_STATE,
-        json_body={
-            "app": app_key,
-            "page": page or "",
-            "summary": summary or "",
-            "metrics": metrics or {},
-            "updated_at": _now_iso(),
-        },
+        json_body=body,
         prefer="resolution=merge-duplicates,return=minimal",
     )
 
@@ -158,18 +218,22 @@ def upsert_resume_item(
         return
     if app_key not in ACTIVE_APP_KEYS:
         return
+    body: dict[str, Any] = {
+        "app": app_key,
+        "item_key": key,
+        "title": title_clean,
+        "subtitle": subtitle or "",
+        "action_url": action_url or "",
+        "valid": True,
+        "updated_at": _now_iso(),
+    }
+    uid = _cloud_user_id()
+    if uid:
+        body["user_id"] = uid
     _request(
         "POST",
         _TABLE_RESUME,
-        json_body={
-            "app": app_key,
-            "item_key": key,
-            "title": title_clean,
-            "subtitle": subtitle or "",
-            "action_url": action_url or "",
-            "valid": True,
-            "updated_at": _now_iso(),
-        },
+        json_body=body,
         prefer="resolution=merge-duplicates,return=minimal",
     )
 
@@ -179,10 +243,14 @@ def invalidate_resume_item(app: str, item_key: str) -> None:
     key = str(item_key or "").strip()
     if not app_key or not key:
         return
+    params: dict[str, str] = {"app": f"eq.{app_key}", "item_key": f"eq.{key}"}
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
     _request(
         "PATCH",
         _TABLE_RESUME,
-        params={"app": f"eq.{app_key}", "item_key": f"eq.{key}"},
+        params=params,
         json_body={"valid": False, "updated_at": _now_iso()},
     )
 
@@ -191,10 +259,14 @@ def invalidate_app_resume_items(app: str) -> None:
     app_key = normalize_app_key(app)
     if not app_key:
         return
+    params: dict[str, str] = {"app": f"eq.{app_key}"}
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
     _request(
         "PATCH",
         _TABLE_RESUME,
-        params={"app": f"eq.{app_key}"},
+        params=params,
         json_body={"valid": False, "updated_at": _now_iso()},
     )
 
@@ -232,10 +304,14 @@ def load_events(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
 
 
 def load_current_states() -> dict[str, dict[str, Any]]:
+    params: dict[str, str] = {"select": "app,page,summary,metrics,updated_at"}
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
     rows = _request(
         "GET",
         _TABLE_STATE,
-        params={"select": "app,page,summary,metrics,updated_at"},
+        params=params,
         prefer="return=representation",
     )
     if not isinstance(rows, list):
