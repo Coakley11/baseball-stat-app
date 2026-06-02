@@ -22,9 +22,12 @@ ACTIVE_APP_KEYS = frozenset(
     }
 )
 
+_TABLE_USERS = "suite_users"
 _TABLE_EVENTS = "suite_activity_events"
 _TABLE_STATE = "suite_app_current_state"
 _TABLE_RESUME = "suite_resume_items"
+_TABLE_SAVED = "suite_saved_items"
+_TABLE_SETTINGS = "suite_user_settings"
 
 
 def _now_iso() -> str:
@@ -262,6 +265,7 @@ def load_active_resume_items(limit: int = 8) -> list[dict[str, Any]]:
         _TABLE_RESUME,
         params={
             "select": "app,item_key,title,subtitle,action_url,updated_at",
+            "user_id": f"eq.{_scoped_user_id()}",
             "valid": "eq.true",
             "order": "updated_at.desc",
             "limit": str(limit),
@@ -282,6 +286,131 @@ def load_active_resume_items(limit: int = 8) -> list[dict[str, Any]]:
         for row in rows
         if isinstance(row, dict)
     ]
+
+
+def upsert_saved_item(
+    app: str,
+    item_type: str,
+    item_key: str,
+    *,
+    title: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    app_key = normalize_app_key(app)
+    key = str(item_key or "").strip()
+    title_clean = str(title or "").strip()
+    itype = str(item_type or "item").strip() or "item"
+    if not app_key or not key or not title_clean:
+        return
+    _request(
+        "POST",
+        _TABLE_SAVED,
+        json_body={
+            "user_id": _scoped_user_id(),
+            "app": app_key,
+            "item_type": itype,
+            "item_key": key,
+            "title": title_clean,
+            "payload": payload or {},
+            "valid": True,
+            "updated_at": _now_iso(),
+        },
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
+
+
+def invalidate_saved_item(app: str, item_type: str, item_key: str) -> None:
+    app_key = normalize_app_key(app)
+    key = str(item_key or "").strip()
+    itype = str(item_type or "item").strip() or "item"
+    if not app_key or not key:
+        return
+    _request(
+        "PATCH",
+        _TABLE_SAVED,
+        params={
+            "user_id": f"eq.{_scoped_user_id()}",
+            "app": f"eq.{app_key}",
+            "item_type": f"eq.{itype}",
+            "item_key": f"eq.{key}",
+        },
+        json_body={"valid": False, "updated_at": _now_iso()},
+    )
+
+
+def load_saved_items(
+    *,
+    app: str | None = None,
+    item_type: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    params: dict[str, str] = {
+        "select": "app,item_type,item_key,title,payload,updated_at",
+        "user_id": f"eq.{_scoped_user_id()}",
+        "valid": "eq.true",
+        "order": "updated_at.desc",
+        "limit": str(limit),
+    }
+    if app:
+        params["app"] = f"eq.{normalize_app_key(app)}"
+    if item_type:
+        params["item_type"] = f"eq.{item_type}"
+    rows = _request("GET", _TABLE_SAVED, params=params, prefer="return=representation")
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        out.append(
+            {
+                "app": str(row.get("app") or ""),
+                "item_type": str(row.get("item_type") or ""),
+                "item_key": str(row.get("item_key") or ""),
+                "title": str(row.get("title") or ""),
+                "payload": payload,
+                "updated_at": str(row.get("updated_at") or "")[:19],
+            }
+        )
+    return out
+
+
+def save_user_settings(app: str, settings: dict[str, Any]) -> None:
+    app_key = str(app or "_global").strip() or "_global"
+    _request(
+        "POST",
+        _TABLE_SETTINGS,
+        json_body={
+            "user_id": _scoped_user_id(),
+            "app": app_key,
+            "settings": settings or {},
+            "updated_at": _now_iso(),
+        },
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
+
+
+def load_user_settings(app: str = "_global") -> dict[str, Any]:
+    app_key = str(app or "_global").strip() or "_global"
+    rows = _request(
+        "GET",
+        _TABLE_SETTINGS,
+        params={
+            "select": "settings,updated_at",
+            "user_id": f"eq.{_scoped_user_id()}",
+            "app": f"eq.{app_key}",
+            "limit": "1",
+        },
+        prefer="return=representation",
+    )
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        settings = rows[0].get("settings")
+        if isinstance(settings, dict):
+            return settings
+    return {}
 
 
 def record_activity(

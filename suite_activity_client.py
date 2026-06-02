@@ -161,6 +161,30 @@ def record_activity(
     ):
         if local_state is not None:
             save_local_app_state(app, local_state)
+            try:
+                from suite_account import sync_local_state_to_cloud
+
+                sync_local_state_to_cloud(app, local_state)
+            except Exception:
+                pass
+        saved_type = str(metrics.get("saved_item_type") or "").strip()
+        saved_key = str(metrics.get("saved_item_key") or "").strip()
+        saved_title = str(metrics.get("saved_item_title") or summary or "").strip()
+        if saved_type and saved_key and saved_title:
+            try:
+                from suite_account import remember_saved_item
+
+                remember_saved_item(
+                    app,
+                    saved_type,
+                    saved_key,
+                    title=saved_title,
+                    payload=metrics.get("saved_item_payload")
+                    if isinstance(metrics.get("saved_item_payload"), dict)
+                    else metrics,
+                )
+            except Exception:
+                pass
         return
 
     storage = _load_storage_module()

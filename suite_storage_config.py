@@ -21,6 +21,9 @@ EXPECTED_SECRETS_TOML = """\
 [suite_activity]
 supabase_url = "https://YOUR_PROJECT_REF.supabase.co"
 supabase_key = "YOUR_SERVICE_ROLE_KEY"
+# Same on phone, laptop, and every suite app (unified account memory)
+suite_user_id = "daniel"
+suite_user_email = "you@example.com"
 """
 
 
