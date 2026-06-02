@@ -148,6 +148,18 @@ def record_activity(
     local_state: dict[str, Any] | None = None,
 ) -> None:
     metrics = metrics or {}
+    if not str(action_url or "").strip():
+        try:
+            from suite_deep_links import build_resume_action_url
+
+            action_url = build_resume_action_url(
+                app,
+                resume_key=resume_key,
+                page=page,
+                metrics=metrics,
+            )
+        except Exception:
+            pass
     if _record_via_cloud(
         app,
         event,

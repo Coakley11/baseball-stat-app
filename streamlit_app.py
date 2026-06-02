@@ -456,6 +456,13 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
+try:
+    from suite_resume_launch import apply_suite_resume_launch
+
+    apply_suite_resume_launch(st, "baseball")
+except Exception:
+    pass
+
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
