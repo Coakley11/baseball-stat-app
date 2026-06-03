@@ -1,8 +1,8 @@
 """
 Per-app persistent user state for Daniel AI Streamlit apps.
 
-Each app stores JSON under ``data/{app_id}_user_state.json``. Loads are defensive:
-missing or corrupt files fall back to defaults without crashing.
+Local JSON under ``data/{app_id}_user_state.json`` plus optional Supabase
+``metrics.full_session`` for cross-device restore on direct app open.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ from typing import Any, Callable
 STATE_VERSION = 1
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
-# App ids must match keys used across the suite (command center registry).
-APP_IDS = frozenset({"music", "investment", "baseball", "basketball", "nba"})
+APP_IDS = frozenset(
+    {"music", "investment", "baseball", "basketball", "nba", "future_lens"}
+)
 
 _LEGACY_COMBINED_FILE = DATA_DIR / "app_state.json"
 
@@ -25,6 +26,7 @@ _SESSION_RESTORED_PREFIX = "_suite_disk_state_restored::"
 _SESSION_BANNER_KEY = "_suite_persist_banner"
 _SESSION_SAVED_FLASH_KEY = "_suite_persist_saved_flash"
 _SESSION_INVALID_WARN_KEY = "_suite_persist_invalid_warn"
+_SESSION_CLOUD_BANNER_KEY = "_suite_persist_cloud_banner"
 
 
 def _utc_now_iso() -> str:
@@ -58,7 +60,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> bool:
 
 
 def _migrate_legacy_combined(app_id: str) -> dict[str, Any] | None:
-    """One-time read from legacy ``data/app_state.json`` nested by app key."""
     combined = _read_json(_LEGACY_COMBINED_FILE)
     if not combined:
         return None
@@ -72,31 +73,33 @@ def _migrate_legacy_combined(app_id: str) -> dict[str, Any] | None:
     return out
 
 
-def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
-    """
-    Return ``(state_dict, warning_message)``.
-
-    ``state_dict`` is empty when nothing valid was loaded.
-    """
+def _load_raw(app_id: str) -> tuple[dict[str, Any], str | None, str | None]:
+    """Return ``(state_dict, warning, saved_at_iso)``."""
     path = state_file_path(app_id)
     raw = _read_json(path)
     if raw is None:
         raw = _migrate_legacy_combined(app_id)
     if raw is None:
-        return {}, None
+        return {}, None, None
 
     version = raw.get("version", STATE_VERSION)
     if version != STATE_VERSION:
-        return {}, f"Saved settings used an older format (v{version}); using defaults."
+        return {}, f"Saved settings used an older format (v{version}); using defaults.", None
 
     state = raw.get("state")
     if not isinstance(state, dict):
-        return {}, "Saved settings were invalid; using defaults."
+        return {}, "Saved settings were invalid; using defaults.", None
 
+    saved_at = str(raw.get("saved_at") or "") or None
     try:
-        return copy.deepcopy(state), None
+        return copy.deepcopy(state), None, saved_at
     except Exception:
-        return {}, "Could not read saved settings; using defaults."
+        return {}, "Could not read saved settings; using defaults.", None
+
+
+def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
+    state, warning, _ = _load_raw(app_id)
+    return state, warning
 
 
 def save_user_state(app_id: str, state: dict[str, Any]) -> bool:
@@ -127,28 +130,75 @@ def restore_once(
     *,
     apply_state: Callable[[Any, dict[str, Any]], None],
 ) -> bool:
-    """Load disk state into session once per browser session."""
+    """
+    Restore once per browser session: cloud vs disk (newer wins).
+
+    Skipped when Continue/deep-link query params are present.
+    """
     flag = f"{_SESSION_RESTORED_PREFIX}{app_id}"
     if st.session_state.get(flag):
         return False
+
+    skip_cloud = False
+    try:
+        from suite_cloud_state import has_resume_query_params
+
+        skip_cloud = has_resume_query_params(st, app_id)
+    except ImportError:
+        pass
+
+    if skip_cloud:
+        st.session_state[flag] = True
+        return False
+
     st.session_state[flag] = True
 
-    loaded, warning = load_user_state(app_id)
-    if warning:
-        st.session_state[_SESSION_INVALID_WARN_KEY] = warning
-    if not loaded:
+    disk_state, disk_warn, disk_ts = _load_raw(app_id)
+    if disk_warn:
+        st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
+
+    cloud_state: dict[str, Any] = {}
+    cloud_ts: str | None = None
+    from_cloud = False
+    try:
+        from suite_cloud_state import load_cloud_full_session, pick_newer_session
+
+        cloud_state, cloud_ts = load_cloud_full_session(app_id)
+        state = pick_newer_session(cloud_state, cloud_ts, disk_state, disk_ts)
+        if cloud_state and state is cloud_state:
+            from_cloud = True
+        elif cloud_state and disk_state and state is disk_state:
+            from_cloud = _parse_ts_simple(cloud_ts) > _parse_ts_simple(disk_ts)
+    except ImportError:
+        state = disk_state
+    except Exception:
+        state = disk_state
+
+    if not state:
         return False
 
     try:
-        apply_state(st, loaded)
+        apply_state(st, state)
     except Exception:
         st.session_state[_SESSION_INVALID_WARN_KEY] = (
             "Some saved settings could not be restored; using defaults."
         )
         return False
 
-    st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
+    if from_cloud:
+        st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+    else:
+        st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
     return True
+
+
+def _parse_ts_simple(ts: str | None) -> float:
+    if not ts:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00")[:26]).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def autosave_if_changed(
@@ -157,7 +207,7 @@ def autosave_if_changed(
     *,
     build_state: Callable[[Any], dict[str, Any]],
 ) -> None:
-    """Persist when the built snapshot fingerprint changes."""
+    """Persist to disk and Supabase when the session snapshot changes."""
     try:
         import hashlib
 
@@ -167,7 +217,17 @@ def autosave_if_changed(
         key = f"_suite_autosave_fp::{app_id}"
         if st.session_state.get(key) == fp:
             return
-        if save_user_state(app_id, state):
+        saved_disk = save_user_state(app_id, state)
+        saved_cloud = False
+        try:
+            from suite_cloud_state import save_cloud_full_session, session_page_summary
+
+            page, summary = session_page_summary(app_id, state)
+            save_cloud_full_session(app_id, state, page=page, summary=summary)
+            saved_cloud = True
+        except Exception:
+            pass
+        if saved_disk or saved_cloud:
             st.session_state[key] = fp
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True
     except Exception:
@@ -178,9 +238,12 @@ def show_persistence_messages(st: Any) -> None:
     warn = st.session_state.pop(_SESSION_INVALID_WARN_KEY, None)
     if warn:
         st.warning(str(warn))
-    banner = st.session_state.pop(_SESSION_BANNER_KEY, None)
-    if banner:
-        st.success(str(banner))
+    if st.session_state.pop(_SESSION_CLOUD_BANNER_KEY, None):
+        st.success("Restored your last session from the cloud")
+    else:
+        banner = st.session_state.pop(_SESSION_BANNER_KEY, None)
+        if banner:
+            st.success(str(banner))
     if st.session_state.pop(_SESSION_SAVED_FLASH_KEY, False):
         st.toast("Settings saved", icon="💾")
 
@@ -193,7 +256,6 @@ def render_reset_controls(
     label: str = "Reset to Default Settings",
     help_text: str = "Clears your saved session for this app only. Core catalog data is not deleted.",
 ) -> None:
-    """Sidebar expander with confirmed reset."""
     with st.sidebar.expander("Saved session", expanded=False):
         st.caption("Your last page, filters, and inputs reload automatically.")
         confirm_key = f"_suite_reset_confirm::{app_id}"
