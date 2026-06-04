@@ -248,36 +248,68 @@ def show_persistence_messages(st: Any) -> None:
         st.toast("Settings saved", icon="💾")
 
 
+def finalize_suite_reset(
+    st: Any,
+    app_id: str,
+    fresh_state: dict[str, Any],
+    *,
+    page: str = "",
+    summary: str = "Reset to defaults",
+) -> None:
+    save_user_state(app_id, fresh_state)
+    try:
+        from suite_cloud_state import (
+            clear_cloud_full_session,
+            save_cloud_full_session,
+            session_page_summary,
+        )
+
+        clear_cloud_full_session(app_id)
+        auto_page, auto_summary = session_page_summary(app_id, fresh_state)
+        save_cloud_full_session(
+            app_id,
+            fresh_state,
+            page=page or auto_page,
+            summary=summary or auto_summary or "Reset to defaults",
+        )
+    except Exception:
+        pass
+    st.session_state[f"{_SESSION_RESTORED_PREFIX}{app_id}"] = True
+    st.session_state.pop(f"_suite_autosave_fp::{app_id}", None)
+
+
 def render_reset_controls(
     st: Any,
     app_id: str,
     *,
     on_reset: Callable[[Any], None],
-    label: str = "Reset to Default Settings",
-    help_text: str = "Clears your saved session for this app only. Core catalog data is not deleted.",
+    label: str = "Reset to default",
+    help_text: str = (
+        "Clears session, local saved state, and cloud session for this app. "
+        "Catalog data and user files are not deleted."
+    ),
 ) -> None:
-    with st.sidebar.expander("Saved session", expanded=False):
-        st.caption("Your last page, filters, and inputs reload automatically.")
-        confirm_key = f"_suite_reset_confirm::{app_id}"
-        if st.session_state.get(confirm_key):
-            st.warning("This clears saved preferences for this app. Continue?")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("Yes, reset", key=f"suite_reset_yes::{app_id}", type="primary"):
-                    reset_user_state(app_id)
-                    for k in list(st.session_state.keys()):
-                        if str(k).startswith(_SESSION_RESTORED_PREFIX) or str(k).startswith(
-                            "_suite_autosave_fp::"
-                        ):
-                            st.session_state.pop(k, None)
-                    st.session_state.pop(confirm_key, None)
-                    on_reset(st)
-                    st.session_state[_SESSION_BANNER_KEY] = "Reset to defaults"
-                    st.rerun()
-            with c2:
-                if st.button("Cancel", key=f"suite_reset_no::{app_id}"):
-                    st.session_state.pop(confirm_key, None)
-                    st.rerun()
-        elif st.button(label, key=f"suite_reset_btn::{app_id}", help=help_text):
-            st.session_state[confirm_key] = True
-            st.rerun()
+    st.sidebar.markdown("---")
+    confirm_key = f"_suite_reset_confirm::{app_id}"
+    if st.session_state.get(confirm_key):
+        st.sidebar.warning("This clears saved preferences for this app. Continue?")
+        c1, c2 = st.sidebar.columns(2)
+        with c1:
+            if st.button("Yes, reset", key=f"suite_reset_yes::{app_id}", type="primary"):
+                reset_user_state(app_id)
+                for k in list(st.session_state.keys()):
+                    if str(k).startswith(_SESSION_RESTORED_PREFIX) or str(k).startswith(
+                        "_suite_autosave_fp::"
+                    ):
+                        st.session_state.pop(k, None)
+                st.session_state.pop(confirm_key, None)
+                on_reset(st)
+                st.session_state[_SESSION_BANNER_KEY] = "Reset to defaults"
+                st.rerun()
+        with c2:
+            if st.button("Cancel", key=f"suite_reset_no::{app_id}"):
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+    elif st.sidebar.button(label, key=f"suite_reset_btn::{app_id}", help=help_text, use_container_width=True):
+        st.session_state[confirm_key] = True
+        st.rerun()

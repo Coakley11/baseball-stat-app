@@ -8,11 +8,14 @@ from typing import Any
 import page_state as pg_state
 from suite_user_persistence import (
     autosave_if_changed,
-    reset_user_state,
+    finalize_suite_reset,
     restore_once,
 )
 
 APP_ID = "baseball"
+
+_DEFAULT_PAGE = "Historical Explorer"
+_DEFAULT_SIDEBAR_PAGE = "🔎 Historical Explorer"
 
 _GLOBAL_KEYS = (
     "active_page",
@@ -58,6 +61,17 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         st.session_state["_page_state_last_active"] = active
 
 
+def apply_baseball_session_defaults(st: Any) -> None:
+    ss = st.session_state
+    for key in list(ss.keys()):
+        if str(key).startswith("_suite_"):
+            ss.pop(key, None)
+    ss.pop("page_filter_state", None)
+    ss.pop("_page_state_last_active", None)
+    ss["active_page"] = _DEFAULT_PAGE
+    ss["main_sidebar_page"] = _DEFAULT_SIDEBAR_PAGE
+
+
 def restore_baseball_disk_state_once(st: Any) -> bool:
     return restore_once(
         st,
@@ -71,10 +85,13 @@ def autosave_baseball_state(st: Any) -> None:
 
 
 def default_reset_baseball_session(st: Any) -> None:
-    reset_user_state(APP_ID)
-    for key in list(st.session_state.keys()):
-        if str(key).startswith("_suite_"):
-            st.session_state.pop(key, None)
-    st.session_state.pop("page_filter_state", None)
-    st.session_state.pop("_page_state_last_active", None)
-    st.session_state["active_page"] = "Historical Explorer"
+    """Full baseball reset: session, disk, and cloud ``full_session``."""
+    apply_baseball_session_defaults(st)
+    fresh = build_baseball_disk_state(st)
+    finalize_suite_reset(
+        st,
+        APP_ID,
+        fresh,
+        page=_DEFAULT_PAGE,
+        summary="Reset to defaults",
+    )

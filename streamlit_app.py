@@ -466,12 +466,19 @@ except Exception:
 try:
     from baseball_persistent_state import (
         autosave_baseball_state,
+        default_reset_baseball_session,
         restore_baseball_disk_state_once,
     )
-    from suite_user_persistence import show_persistence_messages
+    from suite_user_persistence import render_reset_controls, show_persistence_messages
 
     restore_baseball_disk_state_once(st)
     show_persistence_messages(st)
+    render_reset_controls(
+        st,
+        "baseball",
+        on_reset=default_reset_baseball_session,
+        help_text="Clears saved page, filters, local disk, and cloud session. Lahman data is not deleted.",
+    )
 except Exception:
     pass
 

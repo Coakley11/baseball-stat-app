@@ -85,6 +85,28 @@ def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
         return {}, None
 
 
+def clear_cloud_full_session(app_id: str) -> bool:
+    """Remove persisted ``metrics.full_session`` so other devices cannot restore old state."""
+    try:
+        from suite_storage_config import cloud_storage_enabled
+    except ImportError:
+        return False
+    if not cloud_storage_enabled():
+        return True
+    try:
+        import suite_storage as storage
+
+        storage.save_current_state(
+            app_id,
+            page="",
+            summary="Reset to defaults",
+            metrics={FULL_SESSION_KEY: {}},
+        )
+        return True
+    except Exception:
+        return False
+
+
 def save_cloud_full_session(
     app_id: str,
     state: dict[str, Any],
