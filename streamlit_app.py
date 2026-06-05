@@ -11544,6 +11544,13 @@ def render_contextual_page_nav(
 # Page navigation: consume scheduled navigation BEFORE the sidebar radio is instantiated.
 _consume_scheduled_navigation()
 
+try:
+    from suite_command_center_link import render_command_center_sidebar_link
+
+    render_command_center_sidebar_link(st)
+except Exception:
+    pass
+
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
