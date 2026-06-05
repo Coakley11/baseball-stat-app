@@ -456,6 +456,11 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
+import portfolio_polish as pp
+import portfolio_demo as pdemo
+
+pp.inject_polish_css(st, app_slug="baseball")
+
 try:
     from suite_resume_launch import apply_suite_resume_launch
 
@@ -1643,10 +1648,11 @@ def make_valuation_summary(row):
     )
 
 def render_section_header(title, note):
+    note_html = "" if pp.is_screenshot_mode(st) else f'<div class="small-note">{note}</div>'
     st.markdown(f"""
         <div class="section-card">
             <div class="section-title">{title}</div>
-            <div class="small-note">{note}</div>
+            {note_html}
         </div>
         """, unsafe_allow_html=True)
 
@@ -1737,6 +1743,14 @@ def render_page_guide(page_key):
     g = PAGE_GUIDES.get(page_key)
     if not g:
         return
+    if pp.is_screenshot_mode(st):
+        pp.render_executive_summary(
+            st,
+            g.get("purpose", ""),
+            g.get("when", ""),
+            g.get("outputs", ""),
+        )
+        return
     extra_items = "".join(f"<li>{x}</li>" for x in (g.get("extra") or []))
     st.markdown(
         f"""
@@ -1759,7 +1773,7 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
         return
     show_chart = st.checkbox(
         f"Show {title}",
-        value=False,
+        value=pp.chart_default_visible(st),
         key=f"bar_chart_{hashlib.md5(str(title).encode('utf-8')).hexdigest()[:10]}",
         help="Charts are rendered on demand so table-first page loads stay fast.",
     )
@@ -10899,7 +10913,7 @@ def _debug_session_value_repr(val):
 
 def render_page_filters_debug(page_name: str):
     """Bottom-of-page debug: confirm filter keys survive sidebar navigation."""
-    if not developer_mode_enabled():
+    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
         return
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
@@ -10918,7 +10932,7 @@ def render_page_filters_debug(page_name: str):
 
 def render_page_state_debug(page_name: str):
     """Sidebar debug: show persisted keys for the active page."""
-    if not developer_mode_enabled():
+    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
         return
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
@@ -11551,6 +11565,8 @@ try:
 except Exception:
     pass
 
+pp.render_sidebar_toggle(st)
+
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
@@ -11564,6 +11580,7 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
+pdemo.apply_page_demo(st, active_page)
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(
@@ -11581,7 +11598,8 @@ for _ephemeral_key in list(st.session_state.keys()):
     if pg_state._is_ephemeral_widget_key(_ephemeral_key):
         st.session_state.pop(_ephemeral_key, None)
 
-st.sidebar.caption("Filters are remembered as you move between pages.")
+if not pp.is_screenshot_mode(st):
+    st.sidebar.caption("Filters are remembered as you move between pages.")
 render_developer_mode_sidebar_toggle()
 render_page_state_debug(active_page)
 app_tutorial.maybe_open_tutorial_dialog()
@@ -13827,13 +13845,23 @@ if active_page == "Fantasy Sleepers & Busts":
 
 
 if active_page == "Draft Assistant Simulator":
+    if pp.is_screenshot_mode(st) or pp.is_demo_mode(st):
+        pp.render_hero_banner(
+            st,
+            "Draft Assistant — Next-Pick Intelligence",
+            "Rankings driven by team needs, positional scarcity, market value, and ML-enhanced projections.",
+        )
+    pdemo.render_draft_demo_button(st, active_page)
     render_section_header(
         "🧩 Draft Assistant Simulator",
         "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board."
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    st.caption("Log picks in **Draft Room Simulator** first — this page excludes drafted players automatically.")
+    pp.instructional_caption(
+        st,
+        "Log picks in Draft Room Simulator first — this page excludes drafted players automatically.",
+    )
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -13861,7 +13889,7 @@ if active_page == "Draft Assistant Simulator":
                 key="draft_top_n",
             )
 
-        with st.expander("Advanced scoring settings", expanded=False):
+        with st.expander("Advanced scoring settings", expanded=pp.expander_default(st)):
             validate_state_option("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
             st.selectbox(
                 "Projection style",
@@ -13908,10 +13936,14 @@ if active_page == "Draft Assistant Simulator":
             ml_min_games_for_signal=ml_min_games_for_signal,
         )
 
-        with st.expander("Draft Room connection & pick number", expanded=True):
-            st.caption(
-                "Picks come from **Draft Room Simulator** (`draft_room_table`). "
-                "Choose your fantasy team name so needs and availability match your roster."
+        with st.expander(
+            "Draft Room connection & pick number",
+            expanded=not pp.is_screenshot_mode(st),
+        ):
+            pp.instructional_caption(
+                st,
+                "Picks come from Draft Room Simulator (draft_room_table). "
+                "Choose your fantasy team name so needs and availability match your roster.",
             )
 
             draft_room_table_for_assistant = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
@@ -16323,6 +16355,12 @@ if active_page == "Valuation":
 
 
 if active_page == "ML Predictions":
+    if pp.is_demo_mode(st) or pp.is_screenshot_mode(st):
+        pp.render_hero_banner(
+            st,
+            "ML Projections — Star Player Forecasts",
+            "Aaron Judge, Ohtani, Soto, and Gunnar Henderson with feature-importance insights preloaded.",
+        )
     render_section_header(
         "🤖 ML Predictions",
         "Generate next-season projections using machine learning, aging curves, regression-to-the-mean, and similar-player comparisons."
@@ -16424,8 +16462,11 @@ if active_page == "ML Predictions":
         )
 
         if not st.session_state.get("ml_predictions_have_run", False):
-            st.info(
-                "Choose settings, then click **Generate / Refresh ML Predictions**."
+            pp.render_professional_empty(
+                st,
+                "Select projection settings and generate a forecast. The model will estimate "
+                "next-season performance using historical trends, aging curves, and machine learning.",
+                title="Generate ML projections",
             )
 
         _ml_pipeline_ran = _ml_execute_pipeline_if_needed(
@@ -16649,7 +16690,7 @@ if active_page == "ML Predictions":
                     importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
                     importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
                     render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
-                    with st.expander("Feature importance chart", expanded=False):
+                    with st.expander("Feature importance chart", expanded=pp.is_demo_mode(st) or pp.is_screenshot_mode(st)):
                         top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
 
                 if developer_mode_enabled() and _ml_is_nonempty_dataframe(stored_df):
