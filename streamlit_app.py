@@ -4205,6 +4205,12 @@ def _ml_execute_pipeline_if_needed(
     have_run = bool(st.session_state.get("ml_predictions_have_run", False))
     if not full_gen and not have_run:
         return False
+    try:
+        import portfolio_polish as _pp_ml
+        if _pp_ml.skip_heavy_work(st) and have_run and _ml_is_nonempty_dataframe(st.session_state.get(ML_PREDICTIONS_DF_KEY)):
+            return False
+    except ImportError:
+        pass
 
     effective_regression, effective_age, effective_comp = _ml_effective_tuning_from_style(
         ml_projection_style, regression_strength, age_strength, comp_weight
@@ -12519,7 +12525,8 @@ if active_page == "Comparison Tool":
 
 
     st.divider()
-    with st.expander("Advanced: Statistical significance test", expanded=False):
+    if not pp.skip_heavy_work(st):
+      with st.expander("Advanced: Statistical significance test", expanded=False):
         _sig_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
         _sig_year_range = st.session_state.get("compare_year_range", (year_min, year_max))
         _sig_age_range = st.session_state.get("compare_age_range", (16, 50))
@@ -13872,7 +13879,8 @@ if active_page == "Draft Assistant Simulator":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
     else:
-        render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_assistant")
+        if not pp.skip_heavy_work(st):
+            render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_assistant")
         _draft_window_options = [3, 4, 5]
         _draft_format_options = ["5x5 Roto", "Points League"]
         d1, d2, d3 = st.columns(3)
@@ -16357,6 +16365,8 @@ if active_page == "Valuation":
 
 
 if active_page == "ML Predictions":
+    if pp.skip_heavy_work(st):
+        st.session_state.setdefault("ml_max_players", 100)
     if pp.is_demo_mode(st) or pp.is_screenshot_mode(st):
         pp.render_hero_banner(
             st,

@@ -7,6 +7,28 @@ import html
 SESSION_KEY = "portfolio_screenshot_mode"
 DEMO_SESSION_KEY = "portfolio_demo_mode"
 
+__all__ = (
+    "SESSION_KEY",
+    "DEMO_SESSION_KEY",
+    "is_screenshot_mode",
+    "is_demo_mode",
+    "is_capture_mode",
+    "skip_heavy_work",
+    "prefer_cached_demo",
+    "skip_api_refresh",
+    "skip_background_persistence",
+    "render_sidebar_toggle",
+    "inject_polish_css",
+    "render_executive_summary",
+    "render_hero_banner",
+    "render_professional_empty",
+    "instructional_caption",
+    "expander_default",
+    "chart_default_visible",
+    "demo_applied",
+    "mark_demo_applied",
+)
+
 
 def is_screenshot_mode(st) -> bool:
     return bool(st.session_state.get(SESSION_KEY, False))
@@ -14,6 +36,26 @@ def is_screenshot_mode(st) -> bool:
 
 def is_demo_mode(st) -> bool:
     return bool(st.session_state.get(DEMO_SESSION_KEY, False))
+
+
+def is_capture_mode(st) -> bool:
+    return is_screenshot_mode(st) or is_demo_mode(st)
+
+
+def skip_heavy_work(st) -> bool:
+    return is_capture_mode(st)
+
+
+def prefer_cached_demo(st) -> bool:
+    return is_capture_mode(st)
+
+
+def skip_api_refresh(st) -> bool:
+    return is_capture_mode(st)
+
+
+def skip_background_persistence(st) -> bool:
+    return is_capture_mode(st)
 
 
 def _clear_demo_flags(st) -> None:
@@ -43,6 +85,8 @@ def render_sidebar_toggle(st) -> None:
         st.sidebar.caption("Screenshot mode — layout optimized for captures")
     if is_demo_mode(st):
         st.sidebar.caption("Demo mode — curated portfolio examples active")
+    if is_capture_mode(st):
+        st.sidebar.caption("Capture perf — cached demo data, skip heavy reruns")
 
 
 def inject_polish_css(st, *, app_slug: str = "app") -> None:
