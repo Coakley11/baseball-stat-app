@@ -11580,7 +11580,6 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
-pdemo.apply_page_demo(st, active_page)
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(
@@ -11592,6 +11591,9 @@ pg_state.handle_sidebar_page_state(
 # Apply contextual transfer before page widgets render (filters must be in session_state first).
 apply_pending_page_transfer(active_page)
 migrate_legacy_widget_keys()
+# Demo loaders run after page-state restore so saved filters do not overwrite demo seed data.
+pdemo.apply_pending_draft_demo(st)
+pdemo.schedule_page_demo(st, active_page)
 
 # Drop snapshotted button widget keys (they must never be restored into session_state).
 for _ephemeral_key in list(st.session_state.keys()):
