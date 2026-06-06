@@ -1,75 +1,37 @@
 # Baseball workflow activity audit
 
 **Last updated:** 2026-06-06  
-**Scope:** What Baseball logs to Command Center vs what is session-only. **Continue ranking unchanged** — this documents logging coverage only.
+Master suite audit: `daniel-ai-command-center/cursor-prompts/plans/suite-workflow-coverage-audit.md`
 
----
-
-## Trend Value
-
-| Workflow | Logged? | event_type | resume_key | Continue (when wired) | Notes |
-|----------|---------|------------|------------|-------------------------|-------|
-| Single-player dashboard chart | ✅ | `player_trend_viewed` | `trend:{player}` | Yes | Fires after chart render |
-| Multi-player trend visualization (2+) | ✅ **new** | `trend_comparison_viewed` | `trendcompare:{A}:{B}` | Pending CC ranking | Was session-only (`record_workflow_comparison_group`) |
-| Trend filter / lag change | ✅ | `trend_filter_changed` | — | **Excluded** | Activity feed only; not a named workflow |
-| Breakout / decline lists | ✅ | `breakout_analysis` | `baseball:breakouts` | Yes | Fires on filter sig change |
-| Trend insight row select (leaderboard) | ❌ | — | — | **Excluded** | UI selection only; no chart hook |
-
----
-
-## Comparison Tool
-
-| Workflow | Logged? | event_type | resume_key |
-|----------|---------|------------|------------|
-| Two players compared | ✅ | `player_comparison` | `compare:{A}:{B}` |
-
-Note: `player_comparison` is **Comparison Tool** (stat sig tests), not Trends multi-chart.
-
----
-
-## Other pages (currently logged)
-
-| Workflow | event_type | resume_key |
-|----------|------------|------------|
-| Draft prep | `draft_prep` | `baseball:draft` |
-| Trade analysis | `trade_analysis` | `baseball:trade` |
-| Projection report | `projection_report` | `baseball:projections` |
-| Sleeper research | `sleeper_research` | `baseball:sleepers` |
-| Roster build | `roster_build` | `roster:{team}` or `baseball:roster` |
-
----
-
-## Session-only (explicitly not logged)
-
-| Workflow | Reason |
-|----------|--------|
-| Watchlist add/remove | Sidebar MRU; low signal; would spam Continue |
-| Draft queue add/reorder | Same — use `draft_prep` / `roster_build` for meaningful completion |
-| Player insight row pick (trend/market/draft/ML) | Selection widget only; no completed analysis |
-| Feature-importance / ML insight drill-down | Not wired to activity hooks yet |
-| Page navigation / filter debug keys | Developer `render_page_filters_debug` only |
-
----
+| Workflow | Logged? | Continue card? | App Directory? | Priority | Restore? | Notes |
+|----------|---------|----------------|----------------|----------|----------|-------|
+| Single-player trend chart | ✅ | ✅ | Partial | 58 | ✅ `trend:{player}` | `player_trend_viewed` after dashboard chart |
+| Multi-player trend comparison | ✅ | ✅ | Partial | 59 | ✅ `trendcompare:A:B` | `trend_comparison_viewed` after comparison chart |
+| Player comparison (Comparison Tool) | ✅ | ✅ | Partial | 59 | ✅ `compare:A:B` | Not the Trends multi-chart |
+| Trade analysis | ✅ | ✅ | Partial | 54 | ✅ `bb:trade` | Fantasy Lineup Assistant |
+| Draft simulation prep | ✅ | ✅ | Partial | 56 | ✅ `bb:draft` | Draft Simulation Test Mode |
+| Live draft / roster build | ✅ | Partial | Partial | ~35 | Partial | `roster_build` when lab completes |
+| Draft queue edits | ❌ | ❌ | ❌ | — | Session | **Excluded:** sidebar queue MRU |
+| Watchlist additions | ❌ | ❌ | ❌ | — | Session | **Excluded:** would spam Continue |
+| Breakout / decline lists | ✅ | Weak | Partial | 35 | Partial | `breakout_analysis` on filter sig |
+| Sleeper / bust research | ✅ | Partial | Partial | ~35 | Partial | `sleeper_research` |
+| ML projection report | ✅ | Partial | Partial | ~48 | Partial | `projection_report` on ML run |
+| Trend filter change only | ✅ | ❌ | ❌ | — | — | **Excluded:** `trend_filter_changed` |
+| Player insight row picks | ❌ | ❌ | ❌ | — | — | **Excluded:** selection widget only |
+| Feature / ML insight drill-down | ❌ | ❌ | ❌ | — | — | **P1 backlog** |
+| Valuation analysis | ❌ | ❌ | ❌ | — | Disk | **P1 backlog** |
+| Live Draft Room picks | ❌ | ❌ | ❌ | — | Disk | **P1 backlog** |
+| Custom rankings | ❌ | ❌ | ❌ | — | — | No dedicated page |
+| Team builder | ❌ | ❌ | ❌ | — | — | Draft room covers roster building |
 
 ## Developer diagnostics (Trend Value)
 
-**Developer: Latest Trend Activity Event** shows:
+**Developer: Latest Trend Activity Event** — `event_type`, `resume_key`, `players`, `recorded`, `supabase_write_ok`, `write_path`, `error`
 
-- `event_type`, `resume_key`, `players`, `timestamp`, `recorded`, `supabase_write_ok`, `write_path`, `error`
-
----
-
-## Deep link resume (Baseball)
+## Deep link resume
 
 | resume_key | Opens | Restores |
 |------------|-------|----------|
 | `trend:{player}` | Trend Value | Single-player dashboard |
-| `trendcompare:{A}:{B}` | Trend Value | Multi-player trend chart (2 players) |
+| `trendcompare:{A}:{B}` | Trend Value | Multi-player trend chart |
 | `compare:{A}:{B}` | Comparison Tool | Comparison widgets |
-
----
-
-## Next (after logging verified)
-
-1. Wire `trend_comparison_viewed` into Command Center Continue (ranking only — not in this pass)
-2. Optional: `watchlist_updated` / `draft_queue_updated` if product wants those as Continue cards
