@@ -13034,12 +13034,12 @@ if active_page == "Trend Value":
             st.error(make_trend_insight_summary(trend_selected))
 
     try:
-        from baseball_activity import log_breakout_analysis, log_trend_analysis
+        from baseball_activity import log_breakout_analysis, log_trend_filter_change
 
         trend_sig = (lag_trend, int(min_g_trend), trend_position_filter, max_year_trend)
         if st.session_state.get("_cc_trend_activity_sig") != trend_sig:
             st.session_state["_cc_trend_activity_sig"] = trend_sig
-            log_trend_analysis()
+            log_trend_filter_change()
             breakout_n = len(top_breakouts) + len(biggest_declines)
             if breakout_n > 0:
                 log_breakout_analysis(count=breakout_n)
@@ -13182,6 +13182,23 @@ if active_page == "Trend Value":
                 mode=single_dashboard_mode,
                 smooth_window=single_dashboard_smooth_window
             )
+            try:
+                from baseball_activity import log_player_trend_chart
+
+                _player_trend_sig = (
+                    single_trend_label,
+                    tuple(dashboard_stats or []),
+                    single_dashboard_mode,
+                )
+                if st.session_state.get("_cc_trend_player_sig") != _player_trend_sig:
+                    st.session_state["_cc_trend_player_sig"] = _player_trend_sig
+                    log_player_trend_chart(
+                        player=single_player_name,
+                        trend_mode=single_dashboard_mode,
+                        stats=list(dashboard_stats),
+                    )
+            except Exception:
+                pass
         else:
             st.info("Choose at least one stat to graph for the selected player.")
 

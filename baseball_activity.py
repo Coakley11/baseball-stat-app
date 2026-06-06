@@ -133,15 +133,44 @@ def log_sleeper_research(*, count: int | None = None) -> None:
     )
 
 
-def log_trend_analysis(*, player: str = "", trend: str = "") -> None:
+def log_trend_filter_change() -> None:
+    """Aggregate trend filters changed — activity only, not a Continue workflow."""
     _record(
-        "trend_analysis",
+        "trend_filter_changed",
         page="Trend Value",
-        metrics={"player": player, "trend": trend},
-        summary=f"Reviewed recent trends{f' for {player}' if player else ''}",
-        resume_key=f"trend:{player}" if player else "baseball:trends",
-        resume_title="Continue trend analysis",
-        resume_subtitle=player or "Trend value",
+        metrics={},
+        summary="Adjusted trend filters",
+    )
+
+
+def log_trend_analysis(*, player: str = "", trend: str = "") -> None:
+    """Legacy hook; prefer log_player_trend_chart for named-player dashboards."""
+    if not str(player or "").strip():
+        log_trend_filter_change()
+        return
+    log_player_trend_chart(player=player, trend_mode=trend)
+
+
+def log_player_trend_chart(
+    *,
+    player: str,
+    trend_mode: str = "",
+    stats: list[str] | None = None,
+) -> None:
+    name = str(player or "").strip()
+    if not name:
+        return
+    metrics: dict[str, Any] = {"player": name, "trend": trend_mode}
+    if stats:
+        metrics["stats"] = list(stats)
+    _record(
+        "player_trend_viewed",
+        page="Trend Value",
+        metrics=metrics,
+        summary=f"Viewed trend chart for {name}",
+        resume_key=f"trend:{name}",
+        resume_title=f"Continue {name} trend chart",
+        resume_subtitle="Trend Value",
     )
 
 

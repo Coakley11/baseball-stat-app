@@ -248,6 +248,9 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             page = "Draft Simulation"
         elif "trade" in key.lower():
             page = "Fantasy Lineup Assistant"
+        elif key.startswith("trend:"):
+            metrics["player"] = key.split(":", 1)[-1].strip()
+            page = "Trend Value"
         elif "proj" in key.lower():
             page = "ML Projections"
     elif app_key == "investment":
