@@ -11587,6 +11587,20 @@ _selected_page = st.sidebar.radio(
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
 
+try:
+    from suite_analytical_question import build_context_from_session, render_analyze_with_applied_math_sidebar
+
+    _ami_ctx, _ami_summary = build_context_from_session("baseball", active_page, st.session_state)
+    render_analyze_with_applied_math_sidebar(
+        st,
+        source_app="baseball",
+        source_page=active_page,
+        context=_ami_ctx,
+        context_summary=_ami_summary,
+    )
+except Exception:
+    pass
+
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(
     st.session_state,
