@@ -12821,16 +12821,11 @@ if active_page == "Comparison Tool":
 if active_page == "Trend Value":
     render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
     try:
-        from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL, TREND_ACTIVITY_DIAGNOSTICS_LIVE
+        from baseball_event_trace import render_trend_value_deploy_banner
 
-        if TREND_ACTIVITY_DIAGNOSTICS_LIVE:
-            st.info(
-                f"**Trend activity diagnostics live** · build `{SUITE_BUILD_LABEL}` · commit `{GIT_COMMIT_SHORT}`. "
-                "Enable **Developer Mode** in the sidebar — after a single-player chart renders, open "
-                "**Developer: Last Baseball Activity Event** below."
-            )
-    except Exception:
-        pass
+        render_trend_value_deploy_banner(st)
+    except Exception as exc:
+        st.error(f"Trend deploy marker failed to load: {exc}")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _trend_lag_options = [3, 4, 5]
@@ -13178,32 +13173,33 @@ if active_page == "Trend Value":
                 mode=single_dashboard_mode,
                 smooth_window=single_dashboard_smooth_window
             )
+            _trend_log_err = ""
             try:
-                from baseball_activity import log_player_trend_chart
+                from baseball_event_trace import log_trend_chart_if_needed
 
-                _chart_trend_sig = (
-                    single_trend_label,
-                    tuple(dashboard_stats or []),
-                    single_dashboard_mode,
+                _logged, _trend_log_err = log_trend_chart_if_needed(
+                    st,
+                    player=single_player_name,
+                    chart_label=single_trend_label,
+                    dashboard_stats=list(dashboard_stats),
+                    chart_mode=single_dashboard_mode,
+                    developer_mode=developer_mode_enabled(),
                 )
-                if st.session_state.get("_cc_trend_chart_sig") != _chart_trend_sig:
-                    st.session_state["_cc_trend_chart_sig"] = _chart_trend_sig
-                    log_player_trend_chart(
-                        player=single_player_name,
-                        trend_mode=single_dashboard_mode,
-                        stats=list(dashboard_stats),
-                    )
-            except Exception:
-                pass
+            except Exception as exc:
+                _trend_log_err = str(exc)
+            if developer_mode_enabled():
+                try:
+                    from baseball_event_trace import render_last_baseball_activity_event_panel
+
+                    render_last_baseball_activity_event_panel(st)
+                    if _trend_log_err:
+                        st.error(f"Trend activity hook error: `{_trend_log_err}`")
+                except Exception as exc:
+                    st.error(f"Developer activity panel failed: {exc}")
         else:
             st.info("Choose at least one stat to graph for the selected player.")
-        if developer_mode_enabled():
-            try:
-                from baseball_event_trace import render_last_baseball_activity_event
-
-                render_last_baseball_activity_event(st, expanded=True)
-            except Exception:
-                pass
+            if developer_mode_enabled():
+                st.caption("Select at least one stat above to render the chart and fire player_trend_viewed.")
 
     st.subheader("Player Trend Visualization")
     _trend_xfer_note = st.session_state.pop("trend_chart_transfer_note", None)

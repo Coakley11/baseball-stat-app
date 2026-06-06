@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-06-event-trace-v1"
+SUITE_BUILD_LABEL = "2026-06-06-event-trace-v2"
 GIT_COMMIT_SHORT = "eb45c03"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True

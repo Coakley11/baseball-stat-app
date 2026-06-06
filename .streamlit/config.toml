@@ -1,0 +1,8 @@
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+# Streamlit Cloud entrypoint must be streamlit_app.py (lowercase).
+# Do not use Streamlit_app.py — on Linux it is a separate stale copy.
