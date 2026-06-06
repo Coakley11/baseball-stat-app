@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-06-event-trace-v2"
-GIT_COMMIT_SHORT = "cc9190b"
+SUITE_BUILD_LABEL = "2026-06-06-event-trace-v3"
+GIT_COMMIT_SHORT = "pending"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 
