@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 
 SESSION_KEY = "portfolio_screenshot_mode"
 DEMO_SESSION_KEY = "portfolio_demo_mode"
@@ -64,7 +65,18 @@ def _clear_demo_flags(st) -> None:
             st.session_state.pop(key, None)
 
 
+def portfolio_sidebar_ui_enabled() -> bool:
+    """Portfolio capture toggles are hidden unless PORTFOLIO_CAPTURE_UI is set."""
+    return os.environ.get("PORTFOLIO_CAPTURE_UI", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def render_sidebar_toggle(st) -> None:
+    if not portfolio_sidebar_ui_enabled():
+        return
     st.sidebar.divider()
     prev_demo = bool(st.session_state.get(DEMO_SESSION_KEY, False))
     st.sidebar.toggle(
