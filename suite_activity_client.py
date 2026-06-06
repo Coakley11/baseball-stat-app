@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from activity_time import utc_now_iso
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -93,7 +94,7 @@ def _fallback_append(app: str, event: str, page: str, metrics: dict[str, Any], s
             "app": app,
             "event": event,
             "page": page,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "timestamp": utc_now_iso(),
             "metrics": metrics,
             "summary": summary,
         }

@@ -5,6 +5,7 @@ Supabase PostgREST backend for cross-deployment suite activity.
 from __future__ import annotations
 
 import json
+from activity_time import normalize_timestamp_iso, utc_now_iso
 from datetime import datetime
 from typing import Any
 
@@ -272,14 +273,20 @@ def invalidate_app_resume_items(app: str) -> None:
 
 
 def load_events(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
+    params: dict[str, str] = {
+        "select": "app,event,page,timestamp,metrics",
+        "order": "timestamp.desc",
+        "limit": str(limit),
+    }
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
+    else:
+        params["user_id"] = "is.null"
     rows = _request(
         "GET",
         _TABLE_EVENTS,
-        params={
-            "select": "app,event,page,timestamp,metrics",
-            "order": "id.desc",
-            "limit": str(limit),
-        },
+        params=params,
         prefer="return=representation",
     )
     if not isinstance(rows, list):
@@ -291,12 +298,13 @@ def load_events(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
         metrics = row.get("metrics")
         if not isinstance(metrics, dict):
             metrics = {}
+        raw_ts = str(row.get("timestamp") or "")
         out.append(
             {
                 "app": str(row.get("app") or ""),
                 "event": str(row.get("event") or ""),
                 "page": str(row.get("page") or ""),
-                "timestamp": str(row.get("timestamp") or "")[:19],
+                "timestamp": normalize_timestamp_iso(raw_ts) or raw_ts,
                 "metrics": metrics,
             }
         )

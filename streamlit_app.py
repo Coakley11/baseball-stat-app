@@ -13150,6 +13150,16 @@ if active_page == "Trend Value":
                 style_cols=[c for c in trend_snapshot.columns if "Δ" in c]
             )
 
+        try:
+            from baseball_activity import log_trend_analysis
+
+            _player_trend_sig = (single_trend_label, tuple(dashboard_stats or []), single_dashboard_mode)
+            if st.session_state.get("_cc_trend_player_sig") != _player_trend_sig:
+                st.session_state["_cc_trend_player_sig"] = _player_trend_sig
+                log_trend_analysis(player=single_player_name, trend=single_dashboard_mode)
+        except Exception:
+            pass
+
         if dashboard_stats:
             plot_single_player_multi_stat_dashboard(
                 selected_player_history,

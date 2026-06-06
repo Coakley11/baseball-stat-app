@@ -36,6 +36,7 @@ _NBA_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
 
 _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("compare:", "Comparison Tool"),
+    ("trend:", "Trend Value"),
     ("baseball:draft", "Draft Simulation"),
     ("baseball:draft_prep", "Draft Simulation"),
     ("bb:draft", "Draft Simulation"),
@@ -187,6 +188,11 @@ def build_resume_action_url(
             params["suite_player_a"] = pa[:120]
         if pb:
             params["suite_player_b"] = pb[:120]
+        trend_player = str(m.get("player") or "").strip()
+        if not trend_player and rk.startswith("trend:"):
+            trend_player = rk.split(":", 1)[-1].strip()
+        if trend_player:
+            params["suite_trend_player"] = trend_player[:120]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:

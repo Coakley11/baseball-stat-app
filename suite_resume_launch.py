@@ -110,6 +110,12 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     target_page = page.strip()
     if not target_page and resume.startswith("compare:"):
         target_page = "Comparison Tool"
+    trend_player = _qp_get(st, "suite_trend_player")
+    if not trend_player and resume.startswith("trend:"):
+        trend_player = resume.split(":", 1)[-1].strip()
+    if trend_player:
+        st.session_state["single_trend_dashboard_player"] = trend_player
+        st.session_state["pending_trend_player"] = trend_player
     if target_page:
         st.session_state["_navigate_to_page"] = target_page
 
