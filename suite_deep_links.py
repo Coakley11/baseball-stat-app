@@ -36,6 +36,7 @@ _NBA_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
 
 _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("compare:", "Comparison Tool"),
+    ("trendcompare:", "Trend Value"),
     ("trend:", "Trend Value"),
     ("baseball:draft", "Draft Simulation"),
     ("baseball:draft_prep", "Draft Simulation"),
@@ -90,6 +91,11 @@ def _normalize_music_page(page: str, resume_key: str) -> str:
 
 def _parse_compare_resume(resume_key: str) -> tuple[str, str]:
     rk = str(resume_key or "").strip()
+    if rk.startswith("trendcompare:"):
+        parts = rk.split(":", 2)
+        if len(parts) >= 3:
+            return parts[1].strip(), parts[2].strip()
+        return "", ""
     if not rk.startswith("compare:"):
         return "", ""
     parts = rk.split(":", 2)
@@ -250,6 +256,15 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             page = "Fantasy Lineup Assistant"
         elif key.startswith("trend:"):
             metrics["player"] = key.split(":", 1)[-1].strip()
+            page = "Trend Value"
+        elif key.startswith("trendcompare:"):
+            pa, pb = _parse_compare_resume(key)
+            if pa:
+                metrics["player_a"] = pa
+            if pb:
+                metrics["player_b"] = pb
+            if pa and pb:
+                metrics["players"] = [pa, pb]
             page = "Trend Value"
         elif "proj" in key.lower():
             page = "ML Projections"

@@ -191,6 +191,18 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         target_page = "Comparison Tool"
     if not target_page and resume.startswith("trend:"):
         target_page = "Trend Value"
+    if not target_page and resume.startswith("trendcompare:"):
+        target_page = "Trend Value"
+    if resume.startswith("trendcompare:"):
+        parts = resume.split(":", 2)
+        if len(parts) >= 3:
+            tc_a, tc_b = parts[1].strip(), parts[2].strip()
+            if tc_a and tc_b:
+                st.session_state["_suite_pending_trendcompare_names"] = [tc_a, tc_b]
+                if not pa:
+                    pa = tc_a
+                if not pb:
+                    pb = tc_b
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()

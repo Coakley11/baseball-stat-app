@@ -13087,6 +13087,18 @@ if active_page == "Trend Value":
         if _tml:
             st.session_state["trend_players_multi"] = _tml
 
+    _pending_trendcompare = st.session_state.pop("_suite_pending_trendcompare_names", None)
+    if _pending_trendcompare and full_trend_labels:
+        _resolved_tc = []
+        for _nm in _pending_trendcompare:
+            _lbl = resolve_fullname_to_clean_label(str(_nm).strip(), full_trend_label_map)
+            if _lbl and _lbl in full_trend_labels and _lbl not in _resolved_tc:
+                _resolved_tc.append(_lbl)
+        if len(_resolved_tc) >= 2:
+            st.session_state["trend_players_multi"] = _resolved_tc[:6]
+            st.session_state["trend_force_multi_labels"] = _resolved_tc[:6]
+            st.session_state["single_trend_dashboard_player"] = _resolved_tc[0]
+
     st.caption(
         "Pick any player from the **full database**. When you use **Send to Trend Page** elsewhere, the **first** player you send anchors this dashboard; "
         "the **last three** sends populate **Player Trend Visualization** below."
@@ -13251,6 +13263,31 @@ if active_page == "Trend Value":
         except TypeError:
             st.pyplot(fig)
         plt.close(fig)
+
+        _trend_compare_err = ""
+        if len(selected_labels_trend) >= 2:
+            try:
+                from baseball_event_trace import log_trend_comparison_if_needed
+
+                _logged_cmp, _trend_compare_err = log_trend_comparison_if_needed(
+                    st,
+                    selected_labels=selected_labels_trend,
+                    name_from_label=fullname_base_from_label,
+                    trend_stat=stat_choice_trend,
+                    chart_mode=trend_chart_mode,
+                    developer_mode=developer_mode_enabled(),
+                )
+            except Exception as exc:
+                _trend_compare_err = str(exc)
+        if developer_mode_enabled():
+            try:
+                from baseball_event_trace import render_trend_activity_developer_panel
+
+                render_trend_activity_developer_panel(st)
+                if _trend_compare_err:
+                    st.error(f"Trend comparison hook error: `{_trend_compare_err}`")
+            except Exception as exc:
+                st.error(f"Developer activity panel failed: {exc}")
 
         st.subheader("Advanced Trend Intelligence")
         trend_intel = build_advanced_trend_intelligence(player_trend, selected_ids_trend, stat_choice_trend)

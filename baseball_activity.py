@@ -29,6 +29,17 @@ def _record(
     global _LAST_ACTIVITY
     m = dict(metrics or {})
     player = str(m.get("player") or "").strip()
+    pa = str(m.get("player_a") or "").strip()
+    pb = str(m.get("player_b") or "").strip()
+    players_raw = m.get("players")
+    if isinstance(players_raw, list):
+        players_display = " vs ".join(str(x).strip() for x in players_raw if str(x).strip())
+    elif pa and pb:
+        players_display = f"{pa} vs {pb}"
+    elif player:
+        players_display = player
+    else:
+        players_display = "—"
     ts = utc_now_iso()
     _LAST_ACTIVITY = {
         "event_type": event,
@@ -38,7 +49,8 @@ def _record(
         "summary": summary,
         "resume_key": resume_key,
         "resume_title": resume_title,
-        "player": player or "—",
+        "player": player or (pa if pa else "—"),
+        "players": players_display,
         "timestamp": ts,
         "recorded": False,
         "supabase_write_ok": False,
@@ -201,7 +213,7 @@ def log_player_trend_chart(
     name = str(player or "").strip()
     if not name:
         return
-    metrics: dict[str, Any] = {"player": name, "trend": trend_mode}
+    metrics: dict[str, Any] = {"player": name, "trend": trend_mode, "players": [name]}
     if stats:
         metrics["stats"] = list(stats)
     _record(
@@ -211,6 +223,43 @@ def log_player_trend_chart(
         summary=f"Opened trend chart for {name}",
         resume_key=f"trend:{name}",
         resume_title=f"Continue {name} trend chart",
+        resume_subtitle="Trend Value",
+    )
+
+
+def log_trend_comparison_viewed(
+    player_a: str,
+    player_b: str,
+    *,
+    players: list[str] | None = None,
+    trend_stat: str = "",
+    chart_mode: str = "",
+) -> None:
+    a = str(player_a or "").strip()
+    b = str(player_b or "").strip()
+    if not a or not b:
+        return
+    ordered = [str(x).strip() for x in (players or [a, b]) if str(x).strip()]
+    if len(ordered) < 2:
+        ordered = [a, b]
+    pair = f"{a} vs {b}"
+    metrics: dict[str, Any] = {
+        "player_a": a,
+        "player_b": b,
+        "players": ordered,
+        "player": a,
+    }
+    if trend_stat:
+        metrics["trend_stat"] = trend_stat
+    if chart_mode:
+        metrics["trend"] = chart_mode
+    _record(
+        "trend_comparison_viewed",
+        page="Trend Value",
+        metrics=metrics,
+        summary=f"Compared trend charts for {pair}",
+        resume_key=f"trendcompare:{a}:{b}",
+        resume_title=f"Continue {pair} trend comparison",
         resume_subtitle="Trend Value",
     )
 
