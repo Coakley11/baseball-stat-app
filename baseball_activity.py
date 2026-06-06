@@ -62,7 +62,7 @@ def log_draft_prep(*, context: str = "", teams: str = "") -> None:
         page="Draft Simulation",
         metrics={"league": context, "team": teams},
         summary="Completed fantasy draft prep",
-        resume_key="baseball:draft_prep",
+        resume_key="baseball:draft",
         resume_title="Continue fantasy draft prep",
         resume_subtitle=context or teams or "Draft board & rankings",
     )

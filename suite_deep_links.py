@@ -4,7 +4,10 @@ Build Continue / resume deep links for suite Streamlit apps.
 Query params (read by suite_resume_launch in each app):
   suite_resume  — resume item key (e.g. song:pick-123, compare:Judge:Soto)
   suite_page    — target page/tab label
-  suite_pick_key, suite_song, suite_team — app-specific shortcuts
+  suite_pick_key, suite_song, suite_display_key, suite_section_focus — music shortcuts
+  suite_holdings_fp — investment portfolio fingerprint
+  suite_player_a, suite_player_b — baseball comparison players
+  suite_team — NBA favorite team
 """
 
 from __future__ import annotations
@@ -34,8 +37,12 @@ _NBA_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
 _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("compare:", "Comparison Tool"),
     ("baseball:draft", "Draft Simulation"),
+    ("baseball:draft_prep", "Draft Simulation"),
+    ("bb:draft", "Draft Simulation"),
     ("baseball:projections", "ML Projections"),
+    ("bb:proj", "ML Projections"),
     ("baseball:trade", "Fantasy Lineup Assistant"),
+    ("bb:trade", "Fantasy Lineup Assistant"),
     ("baseball:roster", "Draft Room"),
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
@@ -50,6 +57,14 @@ _INVESTMENT_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("inv:allocation", "Portfolio Health"),
 )
 
+_MUSIC_STUDIO_ALIASES: dict[str, str] = {
+    "practice log": "practice",
+    "practice studio": "practice",
+    "backing track studio": "backing",
+    "recording analysis": "recording",
+    "chord coach": "practice",
+}
+
 
 def app_base_url(app: str) -> str:
     key = str(app or "").strip()
@@ -58,23 +73,43 @@ def app_base_url(app: str) -> str:
     return APP_BASE_URLS.get(key, "").strip()
 
 
+def _normalize_music_page(page: str, resume_key: str) -> str:
+    if resume_key.startswith("backing:"):
+        return "backing"
+    raw = str(page or "").strip()
+    if not raw:
+        return "practice"
+    alias = _MUSIC_STUDIO_ALIASES.get(raw.lower())
+    if alias:
+        return alias
+    if raw in {"practice", "backing", "recording", "picker", "custom"}:
+        return raw
+    return "practice"
+
+
+def _parse_compare_resume(resume_key: str) -> tuple[str, str]:
+    rk = str(resume_key or "").strip()
+    if not rk.startswith("compare:"):
+        return "", ""
+    parts = rk.split(":", 2)
+    if len(parts) < 3:
+        return "", ""
+    return parts[1].strip(), parts[2].strip()
+
+
 def _resolve_page(app: str, resume_key: str, page: str, metrics: dict[str, Any]) -> str:
+    rk = resume_key.strip()
+    if app == "music":
+        return _normalize_music_page(page, rk)
     if page.strip():
         return page.strip()
-    rk = resume_key.strip()
     if not rk:
         return ""
-    if app == "music":
-        if rk.startswith("backing:"):
-            return "backing"
-        if rk.startswith("song:"):
-            return "practice"
-        return "practice"
     if app == "baseball":
         for prefix, target in _BASEBALL_PAGE_BY_RESUME:
             if rk.startswith(prefix):
                 return target
-        return metrics.get("page") or ""
+        return str(metrics.get("page") or "")
     if app == "investment":
         for prefix, target in _INVESTMENT_PAGE_BY_RESUME:
             if rk.startswith(prefix):
@@ -84,7 +119,7 @@ def _resolve_page(app: str, resume_key: str, page: str, metrics: dict[str, Any])
         for prefix, target in _NBA_PAGE_BY_RESUME:
             if rk.startswith(prefix):
                 return target
-        return metrics.get("page") or ""
+        return str(metrics.get("page") or "")
     if app == "future_lens":
         if rk.startswith("timeline:"):
             return "timeline"
@@ -94,7 +129,7 @@ def _resolve_page(app: str, resume_key: str, page: str, metrics: dict[str, Any])
             return "skills"
         return "simulation"
     if app == "applied_intelligence":
-        return metrics.get("page") or "lessons"
+        return str(metrics.get("page") or "lessons")
     return ""
 
 
@@ -135,6 +170,30 @@ def build_resume_action_url(
         song = str(m.get("song") or "").strip()
         if song:
             params["suite_song"] = song[:120]
+        display_key = str(m.get("display_key") or "").strip()
+        if display_key:
+            params["suite_display_key"] = display_key[:40]
+        section = str(
+            m.get("practice_focus_section") or m.get("focus") or ""
+        ).strip()
+        if section:
+            params["suite_section_focus"] = section[:80]
+    elif app_key == "baseball":
+        pa = str(m.get("player_a") or "").strip()
+        pb = str(m.get("player_b") or "").strip()
+        if not pa or not pb:
+            pa, pb = _parse_compare_resume(rk)
+        if pa:
+            params["suite_player_a"] = pa[:120]
+        if pb:
+            params["suite_player_b"] = pb[:120]
+    elif app_key == "investment":
+        hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
+        if hfp:
+            params["suite_holdings_fp"] = hfp[:240]
+        tickers = m.get("tickers")
+        if not hfp and isinstance(tickers, list) and tickers:
+            params["suite_holdings_fp"] = "|".join(str(t) for t in tickers[:12])[:240]
     elif app_key == "nba":
         team = str(m.get("team") or "").strip()
         if not team and rk.count(":") >= 2:
@@ -155,3 +214,50 @@ def build_resume_action_url(
     if not params:
         return f"{base}/"
     return f"{base}/?{urlencode(params, quote_via=quote)}"
+
+
+def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "") -> tuple[str, dict[str, Any]]:
+    """Infer page + metrics from a stored resume item key (for URL rebuild)."""
+    app_key = str(app or "").strip()
+    key = str(item_key or "").strip()
+    metrics: dict[str, Any] = {}
+    page = str(subtitle or "").strip()
+
+    if app_key == "music":
+        if key.startswith("song:") or key.startswith("backing:"):
+            metrics["pick_key"] = key.split(":", 1)[-1].strip()
+        page = _normalize_music_page(page, key)
+    elif app_key == "baseball":
+        if key.startswith("compare:"):
+            pa, pb = _parse_compare_resume(key)
+            if pa:
+                metrics["player_a"] = pa
+            if pb:
+                metrics["player_b"] = pb
+            page = "Comparison Tool"
+        elif "draft" in key.lower():
+            page = "Draft Simulation"
+        elif "trade" in key.lower():
+            page = "Fantasy Lineup Assistant"
+        elif "proj" in key.lower():
+            page = "ML Projections"
+    elif app_key == "investment":
+        if "health" in key.lower():
+            page = "Portfolio Health"
+        elif "scenario" in key.lower():
+            page = "Efficient Frontier"
+        elif "main" in key.lower() or "holdings" in key.lower():
+            page = "Portfolio Inputs"
+    elif app_key == "nba":
+        if key.count(":") >= 2:
+            metrics["team"] = key.split(":", 2)[-1].strip()
+        if key.startswith("nba:game:"):
+            page = "🔴 Live Game Center"
+        elif key.startswith("nba:injury:"):
+            page = "🧠 Matchup Intelligence"
+        elif key.startswith("nba:matchup:"):
+            page = "🧠 Matchup Intelligence"
+        elif key.startswith("nba:playoff:"):
+            page = "🏆 Playoff Bracket"
+
+    return page, metrics

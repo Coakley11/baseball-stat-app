@@ -42,11 +42,11 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
     if key == "music":
         _apply_music(st, resume, page)
     elif key == "baseball":
-        _apply_baseball(st, page)
+        _apply_baseball(st, resume, page)
     elif key == "nba":
         _apply_nba(st, resume, page)
     elif key == "investment":
-        _apply_investment(st, page)
+        _apply_investment(st, resume, page)
     elif key == "future_lens":
         _apply_future_lens(st, resume, page)
     elif key == "applied_intelligence":
@@ -59,13 +59,32 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
 def _apply_music(st: Any, resume: str, page: str) -> None:
     pick = _qp_get(st, "suite_pick_key")
     song = _qp_get(st, "suite_song")
+    display_key = _qp_get(st, "suite_display_key")
     if pick:
         st.session_state["active_catalog_pick_key"] = pick
     if song:
         st.session_state["song"] = song
     if resume.startswith("song:") and not pick:
         st.session_state["active_catalog_pick_key"] = resume.split(":", 1)[-1].strip()
-    target = page or ("backing" if resume.startswith("backing:") else "practice")
+    if resume.startswith("backing:") and not pick:
+        st.session_state["active_catalog_pick_key"] = resume.split(":", 1)[-1].strip()
+    if display_key:
+        try:
+            from songs.key_state import PENDING_DISPLAY_KEY
+
+            st.session_state[PENDING_DISPLAY_KEY] = display_key
+        except Exception:
+            st.session_state["display_key"] = display_key
+    section = _qp_get(st, "suite_section_focus")
+    if section:
+        st.session_state["practice_focus_section"] = section
+    target = page.strip()
+    if not target:
+        target = "backing" if resume.startswith("backing:") else "practice"
+    if target.lower() in {"practice log", "practice studio"}:
+        target = "practice"
+    elif target.lower() == "backing track studio":
+        target = "backing"
     try:
         from studio_page_state import navigate_studio_page
 
@@ -74,10 +93,25 @@ def _apply_music(st: Any, resume: str, page: str) -> None:
         st.session_state["studio_page"] = target
 
 
-def _apply_baseball(st: Any, page: str) -> None:
-    if not page:
-        return
-    st.session_state["_navigate_to_page"] = page
+def _apply_baseball(st: Any, resume: str, page: str) -> None:
+    pa = _qp_get(st, "suite_player_a")
+    pb = _qp_get(st, "suite_player_b")
+    if not pa and resume.startswith("compare:"):
+        parts = resume.split(":", 2)
+        if len(parts) >= 3:
+            pa, pb = parts[1].strip(), parts[2].strip()
+    if pa and pb:
+        st.session_state["pending_sig_player_a"] = pa
+        st.session_state["pending_sig_player_b"] = pb
+        st.session_state["pending_compare_players"] = [pa, pb]
+    elif pa:
+        st.session_state["pending_sig_player_a"] = pa
+        st.session_state["pending_compare_players"] = [pa]
+    target_page = page.strip()
+    if not target_page and resume.startswith("compare:"):
+        target_page = "Comparison Tool"
+    if target_page:
+        st.session_state["_navigate_to_page"] = target_page
 
 
 def _apply_nba(st: Any, resume: str, page: str) -> None:
@@ -98,9 +132,20 @@ def _apply_nba(st: Any, resume: str, page: str) -> None:
         st.session_state["page_override"] = label
 
 
-def _apply_investment(st: Any, page: str) -> None:
-    if page:
-        st.session_state["_suite_investment_page"] = page
+def _apply_investment(st: Any, resume: str, page: str) -> None:
+    target = page.strip()
+    if not target and resume:
+        if "health" in resume.lower():
+            target = "Portfolio Health"
+        elif "scenario" in resume.lower():
+            target = "Efficient Frontier"
+        elif "main" in resume.lower():
+            target = "Portfolio Inputs"
+    if target:
+        st.session_state["_suite_investment_page"] = target
+    hfp = _qp_get(st, "suite_holdings_fp")
+    if hfp:
+        st.session_state["_suite_holdings_fp"] = hfp
 
 
 def _apply_future_lens(st: Any, resume: str, page: str) -> None:
