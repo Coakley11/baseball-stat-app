@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-06-06-event-trace-v2"
-GIT_COMMIT_SHORT = "eb45c03"
+GIT_COMMIT_SHORT = "cc9190b"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 
 # Commits that must be present for player_trend_viewed logging.
-DEPLOY_COMMITS_INCLUDED = ("ec818df", "643641a", "0b787f5", "eb45c03")
+DEPLOY_COMMITS_INCLUDED = ("ec818df", "643641a", "0b787f5", "eb45c03", "cc9190b")
