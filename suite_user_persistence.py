@@ -278,6 +278,50 @@ def finalize_suite_reset(
     st.session_state.pop(f"_suite_autosave_fp::{app_id}", None)
 
 
+def reset_confirm_session_key(app_id: str) -> str:
+    return f"_suite_reset_confirm::{app_id}"
+
+
+def clear_reset_confirm_state(session_state: Any, app_id: str) -> None:
+    session_state.pop(reset_confirm_session_key(app_id), None)
+
+
+def request_reset_confirm_state(session_state: Any, app_id: str) -> None:
+    session_state[reset_confirm_session_key(app_id)] = True
+
+
+def _clear_suite_reset_cache_keys(
+    session_state: Any,
+    app_id: str,
+    *,
+    extra_prefixes: tuple[str, ...] = (),
+) -> None:
+    prefixes = (_SESSION_RESTORED_PREFIX, "_suite_autosave_fp::", *extra_prefixes)
+    confirm_key = reset_confirm_session_key(app_id)
+    for key in list(session_state.keys()):
+        sk = str(key)
+        if sk == confirm_key:
+            session_state.pop(key, None)
+            continue
+        if any(sk.startswith(prefix) for prefix in prefixes):
+            session_state.pop(key, None)
+
+
+def execute_suite_reset(
+    st: Any,
+    app_id: str,
+    on_reset: Callable[[Any], None],
+    *,
+    extra_prefixes: tuple[str, ...] = (),
+) -> None:
+    session_state = st.session_state
+    clear_reset_confirm_state(session_state, app_id)
+    reset_user_state(app_id)
+    _clear_suite_reset_cache_keys(session_state, app_id, extra_prefixes=extra_prefixes)
+    on_reset(st)
+    session_state[_SESSION_BANNER_KEY] = "Reset to defaults"
+
+
 def render_reset_controls(
     st: Any,
     app_id: str,
@@ -286,30 +330,41 @@ def render_reset_controls(
     label: str = "Reset to default",
     help_text: str = (
         "Clears session, local saved state, and cloud session for this app. "
-        "Catalog data and user files are not deleted."
+        "Lahman data is not deleted."
     ),
+    extra_reset_clear_prefixes: tuple[str, ...] = (),
 ) -> None:
-    st.sidebar.markdown("---")
-    confirm_key = f"_suite_reset_confirm::{app_id}"
-    if st.session_state.get(confirm_key):
-        st.sidebar.warning("This clears saved preferences for this app. Continue?")
-        c1, c2 = st.sidebar.columns(2)
-        with c1:
-            if st.button("Yes, reset", key=f"suite_reset_yes::{app_id}", type="primary"):
-                reset_user_state(app_id)
-                for k in list(st.session_state.keys()):
-                    if str(k).startswith(_SESSION_RESTORED_PREFIX) or str(k).startswith(
-                        "_suite_autosave_fp::"
-                    ):
-                        st.session_state.pop(k, None)
-                st.session_state.pop(confirm_key, None)
-                on_reset(st)
-                st.session_state[_SESSION_BANNER_KEY] = "Reset to defaults"
-                st.rerun()
-        with c2:
-            if st.button("Cancel", key=f"suite_reset_no::{app_id}"):
-                st.session_state.pop(confirm_key, None)
-                st.rerun()
-    elif st.sidebar.button(label, key=f"suite_reset_btn::{app_id}", help=help_text, use_container_width=True):
-        st.session_state[confirm_key] = True
-        st.rerun()
+    pending = bool(st.session_state.get(reset_confirm_session_key(app_id)))
+    with st.sidebar.expander("Saved session", expanded=pending):
+        st.caption("Your last page, filters, and inputs reload automatically.")
+        if pending:
+            st.warning("This clears saved preferences for this app. Continue?")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.button(
+                    "Yes, reset",
+                    key=f"suite_reset_yes::{app_id}",
+                    type="primary",
+                    on_click=execute_suite_reset,
+                    kwargs={
+                        "st": st,
+                        "app_id": app_id,
+                        "on_reset": on_reset,
+                        "extra_prefixes": extra_reset_clear_prefixes,
+                    },
+                )
+            with c2:
+                st.button(
+                    "Cancel",
+                    key=f"suite_reset_no::{app_id}",
+                    on_click=clear_reset_confirm_state,
+                    kwargs={"session_state": st.session_state, "app_id": app_id},
+                )
+        else:
+            st.button(
+                label,
+                key=f"suite_reset_btn::{app_id}",
+                help=help_text,
+                on_click=request_reset_confirm_state,
+                kwargs={"session_state": st.session_state, "app_id": app_id},
+            )
