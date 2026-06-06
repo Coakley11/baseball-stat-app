@@ -456,37 +456,6 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
-import portfolio_polish as pp
-import portfolio_demo as pdemo
-
-pp.inject_polish_css(st, app_slug="baseball")
-
-try:
-    from suite_resume_launch import apply_suite_resume_launch
-
-    apply_suite_resume_launch(st, "baseball")
-except Exception:
-    pass
-
-try:
-    from baseball_persistent_state import (
-        autosave_baseball_state,
-        default_reset_baseball_session,
-        restore_baseball_disk_state_once,
-    )
-    from suite_user_persistence import render_reset_controls, show_persistence_messages
-
-    restore_baseball_disk_state_once(st)
-    show_persistence_messages(st)
-    render_reset_controls(
-        st,
-        "baseball",
-        on_reset=default_reset_baseball_session,
-        help_text="Clears saved page, filters, local disk, and cloud session. Lahman data is not deleted.",
-    )
-except Exception:
-    pass
-
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
@@ -1648,11 +1617,10 @@ def make_valuation_summary(row):
     )
 
 def render_section_header(title, note):
-    note_html = "" if pp.is_screenshot_mode(st) else f'<div class="small-note">{note}</div>'
     st.markdown(f"""
         <div class="section-card">
             <div class="section-title">{title}</div>
-            {note_html}
+            <div class="small-note">{note}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1743,14 +1711,6 @@ def render_page_guide(page_key):
     g = PAGE_GUIDES.get(page_key)
     if not g:
         return
-    if pp.is_screenshot_mode(st):
-        pp.render_executive_summary(
-            st,
-            g.get("purpose", ""),
-            g.get("when", ""),
-            g.get("outputs", ""),
-        )
-        return
     extra_items = "".join(f"<li>{x}</li>" for x in (g.get("extra") or []))
     st.markdown(
         f"""
@@ -1773,7 +1733,7 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
         return
     show_chart = st.checkbox(
         f"Show {title}",
-        value=pp.chart_default_visible(st),
+        value=False,
         key=f"bar_chart_{hashlib.md5(str(title).encode('utf-8')).hexdigest()[:10]}",
         help="Charts are rendered on demand so table-first page loads stay fast.",
     )
@@ -4205,12 +4165,6 @@ def _ml_execute_pipeline_if_needed(
     have_run = bool(st.session_state.get("ml_predictions_have_run", False))
     if not full_gen and not have_run:
         return False
-    try:
-        import portfolio_polish as _pp_ml
-        if _pp_ml.skip_heavy_work(st) and have_run and _ml_is_nonempty_dataframe(st.session_state.get(ML_PREDICTIONS_DF_KEY)):
-            return False
-    except ImportError:
-        pass
 
     effective_regression, effective_age, effective_comp = _ml_effective_tuning_from_style(
         ml_projection_style, regression_strength, age_strength, comp_weight
@@ -4246,15 +4200,6 @@ def _ml_execute_pipeline_if_needed(
             result, st.session_state.get("_ml_base_pack")
         )
         if result.get("ok"):
-            try:
-                from baseball_activity import log_projection_report
-
-                pc = int(result.get("player_count") or len(pred_df) or 0)
-                if st.session_state.get("_cc_projection_activity_token") != refresh_token:
-                    st.session_state["_cc_projection_activity_token"] = refresh_token
-                    log_projection_report(style=ml_projection_style, player_count=pc)
-            except Exception:
-                pass
             enriched = _ml_enrich_predictions_for_storage(
                 pred_df, yearly_source, ml_lookback, ml_projection_style
             )
@@ -10919,7 +10864,7 @@ def _debug_session_value_repr(val):
 
 def render_page_filters_debug(page_name: str):
     """Bottom-of-page debug: confirm filter keys survive sidebar navigation."""
-    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
+    if not developer_mode_enabled():
         return
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
@@ -10938,7 +10883,7 @@ def render_page_filters_debug(page_name: str):
 
 def render_page_state_debug(page_name: str):
     """Sidebar debug: show persisted keys for the active page."""
-    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
+    if not developer_mode_enabled():
         return
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
@@ -11564,15 +11509,6 @@ def render_contextual_page_nav(
 # Page navigation: consume scheduled navigation BEFORE the sidebar radio is instantiated.
 _consume_scheduled_navigation()
 
-try:
-    from suite_command_center_link import render_command_center_sidebar_link
-
-    render_command_center_sidebar_link(st)
-except Exception:
-    pass
-
-pp.render_sidebar_toggle(st)
-
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
@@ -11597,17 +11533,13 @@ pg_state.handle_sidebar_page_state(
 # Apply contextual transfer before page widgets render (filters must be in session_state first).
 apply_pending_page_transfer(active_page)
 migrate_legacy_widget_keys()
-# Demo loaders run after page-state restore so saved filters do not overwrite demo seed data.
-pdemo.apply_pending_draft_demo(st)
-pdemo.schedule_page_demo(st, active_page)
 
 # Drop snapshotted button widget keys (they must never be restored into session_state).
 for _ephemeral_key in list(st.session_state.keys()):
     if pg_state._is_ephemeral_widget_key(_ephemeral_key):
         st.session_state.pop(_ephemeral_key, None)
 
-if not pp.is_screenshot_mode(st):
-    st.sidebar.caption("Filters are remembered as you move between pages.")
+st.sidebar.caption("Filters are remembered as you move between pages.")
 render_developer_mode_sidebar_toggle()
 render_page_state_debug(active_page)
 app_tutorial.maybe_open_tutorial_dialog()
@@ -12192,15 +12124,6 @@ def compare_top_changed():
         if len(selected) >= 2:
             st.session_state["pending_sig_player_b"] = selected[1]
             record_workflow_comparison_pair(selected[0], selected[1])
-            try:
-                from baseball_activity import log_player_comparison
-
-                sig = tuple(sorted(selected[:2]))
-                if st.session_state.get("_cc_compare_activity_sig") != sig:
-                    st.session_state["_cc_compare_activity_sig"] = sig
-                    log_player_comparison(selected[0], selected[1])
-            except Exception:
-                pass
 
 
 def compare_settings_changed():
@@ -12525,8 +12448,7 @@ if active_page == "Comparison Tool":
 
 
     st.divider()
-    if not pp.skip_heavy_work(st):
-      with st.expander("Advanced: Statistical significance test", expanded=False):
+    with st.expander("Advanced: Statistical significance test", expanded=False):
         _sig_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
         _sig_year_range = st.session_state.get("compare_year_range", (year_min, year_max))
         _sig_age_range = st.session_state.get("compare_age_range", (16, 50))
@@ -13033,19 +12955,6 @@ if active_page == "Trend Value":
         else:
             st.error(make_trend_insight_summary(trend_selected))
 
-    try:
-        from baseball_activity import log_breakout_analysis, log_trend_filter_change
-
-        trend_sig = (lag_trend, int(min_g_trend), trend_position_filter, max_year_trend)
-        if st.session_state.get("_cc_trend_activity_sig") != trend_sig:
-            st.session_state["_cc_trend_activity_sig"] = trend_sig
-            log_trend_filter_change()
-            breakout_n = len(top_breakouts) + len(biggest_declines)
-            if breakout_n > 0:
-                log_breakout_analysis(count=breakout_n)
-    except Exception:
-        pass
-
     st.subheader("Single-Player Trend Dashboard")
 
     full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
@@ -13054,16 +12963,7 @@ if active_page == "Trend Value":
     # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
     _stp = st.session_state.get("single_trend_dashboard_player")
     if _stp is not None and full_trend_labels and _stp not in full_trend_labels:
-        _resolved_stp = resolve_fullname_to_clean_label(_stp, full_trend_label_map)
-        if _resolved_stp and _resolved_stp in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _resolved_stp
-        else:
-            st.session_state.pop("single_trend_dashboard_player", None)
-    _pending_resume_trend = st.session_state.pop("pending_trend_player", None)
-    if _pending_resume_trend and full_trend_labels:
-        _resolved_pending = resolve_fullname_to_clean_label(_pending_resume_trend, full_trend_label_map)
-        if _resolved_pending and _resolved_pending in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _resolved_pending
+        st.session_state.pop("single_trend_dashboard_player", None)
     _tmp_multi = st.session_state.get("trend_players_multi")
     if isinstance(_tmp_multi, list) and full_trend_labels:
         _filtered_multi = [x for x in _tmp_multi if x in full_trend_labels]
@@ -13122,21 +13022,6 @@ if active_page == "Trend Value":
                 key="single_trend_dashboard_smooth_window"
             )
 
-    if single_player_name:
-        try:
-            from baseball_activity import log_trend_analysis
-
-            _player_trend_sig = (
-                single_trend_label,
-                tuple(dashboard_stats or []),
-                single_dashboard_mode,
-            )
-            if st.session_state.get("_cc_trend_player_sig") != _player_trend_sig:
-                st.session_state["_cc_trend_player_sig"] = _player_trend_sig
-                log_trend_analysis(player=single_player_name, trend=single_dashboard_mode)
-        except Exception:
-            pass
-
     selected_player_history = recent_span_df[recent_span_df["playerID"] == single_trend_id].copy()
     if selected_player_history.empty:
         st.info("No trend history available for that player in the selected window.")
@@ -13182,23 +13067,6 @@ if active_page == "Trend Value":
                 mode=single_dashboard_mode,
                 smooth_window=single_dashboard_smooth_window
             )
-            try:
-                from baseball_activity import log_player_trend_chart
-
-                _player_trend_sig = (
-                    single_trend_label,
-                    tuple(dashboard_stats or []),
-                    single_dashboard_mode,
-                )
-                if st.session_state.get("_cc_trend_player_sig") != _player_trend_sig:
-                    st.session_state["_cc_trend_player_sig"] = _player_trend_sig
-                    log_player_trend_chart(
-                        player=single_player_name,
-                        trend_mode=single_dashboard_mode,
-                        stats=list(dashboard_stats),
-                    )
-            except Exception:
-                pass
         else:
             st.info("Choose at least one stat to graph for the selected player.")
 
@@ -13867,16 +13735,6 @@ if active_page == "Fantasy Sleepers & Busts":
             else:
                 st.success(make_market_selected_insight(selected_market_row))
 
-        try:
-            from baseball_activity import log_sleeper_research
-
-            sleeper_sig = (fantasy_top_n, year_max, len(sleepers), len(busts))
-            if st.session_state.get("_cc_sleeper_activity_sig") != sleeper_sig:
-                st.session_state["_cc_sleeper_activity_sig"] = sleeper_sig
-                log_sleeper_research(count=len(sleepers))
-        except Exception:
-            pass
-
     _sleepers_xfer_df = pd.DataFrame()
     if not fantasy_df.empty:
         _sleepers_xfer_df = fantasy_df.sort_values("Fantasy Edge", ascending=False)
@@ -13895,23 +13753,13 @@ if active_page == "Fantasy Sleepers & Busts":
 
 
 if active_page == "Draft Assistant Simulator":
-    if pp.is_screenshot_mode(st) or pp.is_demo_mode(st):
-        pp.render_hero_banner(
-            st,
-            "Draft Assistant — Next-Pick Intelligence",
-            "Rankings driven by team needs, positional scarcity, market value, and ML-enhanced projections.",
-        )
-    pdemo.render_draft_demo_button(st, active_page)
     render_section_header(
         "🧩 Draft Assistant Simulator",
         "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board."
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    pp.instructional_caption(
-        st,
-        "Log picks in Draft Room Simulator first — this page excludes drafted players automatically.",
-    )
+    st.caption("Log picks in **Draft Room Simulator** first — this page excludes drafted players automatically.")
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -13920,8 +13768,7 @@ if active_page == "Draft Assistant Simulator":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
     else:
-        if not pp.skip_heavy_work(st):
-            render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_assistant")
+        render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_assistant")
         _draft_window_options = [3, 4, 5]
         _draft_format_options = ["5x5 Roto", "Points League"]
         d1, d2, d3 = st.columns(3)
@@ -13940,7 +13787,7 @@ if active_page == "Draft Assistant Simulator":
                 key="draft_top_n",
             )
 
-        with st.expander("Advanced scoring settings", expanded=pp.expander_default(st)):
+        with st.expander("Advanced scoring settings", expanded=False):
             validate_state_option("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
             st.selectbox(
                 "Projection style",
@@ -13987,14 +13834,10 @@ if active_page == "Draft Assistant Simulator":
             ml_min_games_for_signal=ml_min_games_for_signal,
         )
 
-        with st.expander(
-            "Draft Room connection & pick number",
-            expanded=not pp.is_screenshot_mode(st),
-        ):
-            pp.instructional_caption(
-                st,
-                "Picks come from Draft Room Simulator (draft_room_table). "
-                "Choose your fantasy team name so needs and availability match your roster.",
+        with st.expander("Draft Room connection & pick number", expanded=True):
+            st.caption(
+                "Picks come from **Draft Room Simulator** (`draft_room_table`). "
+                "Choose your fantasy team name so needs and availability match your roster."
             )
 
             draft_room_table_for_assistant = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
@@ -14998,21 +14841,6 @@ if active_page == "Draft Simulation Test Mode":
                 "actual_summary": lab_actual_summary,
                 "trades": lab_trades,
             }
-            if run_lab:
-                try:
-                    from baseball_activity import log_draft_prep, log_roster_build
-
-                    lab_sig = (lab_format, lab_window, int(lab_picks_per_team))
-                    if st.session_state.get("_cc_draft_lab_activity_sig") != lab_sig:
-                        st.session_state["_cc_draft_lab_activity_sig"] = lab_sig
-                        log_draft_prep(context=lab_format, teams="4-team draft lab")
-                        if lab_team_summary is not None and not lab_team_summary.empty:
-                            top_team = str(
-                                lab_team_summary.sort_values("Projected Team Rank").iloc[0]["Fantasy Team"]
-                            )
-                            log_roster_build(team=top_team)
-                except Exception:
-                    pass
 
     lab_state = st.session_state.get("draft_lab_results", {})
     lab_draft = lab_state.get("draft", pd.DataFrame())
@@ -16130,24 +15958,6 @@ if active_page == "Fantasy Lineup Assistant":
                             display_rows=20,
                             style_cols=["Net Gain"]
                         )
-                        try:
-                            from baseball_activity import log_trade_analysis
-
-                            trade_sig = (
-                                my_team_trade,
-                                other_team_trade,
-                                tuple(sorted(give_players)),
-                                tuple(sorted(get_players)),
-                            )
-                            if st.session_state.get("_cc_trade_activity_sig") != trade_sig:
-                                st.session_state["_cc_trade_activity_sig"] = trade_sig
-                                log_trade_analysis(
-                                    give=give_players,
-                                    get=get_players,
-                                    verdict=str(verdict or ""),
-                                )
-                        except Exception:
-                            pass
 
                     st.markdown("##### Generate Trade Ideas")
                     st.caption(
@@ -16406,14 +16216,6 @@ if active_page == "Valuation":
 
 
 if active_page == "ML Predictions":
-    if pp.skip_heavy_work(st):
-        st.session_state.setdefault("ml_max_players", 100)
-    if pp.is_demo_mode(st) or pp.is_screenshot_mode(st):
-        pp.render_hero_banner(
-            st,
-            "ML Projections — Star Player Forecasts",
-            "Aaron Judge, Ohtani, Soto, and Gunnar Henderson with feature-importance insights preloaded.",
-        )
     render_section_header(
         "🤖 ML Predictions",
         "Generate next-season projections using machine learning, aging curves, regression-to-the-mean, and similar-player comparisons."
@@ -16515,11 +16317,8 @@ if active_page == "ML Predictions":
         )
 
         if not st.session_state.get("ml_predictions_have_run", False):
-            pp.render_professional_empty(
-                st,
-                "Select projection settings and generate a forecast. The model will estimate "
-                "next-season performance using historical trends, aging curves, and machine learning.",
-                title="Generate ML projections",
+            st.info(
+                "Choose settings, then click **Generate / Refresh ML Predictions**."
             )
 
         _ml_pipeline_ran = _ml_execute_pipeline_if_needed(
@@ -16743,7 +16542,7 @@ if active_page == "ML Predictions":
                     importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
                     importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
                     render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
-                    with st.expander("Feature importance chart", expanded=pp.is_demo_mode(st) or pp.is_screenshot_mode(st)):
+                    with st.expander("Feature importance chart", expanded=False):
                         top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
 
                 if developer_mode_enabled() and _ml_is_nonempty_dataframe(stored_df):
@@ -16805,11 +16604,4 @@ if developer_mode_enabled():
         st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
         st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
         st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
-
-try:
-    from baseball_persistent_state import autosave_baseball_state
-
-    autosave_baseball_state(st)
-except Exception:
-    pass
 

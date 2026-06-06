@@ -6,6 +6,13 @@ from __future__ import annotations
 
 from typing import Any
 
+_LAST_ACTIVITY: dict[str, Any] = {}
+
+
+def last_activity_trace() -> dict[str, Any]:
+    """Most recent activity hook call (for Developer mode diagnostics)."""
+    return dict(_LAST_ACTIVITY)
+
 
 def _record(
     event: str,
@@ -17,6 +24,16 @@ def _record(
     resume_title: str = "",
     resume_subtitle: str = "",
 ) -> None:
+    global _LAST_ACTIVITY
+    _LAST_ACTIVITY = {
+        "event": event,
+        "page": page,
+        "metrics": dict(metrics or {}),
+        "summary": summary,
+        "resume_key": resume_key,
+        "resume_title": resume_title,
+        "error": "",
+    }
     try:
         from suite_activity_client import record_activity
 
@@ -30,8 +47,10 @@ def _record(
             resume_title=resume_title,
             resume_subtitle=resume_subtitle,
         )
-    except Exception:
-        pass
+        _LAST_ACTIVITY["recorded"] = True
+    except Exception as exc:
+        _LAST_ACTIVITY["recorded"] = False
+        _LAST_ACTIVITY["error"] = str(exc)
 
 
 def log_player_comparison(
@@ -167,7 +186,7 @@ def log_player_trend_chart(
         "player_trend_viewed",
         page="Trend Value",
         metrics=metrics,
-        summary=f"Viewed trend chart for {name}",
+        summary=f"Opened trend chart for {name}",
         resume_key=f"trend:{name}",
         resume_title=f"Continue {name} trend chart",
         resume_subtitle="Trend Value",
