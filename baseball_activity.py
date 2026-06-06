@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from activity_time import utc_now_iso
+
 _LAST_ACTIVITY: dict[str, Any] = {}
 
 
@@ -25,33 +27,53 @@ def _record(
     resume_subtitle: str = "",
 ) -> None:
     global _LAST_ACTIVITY
+    m = dict(metrics or {})
+    player = str(m.get("player") or "").strip()
+    ts = utc_now_iso()
     _LAST_ACTIVITY = {
+        "event_type": event,
         "event": event,
         "page": page,
-        "metrics": dict(metrics or {}),
+        "metrics": m,
         "summary": summary,
         "resume_key": resume_key,
         "resume_title": resume_title,
+        "player": player or "—",
+        "timestamp": ts,
+        "recorded": False,
+        "supabase_write_ok": False,
+        "write_path": "none",
         "error": "",
     }
     try:
-        from suite_activity_client import record_activity
+        from suite_activity_client import last_record_trace, record_activity
 
         record_activity(
             "baseball",
             event,
             page=page or "Baseball Analytics",
-            metrics=metrics or {},
+            metrics=m,
             summary=summary,
             resume_key=resume_key,
             resume_title=resume_title,
             resume_subtitle=resume_subtitle,
         )
-        _LAST_ACTIVITY["recorded"] = True
+        wt = last_record_trace()
+        if wt:
+            _LAST_ACTIVITY.update(
+                {
+                    "timestamp": str(wt.get("timestamp") or ts),
+                    "recorded": bool(wt.get("recorded")),
+                    "supabase_write_ok": bool(wt.get("supabase_write_ok")),
+                    "write_path": str(wt.get("write_path") or "none"),
+                    "error": str(wt.get("error") or ""),
+                }
+            )
+        else:
+            _LAST_ACTIVITY["recorded"] = True
     except Exception as exc:
         _LAST_ACTIVITY["recorded"] = False
         _LAST_ACTIVITY["error"] = str(exc)
-
 
 def log_player_comparison(
     player_a: str,

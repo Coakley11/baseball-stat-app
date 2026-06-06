@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-06-trend-diagnostics-v2"
-GIT_COMMIT_SHORT = "ec818de+deploy-v2"
+SUITE_BUILD_LABEL = "2026-06-06-event-trace-v1"
+GIT_COMMIT_SHORT = "643641a+trace-pending"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
+
+# Commits that must be present for player_trend_viewed logging.
+DEPLOY_COMMITS_INCLUDED = ("ec818df", "643641a")

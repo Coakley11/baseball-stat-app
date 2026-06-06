@@ -23,6 +23,14 @@ COMMAND_CENTER_ROOT_CANDIDATES = (
 
 LOCAL_FALLBACK_DIR = Path(__file__).resolve().parent / "data"
 
+_LAST_RECORD_TRACE: dict[str, Any] = {}
+_LAST_CLOUD_ERROR: str = ""
+
+
+def last_record_trace() -> dict[str, Any]:
+    """Most recent record_activity write attempt (for developer event tracing)."""
+    return dict(_LAST_RECORD_TRACE)
+
 
 def _load_storage_module():
     for root in COMMAND_CENTER_ROOT_CANDIDATES:
@@ -50,12 +58,16 @@ def _record_via_cloud(
     resume_subtitle: str = "",
     action_url: str = "",
 ) -> bool:
+    global _LAST_CLOUD_ERROR
+    _LAST_CLOUD_ERROR = ""
     try:
         from suite_storage_config import cloud_storage_enabled
         from suite_storage_supabase import record_activity as cloud_record
-    except ImportError:
+    except ImportError as exc:
+        _LAST_CLOUD_ERROR = f"import: {exc}"
         return False
     if not cloud_storage_enabled():
+        _LAST_CLOUD_ERROR = "Supabase not configured ([suite_activity] secrets missing)"
         return False
     try:
         cloud_record(
@@ -70,7 +82,8 @@ def _record_via_cloud(
             action_url=action_url,
         )
         return True
-    except Exception:
+    except Exception as exc:
+        _LAST_CLOUD_ERROR = str(exc)
         return False
 
 
@@ -139,7 +152,7 @@ def record_activity(
     app: str,
     event: str,
     *,
-    page: str = "",
+    page: str = "",
     metrics: dict[str, Any] | None = None,
     summary: str = "",
     resume_key: str = "",
@@ -148,7 +161,19 @@ def record_activity(
     action_url: str = "",
     local_state: dict[str, Any] | None = None,
 ) -> None:
+    global _LAST_RECORD_TRACE
     metrics = metrics or {}
+    trace: dict[str, Any] = {
+        "app": app,
+        "event": event,
+        "event_type": event,
+        "resume_key": resume_key,
+        "timestamp": utc_now_iso(),
+        "recorded": False,
+        "supabase_write_ok": False,
+        "write_path": "none",
+        "error": "",
+    }
     if not str(action_url or "").strip():
         try:
             from suite_deep_links import build_resume_action_url
@@ -172,6 +197,15 @@ def record_activity(
         resume_subtitle=resume_subtitle,
         action_url=action_url,
     ):
+        trace.update(
+            {
+                "recorded": True,
+                "supabase_write_ok": True,
+                "write_path": "supabase",
+                "error": "",
+            }
+        )
+        _LAST_RECORD_TRACE = trace
         if local_state is not None:
             save_local_app_state(app, local_state)
             try:
@@ -214,13 +248,39 @@ def record_activity(
                 resume_subtitle=resume_subtitle,
                 action_url=action_url,
             )
-        except OSError:
+            trace.update(
+                {
+                    "recorded": True,
+                    "supabase_write_ok": False,
+                    "write_path": "sqlite",
+                    "error": _LAST_CLOUD_ERROR,
+                }
+            )
+        except OSError as exc:
             _fallback_append(app, event, page, metrics, summary)
+            trace.update(
+                {
+                    "recorded": True,
+                    "supabase_write_ok": False,
+                    "write_path": "fallback_json",
+                    "error": f"sqlite failed: {exc}; {_LAST_CLOUD_ERROR}".strip("; "),
+                }
+            )
     else:
         _fallback_append(app, event, page, metrics, summary)
+        trace.update(
+            {
+                "recorded": True,
+                "supabase_write_ok": False,
+                "write_path": "fallback_json",
+                "error": _LAST_CLOUD_ERROR or "no storage module",
+            }
+        )
 
     if app == "music":
         _fallback_append(app, event, page, metrics, summary)
+
+    _LAST_RECORD_TRACE = trace
 
     if local_state is not None:
         save_local_app_state(app, local_state)

@@ -12826,8 +12826,8 @@ if active_page == "Trend Value":
         if TREND_ACTIVITY_DIAGNOSTICS_LIVE:
             st.info(
                 f"**Trend activity diagnostics live** · build `{SUITE_BUILD_LABEL}` · commit `{GIT_COMMIT_SHORT}`. "
-                "Enable **Developer Mode** in the sidebar, then scroll to **Developer: last trend activity event** "
-                "after the single-player chart renders."
+                "Enable **Developer Mode** in the sidebar — after a single-player chart renders, open "
+                "**Developer: Last Baseball Activity Event** below."
             )
     except Exception:
         pass
@@ -13199,14 +13199,9 @@ if active_page == "Trend Value":
             st.info("Choose at least one stat to graph for the selected player.")
         if developer_mode_enabled():
             try:
-                from baseball_activity import last_activity_trace
+                from baseball_event_trace import render_last_baseball_activity_event
 
-                with st.expander("Developer: last trend activity event", expanded=False):
-                    trace = last_activity_trace()
-                    if trace:
-                        st.json(trace)
-                    else:
-                        st.caption("No trend activity logged yet this session.")
+                render_last_baseball_activity_event(st, expanded=True)
             except Exception:
                 pass
 
