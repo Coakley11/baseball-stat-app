@@ -20,6 +20,8 @@ log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
 AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-06-ami-sidebar-v1"
+ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
+ANALYTICAL_QUESTION_BUTTON_LABEL = "Continue in Applied Mathematics →"
 
 _SOURCE_AREA: dict[str, str] = {
     "baseball": "sports",
@@ -52,6 +54,136 @@ def _safe_widget_suffix(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "_", str(text or "page"))[:48]
 
 
+def format_context_lines(context: dict[str, Any] | None) -> list[str]:
+    """Human-readable context lines for Continue cards and Applied Intelligence."""
+    ctx = dict(context or {})
+    lines: list[str] = []
+    ordered_keys = (
+        ("source_page", "page", "tab"),
+        ("team",),
+        ("player",),
+        ("player_a", "player_b"),
+        ("league_format", "draft_format", "scoring"),
+        ("draft_round", "current_pick"),
+        ("health_score",),
+        ("objective", "portfolio_preset"),
+        ("tickers",),
+        ("macro_summary",),
+    )
+    seen: set[str] = set()
+    labels = {
+        "source_page": "Page",
+        "page": "Page",
+        "tab": "Tab",
+        "team": "Team",
+        "player": "Player",
+        "player_a": "Player A",
+        "player_b": "Player B",
+        "league_format": "League",
+        "draft_format": "Draft format",
+        "scoring": "Scoring",
+        "draft_round": "Draft round",
+        "current_pick": "Current pick",
+        "health_score": "Health score",
+        "objective": "Objective",
+        "portfolio_preset": "Portfolio preset",
+        "tickers": "Holdings",
+        "macro_summary": "Macro outlook",
+    }
+    for group in ordered_keys:
+        for key in group:
+            if key in seen or key not in ctx:
+                continue
+            val = ctx.get(key)
+            if val is None or val == "":
+                continue
+            seen.add(key)
+            label = labels.get(key, key.replace("_", " ").title())
+            if isinstance(val, list):
+                text = ", ".join(str(v) for v in val[:8])
+            else:
+                text = str(val)
+            if text.strip():
+                lines.append(f"{label}: {text.strip()}")
+    for key, val in sorted(ctx.items()):
+        if key in seen or val in (None, ""):
+            continue
+        if key.startswith("_"):
+            continue
+        text = ", ".join(str(v) for v in val[:8]) if isinstance(val, list) else str(val)
+        if text.strip():
+            lines.append(f"{key.replace('_', ' ').title()}: {text.strip()}")
+    return lines[:8]
+
+
+def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str, str]:
+    """Return (title, subtitle, button_label) for Command Center Continue cards."""
+    label = source_app_label(str(payload.get("source_app") or ""))
+    question = str(payload.get("question") or "").strip()
+    ctx_lines = format_context_lines(payload.get("context") if isinstance(payload.get("context"), dict) else {})
+    subtitle_parts = [f"Question: {question}"]
+    if ctx_lines:
+        subtitle_parts.append("Context: " + " · ".join(ctx_lines))
+    return (
+        f"Applied Math question from {label}",
+        "\n".join(subtitle_parts),
+        ANALYTICAL_QUESTION_BUTTON_LABEL,
+    )
+
+
+def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
+    """Metrics bundle for deep links into Applied Intelligence."""
+    ctx = dict(payload.get("context") or {})
+    ctx_lines = format_context_lines(ctx)
+    return {
+        "question": payload.get("question"),
+        "question_id": payload.get("question_id"),
+        "source_app": payload.get("source_app"),
+        "source_page": payload.get("source_page"),
+        "context_summary": payload.get("context_summary"),
+        "context_display": " · ".join(ctx_lines),
+        "context": ctx,
+        "quant_area": payload.get("quant_area"),
+        "context_json": json.dumps(ctx, ensure_ascii=False),
+    }
+
+
+def _upsert_applied_intelligence_resume(
+    payload: dict[str, Any],
+    *,
+    action_url: str,
+) -> None:
+    title, subtitle, _ = analytical_question_continue_copy(payload)
+    resume_key = str(payload.get("resume_key") or "").strip()
+    if not resume_key:
+        return
+    try:
+        from suite_storage_supabase import upsert_resume_item
+
+        upsert_resume_item(
+            "applied_intelligence",
+            resume_key,
+            title=title,
+            subtitle=subtitle,
+            action_url=action_url,
+        )
+        return
+    except Exception as exc:
+        log.warning("suite_storage_supabase upsert_resume_item failed: %s", exc)
+    try:
+        from suite_storage import upsert_resume_item
+
+        upsert_resume_item(
+            "applied_intelligence",
+            resume_key,
+            title=title,
+            subtitle=subtitle,
+            action_url=action_url,
+        )
+    except Exception as exc:
+        log.warning("suite_storage upsert_resume_item failed: %s", exc)
+
+
 def build_question_payload(
     *,
     source_app: str,
@@ -82,6 +214,9 @@ def build_question_payload(
             if isinstance(tickers, list) and tickers:
                 summary = ", ".join(str(t) for t in tickers[:6])
     qid = question_id(q, source_app=app)
+    ctx = dict(context or {})
+    ctx.setdefault("page", page)
+    ctx_display = format_context_lines(ctx)
     return {
         "question": q,
         "question_id": qid,
@@ -89,6 +224,7 @@ def build_question_payload(
         "source_page": page,
         "context_summary": summary,
         "context": ctx,
+        "context_display": " · ".join(ctx_display),
         "quant_area": area,
         "resume_key": f"ai:question:{qid}",
     }
@@ -97,14 +233,7 @@ def build_question_payload(
 def build_applied_math_resume_url(payload: dict[str, Any], *, base_url: str = "") -> str:
     from suite_deep_links import build_resume_action_url
 
-    metrics = {
-        "question": payload.get("question"),
-        "source_app": payload.get("source_app"),
-        "source_page": payload.get("source_page"),
-        "context_summary": payload.get("context_summary"),
-        "quant_area": payload.get("quant_area"),
-        "context_json": json.dumps(payload.get("context") or {}, ensure_ascii=False),
-    }
+    metrics = metrics_for_applied_math_resume(payload)
     return build_resume_action_url(
         "applied_intelligence",
         resume_key=str(payload.get("resume_key") or ""),
@@ -133,18 +262,9 @@ def submit_analytical_question(
         quant_area=quant_area,
     )
     label = source_app_label(payload["source_app"])
-    title = f"Applied Math question from {label}"
-    subtitle = str(payload["question"])[:120]
     action_url = build_applied_math_resume_url(payload)
-    metrics = {
-        "question": payload["question"],
-        "question_id": payload["question_id"],
-        "source_app": payload["source_app"],
-        "source_page": payload["source_page"],
-        "context_summary": payload["context_summary"],
-        "context": payload["context"],
-        "quant_area": payload["quant_area"],
-    }
+    metrics = metrics_for_applied_math_resume(payload)
+    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     summary = f"Asked Applied Math: {payload['question'][:80]}"
     try:
         from suite_activity_client import record_activity
@@ -155,26 +275,17 @@ def submit_analytical_question(
             page=payload["source_page"],
             metrics=metrics,
             summary=summary,
-            resume_key=payload["resume_key"],
-            resume_title=title,
-            resume_subtitle=subtitle,
-            action_url=action_url,
         )
     except Exception as exc:
         log.warning("record_activity failed for analytical_question: %s", exc)
-    try:
-        from suite_storage import upsert_resume_item
-
-        upsert_resume_item(
-            "applied_intelligence",
-            payload["resume_key"],
-            title=title,
-            subtitle=subtitle,
-            action_url=action_url,
-        )
-    except Exception as exc:
-        log.warning("upsert_resume_item failed for analytical_question: %s", exc)
-    return {**payload, "action_url": action_url, "submitted_at": utc_now_iso()}
+    _upsert_applied_intelligence_resume(payload, action_url=action_url)
+    return {
+        **payload,
+        "action_url": action_url,
+        "continue_title": card_title,
+        "continue_subtitle": card_subtitle,
+        "submitted_at": utc_now_iso(),
+    }
 
 
 def render_analyze_with_applied_math_sidebar(
@@ -274,7 +385,29 @@ def build_context_from_session(
     app = str(source_app or "").strip()
 
     if app == "baseball":
-        if source_page == "Trend Value":
+        low_page = source_page.lower()
+        if "draft" in low_page:
+            fmt = str(
+                session_state.get("draft_format")
+                or session_state.get("draft_lab_scoring_type")
+                or session_state.get("draft_lab_format")
+                or ""
+            ).strip()
+            if fmt:
+                ctx["draft_format"] = fmt
+                ctx["league_format"] = fmt
+            room = session_state.get("draft_room_state") or {}
+            if isinstance(room, dict):
+                idx = int(room.get("current_pick_index") or 0)
+                num_teams = int(room.get("num_teams") or session_state.get("draft_num_teams") or 12)
+                if idx >= 0 and num_teams > 0:
+                    ctx["current_pick"] = idx + 1
+                    ctx["draft_round"] = (idx // num_teams) + 1
+            dq = session_state.get("draft_queue") or []
+            if isinstance(dq, list) and dq:
+                ctx["player"] = str(dq[0]).split(" (")[0].strip()
+            summary = f"Draft · pick {ctx.get('current_pick', '?')} · {fmt or source_page}"
+        elif source_page == "Trend Value":
             pl = session_state.get("single_trend_dashboard_player")
             if pl:
                 name = str(pl).split(" (")[0].strip()
@@ -304,6 +437,27 @@ def build_context_from_session(
         if tab:
             ctx["tab"] = tab
             summary = tab
+        health = session_state.get("health_result")
+        if health is not None:
+            score = getattr(health, "score", None)
+            if score is None and isinstance(health, dict):
+                score = health.get("score")
+            if score is not None:
+                ctx["health_score"] = score
+        objective = str(session_state.get("portfolio_objective") or session_state.get("investment_objective") or "").strip()
+        if objective:
+            ctx["objective"] = objective
+        preset = str(session_state.get("portfolio_preset") or session_state.get("asset_preset") or "").strip()
+        if preset:
+            ctx["portfolio_preset"] = preset
+        try:
+            from components.macro_engine import macro_assumption_summary, macro_assumptions_from_session
+
+            assumptions = macro_assumptions_from_session()
+            if assumptions:
+                ctx["macro_summary"] = macro_assumption_summary(assumptions)
+        except Exception:
+            pass
         tickers: list[str] = []
         df = session_state.get("holdings_df")
         try:
