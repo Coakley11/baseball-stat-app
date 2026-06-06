@@ -9,10 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 from typing import Any
 from urllib.parse import quote
 
 from activity_time import utc_now_iso
+
+log = logging.getLogger(__name__)
+
+AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-06-ami-sidebar-v1"
 
 _SOURCE_AREA: dict[str, str] = {
     "baseball": "sports",
@@ -39,6 +46,10 @@ def source_app_label(source_app: str) -> str:
 def question_id(question: str, *, source_app: str = "") -> str:
     blob = f"{source_app}|{question.strip()}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def _safe_widget_suffix(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", str(text or "page"))[:48]
 
 
 def build_question_payload(
@@ -149,8 +160,8 @@ def submit_analytical_question(
             resume_subtitle=subtitle,
             action_url=action_url,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("record_activity failed for analytical_question: %s", exc)
     try:
         from suite_storage import upsert_resume_item
 
@@ -161,8 +172,8 @@ def submit_analytical_question(
             subtitle=subtitle,
             action_url=action_url,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("upsert_resume_item failed for analytical_question: %s", exc)
     return {**payload, "action_url": action_url, "submitted_at": utc_now_iso()}
 
 
@@ -174,37 +185,82 @@ def render_analyze_with_applied_math_sidebar(
     context: dict[str, Any] | None = None,
     context_summary: str = "",
     default_question: str = "",
+    developer_mode: bool = False,
 ) -> None:
-    """Sidebar expander: question form → Command Center → Applied Intelligence."""
+    """Always-visible sidebar block: question → Command Center → Applied Intelligence."""
     label = source_app_label(source_app)
-    with st.sidebar.expander("Analyze with Applied Math", expanded=False):
-        st.caption(f"Send a quantitative question from {label} to Applied Intelligence.")
-        if context_summary:
-            st.caption(f"Context: {context_summary}")
-        question = st.text_area(
-            "Your question",
-            value=str(default_question or "").strip(),
-            placeholder="e.g. Is this trend meaningful statistically?",
-            height=90,
-            key=f"ami_question_{source_app}_{source_page}",
+    page_suffix = _safe_widget_suffix(source_page)
+    st.sidebar.markdown("### Analyze with Applied Math")
+    st.sidebar.caption(f"Send a quantitative question from {label} to Applied Intelligence.")
+    if context_summary:
+        st.sidebar.caption(f"Context: {context_summary}")
+    question = st.sidebar.text_area(
+        "Your question",
+        value=str(default_question or "").strip(),
+        placeholder="e.g. Is this trend meaningful statistically?",
+        height=90,
+        key=f"ami_question_{source_app}_{page_suffix}",
+        label_visibility="visible",
+    )
+    if st.sidebar.button(
+        "Send to Command Center",
+        key=f"ami_submit_{source_app}_{page_suffix}",
+        use_container_width=True,
+        type="primary",
+    ):
+        q = str(question or "").strip()
+        if not q:
+            st.sidebar.warning("Enter a question first.")
+        else:
+            result = submit_analytical_question(
+                source_app=source_app,
+                source_page=source_page,
+                question=q,
+                context=context,
+                context_summary=context_summary,
+            )
+            st.session_state["_last_analytical_question"] = result
+            st.sidebar.success("Question saved — open Command Center to continue in Applied Intelligence.")
+    last = st.session_state.get("_last_analytical_question")
+    if isinstance(last, dict) and last.get("source_app") == source_app:
+        st.sidebar.caption(f"Last sent: {str(last.get('question') or '')[:60]}…")
+    if developer_mode:
+        st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
+    st.sidebar.divider()
+
+
+def render_applied_math_sidebar_entry(
+    st: Any,
+    *,
+    source_app: str,
+    source_page: str,
+    session_state: dict[str, Any],
+    context_extra: dict[str, Any] | None = None,
+    developer_mode: bool = False,
+) -> None:
+    """Render AMI sidebar near the top; log and surface failures in Developer Mode."""
+    try:
+        ctx, summary = build_context_from_session(source_app, source_page, session_state)
+        if context_extra:
+            ctx = {**ctx, **context_extra}
+            if context_extra.get("team"):
+                summary = str(context_extra["team"])
+            elif context_extra.get("player") and not summary.startswith("Trend"):
+                summary = str(context_extra["player"])
+        render_analyze_with_applied_math_sidebar(
+            st,
+            source_app=source_app,
+            source_page=source_page,
+            context=ctx,
+            context_summary=summary,
+            developer_mode=developer_mode,
         )
-        if st.button("Send to Command Center", key=f"ami_submit_{source_app}", use_container_width=True):
-            q = str(question or "").strip()
-            if not q:
-                st.warning("Enter a question first.")
-            else:
-                result = submit_analytical_question(
-                    source_app=source_app,
-                    source_page=source_page,
-                    question=q,
-                    context=context,
-                    context_summary=context_summary,
-                )
-                st.session_state["_last_analytical_question"] = result
-                st.success("Question saved — open Command Center to continue in Applied Intelligence.")
-        last = st.session_state.get("_last_analytical_question")
-        if isinstance(last, dict) and last.get("source_app") == source_app:
-            st.caption(f"Last sent: {str(last.get('question') or '')[:60]}…")
+    except Exception as exc:
+        log.exception("Applied Math sidebar failed for %s (%s)", source_app, source_page)
+        if developer_mode:
+            st.sidebar.warning(
+                f"Applied Math sidebar failed: {type(exc).__name__}: {exc}"
+            )
 
 
 def build_context_from_session(

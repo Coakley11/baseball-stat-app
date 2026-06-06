@@ -57,3 +57,9 @@ The Trend Value and Comparison Tool pages go beyond raw statistics. They calcula
 ## Current Status
 
 This app is an evolving AI-assisted baseball analytics project. It is designed as a portfolio project showing data analysis, fantasy baseball strategy, Streamlit development, statistical reasoning, and interactive decision-support design.
+
+## Deployment
+
+Streamlit Cloud: branch **`dev`**, main file **`streamlit_app.py`** (lowercase — see `.streamlit/config.toml`).
+
+**Analyze with Applied Math** appears in the sidebar right after page navigation (under Command Center). If your Cloud app tracks **`main`**, merge `dev` → `main` to ship cross-app features.
