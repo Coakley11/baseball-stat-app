@@ -4,7 +4,7 @@ Build Continue / resume deep links for suite Streamlit apps.
 Query params (read by suite_resume_launch in each app):
   suite_resume  — resume item key (e.g. song:pick-123, compare:Judge:Soto)
   suite_page    — target page/tab label
-  suite_pick_key, suite_song, suite_display_key, suite_section_focus — music shortcuts
+  suite_pick_key, suite_song, suite_display_key, suite_instrument, suite_section_focus — music shortcuts
   suite_holdings_fp — investment portfolio fingerprint
   suite_player_a, suite_player_b — baseball comparison players
   suite_team — NBA favorite team
@@ -174,6 +174,9 @@ def build_resume_action_url(
         display_key = str(m.get("display_key") or "").strip()
         if display_key:
             params["suite_display_key"] = display_key[:40]
+        instrument = str(m.get("instrument") or "").strip()
+        if instrument:
+            params["suite_instrument"] = instrument[:40]
         section = str(
             m.get("practice_focus_section") or m.get("focus") or ""
         ).strip()

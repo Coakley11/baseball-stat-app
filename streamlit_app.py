@@ -13054,7 +13054,16 @@ if active_page == "Trend Value":
     # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
     _stp = st.session_state.get("single_trend_dashboard_player")
     if _stp is not None and full_trend_labels and _stp not in full_trend_labels:
-        st.session_state.pop("single_trend_dashboard_player", None)
+        _resolved_stp = resolve_fullname_to_clean_label(_stp, full_trend_label_map)
+        if _resolved_stp and _resolved_stp in full_trend_labels:
+            st.session_state["single_trend_dashboard_player"] = _resolved_stp
+        else:
+            st.session_state.pop("single_trend_dashboard_player", None)
+    _pending_resume_trend = st.session_state.pop("pending_trend_player", None)
+    if _pending_resume_trend and full_trend_labels:
+        _resolved_pending = resolve_fullname_to_clean_label(_pending_resume_trend, full_trend_label_map)
+        if _resolved_pending and _resolved_pending in full_trend_labels:
+            st.session_state["single_trend_dashboard_player"] = _resolved_pending
     _tmp_multi = st.session_state.get("trend_players_multi")
     if isinstance(_tmp_multi, list) and full_trend_labels:
         _filtered_multi = [x for x in _tmp_multi if x in full_trend_labels]
@@ -13113,6 +13122,21 @@ if active_page == "Trend Value":
                 key="single_trend_dashboard_smooth_window"
             )
 
+    if single_player_name:
+        try:
+            from baseball_activity import log_trend_analysis
+
+            _player_trend_sig = (
+                single_trend_label,
+                tuple(dashboard_stats or []),
+                single_dashboard_mode,
+            )
+            if st.session_state.get("_cc_trend_player_sig") != _player_trend_sig:
+                st.session_state["_cc_trend_player_sig"] = _player_trend_sig
+                log_trend_analysis(player=single_player_name, trend=single_dashboard_mode)
+        except Exception:
+            pass
+
     selected_player_history = recent_span_df[recent_span_df["playerID"] == single_trend_id].copy()
     if selected_player_history.empty:
         st.info("No trend history available for that player in the selected window.")
@@ -13149,16 +13173,6 @@ if active_page == "Trend Value":
                 display_rows=3,
                 style_cols=[c for c in trend_snapshot.columns if "Δ" in c]
             )
-
-        try:
-            from baseball_activity import log_trend_analysis
-
-            _player_trend_sig = (single_trend_label, tuple(dashboard_stats or []), single_dashboard_mode)
-            if st.session_state.get("_cc_trend_player_sig") != _player_trend_sig:
-                st.session_state["_cc_trend_player_sig"] = _player_trend_sig
-                log_trend_analysis(player=single_player_name, trend=single_dashboard_mode)
-        except Exception:
-            pass
 
         if dashboard_stats:
             plot_single_player_multi_stat_dashboard(

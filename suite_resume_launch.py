@@ -2,6 +2,7 @@
 Apply Command Center deep-link query params when a suite app opens.
 
 Call once near the top of each Streamlit entry file (after set_page_config).
+Music apps must also call ``finalize_suite_resume_launch`` after the song catalog loads.
 """
 
 from __future__ import annotations
@@ -19,6 +20,34 @@ def _qp_get(st: Any, name: str) -> str:
     if isinstance(raw, list):
         return str(raw[0] or "").strip()
     return str(raw).strip()
+
+
+def finalize_suite_resume_launch(
+    st: Any,
+    app_key: str,
+    *,
+    song_picker_catalog: dict | None = None,
+    song_library: dict | None = None,
+) -> bool:
+    """
+    Apply deferred resume state after app bootstrap (catalog loaded).
+
+    ``apply_suite_resume_launch`` only seeds query params early; this commits
+    the song selection via ``apply_pick_key`` so defaults do not override Continue.
+    """
+    key = str(app_key or "").strip()
+    if key == "math":
+        key = "applied_intelligence"
+    launch_flag = f"_suite_resume_launch_{key}"
+    done_flag = f"_suite_resume_finalized_{key}"
+    if not st.session_state.get(launch_flag) or st.session_state.get(done_flag):
+        return False
+
+    if key == "music" and song_picker_catalog:
+        _finalize_music_resume(st, song_picker_catalog, song_library)
+
+    st.session_state[done_flag] = True
+    return True
 
 
 def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
@@ -56,10 +85,53 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
     return True
 
 
+def _finalize_music_resume(
+    st: Any,
+    song_picker_catalog: dict,
+    song_library: dict | None,
+) -> None:
+    pick = str(st.session_state.get("active_catalog_pick_key") or _qp_get(st, "suite_pick_key")).strip()
+    resume = _qp_get(st, "suite_resume")
+    if not pick and resume.startswith(("song:", "backing:")):
+        pick = resume.split(":", 1)[-1].strip()
+    if pick:
+        try:
+            from songs.state import apply_pick_key
+
+            apply_pick_key(
+                st,
+                pick,
+                song_picker_catalog,
+                song_library=song_library,
+                skip_activity_log=True,
+            )
+        except Exception:
+            pass
+
+    display_key = _qp_get(st, "suite_display_key")
+    if display_key:
+        try:
+            from songs.key_state import PENDING_DISPLAY_KEY
+
+            st.session_state[PENDING_DISPLAY_KEY] = display_key
+        except Exception:
+            st.session_state["display_key"] = display_key
+
+    instrument = _qp_get(st, "suite_instrument")
+    if instrument:
+        try:
+            from practice_setup_globals import set_active_instrument
+
+            set_active_instrument(st.session_state, instrument)
+        except Exception:
+            st.session_state["instrument"] = instrument
+
+
 def _apply_music(st: Any, resume: str, page: str) -> None:
     pick = _qp_get(st, "suite_pick_key")
     song = _qp_get(st, "suite_song")
     display_key = _qp_get(st, "suite_display_key")
+    instrument = _qp_get(st, "suite_instrument")
     if pick:
         st.session_state["active_catalog_pick_key"] = pick
     if song:
@@ -75,6 +147,13 @@ def _apply_music(st: Any, resume: str, page: str) -> None:
             st.session_state[PENDING_DISPLAY_KEY] = display_key
         except Exception:
             st.session_state["display_key"] = display_key
+    if instrument:
+        try:
+            from practice_setup_globals import set_active_instrument
+
+            set_active_instrument(st.session_state, instrument)
+        except Exception:
+            st.session_state["instrument"] = instrument
     section = _qp_get(st, "suite_section_focus")
     if section:
         st.session_state["practice_focus_section"] = section
@@ -110,6 +189,8 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     target_page = page.strip()
     if not target_page and resume.startswith("compare:"):
         target_page = "Comparison Tool"
+    if not target_page and resume.startswith("trend:"):
+        target_page = "Trend Value"
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()

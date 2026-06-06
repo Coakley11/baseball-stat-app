@@ -27,8 +27,16 @@ class RestorePickResult:
     disk_ts: str | None
 
 _RESUME_QUERY_KEYS: dict[str, tuple[str, ...]] = {
-    "music": ("suite_resume", "suite_page", "suite_pick_key", "suite_song"),
-    "baseball": ("suite_page",),
+    "music": (
+        "suite_resume",
+        "suite_page",
+        "suite_pick_key",
+        "suite_song",
+        "suite_display_key",
+        "suite_instrument",
+        "suite_section_focus",
+    ),
+    "baseball": ("suite_resume", "suite_page", "suite_trend_player", "suite_player_a", "suite_player_b"),
     "investment": ("suite_page",),
     "nba": ("suite_resume", "suite_page", "suite_team"),
     "future_lens": ("suite_resume", "suite_page", "suite_sim"),
