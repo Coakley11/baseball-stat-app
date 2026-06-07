@@ -2,12 +2,170 @@
 
 from __future__ import annotations
 
+import copy
+from datetime import datetime, timezone
 from typing import Any
 
 
 def _player_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip()
 
+
+def _copy_widget_value(val: Any) -> Any:
+    if val is None:
+        return None
+    if isinstance(val, (str, int, float, bool)):
+        return val
+    if isinstance(val, (list, tuple)):
+        return [_copy_widget_value(x) for x in val]
+    if isinstance(val, dict):
+        return {str(k): _copy_widget_value(v) for k, v in val.items()}
+    try:
+        import json
+
+        json.dumps(val)
+        return val
+    except (TypeError, ValueError):
+        return str(val)
+
+
+def _snapshot_page_widgets(page: str, session_state: dict[str, Any]) -> dict[str, Any]:
+    """Copy restore-able widget keys for a page from session state."""
+    try:
+        from page_state import PAGE_STATE_REGISTRY
+
+        reg = PAGE_STATE_REGISTRY.get(str(page or "").strip(), {})
+    except Exception:
+        reg = {}
+    out: dict[str, Any] = {}
+    for key in reg.get("exact", []):
+        if key in session_state and session_state[key] is not None and session_state[key] != "":
+            out[key] = _copy_widget_value(session_state[key])
+    for prefix in reg.get("prefixes", []):
+        for key, val in session_state.items():
+            if str(key).startswith(prefix) and val is not None and val != "":
+                if key not in out:
+                    out[key] = _copy_widget_value(val)
+    return out
+
+
+def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, Any]:
+    """
+    Serializable snapshot for Return Insight page restore (separate from solver context).
+    """
+    p = str(page or "").strip()
+    widget_params = _snapshot_page_widgets(p, session_state)
+    entity_params: dict[str, Any] = {"page": p}
+    filter_params: dict[str, Any] = {}
+    chart_params: dict[str, Any] = {}
+
+    if p == "Comparison Tool":
+        pa = session_state.get("sig_player_a_clean")
+        pb = session_state.get("sig_player_b_clean")
+        cp = session_state.get("compare_players") or session_state.get("compare_players_saved")
+        if pa:
+            entity_params["player_a_label"] = str(pa)
+            widget_params.setdefault("sig_player_a_clean", str(pa))
+        if pb:
+            entity_params["player_b_label"] = str(pb)
+            widget_params.setdefault("sig_player_b_clean", str(pb))
+        if isinstance(cp, list) and cp:
+            entity_params["compare_players"] = [_copy_widget_value(x) for x in cp[:3]]
+            widget_params.setdefault("compare_players", entity_params["compare_players"])
+        for fk in (
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ):
+            if fk in session_state and session_state[fk] is not None:
+                filter_params[fk] = _copy_widget_value(session_state[fk])
+
+    elif p == "Trend Value":
+        pl = session_state.get("single_trend_dashboard_player")
+        if pl:
+            entity_params["player_label"] = str(pl)
+            widget_params.setdefault("single_trend_dashboard_player", str(pl))
+        stats = session_state.get("single_trend_dashboard_stats")
+        if stats:
+            chart_params["stats"] = [_copy_widget_value(s) for s in stats[:6]]
+        for fk in ("trend_lag", "trend_plot_stat", "trend_chart_mode", "trend_smooth_window"):
+            if fk in session_state and session_state[fk] is not None:
+                filter_params[fk] = _copy_widget_value(session_state[fk])
+
+    elif p == "Historical Explorer":
+        snap = session_state.get("_ami_historical_snapshot")
+        if isinstance(snap, dict):
+            chart_params["historical_snapshot"] = _copy_widget_value(snap)
+        for fk in (
+            "historical_year_range_filter",
+            "historical_sort_stat_filter",
+            "historical_sort_order_filter",
+            "historical_batting_hand_filter",
+            "historical_position_filter",
+            "historical_team_filter",
+        ):
+            if fk in session_state and session_state[fk] is not None:
+                filter_params[fk] = _copy_widget_value(session_state[fk])
+
+    elif "draft" in p.lower():
+        dq = session_state.get("draft_queue")
+        if isinstance(dq, list) and dq:
+            entity_params["draft_queue"] = [_copy_widget_value(x) for x in dq[:6]]
+
+    return {
+        "source_app": "baseball",
+        "source_page": p,
+        "page_params": {"page": p},
+        "entity_params": entity_params,
+        "widget_params": widget_params,
+        "filter_params": filter_params,
+        "chart_params": chart_params,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def apply_source_state_to_session(session_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+    """Map stored source_state into baseball pending-restore session keys."""
+    if not source_state:
+        return
+    wp = dict(source_state.get("widget_params") or {})
+    ent = dict(source_state.get("entity_params") or {})
+    filt = dict(source_state.get("filter_params") or {})
+
+    for key, val in {**wp, **filt}.items():
+        if val is not None and val != "":
+            session_state[key] = copy.deepcopy(val)
+            if key in (
+                "compare_stat",
+                "compare_x_axis_mode",
+                "compare_year_range",
+                "compare_age_range",
+                "compare_trend_mode",
+                "compare_smooth_window",
+            ):
+                session_state[f"{key}_saved"] = copy.deepcopy(val)
+
+    cp = ent.get("compare_players") or wp.get("compare_players")
+    if isinstance(cp, list) and cp:
+        session_state["pending_compare_players"] = copy.deepcopy(cp[:3])
+    pa = ent.get("player_a_label") or wp.get("sig_player_a_clean")
+    pb = ent.get("player_b_label") or wp.get("sig_player_b_clean")
+    if pa:
+        session_state["pending_sig_player_a"] = str(pa)
+    if pb:
+        session_state["pending_sig_player_b"] = str(pb)
+    tp = ent.get("player_label") or wp.get("single_trend_dashboard_player")
+    if tp:
+        session_state["pending_trend_player"] = str(tp)
+        session_state["single_trend_dashboard_player"] = str(tp)
+
+    page = str(source_state.get("source_page") or source_state.get("page_params", {}).get("page") or "").strip()
+    if page:
+        session_state["_navigate_to_page"] = page
+        session_state["_skip_page_restore_for"] = page
 
 def cache_page_context(session_state: dict[str, Any], page: str, ctx: dict[str, Any]) -> None:
     if not page or not ctx:

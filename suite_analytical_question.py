@@ -21,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-p2-return-insight-v10"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-return-insight-restore-v11"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -262,6 +262,7 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
         "source_page": payload.get("source_page"),
         "quant_area": payload.get("quant_area"),
         "context": dict(payload.get("context") or {}),
+        "source_state": dict(payload.get("source_state") or {}),
     }
     try:
         from suite_account import remember_saved_item
@@ -280,6 +281,11 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
 
 def load_analytical_question_context(question_id: str) -> dict[str, Any]:
     """Load full context blob by question_id from saved items or resume subtitle."""
+    return load_analytical_question_payload(question_id).get("context") or {}
+
+
+def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
+    """Load full question blob (context + source_state) by question_id."""
     qid = str(question_id or "").strip()
     if not qid:
         return {}
@@ -292,9 +298,7 @@ def load_analytical_question_context(question_id: str) -> dict[str, Any]:
             if str(row.get("item_key") or "") == qid:
                 payload = row.get("payload")
                 if isinstance(payload, dict):
-                    ctx = payload.get("context")
-                    if isinstance(ctx, dict) and ctx:
-                        return copy.deepcopy(ctx)
+                    return copy.deepcopy(payload)
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
     try:
@@ -307,10 +311,17 @@ def load_analytical_question_context(question_id: str) -> dict[str, Any]:
                 continue
             ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
             if ctx:
-                return ctx
+                return {"context": ctx, "question_id": qid}
     except Exception:
         pass
     return {}
+
+
+def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
+    """Load page-restore snapshot saved at question send time."""
+    payload = load_analytical_question_payload(question_id)
+    ss = payload.get("source_state")
+    return dict(ss) if isinstance(ss, dict) else {}
 
 
 def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | None = None) -> None:
@@ -348,6 +359,9 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
             pass
     if not ctx and qid:
         ctx = load_analytical_question_context(qid)
+    source_state: dict[str, Any] = {}
+    if qid:
+        source_state = load_analytical_question_source_state(qid)
     if not ctx:
         raw_ctx = _qp("suite_ai_context")
         if raw_ctx:
@@ -373,6 +387,8 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         ss["_suite_ai_page"] = page
     if ctx:
         ss["_suite_ai_context"] = json.dumps(ctx, ensure_ascii=False)
+    if source_state:
+        ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
 
 
 def _format_context_value(key: str, val: Any) -> str:
@@ -502,6 +518,7 @@ def build_question_payload(
     context: dict[str, Any] | None = None,
     context_summary: str = "",
     quant_area: str = "",
+    source_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     q = str(question or "").strip()
     if not q:
@@ -527,6 +544,7 @@ def build_question_payload(
         "context_display": " · ".join(ctx_display),
         "quant_area": area,
         "resume_key": f"ai:question:{qid}",
+        "source_state": dict(source_state or {}),
     }
 
 
@@ -590,6 +608,7 @@ def submit_analytical_question(
     context: dict[str, Any] | None = None,
     context_summary: str = "",
     quant_area: str = "",
+    source_state: dict[str, Any] | None = None,
     session_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Log event on source app and upsert Applied Intelligence resume item."""
@@ -600,6 +619,7 @@ def submit_analytical_question(
         context=context,
         context_summary=context_summary,
         quant_area=quant_area,
+        source_state=source_state,
     )
     action_url = build_applied_math_resume_url(payload)
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
@@ -669,6 +689,7 @@ def render_analyze_with_applied_math_sidebar(
     source_page: str,
     context: dict[str, Any] | None = None,
     context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
+    source_state_builder: Callable[[], dict[str, Any] | None] | None = None,
     context_summary: str = "",
     default_question: str = "",
     developer_mode: bool = False,
@@ -713,12 +734,26 @@ def render_analyze_with_applied_math_sidebar(
         if not q:
             st.sidebar.warning("Enter a question first.")
         else:
+            submit_ctx = build_submit_context(
+                source_app,
+                source_page,
+                ss,
+                context_extra_builder=context_extra_builder,
+                context_extra=context,
+            )
+            submit_source_state: dict[str, Any] | None = None
+            if source_state_builder is not None:
+                try:
+                    submit_source_state = source_state_builder()
+                except Exception:
+                    log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
             result = submit_analytical_question(
                 source_app=source_app,
                 source_page=source_page,
                 question=q,
-                context=context,
+                context=submit_ctx,
                 context_summary=context_summary,
+                source_state=submit_source_state,
                 session_state=ss,
             )
             ss["_last_analytical_question"] = result
@@ -746,6 +781,7 @@ def render_applied_math_sidebar_entry(
     session_state: dict[str, Any] | None = None,
     context_extra: dict[str, Any] | None = None,
     context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
+    source_state_builder: Callable[[], dict[str, Any] | None] | None = None,
     developer_mode: bool = False,
     **kwargs: Any,
 ) -> None:
@@ -771,6 +807,7 @@ def render_applied_math_sidebar_entry(
             source_app=source_app,
             source_page=source_page,
             context_extra_builder=builder,
+            source_state_builder=source_state_builder,
             context_summary="",
             developer_mode=developer_mode,
             session_state=ss,

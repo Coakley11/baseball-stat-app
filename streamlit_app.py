@@ -11664,9 +11664,10 @@ active_page = st.session_state["active_page"]
 from suite_analytical_question import render_applied_math_sidebar_entry
 
 try:
-    from applied_math_context import build_baseball_applied_math_context
+    from applied_math_context import build_baseball_applied_math_context, build_source_state
 except Exception:
     build_baseball_applied_math_context = None  # type: ignore[misc, assignment]
+    build_source_state = None  # type: ignore[misc, assignment]
 
 render_applied_math_sidebar_entry(
     st,
@@ -11677,6 +11678,11 @@ render_applied_math_sidebar_entry(
     context_extra_builder=(
         lambda: build_baseball_applied_math_context(active_page, st.session_state)
         if build_baseball_applied_math_context
+        else None
+    ),
+    source_state_builder=(
+        lambda: build_source_state(active_page, st.session_state)
+        if build_source_state
         else None
     ),
 )

@@ -1,54 +1,46 @@
-"""Tests for Baseball Applied Math context extractors and sidebar entry."""
+"""Tests for Baseball Applied Math context extractors."""
 
 from __future__ import annotations
 
-import inspect
 import unittest
-from unittest.mock import MagicMock
 
-from applied_math_context import build_baseball_applied_math_context, record_trend_intel
-from suite_analytical_question import (
-    build_context_from_session,
-    render_applied_math_sidebar_entry,
+from applied_math_context import (
+    apply_source_state_to_session,
+    build_baseball_applied_math_context,
+    build_source_state,
+    record_trend_intel,
 )
 
 
-class TestAppliedMathSidebarEntry(unittest.TestCase):
-    def test_build_context_from_session_returns_tuple(self) -> None:
-        ctx, summary = build_context_from_session("baseball", "Comparison Tool", {})
-        self.assertIsInstance(ctx, dict)
-        self.assertIsInstance(summary, str)
+class TestBaseballSourceState(unittest.TestCase):
+    def test_build_source_state_captures_full_comparison_labels(self) -> None:
+        session = {
+            "sig_player_a_clean": "Juan Soto (NYY)",
+            "sig_player_b_clean": "Aaron Judge (NYY)",
+            "compare_players": ["Juan Soto (NYY)", "Aaron Judge (NYY)"],
+            "compare_stat": "OPS",
+            "compare_year_range": [2019, 2024],
+        }
+        ss = build_source_state("Comparison Tool", session)
+        self.assertEqual(ss["source_page"], "Comparison Tool")
+        self.assertEqual(ss["entity_params"]["player_a_label"], "Juan Soto (NYY)")
+        self.assertEqual(ss["widget_params"]["sig_player_a_clean"], "Juan Soto (NYY)")
+        self.assertEqual(ss["filter_params"]["compare_stat"], "OPS")
 
-    def test_render_applied_math_sidebar_entry_accepts_current_kwargs(self) -> None:
-        st = MagicMock()
-        st.session_state = {}
-        st.sidebar = MagicMock()
-        render_applied_math_sidebar_entry(
-            st,
-            source_app="baseball",
-            source_page="Comparison Tool",
-            session_state=st.session_state,
-            developer_mode=False,
-            context_extra_builder=lambda: {},
+    def test_apply_source_state_sets_pending_keys(self) -> None:
+        session: dict = {}
+        source = build_source_state(
+            "Comparison Tool",
+            {
+                "sig_player_a_clean": "Juan Soto (NYY)",
+                "sig_player_b_clean": "Aaron Judge (NYY)",
+                "compare_players": ["Juan Soto (NYY)", "Aaron Judge (NYY)"],
+            },
         )
-
-    def test_render_applied_math_sidebar_entry_legacy_context_builder_kwarg(self) -> None:
-        st = MagicMock()
-        st.session_state = {}
-        st.sidebar = MagicMock()
-        render_applied_math_sidebar_entry(
-            st,
-            source_app="baseball",
-            source_page="Comparison Tool",
-            session_state=st.session_state,
-            context_builder=lambda: {"player": "Test"},
-        )
-
-    def test_sidebar_entry_signature_includes_context_extra_builder(self) -> None:
-        sig = inspect.signature(render_applied_math_sidebar_entry)
-        self.assertIn("context_extra_builder", sig.parameters)
-        self.assertIn("context_extra", sig.parameters)
-        self.assertIn("source_app", sig.parameters)
+        apply_source_state_to_session(session, source)
+        self.assertEqual(session["pending_sig_player_a"], "Juan Soto (NYY)")
+        self.assertEqual(session["pending_compare_players"], ["Juan Soto (NYY)", "Aaron Judge (NYY)"])
+        self.assertEqual(session["_navigate_to_page"], "Comparison Tool")
 
 
 class TestBaseballAppliedMathContext(unittest.TestCase):
