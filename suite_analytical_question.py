@@ -21,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-ami-context-v2"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-p2-return-insight-v10"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -743,12 +743,21 @@ def render_applied_math_sidebar_entry(
     *,
     source_app: str,
     source_page: str,
-    session_state: dict[str, Any],
+    session_state: dict[str, Any] | None = None,
     context_extra: dict[str, Any] | None = None,
     context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
     developer_mode: bool = False,
+    **kwargs: Any,
 ) -> None:
     """Render AMI sidebar near the top; log and surface failures in Developer Mode."""
+    if context_extra_builder is None:
+        legacy_builder = kwargs.pop("context_builder", None)
+        if callable(legacy_builder):
+            context_extra_builder = legacy_builder
+    kwargs.pop("context", None)
+    if kwargs:
+        log.debug("render_applied_math_sidebar_entry ignored legacy kwargs: %s", sorted(kwargs))
+    ss = session_state if session_state is not None else getattr(st, "session_state", {})
     try:
         builder = context_extra_builder
         if builder is None and context_extra is not None:
@@ -764,7 +773,7 @@ def render_applied_math_sidebar_entry(
             context_extra_builder=builder,
             context_summary="",
             developer_mode=developer_mode,
-            session_state=session_state,
+            session_state=ss,
         )
     except Exception as exc:
         log.exception("Applied Math sidebar failed for %s (%s)", source_app, source_page)
@@ -996,6 +1005,9 @@ def build_context_from_session(
                 val = getattr(hr_obj, attr, None) if not isinstance(hr_obj, dict) else hr_obj.get(attr)
                 if val is not None and val != "":
                     ctx[key] = val
+
+    return ctx, summary
+
 
 def render_suite_applied_math_insight(
     st: Any,
