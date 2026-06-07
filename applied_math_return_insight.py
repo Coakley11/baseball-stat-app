@@ -201,6 +201,7 @@ def metrics_for_source_app_return(insight: AppliedMathInsight | dict[str, Any]) 
     ctx = dict(data.get("return_context") or ss)
     ent = dict(ss.get("entity_params") or ctx.get("entity_params") or {})
     wp = dict(ss.get("widget_params") or ctx.get("widget_params") or {})
+    chart = dict(ss.get("chart_params") or ctx.get("chart_params") or {})
     page = (
         data.get("source_page")
         or ss.get("source_page")
@@ -227,12 +228,14 @@ def metrics_for_source_app_return(insight: AppliedMathInsight | dict[str, Any]) 
         or ctx.get("player")
         or ent.get("player")
     )
+    trend_players = ent.get("trend_players_multi") or chart.get("trend_players_multi")
     return {
         "page": page,
         "source_page": page,
         "player_a": pa,
         "player_b": pb,
         "player": player,
+        "trend_players": trend_players,
         "team": ent.get("team") or ctx.get("team"),
         "opponent": ent.get("opponent") or ctx.get("opponent"),
         "tickers": ent.get("holdings") or ctx.get("holdings"),
@@ -351,13 +354,17 @@ def store_applied_math_insight(
     try:
         from suite_account import remember_saved_item
 
-        remember_saved_item(
+        for store_app in (
             str(data.get("source_app") or "applied_intelligence"),
-            INSIGHT_ITEM_TYPE,
-            iid,
-            title=str(data.get("conclusion") or "Applied Math insight")[:120],
-            payload=blob,
-        )
+            "applied_intelligence",
+        ):
+            remember_saved_item(
+                store_app,
+                INSIGHT_ITEM_TYPE,
+                iid,
+                title=str(data.get("conclusion") or "Applied Math insight")[:120],
+                payload=blob,
+            )
     except Exception as exc:
         log.warning("remember_saved_item insight failed: %s", exc)
     try:
@@ -385,8 +392,13 @@ def load_applied_math_insight(insight_id: str, *, source_app: str = "") -> dict[
     try:
         from suite_account import load_saved_items
 
-        for app_key in ([app] if app else []) + ["baseball", "nba", "investment", "applied_intelligence"]:
-            rows = load_saved_items(app=app_key, item_type=INSIGHT_ITEM_TYPE, limit=40)
+        for app_key in ([app] if app else []) + [
+            "applied_intelligence",
+            "baseball",
+            "nba",
+            "investment",
+        ]:
+            rows = load_saved_items(app=app_key, item_type=INSIGHT_ITEM_TYPE, limit=80)
             for row in rows:
                 if str(row.get("item_key") or "") == iid:
                     payload = row.get("payload")
@@ -395,6 +407,78 @@ def load_applied_math_insight(insight_id: str, *, source_app: str = "") -> dict[
     except Exception as exc:
         log.warning("load_applied_math_insight failed: %s", exc)
     return {}
+
+
+def _resolve_return_source_state(
+    st: Any,
+    app_key: str,
+    insight: dict[str, Any],
+    *,
+    question_id_qp: str = "",
+) -> dict[str, Any]:
+    """Best-effort source_state from insight blob, return_context, or question send snapshot."""
+    source_state = insight.get("source_state") or insight.get("return_context") or {}
+    if isinstance(source_state, dict) and source_state.get("widget_params"):
+        return dict(source_state)
+    qid = str(insight.get("question_id") or question_id_qp or "").strip()
+    if qid:
+        try:
+            from suite_analytical_question import load_analytical_question_source_state
+
+            loaded = load_analytical_question_source_state(qid)
+            if loaded:
+                return dict(loaded)
+        except Exception:
+            pass
+    return dict(source_state) if isinstance(source_state, dict) else {}
+
+
+def commit_ami_return_page_restore(st: Any, app_key: str) -> bool:
+    """
+    After page navigation is committed, re-apply source_state once so widgets
+    pick up pending_compare_players / trend labels before render.
+    """
+    flag = f"_ami_page_restore_committed_{app_key}"
+    if st.session_state.get(flag):
+        return False
+
+    def _qp(name: str) -> str:
+        try:
+            raw = st.query_params.get(name)
+        except Exception:
+            return ""
+        if raw is None:
+            return ""
+        if isinstance(raw, list):
+            return str(raw[0] or "").strip()
+        return str(raw).strip()
+
+    iid = _qp("suite_ami_insight")
+    pending = st.session_state.get(SESSION_PENDING_KEY)
+    if not iid and not isinstance(pending, dict):
+        return False
+
+    insight = dict(pending) if isinstance(pending, dict) else {}
+    if iid and not insight.get("insight_id"):
+        loaded = load_applied_math_insight(iid, source_app=app_key)
+        if loaded:
+            insight = loaded
+            st.session_state[SESSION_PENDING_KEY] = insight
+
+    source_state = st.session_state.get(SESSION_RETURN_CONTEXT_KEY)
+    if not isinstance(source_state, dict) or not source_state:
+        source_state = _resolve_return_source_state(
+            st,
+            app_key,
+            insight,
+            question_id_qp=_qp("suite_ai_question_id"),
+        )
+    if isinstance(source_state, dict) and source_state:
+        st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
+        apply_return_source_state(st, app_key, source_state)
+        st.session_state[flag] = True
+        return True
+    return False
 
 
 def stage_pending_insight(st: Any, insight: AppliedMathInsight | dict[str, Any], *, return_context: dict[str, Any] | None = None) -> None:
@@ -437,17 +521,15 @@ def apply_ami_insight_from_query(st: Any, app_key: str) -> bool:
         _qp("suite_page") or insight.get("source_page") or ""
     )
 
-    source_state = insight.get("source_state") or insight.get("return_context") or {}
-    qid = str(insight.get("question_id") or _qp("suite_ai_question_id") or "").strip()
-    if qid and not source_state:
-        try:
-            from suite_analytical_question import load_analytical_question_source_state
-
-            source_state = load_analytical_question_source_state(qid)
-        except Exception:
-            pass
+    source_state = _resolve_return_source_state(
+        st,
+        app_key,
+        insight if isinstance(insight, dict) else {},
+        question_id_qp=_qp("suite_ai_question_id"),
+    )
 
     if isinstance(source_state, dict) and source_state:
+        st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
         apply_return_source_state(st, app_key, source_state)
     elif st.session_state.get(SESSION_RETURN_PAGE_KEY):
         page = st.session_state[SESSION_RETURN_PAGE_KEY]

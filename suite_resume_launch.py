@@ -201,6 +201,13 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     if trend_player:
         st.session_state["single_trend_dashboard_player"] = trend_player
         st.session_state["pending_trend_player"] = trend_player
+    trend_players_raw = _qp_get(st, "suite_trend_players")
+    if trend_players_raw:
+        labels = [x.strip() for x in trend_players_raw.split("|") if x.strip()]
+        if labels:
+            st.session_state["pending_trend_players"] = labels
+            st.session_state["trend_force_multi_labels"] = labels[:3]
+            st.session_state["trend_players_multi"] = labels[:3]
     if target_page:
         st.session_state["_navigate_to_page"] = target_page
 
@@ -287,6 +294,16 @@ def _apply_ami_insight(st: Any, app_key: str) -> None:
         apply_ami_insight_from_query(st, app_key)
     except Exception:
         pass
+
+
+def finalize_ami_return_restore(st: Any, app_key: str) -> bool:
+    """Call after page navigation is scheduled — commits widget pending restore."""
+    try:
+        from applied_math_return_insight import commit_ami_return_page_restore
+
+        return commit_ami_return_page_restore(st, app_key)
+    except Exception:
+        return False
 
 
 def _apply_applied_intelligence(st: Any, page: str) -> None:

@@ -203,6 +203,12 @@ def build_resume_action_url(
             trend_player = rk.split(":", 1)[-1].strip()
         if trend_player:
             params["suite_trend_player"] = trend_player[:120]
+        trend_players = m.get("trend_players")
+        if isinstance(trend_players, list) and trend_players:
+            params["suite_trend_players"] = "|".join(str(x) for x in trend_players[:4])[:240]
+        qid = str(m.get("question_id") or "").strip()
+        if qid:
+            params["suite_ai_question_id"] = qid[:40]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:

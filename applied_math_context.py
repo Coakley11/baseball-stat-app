@@ -82,18 +82,52 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
         ):
             if fk in session_state and session_state[fk] is not None:
                 filter_params[fk] = _copy_widget_value(session_state[fk])
+        chart_params["chart_snapshot"] = {
+            "page": p,
+            "player_a": entity_params.get("player_a_label"),
+            "player_b": entity_params.get("player_b_label"),
+            "compare_players": entity_params.get("compare_players") or [],
+            "stat": filter_params.get("compare_stat") or session_state.get("compare_stat"),
+            "x_axis_mode": filter_params.get("compare_x_axis_mode") or session_state.get("compare_x_axis_mode"),
+            "year_range": filter_params.get("compare_year_range") or session_state.get("compare_year_range"),
+            "trend_mode": filter_params.get("compare_trend_mode") or session_state.get("compare_trend_mode"),
+        }
 
     elif p == "Trend Value":
+        multi = session_state.get("trend_players_multi") or session_state.get("trend_force_multi_labels")
         pl = session_state.get("single_trend_dashboard_player")
+        if isinstance(multi, list) and multi:
+            labels = [_copy_widget_value(x) for x in multi[:6]]
+            entity_params["trend_players_multi"] = labels
+            chart_params["trend_players_multi"] = labels
         if pl:
             entity_params["player_label"] = str(pl)
             widget_params.setdefault("single_trend_dashboard_player", str(pl))
         stats = session_state.get("single_trend_dashboard_stats")
         if stats:
             chart_params["stats"] = [_copy_widget_value(s) for s in stats[:6]]
-        for fk in ("trend_lag", "trend_plot_stat", "trend_chart_mode", "trend_smooth_window"):
+        for fk in (
+            "trend_lag",
+            "trend_plot_stat",
+            "trend_chart_mode",
+            "trend_smooth_window",
+            "trend_min_g",
+            "trend_position_filter",
+        ):
             if fk in session_state and session_state[fk] is not None:
                 filter_params[fk] = _copy_widget_value(session_state[fk])
+        chart_params["chart_snapshot"] = {
+            "page": p,
+            "players": entity_params.get("trend_players_multi")
+            or ([str(pl)] if pl else []),
+            "anchor_player": str(pl) if pl else "",
+            "metric": session_state.get("trend_plot_stat"),
+            "stats": chart_params.get("stats") or [],
+            "window_seasons": session_state.get("trend_lag"),
+            "chart_mode": session_state.get("trend_chart_mode"),
+            "smooth_window": session_state.get("trend_smooth_window"),
+            "trend_summary": session_state.get("_ami_trend_summary"),
+        }
 
     elif p == "Historical Explorer":
         snap = session_state.get("_ami_historical_snapshot")
@@ -134,6 +168,24 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
     wp = dict(source_state.get("widget_params") or {})
     ent = dict(source_state.get("entity_params") or {})
     filt = dict(source_state.get("filter_params") or {})
+    chart = dict(source_state.get("chart_params") or {})
+
+    page = str(source_state.get("source_page") or source_state.get("page_params", {}).get("page") or "").strip()
+    if page:
+        session_state["_navigate_to_page"] = page
+        session_state["_skip_page_restore_for"] = page
+        session_state["_ami_return_restore_page"] = page
+
+    # Drop stale widget keys so pending restore wins on the next widget draw.
+    for key in (
+        "compare_players",
+        "compare_players_saved",
+        "sig_player_a_clean",
+        "sig_player_b_clean",
+        "trend_players_multi",
+        "trend_force_multi_labels",
+    ):
+        session_state.pop(key, None)
 
     for key, val in {**wp, **filt}.items():
         if val is not None and val != "":
@@ -148,6 +200,18 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
             ):
                 session_state[f"{key}_saved"] = copy.deepcopy(val)
 
+    if chart.get("stats"):
+        session_state["single_trend_dashboard_stats"] = copy.deepcopy(chart["stats"])
+    multi = chart.get("trend_players_multi") or ent.get("trend_players_multi")
+    if isinstance(multi, list) and multi:
+        labels = copy.deepcopy(multi[:6])
+        session_state["trend_force_multi_labels"] = labels[:3]
+        session_state["trend_players_multi"] = labels[:3]
+        session_state["pending_trend_players"] = labels
+    snap = chart.get("historical_snapshot")
+    if isinstance(snap, dict):
+        session_state["_ami_historical_snapshot"] = copy.deepcopy(snap)
+
     cp = ent.get("compare_players") or wp.get("compare_players")
     if isinstance(cp, list) and cp:
         session_state["pending_compare_players"] = copy.deepcopy(cp[:3])
@@ -161,11 +225,6 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
     if tp:
         session_state["pending_trend_player"] = str(tp)
         session_state["single_trend_dashboard_player"] = str(tp)
-
-    page = str(source_state.get("source_page") or source_state.get("page_params", {}).get("page") or "").strip()
-    if page:
-        session_state["_navigate_to_page"] = page
-        session_state["_skip_page_restore_for"] = page
 
 def cache_page_context(session_state: dict[str, Any], page: str, ctx: dict[str, Any]) -> None:
     if not page or not ctx:
@@ -270,11 +329,15 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
         cmp_extra = session_state.get("_ami_comparison_context")
         if isinstance(cmp_extra, dict):
             ctx.update(cmp_extra)
+        ctx["chart_snapshot"] = build_source_state(p, session_state).get("chart_params", {}).get("chart_snapshot")
 
     elif p == "Trend Value":
         pl = session_state.get("single_trend_dashboard_player")
         if pl:
             ctx["player"] = _player_name(pl)
+        multi = session_state.get("trend_players_multi") or session_state.get("trend_force_multi_labels")
+        if isinstance(multi, list) and multi:
+            ctx["players"] = [_player_name(x) for x in multi[:6]]
         stats = session_state.get("single_trend_dashboard_stats") or []
         if stats:
             ctx["metrics"] = [str(s) for s in stats[:6]]
@@ -289,6 +352,7 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
         ami = session_state.get("_ami_trend_summary")
         if isinstance(ami, dict) and ami:
             ctx["trend_summary"] = ami
+        ctx["chart_snapshot"] = build_source_state(p, session_state).get("chart_params", {}).get("chart_snapshot")
 
     elif "draft" in low:
         dq = session_state.get("draft_queue") or []

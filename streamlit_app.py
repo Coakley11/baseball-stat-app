@@ -11639,6 +11639,13 @@ def render_contextual_page_nav(
 _consume_scheduled_navigation()
 
 try:
+    from suite_resume_launch import finalize_ami_return_restore
+
+    finalize_ami_return_restore(st, "baseball")
+except Exception:
+    pass
+
+try:
     from suite_command_center_link import render_command_center_sidebar_link
 
     render_command_center_sidebar_link(st)

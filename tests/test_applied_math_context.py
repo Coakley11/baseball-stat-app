@@ -41,6 +41,22 @@ class TestBaseballSourceState(unittest.TestCase):
         self.assertEqual(session["pending_sig_player_a"], "Juan Soto (NYY)")
         self.assertEqual(session["pending_compare_players"], ["Juan Soto (NYY)", "Aaron Judge (NYY)"])
         self.assertEqual(session["_navigate_to_page"], "Comparison Tool")
+        self.assertEqual(session["_ami_return_restore_page"], "Comparison Tool")
+
+    def test_trend_source_state_captures_multi_player_chart(self) -> None:
+        session = {
+            "single_trend_dashboard_player": "Aaron Judge (NYY)",
+            "trend_players_multi": ["Aaron Judge (NYY)", "Juan Soto (NYY)"],
+            "trend_plot_stat": "R",
+            "trend_lag": 5,
+            "trend_chart_mode": "Line",
+        }
+        ss = build_source_state("Trend Value", session)
+        self.assertEqual(len(ss["entity_params"]["trend_players_multi"]), 2)
+        self.assertEqual(ss["chart_params"]["chart_snapshot"]["metric"], "R")
+        restored: dict = {}
+        apply_source_state_to_session(restored, ss)
+        self.assertEqual(restored["trend_players_multi"], ["Aaron Judge (NYY)", "Juan Soto (NYY)"])
 
 
 class TestBaseballAppliedMathContext(unittest.TestCase):
