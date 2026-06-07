@@ -219,19 +219,46 @@ def save_cloud_full_session(
     *,
     page: str = "",
     summary: str = "",
-) -> None:
+) -> bool:
+    """Persist full_session to Supabase. Returns True when cloud write succeeds."""
     if not state:
+        return False
+    try:
+        from suite_storage_config import cloud_storage_enabled
+    except ImportError:
+        return False
+    if not cloud_storage_enabled():
+        return False
+    try:
+        storage, _ = _import_storage()
+        app_key = storage.normalize_app_key(app_id)
+        storage.save_current_state(
+            app_key,
+            page=page or "",
+            summary=summary or "Last session",
+            metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+        )
+        return True
+    except Exception:
+        return False
+
+
+def clear_cloud_full_session(app_id: str) -> None:
+    """Remove persisted full_session blob from cloud (reset flows)."""
+    try:
+        from suite_storage_config import cloud_storage_enabled
+    except ImportError:
+        return
+    if not cloud_storage_enabled():
         return
     try:
-        from suite_account import sync_local_state_to_cloud
-
-        sync_local_state_to_cloud(
-            app_id,
-            {
-                "page": page,
-                "summary": summary or "Last session",
-                FULL_SESSION_KEY: state,
-            },
+        storage, _ = _import_storage()
+        app_key = storage.normalize_app_key(app_id)
+        storage.save_current_state(
+            app_key,
+            page="",
+            summary="",
+            metrics={FULL_SESSION_KEY: {}},
         )
     except Exception:
         pass

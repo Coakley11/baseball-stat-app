@@ -30,6 +30,16 @@ _GLOBAL_KEYS = (
 
 def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     ss = st.session_state
+    active = ss.get("active_page")
+    if active:
+        try:
+            store = ss.setdefault("page_filter_state", {})
+            if not isinstance(store, dict):
+                store = {}
+                ss["page_filter_state"] = store
+            pg_state.save_page_state(ss, str(active), store)
+        except Exception:
+            pass
     state: dict[str, Any] = {}
     for key in _GLOBAL_KEYS:
         if key in ss:
@@ -95,3 +105,53 @@ def default_reset_baseball_session(st: Any) -> None:
         page=_DEFAULT_PAGE,
         summary="Reset to defaults",
     )
+
+
+def render_cross_device_sync_debug(st: Any) -> None:
+    """Developer / ?dev=1 panel: cloud vs local persistence trace."""
+    try:
+        from suite_cloud_state import FULL_SESSION_KEY, probe_cloud_restore_diagnostics
+    except ImportError:
+        return
+
+    ss = st.session_state
+    diag = probe_cloud_restore_diagnostics(st, APP_ID)
+    pf = ss.get("page_filter_state")
+    cmp_block = {}
+    trend_block = {}
+    if isinstance(pf, dict):
+        cmp_block = pf.get("Comparison Tool") or {}
+        trend_block = pf.get("Trend Value") or {}
+
+    rows = {
+        "cloud_enabled": diag.get("cloud_enabled"),
+        "account_mode": diag.get("account_mode"),
+        "suite_user_id": (diag.get("suite_user_id") or "")[:24],
+        "storage_module": diag.get("storage_module"),
+        "cloud_row_found": diag.get("cloud_row_found"),
+        "cloud_has_full_session": diag.get("cloud_has_full_session"),
+        "cloud_updated_at": diag.get("cloud_updated_at"),
+        "cloud_load_error": diag.get("cloud_load_error"),
+        "restore_skip_reason": ss.get("_suite_persist_restore_skip_reason"),
+        "pick_source": ss.get("_suite_persist_debug_pick_source"),
+        "pick_reason": ss.get("_suite_persist_debug_pick_reason"),
+        "cloud_ts_debug": ss.get("_suite_persist_debug_cloud_ts"),
+        "disk_ts_debug": ss.get("_suite_persist_debug_disk_ts"),
+        "last_save_at": ss.get("_suite_persist_last_save_at"),
+        "last_save_cloud": ss.get("_suite_persist_last_save_cloud"),
+        "last_save_disk": ss.get("_suite_persist_last_save_disk"),
+        "last_cloud_error": ss.get("_suite_persist_last_cloud_error"),
+        "local_dirty": ss.get("_suite_persist_local_dirty::baseball"),
+        "active_page": ss.get("active_page"),
+        "compare_player_a": cmp_block.get("sig_player_a_clean") or ss.get("sig_player_a_clean"),
+        "compare_player_b": cmp_block.get("sig_player_b_clean") or ss.get("sig_player_b_clean"),
+        "compare_players_saved": cmp_block.get("compare_players") or ss.get("compare_players"),
+        "trend_players_multi": trend_block.get("trend_players_multi") or ss.get("trend_players_multi"),
+        "trend_plot_stat": trend_block.get("trend_plot_stat") or ss.get("trend_plot_stat"),
+    }
+
+    with st.sidebar.expander("Cross-device sync trace", expanded=True):
+        st.caption("Phone ↔ Dell workspace persistence (full_session cloud blob).")
+        for k, v in rows.items():
+            if v is not None and v != "":
+                st.text(f"{k}: {v}")

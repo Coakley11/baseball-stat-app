@@ -10828,6 +10828,14 @@ DEVELOPER_MODE_KEY = "app_developer_mode"
 
 def developer_mode_enabled() -> bool:
     """When False (default), hide debug/diagnostic UI and skip expensive debug work."""
+    try:
+        raw = st.query_params.get("dev")
+    except Exception:
+        raw = None
+    if raw is not None:
+        val = str(raw[0] if isinstance(raw, list) else raw).strip().lower()
+        if val in ("1", "true", "yes", "on"):
+            return True
     return bool(st.session_state.get(DEVELOPER_MODE_KEY, False))
 
 
@@ -11720,6 +11728,13 @@ for _ephemeral_key in list(st.session_state.keys()):
 if not pp.is_screenshot_mode(st):
     st.sidebar.caption("Filters are remembered as you move between pages.")
 render_developer_mode_sidebar_toggle()
+if developer_mode_enabled():
+    try:
+        from baseball_persistent_state import render_cross_device_sync_debug
+
+        render_cross_device_sync_debug(st)
+    except Exception:
+        pass
 render_page_state_debug(active_page)
 app_tutorial.maybe_open_tutorial_dialog()
 render_persistent_workflow_sidebar(yearly_df)
@@ -12975,6 +12990,8 @@ if active_page == "Comparison Tool":
         label="Use these filters in another tool…",
         extra_context={"compare_selected_labels": selected_labels_compare},
     )
+    save_page_state(active_page)
+    render_page_filters_debug(active_page)
 
 
 if active_page == "Trend Value":
@@ -15128,6 +15145,8 @@ if active_page == "Draft Room Simulator":
                     f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
                 )
 
+    save_page_state(active_page)
+    render_page_filters_debug(active_page)
 
 
 if active_page == "Draft Simulation Test Mode":
