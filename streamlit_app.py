@@ -1616,22 +1616,60 @@ def make_trend_insight_summary(row):
     rbi_trend = pd.to_numeric(row.get("RBI_trend", np.nan), errors="coerce")
     sb_trend = pd.to_numeric(row.get("SB_trend", np.nan), errors="coerce")
     xbh_trend = pd.to_numeric(row.get("XBH_noHR_trend", np.nan), errors="coerce")
-    proj_ops = pd.to_numeric(row.get("proj_OPS", np.nan), errors="coerce")
-    proj_hr = pd.to_numeric(row.get("proj_HR", np.nan), errors="coerce")
-    proj_rbi = pd.to_numeric(row.get("proj_RBI", np.nan), errors="coerce")
-    proj_sb = pd.to_numeric(row.get("proj_SB", np.nan), errors="coerce")
-    proj_xbh = pd.to_numeric(row.get("proj_XBH", np.nan), errors="coerce")
     trend_type = classify_trend(row)
     label = "a breakout candidate" if trend_type == "breakout" else ("a decline risk" if trend_type == "decline" else "a stable profile")
-    return (
-        f"{player} looks like {label}. "
-        f"OPS trend is {fmt_rate_4(ops_trend)} per year, HR trend is {fmt_count_1(hr_trend)}, "
-        f"2B+3B trend is {fmt_count_1(xbh_trend)}, RBI trend is {fmt_count_1(rbi_trend)}, "
-        f"and SB trend is {fmt_count_1(sb_trend)}. "
-        f"If the recent pattern continues, the next-season trend estimate is roughly "
-        f"{fmt_rate_4(proj_ops)} OPS, {fmt_count_1(proj_hr)} HR, {fmt_count_1(proj_xbh)} doubles/triples, "
-        f"{fmt_count_1(proj_rbi)} RBI, and {fmt_count_1(proj_sb)} SB."
-    )
+
+    trend_bits = []
+    if pd.notna(ops_trend):
+        trend_bits.append(f"OPS trend {fmt_rate_3(ops_trend)}/yr")
+    if pd.notna(hr_trend):
+        trend_bits.append(f"HR trend {fmt_int(hr_trend)}/yr")
+    if pd.notna(xbh_trend):
+        trend_bits.append(f"2B+3B trend {fmt_int(xbh_trend)}/yr")
+    if pd.notna(rbi_trend):
+        trend_bits.append(f"RBI trend {fmt_int(rbi_trend)}/yr")
+    if pd.notna(sb_trend):
+        trend_bits.append(f"SB trend {fmt_int(sb_trend)}/yr")
+    trend_sentence = ", ".join(trend_bits) + "." if trend_bits else "Trend slopes unavailable."
+
+    proj_bits = []
+    rate_proj = [
+        ("OPS", "proj_OPS"),
+        ("AVG", "proj_BA"),
+        ("OBP", "proj_OBP"),
+        ("SLG", "proj_SLG"),
+    ]
+    for stat_label, col in rate_proj:
+        val = pd.to_numeric(row.get(col, np.nan), errors="coerce")
+        if pd.notna(val):
+            proj_bits.append(f"{stat_label} {val:.3f}")
+    count_proj = [
+        ("HR", "proj_HR"),
+        ("RBI", "proj_RBI"),
+        ("SB", "proj_SB"),
+        ("doubles", "proj_2B"),
+        ("triples", "proj_3B"),
+    ]
+    for stat_label, col in count_proj:
+        val = pd.to_numeric(row.get(col, np.nan), errors="coerce")
+        if pd.notna(val):
+            proj_bits.append(f"{int(round(val))} {stat_label}")
+    war_val = pd.to_numeric(row.get("proj_WAR", np.nan), errors="coerce")
+    if pd.notna(war_val):
+        proj_bits.append(f"WAR {war_val:.1f}")
+    if not any(
+        pd.notna(pd.to_numeric(row.get(c, np.nan), errors="coerce"))
+        for c in ("proj_2B", "proj_3B")
+    ):
+        xbh_val = pd.to_numeric(row.get("proj_XBH", np.nan), errors="coerce")
+        if pd.notna(xbh_val):
+            proj_bits.append(f"{int(round(xbh_val))} doubles/triples")
+    if proj_bits:
+        proj_sentence = "Next year projection: " + ", ".join(proj_bits) + "."
+    else:
+        proj_sentence = "Next year projection unavailable."
+
+    return f"{player} looks like {label}. {trend_sentence} {proj_sentence}"
 
 def make_valuation_summary(row):
     player = row.get("fullName", "This player")
@@ -11627,10 +11665,8 @@ from suite_analytical_question import render_applied_math_sidebar_entry
 
 try:
     from applied_math_context import build_baseball_applied_math_context
-
-    _bb_ami_extra = build_baseball_applied_math_context(active_page, st.session_state)
 except Exception:
-    _bb_ami_extra = None
+    build_baseball_applied_math_context = None  # type: ignore[misc, assignment]
 
 render_applied_math_sidebar_entry(
     st,
@@ -11638,7 +11674,11 @@ render_applied_math_sidebar_entry(
     source_page=active_page,
     session_state=st.session_state,
     developer_mode=developer_mode_enabled(),
-    context_extra=_bb_ami_extra,
+    context_extra_builder=(
+        lambda: build_baseball_applied_math_context(active_page, st.session_state)
+        if build_baseball_applied_math_context
+        else None
+    ),
 )
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
@@ -13085,6 +13125,8 @@ if active_page == "Trend Value":
     breakout_df = trend_value_df[
         ["fullName", "Position", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]
     ].copy()
+    top_breakouts_full = trend_value_df.sort_values("OPS_trend", ascending=False).head(10)
+    biggest_declines_full = trend_value_df.sort_values("OPS_trend", ascending=True).head(10)
     top_breakouts = breakout_df.sort_values("OPS_trend", ascending=False).head(10)
     biggest_declines = breakout_df.sort_values("OPS_trend", ascending=True).head(10)
 
@@ -13128,12 +13170,12 @@ if active_page == "Trend Value":
     )
 
     st.subheader("Insight Summary")
-    trend_insight_pool = pd.concat([top_breakouts, biggest_declines], ignore_index=True)
+    trend_insight_pool = pd.concat([top_breakouts_full, biggest_declines_full], ignore_index=True)
     trend_selected = _select_insight_row(
         trend_insight_pool,
         key="trend_breakout_decline_selected_player",
         label="Choose a breakout or decline player",
-        default_name=top_breakouts.iloc[0]["fullName"] if not top_breakouts.empty else None,
+        default_name=top_breakouts_full.iloc[0]["fullName"] if not top_breakouts_full.empty else None,
     )
     if trend_selected is not None:
         if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
@@ -13249,6 +13291,24 @@ if active_page == "Trend Value":
         selected_player_summary = trend_value_df[trend_value_df["playerID"] == single_trend_id]
         if not selected_player_summary.empty:
             st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
+            try:
+                from applied_math_context import record_trend_intel
+
+                stat_choice_single = str(st.session_state.get("trend_plot_stat") or "OPS")
+                single_intel = build_advanced_trend_intelligence(
+                    recent_span_df, [single_trend_id], stat_choice_single
+                )
+                if not single_intel.empty:
+                    record_trend_intel(
+                        st.session_state,
+                        player=single_player_name,
+                        stat=stat_choice_single,
+                        intel_row=single_intel.iloc[0].to_dict(),
+                        year_start=int(recent_years_trend[0]) if recent_years_trend else None,
+                        year_end=int(recent_years_trend[-1]) if recent_years_trend else None,
+                    )
+            except Exception:
+                pass
 
             trend_snapshot_cols = [
                 "fullName", "R_trend", "HR_trend", "RBI_trend", "SB_trend",

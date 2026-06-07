@@ -13,6 +13,7 @@ import logging
 import re
 import copy
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 
 from activity_time import parse_activity_timestamp, utc_now_iso
@@ -20,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-ami-context-v1"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-ami-context-v2"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -86,6 +87,13 @@ _PUBLIC_CONTEXT_KEYS = (
     "experience_mode",
     "games_remaining",
     "rate_needed",
+    "matchup_advantages",
+    "injury_summary",
+    "key_players",
+    "series_record",
+    "rebalance_recommendation",
+    "total_drift",
+    "historical_comparison",
 )
 
 _CONTEXT_LABELS = {
@@ -133,6 +141,13 @@ _CONTEXT_LABELS = {
     "experience_mode": "Experience mode",
     "games_remaining": "Games remaining",
     "rate_needed": "Rate needed",
+    "matchup_advantages": "Matchup advantages",
+    "injury_summary": "Injury summary",
+    "key_players": "Key players",
+    "series_record": "Series record",
+    "rebalance_recommendation": "Rebalance recommendation",
+    "total_drift": "Total drift",
+    "historical_comparison": "Historical comparison",
 }
 
 
@@ -624,12 +639,36 @@ def submit_analytical_question(
     }
 
 
+def build_submit_context(
+    source_app: str,
+    source_page: str,
+    session_state: dict[str, Any],
+    *,
+    context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
+    context_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fresh context at Send time — page hooks may run after sidebar render."""
+    ctx, _ = build_context_from_session(source_app, source_page, session_state)
+    extra: dict[str, Any] | None = None
+    if context_extra_builder is not None:
+        try:
+            extra = context_extra_builder()
+        except Exception:
+            log.exception("AMI context builder failed for %s (%s)", source_app, source_page)
+    elif context_extra:
+        extra = context_extra
+    if extra:
+        ctx = merge_analytical_context(ctx, extra)
+    return ctx
+
+
 def render_analyze_with_applied_math_sidebar(
     st: Any,
     *,
     source_app: str,
     source_page: str,
     context: dict[str, Any] | None = None,
+    context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
     context_summary: str = "",
     default_question: str = "",
     developer_mode: bool = False,
@@ -706,19 +745,23 @@ def render_applied_math_sidebar_entry(
     source_page: str,
     session_state: dict[str, Any],
     context_extra: dict[str, Any] | None = None,
+    context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
     developer_mode: bool = False,
 ) -> None:
     """Render AMI sidebar near the top; log and surface failures in Developer Mode."""
     try:
-        ctx, summary = build_context_from_session(source_app, source_page, session_state)
-        if context_extra:
-            ctx = merge_analytical_context(ctx, context_extra)
-            summary = _short_context_summary(ctx)
+        builder = context_extra_builder
+        if builder is None and context_extra is not None:
+            frozen_extra = context_extra
+
+            def builder() -> dict[str, Any] | None:
+                return frozen_extra
+
         render_analyze_with_applied_math_sidebar(
             st,
             source_app=source_app,
             source_page=source_page,
-            context=ctx,
+            context_extra_builder=builder,
             context_summary="",
             developer_mode=developer_mode,
             session_state=session_state,
@@ -900,6 +943,7 @@ def build_context_from_session(
             summary_text = macro_assumption_summary()
             if summary_text:
                 ctx["macro_summary"] = summary_text
+                ctx["macro_outlook"] = summary_text
         except Exception:
             pass
         er = session_state.get("portfolio_expected_return") or session_state.get("expected_return_pct")
