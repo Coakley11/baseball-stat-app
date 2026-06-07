@@ -191,18 +191,6 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         target_page = "Comparison Tool"
     if not target_page and resume.startswith("trend:"):
         target_page = "Trend Value"
-    if not target_page and resume.startswith("trendcompare:"):
-        target_page = "Trend Value"
-    if resume.startswith("trendcompare:"):
-        parts = resume.split(":", 2)
-        if len(parts) >= 3:
-            tc_a, tc_b = parts[1].strip(), parts[2].strip()
-            if tc_a and tc_b:
-                st.session_state["_suite_pending_trendcompare_names"] = [tc_a, tc_b]
-                if not pa:
-                    pa = tc_a
-                if not pb:
-                    pb = tc_b
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()
@@ -251,14 +239,41 @@ def _apply_future_lens(st: Any, resume: str, page: str) -> None:
     sim = _qp_get(st, "suite_sim")
     if sim:
         st.session_state["_suite_fl_sim"] = sim
+        if not st.session_state.get("specific_skill"):
+            st.session_state["specific_skill"] = sim
     if resume.startswith("sim:") and not sim:
         st.session_state["_suite_fl_sim"] = resume.split(":", 1)[-1].strip()
-    if page == "timeline":
+    if resume.startswith("career:") and not sim:
+        st.session_state["_suite_fl_sim"] = resume.split(":", 1)[-1].strip()
+    domain = _qp_get(st, "suite_fl_domain")
+    if domain:
+        st.session_state["broad_domain"] = domain
+    area = _qp_get(st, "suite_fl_area")
+    if area:
+        st.session_state["area"] = area
+    timeline_year = _qp_get(st, "suite_fl_timeline_year")
+    if timeline_year:
+        try:
+            st.session_state["timeline_year"] = int(timeline_year)
+        except ValueError:
+            st.session_state["timeline_year"] = timeline_year
+    sim_year = _qp_get(st, "suite_fl_sim_year")
+    if sim_year:
+        try:
+            st.session_state["sim_year"] = int(sim_year)
+        except ValueError:
+            pass
+    fl_view = _qp_get(st, "suite_fl_view")
+    if fl_view:
+        st.session_state["_suite_fl_view"] = fl_view
+    elif page == "timeline":
         st.session_state["_suite_fl_view"] = "timeline"
     elif page == "skills":
         st.session_state["_suite_fl_view"] = "skills"
-    else:
+    elif page:
         st.session_state["_suite_fl_view"] = "simulation"
+    if domain and area:
+        st.session_state["future_project"] = f"{domain} / {area}"
 
 
 def _apply_applied_intelligence(st: Any, page: str) -> None:
@@ -267,3 +282,24 @@ def _apply_applied_intelligence(st: Any, page: str) -> None:
         st.session_state["_suite_ai_lesson"] = lesson
     if page:
         st.session_state["_suite_ai_page"] = page
+    try:
+        from suite_analytical_question import hydrate_applied_intelligence_session
+
+        hydrate_applied_intelligence_session(st)
+    except Exception:
+        q = _qp_get(st, "suite_ai_question")
+        if q:
+            st.session_state["_suite_ai_question"] = q
+            st.session_state["ps_library_problem"] = q
+        ctx_raw = _qp_get(st, "suite_ai_context")
+        if ctx_raw:
+            st.session_state["_suite_ai_context"] = ctx_raw
+        for qp, key in (
+            ("suite_ai_source_app", "_suite_ai_source_app"),
+            ("suite_ai_source_page", "_suite_ai_source_page"),
+            ("suite_ai_area", "_suite_ai_area"),
+            ("suite_ai_question_id", "_suite_ai_question_id"),
+        ):
+            val = _qp_get(st, qp)
+            if val:
+                st.session_state[key] = val

@@ -39,8 +39,24 @@ _RESUME_QUERY_KEYS: dict[str, tuple[str, ...]] = {
     "baseball": ("suite_resume", "suite_page", "suite_trend_player", "suite_player_a", "suite_player_b"),
     "investment": ("suite_page",),
     "nba": ("suite_resume", "suite_page", "suite_team"),
-    "future_lens": ("suite_resume", "suite_page", "suite_sim"),
-    "applied_intelligence": ("suite_page", "suite_lesson"),
+    "future_lens": (
+        "suite_resume",
+        "suite_page",
+        "suite_sim",
+        "suite_fl_domain",
+        "suite_fl_area",
+        "suite_fl_timeline_year",
+        "suite_fl_sim_year",
+        "suite_fl_view",
+    ),
+    "applied_intelligence": (
+        "suite_page",
+        "suite_lesson",
+        "suite_ai_question",
+        "suite_ai_question_id",
+        "suite_ai_source_app",
+        "suite_ai_context",
+    ),
 }
 
 

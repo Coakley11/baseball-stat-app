@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+import copy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,7 +20,9 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-06-ami-sidebar-v2"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-ami-context-v1"
+_CTX_JSON_SUBTITLE_LIMIT = 8000
+_CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
 ANALYTICAL_QUESTION_BUTTON_LABEL = "Continue in Applied Mathematics →"
 _SEND_COOLDOWN_SECONDS = 120
@@ -62,6 +65,27 @@ _PUBLIC_CONTEXT_KEYS = (
     "macro_summary",
     "win_probability",
     "series_probability",
+    "trend_summary",
+    "trend_window",
+    "comparison_stats",
+    "comparison_differences",
+    "stat_gap",
+    "player",
+    "draft_projection",
+    "historical_snapshot",
+    "table_summary",
+    "filters_applied",
+    "sharpe_ratio",
+    "max_drawdown",
+    "risk_level",
+    "rebalance_drift",
+    "target_weights",
+    "current_weights",
+    "macro_outlook",
+    "model_assumptions",
+    "experience_mode",
+    "games_remaining",
+    "rate_needed",
 )
 
 _CONTEXT_LABELS = {
@@ -89,6 +113,26 @@ _CONTEXT_LABELS = {
     "macro_summary": "Macro outlook",
     "win_probability": "Win probability",
     "series_probability": "Series probability",
+    "trend_summary": "Trend summary",
+    "trend_window": "Trend window",
+    "comparison_stats": "Comparison stats",
+    "comparison_differences": "Key differences",
+    "stat_gap": "Stat gap",
+    "draft_projection": "Draft projection",
+    "historical_snapshot": "Historical snapshot",
+    "table_summary": "Table summary",
+    "filters_applied": "Filters",
+    "sharpe_ratio": "Sharpe ratio",
+    "max_drawdown": "Max drawdown",
+    "risk_level": "Risk level",
+    "rebalance_drift": "Weight drift",
+    "target_weights": "Target weights",
+    "current_weights": "Current weights",
+    "macro_outlook": "Macro outlook",
+    "model_assumptions": "Model assumptions",
+    "experience_mode": "Experience mode",
+    "games_remaining": "Games remaining",
+    "rate_needed": "Rate needed",
 }
 
 
@@ -164,7 +208,178 @@ def _safe_widget_suffix(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "_", str(text or "page"))[:48]
 
 
+def merge_analytical_context(base: dict[str, Any], extra: dict[str, Any] | None) -> dict[str, Any]:
+    """Deep-merge page extractor output into base context."""
+    out = dict(base or {})
+    for key, val in dict(extra or {}).items():
+        if val is None or val == "":
+            continue
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            merged = dict(out[key])
+            merged.update(val)
+            out[key] = merged
+        else:
+            out[key] = val
+    return out
+
+
+def _parse_context_from_resume_subtitle(subtitle: str) -> dict[str, Any]:
+    text = str(subtitle or "")
+    if "__ctx_json__:" not in text:
+        return {}
+    _, _, blob = text.partition("\n__ctx_json__:")
+    try:
+        raw = json.loads(blob.strip())
+        return raw if isinstance(raw, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _store_question_context_blob(payload: dict[str, Any]) -> None:
+    """Persist full context server-side keyed by question_id (survives URL truncation)."""
+    qid = str(payload.get("question_id") or "").strip()
+    if not qid:
+        return
+    blob = {
+        "question": payload.get("question"),
+        "question_id": qid,
+        "source_app": payload.get("source_app"),
+        "source_page": payload.get("source_page"),
+        "quant_area": payload.get("quant_area"),
+        "context": dict(payload.get("context") or {}),
+    }
+    try:
+        from suite_account import remember_saved_item
+
+        remember_saved_item(
+            "applied_intelligence",
+            _CONTEXT_ITEM_TYPE,
+            qid,
+            title=str(payload.get("question") or "Applied Math question")[:200],
+            payload=blob,
+        )
+        return
+    except Exception as exc:
+        log.warning("remember_saved_item failed for analytical context: %s", exc)
+
+
+def load_analytical_question_context(question_id: str) -> dict[str, Any]:
+    """Load full context blob by question_id from saved items or resume subtitle."""
+    qid = str(question_id or "").strip()
+    if not qid:
+        return {}
+    resume_key = f"ai:question:{qid}"
+    try:
+        from suite_account import load_saved_items
+
+        rows = load_saved_items(app="applied_intelligence", item_type=_CONTEXT_ITEM_TYPE, limit=50)
+        for row in rows:
+            if str(row.get("item_key") or "") == qid:
+                payload = row.get("payload")
+                if isinstance(payload, dict):
+                    ctx = payload.get("context")
+                    if isinstance(ctx, dict) and ctx:
+                        return copy.deepcopy(ctx)
+    except Exception as exc:
+        log.warning("load_saved_items failed for question context: %s", exc)
+    try:
+        from suite_storage_supabase import load_active_resume_items
+
+        for row in load_active_resume_items(limit=40):
+            if str(row.get("app") or "") != "applied_intelligence":
+                continue
+            if str(row.get("item_key") or "") != resume_key:
+                continue
+            ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
+            if ctx:
+                return ctx
+    except Exception:
+        pass
+    return {}
+
+
+def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | None = None) -> None:
+    """Map URL params / resume metrics into Applied Intelligence session keys."""
+    ss = st.session_state
+
+    def _qp(name: str) -> str:
+        try:
+            raw = st.query_params.get(name)
+        except Exception:
+            return ""
+        if raw is None:
+            return ""
+        if isinstance(raw, list):
+            return str(raw[0] or "").strip()
+        return str(raw).strip()
+
+    m = dict(metrics or {})
+    question = str(m.get("question") or _qp("suite_ai_question") or "").strip()
+    qid = str(m.get("question_id") or m.get("dedupe_fingerprint") or _qp("suite_ai_question_id") or "").strip()
+    source_app = str(m.get("source_app") or _qp("suite_ai_source_app") or "").strip()
+    source_page = str(m.get("source_page") or _qp("suite_ai_source_page") or "").strip()
+    area = str(m.get("quant_area") or m.get("area") or _qp("suite_ai_area") or "").strip()
+    page = str(m.get("page") or _qp("suite_page") or "Solve a Problem").strip()
+
+    ctx: dict[str, Any] = {}
+    if isinstance(m.get("context"), dict):
+        ctx = copy.deepcopy(m["context"])
+    elif m.get("context_json"):
+        try:
+            parsed = json.loads(str(m["context_json"]))
+            if isinstance(parsed, dict):
+                ctx = parsed
+        except json.JSONDecodeError:
+            pass
+    if not ctx and qid:
+        ctx = load_analytical_question_context(qid)
+    if not ctx:
+        raw_ctx = _qp("suite_ai_context")
+        if raw_ctx:
+            try:
+                parsed = json.loads(raw_ctx)
+                if isinstance(parsed, dict):
+                    ctx = parsed
+            except json.JSONDecodeError:
+                pass
+
+    if question:
+        ss["_suite_ai_question"] = question
+        ss["ps_library_problem"] = question
+    if qid:
+        ss["_suite_ai_question_id"] = qid
+    if source_app:
+        ss["_suite_ai_source_app"] = source_app
+    if source_page:
+        ss["_suite_ai_source_page"] = source_page
+    if area:
+        ss["_suite_ai_area"] = area
+    if page:
+        ss["_suite_ai_page"] = page
+    if ctx:
+        ss["_suite_ai_context"] = json.dumps(ctx, ensure_ascii=False)
+
+
 def _format_context_value(key: str, val: Any) -> str:
+    if key == "trend_summary" and isinstance(val, dict):
+        parts = []
+        for sub, label in (
+            ("stat", "metric"),
+            ("direction", "direction"),
+            ("slope", "slope"),
+            ("r2", "R²"),
+            ("delta", "change"),
+            ("latest", "latest"),
+            ("previous", "previous"),
+            ("summary", "summary"),
+        ):
+            v = val.get(sub)
+            if v is not None and str(v).strip() != "":
+                parts.append(f"{label}={v}")
+        return "; ".join(parts)
+    if isinstance(val, dict):
+        inner = ", ".join(f"{k}: {v}" for k, v in list(val.items())[:6] if v is not None and str(v).strip())
+        return inner
     if isinstance(val, list):
         return ", ".join(str(v) for v in val[:8] if str(v).strip())
     return str(val).strip()
@@ -183,7 +398,7 @@ def format_context_lines(context: dict[str, Any] | None) -> list[str]:
             continue
         label = _CONTEXT_LABELS.get(key, key.replace("_", " ").title())
         lines.append(f"{label}: {text}")
-    return lines[:10]
+    return lines[:16]
 
 
 def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str, str]:
@@ -203,7 +418,7 @@ def analytical_question_storage_subtitle(payload: dict[str, Any]) -> str:
     ctx = dict(payload.get("context") or {})
     ctx_json = json.dumps(ctx, ensure_ascii=False) if ctx else ""
     if ctx_json:
-        return f"{question}\n__ctx_json__:{ctx_json[:1200]}"
+        return f"{question}\n__ctx_json__:{ctx_json[:_CTX_JSON_SUBTITLE_LIMIT]}"
     return question
 
 
@@ -222,6 +437,8 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
         "quant_area": payload.get("quant_area"),
         "context_json": json.dumps(ctx, ensure_ascii=False),
         "dedupe_fingerprint": payload.get("question_id"),
+        "saved_item_type": _CONTEXT_ITEM_TYPE,
+        "saved_item_key": payload.get("question_id"),
     }
 
 
@@ -387,6 +604,8 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
     _upsert_applied_intelligence_resume(payload, action_url=action_url)
+    if not duplicate:
+        _store_question_context_blob(payload)
     if session_state is not None:
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
@@ -493,13 +712,8 @@ def render_applied_math_sidebar_entry(
     try:
         ctx, summary = build_context_from_session(source_app, source_page, session_state)
         if context_extra:
-            for key, val in context_extra.items():
-                if val is None or val == "":
-                    continue
-                if key in ("page", "team", "opponent", "win_probability", "series_probability"):
-                    ctx[key] = val
-            if context_extra.get("team"):
-                ctx["team"] = str(context_extra["team"])
+            ctx = merge_analytical_context(ctx, context_extra)
+            summary = _short_context_summary(ctx)
         render_analyze_with_applied_math_sidebar(
             st,
             source_app=source_app,
@@ -597,6 +811,12 @@ def build_context_from_session(
                 trend_dir = session_state.get("_ami_trend_direction") or session_state.get("trend_direction_label")
                 if trend_dir:
                     ctx["trend_summary"] = {"direction": str(trend_dir), "stat": metrics[0] if metrics else ""}
+                ami_trend = session_state.get("_ami_trend_summary")
+                if isinstance(ami_trend, dict) and ami_trend:
+                    ctx["trend_summary"] = {**dict(ctx.get("trend_summary") or {}), **ami_trend}
+                lag = session_state.get("trend_lag")
+                if lag is not None:
+                    ctx["trend_window"] = f"{lag} seasons"
         elif "trade" in low_page:
             ctx["workflow"] = "Trade analysis"
             acquire = session_state.get("pending_trade_acquire_players") or []
@@ -717,5 +937,20 @@ def build_context_from_session(
         if tickers:
             ctx["holdings"] = tickers
             summary = f"{summary} · {', '.join(tickers[:4])}"
+        inv_extra = session_state.get("_ami_investment_context")
+        if isinstance(inv_extra, dict) and inv_extra:
+            for k, v in inv_extra.items():
+                if v is not None and v != "":
+                    ctx[k] = v
+        hr_obj = session_state.get("health_result")
+        if hr_obj is not None:
+            for attr, key in (
+                ("sharpe", "sharpe_ratio"),
+                ("max_drawdown", "max_drawdown"),
+                ("risk_level", "risk_level"),
+            ):
+                val = getattr(hr_obj, attr, None) if not isinstance(hr_obj, dict) else hr_obj.get(attr)
+                if val is not None and val != "":
+                    ctx[key] = val
 
     return ctx, summary

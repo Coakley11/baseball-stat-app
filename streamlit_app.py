@@ -11625,12 +11625,20 @@ active_page = st.session_state["active_page"]
 
 from suite_analytical_question import render_applied_math_sidebar_entry
 
+try:
+    from applied_math_context import build_baseball_applied_math_context
+
+    _bb_ami_extra = build_baseball_applied_math_context(active_page, st.session_state)
+except Exception:
+    _bb_ami_extra = None
+
 render_applied_math_sidebar_entry(
     st,
     source_app="baseball",
     source_page=active_page,
     session_state=st.session_state,
     developer_mode=developer_mode_enabled(),
+    context_extra=_bb_ami_extra,
 )
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
@@ -11822,6 +11830,34 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    try:
+        from applied_math_context import cache_page_context
+
+        top_rows = []
+        for _, row in hist_display_raw.head(5).iterrows():
+            entry: dict = {"player": str(row.get("fullName") or "").strip()}
+            yr = row.get("yearID")
+            if yr is not None and pd.notna(yr):
+                entry["year"] = int(yr)
+            if hist_sort_stat in row.index:
+                entry[str(hist_sort_stat)] = row.get(hist_sort_stat)
+            if entry.get("player"):
+                top_rows.append(entry)
+        snap = {
+            "sort_stat": str(hist_sort_stat),
+            "year_range": f"{hist_year_range[0]}–{hist_year_range[1]}",
+            "row_count": int(len(hist_display_raw)),
+            "top_players": [r["player"] for r in top_rows],
+            "top_rows": top_rows,
+        }
+        st.session_state["_ami_historical_snapshot"] = snap
+        cache_page_context(
+            st.session_state,
+            "Historical Explorer",
+            {"historical_snapshot": snap, "metrics": [str(hist_sort_stat)]},
+        )
+    except Exception:
+        pass
     _hist_action_names = []
     if "fullName" in hist_display_raw.columns:
         _hist_action_names = list(
@@ -12561,6 +12597,26 @@ if active_page == "Comparison Tool":
             st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
         else:
             st.info(make_advanced_trend_commentary(compare_intel, stat_choice_compare))
+            try:
+                from applied_math_context import cache_page_context
+
+                cmp_ctx: dict = {"comparison_stats": [str(stat_choice_compare)]}
+                diffs = []
+                for _, row in compare_intel.iterrows():
+                    name = str(row.get("Player") or row.get("player") or "").strip()
+                    if not name:
+                        continue
+                    entry = {"player": name.split(" (")[0]}
+                    for col in ("Slope", "Recent Slope", "R-squared", "Net Change", "Trend Direction"):
+                        if col in row.index and pd.notna(row.get(col)):
+                            entry[col] = row.get(col)
+                    diffs.append(entry)
+                if diffs:
+                    cmp_ctx["comparison_differences"] = diffs[:4]
+                st.session_state["_ami_comparison_context"] = cmp_ctx
+                cache_page_context(st.session_state, "Comparison Tool", cmp_ctx)
+            except Exception:
+                pass
             render_output_table(
                 format_advanced_trend_table(clean_ui_columns(compare_intel)),
                 key="comparison_advanced_trend_intelligence",
@@ -13340,6 +13396,20 @@ if active_page == "Trend Value":
         if trend_intel.empty:
             st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
         else:
+            try:
+                from applied_math_context import record_trend_intel
+
+                anchor = selected_labels_trend[0] if selected_labels_trend else ""
+                record_trend_intel(
+                    st.session_state,
+                    player=anchor,
+                    stat=str(stat_choice_trend),
+                    intel_row=trend_intel.iloc[0].to_dict() if not trend_intel.empty else None,
+                    year_start=int(recent_years_trend[0]) if recent_years_trend else None,
+                    year_end=int(recent_years_trend[-1]) if recent_years_trend else None,
+                )
+            except Exception:
+                pass
             st.info(make_advanced_trend_commentary(trend_intel, stat_choice_trend))
             render_output_table(
                 format_advanced_trend_table(clean_ui_columns(trend_intel)),

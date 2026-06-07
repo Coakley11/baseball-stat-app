@@ -8,6 +8,7 @@ Query params (read by suite_resume_launch in each app):
   suite_holdings_fp — investment portfolio fingerprint
   suite_player_a, suite_player_b — baseball comparison players
   suite_team — NBA favorite team
+  suite_sim, suite_fl_domain, suite_fl_area, suite_fl_timeline_year, suite_fl_sim_year — Future Lens
 """
 
 from __future__ import annotations
@@ -216,11 +217,30 @@ def build_resume_action_url(
         if team:
             params["suite_team"] = team[:80]
     elif app_key == "future_lens":
-        sim = str(m.get("simulation") or m.get("project") or "").strip()
+        sim = str(m.get("simulation") or m.get("specific_skill") or m.get("project") or "").strip()
         if not sim and rk.startswith("sim:"):
+            sim = rk.split(":", 1)[-1].strip()
+        if not sim and rk.startswith("career:"):
             sim = rk.split(":", 1)[-1].strip()
         if sim:
             params["suite_sim"] = sim[:120]
+        domain = str(m.get("domain") or m.get("broad_domain") or "").strip()
+        if not domain and rk.startswith("timeline:"):
+            domain = str(m.get("project") or "").split(" / ")[0].strip()
+        if domain:
+            params["suite_fl_domain"] = domain[:80]
+        area = str(m.get("area") or "").strip()
+        if area:
+            params["suite_fl_area"] = area[:80]
+        timeline_year = m.get("timeline_year")
+        if timeline_year is not None and str(timeline_year).strip():
+            params["suite_fl_timeline_year"] = str(timeline_year)[:10]
+        sim_year = m.get("sim_year")
+        if sim_year is not None and str(sim_year).strip():
+            params["suite_fl_sim_year"] = str(sim_year)[:10]
+        fl_view = str(m.get("_suite_fl_view") or m.get("view") or "").strip()
+        if fl_view:
+            params["suite_fl_view"] = fl_view[:40]
     elif app_key == "applied_intelligence":
         lesson = str(m.get("lesson") or m.get("next_lesson") or "").strip()
         if lesson:
@@ -228,6 +248,9 @@ def build_resume_action_url(
         question = str(m.get("question") or "").strip()
         if question:
             params["suite_ai_question"] = question[:500]
+        qid = str(m.get("question_id") or m.get("dedupe_fingerprint") or "").strip()
+        if qid:
+            params["suite_ai_question_id"] = qid[:40]
         source_app = str(m.get("source_app") or "").strip()
         if source_app:
             params["suite_ai_source_app"] = source_app[:40]
@@ -239,7 +262,9 @@ def build_resume_action_url(
             params["suite_ai_area"] = area[:40]
         ctx = str(m.get("context_summary") or "").strip()
         ctx_json = str(m.get("context_json") or "").strip()
-        if ctx_json:
+        if qid:
+            params["suite_ai_context"] = ctx_json[:400] if ctx_json else ""
+        elif ctx_json:
             params["suite_ai_context"] = ctx_json[:800]
         elif ctx:
             params["suite_ai_context"] = ctx[:400]
@@ -304,6 +329,20 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             page = "🧠 Matchup Intelligence"
         elif key.startswith("nba:playoff:"):
             page = "🏆 Playoff Bracket"
+    elif app_key == "future_lens":
+        if key.startswith("career:"):
+            scenario = key.split(":", 1)[-1].strip()
+            metrics["simulation"] = scenario
+            metrics["scenario"] = scenario
+            page = page or "simulation"
+        elif key.startswith("sim:"):
+            metrics["simulation"] = key.split(":", 1)[-1].strip()
+            page = page or "simulation"
+        elif key.startswith("timeline:"):
+            metrics["timeline_year"] = key.split(":", 1)[-1].strip()
+            page = page or "timeline"
+        elif key.startswith("future:"):
+            page = page or "skills"
     elif app_key == "applied_intelligence":
         if key.startswith("ai:question:"):
             page = "Solve a Problem"
