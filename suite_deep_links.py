@@ -271,6 +271,9 @@ def build_resume_action_url(
 
     if not params:
         return f"{base}/"
+    ami_insight = str(m.get("ami_insight") or "").strip()
+    if ami_insight:
+        params["suite_ami_insight"] = ami_insight[:40]
     return f"{base}/?{urlencode(params, quote_via=quote)}"
 
 

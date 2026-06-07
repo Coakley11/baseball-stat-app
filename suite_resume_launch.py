@@ -72,10 +72,13 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
         _apply_music(st, resume, page)
     elif key == "baseball":
         _apply_baseball(st, resume, page)
+        _apply_ami_insight(st, "baseball")
     elif key == "nba":
         _apply_nba(st, resume, page)
+        _apply_ami_insight(st, "nba")
     elif key == "investment":
         _apply_investment(st, resume, page)
+        _apply_ami_insight(st, "investment")
     elif key == "future_lens":
         _apply_future_lens(st, resume, page)
     elif key == "applied_intelligence":
@@ -274,6 +277,15 @@ def _apply_future_lens(st: Any, resume: str, page: str) -> None:
         st.session_state["_suite_fl_view"] = "simulation"
     if domain and area:
         st.session_state["future_project"] = f"{domain} / {area}"
+
+
+def _apply_ami_insight(st: Any, app_key: str) -> None:
+    try:
+        from applied_math_return_insight import apply_ami_insight_from_query
+
+        apply_ami_insight_from_query(st, app_key)
+    except Exception:
+        pass
 
 
 def _apply_applied_intelligence(st: Any, page: str) -> None:

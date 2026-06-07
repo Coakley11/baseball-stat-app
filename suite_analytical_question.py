@@ -997,4 +997,20 @@ def build_context_from_session(
                 if val is not None and val != "":
                     ctx[key] = val
 
-    return ctx, summary
+def render_suite_applied_math_insight(
+    st: Any,
+    *,
+    source_app: str = "",
+    source_page: str = "",
+) -> bool:
+    """Source apps: show pending Applied Math insight card on eligible pages."""
+    try:
+        from applied_math_return_insight import render_suite_applied_math_insight_for_page
+
+        return render_suite_applied_math_insight_for_page(
+            st,
+            source_app=source_app,
+            source_page=source_page,
+        )
+    except Exception:
+        return False

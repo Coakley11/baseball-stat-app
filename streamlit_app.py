@@ -11695,6 +11695,10 @@ migrate_legacy_widget_keys()
 pdemo.apply_pending_draft_demo(st)
 pdemo.schedule_page_demo(st, active_page)
 
+from suite_analytical_question import render_suite_applied_math_insight
+
+render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
+
 # Drop snapshotted button widget keys (they must never be restored into session_state).
 for _ephemeral_key in list(st.session_state.keys()):
     if pg_state._is_ephemeral_widget_key(_ephemeral_key):
