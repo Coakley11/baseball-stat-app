@@ -190,15 +190,21 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
     """Return (title, subtitle, button_label) for Command Center Continue cards."""
     label = source_app_label(str(payload.get("source_app") or ""))
     question = str(payload.get("question") or "").strip()
-    ctx_lines = format_context_lines(payload.get("context") if isinstance(payload.get("context"), dict) else {})
-    subtitle_parts = [f"Question: {question}"]
-    if ctx_lines:
-        subtitle_parts.append("Context:\n" + "\n".join(f"  • {line}" for line in ctx_lines))
     return (
         f"Applied Math question from {label}",
-        "\n".join(subtitle_parts),
+        question,
         ANALYTICAL_QUESTION_BUTTON_LABEL,
     )
+
+
+def analytical_question_storage_subtitle(payload: dict[str, Any]) -> str:
+    """Resume-item subtitle for storage/rebuild — question only on CC cards; context stays in metrics/URL."""
+    question = str(payload.get("question") or "").strip()
+    ctx = dict(payload.get("context") or {})
+    ctx_json = json.dumps(ctx, ensure_ascii=False) if ctx else ""
+    if ctx_json:
+        return f"{question}\n__ctx_json__:{ctx_json[:1200]}"
+    return question
 
 
 def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
@@ -224,7 +230,8 @@ def _upsert_applied_intelligence_resume(
     *,
     action_url: str,
 ) -> None:
-    title, subtitle, _ = analytical_question_continue_copy(payload)
+    title, _, _ = analytical_question_continue_copy(payload)
+    subtitle = analytical_question_storage_subtitle(payload)
     resume_key = str(payload.get("resume_key") or "").strip()
     if not resume_key:
         return

@@ -225,6 +225,24 @@ def build_resume_action_url(
         lesson = str(m.get("lesson") or m.get("next_lesson") or "").strip()
         if lesson:
             params["suite_lesson"] = lesson[:120]
+        question = str(m.get("question") or "").strip()
+        if question:
+            params["suite_ai_question"] = question[:500]
+        source_app = str(m.get("source_app") or "").strip()
+        if source_app:
+            params["suite_ai_source_app"] = source_app[:40]
+        source_page = str(m.get("source_page") or "").strip()
+        if source_page:
+            params["suite_ai_source_page"] = source_page[:80]
+        area = str(m.get("quant_area") or m.get("area") or "").strip()
+        if area:
+            params["suite_ai_area"] = area[:40]
+        ctx = str(m.get("context_summary") or "").strip()
+        ctx_json = str(m.get("context_json") or "").strip()
+        if ctx_json:
+            params["suite_ai_context"] = ctx_json[:800]
+        elif ctx:
+            params["suite_ai_context"] = ctx[:400]
 
     if not params:
         return f"{base}/"
@@ -286,5 +304,57 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             page = "🧠 Matchup Intelligence"
         elif key.startswith("nba:playoff:"):
             page = "🏆 Playoff Bracket"
+    elif app_key == "applied_intelligence":
+        if key.startswith("ai:question:"):
+            page = "Solve a Problem"
+            qid = key.split(":", 2)[-1].strip() if key.count(":") >= 2 else ""
+            if qid:
+                metrics["question_id"] = qid
+                metrics["dedupe_fingerprint"] = qid
+            if subtitle:
+                if "__ctx_json__:" in subtitle:
+                    q_part, _, ctx_part = subtitle.partition("\n__ctx_json__:")
+                    metrics["question"] = q_part.strip()
+                    try:
+                        import json
+
+                        parsed = json.loads(ctx_part)
+                        if isinstance(parsed, dict):
+                            metrics["context"] = parsed
+                            metrics["context_json"] = ctx_part
+                    except Exception:
+                        pass
+                elif subtitle.startswith("Question:"):
+                    first_line, _, rest = subtitle.partition("\n")
+                    metrics["question"] = first_line.replace("Question:", "", 1).strip()
+                    metrics["context_summary"] = rest.strip() or subtitle
+                else:
+                    metrics["question"] = subtitle.split("\n", 1)[0].strip()[:500]
+                    if "\n" in subtitle:
+                        metrics["context_summary"] = subtitle
+                ctx: dict[str, Any] = dict(metrics.get("context") or {})
+                if not ctx:
+                    for line in subtitle.splitlines():
+                        stripped = line.strip().lstrip("•").strip()
+                        if ":" in stripped:
+                            label, _, val = stripped.partition(":")
+                            label_key = label.strip().lower().replace(" ", "_")
+                            val = val.strip()
+                            if label_key == "source_app":
+                                ctx["source_app"] = val
+                                metrics.setdefault("source_app", val.lower())
+                            elif label_key == "page":
+                                ctx["page"] = val
+                                metrics.setdefault("source_page", val)
+                            elif val:
+                                ctx[label_key] = val
+                if ctx and "context" not in metrics:
+                    metrics["context"] = ctx
+                    try:
+                        import json
+
+                        metrics["context_json"] = json.dumps(ctx, ensure_ascii=False)
+                    except Exception:
+                        pass
 
     return page, metrics

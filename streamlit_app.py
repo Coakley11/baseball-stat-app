@@ -463,10 +463,8 @@ pp.inject_polish_css(st, app_slug="baseball")
 
 try:
     from suite_resume_launch import apply_suite_resume_launch
-
-    apply_suite_resume_launch(st, "baseball")
 except Exception:
-    pass
+    apply_suite_resume_launch = None  # type: ignore
 
 try:
     from baseball_persistent_state import (
@@ -486,6 +484,12 @@ try:
     )
 except Exception:
     pass
+
+if apply_suite_resume_launch:
+    try:
+        apply_suite_resume_launch(st, "baseball")
+    except Exception:
+        pass
 
 st.markdown("""
 <style>
