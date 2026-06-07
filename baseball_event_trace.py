@@ -39,8 +39,10 @@ def last_activity_event_row() -> dict[str, Any] | None:
     }
 
 
-def render_trend_value_deploy_banner(st) -> None:
-    """Always-visible deploy marker on Trend Value (proves correct build is running)."""
+def render_trend_value_deploy_banner(st, *, developer_mode: bool = False) -> None:
+    """Deploy marker on Trend Value — developer mode only."""
+    if not developer_mode:
+        return
     from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
 
     st.success(

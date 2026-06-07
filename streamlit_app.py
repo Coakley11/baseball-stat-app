@@ -12833,7 +12833,7 @@ if active_page == "Trend Value":
     try:
         from baseball_event_trace import render_trend_value_deploy_banner
 
-        render_trend_value_deploy_banner(st)
+        render_trend_value_deploy_banner(st, developer_mode=developer_mode_enabled())
     except Exception as exc:
         st.error(f"Trend deploy marker failed to load: {exc}")
     render_page_guide(active_page)

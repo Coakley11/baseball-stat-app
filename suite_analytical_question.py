@@ -487,7 +487,9 @@ def render_applied_math_sidebar_entry(
         ctx, summary = build_context_from_session(source_app, source_page, session_state)
         if context_extra:
             for key, val in context_extra.items():
-                if key in ("page", "team") and val:
+                if val is None or val == "":
+                    continue
+                if key in ("page", "team", "opponent", "win_probability", "series_probability"):
                     ctx[key] = val
             if context_extra.get("team"):
                 ctx["team"] = str(context_extra["team"])
@@ -585,8 +587,18 @@ def build_context_from_session(
                 if metrics:
                     ctx["metrics"] = metrics[:6]
                 summary = f"{ctx.get('player', 'Player')} · {', '.join(metrics[:3]) if metrics else 'trends'}"
+                trend_dir = session_state.get("_ami_trend_direction") or session_state.get("trend_direction_label")
+                if trend_dir:
+                    ctx["trend_summary"] = {"direction": str(trend_dir), "stat": metrics[0] if metrics else ""}
         elif "trade" in low_page:
             ctx["workflow"] = "Trade analysis"
+            acquire = session_state.get("pending_trade_acquire_players") or []
+            away = session_state.get("pending_trade_away_players") or []
+            if isinstance(acquire, list) and acquire:
+                ctx["players"] = [_player_name(x) for x in acquire[:4]]
+            if isinstance(away, list) and away:
+                ctx["player_a"] = _player_name(away[0]) if away else ""
+                ctx["player_b"] = _player_name(acquire[0]) if acquire else ""
         elif "lineup" in low_page or "fantasy" in low_page:
             ctx["workflow"] = "Fantasy lineup"
     elif app == "nba":
@@ -656,13 +668,36 @@ def build_context_from_session(
         if pv:
             ctx["portfolio_value"] = f"${int(float(pv)):,}"
         try:
-            from components.macro_engine import macro_assumption_summary, macro_assumptions_from_session
+            from components.macro_engine import macro_assumption_summary
 
-            assumptions = macro_assumptions_from_session()
-            if assumptions:
-                ctx["macro_summary"] = macro_assumption_summary(assumptions)
+            summary_text = macro_assumption_summary()
+            if summary_text:
+                ctx["macro_summary"] = summary_text
         except Exception:
             pass
+        er = session_state.get("portfolio_expected_return") or session_state.get("expected_return_pct")
+        vol = session_state.get("portfolio_volatility") or session_state.get("volatility_pct")
+        if er is not None:
+            try:
+                ctx["expected_return"] = f"{float(er):.1f}%"
+            except (TypeError, ValueError):
+                ctx["expected_return"] = str(er)
+        if vol is not None:
+            try:
+                ctx["volatility"] = f"{float(vol):.1f}%"
+            except (TypeError, ValueError):
+                ctx["volatility"] = str(vol)
+        hr = session_state.get("health_result")
+        if hr is not None and hasattr(hr, "expected_return"):
+            try:
+                ctx.setdefault("expected_return", f"{float(hr.expected_return):.1f}%")
+            except Exception:
+                pass
+        if hr is not None and hasattr(hr, "volatility"):
+            try:
+                ctx.setdefault("volatility", f"{float(hr.volatility):.1f}%")
+            except Exception:
+                pass
         tickers: list[str] = []
         df = session_state.get("holdings_df")
         try:
