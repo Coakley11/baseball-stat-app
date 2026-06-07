@@ -191,6 +191,8 @@ def inject_polish_css(st, *, app_slug: str = "app") -> None:
 
 
 def render_executive_summary(st, what: str, why: str, outputs: str) -> None:
+    if not is_capture_mode(st):
+        return
     st.markdown(
         f"""
         <div class="pp-exec-summary">
