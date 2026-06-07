@@ -10823,17 +10823,49 @@ def init_state_once(key, default):
 
 
 def validate_state_option(key, options, default=None):
-    """Selectbox/radio: init once; if stored value is invalid, fall back to default or first option."""
+    """Selectbox/radio: init once; tolerate redeploy enum drift with nearest mapping."""
     opts = list(options)
     if not opts:
         return
     fallback = default if default is not None else opts[0]
     if fallback not in opts:
         fallback = opts[0]
+    warn_key = f"_suite_validate_warn::{key}"
+    stale_key = f"_suite_stale_option::{key}"
     if key not in st.session_state:
         st.session_state[key] = fallback
-    elif st.session_state[key] not in opts:
-        st.session_state[key] = fallback
+        st.session_state.pop(warn_key, None)
+        st.session_state.pop(stale_key, None)
+        return
+    current = st.session_state[key]
+    if current in opts:
+        st.session_state.pop(warn_key, None)
+        return
+    stale = current
+    mapped = None
+    stale_l = str(stale).lower()
+    for opt in opts:
+        if str(opt).lower() == stale_l:
+            mapped = opt
+            break
+    if mapped is None:
+        for opt in opts:
+            opt_l = str(opt).lower()
+            if stale_l in opt_l or opt_l in stale_l:
+                mapped = opt
+                break
+    if mapped is not None:
+        st.session_state[stale_key] = stale
+        st.session_state[key] = mapped
+        if developer_mode_enabled():
+            st.session_state[warn_key] = f"Mapped restored value '{stale}' → '{mapped}'"
+        return
+    st.session_state[stale_key] = stale
+    st.session_state[key] = fallback
+    if developer_mode_enabled():
+        st.session_state[warn_key] = (
+            f"Restored value '{stale}' is not in current options; using '{fallback}'"
+        )
 
 
 def validate_multiselect_options(key, options, default=None):
