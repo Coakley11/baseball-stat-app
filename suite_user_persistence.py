@@ -25,6 +25,7 @@ _LEGACY_COMBINED_FILE = DATA_DIR / "app_state.json"
 _SESSION_RESTORED_PREFIX = "_suite_disk_state_restored::"
 _SESSION_BANNER_KEY = "_suite_persist_banner"
 _SESSION_SAVED_FLASH_KEY = "_suite_persist_saved_flash"
+SESSION_USER_OWNED_PAGE_KEY = "_suite_user_owned_page"
 _SESSION_INVALID_WARN_KEY = "_suite_persist_invalid_warn"
 _SESSION_CLOUD_BANNER_KEY = "_suite_persist_cloud_banner"
 _LOCAL_DIRTY_PREFIX = "_suite_persist_local_dirty::"
@@ -324,11 +325,78 @@ def _preserve_cloud_widget_fields_on_page_change(
     return out
 
 
+def claim_user_page_ownership(st: Any, app_id: str, page: str) -> None:
+    """Record explicit sidebar page selection; blocks stale cloud page overwrite."""
+    selected = str(page or "").strip()
+    if not selected:
+        return
+    ss = st.session_state
+    ss[SESSION_USER_OWNED_PAGE_KEY] = selected
+    ss["_suite_page_user_nav"] = True
+    ss["requested_page"] = selected
+    ss["active_page_source"] = "user_sidebar"
+    try:
+        from applied_math_return_insight import reconcile_stale_page_navigation
+
+        reconcile_stale_page_navigation(st, app_id)
+    except Exception:
+        pass
+
+
+def _user_page_blocks_cloud_overwrite(st: Any, cloud_page: str) -> bool:
+    owned = str(st.session_state.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
+    current = _session_workspace_page(st)
+    cloud = str(cloud_page or "").strip()
+    if not owned or not current:
+        return False
+    return bool(owned == current and cloud and cloud != owned)
+
+
+def _release_user_page_ownership_after_save(st: Any, saved_page: str) -> None:
+    owned = str(st.session_state.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
+    saved = str(saved_page or "").strip()
+    if owned and saved and owned == saved:
+        st.session_state.pop(SESSION_USER_OWNED_PAGE_KEY, None)
+        st.session_state["_suite_last_persisted_page"] = saved
+
+
+def record_page_navigation_startup_diagnostics(st: Any, app_id: str) -> None:
+    """?dev=1 trace for page ownership at startup (before sidebar interaction)."""
+    ss = st.session_state
+    has_resume = None
+    consumed = None
+    try:
+        from suite_cloud_state import ami_return_resume_consumed, has_resume_query_params
+
+        has_resume = has_resume_query_params(st, app_id)
+        consumed = ami_return_resume_consumed(st, app_id)
+    except Exception:
+        pass
+    try:
+        from applied_math_return_insight import ami_resume_consumed
+
+        consumed = ami_resume_consumed(st, app_id) if consumed is None else consumed
+    except Exception:
+        pass
+    ss["_page_nav_startup_recorded"] = True
+    ss["sidebar_selected_page"] = ss.get("main_sidebar_page")
+    ss["active_page_source"] = ss.get("active_page_source")
+    ss["_suite_page_user_nav"] = bool(ss.get("_suite_page_user_nav"))
+    ss["_suite_cloud_target_page"] = ss.get("_suite_cloud_target_page")
+    ss["_navigate_to_page"] = ss.get("_navigate_to_page")
+    ss["_skip_page_restore_for"] = ss.get("_skip_page_restore_for")
+    ss["ami_resume_consumed"] = consumed
+    ss["has_resume_query_params"] = has_resume
+    ss["final_page"] = ss.get("active_page")
+    ss["_suite_user_owned_page"] = ss.get(SESSION_USER_OWNED_PAGE_KEY)
+
+
 def record_sidebar_nav_diagnostics(
     st: Any,
     *,
     phase: str,
     rerun_source: str = "",
+    requested_page: str = "",
     active_page_before: str | None = None,
     active_page_after: str | None = None,
     page_overwrite_source: str = "",
@@ -350,14 +418,21 @@ def record_sidebar_nav_diagnostics(
     ss["_suite_sidebar_nav_phase"] = phase
     if rerun_source:
         ss["_suite_sidebar_nav_rerun_source"] = rerun_source
+    if requested_page:
+        ss["requested_page"] = requested_page
     ss["sidebar_selected_page"] = ss.get("main_sidebar_page")
     ss["active_page_before"] = active_page_before if active_page_before is not None else ss.get("_suite_nav_active_page_before")
     ss["active_page_after"] = active_page_after if active_page_after is not None else ss.get("active_page")
+    ss["final_page_after_sidebar_click"] = ss.get("active_page")
     ss["_suite_sidebar_nav_main_sidebar_page"] = ss.get("main_sidebar_page")
     ss["_suite_sidebar_nav_active_page"] = ss.get("active_page")
     ss["_suite_sidebar_nav_user_nav"] = bool(ss.get("_suite_page_user_nav"))
     ss["_suite_sidebar_nav_cloud_target"] = ss.get("_suite_cloud_target_page")
     ss["_suite_sidebar_nav_last_persisted_page"] = ss.get("_suite_last_persisted_page")
+    ss["_navigate_to_page"] = ss.get("_navigate_to_page")
+    ss["_skip_page_restore_for"] = ss.get("_skip_page_restore_for")
+    ss["active_page_source"] = ss.get("active_page_source")
+    ss["_suite_user_owned_page"] = ss.get(SESSION_USER_OWNED_PAGE_KEY)
     ss["_suite_sidebar_nav_cloud_restored_this_run"] = bool(
         ss.get("_cloud_workspace_restored_this_run")
     )
@@ -485,6 +560,13 @@ def sync_workspace_protocol(
     st.session_state["_suite_persist_app_id"] = app_id
     st.session_state["_suite_workspace_sync_attempted"] = True
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
+    record_page_navigation_startup_diagnostics(st, app_id)
+    try:
+        from applied_math_return_insight import reconcile_stale_page_navigation
+
+        reconcile_stale_page_navigation(st, app_id)
+    except Exception:
+        pass
 
     try:
         from suite_cloud_state import (
@@ -612,6 +694,7 @@ def sync_workspace_protocol(
     page_mismatch_apply = bool(
         page_mismatch
         and (first_sync or cloud_newer_than_applied or cloud_newer_than_disk)
+        and not _user_page_blocks_cloud_overwrite(st, page)
     )
     if page_mismatch:
         apply_reasons.append("page_mismatch")
@@ -946,6 +1029,13 @@ def sync_cloud_workspace_before_sidebar(
     """
     st.session_state["_suite_persist_app_id"] = app_id
     st.session_state["_suite_page_sync_restore_attempted"] = True
+    record_page_navigation_startup_diagnostics(st, app_id)
+    try:
+        from applied_math_return_insight import reconcile_stale_page_navigation
+
+        reconcile_stale_page_navigation(st, app_id)
+    except Exception:
+        pass
 
     try:
         from suite_cloud_state import (
@@ -1027,11 +1117,24 @@ def sync_cloud_workspace_before_sidebar(
     cloud_epoch = parse_persist_timestamp(cloud_ts)
     applied_epoch = parse_persist_timestamp(applied_ts)
     user_page_nav = bool(st.session_state.get("_suite_page_user_nav"))
+    ami_return_active = False
+    try:
+        from suite_cloud_state import ami_return_resume_consumed
+
+        ami_return_active = bool(
+            has_resume_query_params(st, app_id)
+            or st.session_state.get("_ami_insight_return_preserve")
+        ) and not ami_return_resume_consumed(st, app_id)
+    except Exception:
+        ami_return_active = bool(st.session_state.get("_ami_insight_return_preserve"))
     page_mismatch = bool(
         cloud_page and current_page and cloud_page != current_page and not user_page_nav
     )
     cloud_newer_than_applied = bool(cloud_ts and cloud_epoch > applied_epoch)
-    page_mismatch_apply = bool(page_mismatch and cloud_newer_than_applied)
+    page_mismatch_apply = bool(
+        page_mismatch and cloud_newer_than_applied and not ami_return_active
+        and not _user_page_blocks_cloud_overwrite(st, cloud_page)
+    )
 
     if (
         not cloud_newer_than_applied
@@ -1047,6 +1150,12 @@ def sync_cloud_workspace_before_sidebar(
     if applied_ts and not cloud_newer_than_applied and not page_mismatch_apply:
         st.session_state["_suite_persist_restore_skip_reason"] = (
             "page sync skipped (cloud not newer than applied)"
+        )
+        return False
+
+    if _user_page_blocks_cloud_overwrite(st, cloud_page):
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "user page ownership — page sync skipped"
         )
         return False
 
@@ -1148,6 +1257,8 @@ def force_autosave(
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
             st.session_state[_local_dirty_key(app_id)] = False
+            if reason == "page_change":
+                _release_user_page_ownership_after_save(st, str(state.get("active_page") or ""))
             if saved_cloud:
                 _, cloud_ts = load_cloud_full_session(app_id)
                 st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()

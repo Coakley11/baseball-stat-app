@@ -209,7 +209,15 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
             st.session_state["trend_force_multi_labels"] = labels[:3]
             st.session_state["trend_players_multi"] = labels[:3]
     if target_page:
-        st.session_state["_navigate_to_page"] = target_page
+        try:
+            from applied_math_return_insight import _should_apply_ami_return_navigation
+
+            if _should_apply_ami_return_navigation(st, "baseball", target_page):
+                st.session_state["_navigate_to_page"] = target_page
+                st.session_state["ami_return_forced_page"] = target_page
+                st.session_state["active_page_source"] = "suite_resume_launch"
+        except Exception:
+            st.session_state["_navigate_to_page"] = target_page
 
 
 def _apply_nba(st: Any, resume: str, page: str) -> None:

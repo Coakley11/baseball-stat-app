@@ -11691,11 +11691,20 @@ def _on_sidebar_page_change() -> None:
     """Manual sidebar navigation wins over cloud page restore in the same run."""
     pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
     st.session_state["active_page"] = pick
-    st.session_state["_suite_page_user_nav"] = True
-    st.session_state.pop("_suite_cloud_target_page", None)
+    try:
+        from suite_user_persistence import claim_user_page_ownership
+
+        claim_user_page_ownership(st, "baseball", pick)
+    except Exception:
+        st.session_state["_suite_page_user_nav"] = True
+        st.session_state.pop("_suite_cloud_target_page", None)
     st.session_state.pop("_suite_page_enforce_rerun", None)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
-    _record_sidebar_nav_trace("on_change_after", rerun_source="sidebar_radio_on_change")
+    _record_sidebar_nav_trace(
+        "on_change_after",
+        rerun_source="sidebar_radio_on_change",
+        requested_page=pick,
+    )
 
 
 def _align_active_page_from_sidebar() -> None:
@@ -11703,11 +11712,20 @@ def _align_active_page_from_sidebar() -> None:
     active = normalize_page_key(st.session_state.get("active_page") or "")
     if pick and pick != active:
         st.session_state["active_page"] = pick
-        st.session_state["_suite_page_user_nav"] = True
-        st.session_state.pop("_suite_cloud_target_page", None)
+        try:
+            from suite_user_persistence import claim_user_page_ownership
+
+            claim_user_page_ownership(st, "baseball", pick)
+        except Exception:
+            st.session_state["_suite_page_user_nav"] = True
+            st.session_state.pop("_suite_cloud_target_page", None)
         st.session_state.pop("_suite_page_enforce_rerun", None)
         st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
-        _record_sidebar_nav_trace("align_before_sync", rerun_source="sidebar_align")
+        _record_sidebar_nav_trace(
+            "align_before_sync",
+            rerun_source="sidebar_align",
+            requested_page=pick,
+        )
 
 
 # Page navigation: authoritative workspace sync, then consume scheduled navigation BEFORE sidebar radio.
@@ -11759,7 +11777,11 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
-_record_sidebar_nav_trace("after_sidebar_radio", rerun_source="sidebar_render")
+_record_sidebar_nav_trace(
+    "after_sidebar_radio",
+    rerun_source="sidebar_render",
+    requested_page=active_page,
+)
 
 st.session_state.pop("_suite_cloud_target_page", None)
 st.session_state.pop("_suite_page_enforce_rerun", None)
@@ -11775,6 +11797,15 @@ if _page_changed or _user_nav:
             _did_save = True
         except Exception:
             pass
+    try:
+        from applied_math_return_insight import SESSION_RETURN_PAGE_KEY, consume_ami_return_resume
+
+        _ret_page = str(st.session_state.get(SESSION_RETURN_PAGE_KEY) or "").strip()
+        if _ret_page and active_page != _ret_page:
+            st.session_state.pop("_ami_insight_return_preserve", None)
+            consume_ami_return_resume(st, "baseball")
+    except Exception:
+        pass
     st.session_state["_suite_last_persisted_page"] = active_page
     st.session_state.pop("_suite_page_user_nav", None)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)

@@ -12,10 +12,12 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 INSIGHT_ITEM_TYPE = "applied_math_insight"
+INSIGHT_DISMISSAL_ITEM_TYPE = "applied_math_insight_dismissal"
 SESSION_PENDING_KEY = "_ami_pending_insight"
 SESSION_RETURN_PAGE_KEY = "_ami_return_page"
 SESSION_RETURN_CONTEXT_KEY = "_ami_return_context"
 SESSION_DISMISSED_KEY = "_ami_dismissed_insight_ids"
+SESSION_DISMISSED_AT_KEY = "_ami_dismissed_insight_at"
 SESSION_PERSIST_INSIGHT_DIRTY = "_suite_persist_insight_dirty"
 
 # Pages where the insight card may appear (display-only v1).
@@ -396,6 +398,7 @@ def apply_return_source_state(st: Any, app_key: str, source_state: dict[str, Any
     if not isinstance(source_state, dict) or not source_state:
         return
     ss = st.session_state
+    key = _normalize_app_key(app_key or source_state.get("source_app") or "")
     ss[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
     page = str(
         source_state.get("source_page")
@@ -404,22 +407,43 @@ def apply_return_source_state(st: Any, app_key: str, source_state: dict[str, Any
     ).strip()
     if page:
         ss[SESSION_RETURN_PAGE_KEY] = page
+    schedule_navigation = _should_apply_ami_return_navigation(st, key, page)
+    if page and schedule_navigation:
         ss["_skip_page_restore_for"] = page
+        ss["ami_return_forced_page"] = page
+        ss["active_page_source"] = "ami_return_source_state"
+    elif not schedule_navigation:
+        ss.pop("_skip_page_restore_for", None)
+        ss.pop("_navigate_to_page", None)
 
-    app = str(app_key or source_state.get("source_app") or "").strip().lower()
+    app = key
     try:
         if app == "baseball":
             from applied_math_context import apply_source_state_to_session
 
-            apply_source_state_to_session(ss, source_state)
+            apply_source_state_to_session(ss, source_state, schedule_navigation=schedule_navigation)
         elif app == "nba":
             from applied_math_context import apply_source_state_to_session
 
-            apply_source_state_to_session(ss, source_state)
+            apply_source_state_to_session(ss, source_state, schedule_navigation=schedule_navigation)
         elif app == "investment":
             from applied_math_context import apply_source_state_to_session
 
-            apply_source_state_to_session(ss, source_state)
+            apply_source_state_to_session(ss, source_state, schedule_navigation=schedule_navigation)
+    except TypeError:
+        try:
+            if app == "baseball":
+                from applied_math_context import apply_source_state_to_session
+
+                apply_source_state_to_session(ss, source_state)
+            elif app in ("nba", "investment"):
+                from applied_math_context import apply_source_state_to_session
+
+                apply_source_state_to_session(ss, source_state)
+            if not schedule_navigation:
+                ss.pop("_navigate_to_page", None)
+        except Exception as exc:
+            log.warning("apply_return_source_state failed for %s: %s", app, exc)
     except Exception as exc:
         log.warning("apply_return_source_state failed for %s: %s", app, exc)
 
@@ -533,6 +557,90 @@ def _get_dismissed_insight_ids(st: Any) -> set[str]:
     return {str(x).strip() for x in raw if str(x).strip()}
 
 
+def _get_dismissed_insight_at(st: Any, insight_id: str) -> str:
+    meta = st.session_state.get(SESSION_DISMISSED_AT_KEY)
+    if not isinstance(meta, dict):
+        return ""
+    return str(meta.get(str(insight_id or "").strip()) or "").strip()
+
+
+def load_dismissed_insight_ids_from_cloud(source_app: str) -> dict[str, str]:
+    """Cross-device dismissals: {insight_id: dismissed_at_iso}."""
+    app = _normalize_app_key(source_app)
+    if not app:
+        return {}
+    out: dict[str, str] = {}
+    try:
+        from suite_account import load_saved_items
+
+        for app_key in (app, "applied_intelligence"):
+            rows = load_saved_items(app=app_key, item_type=INSIGHT_DISMISSAL_ITEM_TYPE, limit=80)
+            for row in rows:
+                iid = str(row.get("item_key") or "").strip()
+                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                if not iid and isinstance(payload, dict):
+                    iid = str(payload.get("insight_id") or "").strip()
+                if not iid:
+                    continue
+                ts = str(payload.get("dismissed_at") or row.get("updated_at") or "").strip()
+                out[iid] = ts
+    except Exception as exc:
+        log.warning("load_dismissed_insight_ids_from_cloud failed: %s", exc)
+    return out
+
+
+def sync_dismissed_insights_from_cloud(st: Any, app_key: str) -> None:
+    """Merge cloud dismissals into session; drop pending insight if dismissed remotely."""
+    key = _normalize_app_key(app_key)
+    cloud = load_dismissed_insight_ids_from_cloud(key)
+    if not cloud:
+        return
+    dismissed = _get_dismissed_insight_ids(st)
+    dismissed.update(cloud.keys())
+    st.session_state[SESSION_DISMISSED_KEY] = sorted(dismissed)
+    meta = dict(st.session_state.get(SESSION_DISMISSED_AT_KEY) or {})
+    if not isinstance(meta, dict):
+        meta = {}
+    meta.update(cloud)
+    st.session_state[SESSION_DISMISSED_AT_KEY] = meta
+    pending = st.session_state.get(SESSION_PENDING_KEY)
+    if isinstance(pending, dict):
+        iid = str(pending.get("insight_id") or "").strip()
+        if iid and iid in cloud:
+            clear_pending_insight(st)
+
+
+def persist_insight_dismissal_to_cloud(app_key: str, insight_id: str, *, dismissed_at: str | None = None) -> None:
+    """Write dismissal to cloud saved items for cross-device hide on refresh."""
+    iid = str(insight_id or "").strip()
+    app = _normalize_app_key(app_key)
+    if not iid or not app:
+        return
+    ts = dismissed_at or datetime.now(timezone.utc).isoformat()
+    payload = {"insight_id": iid, "dismissed_at": ts, "source_app": app}
+    try:
+        from suite_account import remember_saved_item
+
+        remember_saved_item(
+            app,
+            INSIGHT_DISMISSAL_ITEM_TYPE,
+            iid,
+            title=f"Dismissed insight {iid[:12]}",
+            payload=payload,
+        )
+    except Exception as exc:
+        log.warning("persist_insight_dismissal_to_cloud failed: %s", exc)
+
+
+def record_ami_sidebar_nav_result(st: Any, app_key: str, *, selected_page: str = "") -> None:
+    """Call after sidebar page selection to trace manual nav post-AMI return."""
+    ss = st.session_state
+    final_page = str(selected_page or ss.get("active_page") or ss.get("main_sidebar_page") or "").strip()
+    ss["final_page_after_sidebar_click"] = final_page
+    ss["manual_nav_after_ami_return"] = bool(ami_resume_consumed(st, app_key) and ss.get("_suite_page_user_nav"))
+    _record_insight_return_diagnostics(st, phase="sidebar_nav")
+
+
 def _insight_is_dismissed(st: Any, insight_id: str) -> bool:
     iid = str(insight_id or "").strip()
     return bool(iid and iid in _get_dismissed_insight_ids(st))
@@ -553,6 +661,170 @@ def _query_param(st: Any, name: str) -> str:
 def insight_return_query_id(st: Any) -> str:
     """suite_ami_insight query param when returning from Applied Math."""
     return _query_param(st, "suite_ami_insight")
+
+
+_AMI_RETURN_QP_KEYS: tuple[str, ...] = (
+    "suite_ami_insight",
+    "suite_page",
+    "suite_resume",
+    "suite_player_a",
+    "suite_player_b",
+    "suite_trend_player",
+    "suite_ai_question_id",
+    "suite_trend_players",
+)
+
+
+def _normalize_app_key(app_key: str) -> str:
+    key = str(app_key or "").strip().lower()
+    if key == "math":
+        return "applied_intelligence"
+    return key
+
+
+def _ami_resume_consumed_flag(app_key: str) -> str:
+    return f"_ami_resume_consumed_{_normalize_app_key(app_key)}"
+
+
+def ami_resume_consumed(st: Any, app_key: str) -> bool:
+    """True after AMI return URL/resume state was consumed (manual nav may proceed)."""
+    return bool(st.session_state.get(_ami_resume_consumed_flag(app_key)))
+
+
+def _active_ami_return_query_param_keys(st: Any) -> list[str]:
+    return [k for k in _AMI_RETURN_QP_KEYS if _query_param(st, k)]
+
+
+def ami_return_navigation_active(st: Any, app_key: str) -> bool:
+    """True while AMI return URL/resume may force page navigation (before consume)."""
+    key = _normalize_app_key(app_key)
+    if ami_resume_consumed(st, key):
+        return False
+    if insight_return_query_id(st) or _active_ami_return_query_param_keys(st):
+        return True
+    if st.session_state.get("_ami_insight_return_preserve"):
+        return True
+    return False
+
+
+def reconcile_stale_page_navigation(st: Any, app_key: str) -> None:
+    """Clear lingering page-forcing flags when AMI return is not actively steering."""
+    if ami_return_navigation_active(st, app_key):
+        return
+    ss = st.session_state
+    for flag in (
+        "_navigate_to_page",
+        "_skip_page_restore_for",
+        "_suite_cloud_target_page",
+        "ami_return_forced_page",
+        "ami_return_force_active_page",
+    ):
+        ss.pop(flag, None)
+
+
+def maybe_consume_ami_return_on_page_match(
+    st: Any,
+    app_key: str,
+    *,
+    current_page: str = "",
+) -> bool:
+    """Consume AMI return once the user is on the source page (even if insight card skipped)."""
+    key = _normalize_app_key(app_key)
+    if ami_resume_consumed(st, key):
+        return False
+    ret = _normalize_insight_page(str(st.session_state.get(SESSION_RETURN_PAGE_KEY) or ""))
+    current = _normalize_insight_page(
+        str(
+            current_page
+            or st.session_state.get("active_page")
+            or st.session_state.get("main_sidebar_page")
+            or ""
+        )
+    )
+    if not ret or not current or ret != current:
+        return False
+    if not (
+        ami_return_navigation_active(st, key)
+        or st.session_state.get("_ami_insight_hydrate_source") in ("url", "cloud_saved_items")
+    ):
+        return False
+    return consume_ami_return_resume(st, key)
+
+
+def _should_apply_ami_return_navigation(st: Any, app_key: str, return_page: str) -> bool:
+    """Whether AMI return may schedule _navigate_to_page (first return only)."""
+    ss = st.session_state
+    if ss.get("_suite_page_user_nav") or ss.get("_suite_user_owned_page"):
+        return False
+    if ami_resume_consumed(st, app_key):
+        return False
+    active = str(ss.get("active_page") or "").strip()
+    ret = str(return_page or ss.get(SESSION_RETURN_PAGE_KEY) or "").strip()
+    persisted = str(ss.get("_suite_last_persisted_page") or "").strip()
+    owned = str(ss.get("_suite_user_owned_page") or "").strip()
+    if owned and active and owned == active and ret and ret != active:
+        return False
+    if active and ret and active != ret and persisted and active == persisted:
+        return False
+    return True
+
+
+def _clear_ami_return_query_params(st: Any) -> list[str]:
+    """Remove AMI return query keys from the URL; returns keys cleared."""
+    present = _active_ami_return_query_param_keys(st)
+    if not present:
+        return []
+    cleared: list[str] = []
+    try:
+        qp = st.query_params
+        if hasattr(qp, "from_dict"):
+            try:
+                remaining = {k: v for k, v in dict(qp).items() if k not in _AMI_RETURN_QP_KEYS}
+            except Exception:
+                remaining = {}
+                for k, v in qp.items():
+                    if k not in _AMI_RETURN_QP_KEYS:
+                        remaining[k] = v
+            qp.from_dict(remaining)
+            cleared = list(present)
+        else:
+            for key in present:
+                try:
+                    del qp[key]
+                    cleared.append(key)
+                except Exception:
+                    try:
+                        qp.pop(key, None)
+                        cleared.append(key)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return cleared
+
+
+def consume_ami_return_resume(st: Any, app_key: str) -> bool:
+    """
+    Mark AMI return resume as consumed after first hydrate+render on the source page.
+    Clears lingering URL params and preserve flags so manual sidebar navigation wins.
+    """
+    key = _normalize_app_key(app_key)
+    flag = _ami_resume_consumed_flag(key)
+    if st.session_state.get(flag):
+        return False
+    st.session_state[flag] = True
+    st.session_state["ami_resume_consumed"] = True
+    st.session_state.pop("_ami_insight_return_preserve", None)
+    st.session_state.pop("_suite_resume_insight_hydration_only", None)
+    st.session_state.pop("_navigate_to_page", None)
+    st.session_state.pop("_skip_page_restore_for", None)
+    st.session_state.pop("_suite_cloud_target_page", None)
+    st.session_state.pop("ami_return_forced_page", None)
+    st.session_state.pop("ami_return_force_active_page", None)
+    st.session_state["active_page_source"] = "manual_nav_allowed"
+    st.session_state["manual_nav_after_ami_return"] = True
+    _clear_ami_return_query_params(st)
+    return True
 
 
 def _record_insight_return_diagnostics(st: Any, *, phase: str, insight: dict[str, Any] | None = None) -> None:
@@ -579,6 +851,33 @@ def _record_insight_return_diagnostics(st: Any, *, phase: str, insight: dict[str
     ss["hydrate_source"] = ss.get("_ami_insight_hydrate_source")
     ss["pending_insight_exists"] = bool(pending.get("conclusion") or pending.get("question"))
     ss["insight_card_rendered"] = bool(ss.get("_ami_insight_card_rendered"))
+    app_key = str(ss.get("_suite_persist_app_id") or (pending or {}).get("source_app") or "baseball")
+    consumed = ami_resume_consumed(st, app_key)
+    url_params = _active_ami_return_query_param_keys(st)
+    forced_page = str(ss.get("_navigate_to_page") or ss.get("ami_return_forced_page") or "")
+    ss["ami_resume_consumed"] = consumed
+    ss["ami_url_params_present"] = url_params
+    ss["query_params_present"] = url_params
+    ss["insight_return_preserve"] = bool(ss.get("_ami_insight_return_preserve"))
+    ss["resume_target_page"] = str(ss.get(SESSION_RETURN_PAGE_KEY) or "")
+    ss["ami_return_forced_page"] = forced_page or str(ss.get(SESSION_RETURN_PAGE_KEY) or "")
+    ss["ami_return_force_active_page"] = bool(forced_page) and not consumed
+    ss["page_forced_by_ami_return"] = bool(forced_page)
+    ss["manual_nav_after_ami_return"] = bool(consumed and ss.get("_suite_page_user_nav"))
+    ss["manual_nav_blocked_by_ami_return"] = bool(
+        not consumed
+        and (
+            bool(forced_page)
+            or bool(ss.get("_ami_insight_return_preserve"))
+            or bool(url_params)
+            or bool(_query_param(st, "suite_resume"))
+        )
+    )
+    ss["manual_nav_blocked_by_resume"] = ss["manual_nav_blocked_by_ami_return"]
+    ss["active_page_source"] = ss.get("active_page_source") or (
+        "ami_return" if not consumed and (forced_page or url_params) else "session"
+    )
+    ss["final_page_after_sidebar_click"] = ss.get("final_page_after_sidebar_click") or ss.get("active_page")
 
 
 def _stage_insight_trace(
@@ -661,30 +960,52 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
     Call before rendering the insight card on every rerun so cross-device refresh
     shows the same insight without requiring the return URL.
     """
-    key = str(app_key or "").strip().lower()
+    key = _normalize_app_key(app_key)
+    reconcile_stale_page_navigation(st, key)
+    sync_dismissed_insights_from_cloud(st, key)
     st.session_state["_ami_insight_hydrate_attempted"] = True
     url_iid = insight_return_query_id(st)
+    if url_iid and _insight_is_dismissed(st, url_iid):
+        _clear_ami_return_query_params(st)
+        _record_insight_return_diagnostics(st, phase="hydrate_url_dismissed")
+        url_iid = ""
     if url_iid:
-        st.session_state["_ami_insight_return_preserve"] = True
-        if apply_ami_insight_from_query(st, key, force=True):
+        if ami_resume_consumed(st, key):
             pending = _pending_insight_valid(st)
             if pending:
                 _stage_insight_trace(
                     st,
                     hydrate_success=True,
-                    hydrate_source="url",
+                    hydrate_source="session_consumed",
                     insight=pending,
-                    loaded_from_url=True,
                 )
-                st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
-                _record_insight_return_diagnostics(st, phase="hydrate_url", insight=pending)
+                _record_insight_return_diagnostics(st, phase="hydrate_url_consumed", insight=pending)
                 return True
+        else:
+            pending = st.session_state.get(SESSION_PENDING_KEY)
+            pending_iid = (
+                str(pending.get("insight_id") or "").strip() if isinstance(pending, dict) else ""
+            )
+            force = not _pending_insight_valid(st) or (pending_iid and pending_iid != url_iid)
+            if apply_ami_insight_from_query(st, key, force=force):
+                pending = _pending_insight_valid(st)
+                if pending:
+                    _stage_insight_trace(
+                        st,
+                        hydrate_success=True,
+                        hydrate_source="url",
+                        insight=pending,
+                        loaded_from_url=True,
+                    )
+                    st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+                    _record_insight_return_diagnostics(st, phase="hydrate_url", insight=pending)
+                    return True
 
     pending = _pending_insight_valid(st)
     if pending:
         url_iid = insight_return_query_id(st)
         pending_iid = str(pending.get("insight_id") or "").strip()
-        if url_iid and pending_iid and pending_iid != url_iid:
+        if url_iid and pending_iid and pending_iid != url_iid and not ami_resume_consumed(st, key):
             if apply_ami_insight_from_query(st, key, force=True):
                 pending = _pending_insight_valid(st)
         _stage_insight_trace(
@@ -713,7 +1034,7 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
     )
     if isinstance(source_state, dict) and source_state:
         st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
-        apply_return_source_state(st, key, source_state)
+        # Cloud-only insight hydrate must not force page navigation (display-only).
 
     _stage_insight_trace(
         st,
@@ -776,7 +1097,20 @@ def render_insight_sync_debug(st: Any) -> None:
         "pending_insight_exists": ss.get("pending_insight_exists", bool(pending.get("conclusion"))),
         "insight_card_rendered": ss.get("insight_card_rendered", ss.get("_ami_insight_card_rendered")),
         "insight_return_phase": ss.get("_ami_insight_return_phase"),
-        "insight_return_preserve": ss.get("_ami_insight_return_preserve"),
+        "insight_return_preserve": ss.get("insight_return_preserve", ss.get("_ami_insight_return_preserve")),
+        "ami_resume_consumed": ss.get("ami_resume_consumed"),
+        "ami_url_params_present": ss.get("ami_url_params_present", ss.get("query_params_present")),
+        "query_params_present": ss.get("query_params_present"),
+        "ami_return_forced_page": ss.get("ami_return_forced_page"),
+        "ami_return_force_active_page": ss.get("ami_return_force_active_page"),
+        "resume_target_page": ss.get("resume_target_page"),
+        "page_forced_by_ami_return": ss.get("page_forced_by_ami_return"),
+        "manual_nav_after_ami_return": ss.get("manual_nav_after_ami_return"),
+        "manual_nav_blocked_by_ami_return": ss.get(
+            "manual_nav_blocked_by_ami_return", ss.get("manual_nav_blocked_by_resume")
+        ),
+        "active_page_source": ss.get("active_page_source"),
+        "final_page_after_sidebar_click": ss.get("final_page_after_sidebar_click"),
         "render_attempted": ss.get("_ami_insight_render_attempted"),
         "render_success": ss.get("_ami_insight_render_success"),
         "render_skipped_reason": ss.get("_ami_insight_render_skipped_reason"),
@@ -834,8 +1168,12 @@ def commit_ami_return_page_restore(st: Any, app_key: str) -> bool:
     """
     After page navigation is committed, re-apply source_state once so widgets
     pick up pending_compare_players / trend labels before render.
+    Skipped once AMI return resume is consumed so manual sidebar nav wins.
     """
-    flag = f"_ami_page_restore_committed_{app_key}"
+    key = _normalize_app_key(app_key)
+    if ami_resume_consumed(st, key):
+        return False
+    flag = f"_ami_page_restore_committed_{key}"
     if st.session_state.get(flag):
         return False
 
@@ -893,12 +1231,23 @@ def apply_ami_insight_from_query(st: Any, app_key: str, *, force: bool = False) 
     if not iid:
         return False
 
-    st.session_state["_ami_insight_return_preserve"] = True
+    key = _normalize_app_key(app_key or "")
     st.session_state["insight_return_detected"] = True
 
     prev = str(st.session_state.get("_ami_hydrated_insight_id") or "").strip()
     pending = st.session_state.get(SESSION_PENDING_KEY)
     pending_iid = str(pending.get("insight_id") or "").strip() if isinstance(pending, dict) else ""
+    if _insight_is_dismissed(st, iid):
+        _clear_ami_return_query_params(st)
+        _record_insight_return_diagnostics(st, phase="url_skip_dismissed", insight=pending if isinstance(pending, dict) else None)
+        return False
+    if ami_resume_consumed(st, key) and _pending_insight_valid(st):
+        _record_insight_return_diagnostics(
+            st,
+            phase="url_skip_consumed",
+            insight=pending if isinstance(pending, dict) else None,
+        )
+        return False
     if (
         not force
         and prev == iid
@@ -907,6 +1256,8 @@ def apply_ami_insight_from_query(st: Any, app_key: str, *, force: bool = False) 
     ):
         _record_insight_return_diagnostics(st, phase="url_skip_already_loaded", insight=pending if isinstance(pending, dict) else None)
         return False
+
+    st.session_state["_ami_insight_return_preserve"] = True
 
     insight = load_applied_math_insight(iid, source_app=app_key)
     if not insight:
@@ -935,8 +1286,15 @@ def apply_ami_insight_from_query(st: Any, app_key: str, *, force: bool = False) 
         apply_return_source_state(st, app_key, source_state)
     elif st.session_state.get(SESSION_RETURN_PAGE_KEY):
         ret_page = st.session_state[SESSION_RETURN_PAGE_KEY]
-        st.session_state["_navigate_to_page"] = ret_page
-        st.session_state["_skip_page_restore_for"] = ret_page
+        if _should_apply_ami_return_navigation(st, key, ret_page):
+            st.session_state["_navigate_to_page"] = ret_page
+            st.session_state["_skip_page_restore_for"] = ret_page
+            st.session_state["ami_return_forced_page"] = ret_page
+            st.session_state["ami_return_force_active_page"] = True
+            st.session_state["active_page_source"] = "ami_return_query"
+        else:
+            st.session_state.pop("_navigate_to_page", None)
+            st.session_state.pop("ami_return_force_active_page", None)
 
     st.session_state["_ami_hydrated_insight_id"] = iid
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
@@ -951,17 +1309,27 @@ def apply_ami_insight_from_query(st: Any, app_key: str, *, force: bool = False) 
     return True
 
 
-def dismiss_applied_math_insight(st: Any) -> None:
-    """Dismiss insight locally and mark id so cross-device refresh hides it."""
+def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
+    """Dismiss insight locally and persist dismissal for cross-device sync."""
     pending = st.session_state.get(SESSION_PENDING_KEY)
     iid = ""
     if isinstance(pending, dict):
         iid = str(pending.get("insight_id") or "").strip()
+    source_app = _normalize_app_key(
+        app_key or (pending.get("source_app") if isinstance(pending, dict) else "") or st.session_state.get("_suite_persist_app_id") or "baseball"
+    )
+    dismissed_at = datetime.now(timezone.utc).isoformat()
     clear_pending_insight(st)
     if iid:
         dismissed = _get_dismissed_insight_ids(st)
         dismissed.add(iid)
         st.session_state[SESSION_DISMISSED_KEY] = sorted(dismissed)
+        meta = dict(st.session_state.get(SESSION_DISMISSED_AT_KEY) or {})
+        if not isinstance(meta, dict):
+            meta = {}
+        meta[iid] = dismissed_at
+        st.session_state[SESSION_DISMISSED_AT_KEY] = meta
+        persist_insight_dismissal_to_cloud(source_app, iid, dismissed_at=dismissed_at)
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
 
 
@@ -1015,6 +1383,7 @@ def render_suite_applied_math_insight_for_page(
 ) -> bool:
     """Render insight card when pending insight matches this page (source apps)."""
     st.session_state["_ami_insight_render_attempted"] = True
+    maybe_consume_ami_return_on_page_match(st, source_app, current_page=source_page)
     insight = _pending_insight_valid(st)
     if not insight:
         st.session_state["_ami_insight_render_skipped_reason"] = "no pending insight"
@@ -1038,6 +1407,10 @@ def render_suite_applied_math_insight_for_page(
         st.session_state["_ami_insight_render_skipped_reason"] = "panel render failed"
     else:
         st.session_state.pop("_ami_insight_render_skipped_reason", None)
+        consume_ami_return_resume(
+            st,
+            str(st.session_state.get("_suite_persist_app_id") or source_app or "baseball"),
+        )
     _record_insight_return_diagnostics(st, phase="render_done", insight=insight)
     return ok
 
