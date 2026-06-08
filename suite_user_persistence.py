@@ -186,6 +186,36 @@ def _extract_page_players(state: dict[str, Any], page: str) -> Any:
     return None
 
 
+def _workspace_comparison_players(state: dict[str, Any]) -> list[str]:
+    cs = state.get("comparison_state")
+    if isinstance(cs, dict):
+        players = cs.get("players")
+        if isinstance(players, list):
+            return [str(p) for p in players if p][:3]
+    meta = state.get("baseball_workspace_state")
+    if isinstance(meta, dict):
+        cp = meta.get("comparison_players")
+        if isinstance(cp, list) and cp:
+            return [str(p) for p in cp if p][:3]
+    pf_players = _extract_page_players(state, "Comparison Tool")
+    if isinstance(pf_players, list):
+        return [str(p) for p in pf_players if p][:3]
+    return []
+
+
+def _session_comparison_players(st: Any) -> list[str]:
+    ss = st.session_state
+    cs = ss.get("comparison_state")
+    if isinstance(cs, dict):
+        players = cs.get("players")
+        if isinstance(players, list):
+            return [str(p) for p in players if p][:3]
+    cp = ss.get("compare_players")
+    if isinstance(cp, list):
+        return [str(p) for p in cp if p][:3]
+    return []
+
+
 def _record_workspace_sync_trace(
     st: Any,
     app_id: str,
@@ -305,8 +335,17 @@ def sync_workspace_protocol(
     page = str(picked.state.get("active_page") or "")
     current_page = _session_workspace_page(st)
     page_mismatch = bool(page and current_page and page != current_page)
+    cloud_players = _workspace_comparison_players(picked.state) if picked.source == "cloud" else []
+    local_players = _session_comparison_players(st)
+    comparison_mismatch = bool(
+        picked.source == "cloud"
+        and cloud_players != local_players
+    )
+    st.session_state["_suite_workspace_cloud_comparison_players"] = cloud_players or None
+    st.session_state["_suite_workspace_local_comparison_players"] = local_players or None
+    st.session_state["_suite_workspace_comparison_mismatch"] = comparison_mismatch
 
-    should_apply = first_sync or cloud_newer or page_mismatch
+    should_apply = first_sync or cloud_newer or page_mismatch or comparison_mismatch
     if not should_apply:
         st.session_state["_suite_persist_restore_skip_reason"] = "workspace already synced this session"
         _record_workspace_sync_trace(
@@ -751,7 +790,8 @@ def force_autosave(
         from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
 
         block_key = _autosave_block_key(app_id)
-        if st.session_state.get(block_key):
+        bypass_block = reason in ("comparison_edit", "page_change", "insight_persist", "insight_hydrate")
+        if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
             st.session_state["_suite_autosave_block_reason"] = st.session_state.get(
                 "_suite_autosave_block_reason", "post-restore cooldown"
@@ -777,6 +817,13 @@ def force_autosave(
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
             st.session_state["_suite_persist_last_save_reason"] = reason or "force_autosave"
+            st.session_state["_suite_last_force_save_at"] = st.session_state["_suite_persist_last_save_at"]
+            st.session_state["_suite_last_cloud_payload_comparison_players"] = _workspace_comparison_players(
+                state
+            ) or None
+            _record_autosave_trace(
+                st, app_id, reason=reason or "force_autosave", wrote_cloud=saved_cloud, state=state
+            )
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True
             return True
     except Exception:
@@ -859,11 +906,15 @@ def autosave_if_changed(
                 ):
                     st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
+            st.session_state["_suite_last_autosave_at"] = st.session_state["_suite_persist_last_save_at"]
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
             _record_autosave_trace(
                 st, app_id, reason="autosave", wrote_cloud=saved_cloud, state=state
             )
+            st.session_state["_suite_last_cloud_payload_comparison_players"] = _workspace_comparison_players(
+                state
+            ) or None
             if cloud_err:
                 st.session_state["_suite_persist_last_cloud_error"] = cloud_err
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True

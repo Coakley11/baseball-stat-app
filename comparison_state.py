@@ -410,8 +410,14 @@ def render_comparison_state_debug(
         "page_filter_state.sig_a": pf_cmp.get("sig_player_a_clean"),
         "page_filter_state.sig_b": pf_cmp.get("sig_player_b_clean"),
         "cloud_applied_comparison_players": cloud_players,
+        "restored_comparison_players": session.get("_comparison_restored_players"),
+        "restore_source": session.get("_comparison_restore_source"),
         "last_restored_players": restored_players,
         "last_saved_reason": session.get("_suite_persist_last_save_reason"),
+        "last_autosave_at": session.get("_suite_last_autosave_at"),
+        "last_force_save_at": session.get("_suite_last_force_save_at"),
+        "last_cloud_payload_players": session.get("_suite_last_cloud_payload_comparison_players"),
+        "last_save_cloud": session.get("_suite_persist_last_save_cloud"),
         "suite_local_dirty": session.get(_SUITE_LOCAL_DIRTY),
     }
     decision_rows = {

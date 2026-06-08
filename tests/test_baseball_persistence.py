@@ -18,6 +18,11 @@ class TestBaseballPersistence(unittest.TestCase):
             "sig_player_b_clean": "Francisco Lindor (NYM)",
             "compare_players": ["Juan Soto (NYY)", "Francisco Lindor (NYM)"],
             "compare_stat": "OPS",
+            "comparison_state": {
+                "players": ["Juan Soto (NYY)", "Francisco Lindor (NYM)"],
+                "player_a": "Juan Soto (NYY)",
+                "player_b": "Francisco Lindor (NYM)",
+            },
         }
         blob = build_baseball_disk_state(st)
         self.assertEqual(blob.get("active_page"), "Comparison Tool")
@@ -25,6 +30,8 @@ class TestBaseballPersistence(unittest.TestCase):
         self.assertEqual(meta.get("page"), "Comparison Tool")
         self.assertEqual(meta.get("schema_version"), 1)
         self.assertTrue(meta.get("device_id"))
+        top_cs = blob.get("comparison_state") or {}
+        self.assertEqual(top_cs.get("players"), ["Juan Soto (NYY)", "Francisco Lindor (NYM)"])
         pf = blob.get("page_filter_state") or {}
         cmp = pf.get("Comparison Tool") or {}
         self.assertEqual(cmp.get("sig_player_a_clean"), "Juan Soto (NYY)")

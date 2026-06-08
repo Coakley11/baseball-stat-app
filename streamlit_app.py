@@ -12435,6 +12435,12 @@ def compare_top_changed():
             st.session_state, winner="multiselect", reason="compare_top_changed"
         )
         selected = st.session_state.get("compare_players") or []
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="comparison_edit")
+        except Exception:
+            pass
     except Exception:
         selected = [x for x in selected if isinstance(x, str)][:3]
     if len(selected) >= 2:

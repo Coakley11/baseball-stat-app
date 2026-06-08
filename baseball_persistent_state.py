@@ -41,6 +41,8 @@ _INSIGHT_KEYS = (
     "_ami_dismissed_insight_ids",
 )
 
+_WORKSPACE_KEYS = ("comparison_state",)
+
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
 
@@ -147,7 +149,7 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     store = ss.get("page_filter_state")
     if isinstance(store, dict) and store:
         state["page_filter_state"] = copy.deepcopy(store)
-    for key in _INSIGHT_KEYS:
+    for key in _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key in ss:
             try:
                 state[key] = copy.deepcopy(ss[key])
@@ -156,6 +158,30 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     save_reason = str(ss.pop("_suite_pending_save_reason", None) or "autosave")
     state["baseball_workspace_state"] = _build_workspace_envelope(st, state, save_reason=save_reason)
     return state
+
+
+def _comparison_players_from_workspace_blob(state: dict[str, Any]) -> list[str] | None:
+    cs = state.get("comparison_state")
+    if isinstance(cs, dict):
+        players = cs.get("players")
+        if isinstance(players, list):
+            return [str(p) for p in players if p][:3]
+    meta = state.get("baseball_workspace_state")
+    if isinstance(meta, dict):
+        cp = meta.get("comparison_players")
+        if isinstance(cp, list):
+            return [str(p) for p in cp if p][:3]
+    pf = state.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get("Comparison Tool")
+        if isinstance(block, dict):
+            cp = block.get("compare_players")
+            if isinstance(cp, list):
+                return [str(p) for p in cp if p][:3]
+            inner = block.get("comparison_state")
+            if isinstance(inner, dict) and isinstance(inner.get("players"), list):
+                return [str(p) for p in inner["players"] if p][:3]
+    return None
 
 
 def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
@@ -167,7 +193,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     else:
         ss.setdefault("page_filter_state", {})
 
-    for key in _GLOBAL_KEYS + _INSIGHT_KEYS:
+    for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
             continue
         val = state[key]
@@ -187,6 +213,20 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         ss["_suite_cloud_target_page"] = active
         pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         ss["_page_state_last_active"] = active
+
+    try:
+        from comparison_state import clear_comparison_local_edit, is_comparison_locally_dirty, write_canonical_comparison_state
+
+        if not is_comparison_locally_dirty(ss):
+            restored_players = _comparison_players_from_workspace_blob(state)
+            if restored_players is not None:
+                write_canonical_comparison_state(ss, restored_players, reason="workspace_restore")
+                clear_comparison_local_edit(ss)
+                ss["_comparison_restored_players"] = list(restored_players)
+                ss["_comparison_restore_source"] = ss.get("_suite_persist_last_restore_source", "workspace")
+    except ImportError:
+        pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -228,7 +268,11 @@ def autosave_baseball_state(st: Any) -> None:
         from comparison_state import clear_comparison_local_edit
 
         after_save_at = st.session_state.get("_suite_persist_last_save_at")
-        if after_save_at and after_save_at != before_save_at:
+        if (
+            after_save_at
+            and after_save_at != before_save_at
+            and st.session_state.get("_suite_persist_last_save_cloud")
+        ):
             clear_comparison_local_edit(st.session_state)
     except ImportError:
         pass
@@ -238,7 +282,7 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
     if reason:
         st.session_state["_suite_pending_save_reason"] = reason
     saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
-    if saved:
+    if saved and st.session_state.get("_suite_persist_last_save_cloud"):
         try:
             from comparison_state import clear_comparison_local_edit
 
@@ -350,6 +394,7 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "page_filter_pages": local_pf_pages or None,
         "device_id": local_meta.get("device_id") or ss.get("_suite_device_id"),
     }
+    cloud_top_cs = cloud_state.get("comparison_state") if isinstance(cloud_state.get("comparison_state"), dict) else {}
     decision_rows = {
         "cloud_loaded": ss.get("_suite_workspace_cloud_loaded"),
         "local_loaded": ss.get("_suite_workspace_local_loaded"),
@@ -360,8 +405,22 @@ def render_cross_device_sync_debug(st: Any) -> None:
             "_suite_page_sync_cloud_newer_than_local",
             cloud_epoch > local_epoch if cloud_ts else False,
         ),
+        "cloud_record_timestamp": cloud_ts,
+        "applied_cloud_timestamp": applied_ts,
+        "cloud_comparison_players": ss.get("_suite_workspace_cloud_comparison_players")
+        or cloud_top_cs.get("players")
+        or cloud_rows.get("comparison_players"),
+        "local_comparison_players": ss.get("_suite_workspace_local_comparison_players")
+        or ss.get("compare_players"),
+        "comparison_mismatch": ss.get("_suite_workspace_comparison_mismatch"),
+        "comparison_state_dirty": ss.get("comparison_state_dirty"),
+        "comparison_last_local_edit_ts": ss.get("comparison_state_last_local_edit_ts"),
         "restore_skipped_reason": ss.get("_suite_persist_restore_skip_reason"),
         "cloud_workspace_restored": ss.get("_cloud_workspace_restored"),
+        "restore_source": ss.get("_comparison_restore_source")
+        or ss.get("_suite_persist_last_restore_source"),
+        "restored_comparison_players": ss.get("_comparison_restored_players"),
+        "page_state_source": "page_filter_state + full_session",
     }
     apply_rows = {
         "applied_page": ss.get("_suite_workspace_applied_page"),
@@ -375,6 +434,10 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "autosave_wrote_cloud": ss.get("_suite_autosave_wrote_cloud"),
         "autosave_payload_page": ss.get("_suite_autosave_payload_page"),
         "autosave_payload_comparison_players": ss.get("_suite_autosave_payload_comparison_players"),
+        "last_autosave_at": ss.get("_suite_last_autosave_at"),
+        "last_force_save_at": ss.get("_suite_last_force_save_at"),
+        "last_cloud_payload_players": ss.get("_suite_last_cloud_payload_comparison_players"),
+        "last_save_cloud": ss.get("_suite_persist_last_save_cloud"),
     }
     final_rows = {
         "final_page": ss.get("active_page"),
