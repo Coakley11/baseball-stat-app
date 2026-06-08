@@ -30,6 +30,12 @@ _GLOBAL_KEYS = (
     "room_format",
 )
 
+_INSIGHT_KEYS = (
+    "_ami_pending_insight",
+    "_ami_return_context",
+    "_ami_dismissed_insight_ids",
+)
+
 
 def _clear_page_widget_keys(session: dict[str, Any], page_name: str) -> None:
     for key in pg_state._collect_keys_for_page(session, page_name):
@@ -79,6 +85,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     store = ss.get("page_filter_state")
     if isinstance(store, dict) and store:
         state["page_filter_state"] = copy.deepcopy(store)
+    for key in _INSIGHT_KEYS:
+        if key in ss:
+            try:
+                state[key] = copy.deepcopy(ss[key])
+            except Exception:
+                state[key] = ss[key]
     return state
 
 

@@ -175,8 +175,15 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
         session_state["_navigate_to_page"] = page
         session_state["_skip_page_restore_for"] = page
         session_state["_ami_return_restore_page"] = page
+        try:
+            from page_state import _collect_keys_for_page
 
-    # Drop stale widget keys so pending restore wins on the next widget draw.
+            for key in _collect_keys_for_page(session_state, page):
+                session_state.pop(key, None)
+        except Exception:
+            pass
+
+    # Drop stale pending-restore keys so fresh source_state wins.
     for key in (
         "compare_players",
         "compare_players_saved",
@@ -373,3 +380,35 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
 
 def merged_baseball_context(page: str, session_state: dict[str, Any]) -> dict[str, Any]:
     return build_baseball_applied_math_context(page, session_state)
+
+
+def build_comparison_source_state(session_state: dict[str, Any]) -> dict[str, Any]:
+    return build_source_state("Comparison Tool", session_state)
+
+
+def build_trends_source_state(session_state: dict[str, Any]) -> dict[str, Any]:
+    return build_source_state("Trend Value", session_state)
+
+
+def build_historical_source_state(session_state: dict[str, Any]) -> dict[str, Any]:
+    return build_source_state("Historical Explorer", session_state)
+
+
+def build_draft_source_state(session_state: dict[str, Any], page: str) -> dict[str, Any]:
+    return build_source_state(page, session_state)
+
+
+def apply_comparison_source_state(session_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+    apply_source_state_to_session(session_state, source_state)
+
+
+def apply_trends_source_state(session_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+    apply_source_state_to_session(session_state, source_state)
+
+
+def apply_historical_source_state(session_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+    apply_source_state_to_session(session_state, source_state)
+
+
+def apply_draft_source_state(session_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+    apply_source_state_to_session(session_state, source_state)

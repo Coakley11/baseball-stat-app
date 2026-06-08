@@ -15,6 +15,8 @@ INSIGHT_ITEM_TYPE = "applied_math_insight"
 SESSION_PENDING_KEY = "_ami_pending_insight"
 SESSION_RETURN_PAGE_KEY = "_ami_return_page"
 SESSION_RETURN_CONTEXT_KEY = "_ami_return_context"
+SESSION_DISMISSED_KEY = "_ami_dismissed_insight_ids"
+SESSION_PERSIST_INSIGHT_DIRTY = "_suite_persist_insight_dirty"
 
 # Pages where the insight card may appear (display-only v1).
 INSIGHT_ELIGIBLE_PAGES: dict[str, frozenset[str]] = {
@@ -409,6 +411,221 @@ def load_applied_math_insight(insight_id: str, *, source_app: str = "") -> dict[
     return {}
 
 
+def _get_dismissed_insight_ids(st: Any) -> set[str]:
+    raw = st.session_state.get(SESSION_DISMISSED_KEY)
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _insight_is_dismissed(st: Any, insight_id: str) -> bool:
+    iid = str(insight_id or "").strip()
+    return bool(iid and iid in _get_dismissed_insight_ids(st))
+
+
+def _stage_insight_trace(
+    st: Any,
+    *,
+    hydrate_attempted: bool = False,
+    hydrate_success: bool = False,
+    hydrate_source: str = "",
+    insight: dict[str, Any] | None = None,
+    loaded_from_cloud: bool = False,
+    loaded_from_url: bool = False,
+) -> None:
+    if hydrate_attempted:
+        st.session_state["_ami_insight_hydrate_attempted"] = True
+    if hydrate_success:
+        st.session_state["_ami_insight_hydrate_success"] = True
+    if hydrate_source:
+        st.session_state["_ami_insight_hydrate_source"] = hydrate_source
+    if loaded_from_cloud:
+        st.session_state["_ami_insight_loaded_from_cloud"] = True
+    if loaded_from_url:
+        st.session_state["_ami_insight_loaded_from_url"] = True
+    if isinstance(insight, dict):
+        st.session_state["_ami_insight_active_id"] = insight.get("insight_id") or ""
+        st.session_state["_ami_insight_active_question_id"] = insight.get("question_id") or ""
+
+
+def load_latest_applied_math_insight_for_app(
+    source_app: str,
+    *,
+    exclude_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Most recent cloud-stored insight for a source app (cross-device)."""
+    app = str(source_app or "").strip().lower()
+    if not app:
+        return {}
+    excluded = exclude_ids or set()
+    try:
+        from suite_account import load_saved_items
+
+        for app_key in (app, "applied_intelligence"):
+            rows = load_saved_items(app=app_key, item_type=INSIGHT_ITEM_TYPE, limit=30)
+            for row in rows:
+                iid = str(row.get("item_key") or "").strip()
+                if not iid or iid in excluded:
+                    continue
+                payload = row.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("source_app") or "").strip().lower() not in ("", app):
+                    if app_key != app:
+                        continue
+                if payload.get("conclusion") or payload.get("question"):
+                    out = dict(payload)
+                    out.setdefault("insight_id", iid)
+                    return out
+    except Exception as exc:
+        log.warning("load_latest_applied_math_insight_for_app failed: %s", exc)
+    return {}
+
+
+def _pending_insight_valid(st: Any) -> dict[str, Any]:
+    pending = st.session_state.get(SESSION_PENDING_KEY)
+    if not isinstance(pending, dict):
+        return {}
+    iid = str(pending.get("insight_id") or "").strip()
+    if iid and _insight_is_dismissed(st, iid):
+        st.session_state.pop(SESSION_PENDING_KEY, None)
+        return {}
+    if pending.get("conclusion") or pending.get("question"):
+        return pending
+    return {}
+
+
+def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
+    """
+    Load pending insight for this session from URL, workspace blob, or cloud store.
+
+    Call before rendering the insight card on every rerun so cross-device refresh
+    shows the same insight without requiring the return URL.
+    """
+    key = str(app_key or "").strip().lower()
+    st.session_state["_ami_insight_hydrate_attempted"] = True
+
+    def _qp(name: str) -> str:
+        try:
+            raw = st.query_params.get(name)
+        except Exception:
+            return ""
+        if raw is None:
+            return ""
+        if isinstance(raw, list):
+            return str(raw[0] or "").strip()
+        return str(raw).strip()
+
+    url_iid = _qp("suite_ami_insight")
+    if url_iid:
+        applied = apply_ami_insight_from_query(st, key)
+        if applied:
+            pending = _pending_insight_valid(st)
+            if pending:
+                _stage_insight_trace(
+                    st,
+                    hydrate_success=True,
+                    hydrate_source="url",
+                    insight=pending,
+                    loaded_from_url=True,
+                )
+                st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+                return True
+
+    pending = _pending_insight_valid(st)
+    if pending:
+        _stage_insight_trace(
+            st,
+            hydrate_success=True,
+            hydrate_source="session",
+            insight=pending,
+        )
+        return True
+
+    dismissed = _get_dismissed_insight_ids(st)
+    latest = load_latest_applied_math_insight_for_app(key, exclude_ids=dismissed)
+    if not latest:
+        st.session_state["_ami_insight_hydrate_success"] = False
+        st.session_state["_ami_insight_hydrate_source"] = "none"
+        return False
+
+    iid = str(latest.get("insight_id") or "").strip()
+    st.session_state[SESSION_PENDING_KEY] = latest
+    st.session_state[SESSION_RETURN_PAGE_KEY] = latest.get("source_page") or ""
+
+    source_state = _resolve_return_source_state(st, key, latest, question_id_qp=_qp("suite_ai_question_id"))
+    if isinstance(source_state, dict) and source_state:
+        st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
+        apply_return_source_state(st, key, source_state)
+
+    _stage_insight_trace(
+        st,
+        hydrate_success=True,
+        hydrate_source="cloud_saved_items",
+        insight=latest,
+        loaded_from_cloud=True,
+    )
+    st.session_state["_ami_hydrated_insight_id"] = iid
+    st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+    return True
+
+
+def render_insight_sync_debug(st: Any) -> None:
+    """Developer panel: insight hydration + render trace."""
+    ss = st.session_state
+    pending = ss.get(SESSION_PENDING_KEY) if isinstance(ss.get(SESSION_PENDING_KEY), dict) else {}
+    cloud_exists = False
+    try:
+        latest = load_latest_applied_math_insight_for_app(
+            str(ss.get("_suite_persist_app_id") or "baseball"),
+            exclude_ids=set(),
+        )
+        cloud_exists = bool(latest.get("insight_id"))
+    except Exception:
+        cloud_exists = False
+
+    cloud_rows = {
+        "insight_id": pending.get("insight_id") or ss.get("_ami_insight_active_id"),
+        "question_id": pending.get("question_id") or ss.get("_ami_insight_active_question_id"),
+        "insight_exists_cloud": cloud_exists,
+        "insight_loaded_from_cloud": ss.get("_ami_insight_loaded_from_cloud"),
+        "insight_loaded_from_url": ss.get("_ami_insight_loaded_from_url"),
+        "insight_timestamp": pending.get("created_at"),
+    }
+    local_rows = {
+        "pending_insight": bool(pending.get("conclusion") or pending.get("question")),
+        "active_insight": ss.get("_ami_insight_active_id"),
+        "dismissed": ss.get(SESSION_DISMISSED_KEY),
+        "last_loaded_insight_id": ss.get("_ami_hydrated_insight_id"),
+    }
+    decision_rows = {
+        "hydrate_attempted": ss.get("_ami_insight_hydrate_attempted"),
+        "hydrate_success": ss.get("_ami_insight_hydrate_success"),
+        "hydrate_source": ss.get("_ami_insight_hydrate_source"),
+        "render_attempted": ss.get("_ami_insight_render_attempted"),
+        "render_success": ss.get("_ami_insight_render_success"),
+        "render_skipped_reason": ss.get("_ami_insight_render_skipped_reason"),
+    }
+
+    with st.sidebar.expander("Insight sync trace", expanded=True):
+        st.caption("Applied Math insight — cloud-backed, cross-device.")
+        st.markdown("**INSIGHT CLOUD**")
+        for k, v in cloud_rows.items():
+            if v is not None and v != "":
+                st.text(f"{k}: {v}")
+        st.markdown("**INSIGHT LOCAL**")
+        for k, v in local_rows.items():
+            if v is not None and v != "" and v != []:
+                st.text(f"{k}: {v}")
+        st.markdown("**DECISION**")
+        for k, v in decision_rows.items():
+            if v is not None and v != "":
+                st.text(f"{k}: {v}")
+        st.markdown("**FINAL**")
+        st.text(f"final_page: {ss.get('active_page')}")
+        st.text(f"final_has_insight_card: {bool(pending.get('conclusion'))}")
+
+
 def _resolve_return_source_state(
     st: Any,
     app_key: str,
@@ -537,7 +754,29 @@ def apply_ami_insight_from_query(st: Any, app_key: str) -> bool:
         st.session_state["_skip_page_restore_for"] = page
 
     st.session_state["_ami_hydrated_insight_id"] = iid
+    st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+    _stage_insight_trace(
+        st,
+        hydrate_success=True,
+        hydrate_source="url",
+        insight=insight if isinstance(insight, dict) else {},
+        loaded_from_url=True,
+    )
     return True
+
+
+def dismiss_applied_math_insight(st: Any) -> None:
+    """Dismiss insight locally and mark id so cross-device refresh hides it."""
+    pending = st.session_state.get(SESSION_PENDING_KEY)
+    iid = ""
+    if isinstance(pending, dict):
+        iid = str(pending.get("insight_id") or "").strip()
+    clear_pending_insight(st)
+    if iid:
+        dismissed = _get_dismissed_insight_ids(st)
+        dismissed.add(iid)
+        st.session_state[SESSION_DISMISSED_KEY] = sorted(dismissed)
+    st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
 
 
 def clear_pending_insight(st: Any) -> None:
@@ -548,8 +787,8 @@ def clear_pending_insight(st: Any) -> None:
 
 def render_applied_math_insight_panel(st: Any) -> bool:
     """Display-only insight card on source app pages. Returns True if rendered."""
-    insight = st.session_state.get(SESSION_PENDING_KEY)
-    if not isinstance(insight, dict) or not insight.get("conclusion"):
+    insight = _pending_insight_valid(st)
+    if not insight or not insight.get("conclusion"):
         return False
 
     with st.container(border=True):
@@ -577,7 +816,7 @@ def render_applied_math_insight_panel(st: Any) -> bool:
                 st.link_button("Open full analysis →", url, use_container_width=True)
         with c2:
             if st.button("Dismiss insight", key="ami_insight_dismiss", use_container_width=True):
-                clear_pending_insight(st)
+                dismiss_applied_math_insight(st)
                 st.rerun()
     return True
 
@@ -589,12 +828,25 @@ def render_suite_applied_math_insight_for_page(
     source_page: str,
 ) -> bool:
     """Render insight card when pending insight matches this page (source apps)."""
-    insight = st.session_state.get(SESSION_PENDING_KEY)
-    if not isinstance(insight, dict) or not insight.get("conclusion"):
+    st.session_state["_ami_insight_render_attempted"] = True
+    insight = _pending_insight_valid(st)
+    if not insight:
+        st.session_state["_ami_insight_render_skipped_reason"] = "no pending insight"
+        st.session_state["_ami_insight_render_success"] = False
         return False
     if not should_render_insight_on_page(source_app, source_page, insight):
+        st.session_state["_ami_insight_render_skipped_reason"] = (
+            f"page mismatch (current={source_page!r}, insight={insight.get('source_page')!r})"
+        )
+        st.session_state["_ami_insight_render_success"] = False
         return False
-    return render_applied_math_insight_panel(st)
+    ok = render_applied_math_insight_panel(st)
+    st.session_state["_ami_insight_render_success"] = ok
+    if not ok:
+        st.session_state["_ami_insight_render_skipped_reason"] = "panel render failed"
+    else:
+        st.session_state.pop("_ami_insight_render_skipped_reason", None)
+    return ok
 
 
 def render_return_to_source_button(

@@ -27,6 +27,28 @@ class TestBaseballSourceState(unittest.TestCase):
         self.assertEqual(ss["widget_params"]["sig_player_a_clean"], "Juan Soto (NYY)")
         self.assertEqual(ss["filter_params"]["compare_stat"], "OPS")
 
+    def test_apply_source_state_restores_compare_chart_controls(self) -> None:
+        session: dict = {
+            "compare_stat": "OPS",
+            "compare_x_axis_mode": "Season",
+        }
+        source = build_source_state(
+            "Comparison Tool",
+            {
+                "sig_player_a_clean": "Miguel Cabrera (DET)",
+                "sig_player_b_clean": "Juan Soto (NYY)",
+                "compare_players": ["Miguel Cabrera (DET)", "Juan Soto (NYY)"],
+                "compare_stat": "HR",
+                "compare_x_axis_mode": "Age",
+                "compare_age_range": [20, 40],
+            },
+        )
+        apply_source_state_to_session(session, source)
+        self.assertEqual(session["compare_stat"], "HR")
+        self.assertEqual(session["compare_stat_saved"], "HR")
+        self.assertEqual(session["compare_x_axis_mode"], "Age")
+        self.assertEqual(session["sig_player_a_clean"], "Miguel Cabrera (DET)")
+
     def test_apply_source_state_sets_pending_keys(self) -> None:
         session: dict = {}
         source = build_source_state(

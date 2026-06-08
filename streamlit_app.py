@@ -11748,6 +11748,18 @@ pdemo.schedule_page_demo(st, active_page)
 
 from suite_analytical_question import render_suite_applied_math_insight
 
+try:
+    from applied_math_return_insight import hydrate_applied_math_insight_for_session
+
+    hydrate_applied_math_insight_for_session(st, "baseball")
+    if st.session_state.pop("_suite_persist_insight_dirty", None):
+        try:
+            force_save_baseball_state(st, reason="insight_hydrate")
+        except Exception:
+            pass
+except Exception:
+    pass
+
 render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
 
 # Drop snapshotted button widget keys (they must never be restored into session_state).
@@ -11763,6 +11775,12 @@ if developer_mode_enabled():
         from baseball_persistent_state import render_cross_device_sync_debug
 
         render_cross_device_sync_debug(st)
+    except Exception:
+        pass
+    try:
+        from applied_math_return_insight import render_insight_sync_debug
+
+        render_insight_sync_debug(st)
     except Exception:
         pass
 render_page_state_debug(active_page)
@@ -17088,6 +17106,12 @@ try:
     from baseball_persistent_state import autosave_baseball_state
 
     autosave_baseball_state(st)
+    if st.session_state.get("_suite_persist_insight_dirty"):
+        try:
+            force_save_baseball_state(st, reason="insight_persist")
+            st.session_state.pop("_suite_persist_insight_dirty", None)
+        except Exception:
+            pass
 except Exception:
     pass
 
