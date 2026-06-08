@@ -232,6 +232,7 @@ def _comparison_user_explicitly_cleared(st: Any) -> bool:
 _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "comparison_edit",
     "trend_edit",
+    "career_edit",
     "page_change",
     "insight_persist",
     "insight_hydrate",
@@ -1226,6 +1227,7 @@ def force_autosave(
         bypass_block = reason in (
             "comparison_edit",
             "trend_edit",
+            "career_edit",
             "page_change",
             "insight_persist",
             "insight_hydrate",

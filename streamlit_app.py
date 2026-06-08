@@ -12144,6 +12144,7 @@ if active_page == "Career Totals":
         prepare_career_totals_page,
         prepare_career_year_range,
         render_career_totals_state_debug,
+        render_career_totals_sync_trace,
     )
 
     prepare_career_totals_page(st.session_state)
@@ -12347,6 +12348,7 @@ if active_page == "Career Totals":
     )
     flush_career_filter_edits(st.session_state, st, reason="career_page_save")
     if developer_mode_enabled():
+        render_career_totals_sync_trace(st, st.session_state)
         render_career_totals_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)

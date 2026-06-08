@@ -11,8 +11,10 @@ from career_totals_state import (
     CAREER_DIRTY_KEY,
     CAREER_FILTER_KEYS,
     CAREER_STAT_MIN_KEYS,
+    CAREER_SYNC_TRACE_KEY,
     apply_career_source_state_from_ami,
     apply_cloud_career_state_if_allowed,
+    classify_career_sync_failure,
     commit_career_filters_from_session,
     flush_career_filter_edits,
     is_career_locally_dirty,
@@ -23,7 +25,9 @@ from career_totals_state import (
     prepare_career_totals_filters,
     prepare_career_totals_page,
     prepare_career_year_range,
+    record_career_sync_trace,
     restore_career_totals_page_filters,
+    snapshot_career_sync_layers,
     sync_career_filter_change,
     write_canonical_career_state,
 )
@@ -361,6 +365,45 @@ class TestCareerTotalsState(unittest.TestCase):
         self.assertEqual(blob["career_state"]["filters"]["career_3B_min"], 2)
         meta = blob.get("baseball_workspace_state") or {}
         self.assertEqual(meta.get("career_filters", {}).get("career_3B_min"), 2)
+
+    def test_sync_trace_classify_a_phone_not_writing_cloud(self) -> None:
+        session = {"_career_last_force_save_attempted": True, "_career_last_force_save_success": False}
+        self.assertEqual(classify_career_sync_failure(session), "A")
+
+    def test_sync_trace_classify_c_restore_rejected(self) -> None:
+        session = {"_career_restore_skipped_reason": "local_dirty"}
+        self.assertEqual(classify_career_sync_failure(session), "C")
+
+    def test_sync_trace_classify_d_render_overwrite(self) -> None:
+        session = {"_career_render_overwrite_detected": True}
+        self.assertEqual(classify_career_sync_failure(session), "D")
+
+    def test_sync_trace_snapshot_layers(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        write_canonical_career_state(session, filters=_SAMPLE_FILTERS, reason="setup")
+        session["career_team_filter"] = ["New York Mets"]
+        layers = snapshot_career_sync_layers(session)
+        self.assertEqual(layers["career_team_filter_widget"], ["New York Mets"])
+        self.assertEqual(layers["career_year_range_canonical"], (2015, 2024))
+
+    def test_flush_records_phone_after_edit_trace(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        write_canonical_career_state(session, filters=_SAMPLE_FILTERS, reason="setup")
+        session["career_year_range_filter"] = (2000, 2018)
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
+        trace = session.get(CAREER_SYNC_TRACE_KEY)
+        self.assertIsInstance(trace, dict)
+        self.assertEqual(trace.get("phase"), "phone_after_edit")
+        self.assertEqual(trace.get("career_year_range_widget"), (2000, 2018))
+
+    def test_career_edit_bypasses_blank_comparison_cloud_block(self) -> None:
+        from suite_user_persistence import _cloud_autosave_blocked_reason
+
+        st = MagicMock()
+        st.session_state = {"comparison_state": {"players": []}, "compare_players": []}
+        state = {"career_state": {"filters": dict(_SAMPLE_FILTERS)}}
+        self.assertIsNone(_cloud_autosave_blocked_reason(st, "baseball", state, save_reason="career_edit"))
 
 
 if __name__ == "__main__":

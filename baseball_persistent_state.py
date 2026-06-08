@@ -408,6 +408,18 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
     if reason:
         st.session_state["_suite_pending_save_reason"] = reason
     saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
+    if reason == "career_edit":
+        try:
+            from career_totals_state import record_career_force_save_result
+
+            record_career_force_save_result(
+                st.session_state,
+                attempted=True,
+                success=bool(saved and st.session_state.get("_suite_persist_last_save_cloud")),
+                reason=reason,
+            )
+        except ImportError:
+            pass
     if saved and st.session_state.get("_suite_persist_last_save_cloud"):
         try:
             from comparison_state import clear_comparison_local_edit
