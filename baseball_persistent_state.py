@@ -41,7 +41,15 @@ _INSIGHT_KEYS = (
     "_ami_dismissed_insight_ids",
 )
 
-_WORKSPACE_KEYS = ("comparison_state", "trend_state", "career_state", "draft_state", "historical_state")
+_WORKSPACE_KEYS = (
+    "comparison_state",
+    "trend_state",
+    "career_state",
+    "draft_state",
+    "historical_state",
+    "valuation_state",
+    "projections_state",
+)
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
@@ -114,6 +122,24 @@ def _career_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
     return _filters_from_block(block)
 
 
+def _valuation_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from valuation_state import _filters_from_block
+
+        return _filters_from_block(block)
+    except ImportError:
+        return {}
+
+
+def _projections_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from projections_state import _filters_from_block
+
+        return _filters_from_block(block)
+    except ImportError:
+        return {}
+
+
 def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: str) -> dict[str, Any]:
     cmp_block = _page_block(state, "Comparison Tool")
     trend_block = _page_block(state, "Trend Value")
@@ -129,6 +155,28 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
     career_filters = career_meta.get("filters") or _career_filter_summary(career_block) or None
     hist_meta = state.get("historical_state") if isinstance(state.get("historical_state"), dict) else {}
     historical_filters = hist_meta.get("filters") or _historical_filter_summary(hist_block) or None
+    val_block = _page_block(state, "Valuation")
+    val_meta = state.get("valuation_state") if isinstance(state.get("valuation_state"), dict) else {}
+    valuation_filters = None
+    if val_meta:
+        vf = dict(val_meta.get("filters") or {})
+        if val_meta.get("selected_player"):
+            vf["valuation_selected_player"] = val_meta["selected_player"]
+        valuation_filters = vf or None
+    if not valuation_filters:
+        valuation_filters = _valuation_filter_summary(val_block) or None
+    ml_block = _page_block(state, "ML Predictions")
+    ml_meta = state.get("projections_state") if isinstance(state.get("projections_state"), dict) else {}
+    projections_filters = None
+    if ml_meta:
+        try:
+            from projections_state import _flat_from_meta
+
+            projections_filters = _flat_from_meta(ml_meta) or None
+        except ImportError:
+            projections_filters = None
+    if not projections_filters:
+        projections_filters = _projections_filter_summary(ml_block) or None
     draft_meta = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
     draft_workflow = None
     if draft_meta:
@@ -156,6 +204,8 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         "trend_players": trend_block.get("trend_players_multi"),
         "career_filters": career_filters,
         "historical_filters": historical_filters,
+        "valuation_filters": valuation_filters,
+        "projections_filters": projections_filters,
         "draft_state": {
             k: draft_block[k]
             for k in ("room_your_team", "room_team_count", "room_rounds", "room_format")
@@ -305,12 +355,32 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 clear_historical_local_edit(ss)
             except ImportError:
                 pass
+            try:
+                from valuation_state import clear_valuation_local_edit
+
+                clear_valuation_local_edit(ss)
+            except ImportError:
+                pass
+            try:
+                from projections_state import clear_projections_local_edit
+
+                clear_projections_local_edit(ss)
+            except ImportError:
+                pass
             if active == "Comparison Tool":
                 restore_comparison_page_filters(ss, ss["page_filter_state"])
             elif active == "Trend Value":
                 from trend_state import restore_trend_page_filters
 
                 restore_trend_page_filters(ss, ss["page_filter_state"])
+            elif active == "Valuation":
+                from valuation_state import restore_valuation_page_filters
+
+                restore_valuation_page_filters(ss, ss["page_filter_state"])
+            elif active == "ML Predictions":
+                from projections_state import restore_projections_page_filters
+
+                restore_projections_page_filters(ss, ss["page_filter_state"])
             else:
                 pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         except ImportError:
@@ -398,6 +468,20 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
+    try:
+        from valuation_state import apply_cloud_valuation_state_if_allowed
+
+        apply_cloud_valuation_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
+    try:
+        from projections_state import apply_cloud_projections_state_if_allowed
+
+        apply_cloud_projections_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -463,6 +547,18 @@ def autosave_baseball_state(st: Any) -> None:
                 clear_historical_local_edit(st.session_state)
             except ImportError:
                 pass
+            try:
+                from valuation_state import clear_valuation_local_edit
+
+                clear_valuation_local_edit(st.session_state)
+            except ImportError:
+                pass
+            try:
+                from projections_state import clear_projections_local_edit
+
+                clear_projections_local_edit(st.session_state)
+            except ImportError:
+                pass
     except ImportError:
         pass
 
@@ -506,6 +602,18 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from historical_state import clear_historical_local_edit
 
             clear_historical_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from valuation_state import clear_valuation_local_edit
+
+            clear_valuation_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from projections_state import clear_projections_local_edit
+
+            clear_projections_local_edit(st.session_state)
         except ImportError:
             pass
     return saved

@@ -3599,7 +3599,7 @@ def _insight_name_col(df):
     return None
 
 
-def _select_insight_row(df, *, key, label="Select player for insight", default_name=None):
+def _select_insight_row(df, *, key, label="Select player for insight", default_name=None, on_change=None):
     """Select a player from a dataframe and return the matching row for section summaries."""
     if df is None or df.empty:
         return None
@@ -3616,7 +3616,7 @@ def _select_insight_row(df, *, key, label="Select player for insight", default_n
     if saved not in options:
         saved = default_name if default_name in options else options[0]
         st.session_state[key] = saved
-    selected = st.selectbox(label, options, key=key)
+    selected = st.selectbox(label, options, key=key, on_change=on_change)
     st.markdown(f"**Selected:** <span style='color:#b42318;font-weight:800'>{selected}</span>", unsafe_allow_html=True)
     match = df[df[name_col].astype(str).str.strip().eq(str(selected).strip())]
     return match.iloc[0] if not match.empty else None
@@ -4095,6 +4095,12 @@ def _on_ml_predictions_refresh_click():
     _clear_ml_tuning_cache()
     st.session_state.pop(ML_PREDICTIONS_STATUS_KEY, None)
     st.session_state.pop(ML_LAST_TUNING_SIG_KEY, None)
+    try:
+        from projections_state import mark_projections_pipeline_refresh
+
+        mark_projections_pipeline_refresh(st.session_state)
+    except Exception:
+        pass
 
 
 def _ml_enrich_predictions_for_storage(pred_df, yearly_source, ml_lookback, ml_projection_style):
@@ -16952,7 +16958,35 @@ if active_page == "Fantasy Lineup Assistant":
     render_page_filters_debug(active_page)
 
 
+def valuation_filter_changed():
+    try:
+        from valuation_state import mark_valuation_filter_pending_sync
+
+        mark_valuation_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+def projections_filter_changed():
+    try:
+        from projections_state import mark_projections_filter_pending_sync
+
+        mark_projections_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
 if active_page == "Valuation":
+    from valuation_state import (
+        flush_valuation_filter_edits,
+        prepare_valuation_filters,
+        prepare_valuation_page,
+        render_valuation_state_debug,
+    )
+
+    prepare_valuation_page(st.session_state)
+    prepare_valuation_filters(st.session_state)
+
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -16961,7 +16995,7 @@ if active_page == "Valuation":
     c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
-        lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag")
+        lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag", on_change=valuation_filter_changed)
     with c2:
         validate_number_state("value_min_g", 50, min_value=0, max_value=800)
         min_g_value = st.number_input(
@@ -16969,6 +17003,7 @@ if active_page == "Valuation":
             min_value=0,
             max_value=800,
             key="value_min_g",
+            on_change=valuation_filter_changed,
         )
     with c3:
         validate_state_option("value_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
@@ -16977,6 +17012,7 @@ if active_page == "Valuation":
             FANTASY_POSITION_FILTER_OPTIONS,
             key="value_position_filter",
             help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
+            on_change=valuation_filter_changed,
         )
 
     max_year_value = int(yearly_df["yearID"].max())
@@ -16991,6 +17027,7 @@ if active_page == "Valuation":
         value_sync_enabled = st.checkbox(
             "Remove already drafted players and allow drafting from Valuation page",
             key="value_use_draft_room_sync",
+            on_change=valuation_filter_changed,
         )
         if value_sync_enabled:
             value_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
@@ -17004,6 +17041,7 @@ if active_page == "Valuation":
                         "My Draft Room Team",
                         value_team_options,
                         key="value_sync_team_for_draft",
+                        on_change=valuation_filter_changed,
                     )
                 st.caption(f"Removed {len(set(value_drafted_names))} already drafted player(s) from this page.")
             else:
@@ -17024,7 +17062,7 @@ if active_page == "Valuation":
         ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
     )
     agg_value = agg_value[agg_value["G"] >= min_g_value].copy()
-    agg_value = apply_stat_min_filters(agg_value, "value")
+    agg_value = apply_stat_min_filters(agg_value, "value", on_change=valuation_filter_changed)
 
     trend_value = compute_player_trend_table(
         recent_data_value,
@@ -17040,9 +17078,9 @@ if active_page == "Valuation":
         st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
         c5, c6 = st.columns(2)
         with c5:
-            w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current")
+            w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current", on_change=valuation_filter_changed)
         with c6:
-            w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend")
+            w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend", on_change=valuation_filter_changed)
 
     valuation_df["Trend_Score"] = (
         valuation_df["R_trend"].fillna(0) * 1.0 + valuation_df["H_trend"].fillna(0) * 0.5 +
@@ -17134,6 +17172,7 @@ if active_page == "Valuation":
         key="valuation_selected_player",
         label="Choose a player to explain",
         default_name=valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else None,
+        on_change=valuation_filter_changed,
     )
     if selected_value_row is not None:
         st.info(make_valuation_summary(selected_value_row))
@@ -17142,11 +17181,24 @@ if active_page == "Valuation":
     if not best_value_row.empty:
         st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
 
+    flush_valuation_filter_edits(st.session_state, st, reason="valuation_page_save")
+    if developer_mode_enabled():
+        render_valuation_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
 if active_page == "ML Predictions":
+    from projections_state import (
+        flush_projections_filter_edits,
+        prepare_projections_filters,
+        prepare_projections_page,
+        render_projections_state_debug,
+    )
+
+    prepare_projections_page(st.session_state)
+    prepare_projections_filters(st.session_state)
+
     if pp.skip_heavy_work(st):
         st.session_state.setdefault("ml_max_players", 100)
     if pp.is_demo_mode(st) or pp.is_screenshot_mode(st):
@@ -17180,11 +17232,11 @@ if active_page == "ML Predictions":
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback")
+            ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback", on_change=projections_filter_changed)
         with c2:
-            ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 75, key="ml_min_games")
+            ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 75, key="ml_min_games", on_change=projections_filter_changed)
         with c3:
-            ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=2, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud. Fantasy-relevant players with recent playing time are still included when possible.")
+            ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=2, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud. Fantasy-relevant players with recent playing time are still included when possible.", on_change=projections_filter_changed)
 
         ml_min_ab = st.number_input(
             "Minimum Recent AB in Lookback Window",
@@ -17193,6 +17245,7 @@ if active_page == "ML Predictions":
             200,
             key="ml_min_ab",
             help="Primary AB filter. Players with at least 75 recent AB and 30 recent games can still qualify as fantasy-relevant breakouts.",
+            on_change=projections_filter_changed,
         )
 
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
@@ -17206,16 +17259,17 @@ if active_page == "ML Predictions":
                     "Conservative adds more regression and lowers volatility. Balanced keeps the normal model behavior. "
                     "Aggressive trusts upside/recent signals more and regresses less."
                 ),
+                on_change=projections_filter_changed,
             )
             a1, a2, a3, a4 = st.columns(4)
             with a1:
-                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength")
+                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength", on_change=projections_filter_changed)
             with a2:
-                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength")
+                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength", on_change=projections_filter_changed)
             with a3:
-                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight")
+                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight", on_change=projections_filter_changed)
             with a4:
-                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors")
+                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors", on_change=projections_filter_changed)
             _ml_style_mode = "Aggressive / Upside" if ml_projection_style == "Aggressive" else ml_projection_style
             _ml_style_factors = get_draft_projection_factors(_ml_style_mode)
             effective_regression_strength = float(
@@ -17234,6 +17288,7 @@ if active_page == "ML Predictions":
                 value=True,
                 key="ml_auto_apply_tuning",
                 help="Turn off to adjust multiple sliders, then click **Apply tuning changes** once.",
+                on_change=projections_filter_changed,
             )
 
         _tune_cols = st.columns([1, 2])
@@ -17244,6 +17299,12 @@ if active_page == "ML Predictions":
                 help="Re-blend projections using current sliders without retraining Random Forest models.",
             ):
                 st.session_state["ml_tuning_apply_requested"] = True
+                try:
+                    from projections_state import mark_projections_filter_pending_sync
+
+                    mark_projections_filter_pending_sync(st.session_state)
+                except Exception:
+                    pass
         with _tune_cols[1]:
             if not st.session_state.get("ml_auto_apply_tuning", True):
                 st.caption("Auto-apply is off — use this button after changing sliders.")
@@ -17382,6 +17443,7 @@ if active_page == "ML Predictions":
                 FANTASY_POSITION_FILTER_OPTIONS,
                 key="ml_position_filter",
                 help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                on_change=projections_filter_changed,
             )
         with _ml_tbl_c2:
             validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
@@ -17390,6 +17452,7 @@ if active_page == "ML Predictions":
                 ML_DISPLAY_SORT_OPTIONS,
                 key="ml_sort_by",
                 help="Display-only — does not regenerate ML projections.",
+                on_change=projections_filter_changed,
             )
 
         if st.session_state.get("ml_predictions_have_run", False):
@@ -17462,6 +17525,7 @@ if active_page == "ML Predictions":
                         key="ml_projection_insight_player",
                         label="Selected Projection Insight player",
                         default_name=ml_display.iloc[0]["Player"] if "Player" in ml_display.columns else None,
+                        on_change=projections_filter_changed,
                     )
                     if selected_ml_row is not None:
                         st.success(make_ml_prediction_summary(selected_ml_row, _ml_insight_stat_from_sort(ml_sort_by)))
@@ -17471,7 +17535,7 @@ if active_page == "ML Predictions":
                     if not age_curve_df.empty:
                         age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
                         if age_stats:
-                            age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat")
+                            age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat", on_change=projections_filter_changed)
                             age_view = age_curve_df[age_curve_df["Stat"] == age_view_stat].rename(columns={"Age Adjustment": "Expected Age Change"})
                             age_curve_table = format_display_table(age_view, rate_cols=["Expected Age Change"])
                             render_output_table(age_curve_table, key="ml_age_curve", file_name="ml_age_curve.csv")
@@ -17479,7 +17543,7 @@ if active_page == "ML Predictions":
                 st.subheader("What Stats Matter Most?")
                 importance_options = [s for s in ML_TARGET_STATS if s in ml_models]
                 if importance_options:
-                    importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat")
+                    importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat", on_change=projections_filter_changed)
                     importance_df = ml_models[importance_stat]["importance"].head(15).copy()
                     importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
                     importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
@@ -17536,6 +17600,9 @@ if active_page == "ML Predictions":
             ),
         )
 
+        flush_projections_filter_edits(st.session_state, st, reason="projections_page_save")
+        if developer_mode_enabled():
+            render_projections_state_debug(st, st.session_state)
         save_page_state(active_page)
         render_page_filters_debug(active_page)
 

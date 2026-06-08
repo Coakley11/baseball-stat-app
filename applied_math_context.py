@@ -192,6 +192,37 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
                 if str(fk).startswith("career_") and str(fk).endswith("_min"):
                     filter_params[str(fk)] = _copy_widget_value(val)
 
+    elif p == "Valuation":
+        try:
+            from valuation_state import canonical_valuation_state, gather_valuation_state, is_valuation_state_key
+
+            canonical = canonical_valuation_state(session_state) or gather_valuation_state(session_state)
+            for fk, val in canonical.items():
+                if is_valuation_state_key(fk):
+                    filter_params[fk] = _copy_widget_value(val)
+            sp = (session_state.get("valuation_state") or {}).get("selected_player")
+            if sp:
+                entity_params["valuation_selected_player"] = str(sp)
+            for fk, val in session_state.items():
+                if is_valuation_state_key(str(fk)) and str(fk) not in filter_params and val is not None:
+                    filter_params[str(fk)] = _copy_widget_value(val)
+        except ImportError:
+            pass
+
+    elif p == "ML Predictions":
+        try:
+            from projections_state import canonical_projections_state, gather_projections_state, is_projections_state_key
+
+            canonical = canonical_projections_state(session_state) or gather_projections_state(session_state)
+            for fk, val in canonical.items():
+                if is_projections_state_key(fk):
+                    filter_params[fk] = _copy_widget_value(val)
+            for fk, val in session_state.items():
+                if is_projections_state_key(str(fk)) and str(fk) not in filter_params and val is not None:
+                    filter_params[str(fk)] = _copy_widget_value(val)
+        except ImportError:
+            pass
+
     elif "draft" in p.lower():
         try:
             from draft_state import canonical_draft_workflow, gather_draft_workflow
@@ -310,6 +341,28 @@ def apply_source_state_to_session(
             from career_totals_state import apply_career_source_state_from_ami
 
             apply_career_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
+        return
+
+    if page == "Valuation":
+        try:
+            from valuation_state import apply_valuation_source_state_from_ami
+
+            apply_valuation_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
+        return
+
+    if page == "ML Predictions":
+        try:
+            from projections_state import apply_projections_source_state_from_ami
+
+            apply_projections_source_state_from_ami(session_state, source_state)
         except ImportError:
             for key, val in {**wp, **filt}.items():
                 if val is not None and val != "":
