@@ -214,6 +214,9 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
     session.setdefault("page_filter_state", {})
     store = session["page_filter_state"]
     curr = normalize_page_key(active_page)
+    if session.pop("_suite_cloud_workspace_applied", None):
+        session["_page_state_last_active"] = curr
+        return
     prev = session.get("_page_state_last_active")
     pending_target = None
     if pending_transfer and isinstance(pending_transfer, dict):

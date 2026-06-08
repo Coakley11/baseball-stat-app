@@ -272,13 +272,15 @@ def pick_restore_session(
     *,
     local_dirty: bool = False,
     prefer_cloud_on_tie: bool = True,
+    cloud_first: bool = True,
 ) -> RestorePickResult:
     """
     Choose restore payload for direct open / cloud re-sync.
 
-    When ``local_dirty`` is False (fresh open, no unsaved edits on this device),
-    the newer timestamp wins; ties favor cloud for cross-device sync.
-    When ``local_dirty`` is True, keep local disk over remote cloud.
+    When ``local_dirty`` is False and ``cloud_first`` is True (default), cloud
+    ``full_session`` is the cross-device source of truth whenever it exists.
+    Local disk is a per-device cache used only when cloud is empty/unavailable
+    or this device has unsaved local edits.
     """
     cloud_epoch = _parse_ts(cloud_ts)
     disk_epoch = _parse_ts(disk_ts)
@@ -295,6 +297,15 @@ def pick_restore_session(
             disk_state,
             "disk",
             "local unsaved edits",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if cloud_first and cloud_state:
+        return RestorePickResult(
+            cloud_state,
+            "cloud",
+            "cloud-first workspace sync",
             cloud_ts,
             disk_ts,
         )

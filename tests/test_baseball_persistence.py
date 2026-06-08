@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from baseball_persistent_state import build_baseball_disk_state
+from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 
 
 class TestBaseballPersistence(unittest.TestCase):
@@ -15,8 +15,8 @@ class TestBaseballPersistence(unittest.TestCase):
             "active_page": "Comparison Tool",
             "page_filter_state": {},
             "sig_player_a_clean": "Juan Soto (NYY)",
-            "sig_player_b_clean": "Aaron Judge (NYY)",
-            "compare_players": ["Juan Soto (NYY)", "Aaron Judge (NYY)"],
+            "sig_player_b_clean": "Francisco Lindor (NYM)",
+            "compare_players": ["Juan Soto (NYY)", "Francisco Lindor (NYM)"],
             "compare_stat": "OPS",
         }
         blob = build_baseball_disk_state(st)
@@ -24,7 +24,38 @@ class TestBaseballPersistence(unittest.TestCase):
         pf = blob.get("page_filter_state") or {}
         cmp = pf.get("Comparison Tool") or {}
         self.assertEqual(cmp.get("sig_player_a_clean"), "Juan Soto (NYY)")
-        self.assertEqual(cmp.get("compare_players"), ["Juan Soto (NYY)", "Aaron Judge (NYY)"])
+        self.assertEqual(
+            cmp.get("compare_players"),
+            ["Juan Soto (NYY)", "Francisco Lindor (NYM)"],
+        )
+
+    def test_apply_disk_state_sets_navigation_and_players(self) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Trend Value",
+            "main_sidebar_page": "Trend Value",
+            "page_filter_state": {"Trend Value": {"trend_players_multi": ["Aaron Judge"]}},
+            "trend_players_multi": ["Aaron Judge"],
+            "_page_state_last_active": "Trend Value",
+        }
+        cloud_state = {
+            "active_page": "Comparison Tool",
+            "page_filter_state": {
+                "Comparison Tool": {
+                    "sig_player_a_clean": "Juan Soto (NYY)",
+                    "sig_player_b_clean": "Francisco Lindor (NYM)",
+                    "compare_players": ["Juan Soto (NYY)", "Francisco Lindor (NYM)"],
+                }
+            },
+        }
+        apply_baseball_disk_state(st, cloud_state)
+        ss = st.session_state
+        self.assertEqual(ss["active_page"], "Comparison Tool")
+        self.assertEqual(ss["main_sidebar_page"], "Comparison Tool")
+        self.assertEqual(ss["_navigate_to_page"], "Comparison Tool")
+        self.assertEqual(ss["sig_player_a_clean"], "Juan Soto (NYY)")
+        self.assertEqual(ss["sig_player_b_clean"], "Francisco Lindor (NYM)")
+        self.assertTrue(ss.get("_suite_cloud_workspace_applied"))
 
 
 if __name__ == "__main__":

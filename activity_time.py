@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
 # Naive ISO strings from legacy writers are treated as UTC.
 _LEGACY_NAIVE_IS_UTC = True
 

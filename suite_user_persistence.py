@@ -251,6 +251,7 @@ def restore_once(
             disk_state,
             disk_ts,
             local_dirty=local_dirty,
+            cloud_first=True,
         )
         state = picked.state
         pick_source = picked.source
@@ -310,12 +311,144 @@ def restore_once(
     st.session_state["_suite_persist_last_restore_at"] = _utc_now_iso()
     st.session_state["_suite_persist_last_restore_source"] = pick_source
     st.session_state["_suite_persist_last_restore_reason"] = pick_reason
+    st.session_state["_suite_persist_restore_applied"] = True
 
     if from_cloud:
         st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
     else:
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
     return True
+
+
+def sync_cloud_workspace_if_newer(
+    st: Any,
+    app_id: str,
+    *,
+    apply_state: Callable[[Any, dict[str, Any]], None],
+) -> bool:
+    """
+    Re-apply cloud full_session when remote workspace is newer than last apply.
+
+    Call before sidebar/widgets on each rerun so refresh and cross-device edits
+    take over without requiring a full browser restart.
+    """
+    try:
+        from suite_cloud_state import (
+            has_resume_query_params,
+            load_cloud_full_session,
+            parse_persist_timestamp,
+            pick_restore_session,
+        )
+    except ImportError:
+        return False
+
+    if has_resume_query_params(st, app_id):
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "resume query params — cloud workspace sync skipped"
+        )
+        return False
+
+    dirty_key = _local_dirty_key(app_id)
+    if st.session_state.get(dirty_key):
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "local unsaved edits — cloud workspace sync skipped"
+        )
+        return False
+
+    cloud_state, cloud_ts = load_cloud_full_session(app_id)
+    if not isinstance(cloud_state, dict) or not cloud_state:
+        return False
+
+    applied_key = _applied_cloud_ts_key(app_id)
+    applied_ts = st.session_state.get(applied_key)
+    cloud_epoch = parse_persist_timestamp(cloud_ts)
+    applied_epoch = parse_persist_timestamp(applied_ts)
+    st.session_state["_suite_persist_cloud_newer_than_applied"] = (
+        cloud_epoch > applied_epoch if cloud_ts else False
+    )
+
+    if applied_ts and cloud_epoch <= applied_epoch:
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "cloud not newer than last applied workspace"
+        )
+        return False
+
+    disk_state, _, disk_ts = _load_raw(app_id)
+    picked = pick_restore_session(
+        cloud_state,
+        cloud_ts,
+        disk_state,
+        disk_ts,
+        local_dirty=False,
+        cloud_first=True,
+    )
+    if not picked.state or picked.source != "cloud":
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            f"cloud workspace sync skipped ({picked.reason})"
+        )
+        return False
+
+    try:
+        apply_state(st, picked.state)
+    except Exception as exc:
+        st.session_state["_suite_persist_restore_skip_reason"] = f"apply_state failed: {exc}"
+        return False
+
+    flag = f"{_SESSION_RESTORED_PREFIX}{app_id}"
+    st.session_state[flag] = True
+    st.session_state[applied_key] = cloud_ts or _utc_now_iso()
+    st.session_state[dirty_key] = False
+    st.session_state["_suite_persist_last_restore_at"] = _utc_now_iso()
+    st.session_state["_suite_persist_last_restore_source"] = picked.source
+    st.session_state["_suite_persist_last_restore_reason"] = picked.reason
+    st.session_state["_suite_persist_debug_cloud_ts"] = cloud_ts
+    st.session_state["_suite_persist_debug_disk_ts"] = disk_ts
+    st.session_state["_suite_persist_debug_pick_source"] = picked.source
+    st.session_state["_suite_persist_debug_pick_reason"] = picked.reason
+    st.session_state["_suite_persist_restore_applied"] = True
+    st.session_state.pop("_suite_persist_restore_skip_reason", None)
+
+    save_user_state(app_id, picked.state)
+    st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+    return True
+
+
+def force_autosave(
+    st: Any,
+    app_id: str,
+    *,
+    build_state: Callable[[Any], dict[str, Any]],
+    reason: str = "",
+) -> bool:
+    """Persist workspace immediately (e.g. after meaningful user action)."""
+    try:
+        import hashlib
+        import json
+
+        from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
+
+        state = build_state(st)
+        blob = json.dumps(state, sort_keys=True, default=str)
+        fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
+        saved_disk = save_user_state(app_id, state)
+        page, summary = session_page_summary(app_id, state)
+        saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
+        if saved_disk or saved_cloud:
+            st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
+            st.session_state[_restored_fp_key(app_id)] = fp
+            st.session_state[_local_dirty_key(app_id)] = False
+            if saved_cloud:
+                _, cloud_ts = load_cloud_full_session(app_id)
+                st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()
+            st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
+            st.session_state["_suite_persist_last_save_disk"] = saved_disk
+            st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
+            st.session_state["_suite_persist_last_save_reason"] = reason or "force_autosave"
+            st.session_state[_SESSION_SAVED_FLASH_KEY] = True
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _parse_ts_simple(ts: str | None) -> float:
@@ -361,6 +494,12 @@ def autosave_if_changed(
             saved_cloud = bool(
                 save_cloud_full_session(app_id, state, page=page, summary=summary)
             )
+            if saved_cloud:
+                from suite_cloud_state import load_cloud_full_session
+
+                _, cloud_ts_after = load_cloud_full_session(app_id)
+                if cloud_ts_after:
+                    st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts_after
         except Exception as exc:
             cloud_err = str(exc)
         if saved_disk or saved_cloud:
@@ -368,7 +507,10 @@ def autosave_if_changed(
             st.session_state[_restored_fp_key(app_id)] = fp
             if saved_cloud:
                 st.session_state[_local_dirty_key(app_id)] = False
-                st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
+                if _applied_cloud_ts_key(app_id) not in st.session_state or not st.session_state.get(
+                    _applied_cloud_ts_key(app_id)
+                ):
+                    st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud

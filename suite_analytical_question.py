@@ -694,6 +694,7 @@ def render_analyze_with_applied_math_sidebar(
     default_question: str = "",
     developer_mode: bool = False,
     session_state: dict[str, Any] | None = None,
+    on_after_send: Callable[[], None] | None = None,
 ) -> None:
     """Always-visible sidebar block: question → Command Center → Applied Intelligence."""
     ss = session_state if session_state is not None else st.session_state
@@ -766,6 +767,11 @@ def render_analyze_with_applied_math_sidebar(
                 st.sidebar.success(
                     "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
                 )
+            if on_after_send is not None and not result.get("duplicate"):
+                try:
+                    on_after_send()
+                except Exception:
+                    log.exception("on_after_send hook failed for %s (%s)", source_app, source_page)
             st.rerun()
 
     if developer_mode:
@@ -783,6 +789,7 @@ def render_applied_math_sidebar_entry(
     context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
     source_state_builder: Callable[[], dict[str, Any] | None] | None = None,
     developer_mode: bool = False,
+    on_after_send: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> None:
     """Render AMI sidebar near the top; log and surface failures in Developer Mode."""
@@ -811,6 +818,7 @@ def render_applied_math_sidebar_entry(
             context_summary="",
             developer_mode=developer_mode,
             session_state=ss,
+            on_after_send=on_after_send,
         )
     except Exception as exc:
         log.exception("Applied Math sidebar failed for %s (%s)", source_app, source_page)

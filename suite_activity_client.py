@@ -152,7 +152,7 @@ def record_activity(
     app: str,
     event: str,
     *,
-    page: str = "",
+    page: str = "",
     metrics: dict[str, Any] | None = None,
     summary: str = "",
     resume_key: str = "",

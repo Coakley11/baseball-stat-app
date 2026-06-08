@@ -470,6 +470,7 @@ try:
     from baseball_persistent_state import (
         autosave_baseball_state,
         default_reset_baseball_session,
+        force_save_baseball_state,
         restore_baseball_disk_state_once,
     )
     from suite_user_persistence import render_reset_controls, show_persistence_messages
@@ -11643,7 +11644,13 @@ def render_contextual_page_nav(
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# Page navigation: consume scheduled navigation BEFORE the sidebar radio is instantiated.
+# Page navigation: re-sync cloud workspace, then consume scheduled navigation BEFORE sidebar radio.
+try:
+    from baseball_persistent_state import sync_baseball_cloud_workspace
+
+    sync_baseball_cloud_workspace(st)
+except Exception:
+    pass
 _consume_scheduled_navigation()
 
 try:
@@ -11700,6 +11707,7 @@ render_applied_math_sidebar_entry(
         if build_source_state
         else None
     ),
+    on_after_send=lambda: force_save_baseball_state(st, reason="applied_math_send"),
 )
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
