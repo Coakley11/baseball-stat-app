@@ -215,7 +215,8 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
     store = session["page_filter_state"]
     curr = normalize_page_key(active_page)
     if session.pop("_suite_cloud_workspace_applied", None):
-        session["_page_state_last_active"] = curr
+        cloud_page = str(session.get("_suite_cloud_target_page") or curr).strip()
+        session["_page_state_last_active"] = cloud_page or curr
         return
     prev = session.get("_page_state_last_active")
     pending_target = None

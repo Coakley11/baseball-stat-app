@@ -11683,6 +11683,28 @@ _selected_page = st.sidebar.radio(
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
 
+_cloud_target = st.session_state.get("_suite_cloud_target_page")
+if _cloud_target:
+    _cloud_page = normalize_page_key(_cloud_target)
+    if _cloud_page != active_page:
+        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _cloud_page
+        st.session_state["active_page"] = _cloud_page
+        active_page = _cloud_page
+        if not st.session_state.get("_suite_page_enforce_rerun"):
+            st.session_state["_suite_page_enforce_rerun"] = True
+            st.rerun()
+    else:
+        st.session_state.pop("_suite_cloud_target_page", None)
+        st.session_state.pop("_suite_page_enforce_rerun", None)
+
+_prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
+if active_page != _prev_persisted_page:
+    try:
+        force_save_baseball_state(st, reason="page_change")
+    except Exception:
+        pass
+    st.session_state["_suite_last_persisted_page"] = active_page
+
 from suite_analytical_question import render_applied_math_sidebar_entry
 
 try:

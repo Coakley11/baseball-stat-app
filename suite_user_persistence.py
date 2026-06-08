@@ -302,7 +302,10 @@ def restore_once(
     except Exception:
         pass
 
-    st.session_state[applied_cloud_key] = cloud_ts
+    if from_cloud:
+        st.session_state[applied_cloud_key] = cloud_ts or _utc_now_iso()
+    elif pick_source == "disk":
+        st.session_state[applied_cloud_key] = disk_ts or _utc_now_iso()
     st.session_state[dirty_key] = False
 
     if from_cloud:
@@ -320,18 +323,67 @@ def restore_once(
     return True
 
 
-def sync_cloud_workspace_if_newer(
+def _session_workspace_page(st: Any) -> str:
+    ss = st.session_state
+    return str(ss.get("active_page") or ss.get("main_sidebar_page") or "").strip()
+
+
+def _record_page_sync_decision(
+    st: Any,
+    app_id: str,
+    *,
+    cloud_state: dict[str, Any],
+    cloud_ts: str | None,
+    disk_state: dict[str, Any],
+    disk_ts: str | None,
+    picked_source: str,
+    picked_reason: str,
+    cloud_first: bool,
+    local_dirty: bool,
+) -> None:
+    try:
+        from suite_cloud_state import parse_persist_timestamp
+    except ImportError:
+        parse_persist_timestamp = _parse_ts_simple  # type: ignore[assignment]
+
+    applied_ts = st.session_state.get(_applied_cloud_ts_key(app_id))
+    cloud_epoch = parse_persist_timestamp(cloud_ts)
+    disk_epoch = parse_persist_timestamp(disk_ts)
+    applied_epoch = parse_persist_timestamp(applied_ts)
+    local_epoch = max(disk_epoch, applied_epoch)
+
+    st.session_state["_suite_page_sync_cloud_first"] = cloud_first
+    st.session_state["_suite_page_sync_cloud_exists"] = bool(cloud_state)
+    st.session_state["_suite_page_sync_local_exists"] = bool(disk_state)
+    st.session_state["_suite_page_sync_local_dirty"] = local_dirty
+    st.session_state["_suite_page_sync_cloud_newer_than_local"] = (
+        cloud_epoch > local_epoch if cloud_ts else False
+    )
+    st.session_state["_suite_persist_debug_cloud_ts"] = cloud_ts
+    st.session_state["_suite_persist_debug_disk_ts"] = disk_ts
+    st.session_state["_suite_persist_debug_pick_source"] = picked_source
+    st.session_state["_suite_persist_debug_pick_reason"] = picked_reason
+    if isinstance(cloud_state, dict):
+        st.session_state["_suite_page_sync_cloud_page"] = cloud_state.get("active_page")
+
+
+def sync_cloud_workspace_before_sidebar(
     st: Any,
     app_id: str,
     *,
     apply_state: Callable[[Any, dict[str, Any]], None],
+    cloud_first: bool = True,
 ) -> bool:
     """
-    Re-apply cloud full_session when remote workspace is newer than last apply.
+    Apply cloud workspace before sidebar widgets render.
 
-    Call before sidebar/widgets on each rerun so refresh and cross-device edits
-    take over without requiring a full browser restart.
+    Re-applies when the cloud page differs from the current session page, when
+    cloud is newer than last apply, or on first open — not only when cloud ts
+    beats applied ts (which restore_once may have already set this run).
     """
+    st.session_state["_suite_persist_app_id"] = app_id
+    st.session_state["_suite_page_sync_restore_attempted"] = True
+
     try:
         from suite_cloud_state import (
             has_resume_query_params,
@@ -340,51 +392,80 @@ def sync_cloud_workspace_if_newer(
             pick_restore_session,
         )
     except ImportError:
+        st.session_state["_suite_persist_restore_skip_reason"] = "cloud module missing"
         return False
 
     if has_resume_query_params(st, app_id):
         st.session_state["_suite_persist_restore_skip_reason"] = (
-            "resume query params — cloud workspace sync skipped"
+            "resume query params — page sync skipped"
         )
         return False
 
     dirty_key = _local_dirty_key(app_id)
-    if st.session_state.get(dirty_key):
+    local_dirty = bool(st.session_state.get(dirty_key))
+    if local_dirty:
         st.session_state["_suite_persist_restore_skip_reason"] = (
-            "local unsaved edits — cloud workspace sync skipped"
+            "local unsaved edits — page sync skipped"
         )
         return False
 
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
-    if not isinstance(cloud_state, dict) or not cloud_state:
-        return False
-
-    applied_key = _applied_cloud_ts_key(app_id)
-    applied_ts = st.session_state.get(applied_key)
-    cloud_epoch = parse_persist_timestamp(cloud_ts)
-    applied_epoch = parse_persist_timestamp(applied_ts)
-    st.session_state["_suite_persist_cloud_newer_than_applied"] = (
-        cloud_epoch > applied_epoch if cloud_ts else False
-    )
-
-    if applied_ts and cloud_epoch <= applied_epoch:
-        st.session_state["_suite_persist_restore_skip_reason"] = (
-            "cloud not newer than last applied workspace"
-        )
-        return False
-
     disk_state, _, disk_ts = _load_raw(app_id)
+    if not isinstance(cloud_state, dict) or not cloud_state:
+        _record_page_sync_decision(
+            st,
+            app_id,
+            cloud_state={},
+            cloud_ts=cloud_ts,
+            disk_state=disk_state,
+            disk_ts=disk_ts,
+            picked_source="none",
+            picked_reason="cloud full_session empty",
+            cloud_first=cloud_first,
+            local_dirty=local_dirty,
+        )
+        st.session_state["_suite_persist_restore_skip_reason"] = "cloud full_session empty"
+        return False
+
     picked = pick_restore_session(
         cloud_state,
         cloud_ts,
         disk_state,
         disk_ts,
         local_dirty=False,
-        cloud_first=True,
+        cloud_first=cloud_first,
     )
+    _record_page_sync_decision(
+        st,
+        app_id,
+        cloud_state=cloud_state,
+        cloud_ts=cloud_ts,
+        disk_state=disk_state,
+        disk_ts=disk_ts,
+        picked_source=picked.source,
+        picked_reason=picked.reason,
+        cloud_first=cloud_first,
+        local_dirty=local_dirty,
+    )
+
     if not picked.state or picked.source != "cloud":
         st.session_state["_suite_persist_restore_skip_reason"] = (
-            f"cloud workspace sync skipped ({picked.reason})"
+            f"page sync skipped ({picked.reason})"
+        )
+        return False
+
+    cloud_page = str(picked.state.get("active_page") or "").strip()
+    current_page = _session_workspace_page(st)
+    applied_key = _applied_cloud_ts_key(app_id)
+    applied_ts = st.session_state.get(applied_key)
+    cloud_epoch = parse_persist_timestamp(cloud_ts)
+    applied_epoch = parse_persist_timestamp(applied_ts)
+    page_mismatch = bool(cloud_page and current_page and cloud_page != current_page)
+    cloud_newer_than_applied = bool(cloud_ts and cloud_epoch > applied_epoch)
+
+    if not page_mismatch and not cloud_newer_than_applied and applied_ts and current_page == cloud_page:
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "cloud page already applied this session"
         )
         return False
 
@@ -401,16 +482,28 @@ def sync_cloud_workspace_if_newer(
     st.session_state["_suite_persist_last_restore_at"] = _utc_now_iso()
     st.session_state["_suite_persist_last_restore_source"] = picked.source
     st.session_state["_suite_persist_last_restore_reason"] = picked.reason
-    st.session_state["_suite_persist_debug_cloud_ts"] = cloud_ts
-    st.session_state["_suite_persist_debug_disk_ts"] = disk_ts
-    st.session_state["_suite_persist_debug_pick_source"] = picked.source
-    st.session_state["_suite_persist_debug_pick_reason"] = picked.reason
     st.session_state["_suite_persist_restore_applied"] = True
+    st.session_state["_suite_cloud_target_page"] = cloud_page
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
 
     save_user_state(app_id, picked.state)
     st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
     return True
+
+
+def sync_cloud_workspace_if_newer(
+    st: Any,
+    app_id: str,
+    *,
+    apply_state: Callable[[Any, dict[str, Any]], None],
+) -> bool:
+    """Backward-compatible alias — page-aware cloud sync before sidebar."""
+    return sync_cloud_workspace_before_sidebar(
+        st,
+        app_id,
+        apply_state=apply_state,
+        cloud_first=True,
+    )
 
 
 def force_autosave(
