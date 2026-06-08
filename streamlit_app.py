@@ -12126,6 +12126,16 @@ if active_page == "Historical Explorer":
     )
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
 
+def career_filter_changed():
+    try:
+        from career_totals_state import sync_career_filter_change
+        from baseball_persistent_state import force_save_baseball_state
+
+        sync_career_filter_change(st.session_state, reason="filter_change")
+        force_save_baseball_state(st, reason="career_edit")
+    except Exception:
+        pass
+
 if active_page == "Career Totals":
     from career_totals_state import (
         commit_career_filters_from_session,
@@ -12157,6 +12167,7 @@ if active_page == "Career Totals":
             min_value=year_min,
             max_value=year_max,
             key="career_year_range_filter",
+            on_change=career_filter_changed,
         )
     with cc2:
         validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
@@ -12164,6 +12175,7 @@ if active_page == "Career Totals":
             "Sort by",
             career_sort_options,
             key="career_sort_stat_filter",
+            on_change=career_filter_changed,
         )
 
     with st.expander("Advanced filters", expanded=False):
@@ -12175,6 +12187,7 @@ if active_page == "Career Totals":
                 "Batting Hand",
                 bats_options_career,
                 key="career_batting_hand_filter",
+                on_change=career_filter_changed,
             )
         with c3:
             validate_state_option(
@@ -12187,6 +12200,7 @@ if active_page == "Career Totals":
                 ["Career Primary Position", "Season Primary Position"],
                 key="career_position_filter_mode",
                 help="Career mode uses each player's full-career primary position from Fielding.csv games. Season mode includes only seasons where the selected position was that player's primary position that year.",
+                on_change=career_filter_changed,
             )
         position_source_col = "careerPrimaryPos" if position_filter_mode == "Career Primary Position" else "primaryPos"
         with c4:
@@ -12196,6 +12210,7 @@ if active_page == "Career Totals":
                 "Position",
                 pos_options_career,
                 key="career_position_filter",
+                on_change=career_filter_changed,
             )
         actual_team_names_career = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
         team_options_career = ["All Teams", "American League", "National League"] + actual_team_names_career
@@ -12204,12 +12219,14 @@ if active_page == "Career Totals":
             "Franchise / League",
             team_options_career,
             key="career_team_filter",
+            on_change=career_filter_changed,
         )
         init_state_once("career_by_team_toggle_filter", False)
         show_career_by_team = st.toggle(
             "Show career totals separately by team",
             key="career_by_team_toggle_filter",
             help="OFF = one row per player with a Primary Team. ON = one row per player/team, and stat minimums are applied to each team row separately.",
+            on_change=career_filter_changed,
         )
 
     filtered_career = batting_df[(batting_df["yearID"] >= range_career[0]) & (batting_df["yearID"] <= range_career[1])].copy()

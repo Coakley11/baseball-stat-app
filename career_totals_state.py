@@ -67,7 +67,11 @@ def record_career_field_write(
         session[f"_career_new_{field}"] = new
 
 
-def _sync_page_filter_career_block(session: dict[str, Any]) -> None:
+def _sync_page_filter_career_block(
+    session: dict[str, Any],
+    *,
+    filters: dict[str, Any] | None = None,
+) -> None:
     pf = session.setdefault("page_filter_state", {})
     if not isinstance(pf, dict):
         return
@@ -81,9 +85,17 @@ def _sync_page_filter_career_block(session: dict[str, Any]) -> None:
             "filters": copy.deepcopy(meta.get("filters") or {}),
             "last_write_reason": meta.get("last_write_reason"),
         }
-    for key in CAREER_FILTER_KEYS:
-        if key in session:
-            block[key] = copy.deepcopy(session[key])
+    filt = filters
+    if filt is None and isinstance(meta, dict) and isinstance(meta.get("filters"), dict):
+        filt = meta["filters"]
+    if isinstance(filt, dict):
+        for key in CAREER_FILTER_KEYS:
+            if key in filt:
+                block[key] = copy.deepcopy(filt[key])
+    else:
+        for key in CAREER_FILTER_KEYS:
+            if key in session:
+                block[key] = copy.deepcopy(session[key])
 
 
 def write_canonical_career_state(
@@ -92,8 +104,9 @@ def write_canonical_career_state(
     filters: dict[str, Any] | None = None,
     reason: str = "",
     local_edit: bool = False,
+    sync_widget_keys: bool = True,
 ) -> dict[str, Any]:
-    """Write canonical career_state and mirror filter widget keys."""
+    """Write canonical career_state; optionally mirror filter widget keys (pre-render only)."""
     filt = dict(filters) if isinstance(filters, dict) else _extract_filters_from_session(session)
     meta = session.get("career_state")
     if not isinstance(meta, dict):
@@ -101,10 +114,14 @@ def write_canonical_career_state(
     meta["filters"] = copy.deepcopy(filt)
     meta["last_write_reason"] = reason or None
     session["career_state"] = meta
-    for key, val in filt.items():
-        session[key] = copy.deepcopy(val)
-        record_career_field_write(session, key, reason or "canonical", new=val)
-    _sync_page_filter_career_block(session)
+    if sync_widget_keys:
+        for key, val in filt.items():
+            session[key] = copy.deepcopy(val)
+            record_career_field_write(session, key, reason or "canonical", new=val)
+    else:
+        for key, val in filt.items():
+            record_career_field_write(session, key, reason or "canonical_meta", new=val)
+    _sync_page_filter_career_block(session, filters=filt)
     if local_edit:
         mark_career_local_edit(session)
     return meta
@@ -210,12 +227,27 @@ def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str,
             filters=inner["filters"],
             reason="page_filter_restore",
             local_edit=False,
+            sync_widget_keys=False,
         )
     return True
 
 
+def sync_career_filter_change(session: dict[str, Any], *, reason: str = "filter_change") -> None:
+    """on_change handler: read widget values, update canonical only (never write widget keys)."""
+    current = _extract_filters_from_session(session)
+    if not current:
+        return
+    write_canonical_career_state(
+        session,
+        filters=current,
+        reason=reason,
+        local_edit=True,
+        sync_widget_keys=False,
+    )
+
+
 def commit_career_filters_from_session(session: dict[str, Any], *, reason: str = "widget_rerun") -> None:
-    """Persist current widget values to canonical career_state (marks dirty when changed)."""
+    """Persist widget values into canonical career_state without mutating widget keys."""
     current = _extract_filters_from_session(session)
     if not current:
         return
@@ -226,6 +258,7 @@ def commit_career_filters_from_session(session: dict[str, Any], *, reason: str =
         filters=current,
         reason=reason,
         local_edit=changed or is_career_locally_dirty(session),
+        sync_widget_keys=False,
     )
 
 

@@ -9,6 +9,7 @@ from applied_math_context import apply_source_state_to_session, build_source_sta
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from career_totals_state import (
     CAREER_DIRTY_KEY,
+    CAREER_FILTER_KEYS,
     apply_career_source_state_from_ami,
     apply_cloud_career_state_if_allowed,
     commit_career_filters_from_session,
@@ -17,6 +18,7 @@ from career_totals_state import (
     prepare_career_totals_filters,
     prepare_career_totals_page,
     restore_career_totals_page_filters,
+    sync_career_filter_change,
     write_canonical_career_state,
 )
 
@@ -155,6 +157,25 @@ class TestCareerTotalsState(unittest.TestCase):
         block = session["page_filter_state"]["Career Totals"]
         self.assertEqual(block["career_sort_stat_filter"], "OPS")
         self.assertEqual(block["career_state"]["filters"]["career_sort_stat_filter"], "OPS")
+
+    def test_commit_after_render_does_not_mutate_widget_keys(self) -> None:
+        """Regression: post-render commit must not assign widget-backed session keys."""
+        session = dict(_SAMPLE_FILTERS)
+        session["career_sort_stat_filter"] = "HR"
+        before = {k: session[k] for k in CAREER_FILTER_KEYS if k in session}
+        commit_career_filters_from_session(session, reason="page_rerun")
+        after = {k: session[k] for k in CAREER_FILTER_KEYS if k in session}
+        self.assertEqual(before, after)
+        self.assertEqual(session["career_state"]["filters"]["career_sort_stat_filter"], "HR")
+
+    def test_sync_career_filter_change_updates_canonical_only(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        write_canonical_career_state(session, filters=_SAMPLE_FILTERS, reason="setup")
+        session["career_sort_stat_filter"] = "RBI"
+        sync_career_filter_change(session, reason="filter_change")
+        self.assertEqual(session["career_sort_stat_filter"], "RBI")
+        self.assertEqual(session["career_state"]["filters"]["career_sort_stat_filter"], "RBI")
+        self.assertTrue(is_career_locally_dirty(session))
 
 
 if __name__ == "__main__":
