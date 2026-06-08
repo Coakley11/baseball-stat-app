@@ -41,7 +41,7 @@ _INSIGHT_KEYS = (
     "_ami_dismissed_insight_ids",
 )
 
-_WORKSPACE_KEYS = ("comparison_state", "trend_state", "career_state", "draft_state")
+_WORKSPACE_KEYS = ("comparison_state", "trend_state", "career_state", "draft_state", "historical_state")
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
@@ -88,15 +88,22 @@ def _page_block(state: dict[str, Any], page_name: str) -> dict[str, Any]:
 
 
 def _historical_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "hist_year",
-        "historical_year_range_filter",
-        "hist_team",
-        "hist_pos",
-        "hist_bats",
-        "historical_sort_stat_filter",
-    )
-    return {k: block[k] for k in keys if k in block}
+    try:
+        from historical_state import _filters_from_block
+
+        return _filters_from_block(block)
+    except ImportError:
+        keys = (
+            "historical_year_range_filter",
+            "historical_sort_stat_filter",
+            "historical_sort_order_filter",
+            "historical_batting_hand_filter",
+            "historical_position_filter_mode",
+            "historical_position_filter",
+            "historical_team_filter",
+            "historical_combine_split_seasons_filter",
+        )
+        return {k: block[k] for k in keys if k in block}
 
 
 def _career_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
@@ -120,6 +127,8 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
     trend_chart_player = trend_meta.get("chart_player") or trend_block.get("single_trend_dashboard_player")
     career_meta = state.get("career_state") if isinstance(state.get("career_state"), dict) else {}
     career_filters = career_meta.get("filters") or _career_filter_summary(career_block) or None
+    hist_meta = state.get("historical_state") if isinstance(state.get("historical_state"), dict) else {}
+    historical_filters = hist_meta.get("filters") or _historical_filter_summary(hist_block) or None
     draft_meta = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
     draft_workflow = None
     if draft_meta:
@@ -145,8 +154,8 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         "comparison_player_a": cmp_meta.get("player_a") or cmp_block.get("sig_player_a_clean"),
         "comparison_player_b": cmp_meta.get("player_b") or cmp_block.get("sig_player_b_clean"),
         "trend_players": trend_block.get("trend_players_multi"),
-        "historical_filters": _historical_filter_summary(hist_block) or None,
         "career_filters": career_filters,
+        "historical_filters": historical_filters,
         "draft_state": {
             k: draft_block[k]
             for k in ("room_your_team", "room_team_count", "room_rounds", "room_format")
@@ -290,6 +299,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 clear_draft_local_edit(ss)
             except ImportError:
                 pass
+            try:
+                from historical_state import clear_historical_local_edit
+
+                clear_historical_local_edit(ss)
+            except ImportError:
+                pass
             if active == "Comparison Tool":
                 restore_comparison_page_filters(ss, ss["page_filter_state"])
             elif active == "Trend Value":
@@ -376,6 +391,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
+    try:
+        from historical_state import apply_cloud_historical_state_if_allowed
+
+        apply_cloud_historical_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -435,6 +457,12 @@ def autosave_baseball_state(st: Any) -> None:
                 clear_draft_local_edit(st.session_state)
             except ImportError:
                 pass
+            try:
+                from historical_state import clear_historical_local_edit
+
+                clear_historical_local_edit(st.session_state)
+            except ImportError:
+                pass
     except ImportError:
         pass
 
@@ -472,6 +500,12 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from draft_state import clear_draft_local_edit
 
             clear_draft_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from historical_state import clear_historical_local_edit
+
+            clear_historical_local_edit(st.session_state)
         except ImportError:
             pass
     return saved

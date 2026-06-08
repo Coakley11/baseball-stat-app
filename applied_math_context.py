@@ -143,16 +143,27 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
         snap = session_state.get("_ami_historical_snapshot")
         if isinstance(snap, dict):
             chart_params["historical_snapshot"] = _copy_widget_value(snap)
-        for fk in (
-            "historical_year_range_filter",
-            "historical_sort_stat_filter",
-            "historical_sort_order_filter",
-            "historical_batting_hand_filter",
-            "historical_position_filter",
-            "historical_team_filter",
-        ):
-            if fk in session_state and session_state[fk] is not None:
-                filter_params[fk] = _copy_widget_value(session_state[fk])
+        try:
+            from historical_state import canonical_historical_filters, gather_historical_filters, is_historical_state_key
+
+            canonical = canonical_historical_filters(session_state) or gather_historical_filters(session_state)
+            for fk, val in canonical.items():
+                if is_historical_state_key(fk):
+                    filter_params[fk] = _copy_widget_value(val)
+            for fk, val in session_state.items():
+                if is_historical_state_key(str(fk)) and str(fk) not in filter_params and val is not None:
+                    filter_params[str(fk)] = _copy_widget_value(val)
+        except ImportError:
+            for fk in (
+                "historical_year_range_filter",
+                "historical_sort_stat_filter",
+                "historical_sort_order_filter",
+                "historical_batting_hand_filter",
+                "historical_position_filter",
+                "historical_team_filter",
+            ):
+                if fk in session_state and session_state[fk] is not None:
+                    filter_params[fk] = _copy_widget_value(session_state[fk])
 
     elif p == "Career Totals":
         try:
@@ -278,6 +289,20 @@ def apply_source_state_to_session(
             for key, val in {**wp, **filt}.items():
                 if val is not None and val != "":
                     session_state[key] = copy.deepcopy(val)
+        return
+
+    if page == "Historical Explorer":
+        try:
+            from historical_state import apply_historical_source_state_from_ami
+
+            apply_historical_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
+            snap = chart.get("historical_snapshot")
+            if isinstance(snap, dict):
+                session_state["_ami_historical_snapshot"] = copy.deepcopy(snap)
         return
 
     if page == "Career Totals":

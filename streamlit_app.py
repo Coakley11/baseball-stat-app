@@ -11959,6 +11959,18 @@ except Exception:
     pass
 
 if active_page == "Historical Explorer":
+    from historical_state import (
+        flush_historical_filter_edits,
+        prepare_historical_explorer_filters,
+        prepare_historical_explorer_page,
+        prepare_historical_multiselect_filter,
+        prepare_historical_year_range,
+        render_historical_state_debug,
+    )
+
+    prepare_historical_explorer_page(st.session_state)
+    prepare_historical_explorer_filters(st.session_state)
+
     render_section_header(
         "🔎 Historical Explorer",
         "Find individual player seasons. Split-team seasons can stay as separate team rows or be combined into one primary-team season row."
@@ -11971,6 +11983,12 @@ if active_page == "Historical Explorer":
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
     with hc1:
+        prepare_historical_year_range(
+            st.session_state,
+            year_min,
+            year_max,
+            (default_start_hist, year_max),
+        )
         validate_slider_range(
             "historical_year_range_filter",
             year_min,
@@ -11982,6 +12000,7 @@ if active_page == "Historical Explorer":
             min_value=year_min,
             max_value=year_max,
             key="historical_year_range_filter",
+            on_change=historical_filter_changed,
         )
     with hc2:
         validate_state_option("historical_sort_stat_filter", sort_options_hist, "HR")
@@ -11989,6 +12008,7 @@ if active_page == "Historical Explorer":
             "Sort by",
             sort_options_hist,
             key="historical_sort_stat_filter",
+            on_change=historical_filter_changed,
         )
     with hc3:
         validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
@@ -11996,17 +12016,25 @@ if active_page == "Historical Explorer":
             "Order",
             ["Descending", "Ascending"],
             key="historical_sort_order_filter",
+            on_change=historical_filter_changed,
         )
 
     with st.expander("Advanced filters", expanded=False):
         c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
             bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
+            prepare_historical_multiselect_filter(
+                st.session_state,
+                "historical_batting_hand_filter",
+                bats_options,
+                bats_options,
+            )
             validate_multiselect_options("historical_batting_hand_filter", bats_options, bats_options)
             hist_bats = st.multiselect(
                 "Batting Hand",
                 bats_options,
                 key="historical_batting_hand_filter",
+                on_change=historical_filter_changed,
             )
         with c_mode:
             validate_state_option(
@@ -12019,30 +12047,46 @@ if active_page == "Historical Explorer":
                 ["Season Primary Position", "Career Primary Position"],
                 key="historical_position_filter_mode",
                 help="Season mode filters by the player’s primary position for that season. Career mode filters by the player’s full-career primary position from Fielding.csv games.",
+                on_change=historical_filter_changed,
             )
         hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
         with c3:
             pos_options = _hist_explorer_pos_options(hist_position_source_col)
+            prepare_historical_multiselect_filter(
+                st.session_state,
+                "historical_position_filter",
+                pos_options,
+                pos_options,
+            )
             validate_multiselect_options("historical_position_filter", pos_options, pos_options)
             hist_pos = st.multiselect(
                 "Primary Position",
                 pos_options,
                 key="historical_position_filter",
+                on_change=historical_filter_changed,
             )
         with c4:
             actual_team_names = _hist_explorer_franchise_names_for_teams()
             hist_team_options = ["All Teams", "American League", "National League"] + actual_team_names
+            prepare_historical_multiselect_filter(
+                st.session_state,
+                "historical_team_filter",
+                hist_team_options,
+                ["All Teams"],
+            )
             validate_multiselect_options("historical_team_filter", hist_team_options, ["All Teams"])
             hist_teams = st.multiselect(
                 "Franchise / League",
                 hist_team_options,
                 key="historical_team_filter",
+                on_change=historical_filter_changed,
             )
         init_state_once("historical_combine_split_seasons_filter", False)
         combine_split_seasons = st.toggle(
             "Combine split-team seasons into one primary-team row",
             key="historical_combine_split_seasons_filter",
             help="OFF = one row per player/year/team. ON = one row per player/year, with Team assigned to the team where he had the most games/AB in that season.",
+            on_change=historical_filter_changed,
         )
 
     hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
@@ -12093,7 +12137,7 @@ if active_page == "Historical Explorer":
     else:
         hist["displayPosition"] = ""
 
-    hist = apply_stat_min_filters(hist, "hist")
+    hist = apply_stat_min_filters(hist, "hist", on_change=historical_filter_changed)
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
 
@@ -12170,6 +12214,9 @@ if active_page == "Historical Explorer":
         transfer_name_col="fullName",
         default_rank_stat=hist_sort_stat,
     )
+    flush_historical_filter_edits(st.session_state, st, reason="historical_page_save")
+    if developer_mode_enabled():
+        render_historical_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
@@ -12178,6 +12225,15 @@ if active_page == "Historical Explorer":
         hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
     )
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
+
+def historical_filter_changed():
+    try:
+        from historical_state import mark_historical_filter_pending_sync
+
+        mark_historical_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
 
 def career_filter_changed():
     try:
