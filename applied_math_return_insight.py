@@ -364,8 +364,22 @@ def build_return_resume_key(
 
     if app == "baseball":
         if page == "Comparison Tool":
-            pa = ent.get("player_a_label") or wp.get("sig_player_a_clean")
-            pb = ent.get("player_b_label") or wp.get("sig_player_b_clean")
+            pa = (
+                ent.get("player_a_label")
+                or wp.get("sig_player_a_clean")
+                or ent.get("player_a")
+                or ss.get("player_a")
+            )
+            pb = (
+                ent.get("player_b_label")
+                or wp.get("sig_player_b_clean")
+                or ent.get("player_b")
+                or ss.get("player_b")
+            )
+            cp = ent.get("compare_players") or wp.get("compare_players")
+            if (not pa or not pb) and isinstance(cp, list) and len(cp) >= 2:
+                pa = pa or cp[0]
+                pb = pb or cp[1]
             if pa and pb:
                 return f"compare:{pa}:{pb}"
         if page == "Trend Value":
@@ -524,6 +538,49 @@ def _insight_is_dismissed(st: Any, insight_id: str) -> bool:
     return bool(iid and iid in _get_dismissed_insight_ids(st))
 
 
+def _query_param(st: Any, name: str) -> str:
+    try:
+        raw = st.query_params.get(name)
+    except Exception:
+        return ""
+    if raw is None:
+        return ""
+    if isinstance(raw, list):
+        return str(raw[0] or "").strip()
+    return str(raw).strip()
+
+
+def insight_return_query_id(st: Any) -> str:
+    """suite_ami_insight query param when returning from Applied Math."""
+    return _query_param(st, "suite_ami_insight")
+
+
+def _record_insight_return_diagnostics(st: Any, *, phase: str, insight: dict[str, Any] | None = None) -> None:
+    """?dev=1 trace for AMI return → source app insight card."""
+    ss = st.session_state
+    url_iid = insight_return_query_id(st)
+    pending = insight if isinstance(insight, dict) else _pending_insight_valid(st)
+    scope = insight_page_scope_decision(
+        str(ss.get("_suite_persist_app_id") or pending.get("source_app") or "baseball"),
+        str(ss.get("active_page") or ""),
+        pending,
+    ) if pending else {}
+    ss["_ami_insight_return_phase"] = phase
+    ss["insight_return_detected"] = bool(url_iid)
+    ss["insight_source_page_raw"] = (
+        pending.get("source_page") if pending else scope.get("source_page_raw")
+    )
+    ss["insight_source_page_normalized"] = scope.get("source_page_normalized")
+    ss["current_page_normalized"] = scope.get("current_page_normalized")
+    ss["should_render_insight_on_page"] = scope.get("should_render_insight_on_page")
+    ss["render_skip_reason"] = scope.get("render_skip_reason")
+    ss["hydrate_attempted"] = ss.get("_ami_insight_hydrate_attempted")
+    ss["hydrate_success"] = ss.get("_ami_insight_hydrate_success")
+    ss["hydrate_source"] = ss.get("_ami_insight_hydrate_source")
+    ss["pending_insight_exists"] = bool(pending.get("conclusion") or pending.get("question"))
+    ss["insight_card_rendered"] = bool(ss.get("_ami_insight_card_rendered"))
+
+
 def _stage_insight_trace(
     st: Any,
     *,
@@ -547,6 +604,7 @@ def _stage_insight_trace(
     if isinstance(insight, dict):
         st.session_state["_ami_insight_active_id"] = insight.get("insight_id") or ""
         st.session_state["_ami_insight_active_question_id"] = insight.get("question_id") or ""
+    _record_insight_return_diagnostics(st, phase="trace", insight=insight)
 
 
 def load_latest_applied_math_insight_for_app(
@@ -605,22 +663,10 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
     """
     key = str(app_key or "").strip().lower()
     st.session_state["_ami_insight_hydrate_attempted"] = True
-
-    def _qp(name: str) -> str:
-        try:
-            raw = st.query_params.get(name)
-        except Exception:
-            return ""
-        if raw is None:
-            return ""
-        if isinstance(raw, list):
-            return str(raw[0] or "").strip()
-        return str(raw).strip()
-
-    url_iid = _qp("suite_ami_insight")
+    url_iid = insight_return_query_id(st)
     if url_iid:
-        applied = apply_ami_insight_from_query(st, key)
-        if applied:
+        st.session_state["_ami_insight_return_preserve"] = True
+        if apply_ami_insight_from_query(st, key, force=True):
             pending = _pending_insight_valid(st)
             if pending:
                 _stage_insight_trace(
@@ -631,16 +677,23 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
                     loaded_from_url=True,
                 )
                 st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+                _record_insight_return_diagnostics(st, phase="hydrate_url", insight=pending)
                 return True
 
     pending = _pending_insight_valid(st)
     if pending:
+        url_iid = insight_return_query_id(st)
+        pending_iid = str(pending.get("insight_id") or "").strip()
+        if url_iid and pending_iid and pending_iid != url_iid:
+            if apply_ami_insight_from_query(st, key, force=True):
+                pending = _pending_insight_valid(st)
         _stage_insight_trace(
             st,
             hydrate_success=True,
             hydrate_source="session",
             insight=pending,
         )
+        _record_insight_return_diagnostics(st, phase="hydrate_session", insight=pending)
         return True
 
     dismissed = _get_dismissed_insight_ids(st)
@@ -648,13 +701,16 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
     if not latest:
         st.session_state["_ami_insight_hydrate_success"] = False
         st.session_state["_ami_insight_hydrate_source"] = "none"
+        _record_insight_return_diagnostics(st, phase="hydrate_none")
         return False
 
     iid = str(latest.get("insight_id") or "").strip()
     st.session_state[SESSION_PENDING_KEY] = latest
     st.session_state[SESSION_RETURN_PAGE_KEY] = latest.get("source_page") or ""
 
-    source_state = _resolve_return_source_state(st, key, latest, question_id_qp=_qp("suite_ai_question_id"))
+    source_state = _resolve_return_source_state(
+        st, key, latest, question_id_qp=_query_param(st, "suite_ai_question_id")
+    )
     if isinstance(source_state, dict) and source_state:
         st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
         apply_return_source_state(st, key, source_state)
@@ -668,6 +724,7 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
     )
     st.session_state["_ami_hydrated_insight_id"] = iid
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+    _record_insight_return_diagnostics(st, phase="hydrate_cloud", insight=latest)
     return True
 
 
@@ -707,17 +764,22 @@ def render_insight_sync_debug(st: Any) -> None:
             pending,
         )
     decision_rows = {
-        "hydrate_attempted": ss.get("_ami_insight_hydrate_attempted"),
-        "hydrate_success": ss.get("_ami_insight_hydrate_success"),
-        "hydrate_source": ss.get("_ami_insight_hydrate_source"),
+        "insight_return_detected": ss.get("insight_return_detected"),
+        "insight_source_page_raw": ss.get("insight_source_page_raw") or scope.get("source_page_raw"),
+        "insight_source_page_normalized": ss.get("insight_source_page_normalized") or scope.get("source_page_normalized"),
+        "current_page_normalized": ss.get("current_page_normalized") or scope.get("current_page_normalized"),
+        "should_render_insight_on_page": ss.get("should_render_insight_on_page", scope.get("should_render_insight_on_page")),
+        "render_skip_reason": ss.get("render_skip_reason") or scope.get("render_skip_reason"),
+        "hydrate_attempted": ss.get("hydrate_attempted", ss.get("_ami_insight_hydrate_attempted")),
+        "hydrate_success": ss.get("hydrate_success", ss.get("_ami_insight_hydrate_success")),
+        "hydrate_source": ss.get("hydrate_source", ss.get("_ami_insight_hydrate_source")),
+        "pending_insight_exists": ss.get("pending_insight_exists", bool(pending.get("conclusion"))),
+        "insight_card_rendered": ss.get("insight_card_rendered", ss.get("_ami_insight_card_rendered")),
+        "insight_return_phase": ss.get("_ami_insight_return_phase"),
+        "insight_return_preserve": ss.get("_ami_insight_return_preserve"),
         "render_attempted": ss.get("_ami_insight_render_attempted"),
         "render_success": ss.get("_ami_insight_render_success"),
         "render_skipped_reason": ss.get("_ami_insight_render_skipped_reason"),
-        "insight.source_page_raw": scope.get("source_page_raw"),
-        "insight.source_page_normalized": scope.get("source_page_normalized"),
-        "current_page_normalized": scope.get("current_page_normalized"),
-        "should_render_insight_on_page": scope.get("should_render_insight_on_page"),
-        "render_skip_reason": scope.get("render_skip_reason"),
     }
 
     with st.sidebar.expander("Insight sync trace", expanded=True):
@@ -748,7 +810,12 @@ def _resolve_return_source_state(
 ) -> dict[str, Any]:
     """Best-effort source_state from insight blob, return_context, or question send snapshot."""
     source_state = insight.get("source_state") or insight.get("return_context") or {}
-    if isinstance(source_state, dict) and source_state.get("widget_params"):
+    if isinstance(source_state, dict) and (
+        source_state.get("source_page")
+        or source_state.get("entity_params")
+        or source_state.get("page_params")
+        or "widget_params" in source_state
+    ):
         return dict(source_state)
     qid = str(insight.get("question_id") or question_id_qp or "").strip()
     if qid:
@@ -820,51 +887,56 @@ def stage_pending_insight(st: Any, insight: AppliedMathInsight | dict[str, Any],
         st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(return_context)
 
 
-def apply_ami_insight_from_query(st: Any, app_key: str) -> bool:
+def apply_ami_insight_from_query(st: Any, app_key: str, *, force: bool = False) -> bool:
     """On source app load: hydrate pending insight from ?suite_ami_insight= (cloud-backed)."""
-
-    def _qp(name: str) -> str:
-        try:
-            raw = st.query_params.get(name)
-        except Exception:
-            return ""
-        if raw is None:
-            return ""
-        if isinstance(raw, list):
-            return str(raw[0] or "").strip()
-        return str(raw).strip()
-
-    iid = _qp("suite_ami_insight")
+    iid = insight_return_query_id(st)
     if not iid:
         return False
 
+    st.session_state["_ami_insight_return_preserve"] = True
+    st.session_state["insight_return_detected"] = True
+
     prev = str(st.session_state.get("_ami_hydrated_insight_id") or "").strip()
-    if prev == iid and isinstance(st.session_state.get(SESSION_PENDING_KEY), dict):
+    pending = st.session_state.get(SESSION_PENDING_KEY)
+    pending_iid = str(pending.get("insight_id") or "").strip() if isinstance(pending, dict) else ""
+    if (
+        not force
+        and prev == iid
+        and pending_iid == iid
+        and _pending_insight_valid(st)
+    ):
+        _record_insight_return_diagnostics(st, phase="url_skip_already_loaded", insight=pending if isinstance(pending, dict) else None)
         return False
 
     insight = load_applied_math_insight(iid, source_app=app_key)
     if not insight:
         insight = {"insight_id": iid, "conclusion": "Applied Math insight loaded.", "question": ""}
 
-    st.session_state[SESSION_PENDING_KEY] = insight
-    st.session_state[SESSION_RETURN_PAGE_KEY] = (
-        _qp("suite_page") or insight.get("source_page") or ""
+    page = _normalize_insight_page(
+        _query_param(st, "suite_page") or str(insight.get("source_page") or "")
     )
+    if page:
+        insight["source_page"] = page
+
+    st.session_state[SESSION_PENDING_KEY] = insight
+    st.session_state[SESSION_RETURN_PAGE_KEY] = page or insight.get("source_page") or ""
 
     source_state = _resolve_return_source_state(
         st,
         app_key,
         insight if isinstance(insight, dict) else {},
-        question_id_qp=_qp("suite_ai_question_id"),
+        question_id_qp=_query_param(st, "suite_ai_question_id"),
     )
 
     if isinstance(source_state, dict) and source_state:
+        if page and not source_state.get("source_page"):
+            source_state["source_page"] = page
         st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(source_state)
         apply_return_source_state(st, app_key, source_state)
     elif st.session_state.get(SESSION_RETURN_PAGE_KEY):
-        page = st.session_state[SESSION_RETURN_PAGE_KEY]
-        st.session_state["_navigate_to_page"] = page
-        st.session_state["_skip_page_restore_for"] = page
+        ret_page = st.session_state[SESSION_RETURN_PAGE_KEY]
+        st.session_state["_navigate_to_page"] = ret_page
+        st.session_state["_skip_page_restore_for"] = ret_page
 
     st.session_state["_ami_hydrated_insight_id"] = iid
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
@@ -875,6 +947,7 @@ def apply_ami_insight_from_query(st: Any, app_key: str) -> bool:
         insight=insight if isinstance(insight, dict) else {},
         loaded_from_url=True,
     )
+    _record_insight_return_diagnostics(st, phase="url_applied", insight=insight)
     return True
 
 
@@ -949,19 +1022,23 @@ def render_suite_applied_math_insight_for_page(
         return False
     scope = insight_page_scope_decision(source_app, source_page, insight)
     st.session_state["_ami_insight_scope_decision"] = scope
+    _record_insight_return_diagnostics(st, phase="render_check", insight=insight)
     if not scope.get("should_render_insight_on_page"):
         st.session_state["_ami_insight_render_skipped_reason"] = (
             scope.get("render_skip_reason")
             or f"page mismatch (current={source_page!r}, insight={insight.get('source_page')!r})"
         )
         st.session_state["_ami_insight_render_success"] = False
+        st.session_state["_ami_insight_card_rendered"] = False
         return False
     ok = render_applied_math_insight_panel(st)
     st.session_state["_ami_insight_render_success"] = ok
+    st.session_state["_ami_insight_card_rendered"] = ok
     if not ok:
         st.session_state["_ami_insight_render_skipped_reason"] = "panel render failed"
     else:
         st.session_state.pop("_ami_insight_render_skipped_reason", None)
+    _record_insight_return_diagnostics(st, phase="render_done", insight=insight)
     return ok
 
 
@@ -995,16 +1072,25 @@ def render_return_to_source_button(
     if not ss and return_context and isinstance(return_context.get("widget_params"), dict):
         ss = dict(return_context)
     if not ss and return_context:
+        page = _normalize_insight_page(
+            str(data.get("source_page") or return_context.get("page") or "")
+        )
+        ent: dict[str, Any] = {
+            k: v
+            for k, v in return_context.items()
+            if k in ("player_a", "player_b", "player", "team", "opponent", "holdings", "compare_players")
+        }
+        if page == "Comparison Tool":
+            if ent.get("player_a") and not ent.get("player_a_label"):
+                ent["player_a_label"] = ent["player_a"]
+            if ent.get("player_b") and not ent.get("player_b_label"):
+                ent["player_b_label"] = ent["player_b"]
         ss = {
             "source_app": app,
-            "source_page": data.get("source_page") or return_context.get("page") or "",
-            "entity_params": {
-                k: v
-                for k, v in return_context.items()
-                if k in ("player_a", "player_b", "player", "team", "opponent", "holdings")
-            },
-            "widget_params": {},
-            "page_params": {"page": data.get("source_page") or return_context.get("page") or ""},
+            "source_page": page,
+            "entity_params": ent,
+            "widget_params": dict(return_context.get("widget_params") or {}),
+            "page_params": {"page": page},
         }
     qid = str(data.get("question_id") or "").strip()
     if qid and not ss:
@@ -1016,6 +1102,11 @@ def render_return_to_source_button(
             pass
 
     blob_data = dict(data)
+    page = _normalize_insight_page(str(data.get("source_page") or ss.get("source_page") or ""))
+    if page:
+        blob_data["source_page"] = page
+        if ss and not ss.get("source_page"):
+            ss["source_page"] = page
     if ss:
         blob_data["source_state"] = ss
         blob_data["return_context"] = ss

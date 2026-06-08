@@ -196,8 +196,11 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     else:
         ss.setdefault("page_filter_state", {})
 
+    preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
+            continue
+        if preserve_insight and key in _INSIGHT_KEYS:
             continue
         val = state[key]
         if key == "page_filter_state" and isinstance(val, dict):
