@@ -21,6 +21,10 @@ class TestBaseballPersistence(unittest.TestCase):
         }
         blob = build_baseball_disk_state(st)
         self.assertEqual(blob.get("active_page"), "Comparison Tool")
+        meta = blob.get("baseball_workspace_state") or {}
+        self.assertEqual(meta.get("page"), "Comparison Tool")
+        self.assertEqual(meta.get("schema_version"), 1)
+        self.assertTrue(meta.get("device_id"))
         pf = blob.get("page_filter_state") or {}
         cmp = pf.get("Comparison Tool") or {}
         self.assertEqual(cmp.get("sig_player_a_clean"), "Juan Soto (NYY)")

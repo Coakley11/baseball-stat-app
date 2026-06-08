@@ -471,12 +471,9 @@ try:
         autosave_baseball_state,
         default_reset_baseball_session,
         force_save_baseball_state,
-        restore_baseball_disk_state_once,
     )
-    from suite_user_persistence import render_reset_controls, show_persistence_messages
+    from suite_user_persistence import render_reset_controls
 
-    restore_baseball_disk_state_once(st)
-    show_persistence_messages(st)
     render_reset_controls(
         st,
         "baseball",
@@ -11644,11 +11641,17 @@ def render_contextual_page_nav(
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# Page navigation: re-sync cloud workspace, then consume scheduled navigation BEFORE sidebar radio.
+# Page navigation: authoritative workspace sync, then consume scheduled navigation BEFORE sidebar radio.
 try:
-    from baseball_persistent_state import sync_baseball_cloud_workspace
+    from baseball_persistent_state import prepare_baseball_workspace
 
-    sync_baseball_cloud_workspace(st)
+    prepare_baseball_workspace(st)
+except Exception:
+    pass
+try:
+    from suite_user_persistence import show_persistence_messages
+
+    show_persistence_messages(st)
 except Exception:
     pass
 _consume_scheduled_navigation()
@@ -11699,10 +11702,11 @@ if _cloud_target:
 
 _prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
 if active_page != _prev_persisted_page:
-    try:
-        force_save_baseball_state(st, reason="page_change")
-    except Exception:
-        pass
+    if not st.session_state.get("_cloud_workspace_restored_this_run"):
+        try:
+            force_save_baseball_state(st, reason="page_change")
+        except Exception:
+            pass
     st.session_state["_suite_last_persisted_page"] = active_page
 
 from suite_analytical_question import render_applied_math_sidebar_entry
@@ -17112,6 +17116,13 @@ try:
             st.session_state.pop("_suite_persist_insight_dirty", None)
         except Exception:
             pass
+except Exception:
+    pass
+
+try:
+    from suite_user_persistence import clear_workspace_autosave_block
+
+    clear_workspace_autosave_block(st, "baseball")
 except Exception:
     pass
 
