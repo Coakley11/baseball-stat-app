@@ -424,6 +424,12 @@ def render_comparison_state_debug(
         "sync_reason": session.get("_comparison_sync_reason"),
         "chart_players_used": selected_labels or session.get("compare_players"),
     }
+    chart_rows = {
+        "compare_year_range_raw": session.get("_dev_compare_year_range_raw"),
+        "compare_year_range_sanitized": session.get("_dev_compare_year_range_sanitized"),
+        "compare_year_range": session.get("compare_year_range"),
+        "compare_x_axis_mode": session.get("compare_x_axis_mode"),
+    }
 
     with st.sidebar.expander("Comparison Tool state", expanded=True):
         st.caption("Canonical comparison_state drives top multiselect + bottom sig tests.")
@@ -433,6 +439,10 @@ def render_comparison_state_debug(
                 st.text(f"{k}: {v}")
         st.markdown("**Canonical**")
         for k, v in canonical_rows.items():
+            if v is not None and v != "":
+                st.text(f"{k}: {v}")
+        st.markdown("**Chart filters**")
+        for k, v in chart_rows.items():
             if v is not None and v != "":
                 st.text(f"{k}: {v}")
         st.markdown("**Stat test (sig A/B)**")

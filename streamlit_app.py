@@ -10955,19 +10955,18 @@ def validate_multiselect_options(key, options, default=None):
 
 def validate_slider_range(key, min_value, max_value, default=None):
     """Range slider: init once; clamp stored tuple into bounds."""
+    from year_range_state import sanitize_year_range
+
+    min_value = int(min_value)
+    max_value = int(max_value)
     if default is None:
-        default = (int(min_value), int(max_value))
-    lo_def, hi_def = default
-    if key not in st.session_state:
-        st.session_state[key] = (int(lo_def), int(hi_def))
+        default = (min_value, max_value)
+    raw = st.session_state.get(key) if key in st.session_state else None
+    sanitized = sanitize_year_range(raw, min_value, max_value, default)
+    if sanitized is None:
+        st.session_state[key] = (min_value, max_value)
     else:
-        cur = st.session_state.get(key)
-        if not isinstance(cur, (tuple, list)) or len(cur) != 2:
-            st.session_state[key] = (int(lo_def), int(hi_def))
-        else:
-            lo = max(int(min_value), min(int(cur[0]), int(max_value)))
-            hi = max(lo, min(int(cur[1]), int(max_value)))
-            st.session_state[key] = (lo, hi)
+        st.session_state[key] = sanitized
 
 
 def validate_number_state(key, default, min_value=None, max_value=None, as_int=True):
@@ -12614,27 +12613,37 @@ if active_page == "Comparison Tool":
         )
         compare_age_range = (16, 50)
         if compare_x_axis_mode == "Season Year":
-            _saved_cmp_year_range = st.session_state.get("compare_year_range")
-            if (
-                isinstance(_saved_cmp_year_range, tuple)
-                and len(_saved_cmp_year_range) == 2
-                and (_saved_cmp_year_range[0] < compare_year_range[0] or _saved_cmp_year_range[1] > compare_year_range[1])
-            ):
-                st.session_state.pop("compare_year_range", None)
-            validate_slider_range(
-                "compare_year_range",
-                compare_year_range[0],
-                compare_year_range[1],
-                compare_year_range,
+            from year_range_state import sanitize_year_range
+
+            _slider_min = int(compare_year_range[0])
+            _slider_max = int(compare_year_range[1])
+            _default_cmp_year_range = (_slider_min, _slider_max)
+            _raw_cmp_year_range = st.session_state.get("compare_year_range")
+            _sanitized_cmp_year_range = sanitize_year_range(
+                _raw_cmp_year_range,
+                _slider_min,
+                _slider_max,
+                _default_cmp_year_range,
             )
-            compare_year_range = st.slider(
-                "Season Year Range",
-                min_value=compare_year_range[0],
-                max_value=compare_year_range[1],
-                key="compare_year_range",
-                on_change=compare_settings_changed,
-                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
-            )
+            st.session_state["_dev_compare_year_range_raw"] = _raw_cmp_year_range
+            st.session_state["_dev_compare_year_range_sanitized"] = _sanitized_cmp_year_range
+            if _slider_min >= _slider_max:
+                compare_year_range = (_slider_min, _slider_max)
+                st.session_state["compare_year_range"] = compare_year_range
+                st.caption(
+                    f"Season year range fixed to {_slider_min} "
+                    "(selected player data has a single season year)."
+                )
+            else:
+                st.session_state["compare_year_range"] = _sanitized_cmp_year_range
+                compare_year_range = st.slider(
+                    "Season Year Range",
+                    min_value=_slider_min,
+                    max_value=_slider_max,
+                    key="compare_year_range",
+                    on_change=compare_settings_changed,
+                    help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
+                )
         else:
             validate_slider_range("compare_age_range", 16, 50, (16, 50))
             compare_age_range = st.slider(
