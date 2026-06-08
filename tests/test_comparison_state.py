@@ -7,11 +7,15 @@ import unittest
 from comparison_state import (
     COMPARISON_DIRTY_KEY,
     clear_comparison_local_edit,
+    ensure_compare_multiselect,
     gather_comparison_players,
     is_comparison_locally_dirty,
+    mark_comparison_local_edit,
     normalize_compare_label,
+    prepare_comparison_chart_options,
     prepare_comparison_tool_page,
     reconcile_compare_player_list,
+    restore_comparison_page_filters,
     sync_compare_from_multiselect,
     write_canonical_comparison_state,
 )
@@ -52,15 +56,19 @@ class TestComparisonState(unittest.TestCase):
         )
         self.assertEqual(out, ["Juan Soto", "Miguel Cabrera"])
 
-    def test_gather_empty_widget_uses_saved_not_sig(self) -> None:
+    def test_gather_empty_canonical_stays_empty_not_saved_or_sig(self) -> None:
         session = {
+            "comparison_state": {"players": []},
             "compare_players": [],
             "compare_players_saved": ["Juan Soto"],
             "sig_player_a_clean": "Juan Soto (NYY)",
             "sig_player_b_clean": "Miguel Cabrera (DET)",
+            "page_filter_state": {
+                "Comparison Tool": {"compare_players": ["A. D. Lewis"]},
+            },
         }
         gathered = gather_comparison_players(session, self.label_map, _resolve)
-        self.assertEqual(gathered, ["Juan Soto"])
+        self.assertEqual(gathered, [])
 
     def test_gather_uses_saved_when_widget_not_set(self) -> None:
         session = {
@@ -142,6 +150,57 @@ class TestComparisonState(unittest.TestCase):
 
         clear_comparison_local_edit(session)
         self.assertFalse(session.get(COMPARISON_DIRTY_KEY))
+
+    def test_ensure_multiselect_empty_canonical_no_invention(self) -> None:
+        session = {
+            "comparison_state": {"players": []},
+            "compare_players_saved": ["A. D. Lewis"],
+            "page_filter_state": {
+                "Comparison Tool": {"compare_players": ["A. D. Lewis"]},
+            },
+        }
+        options = list(self.label_map.keys()) + ["A. D. Lewis"]
+        out = ensure_compare_multiselect(session, self.label_map, _resolve, options)
+        self.assertEqual(out, [])
+        self.assertEqual(session["comparison_state"]["players"], [])
+
+    def test_restore_page_filters_blocked_when_locally_dirty(self) -> None:
+        session = {
+            "compare_x_axis_mode": "Player Age",
+            "compare_trend_mode": "Smoothed Moving Average",
+        }
+        mark_comparison_local_edit(session)
+        store = {
+            "Comparison Tool": {
+                "compare_x_axis_mode": "Season Year",
+                "compare_trend_mode": "Actual Values",
+            }
+        }
+        self.assertFalse(restore_comparison_page_filters(session, store))
+        self.assertEqual(session["compare_x_axis_mode"], "Player Age")
+        self.assertEqual(session["compare_trend_mode"], "Smoothed Moving Average")
+
+    def test_prepare_chart_options_respects_local_dirty(self) -> None:
+        session = {
+            "comparison_state": {
+                "chart": {"compare_x_axis_mode": "Season Year", "compare_trend_mode": "Actual Values"},
+            },
+            "compare_x_axis_mode": "Player Age",
+        }
+        mark_comparison_local_edit(session)
+        prepare_comparison_chart_options(session)
+        self.assertEqual(session["compare_x_axis_mode"], "Player Age")
+        self.assertNotIn("compare_trend_mode", session)
+
+    def test_cloud_restore_players_preserved_over_stale_page_filter(self) -> None:
+        session = {
+            "comparison_state": {"players": ["Francisco Lindor", "Aaron Judge"]},
+            "page_filter_state": {
+                "Comparison Tool": {"compare_players": ["A. D. Lewis"]},
+            },
+        }
+        players = prepare_comparison_tool_page(session, self.label_map, _resolve)
+        self.assertEqual(players, ["Francisco Lindor", "Aaron Judge"])
 
 
 if __name__ == "__main__":

@@ -211,8 +211,23 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         ss["main_sidebar_page"] = active
         ss["_navigate_to_page"] = active
         ss["_suite_cloud_target_page"] = active
-        pg_state.restore_page_state(ss, active, ss["page_filter_state"])
+        try:
+            from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
+
+            clear_comparison_local_edit(ss)
+            if active == "Comparison Tool":
+                restore_comparison_page_filters(ss, ss["page_filter_state"])
+            else:
+                pg_state.restore_page_state(ss, active, ss["page_filter_state"])
+        except ImportError:
+            pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         ss["_page_state_last_active"] = active
+        try:
+            from comparison_state import record_comparison_field_write
+
+            record_comparison_field_write(ss, "active_page", "workspace_restore", new=active)
+        except ImportError:
+            pass
 
     try:
         from comparison_state import clear_comparison_local_edit, is_comparison_locally_dirty, write_canonical_comparison_state
@@ -412,6 +427,9 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "disk_restore_after_cloud": ss.get("_suite_disk_restore_after_cloud"),
         "post_restore_active_page": ss.get("_suite_post_restore_active_page"),
         "post_restore_comparison_players": ss.get("_suite_post_restore_comparison_players"),
+        "resume_insight_hydration_only": ss.get("_suite_resume_insight_hydration_only"),
+        "workspace_sync_skipped_no_apply": ss.get("_suite_workspace_sync_skipped_no_apply"),
+        "autosave_cloud_blocked_reason": ss.get("_suite_autosave_cloud_blocked_reason"),
     }
     decision_rows = {
         "cloud_loaded": ss.get("_suite_workspace_cloud_loaded"),

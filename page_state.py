@@ -192,6 +192,13 @@ def save_page_state(session, page_name: str, store: dict):
 
 def restore_page_state(session, page_name: str, store: dict):
     """Restore a prior snapshot into session (sidebar return visits)."""
+    if page_name == "Comparison Tool":
+        try:
+            from comparison_state import restore_comparison_page_filters
+
+            return restore_comparison_page_filters(session, store)
+        except ImportError:
+            pass
     snapshot = store.get(page_name)
     if not snapshot:
         return False

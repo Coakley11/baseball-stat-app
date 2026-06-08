@@ -12458,16 +12458,40 @@ def compare_top_changed():
 
 
 def compare_settings_changed():
-    for _key in [
-        "compare_stat",
-        "compare_x_axis_mode",
-        "compare_year_range",
-        "compare_age_range",
-        "compare_trend_mode",
-        "compare_smooth_window",
-    ]:
-        if _key in st.session_state:
-            st.session_state[f"{_key}_saved"] = st.session_state[_key]
+    try:
+        from comparison_state import mark_comparison_local_edit, record_comparison_field_write
+
+        mark_comparison_local_edit(st.session_state)
+        for _key in [
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ]:
+            if _key in st.session_state:
+                st.session_state[f"{_key}_saved"] = st.session_state[_key]
+                record_comparison_field_write(
+                    st.session_state, _key, "widget", new=st.session_state[_key]
+                )
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="comparison_edit")
+        except Exception:
+            pass
+    except Exception:
+        for _key in [
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ]:
+            if _key in st.session_state:
+                st.session_state[f"{_key}_saved"] = st.session_state[_key]
 
 
 def _sig_years_changed(key):
@@ -12504,6 +12528,7 @@ if active_page == "Comparison Tool":
 
     from comparison_state import (
         ensure_compare_multiselect,
+        prepare_comparison_chart_options,
         prepare_comparison_tool_page,
         record_comparison_sync_trace,
         render_comparison_state_debug,
@@ -12512,6 +12537,7 @@ if active_page == "Comparison Tool":
     _canonical_players = prepare_comparison_tool_page(
         st.session_state, clean_label_map_compare, resolve_fullname_to_clean_label
     )
+    prepare_comparison_chart_options(st.session_state)
     winner = "local_edit" if st.session_state.get("comparison_state_dirty") else "canonical"
     record_comparison_sync_trace(
         st.session_state,
@@ -12519,6 +12545,10 @@ if active_page == "Comparison Tool":
         reason=f"prepare_on_load ({len(_canonical_players)} players)",
     )
 
+    try:
+        from comparison_state import is_comparison_locally_dirty as _cmp_locally_dirty
+    except Exception:
+        _cmp_locally_dirty = lambda _s: False  # noqa: E731
     for _key in [
         "compare_stat",
         "compare_x_axis_mode",
@@ -12527,6 +12557,8 @@ if active_page == "Comparison Tool":
         "compare_trend_mode",
         "compare_smooth_window",
     ]:
+        if _cmp_locally_dirty(st.session_state):
+            continue
         _saved = st.session_state.get(f"{_key}_saved")
         if _saved is not None and _key not in st.session_state:
             st.session_state[_key] = _saved

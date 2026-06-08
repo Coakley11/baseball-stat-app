@@ -12,6 +12,15 @@ COMPARISON_DIRTY_KEY = "comparison_state_dirty"
 COMPARISON_LOCAL_EDIT_TS_KEY = "comparison_state_last_local_edit_ts"
 _SUITE_LOCAL_DIRTY = "_suite_persist_local_dirty::baseball"
 
+COMPARISON_CHART_KEYS = (
+    "compare_stat",
+    "compare_x_axis_mode",
+    "compare_year_range",
+    "compare_age_range",
+    "compare_trend_mode",
+    "compare_smooth_window",
+)
+
 ResolveFn = Callable[[str, dict[str, Any]], str | None]
 
 
@@ -32,6 +41,28 @@ def mark_comparison_local_edit(session: dict[str, Any]) -> None:
 def clear_comparison_local_edit(session: dict[str, Any]) -> None:
     session.pop(COMPARISON_DIRTY_KEY, None)
     session.pop(COMPARISON_LOCAL_EDIT_TS_KEY, None)
+
+
+def canonical_comparison_players_list(session: dict[str, Any]) -> list[str] | None:
+    """Return canonical players when comparison_state.players exists (empty list is valid)."""
+    meta = session.get("comparison_state")
+    if isinstance(meta, dict) and isinstance(meta.get("players"), list):
+        return list(meta["players"])
+    return None
+
+
+def record_comparison_field_write(
+    session: dict[str, Any],
+    field: str,
+    source: str,
+    old: Any = None,
+    new: Any = None,
+) -> None:
+    session[f"_comparison_last_write_{field}"] = source
+    if old is not None:
+        session[f"_comparison_prev_{field}"] = old
+    if new is not None:
+        session[f"_comparison_new_{field}"] = new
 
 
 def normalize_compare_label(
@@ -120,11 +151,14 @@ def gather_comparison_players(
             return reconcile_compare_player_list(meta["players"], label_map, resolve_fn)
         return []
 
+    canonical = canonical_comparison_players_list(session)
+    if canonical is not None:
+        return reconcile_compare_player_list(canonical, label_map, resolve_fn)
+
     widget = _widget_compare_players(session)
     widget_key_present = "compare_players" in session
-    if widget is not None:
-        if is_comparison_locally_dirty(session) or widget:
-            return reconcile_compare_player_list(widget, label_map, resolve_fn)
+    if widget is not None and widget:
+        return reconcile_compare_player_list(widget, label_map, resolve_fn)
 
     if not allow_persisted_fallback:
         return []
@@ -141,14 +175,6 @@ def gather_comparison_players(
         sig_players = _sig_slot_players(session, label_map, resolve_fn)
         if sig_players:
             candidates.append(sig_players)
-
-    meta = session.get("comparison_state")
-    if isinstance(meta, dict):
-        meta_players = meta.get("players")
-        if isinstance(meta_players, list) and meta_players:
-            reconciled = reconcile_compare_player_list(meta_players, label_map, resolve_fn)
-            if reconciled:
-                candidates.append(reconciled)
 
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
@@ -167,6 +193,15 @@ def gather_comparison_players(
         if src:
             return src[:3]
     return []
+
+
+def _sync_chart_meta(session: dict[str, Any]) -> None:
+    meta = session.get("comparison_state")
+    if not isinstance(meta, dict):
+        return
+    chart = {k: session[k] for k in COMPARISON_CHART_KEYS if k in session}
+    if chart:
+        meta["chart"] = chart
 
 
 def _sync_page_filter_comparison_block(session: dict[str, Any]) -> None:
@@ -197,6 +232,10 @@ def _sync_page_filter_comparison_block(session: dict[str, Any]) -> None:
             block[bk] = session[sk]
         else:
             block.pop(bk, None)
+    for ck in COMPARISON_CHART_KEYS:
+        if ck in session:
+            block[ck] = session[ck]
+            block[f"{ck}_saved"] = session[ck]
 
 
 def write_canonical_comparison_state(
@@ -228,9 +267,11 @@ def write_canonical_comparison_state(
     session.pop("pending_sig_player_a", None)
     session.pop("pending_sig_player_b", None)
     session.pop("pending_compare_clear_player_b", None)
+    _sync_chart_meta(session)
     _sync_page_filter_comparison_block(session)
     if local_edit:
         mark_comparison_local_edit(session)
+    record_comparison_field_write(session, "compare_players", reason or "canonical", new=clean)
     return clean
 
 
@@ -260,6 +301,11 @@ def prepare_comparison_tool_page(
         merged = reconcile_compare_player_list(pending, label_map, resolve_fn)
         if merged:
             return write_canonical_comparison_state(session, merged, reason="pending_compare")
+
+    canonical = canonical_comparison_players_list(session)
+    if canonical is not None:
+        players = reconcile_compare_player_list(canonical, label_map, resolve_fn)
+        return write_canonical_comparison_state(session, players, reason="canonical_preserve")
 
     gathered = gather_comparison_players(session, label_map, resolve_fn)
     return write_canonical_comparison_state(
@@ -299,6 +345,51 @@ def sync_compare_from_sig_ab(
     )
 
 
+def prepare_comparison_chart_options(session: dict[str, Any]) -> None:
+    """Seed chart widget keys from canonical comparison_state.chart when not locally dirty."""
+    if is_comparison_locally_dirty(session):
+        return
+    meta = session.get("comparison_state")
+    chart: dict[str, Any] = {}
+    if isinstance(meta, dict) and isinstance(meta.get("chart"), dict):
+        chart = meta["chart"]
+    pf = session.get("page_filter_state")
+    block = pf.get("Comparison Tool") if isinstance(pf, dict) else None
+    if not isinstance(block, dict):
+        block = {}
+    for key in COMPARISON_CHART_KEYS:
+        if key in session:
+            continue
+        if key in chart:
+            session[key] = chart[key]
+            record_comparison_field_write(session, key, "comparison_state.chart", new=chart[key])
+        elif key in block:
+            session[key] = block[key]
+            record_comparison_field_write(session, key, "page_filter_state", new=block[key])
+
+
+def restore_comparison_page_filters(session: dict[str, Any], store: dict[str, Any]) -> bool:
+    """Restore Comparison Tool snapshot unless this device owns local edits."""
+    if is_comparison_locally_dirty(session):
+        record_comparison_field_write(session, "page_filter_restore", "blocked_local_dirty")
+        return False
+    snapshot = store.get("Comparison Tool") if isinstance(store, dict) else None
+    if not isinstance(snapshot, dict):
+        return False
+    import copy
+
+    for key, value in snapshot.items():
+        if key == "comparison_state":
+            continue
+        old = session.get(key)
+        try:
+            session[key] = copy.deepcopy(value)
+        except Exception:
+            session[key] = value
+        record_comparison_field_write(session, key, "page_filter_state", old, value)
+    return True
+
+
 def ensure_compare_multiselect(
     session: dict[str, Any],
     label_map: dict[str, Any],
@@ -311,11 +402,11 @@ def ensure_compare_multiselect(
         widget = _widget_compare_players(session)
         players = reconcile_compare_player_list(widget or [], label_map, resolve_fn)
     else:
-        players = reconcile_compare_player_list(session.get("compare_players") or [], label_map, resolve_fn)
-        if players == [] and _widget_compare_players(session) is None:
-            players = reconcile_compare_player_list(
-                session.get("compare_players_saved") or [], label_map, resolve_fn
-            )
+        canonical = canonical_comparison_players_list(session)
+        if canonical is not None:
+            players = reconcile_compare_player_list(canonical, label_map, resolve_fn)
+        else:
+            players = reconcile_compare_player_list(session.get("compare_players") or [], label_map, resolve_fn)
     players = [p for p in players if p in opts_set][:3]
     write_canonical_comparison_state(
         session,
@@ -429,6 +520,13 @@ def render_comparison_state_debug(
         "compare_year_range_sanitized": session.get("_dev_compare_year_range_sanitized"),
         "compare_year_range": session.get("compare_year_range"),
         "compare_x_axis_mode": session.get("compare_x_axis_mode"),
+        "compare_trend_mode": session.get("compare_trend_mode"),
+        "compare_smooth_window": session.get("compare_smooth_window"),
+        "last_write_active_page": session.get("_comparison_last_write_active_page"),
+        "last_write_compare_players": session.get("_comparison_last_write_compare_players"),
+        "last_write_compare_x_axis_mode": session.get("_comparison_last_write_compare_x_axis_mode"),
+        "last_write_compare_trend_mode": session.get("_comparison_last_write_compare_trend_mode"),
+        "last_write_compare_year_range": session.get("_comparison_last_write_compare_year_range"),
     }
 
     with st.sidebar.expander("Comparison Tool state", expanded=True):

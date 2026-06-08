@@ -203,6 +203,48 @@ def _workspace_comparison_players(state: dict[str, Any]) -> list[str]:
     return []
 
 
+def _mark_workspace_sync_skipped(st: Any, app_id: str, reason: str) -> None:
+    """Block cloud autosave when startup workspace sync did not apply."""
+    st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
+    st.session_state[_autosave_block_key(app_id)] = True
+    st.session_state["_suite_autosave_block_reason"] = reason
+
+
+def _comparison_user_explicitly_cleared(st: Any) -> bool:
+    ss = st.session_state
+    if not ss.get("comparison_state_dirty"):
+        return False
+    cs = ss.get("comparison_state")
+    if isinstance(cs, dict) and isinstance(cs.get("players"), list):
+        return len(cs.get("players") or []) == 0
+    cp = ss.get("compare_players")
+    return isinstance(cp, list) and len(cp) == 0
+
+
+def _cloud_autosave_blocked_reason(st: Any, app_id: str, state: dict[str, Any]) -> str | None:
+    if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
+        return "workspace_sync_not_applied"
+    if app_id != "baseball":
+        return None
+    local_players = _workspace_comparison_players(state)
+    if local_players:
+        return None
+    try:
+        from suite_cloud_state import load_cloud_full_session
+
+        cloud_state, _ = load_cloud_full_session(app_id)
+        if not isinstance(cloud_state, dict) or not cloud_state:
+            return None
+        cloud_players = _workspace_comparison_players(cloud_state)
+        if not cloud_players:
+            return None
+        if _comparison_user_explicitly_cleared(st):
+            return None
+        return "blank_comparison_would_erase_cloud"
+    except Exception:
+        return None
+
+
 def _session_comparison_players(st: Any) -> list[str]:
     ss = st.session_state
     cs = ss.get("comparison_state")
@@ -333,10 +375,10 @@ def sync_workspace_protocol(
         return False
 
     if has_resume_query_params(st, app_id):
-        st.session_state["_suite_persist_restore_skip_reason"] = "resume query params — workspace sync skipped"
-        return False
+        st.session_state["_suite_resume_insight_hydration_only"] = True
 
     dirty_key = _local_dirty_key(app_id)
+    st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
 
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
@@ -350,6 +392,7 @@ def sync_workspace_protocol(
     if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
         reason = "local unsaved edits — workspace sync skipped"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -366,6 +409,7 @@ def sync_workspace_protocol(
             winner="none", reason="empty", applied=False,
         )
         st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state={}, cloud_ts=cloud_ts, disk_state={}, disk_ts=disk_ts,
@@ -388,6 +432,7 @@ def sync_workspace_protocol(
             disk_state=disk_state, disk_ts=disk_ts, winner="none",
             reason=picked.reason, applied=False,
         )
+        _mark_workspace_sync_skipped(st, app_id, picked.reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -453,6 +498,7 @@ def sync_workspace_protocol(
             disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
             reason="already synced", applied=False,
         )
+        _mark_workspace_sync_skipped(st, app_id, skip_reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -465,7 +511,9 @@ def sync_workspace_protocol(
     try:
         apply_state(st, picked.state)
     except Exception as exc:
-        st.session_state["_suite_persist_restore_skip_reason"] = f"apply_state failed: {exc}"
+        reason = f"apply_state failed: {exc}"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
         _record_workspace_sync_trace(
             st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
             disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
@@ -563,18 +611,7 @@ def restore_once(
         pass
 
     if skip_cloud:
-        _set_restore_skip_reason(st, "resume query params or deep-link launch (restore skipped)")
-        st.session_state[flag] = True
-        _record_restore_debug_meta(
-            st,
-            app_id,
-            cloud_ts=None,
-            disk_ts=disk_ts,
-            pick_source="skipped",
-            pick_reason="resume query params",
-            local_dirty=local_dirty,
-        )
-        return False
+        st.session_state["_suite_resume_insight_hydration_only"] = True
 
     cloud_state: dict[str, Any] = {}
     cloud_ts: str | None = None
@@ -767,10 +804,7 @@ def sync_cloud_workspace_before_sidebar(
         return False
 
     if has_resume_query_params(st, app_id):
-        st.session_state["_suite_persist_restore_skip_reason"] = (
-            "resume query params — page sync skipped"
-        )
-        return False
+        st.session_state["_suite_resume_insight_hydration_only"] = True
 
     dirty_key = _local_dirty_key(app_id)
     local_dirty = bool(st.session_state.get(dirty_key))
@@ -919,7 +953,12 @@ def force_autosave(
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
-        saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
+        cloud_block = _cloud_autosave_blocked_reason(st, app_id, state)
+        saved_cloud = False
+        if cloud_block:
+            st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
+        else:
+            saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
@@ -999,15 +1038,19 @@ def autosave_if_changed(
             from suite_cloud_state import save_cloud_full_session, session_page_summary
 
             page, summary = session_page_summary(app_id, state)
-            saved_cloud = bool(
-                save_cloud_full_session(app_id, state, page=page, summary=summary)
-            )
-            if saved_cloud:
-                from suite_cloud_state import load_cloud_full_session
+            cloud_block = _cloud_autosave_blocked_reason(st, app_id, state)
+            if cloud_block:
+                st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
+            else:
+                saved_cloud = bool(
+                    save_cloud_full_session(app_id, state, page=page, summary=summary)
+                )
+                if saved_cloud:
+                    from suite_cloud_state import load_cloud_full_session
 
-                _, cloud_ts_after = load_cloud_full_session(app_id)
-                if cloud_ts_after:
-                    st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts_after
+                    _, cloud_ts_after = load_cloud_full_session(app_id)
+                    if cloud_ts_after:
+                        st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts_after
         except Exception as exc:
             cloud_err = str(exc)
         if saved_disk or saved_cloud:
