@@ -11,8 +11,10 @@ from trend_state import (
     gather_trend_players_multi,
     is_trend_locally_dirty,
     mark_trend_local_edit,
+    prepare_trend_top_filters,
     prepare_trend_value_page,
     restore_trend_page_filters,
+    sync_trend_settings_change,
     write_canonical_trend_state,
 )
 
@@ -116,6 +118,39 @@ class TestTrendState(unittest.TestCase):
         self.assertEqual(block["single_trend_dashboard_player"], "Aaron Judge")
         self.assertEqual(block["trend_players_multi"], ["Aaron Judge", "Juan Soto"])
         self.assertFalse(is_trend_locally_dirty(session))
+
+    def test_top_filter_settings_sync_to_canonical_meta(self) -> None:
+        session = {
+            "trend_state": {
+                "filters": {"trend_lag": 3, "trend_min_g": 50, "trend_position_filter": "All positions"},
+            },
+            "page_filter_state": {"Trend Value": {"trend_lag": 3, "trend_min_g": 50}},
+        }
+        session["trend_lag"] = 5
+        session["trend_min_g"] = 120
+        session["trend_position_filter"] = "OF"
+        sync_trend_settings_change(session, reason="settings_change")
+        meta = session["trend_state"]
+        self.assertTrue(is_trend_locally_dirty(session))
+        self.assertEqual(meta["filters"]["trend_lag"], 5)
+        self.assertEqual(meta["filters"]["trend_min_g"], 120)
+        self.assertEqual(meta["filters"]["trend_position_filter"], "OF")
+        block = session["page_filter_state"]["Trend Value"]
+        self.assertEqual(block["trend_lag"], 5)
+        self.assertEqual(block["trend_min_g"], 120)
+        self.assertEqual(block["trend_position_filter"], "OF")
+
+    def test_prepare_top_filters_seeds_from_canonical_before_widgets(self) -> None:
+        session = {
+            "trend_state": {
+                "filters": {"trend_lag": 4, "trend_min_g": 75, "trend_position_filter": "SS"},
+            },
+            "page_filter_state": {"Trend Value": {"trend_lag": 3, "trend_min_g": 50}},
+        }
+        prepare_trend_top_filters(session)
+        self.assertEqual(session["trend_lag"], 4)
+        self.assertEqual(session["trend_min_g"], 75)
+        self.assertEqual(session["trend_position_filter"], "SS")
 
 
 if __name__ == "__main__":

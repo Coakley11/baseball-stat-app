@@ -45,15 +45,91 @@ INSIGHT_ELIGIBLE_PAGES: dict[str, frozenset[str]] = {
 }
 
 
+_INSIGHT_PAGE_LABEL_TO_KEY: dict[str, str] = {
+    "🔎 Historical Explorer": "Historical Explorer",
+    "📚 Career Totals": "Career Totals",
+    "🏆 Leaderboards": "Leaderboards",
+    "📈 Comparison Tool": "Comparison Tool",
+    "🔥 Trend Value": "Trend Value",
+    "💰 Valuation": "Valuation",
+    "🤖 ML Predictions": "ML Predictions",
+    "💎 Fantasy Sleepers & Busts": "Fantasy Sleepers & Busts",
+    "🧾 Draft Room Simulator": "Draft Room Simulator",
+    "🧩 Draft Assistant Simulator": "Draft Assistant Simulator",
+    "🧪 Draft Simulation Test Mode": "Draft Simulation Test Mode",
+    "📡 Live Draft Room": "Live Draft Room",
+    "📊 Fantasy Standings Tracker": "Fantasy Standings Tracker",
+    "🧠 Fantasy Lineup Assistant": "Fantasy Lineup Assistant",
+}
+
+_INSIGHT_PAGE_ALIASES: dict[str, str] = {
+    "trends": "Trend Value",
+    "trend value": "Trend Value",
+    "comparison": "Comparison Tool",
+    "comparison tool": "Comparison Tool",
+}
+
+
 def _normalize_insight_page(page: str) -> str:
     p = str(page or "").strip()
+    if not p:
+        return ""
+    if p in _INSIGHT_PAGE_LABEL_TO_KEY:
+        return _INSIGHT_PAGE_LABEL_TO_KEY[p]
+    eligible_union: set[str] = set()
+    for pages in INSIGHT_ELIGIBLE_PAGES.values():
+        eligible_union.update(pages)
+    if p in eligible_union:
+        return p
     if p.startswith("🔴 "):
         p = p.replace("🔴 ", "", 1)
     if p.startswith("🧠 "):
         p = p.replace("🧠 ", "", 1)
     if p.startswith("👑 "):
         p = p.replace("👑 ", "", 1)
-    return p.strip()
+    p = p.strip()
+    if p in _INSIGHT_PAGE_LABEL_TO_KEY:
+        return _INSIGHT_PAGE_LABEL_TO_KEY[p]
+    if p in eligible_union:
+        return p
+    import re
+
+    stripped = re.sub(r"^[^\w]+", "", p).strip()
+    if stripped in eligible_union:
+        return stripped
+    alias = _INSIGHT_PAGE_ALIASES.get(stripped.lower())
+    if alias:
+        return alias
+    return stripped or p
+
+
+def _resolve_insight_source_page(insight: dict[str, Any]) -> str:
+    """Canonical originating page for a pending insight (strict, no current-page fallback)."""
+    raw = str(insight.get("source_page") or "").strip()
+    page = _normalize_insight_page(raw)
+    if page:
+        return page
+    for container_key in ("source_state", "return_context"):
+        container = insight.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for key in ("source_page", "page"):
+            page = _normalize_insight_page(str(container.get(key) or ""))
+            if page:
+                return page
+        page_params = container.get("page_params")
+        if isinstance(page_params, dict):
+            page = _normalize_insight_page(str(page_params.get("page") or ""))
+            if page:
+                return page
+        chart = container.get("chart_params")
+        if isinstance(chart, dict):
+            snap = chart.get("chart_snapshot")
+            if isinstance(snap, dict):
+                page = _normalize_insight_page(str(snap.get("page") or ""))
+                if page:
+                    return page
+    return ""
 
 
 def should_render_insight_on_page(source_app: str, current_page: str, insight: dict[str, Any]) -> bool:
@@ -63,15 +139,15 @@ def should_render_insight_on_page(source_app: str, current_page: str, insight: d
     eligible = INSIGHT_ELIGIBLE_PAGES.get(app, frozenset())
     if cur not in eligible and not any(_normalize_insight_page(x) == cur for x in eligible):
         return False
-    insight_page = _normalize_insight_page(str(insight.get("source_page") or ""))
-    if insight_page:
-        if insight_page == cur:
-            return True
-        # Draft family: any draft page shows draft insight
-        if "draft" in insight_page.lower() and "draft" in cur.lower():
-            return True
+    insight_page = _resolve_insight_source_page(insight)
+    if not insight_page:
         return False
-    return True
+    if insight_page == cur:
+        return True
+    # Draft family: any draft page shows draft insight
+    if "draft" in insight_page.lower() and "draft" in cur.lower():
+        return True
+    return False
 
 
 @dataclass

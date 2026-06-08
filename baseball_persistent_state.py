@@ -213,7 +213,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         ss["active_page"] = active
         ss["main_sidebar_page"] = active
         ss["_navigate_to_page"] = active
-        ss["_suite_cloud_target_page"] = active
+        if not ss.get("_suite_page_user_nav"):
+            ss["_suite_cloud_target_page"] = active
+        else:
+            ss.pop("_suite_cloud_target_page", None)
         try:
             from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
 

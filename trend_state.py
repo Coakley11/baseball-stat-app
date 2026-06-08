@@ -329,6 +329,11 @@ def prepare_trend_value_page(
     )
 
 
+def prepare_trend_top_filters(session: dict[str, Any]) -> None:
+    """Seed trend window / min games / position from canonical state before top widgets."""
+    prepare_trend_chart_options(session)
+
+
 def prepare_trend_chart_options(session: dict[str, Any]) -> None:
     if is_trend_locally_dirty(session):
         return

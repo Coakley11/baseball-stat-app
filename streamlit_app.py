@@ -11673,7 +11673,27 @@ def render_contextual_page_nav(
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _on_sidebar_page_change() -> None:
+    """Manual sidebar navigation wins over cloud page restore in the same run."""
+    pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
+    st.session_state["active_page"] = pick
+    st.session_state["_suite_page_user_nav"] = True
+    st.session_state.pop("_suite_cloud_target_page", None)
+    st.session_state.pop("_suite_page_enforce_rerun", None)
+
+
+def _align_active_page_from_sidebar() -> None:
+    pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
+    active = normalize_page_key(st.session_state.get("active_page") or "")
+    if pick and pick != active:
+        st.session_state["active_page"] = pick
+        st.session_state["_suite_page_user_nav"] = True
+        st.session_state.pop("_suite_cloud_target_page", None)
+        st.session_state.pop("_suite_page_enforce_rerun", None)
+
+
 # Page navigation: authoritative workspace sync, then consume scheduled navigation BEFORE sidebar radio.
+_align_active_page_from_sidebar()
 try:
     from baseball_persistent_state import prepare_baseball_workspace
 
@@ -11714,12 +11734,13 @@ _selected_page = st.sidebar.radio(
     PAGE_OPTIONS,
     key=MAIN_SIDEBAR_PAGE_KEY,
     format_func=page_option_label,
+    on_change=_on_sidebar_page_change,
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
 
 _cloud_target = st.session_state.get("_suite_cloud_target_page")
-if _cloud_target:
+if _cloud_target and not st.session_state.get("_suite_page_user_nav"):
     _cloud_page = normalize_page_key(_cloud_target)
     if _cloud_page != active_page:
         st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _cloud_page
@@ -11731,6 +11752,9 @@ if _cloud_target:
     else:
         st.session_state.pop("_suite_cloud_target_page", None)
         st.session_state.pop("_suite_page_enforce_rerun", None)
+elif _cloud_target:
+    st.session_state.pop("_suite_cloud_target_page", None)
+    st.session_state.pop("_suite_page_enforce_rerun", None)
 
 _prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
 if active_page != _prev_persisted_page:
@@ -11740,6 +11764,7 @@ if active_page != _prev_persisted_page:
         except Exception:
             pass
     st.session_state["_suite_last_persisted_page"] = active_page
+    st.session_state.pop("_suite_page_user_nav", None)
 
 from suite_analytical_question import render_applied_math_sidebar_entry
 
@@ -13201,11 +13226,22 @@ if active_page == "Trend Value":
         st.error(f"Trend deploy marker failed to load: {exc}")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    try:
+        from trend_state import prepare_trend_top_filters
+
+        prepare_trend_top_filters(st.session_state)
+    except Exception:
+        pass
     _trend_lag_options = [3, 4, 5]
     c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("trend_lag", _trend_lag_options, 3)
-        lag_trend = st.selectbox("Trend Window (Years)", _trend_lag_options, key="trend_lag")
+        lag_trend = st.selectbox(
+            "Trend Window (Years)",
+            _trend_lag_options,
+            key="trend_lag",
+            on_change=trend_settings_changed,
+        )
     with c2:
         validate_number_state("trend_min_g", 50, min_value=0, max_value=800)
         min_g_trend = st.number_input(
@@ -13213,6 +13249,7 @@ if active_page == "Trend Value":
             min_value=0,
             max_value=800,
             key="trend_min_g",
+            on_change=trend_settings_changed,
         )
     with c3:
         validate_state_option("trend_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
@@ -13221,6 +13258,7 @@ if active_page == "Trend Value":
             FANTASY_POSITION_FILTER_OPTIONS,
             key="trend_position_filter",
             help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+            on_change=trend_settings_changed,
         )
 
     max_year_trend = int(yearly_df["yearID"].max())
@@ -13288,7 +13326,12 @@ if active_page == "Trend Value":
 
     _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
     validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
-    sort_col = st.selectbox("Sort By Trend Stat", _trend_sort_options, key="trend_sort_col")
+    sort_col = st.selectbox(
+        "Sort By Trend Stat",
+        _trend_sort_options,
+        key="trend_sort_col",
+        on_change=trend_settings_changed,
+    )
     trend_label_to_column = {"R Δ": "R_trend", "H Δ": "H_trend", "2B Δ": "2B_trend", "3B Δ": "3B_trend", "HR Δ": "HR_trend", "RBI Δ": "RBI_trend", "SB Δ": "SB_trend", "BB Δ": "BB_trend", "BA Δ": "BA_trend", "OBP Δ": "OBP_trend", "SLG Δ": "SLG_trend", "OPS Δ": "OPS_trend"}
     selected_trend_col = trend_label_to_column[sort_col]
     selected_trend_name = sort_col.replace(" Δ", "")

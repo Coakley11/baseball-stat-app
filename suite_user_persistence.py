@@ -402,6 +402,19 @@ def sync_workspace_protocol(
         )
         return False
 
+    if st.session_state.get("_suite_page_user_nav"):
+        reason = "user page navigation — workspace sync skipped"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state=cloud_state, cloud_ts=cloud_ts,
+            disk_state=disk_state, disk_ts=disk_ts,
+            picked_source="none", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
+        return False
+
     if not cloud_state and not disk_state:
         reason = "no workspace blob"
         _record_workspace_sync_trace(
@@ -733,7 +746,11 @@ def restore_once(
 
 def _session_workspace_page(st: Any) -> str:
     ss = st.session_state
-    return str(ss.get("active_page") or ss.get("main_sidebar_page") or "").strip()
+    active = str(ss.get("active_page") or "").strip()
+    sidebar = str(ss.get("main_sidebar_page") or "").strip()
+    if sidebar and active and sidebar != active:
+        return sidebar
+    return active or sidebar
 
 
 def _record_page_sync_decision(
@@ -814,6 +831,12 @@ def sync_cloud_workspace_before_sidebar(
         )
         return False
 
+    if st.session_state.get("_suite_page_user_nav"):
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "user page navigation — page sync skipped"
+        )
+        return False
+
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
     disk_state, _, disk_ts = _load_raw(app_id)
     if not isinstance(cloud_state, dict) or not cloud_state:
@@ -865,7 +888,10 @@ def sync_cloud_workspace_before_sidebar(
     applied_ts = st.session_state.get(applied_key)
     cloud_epoch = parse_persist_timestamp(cloud_ts)
     applied_epoch = parse_persist_timestamp(applied_ts)
-    page_mismatch = bool(cloud_page and current_page and cloud_page != current_page)
+    user_page_nav = bool(st.session_state.get("_suite_page_user_nav"))
+    page_mismatch = bool(
+        cloud_page and current_page and cloud_page != current_page and not user_page_nav
+    )
     cloud_newer_than_applied = bool(cloud_ts and cloud_epoch > applied_epoch)
 
     if not page_mismatch and not cloud_newer_than_applied and applied_ts and current_page == cloud_page:
