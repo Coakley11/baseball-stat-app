@@ -11673,7 +11673,7 @@ def render_contextual_page_nav(
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "") -> None:
+def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: object) -> None:
     try:
         from suite_user_persistence import record_sidebar_nav_diagnostics
 
@@ -11681,6 +11681,7 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "") -> None:
             st,
             phase=phase,
             rerun_source=rerun_source,
+            **kwargs,
         )
     except Exception:
         pass
@@ -11710,6 +11711,7 @@ def _align_active_page_from_sidebar() -> None:
 
 
 # Page navigation: authoritative workspace sync, then consume scheduled navigation BEFORE sidebar radio.
+st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
 _record_sidebar_nav_trace("run_start_before_align")
 _align_active_page_from_sidebar()
 try:
@@ -11759,38 +11761,36 @@ st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
 _record_sidebar_nav_trace("after_sidebar_radio", rerun_source="sidebar_render")
 
-_cloud_target = st.session_state.get("_suite_cloud_target_page")
-if _cloud_target and not st.session_state.get("_suite_page_user_nav"):
-    _cloud_page = normalize_page_key(_cloud_target)
-    if _cloud_page != active_page:
-        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = _cloud_page
-        st.session_state["active_page"] = _cloud_page
-        active_page = _cloud_page
-        _record_sidebar_nav_trace("cloud_target_enforce", rerun_source="cloud_target_rerun")
-        if not st.session_state.get("_suite_page_enforce_rerun"):
-            st.session_state["_suite_page_enforce_rerun"] = True
-            st.rerun()
-    else:
-        st.session_state.pop("_suite_cloud_target_page", None)
-        st.session_state.pop("_suite_page_enforce_rerun", None)
-elif _cloud_target:
-    st.session_state.pop("_suite_cloud_target_page", None)
-    st.session_state.pop("_suite_page_enforce_rerun", None)
-    _record_sidebar_nav_trace("cloud_target_cleared_user_nav")
+st.session_state.pop("_suite_cloud_target_page", None)
+st.session_state.pop("_suite_page_enforce_rerun", None)
 
 _prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
 _user_nav = bool(st.session_state.get("_suite_page_user_nav"))
-if active_page != _prev_persisted_page or _user_nav:
-    _record_sidebar_nav_trace("page_change_before_save", rerun_source="page_change")
-    if _user_nav or not st.session_state.get("_cloud_workspace_restored_this_run"):
+_page_changed = active_page != _prev_persisted_page
+if _page_changed or _user_nav:
+    _did_save = False
+    if _user_nav or _page_changed:
         try:
             force_save_baseball_state(st, reason="page_change")
+            _did_save = True
         except Exception:
             pass
     st.session_state["_suite_last_persisted_page"] = active_page
     st.session_state.pop("_suite_page_user_nav", None)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
-    _record_sidebar_nav_trace("page_change_after_save")
+    _record_sidebar_nav_trace(
+        "page_change_after_save",
+        rerun_source="page_change",
+        active_page_after=active_page,
+        page_change_detected=_page_changed or _user_nav,
+        page_change_force_save=_did_save,
+    )
+
+_record_sidebar_nav_trace(
+    "nav_final",
+    active_page_after=active_page,
+    page_overwrite_source=st.session_state.get("_suite_page_overwrite_source") or "",
+)
 
 from suite_analytical_question import render_applied_math_sidebar_entry
 

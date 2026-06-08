@@ -329,12 +329,30 @@ def record_sidebar_nav_diagnostics(
     *,
     phase: str,
     rerun_source: str = "",
+    active_page_before: str | None = None,
+    active_page_after: str | None = None,
+    page_overwrite_source: str = "",
+    page_change_detected: bool | None = None,
+    page_change_force_save: bool | None = None,
 ) -> None:
     """?dev=1 trace for manual sidebar navigation vs cloud restore."""
     ss = st.session_state
+    cloud_page = ss.get("_suite_cloud_fetch_active_page") or ss.get("_suite_page_sync_cloud_page")
+    if cloud_page is None:
+        try:
+            from suite_cloud_state import load_cloud_full_session
+
+            cloud_state, _ = load_cloud_full_session(str(ss.get("_suite_persist_app_id") or "baseball"))
+            if isinstance(cloud_state, dict):
+                cloud_page = cloud_state.get("active_page")
+        except Exception:
+            cloud_page = None
     ss["_suite_sidebar_nav_phase"] = phase
     if rerun_source:
         ss["_suite_sidebar_nav_rerun_source"] = rerun_source
+    ss["sidebar_selected_page"] = ss.get("main_sidebar_page")
+    ss["active_page_before"] = active_page_before if active_page_before is not None else ss.get("_suite_nav_active_page_before")
+    ss["active_page_after"] = active_page_after if active_page_after is not None else ss.get("active_page")
     ss["_suite_sidebar_nav_main_sidebar_page"] = ss.get("main_sidebar_page")
     ss["_suite_sidebar_nav_active_page"] = ss.get("active_page")
     ss["_suite_sidebar_nav_user_nav"] = bool(ss.get("_suite_page_user_nav"))
@@ -343,6 +361,15 @@ def record_sidebar_nav_diagnostics(
     ss["_suite_sidebar_nav_cloud_restored_this_run"] = bool(
         ss.get("_cloud_workspace_restored_this_run")
     )
+    ss["_suite_page_user_nav_flag"] = bool(ss.get("_suite_page_user_nav"))
+    ss["cloud_active_page"] = cloud_page
+    ss["final_page"] = ss.get("active_page")
+    if page_overwrite_source:
+        ss["page_overwrite_source"] = page_overwrite_source
+    if page_change_detected is not None:
+        ss["page_change_detected"] = page_change_detected
+    if page_change_force_save is not None:
+        ss["page_change_force_save"] = page_change_force_save
 
 
 def _session_comparison_players(st: Any) -> list[str]:
@@ -582,10 +609,22 @@ def sync_workspace_protocol(
         apply_reasons.append("cloud_newer_than_applied")
     if cloud_newer_than_disk:
         apply_reasons.append("cloud_newer_than_disk")
+    page_mismatch_apply = bool(
+        page_mismatch
+        and (first_sync or cloud_newer_than_applied or cloud_newer_than_disk)
+    )
     if page_mismatch:
         apply_reasons.append("page_mismatch")
+    if page_mismatch_apply:
+        apply_reasons.append("page_mismatch_apply")
+    comparison_mismatch_apply = bool(
+        comparison_mismatch
+        and (first_sync or cloud_newer_than_applied or cloud_newer_than_disk)
+    )
     if comparison_mismatch:
         apply_reasons.append("comparison_mismatch")
+    if comparison_mismatch_apply:
+        apply_reasons.append("comparison_mismatch_apply")
 
     should_apply = bool(
         picked.state
@@ -593,8 +632,8 @@ def sync_workspace_protocol(
             first_sync
             or cloud_newer_than_applied
             or cloud_newer_than_disk
-            or page_mismatch
-            or comparison_mismatch
+            or page_mismatch_apply
+            or comparison_mismatch_apply
         )
     )
     apply_reason = ", ".join(apply_reasons) if apply_reasons else "none"
@@ -992,10 +1031,22 @@ def sync_cloud_workspace_before_sidebar(
         cloud_page and current_page and cloud_page != current_page and not user_page_nav
     )
     cloud_newer_than_applied = bool(cloud_ts and cloud_epoch > applied_epoch)
+    page_mismatch_apply = bool(page_mismatch and cloud_newer_than_applied)
 
-    if not page_mismatch and not cloud_newer_than_applied and applied_ts and current_page == cloud_page:
+    if (
+        not cloud_newer_than_applied
+        and not page_mismatch_apply
+        and applied_ts
+        and current_page == cloud_page
+    ):
         st.session_state["_suite_persist_restore_skip_reason"] = (
             "cloud page already applied this session"
+        )
+        return False
+
+    if applied_ts and not cloud_newer_than_applied and not page_mismatch_apply:
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "page sync skipped (cloud not newer than applied)"
         )
         return False
 
@@ -1013,7 +1064,7 @@ def sync_cloud_workspace_before_sidebar(
     st.session_state["_suite_persist_last_restore_source"] = picked.source
     st.session_state["_suite_persist_last_restore_reason"] = picked.reason
     st.session_state["_suite_persist_restore_applied"] = True
-    st.session_state["_suite_cloud_target_page"] = cloud_page
+    st.session_state.pop("_suite_cloud_target_page", None)
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
 
     save_user_state(app_id, picked.state)

@@ -210,16 +210,29 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         except Exception:
             ss[key] = val
 
-    active = str(ss.get("active_page") or state.get("active_page") or "").strip()
+    blob_page = str(state.get("active_page") or "").strip()
+    session_page = str(ss.get("active_page") or "").strip()
+    last_persisted = str(ss.get("_suite_last_persisted_page") or "").strip()
+    user_owns_page = bool(
+        ss.get("_suite_page_user_nav")
+        or (session_page and last_persisted and session_page == last_persisted)
+    )
+    active = blob_page
+    overwrite_source = "workspace_blob"
+    if user_owns_page and session_page and blob_page and session_page != blob_page:
+        active = session_page
+        overwrite_source = "user_page_preserved"
+    elif session_page:
+        active = session_page
+    elif blob_page:
+        active = blob_page
+    ss["_suite_page_overwrite_source"] = overwrite_source
     if active:
         _clear_page_widget_keys(ss, active)
         ss["active_page"] = active
         ss["main_sidebar_page"] = active
         ss["_navigate_to_page"] = active
-        if not ss.get("_suite_page_user_nav"):
-            ss["_suite_cloud_target_page"] = active
-        else:
-            ss.pop("_suite_cloud_target_page", None)
+        ss.pop("_suite_cloud_target_page", None)
         try:
             from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
 
@@ -587,7 +600,7 @@ def render_cross_device_sync_debug(st: Any) -> None:
         for k, v in final_rows.items():
             if v is not None and v != "":
                 st.text(f"{k}: {v}")
-        st.markdown("**Sidebar navigation**")
+        st.markdown("**Page Navigation Trace**")
         for k, v in nav_rows.items():
             if v is not None and v != "":
                 st.text(f"{k}: {v}")
