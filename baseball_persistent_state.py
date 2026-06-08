@@ -531,6 +531,17 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "final_comparison_players": ss.get("compare_players"),
         "final_trend_players": ss.get("trend_players_multi"),
     }
+    nav_rows = {
+        "nav_phase": ss.get("_suite_sidebar_nav_phase"),
+        "nav_rerun_source": ss.get("_suite_sidebar_nav_rerun_source"),
+        "nav_main_sidebar_page": ss.get("_suite_sidebar_nav_main_sidebar_page"),
+        "nav_active_page": ss.get("_suite_sidebar_nav_active_page"),
+        "nav_user_nav": ss.get("_suite_sidebar_nav_user_nav"),
+        "nav_cloud_target_page": ss.get("_suite_sidebar_nav_cloud_target"),
+        "nav_last_persisted_page": ss.get("_suite_sidebar_nav_last_persisted_page"),
+        "nav_cloud_restored_this_run": ss.get("_suite_sidebar_nav_cloud_restored_this_run"),
+        "user_nav_sync_skipped": ss.get("_suite_user_nav_sync_skipped"),
+    }
     infra_rows = {
         "cloud_enabled": diag.get("cloud_enabled"),
         "suite_user_id": (diag.get("suite_user_id") or "")[:24],
@@ -571,6 +582,10 @@ def render_cross_device_sync_debug(st: Any) -> None:
                 st.text(f"{k}: {v}")
         st.markdown("**Final**")
         for k, v in final_rows.items():
+            if v is not None and v != "":
+                st.text(f"{k}: {v}")
+        st.markdown("**Sidebar navigation**")
+        for k, v in nav_rows.items():
             if v is not None and v != "":
                 st.text(f"{k}: {v}")
         with st.expander("Infra", expanded=False):

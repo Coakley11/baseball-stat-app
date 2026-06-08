@@ -132,22 +132,47 @@ def _resolve_insight_source_page(insight: dict[str, Any]) -> str:
     return ""
 
 
-def should_render_insight_on_page(source_app: str, current_page: str, insight: dict[str, Any]) -> bool:
-    """True when pending insight belongs on this page."""
+def insight_page_scope_decision(
+    source_app: str,
+    current_page: str,
+    insight: dict[str, Any],
+) -> dict[str, Any]:
+    """Strict page scope decision with normalized fields for ?dev=1 diagnostics."""
     app = str(source_app or insight.get("source_app") or "").strip().lower()
     cur = _normalize_insight_page(current_page)
-    eligible = INSIGHT_ELIGIBLE_PAGES.get(app, frozenset())
-    if cur not in eligible and not any(_normalize_insight_page(x) == cur for x in eligible):
-        return False
+    raw_source = str(insight.get("source_page") or "").strip()
     insight_page = _resolve_insight_source_page(insight)
-    if not insight_page:
-        return False
-    if insight_page == cur:
-        return True
-    # Draft family: any draft page shows draft insight
-    if "draft" in insight_page.lower() and "draft" in cur.lower():
-        return True
-    return False
+    eligible = INSIGHT_ELIGIBLE_PAGES.get(app, frozenset())
+    cur_eligible = cur in eligible or any(_normalize_insight_page(x) == cur for x in eligible)
+    should_render = False
+    skip_reason = ""
+    if not cur_eligible:
+        skip_reason = f"current_page_not_eligible ({cur!r})"
+    elif not insight_page:
+        skip_reason = "missing_normalized_source_page"
+    elif insight_page == cur:
+        should_render = True
+    elif "draft" in insight_page.lower() and "draft" in cur.lower():
+        should_render = True
+    else:
+        skip_reason = f"normalized_page_mismatch (insight={insight_page!r}, current={cur!r})"
+    return {
+        "source_page_raw": raw_source or None,
+        "source_page_normalized": insight_page or None,
+        "current_page_raw": str(current_page or "").strip() or None,
+        "current_page_normalized": cur or None,
+        "should_render_insight_on_page": should_render,
+        "render_skip_reason": skip_reason or None,
+    }
+
+
+def should_render_insight_on_page(source_app: str, current_page: str, insight: dict[str, Any]) -> bool:
+    """True when pending insight belongs on this page."""
+    return bool(
+        insight_page_scope_decision(source_app, current_page, insight).get(
+            "should_render_insight_on_page"
+        )
+    )
 
 
 @dataclass
@@ -674,6 +699,13 @@ def render_insight_sync_debug(st: Any) -> None:
         "dismissed": ss.get(SESSION_DISMISSED_KEY),
         "last_loaded_insight_id": ss.get("_ami_hydrated_insight_id"),
     }
+    scope = ss.get("_ami_insight_scope_decision")
+    if not isinstance(scope, dict):
+        scope = insight_page_scope_decision(
+            str(ss.get("_suite_persist_app_id") or "baseball"),
+            str(ss.get("active_page") or ""),
+            pending,
+        )
     decision_rows = {
         "hydrate_attempted": ss.get("_ami_insight_hydrate_attempted"),
         "hydrate_success": ss.get("_ami_insight_hydrate_success"),
@@ -681,6 +713,11 @@ def render_insight_sync_debug(st: Any) -> None:
         "render_attempted": ss.get("_ami_insight_render_attempted"),
         "render_success": ss.get("_ami_insight_render_success"),
         "render_skipped_reason": ss.get("_ami_insight_render_skipped_reason"),
+        "insight.source_page_raw": scope.get("source_page_raw"),
+        "insight.source_page_normalized": scope.get("source_page_normalized"),
+        "current_page_normalized": scope.get("current_page_normalized"),
+        "should_render_insight_on_page": scope.get("should_render_insight_on_page"),
+        "render_skip_reason": scope.get("render_skip_reason"),
     }
 
     with st.sidebar.expander("Insight sync trace", expanded=True):
@@ -910,9 +947,12 @@ def render_suite_applied_math_insight_for_page(
         st.session_state["_ami_insight_render_skipped_reason"] = "no pending insight"
         st.session_state["_ami_insight_render_success"] = False
         return False
-    if not should_render_insight_on_page(source_app, source_page, insight):
+    scope = insight_page_scope_decision(source_app, source_page, insight)
+    st.session_state["_ami_insight_scope_decision"] = scope
+    if not scope.get("should_render_insight_on_page"):
         st.session_state["_ami_insight_render_skipped_reason"] = (
-            f"page mismatch (current={source_page!r}, insight={insight.get('source_page')!r})"
+            scope.get("render_skip_reason")
+            or f"page mismatch (current={source_page!r}, insight={insight.get('source_page')!r})"
         )
         st.session_state["_ami_insight_render_success"] = False
         return False

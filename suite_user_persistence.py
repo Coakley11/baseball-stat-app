@@ -170,6 +170,7 @@ def clear_workspace_autosave_block(st: Any, app_id: str) -> None:
     """Call at end of script run to allow autosave on the next rerun."""
     st.session_state.pop(_autosave_block_key(app_id), None)
     st.session_state.pop("_cloud_workspace_restored_this_run", None)
+    st.session_state.pop("_suite_user_nav_sync_skipped", None)
 
 
 def _extract_page_players(state: dict[str, Any], page: str) -> Any:
@@ -210,6 +211,12 @@ def _mark_workspace_sync_skipped(st: Any, app_id: str, reason: str) -> None:
     st.session_state["_suite_autosave_block_reason"] = reason
 
 
+def _mark_user_nav_sync_skipped(st: Any, reason: str) -> None:
+    """User navigation intentionally skipped restore — must not block page_change cloud save."""
+    st.session_state["_suite_persist_restore_skip_reason"] = reason
+    st.session_state["_suite_user_nav_sync_skipped"] = True
+
+
 def _comparison_user_explicitly_cleared(st: Any) -> bool:
     ss = st.session_state
     if not ss.get("comparison_state_dirty"):
@@ -221,8 +228,29 @@ def _comparison_user_explicitly_cleared(st: Any) -> bool:
     return isinstance(cp, list) and len(cp) == 0
 
 
-def _cloud_autosave_blocked_reason(st: Any, app_id: str, state: dict[str, Any]) -> str | None:
-    if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
+_FORCE_SAVE_CLOUD_REASONS = frozenset({
+    "comparison_edit",
+    "trend_edit",
+    "page_change",
+    "insight_persist",
+    "insight_hydrate",
+    "applied_math_send",
+})
+
+
+def _cloud_autosave_blocked_reason(
+    st: Any,
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    save_reason: str = "",
+) -> str | None:
+    if save_reason in _FORCE_SAVE_CLOUD_REASONS:
+        if save_reason == "page_change":
+            return None
+        if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
+            return None
+    elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
     if app_id != "baseball":
         return None
@@ -243,6 +271,78 @@ def _cloud_autosave_blocked_reason(st: Any, app_id: str, state: dict[str, Any]) 
         return "blank_comparison_would_erase_cloud"
     except Exception:
         return None
+
+
+def _preserve_cloud_widget_fields_on_page_change(
+    app_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Page-only save: keep cloud comparison/trend widgets when leaving those pages."""
+    if app_id != "baseball":
+        return state
+    try:
+        from suite_cloud_state import load_cloud_full_session
+    except ImportError:
+        return state
+    cloud_state, _ = load_cloud_full_session(app_id)
+    if not isinstance(cloud_state, dict) or not cloud_state:
+        return state
+    out = copy.deepcopy(state)
+    if not _workspace_comparison_players(out) and _workspace_comparison_players(cloud_state):
+        cs = cloud_state.get("comparison_state")
+        if isinstance(cs, dict):
+            out["comparison_state"] = copy.deepcopy(cs)
+        cloud_pf = cloud_state.get("page_filter_state")
+        if isinstance(cloud_pf, dict):
+            cmp_block = cloud_pf.get("Comparison Tool")
+            if isinstance(cmp_block, dict):
+                pf = out.setdefault("page_filter_state", {})
+                if not isinstance(pf, dict):
+                    pf = {}
+                    out["page_filter_state"] = pf
+                pf["Comparison Tool"] = copy.deepcopy(cmp_block)
+        meta = cloud_state.get("baseball_workspace_state")
+        if isinstance(meta, dict) and meta.get("comparison_players"):
+            ws = out.setdefault("baseball_workspace_state", {})
+            if isinstance(ws, dict):
+                ws["comparison_players"] = copy.deepcopy(meta["comparison_players"])
+    cloud_trend = _extract_page_players(cloud_state, "Trend Value")
+    local_trend = _extract_page_players(out, "Trend Value")
+    if cloud_trend and not local_trend:
+        ts = cloud_state.get("trend_state")
+        if isinstance(ts, dict):
+            out["trend_state"] = copy.deepcopy(ts)
+        cloud_pf = cloud_state.get("page_filter_state")
+        if isinstance(cloud_pf, dict):
+            trend_block = cloud_pf.get("Trend Value")
+            if isinstance(trend_block, dict):
+                pf = out.setdefault("page_filter_state", {})
+                if not isinstance(pf, dict):
+                    pf = {}
+                    out["page_filter_state"] = pf
+                pf["Trend Value"] = copy.deepcopy(trend_block)
+    return out
+
+
+def record_sidebar_nav_diagnostics(
+    st: Any,
+    *,
+    phase: str,
+    rerun_source: str = "",
+) -> None:
+    """?dev=1 trace for manual sidebar navigation vs cloud restore."""
+    ss = st.session_state
+    ss["_suite_sidebar_nav_phase"] = phase
+    if rerun_source:
+        ss["_suite_sidebar_nav_rerun_source"] = rerun_source
+    ss["_suite_sidebar_nav_main_sidebar_page"] = ss.get("main_sidebar_page")
+    ss["_suite_sidebar_nav_active_page"] = ss.get("active_page")
+    ss["_suite_sidebar_nav_user_nav"] = bool(ss.get("_suite_page_user_nav"))
+    ss["_suite_sidebar_nav_cloud_target"] = ss.get("_suite_cloud_target_page")
+    ss["_suite_sidebar_nav_last_persisted_page"] = ss.get("_suite_last_persisted_page")
+    ss["_suite_sidebar_nav_cloud_restored_this_run"] = bool(
+        ss.get("_cloud_workspace_restored_this_run")
+    )
 
 
 def _session_comparison_players(st: Any) -> list[str]:
@@ -404,8 +504,7 @@ def sync_workspace_protocol(
 
     if st.session_state.get("_suite_page_user_nav"):
         reason = "user page navigation — workspace sync skipped"
-        st.session_state["_suite_persist_restore_skip_reason"] = reason
-        _mark_workspace_sync_skipped(st, app_id, reason)
+        _mark_user_nav_sync_skipped(st, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -982,11 +1081,13 @@ def force_autosave(
         if reason:
             st.session_state["_suite_pending_save_reason"] = reason
         state = build_state(st)
+        if reason == "page_change":
+            state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
-        cloud_block = _cloud_autosave_blocked_reason(st, app_id, state)
+        cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=reason)
         saved_cloud = False
         if cloud_block:
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
@@ -1071,7 +1172,7 @@ def autosave_if_changed(
             from suite_cloud_state import save_cloud_full_session, session_page_summary
 
             page, summary = session_page_summary(app_id, state)
-            cloud_block = _cloud_autosave_blocked_reason(st, app_id, state)
+            cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason="autosave")
             if cloud_block:
                 st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
             else:
