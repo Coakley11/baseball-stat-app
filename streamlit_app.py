@@ -11958,6 +11958,16 @@ try:
 except Exception:
     pass
 
+
+def historical_filter_changed():
+    try:
+        from historical_state import mark_historical_filter_pending_sync
+
+        mark_historical_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
 if active_page == "Historical Explorer":
     from historical_state import (
         flush_historical_filter_edits,
@@ -12225,14 +12235,6 @@ if active_page == "Historical Explorer":
         hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
     )
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
-
-def historical_filter_changed():
-    try:
-        from historical_state import mark_historical_filter_pending_sync
-
-        mark_historical_filter_pending_sync(st.session_state)
-    except Exception:
-        pass
 
 
 def career_filter_changed():

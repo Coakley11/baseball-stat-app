@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import py_compile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from applied_math_context import apply_source_state_to_session, build_source_state
 from baseball_persistent_state import build_baseball_disk_state
@@ -153,6 +157,19 @@ class TestHistoricalState(unittest.TestCase):
         st.session_state = {"comparison_state": {"players": []}, "compare_players": []}
         state = {"historical_state": {"filters": dict(_SAMPLE_FILTERS)}}
         self.assertIsNone(_cloud_autosave_blocked_reason(st, "baseball", state, save_reason="historical_edit"))
+
+    def test_streamlit_app_compiles_and_defines_historical_handler_before_use(self) -> None:
+        streamlit_app = _REPO_ROOT / "streamlit_app.py"
+        historical_state = _REPO_ROOT / "historical_state.py"
+        py_compile.compile(str(streamlit_app), doraise=True)
+        py_compile.compile(str(historical_state), doraise=True)
+        text = streamlit_app.read_text(encoding="utf-8")
+        def_pos = text.find("def historical_filter_changed")
+        page_pos = text.find('if active_page == "Historical Explorer"')
+        use_pos = text.find("on_change=historical_filter_changed")
+        self.assertNotEqual(def_pos, -1, "historical_filter_changed must be defined in streamlit_app.py")
+        self.assertLess(def_pos, page_pos, "handler must be defined before Historical Explorer block")
+        self.assertLess(def_pos, use_pos, "handler must be defined before first on_change reference")
 
 
 if __name__ == "__main__":
