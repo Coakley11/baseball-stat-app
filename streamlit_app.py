@@ -1376,7 +1376,7 @@ def add_rate_stats(df):
     df["OPS"] = pd.to_numeric(df["OBP"] + df["SLG"], errors="coerce")
     return df
 
-def apply_stat_min_filters(df, prefix):
+def apply_stat_min_filters(df, prefix, on_change=None):
     df = df.copy()
     stat_columns = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     for col in stat_columns:
@@ -1405,6 +1405,7 @@ def apply_stat_min_filters(df, prefix):
                         value=0,
                         step=1,
                         key=f"{prefix}_{stat}_min",
+                        on_change=on_change,
                         help=(
                             f"Minimum {stat} combined across selected lookback years."
                             if prefix == "trend"
@@ -1423,6 +1424,7 @@ def apply_stat_min_filters(df, prefix):
                         step=0.001,
                         format="%.3f",
                         key=f"{prefix}_{stat}_min",
+                        on_change=on_change,
                         help=(
                             f"Minimum {stat} based on the selected trend-window data."
                             if prefix == "trend"
@@ -12289,7 +12291,7 @@ if active_page == "Career Totals":
         career_mode_note = "Total-career mode: one row per player. Franchise/league filters first limit the data included, then Team becomes the primary team within that filtered data. Position is based on Fielding.csv games."
 
     career_totals = add_rate_stats(career_totals)
-    career_totals = apply_stat_min_filters(career_totals, "career")
+    career_totals = apply_stat_min_filters(career_totals, "career", on_change=career_filter_changed)
     career_totals = safe_round_rate_stats(career_totals)
     st.caption(career_mode_note)
 

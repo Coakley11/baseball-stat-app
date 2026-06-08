@@ -8,8 +8,10 @@ from unittest.mock import MagicMock
 from applied_math_context import apply_source_state_to_session, build_source_state
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from career_totals_state import (
+    CAREER_ALL_STATE_KEYS,
     CAREER_DIRTY_KEY,
     CAREER_FILTER_KEYS,
+    CAREER_STAT_MIN_KEYS,
     apply_career_source_state_from_ami,
     apply_cloud_career_state_if_allowed,
     commit_career_filters_from_session,
@@ -176,6 +178,86 @@ class TestCareerTotalsState(unittest.TestCase):
         self.assertEqual(session["career_sort_stat_filter"], "RBI")
         self.assertEqual(session["career_state"]["filters"]["career_sort_stat_filter"], "RBI")
         self.assertTrue(is_career_locally_dirty(session))
+
+    def test_year_range_change_persists(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        session["career_year_range_filter"] = (2000, 2018)
+        sync_career_filter_change(session, reason="filter_change")
+        self.assertEqual(session["career_state"]["filters"]["career_year_range_filter"], (2000, 2018))
+        prepare_career_totals_page(session)
+        self.assertEqual(session["career_year_range_filter"], (2000, 2018))
+
+    def test_triples_min_zero_to_two_persists(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        session["career_3B_min"] = 0
+        write_canonical_career_state(session, filters={**_SAMPLE_FILTERS, "career_3B_min": 0}, reason="setup")
+        session["career_3B_min"] = 2
+        sync_career_filter_change(session, reason="filter_change")
+        self.assertEqual(session["career_state"]["filters"]["career_3B_min"], 2)
+        self.assertTrue(is_career_locally_dirty(session))
+        prepare_career_totals_page(session)
+        self.assertEqual(session["career_3B_min"], 2)
+
+    def test_zero_stat_min_is_valid_not_missing(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        session["career_HR_min"] = 0
+        session["career_3B_min"] = 0
+        sync_career_filter_change(session, reason="filter_change")
+        self.assertIn("career_HR_min", session["career_state"]["filters"])
+        self.assertIn("career_3B_min", session["career_state"]["filters"])
+        self.assertEqual(session["career_state"]["filters"]["career_HR_min"], 0)
+        self.assertEqual(session["career_state"]["filters"]["career_3B_min"], 0)
+
+    def test_phone_edit_beats_stale_cloud_default(self) -> None:
+        session = {
+            **_SAMPLE_FILTERS,
+            "career_3B_min": 2,
+            "career_year_range_filter": (2005, 2020),
+        }
+        sync_career_filter_change(session, reason="filter_change")
+        stale_cloud = {
+            "career_state": {
+                "filters": {**_SAMPLE_FILTERS, "career_3B_min": 0, "career_year_range_filter": (2010, 2024)},
+            }
+        }
+        self.assertFalse(apply_cloud_career_state_if_allowed(session, stale_cloud))
+        self.assertEqual(session["career_3B_min"], 2)
+        self.assertEqual(session["career_year_range_filter"], (2005, 2020))
+
+    def test_all_stat_min_keys_in_canonical_state(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        for key in CAREER_STAT_MIN_KEYS:
+            session[key] = 1 if key == "career_3B_min" else 0
+        sync_career_filter_change(session, reason="filter_change")
+        canonical = session["career_state"]["filters"]
+        for key in CAREER_STAT_MIN_KEYS:
+            self.assertIn(key, canonical)
+        self.assertEqual(canonical["career_3B_min"], 1)
+
+    def test_build_source_state_includes_stat_mins(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        session["career_3B_min"] = 2
+        write_canonical_career_state(
+            session,
+            filters={**_SAMPLE_FILTERS, "career_3B_min": 2},
+            reason="setup",
+        )
+        built = build_source_state("Career Totals", session)
+        self.assertEqual(built["filter_params"]["career_3B_min"], 2)
+
+    def test_disk_blob_includes_stat_mins(self) -> None:
+        st = MagicMock()
+        filters = {**_SAMPLE_FILTERS, "career_3B_min": 2}
+        st.session_state = {
+            "active_page": "Career Totals",
+            "career_state": {"filters": filters},
+            **filters,
+            "page_filter_state": {},
+        }
+        blob = build_baseball_disk_state(st)
+        self.assertEqual(blob["career_state"]["filters"]["career_3B_min"], 2)
+        meta = blob.get("baseball_workspace_state") or {}
+        self.assertEqual(meta.get("career_filters", {}).get("career_3B_min"), 2)
 
 
 if __name__ == "__main__":

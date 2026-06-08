@@ -156,14 +156,15 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
 
     elif p == "Career Totals":
         try:
-            from career_totals_state import CAREER_FILTER_KEYS, canonical_career_filters, gather_career_filters
+            from career_totals_state import canonical_career_filters, gather_career_filters, is_career_state_key
 
             canonical = canonical_career_filters(session_state) or gather_career_filters(session_state)
-            for fk in CAREER_FILTER_KEYS:
-                if fk in canonical:
-                    filter_params[fk] = _copy_widget_value(canonical[fk])
-                elif fk in session_state and session_state[fk] is not None:
-                    filter_params[fk] = _copy_widget_value(session_state[fk])
+            for fk, val in canonical.items():
+                if is_career_state_key(fk):
+                    filter_params[fk] = _copy_widget_value(val)
+            for fk, val in session_state.items():
+                if is_career_state_key(str(fk)) and fk not in filter_params and val is not None:
+                    filter_params[str(fk)] = _copy_widget_value(val)
         except ImportError:
             for fk in (
                 "career_year_range_filter",
@@ -176,6 +177,9 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
             ):
                 if fk in session_state and session_state[fk] is not None:
                     filter_params[fk] = _copy_widget_value(session_state[fk])
+            for fk, val in session_state.items():
+                if str(fk).startswith("career_") and str(fk).endswith("_min"):
+                    filter_params[str(fk)] = _copy_widget_value(val)
 
     elif "draft" in p.lower():
         dq = session_state.get("draft_queue")

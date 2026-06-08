@@ -1,10 +1,15 @@
-"""Canonical Career Totals page state — filters, sort, by-team toggle."""
+"""Canonical Career Totals page state — filters, stat minimums, sort, by-team toggle."""
 
 from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
 from typing import Any
+
+try:
+    from page_transfers import _TRANSFER_STAT_COLS as CAREER_STAT_COLUMNS
+except ImportError:
+    CAREER_STAT_COLUMNS = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
 
 CAREER_DIRTY_KEY = "career_state_dirty"
 CAREER_LOCAL_EDIT_TS_KEY = "career_state_last_local_edit_ts"
@@ -19,9 +24,28 @@ CAREER_FILTER_KEYS = (
     "career_by_team_toggle_filter",
 )
 
+CAREER_STAT_MIN_KEYS = tuple(f"career_{col}_min" for col in CAREER_STAT_COLUMNS)
+
+CAREER_ALL_STATE_KEYS = CAREER_FILTER_KEYS + CAREER_STAT_MIN_KEYS
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def is_career_state_key(key: str) -> bool:
+    k = str(key or "")
+    return k in CAREER_ALL_STATE_KEYS or (k.startswith("career_") and k.endswith("_min"))
+
+
+def _normalize_filter_value(key: str, value: Any) -> Any:
+    if key == "career_year_range_filter" and value is not None:
+        try:
+            lo, hi = value
+            return (int(lo), int(hi))
+        except (TypeError, ValueError):
+            return copy.deepcopy(value)
+    return copy.deepcopy(value)
 
 
 def is_career_locally_dirty(session: dict[str, Any]) -> bool:
@@ -39,17 +63,36 @@ def clear_career_local_edit(session: dict[str, Any]) -> None:
 
 
 def _extract_filters_from_session(session: dict[str, Any]) -> dict[str, Any]:
+    """Read all Career Totals filter keys from session; zero/False/empty are valid values."""
     out: dict[str, Any] = {}
-    for key in CAREER_FILTER_KEYS:
+    for key in CAREER_ALL_STATE_KEYS:
         if key in session:
-            out[key] = copy.deepcopy(session[key])
+            out[key] = _normalize_filter_value(key, session[key])
+    for key, val in session.items():
+        if is_career_state_key(str(key)) and key not in out:
+            out[str(key)] = _normalize_filter_value(str(key), val)
+    return out
+
+
+def _filters_from_block(block: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    inner = block.get("career_state")
+    if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
+        for key, val in inner["filters"].items():
+            if is_career_state_key(key):
+                out[key] = _normalize_filter_value(key, val)
+    for key, val in block.items():
+        if key == "career_state":
+            continue
+        if is_career_state_key(key):
+            out[key] = _normalize_filter_value(key, val)
     return out
 
 
 def canonical_career_filters(session: dict[str, Any]) -> dict[str, Any] | None:
     meta = session.get("career_state")
     if isinstance(meta, dict) and isinstance(meta.get("filters"), dict):
-        return dict(meta["filters"])
+        return {k: _normalize_filter_value(k, v) for k, v in meta["filters"].items() if is_career_state_key(k)}
     return None
 
 
@@ -89,13 +132,9 @@ def _sync_page_filter_career_block(
     if filt is None and isinstance(meta, dict) and isinstance(meta.get("filters"), dict):
         filt = meta["filters"]
     if isinstance(filt, dict):
-        for key in CAREER_FILTER_KEYS:
-            if key in filt:
-                block[key] = copy.deepcopy(filt[key])
-    else:
-        for key in CAREER_FILTER_KEYS:
-            if key in session:
-                block[key] = copy.deepcopy(session[key])
+        for key, val in filt.items():
+            if is_career_state_key(key):
+                block[key] = _normalize_filter_value(key, val)
 
 
 def write_canonical_career_state(
@@ -107,7 +146,8 @@ def write_canonical_career_state(
     sync_widget_keys: bool = True,
 ) -> dict[str, Any]:
     """Write canonical career_state; optionally mirror filter widget keys (pre-render only)."""
-    filt = dict(filters) if isinstance(filters, dict) else _extract_filters_from_session(session)
+    raw = dict(filters) if isinstance(filters, dict) else _extract_filters_from_session(session)
+    filt = {k: _normalize_filter_value(k, v) for k, v in raw.items() if is_career_state_key(k)}
     meta = session.get("career_state")
     if not isinstance(meta, dict):
         meta = {}
@@ -116,30 +156,28 @@ def write_canonical_career_state(
     session["career_state"] = meta
     if sync_widget_keys:
         for key, val in filt.items():
-            session[key] = copy.deepcopy(val)
+            session[key] = _normalize_filter_value(key, val)
             record_career_field_write(session, key, reason or "canonical", new=val)
     else:
         for key, val in filt.items():
             record_career_field_write(session, key, reason or "canonical_meta", new=val)
     _sync_page_filter_career_block(session, filters=filt)
+    session["_suite_last_cloud_payload_career_filters"] = copy.deepcopy(filt)
     if local_edit:
         mark_career_local_edit(session)
     return meta
 
 
 def gather_career_filters(session: dict[str, Any]) -> dict[str, Any]:
-    if is_career_locally_dirty(session):
-        widget = _extract_filters_from_session(session)
-        if widget:
-            return widget
-        canonical = canonical_career_filters(session)
-        return dict(canonical) if canonical else {}
+    widget = _extract_filters_from_session(session)
+    canonical = canonical_career_filters(session) or {}
 
-    canonical = canonical_career_filters(session)
-    if canonical is not None:
+    if is_career_locally_dirty(session):
+        return {**canonical, **widget}
+
+    if canonical:
         return dict(canonical)
 
-    widget = _extract_filters_from_session(session)
     if widget:
         return widget
 
@@ -147,12 +185,9 @@ def gather_career_filters(session: dict[str, Any]) -> dict[str, Any]:
     if isinstance(pf, dict):
         block = pf.get("Career Totals")
         if isinstance(block, dict):
-            inner = block.get("career_state")
-            if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
-                return dict(inner["filters"])
-            out = {k: block[k] for k in CAREER_FILTER_KEYS if k in block}
-            if out:
-                return out
+            block_filters = _filters_from_block(block)
+            if block_filters:
+                return block_filters
     return {}
 
 
@@ -191,15 +226,14 @@ def prepare_career_totals_filters(session: dict[str, Any]) -> None:
     block = pf.get("Career Totals") if isinstance(pf, dict) else None
     if not isinstance(block, dict):
         block = {}
-    for key in CAREER_FILTER_KEYS:
+    block_filters = _filters_from_block(block)
+    merged = {**block_filters, **{k: v for k, v in filters.items() if is_career_state_key(k)}}
+    for key in CAREER_ALL_STATE_KEYS:
         if key in session:
             continue
-        if key in filters:
-            session[key] = copy.deepcopy(filters[key])
-            record_career_field_write(session, key, "career_state.filters", new=filters[key])
-        elif key in block:
-            session[key] = copy.deepcopy(block[key])
-            record_career_field_write(session, key, "page_filter_state", new=block[key])
+        if key in merged:
+            session[key] = _normalize_filter_value(key, merged[key])
+            record_career_field_write(session, key, "career_state.filters", new=merged[key])
 
 
 def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str, Any]) -> bool:
@@ -212,13 +246,10 @@ def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str,
     for key, value in snapshot.items():
         if key == "career_state":
             continue
-        if key not in CAREER_FILTER_KEYS:
+        if not is_career_state_key(key):
             continue
         old = session.get(key)
-        try:
-            session[key] = copy.deepcopy(value)
-        except Exception:
-            session[key] = value
+        session[key] = _normalize_filter_value(key, value)
         record_career_field_write(session, key, "page_filter_state", old, value)
     inner = snapshot.get("career_state")
     if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
@@ -229,14 +260,20 @@ def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str,
             local_edit=False,
             sync_widget_keys=False,
         )
+    elif snapshot:
+        write_canonical_career_state(
+            session,
+            filters=_filters_from_block(snapshot),
+            reason="page_filter_restore",
+            local_edit=False,
+            sync_widget_keys=False,
+        )
     return True
 
 
 def sync_career_filter_change(session: dict[str, Any], *, reason: str = "filter_change") -> None:
     """on_change handler: read widget values, update canonical only (never write widget keys)."""
     current = _extract_filters_from_session(session)
-    if not current:
-        return
     write_canonical_career_state(
         session,
         filters=current,
@@ -249,8 +286,6 @@ def sync_career_filter_change(session: dict[str, Any], *, reason: str = "filter_
 def commit_career_filters_from_session(session: dict[str, Any], *, reason: str = "widget_rerun") -> None:
     """Persist widget values into canonical career_state without mutating widget keys."""
     current = _extract_filters_from_session(session)
-    if not current:
-        return
     prev = canonical_career_filters(session) or {}
     changed = current != prev
     write_canonical_career_state(
@@ -268,21 +303,17 @@ def apply_cloud_career_state_if_allowed(session: dict[str, Any], state: dict[str
     filters: dict[str, Any] = {}
     cs = state.get("career_state")
     if isinstance(cs, dict) and isinstance(cs.get("filters"), dict):
-        filters = dict(cs["filters"])
+        filters = {k: v for k, v in cs["filters"].items() if is_career_state_key(k)}
     if not filters:
         pf = state.get("page_filter_state")
         if isinstance(pf, dict):
             block = pf.get("Career Totals")
             if isinstance(block, dict):
-                inner = block.get("career_state")
-                if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
-                    filters = dict(inner["filters"])
-                else:
-                    filters = {k: block[k] for k in CAREER_FILTER_KEYS if k in block}
+                filters = _filters_from_block(block)
     if not filters:
         ws = state.get("baseball_workspace_state")
         if isinstance(ws, dict) and isinstance(ws.get("career_filters"), dict):
-            filters = dict(ws["career_filters"])
+            filters = {k: v for k, v in ws["career_filters"].items() if is_career_state_key(k)}
     if not filters:
         return False
     write_canonical_career_state(session, filters=filters, reason="cloud_restore")
@@ -297,13 +328,11 @@ def apply_career_source_state_from_ami(session: dict[str, Any], source_state: di
     wp = dict(source_state.get("widget_params") or {})
     filt = dict(source_state.get("filter_params") or {})
     merged = {**wp, **filt}
-    filters = {k: copy.deepcopy(merged[k]) for k in CAREER_FILTER_KEYS if k in merged}
-    if not filters:
-        filters = {
-            k: copy.deepcopy(v)
-            for k, v in merged.items()
-            if str(k).startswith("career_")
-        }
+    filters = {
+        k: _normalize_filter_value(k, copy.deepcopy(merged[k]))
+        for k in merged
+        if is_career_state_key(k)
+    }
     write_canonical_career_state(session, filters=filters, reason="ami_return", local_edit=False)
     clear_career_local_edit(session)
 
@@ -312,26 +341,28 @@ def render_career_totals_state_debug(st: Any, session: dict[str, Any]) -> None:
     meta = session.get("career_state")
     if not isinstance(meta, dict):
         meta = {}
+    canonical = meta.get("filters") if isinstance(meta.get("filters"), dict) else {}
     pf = session.get("page_filter_state")
     pf_block: dict[str, Any] = {}
     if isinstance(pf, dict):
         block = pf.get("Career Totals")
         if isinstance(block, dict):
             pf_block = block
+    widget_values = {k: session.get(k) for k in CAREER_ALL_STATE_KEYS if k in session}
     rows = {
-        "career_state.filters": meta.get("filters"),
-        "last_write_reason": meta.get("last_write_reason"),
         "career_state_dirty": session.get(CAREER_DIRTY_KEY),
-        "widget year_range": session.get("career_year_range_filter"),
-        "widget sort": session.get("career_sort_stat_filter"),
-        "widget by_team_toggle": session.get("career_by_team_toggle_filter"),
-        "page_filter_state.career_state": pf_block.get("career_state"),
+        "last_write_reason": meta.get("last_write_reason"),
+        "last_force_save_reason": session.get("_suite_pending_save_reason") or session.get("_suite_persist_last_save_reason"),
+        "last_save_cloud": session.get("_suite_persist_last_save_cloud"),
+        "cloud_payload_career_filters": session.get("_suite_last_cloud_payload_career_filters"),
         "restored_filters": session.get("_career_restored_filters"),
         "restore_source": session.get("_career_restore_source"),
-        "last_save_reason": session.get("_suite_persist_last_save_reason"),
-        "last_save_cloud": session.get("_suite_persist_last_save_cloud"),
+        "canonical career_state.filters": canonical,
+        "page_filter_state.career_state": pf_block.get("career_state"),
+        "page_filter_state career keys": _filters_from_block(pf_block),
+        "raw widget values": widget_values,
     }
     with st.sidebar.expander("Career Totals state", expanded=False):
         for k, v in rows.items():
-            if v is not None and v != "" and v is not False:
+            if v is not None and v != "" and v is not False and v != {}:
                 st.text(f"{k}: {v}")

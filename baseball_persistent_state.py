@@ -101,21 +101,10 @@ def _historical_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
 
 def _career_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
     try:
-        from career_totals_state import CAREER_FILTER_KEYS
+        from career_totals_state import _filters_from_block
     except ImportError:
-        CAREER_FILTER_KEYS = (
-            "career_year_range_filter",
-            "career_sort_stat_filter",
-            "career_batting_hand_filter",
-            "career_position_filter_mode",
-            "career_position_filter",
-            "career_team_filter",
-            "career_by_team_toggle_filter",
-        )
-    inner = block.get("career_state")
-    if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
-        return dict(inner["filters"])
-    return {k: block[k] for k in CAREER_FILTER_KEYS if k in block}
+        return {}
+    return _filters_from_block(block)
 
 
 def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: str) -> dict[str, Any]:
