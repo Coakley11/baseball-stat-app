@@ -26,6 +26,9 @@ INSIGHT_ELIGIBLE_PAGES: dict[str, frozenset[str]] = {
         "Comparison Tool",
         "Trend Value",
         "Historical Explorer",
+        "Career Totals",
+        "Valuation",
+        "ML Predictions",
         "Draft Assistant Simulator",
         "Live Draft Room",
         "Draft Room Simulator",
@@ -69,6 +72,8 @@ _INSIGHT_PAGE_ALIASES: dict[str, str] = {
     "trend value": "Trend Value",
     "comparison": "Comparison Tool",
     "comparison tool": "Comparison Tool",
+    "valuation": "Valuation",
+    "ml predictions": "ML Predictions",
 }
 
 
@@ -1084,6 +1089,11 @@ def render_insight_sync_debug(st: Any) -> None:
             str(ss.get("active_page") or ""),
             pending,
         )
+    rc = ss.get(SESSION_RETURN_CONTEXT_KEY)
+    if not isinstance(rc, dict):
+        rc = pending.get("return_context") or pending.get("source_state") or {}
+    rc = rc if isinstance(rc, dict) else {}
+    rc_filters = rc.get("filter_params") if isinstance(rc.get("filter_params"), dict) else {}
     decision_rows = {
         "insight_return_detected": ss.get("insight_return_detected"),
         "insight_source_page_raw": ss.get("insight_source_page_raw") or scope.get("source_page_raw"),
@@ -1096,6 +1106,9 @@ def render_insight_sync_debug(st: Any) -> None:
         "hydrate_source": ss.get("hydrate_source", ss.get("_ami_insight_hydrate_source")),
         "pending_insight_exists": ss.get("pending_insight_exists", bool(pending.get("conclusion"))),
         "insight_card_rendered": ss.get("insight_card_rendered", ss.get("_ami_insight_card_rendered")),
+        "return_context_source_page": rc.get("source_page"),
+        "return_context_has_valuation_filters": any(str(k).startswith("value_") for k in rc_filters),
+        "return_context_has_projections_filters": any(str(k).startswith("ml_") for k in rc_filters),
         "insight_return_phase": ss.get("_ami_insight_return_phase"),
         "insight_return_preserve": ss.get("insight_return_preserve", ss.get("_ami_insight_return_preserve")),
         "ami_resume_consumed": ss.get("ami_resume_consumed"),

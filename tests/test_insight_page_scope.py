@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from applied_math_return_insight import should_render_insight_on_page
+from applied_math_return_insight import insight_page_scope_decision, should_render_insight_on_page
 
 
 class TestInsightPageScope(unittest.TestCase):
@@ -31,6 +31,23 @@ class TestInsightPageScope(unittest.TestCase):
         }
         self.assertTrue(should_render_insight_on_page("baseball", "Trend Value", insight))
         self.assertFalse(should_render_insight_on_page("baseball", "Comparison Tool", insight))
+
+    def test_valuation_insight_only_on_valuation_page(self) -> None:
+        insight = {"source_app": "baseball", "source_page": "Valuation", "conclusion": "test"}
+        self.assertTrue(should_render_insight_on_page("baseball", "Valuation", insight))
+        self.assertFalse(should_render_insight_on_page("baseball", "ML Predictions", insight))
+        scope = insight_page_scope_decision("baseball", "Valuation", insight)
+        self.assertTrue(scope["should_render_insight_on_page"])
+        self.assertEqual(scope["source_page_normalized"], "Valuation")
+
+    def test_ml_predictions_insight_only_on_ml_page(self) -> None:
+        insight = {"source_app": "baseball", "source_page": "ML Predictions", "conclusion": "test"}
+        self.assertTrue(should_render_insight_on_page("baseball", "ML Predictions", insight))
+        self.assertFalse(should_render_insight_on_page("baseball", "Valuation", insight))
+
+    def test_emoji_valuation_source_page_normalizes(self) -> None:
+        insight = {"source_app": "baseball", "source_page": "💰 Valuation", "conclusion": "test"}
+        self.assertTrue(should_render_insight_on_page("baseball", "Valuation", insight))
 
 
 if __name__ == "__main__":
