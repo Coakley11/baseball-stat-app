@@ -102,13 +102,17 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
     trend_block = _page_block(state, "Trend Value")
     hist_block = _page_block(state, "Historical Explorer")
     draft_block = _page_block(state, "Draft Room")
+    cmp_meta = state.get("comparison_state") if isinstance(state.get("comparison_state"), dict) else {}
+    comparison_players = cmp_meta.get("players") or cmp_block.get("compare_players")
     return {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "updated_at": _utc_now_iso(),
         "device_id": _get_device_id(st),
         "save_reason": save_reason or "autosave",
         "page": state.get("active_page"),
-        "comparison_players": cmp_block.get("compare_players"),
+        "comparison_players": comparison_players,
+        "comparison_player_a": cmp_meta.get("player_a") or cmp_block.get("sig_player_a_clean"),
+        "comparison_player_b": cmp_meta.get("player_b") or cmp_block.get("sig_player_b_clean"),
         "trend_players": trend_block.get("trend_players_multi"),
         "historical_filters": _historical_filter_summary(hist_block) or None,
         "draft_state": {

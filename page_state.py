@@ -37,7 +37,7 @@ PAGE_STATE_REGISTRY = {
             "comparison_user_team",
             "compare_stat_saved", "compare_x_axis_mode_saved", "compare_year_range_saved",
             "compare_age_range_saved", "compare_trend_mode_saved", "compare_smooth_window_saved",
-            "sig_player_a_clean", "sig_player_b_clean",
+            "sig_player_a_clean", "sig_player_b_clean", "comparison_state",
         ],
         "prefixes": ["compare_", "sig_years_", "sig_player"],
     },

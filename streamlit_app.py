@@ -827,6 +827,23 @@ def resolve_fullname_to_clean_label(full_name, label_map):
     base = " ".join(fullname_base_from_label(fn).split())
     if base in label_map:
         return base
+    # Legacy team-suffix labels from older saves, e.g. "Juan Soto (NYY)".
+    if fn.endswith(")") and "(" in fn:
+        suffix = fn[fn.rfind("(") + 1 : -1].strip()
+        if suffix.isupper() and 2 <= len(suffix) <= 4:
+            base_from_team = fn[: fn.rfind("(")].strip()
+            if base_from_team in label_map:
+                return base_from_team
+            base_matches = [
+                lbl for lbl in label_map.keys() if fullname_base_from_label(lbl) == base_from_team
+            ]
+            if len(base_matches) == 1:
+                return base_matches[0]
+            if len(base_matches) > 1:
+                return sorted(base_matches)[0]
+            resolved = resolve_fullname_to_clean_label(base_from_team, label_map)
+            if resolved:
+                return resolved
     candidates = sorted([lbl for lbl in label_map.keys() if lbl.startswith(fn + " (")])
     if candidates:
         return candidates[0]
@@ -944,16 +961,31 @@ def register_players_sent_to_trend_page(full_name, label_map):
 
 
 def append_compare_player_ordered(full_name, label_map):
-    """Queue one player for the Comparison Tool using Player A / Player B slots.
+    """Queue one player for the Comparison Tool using Player A / Player B slots."""
+    try:
+        from comparison_state import (
+            gather_comparison_players,
+            normalize_compare_label,
+            write_canonical_comparison_state,
+        )
+    except ImportError:
+        gather_comparison_players = None  # type: ignore[assignment]
 
-    Rules:
-    - If Player A is empty, the sent player becomes Player A.
-    - If Player A is already set, the sent player becomes Player B (replacing any prior B).
-    - ``pending_compare_players`` is kept in sync so the top multiselect matches A/B.
-    """
     lbl = resolve_fullname_to_clean_label(full_name, label_map)
     if not lbl:
         return False
+
+    if gather_comparison_players is not None:
+        current = gather_comparison_players(st.session_state, label_map, resolve_fullname_to_clean_label)
+        a = current[0] if len(current) >= 1 else None
+        b = current[1] if len(current) >= 2 else None
+        if not a:
+            return bool(write_canonical_comparison_state(st.session_state, [lbl], reason="send_player_a"))
+        if a == lbl:
+            return True
+        if not b or b == lbl:
+            return bool(write_canonical_comparison_state(st.session_state, [a, lbl], reason="send_player_b"))
+        return bool(write_canonical_comparison_state(st.session_state, [a, lbl], reason="send_replace_b"))
 
     a = st.session_state.get("sig_player_a_clean")
     b = st.session_state.get("sig_player_b_clean")
@@ -961,7 +993,6 @@ def append_compare_player_ordered(full_name, label_map):
     b = b if isinstance(b, str) and b in label_map else None
 
     old_compare = [x for x in (st.session_state.get("compare_players") or []) if isinstance(x, str) and x in label_map]
-    # When navigating from other pages, sig A/B session may be unset while compare_players still holds the last UI selection.
     if a is None and old_compare:
         a = old_compare[0]
     if b is None and len(old_compare) > 1:
@@ -989,7 +1020,6 @@ def append_compare_player_ordered(full_name, label_map):
         st.session_state["pending_compare_players"] = merged[:3]
         return True
 
-    # Both slots occupied by different players: new send replaces Player B.
     st.session_state["pending_sig_player_a"] = a
     st.session_state["pending_sig_player_b"] = lbl
     merged = [a, lbl]
@@ -11341,10 +11371,13 @@ def _apply_transfer_players_to_compare(players: dict):
     label_map = get_clean_player_label_map_yearly(yearly_df)
     mode = str((players or {}).get("mode", "none")).lower()
     if mode in ("", "none"):
-        st.session_state["compare_players"] = []
-        st.session_state["compare_players_saved"] = []
-        st.session_state.pop("pending_compare_players", None)
-        st.session_state.pop("pending_compare_clear_player_b", None)
+        try:
+            from comparison_state import write_canonical_comparison_state
+
+            write_canonical_comparison_state(st.session_state, [], reason="transfer_clear")
+        except Exception:
+            st.session_state["compare_players"] = []
+            st.session_state["compare_players_saved"] = []
         return
     labels = list(players.get("labels") or [])
     if not labels:
@@ -11354,13 +11387,13 @@ def _apply_transfer_players_to_compare(players: dict):
                 labels.append(lbl)
     if not labels:
         return
-    st.session_state["pending_compare_players"] = labels[:3]
-    st.session_state["compare_players"] = labels[:3]
-    st.session_state["compare_players_saved"] = labels[:3]
-    if labels:
-        st.session_state["pending_sig_player_a"] = labels[0]
-    if len(labels) > 1:
-        st.session_state["pending_sig_player_b"] = labels[1]
+    try:
+        from comparison_state import write_canonical_comparison_state
+
+        write_canonical_comparison_state(st.session_state, labels[:3], reason="transfer_apply")
+    except Exception:
+        st.session_state["compare_players"] = labels[:3]
+        st.session_state["compare_players_saved"] = labels[:3]
 
 
 def _valid_trend_chart_labels(candidate_labels, label_map, *, lag_years=None, min_seasons=2):
@@ -12389,24 +12422,34 @@ def _format_sig_table(df):
 
 def compare_top_changed():
     selected = st.session_state.get("compare_players", [])
-    if isinstance(selected, list):
-        st.session_state["compare_players_saved"] = selected[:3]
-        if len(selected) >= 2:
-            record_workflow_comparison_group(selected[:3])
-        if len(selected) >= 1:
-            st.session_state["pending_sig_player_a"] = selected[0]
-        if len(selected) >= 2:
-            st.session_state["pending_sig_player_b"] = selected[1]
-            record_workflow_comparison_pair(selected[0], selected[1])
-            try:
-                from baseball_activity import log_player_comparison
+    if not isinstance(selected, list):
+        return
+    try:
+        from comparison_state import record_comparison_sync_trace, sync_compare_from_multiselect
 
-                sig = tuple(sorted(selected[:2]))
-                if st.session_state.get("_cc_compare_activity_sig") != sig:
-                    st.session_state["_cc_compare_activity_sig"] = sig
-                    log_player_comparison(selected[0], selected[1])
-            except Exception:
-                pass
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_compare_from_multiselect(
+            st.session_state, selected, label_map, resolve_fullname_to_clean_label
+        )
+        record_comparison_sync_trace(
+            st.session_state, winner="multiselect", reason="compare_top_changed"
+        )
+        selected = st.session_state.get("compare_players") or []
+    except Exception:
+        selected = [x for x in selected if isinstance(x, str)][:3]
+    if len(selected) >= 2:
+        record_workflow_comparison_group(selected[:3])
+    if len(selected) >= 2:
+        record_workflow_comparison_pair(selected[0], selected[1])
+        try:
+            from baseball_activity import log_player_comparison
+
+            sig = tuple(sorted(selected[:2]))
+            if st.session_state.get("_cc_compare_activity_sig") != sig:
+                st.session_state["_cc_compare_activity_sig"] = sig
+                log_player_comparison(selected[0], selected[1])
+        except Exception:
+            pass
 
 
 def compare_settings_changed():
@@ -12428,20 +12471,22 @@ def _sig_years_changed(key):
 
 
 def sig_players_changed():
-    a = st.session_state.get("sig_player_a_clean")
-    b = st.session_state.get("sig_player_b_clean")
-    selected = []
-    if a:
-        selected.append(a)
-    if b and b not in selected:
-        selected.append(b)
-    current = st.session_state.get("compare_players", [])
-    if isinstance(current, list):
-        for p in current:
-            if p not in selected and len(selected) < 3:
-                selected.append(p)
-    st.session_state["compare_players_saved"] = selected[:3]
-    st.session_state["pending_compare_players"] = selected[:3]
+    try:
+        from comparison_state import record_comparison_sync_trace, sync_compare_from_sig_ab
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_compare_from_sig_ab(st.session_state, label_map, resolve_fullname_to_clean_label)
+        record_comparison_sync_trace(st.session_state, winner="sig_ab", reason="sig_players_changed")
+    except Exception:
+        a = st.session_state.get("sig_player_a_clean")
+        b = st.session_state.get("sig_player_b_clean")
+        selected = []
+        if a:
+            selected.append(a)
+        if b and b not in selected:
+            selected.append(b)
+        st.session_state["compare_players_saved"] = selected[:3]
+        st.session_state["pending_compare_players"] = selected[:3]
 
 
 if active_page == "Comparison Tool":
@@ -12452,35 +12497,21 @@ if active_page == "Comparison Tool":
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
 
-    # Safe two-way sync setup.
-    # Apply pending Player A/B changes to the top selector BEFORE the widget is created.
-    pending_compare = st.session_state.pop("pending_compare_players", None)
-    if isinstance(pending_compare, list) and pending_compare:
-        opts_set = set(compare_player_options)
-        normalized = [p for p in pending_compare if p in opts_set][:3]
-        if not normalized:
-            st.warning(
-                "Send to Comparison: could not match those names to Lahman player labels. "
-                "Try the Comparison page dropdown if the table uses nicknames or extra text."
-            )
-        else:
-            # Drop stale multiselect session so navigation from other pages always applies the send.
-            st.session_state.pop("compare_players", None)
-            st.session_state["compare_players"] = normalized
-            st.session_state["compare_players_saved"] = normalized
+    from comparison_state import (
+        ensure_compare_multiselect,
+        prepare_comparison_tool_page,
+        record_comparison_sync_trace,
+        render_comparison_state_debug,
+    )
 
-    if st.session_state.pop("pending_compare_clear_player_b", False):
-        st.session_state.pop("sig_player_b_clean", None)
-
-    default_compare_labels = []
-    for _sig_key in ["pending_sig_player_a", "pending_sig_player_b", "sig_player_a_clean", "sig_player_b_clean"]:
-        _lbl = st.session_state.get(_sig_key)
-        if _lbl in compare_player_options and _lbl not in default_compare_labels:
-            default_compare_labels.append(_lbl)
-    if not default_compare_labels:
-        saved_compare = st.session_state.get("compare_players_saved", [])
-        if isinstance(saved_compare, list):
-            default_compare_labels = [p for p in saved_compare if p in compare_player_options][:3]
+    _canonical_players = prepare_comparison_tool_page(
+        st.session_state, clean_label_map_compare, resolve_fullname_to_clean_label
+    )
+    record_comparison_sync_trace(
+        st.session_state,
+        winner="canonical",
+        reason=f"prepare_on_load ({len(_canonical_players)} players)",
+    )
 
     for _key in [
         "compare_stat",
@@ -12494,14 +12525,18 @@ if active_page == "Comparison Tool":
         if _saved is not None and _key not in st.session_state:
             st.session_state[_key] = _saved
 
-    _compare_init = default_compare_labels[:3] if default_compare_labels else []
-    ensure_multiselect_state("compare_players", compare_player_options, _compare_init)
+    ensure_compare_multiselect(
+        st.session_state,
+        clean_label_map_compare,
+        resolve_fullname_to_clean_label,
+        compare_player_options,
+    )
     selected_labels_compare = st.multiselect(
         "Select up to 3 players",
         options=compare_player_options,
         max_selections=3,
         key="compare_players",
-        on_change=compare_top_changed
+        on_change=compare_top_changed,
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     comparison_action_team = st.session_state.get("room_your_team")
@@ -12778,21 +12813,26 @@ if active_page == "Comparison Tool":
         clean_label_map_sig = clean_label_map_compare
         all_player_options_sig = compare_player_options
 
-        # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
-        pending_a = st.session_state.pop("pending_sig_player_a", None)
-        pending_b = st.session_state.pop("pending_sig_player_b", None)
-        if pending_a in all_player_options_sig:
-            st.session_state["sig_player_a_clean"] = pending_a
-        if pending_b in all_player_options_sig:
-            st.session_state["sig_player_b_clean"] = pending_b
-
-        # Bottom Player A/B dropdowns show the top-selected comparison players first,
-        # but still allow any player in the database.
         sig_priority_options = [p for p in selected_labels_compare if p in all_player_options_sig]
         sig_dropdown_options = sig_priority_options + [p for p in all_player_options_sig if p not in sig_priority_options]
 
+        if len(selected_labels_compare) >= 1:
+            validate_state_option(
+                "sig_player_a_clean",
+                sig_dropdown_options,
+                selected_labels_compare[0],
+            )
+        if len(selected_labels_compare) >= 2:
+            validate_state_option(
+                "sig_player_b_clean",
+                sig_dropdown_options,
+                selected_labels_compare[1],
+            )
+        elif st.session_state.get("sig_player_b_clean") not in (None, selected_labels_compare[:1]):
+            st.session_state.pop("sig_player_b_clean", None)
+
         sig_default_a_index = 0
-        sig_default_b_index = 1 if len(sig_dropdown_options) > 1 else 0
+        sig_default_b_index = min(1, len(sig_dropdown_options) - 1) if len(sig_dropdown_options) > 1 else 0
 
         saved_a = st.session_state.get("sig_player_a_clean")
         saved_b = st.session_state.get("sig_player_b_clean")
@@ -12806,6 +12846,8 @@ if active_page == "Comparison Tool":
             sig_default_b_index = sig_dropdown_options.index(saved_b)
         elif len(selected_labels_compare) >= 2 and selected_labels_compare[1] in sig_dropdown_options:
             sig_default_b_index = sig_dropdown_options.index(selected_labels_compare[1])
+        elif len(selected_labels_compare) < 2:
+            sig_default_b_index = sig_default_a_index
 
         with sig_col1:
             sig_player_a_label = st.selectbox(
@@ -13042,6 +13084,13 @@ if active_page == "Comparison Tool":
         label="Use these filters in another tool…",
         extra_context={"compare_selected_labels": selected_labels_compare},
     )
+    if developer_mode_enabled():
+        render_comparison_state_debug(
+            st,
+            st.session_state,
+            clean_label_map_compare,
+            selected_labels=selected_labels_compare,
+        )
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
