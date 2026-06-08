@@ -28,6 +28,9 @@ CAREER_STAT_MIN_KEYS = tuple(f"career_{col}_min" for col in CAREER_STAT_COLUMNS)
 
 CAREER_ALL_STATE_KEYS = CAREER_FILTER_KEYS + CAREER_STAT_MIN_KEYS
 
+CAREER_PENDING_SYNC_KEY = "_career_filters_pending_sync"
+CAREER_TEAM_PSEUDO_OPTIONS = frozenset({"All Teams", "American League", "National League"})
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -39,13 +42,77 @@ def is_career_state_key(key: str) -> bool:
 
 
 def _normalize_filter_value(key: str, value: Any) -> Any:
-    if key == "career_year_range_filter" and value is not None:
-        try:
-            lo, hi = value
-            return (int(lo), int(hi))
-        except (TypeError, ValueError):
-            return copy.deepcopy(value)
+    if key == "career_year_range_filter":
+        return normalize_career_year_range(value)
+    if key == "career_team_filter":
+        return _normalize_team_filter(value)
+    if key == "career_batting_hand_filter" or key == "career_position_filter":
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return [str(value).strip()] if str(value).strip() else []
+        return [str(x).strip() for x in value if str(x).strip()]
+    if key == "career_by_team_toggle_filter":
+        return bool(value)
     return copy.deepcopy(value)
+
+
+def normalize_career_year_range(
+    value: Any,
+    *,
+    min_year: int | None = None,
+    max_year: int | None = None,
+    default: tuple[int, int] | None = None,
+) -> tuple[int, int] | None:
+    """Stable 2-int tuple; accepts list or tuple; clamp only when bounds provided."""
+    from year_range_state import sanitize_year_range
+
+    if value is None:
+        return None
+    if min_year is not None and max_year is not None:
+        if default is None:
+            default = (int(min_year), int(max_year))
+        return sanitize_year_range(value, int(min_year), int(max_year), default)
+    parsed = value
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            return (int(value[0]), int(value[1]))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _normalize_team_filter(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = [value]
+    out: list[str] = []
+    for item in value:
+        s = str(item).strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _career_widget_drift(session: dict[str, Any]) -> bool:
+    widget = _extract_filters_from_session(session)
+    canonical = canonical_career_filters(session) or {}
+    if not widget:
+        return False
+    for key, val in widget.items():
+        if canonical.get(key) != val:
+            return True
+    return False
+
+
+def _migrate_legacy_career_keys(session: dict[str, Any]) -> None:
+    if "career_year_range_filter" not in session and session.get("career_year") is not None:
+        yr = normalize_career_year_range(session.get("career_year"))
+        if yr is not None:
+            session["career_year_range_filter"] = yr
+    if "career_team_filter" not in session and session.get("career_team") is not None:
+        session["career_team_filter"] = _normalize_team_filter(session.get("career_team"))
 
 
 def is_career_locally_dirty(session: dict[str, Any]) -> bool:
@@ -162,24 +229,30 @@ def write_canonical_career_state(
         for key, val in filt.items():
             record_career_field_write(session, key, reason or "canonical_meta", new=val)
     _sync_page_filter_career_block(session, filters=filt)
-    session["_suite_last_cloud_payload_career_filters"] = copy.deepcopy(filt)
+    payload = copy.deepcopy(filt)
+    session["_suite_last_cloud_payload_career_filters"] = payload
+    if "career_year_range_filter" in payload:
+        session["_suite_last_cloud_payload_career_year_range"] = copy.deepcopy(
+            payload["career_year_range_filter"]
+        )
     if local_edit:
         mark_career_local_edit(session)
     return meta
 
 
 def gather_career_filters(session: dict[str, Any]) -> dict[str, Any]:
+    _migrate_legacy_career_keys(session)
     widget = _extract_filters_from_session(session)
     canonical = canonical_career_filters(session) or {}
 
-    if is_career_locally_dirty(session):
+    if is_career_locally_dirty(session) or session.get(CAREER_PENDING_SYNC_KEY) or _career_widget_drift(session):
+        return {**canonical, **widget}
+
+    if widget:
         return {**canonical, **widget}
 
     if canonical:
         return dict(canonical)
-
-    if widget:
-        return widget
 
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
@@ -193,18 +266,29 @@ def gather_career_filters(session: dict[str, Any]) -> dict[str, Any]:
 
 def prepare_career_totals_page(session: dict[str, Any]) -> dict[str, Any]:
     """Reconcile Career Totals filters before widgets render."""
-    if is_career_locally_dirty(session):
-        filt = gather_career_filters(session)
+    _migrate_legacy_career_keys(session)
+    widget = _extract_filters_from_session(session)
+    canonical = canonical_career_filters(session) or {}
+    drift = _career_widget_drift(session) or bool(session.get(CAREER_PENDING_SYNC_KEY))
+
+    if is_career_locally_dirty(session) or drift:
+        filt = {**canonical, **widget}
         return write_canonical_career_state(
             session,
             filters=filt,
-            reason="local_edit_preserve",
+            reason="local_edit_preserve" if is_career_locally_dirty(session) else "widget_drift",
             local_edit=True,
+            sync_widget_keys=False,
         )
 
-    if canonical_career_filters(session) is not None:
-        filt = gather_career_filters(session)
-        return write_canonical_career_state(session, filters=filt, reason="canonical_preserve")
+    if canonical:
+        filt = {**canonical, **widget}
+        return write_canonical_career_state(
+            session,
+            filters=filt,
+            reason="canonical_preserve",
+            sync_widget_keys=not bool(widget),
+        )
 
     filt = gather_career_filters(session)
     return write_canonical_career_state(
@@ -271,16 +355,101 @@ def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str,
     return True
 
 
-def sync_career_filter_change(session: dict[str, Any], *, reason: str = "filter_change") -> None:
-    """on_change handler: read widget values, update canonical only (never write widget keys)."""
+def prepare_career_year_range(
+    session: dict[str, Any],
+    min_year: int,
+    max_year: int,
+    default: tuple[int, int],
+) -> tuple[int, int]:
+    """Seed/clamp year range before slider; never reset a valid in-bounds range to default."""
+    from year_range_state import sanitize_year_range
+
+    key = "career_year_range_filter"
+    _migrate_legacy_career_keys(session)
+    canonical = (canonical_career_filters(session) or {}).get(key)
+    raw = session.get(key) if key in session else None
+    if raw is None and canonical is not None:
+        raw = canonical
+    preserve_default = default
+    if is_career_locally_dirty(session) or session.get(CAREER_PENDING_SYNC_KEY) or _career_widget_drift(session):
+        if raw is not None:
+            preserve_default = normalize_career_year_range(raw) or default
+    sanitized = sanitize_year_range(raw, int(min_year), int(max_year), preserve_default)
+    if sanitized is None:
+        sanitized = (int(min_year), int(max_year))
+    session[key] = (int(sanitized[0]), int(sanitized[1]))
+    return session[key]
+
+
+def prepare_career_multiselect_filter(
+    session: dict[str, Any],
+    key: str,
+    options: list[str],
+    default: list[str] | None = None,
+) -> list[str]:
+    """Prepare multiselect options/values; preserve valid selections across option rebuilds."""
+    opts = [str(x) for x in options]
+    default_list = _normalize_filter_value(key, default or [])
+    canonical = (canonical_career_filters(session) or {}).get(key)
+    if key not in session:
+        if canonical is not None:
+            session[key] = _normalize_filter_value(key, canonical)
+        else:
+            session[key] = list(default_list)
+    elif not isinstance(session.get(key), list):
+        session[key] = list(default_list)
+
+    current = _normalize_filter_value(key, session.get(key))
+    preserve = set(current)
+    if isinstance(canonical, list):
+        preserve.update(canonical)
+    merged_opts = list(dict.fromkeys(opts + list(preserve)))
+
+    if is_career_locally_dirty(session) or session.get(CAREER_PENDING_SYNC_KEY) or _career_widget_drift(session):
+        session[key] = [x for x in current if x in merged_opts or x in preserve]
+        if not session[key] and current:
+            session[key] = list(current)
+    elif session.get("_transfer_just_applied_to") != session.get("active_page"):
+        session[key] = [x for x in current if x in opts]
+    else:
+        session[key] = [x for x in current if x in merged_opts]
+    return merged_opts
+
+
+def mark_career_filter_pending_sync(session: dict[str, Any]) -> None:
+    session[CAREER_PENDING_SYNC_KEY] = True
+
+
+def flush_career_filter_edits(session: dict[str, Any], st_obj: Any = None, *, reason: str = "filter_change") -> bool:
+    """After widgets render: read current session values, update canonical, force-save."""
+    pending = bool(session.pop(CAREER_PENDING_SYNC_KEY, False))
     current = _extract_filters_from_session(session)
+    prev = canonical_career_filters(session) or {}
+    if not current and not pending:
+        return False
+    changed = current != prev
+    if not pending and not changed:
+        return False
     write_canonical_career_state(
         session,
-        filters=current,
+        filters={**prev, **current},
         reason=reason,
         local_edit=True,
         sync_widget_keys=False,
     )
+    if st_obj is not None:
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st_obj, reason="career_edit")
+        except Exception:
+            pass
+    return True
+
+
+def sync_career_filter_change(session: dict[str, Any], *, reason: str = "filter_change") -> None:
+    """Legacy alias — on_change only marks pending; call flush after widgets render."""
+    mark_career_filter_pending_sync(session)
 
 
 def commit_career_filters_from_session(session: dict[str, Any], *, reason: str = "widget_rerun") -> None:
@@ -349,12 +518,29 @@ def render_career_totals_state_debug(st: Any, session: dict[str, Any]) -> None:
         if isinstance(block, dict):
             pf_block = block
     widget_values = {k: session.get(k) for k in CAREER_ALL_STATE_KEYS if k in session}
+    cloud_payload = session.get("_suite_last_cloud_payload_career_filters")
+    if isinstance(cloud_payload, dict):
+        cloud_year = cloud_payload.get("career_year_range_filter")
+        cloud_team = cloud_payload.get("career_team_filter")
+    else:
+        cloud_year = session.get("_suite_last_cloud_payload_career_year_range")
+        cloud_team = None
     rows = {
         "career_state_dirty": session.get(CAREER_DIRTY_KEY),
         "last_write_reason": meta.get("last_write_reason"),
-        "last_force_save_reason": session.get("_suite_pending_save_reason") or session.get("_suite_persist_last_save_reason"),
+        "last_force_save_reason": session.get("_suite_pending_save_reason")
+        or session.get("_suite_persist_last_save_reason"),
         "last_save_cloud": session.get("_suite_persist_last_save_cloud"),
-        "cloud_payload_career_filters": session.get("_suite_last_cloud_payload_career_filters"),
+        "raw career_year_range widget": session.get("career_year_range_filter"),
+        "canonical career_year_range": canonical.get("career_year_range_filter"),
+        "page_filter_state career_year_range": pf_block.get("career_year_range_filter"),
+        "cloud_payload_career_year_range": cloud_year,
+        "raw career_team_filter widget": session.get("career_team_filter"),
+        "canonical career_team_filter": canonical.get("career_team_filter"),
+        "page_filter_state career_team_filter": pf_block.get("career_team_filter"),
+        "cloud_payload_career_team_filter": cloud_team,
+        "cloud_payload_career_filters": cloud_payload,
+        "pending_sync": session.get(CAREER_PENDING_SYNC_KEY),
         "restored_filters": session.get("_career_restored_filters"),
         "restore_source": session.get("_career_restore_source"),
         "canonical career_state.filters": canonical,

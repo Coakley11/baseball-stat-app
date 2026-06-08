@@ -12130,19 +12130,19 @@ if active_page == "Historical Explorer":
 
 def career_filter_changed():
     try:
-        from career_totals_state import sync_career_filter_change
-        from baseball_persistent_state import force_save_baseball_state
+        from career_totals_state import mark_career_filter_pending_sync
 
-        sync_career_filter_change(st.session_state, reason="filter_change")
-        force_save_baseball_state(st, reason="career_edit")
+        mark_career_filter_pending_sync(st.session_state)
     except Exception:
         pass
 
 if active_page == "Career Totals":
     from career_totals_state import (
-        commit_career_filters_from_session,
+        flush_career_filter_edits,
+        prepare_career_multiselect_filter,
         prepare_career_totals_filters,
         prepare_career_totals_page,
+        prepare_career_year_range,
         render_career_totals_state_debug,
     )
 
@@ -12158,8 +12158,8 @@ if active_page == "Career Totals":
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
     cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
-        validate_slider_range(
-            "career_year_range_filter",
+        prepare_career_year_range(
+            st.session_state,
             year_min,
             year_max,
             (max(year_min, 2010), year_max),
@@ -12184,7 +12184,12 @@ if active_page == "Career Totals":
         c2, c3, c4 = st.columns(3)
         with c2:
             bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
-            validate_multiselect_options("career_batting_hand_filter", bats_options_career, bats_options_career)
+            bats_options_career = prepare_career_multiselect_filter(
+                st.session_state,
+                "career_batting_hand_filter",
+                bats_options_career,
+                bats_options_career,
+            )
             bats_filter_career = st.multiselect(
                 "Batting Hand",
                 bats_options_career,
@@ -12207,7 +12212,12 @@ if active_page == "Career Totals":
         position_source_col = "careerPrimaryPos" if position_filter_mode == "Career Primary Position" else "primaryPos"
         with c4:
             pos_options_career = sorted([x for x in batting_df[position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
-            validate_multiselect_options("career_position_filter", pos_options_career, pos_options_career)
+            pos_options_career = prepare_career_multiselect_filter(
+                st.session_state,
+                "career_position_filter",
+                pos_options_career,
+                pos_options_career,
+            )
             pos_filter_career = st.multiselect(
                 "Position",
                 pos_options_career,
@@ -12216,7 +12226,12 @@ if active_page == "Career Totals":
             )
         actual_team_names_career = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
         team_options_career = ["All Teams", "American League", "National League"] + actual_team_names_career
-        validate_multiselect_options("career_team_filter", team_options_career, ["All Teams"])
+        team_options_career = prepare_career_multiselect_filter(
+            st.session_state,
+            "career_team_filter",
+            team_options_career,
+            ["All Teams"],
+        )
         team_filter_career = st.multiselect(
             "Franchise / League",
             team_options_career,
@@ -12230,6 +12245,8 @@ if active_page == "Career Totals":
             help="OFF = one row per player with a Primary Team. ON = one row per player/team, and stat minimums are applied to each team row separately.",
             on_change=career_filter_changed,
         )
+
+    flush_career_filter_edits(st.session_state, st, reason="career_filter_flush")
 
     filtered_career = batting_df[(batting_df["yearID"] >= range_career[0]) & (batting_df["yearID"] <= range_career[1])].copy()
     if bats_filter_career:
@@ -12328,7 +12345,7 @@ if active_page == "Career Totals":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_career,
     )
-    commit_career_filters_from_session(st.session_state, reason="page_rerun")
+    flush_career_filter_edits(st.session_state, st, reason="career_page_save")
     if developer_mode_enabled():
         render_career_totals_state_debug(st, st.session_state)
     save_page_state(active_page)

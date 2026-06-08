@@ -8,17 +8,21 @@ from unittest.mock import MagicMock
 from applied_math_context import apply_source_state_to_session, build_source_state
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from career_totals_state import (
-    CAREER_ALL_STATE_KEYS,
     CAREER_DIRTY_KEY,
     CAREER_FILTER_KEYS,
     CAREER_STAT_MIN_KEYS,
     apply_career_source_state_from_ami,
     apply_cloud_career_state_if_allowed,
     commit_career_filters_from_session,
+    flush_career_filter_edits,
     is_career_locally_dirty,
+    mark_career_filter_pending_sync,
     mark_career_local_edit,
+    normalize_career_year_range,
+    prepare_career_multiselect_filter,
     prepare_career_totals_filters,
     prepare_career_totals_page,
+    prepare_career_year_range,
     restore_career_totals_page_filters,
     sync_career_filter_change,
     write_canonical_career_state,
@@ -41,7 +45,8 @@ class TestCareerTotalsState(unittest.TestCase):
         session: dict = {}
         write_canonical_career_state(session, filters=_SAMPLE_FILTERS, reason="user_edit", local_edit=True)
         session["career_sort_stat_filter"] = "HR"
-        commit_career_filters_from_session(session, reason="widget_change")
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="widget_change")
         prepare_career_totals_page(session)
         self.assertEqual(session["career_sort_stat_filter"], "HR")
         self.assertEqual(session["career_state"]["filters"]["career_sort_stat_filter"], "HR")
@@ -170,11 +175,13 @@ class TestCareerTotalsState(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(session["career_state"]["filters"]["career_sort_stat_filter"], "HR")
 
-    def test_sync_career_filter_change_updates_canonical_only(self) -> None:
+    def test_sync_career_filter_change_marks_pending_then_flush(self) -> None:
         session = dict(_SAMPLE_FILTERS)
         write_canonical_career_state(session, filters=_SAMPLE_FILTERS, reason="setup")
         session["career_sort_stat_filter"] = "RBI"
         sync_career_filter_change(session, reason="filter_change")
+        self.assertTrue(session.get("_career_filters_pending_sync"))
+        flush_career_filter_edits(session, reason="filter_change")
         self.assertEqual(session["career_sort_stat_filter"], "RBI")
         self.assertEqual(session["career_state"]["filters"]["career_sort_stat_filter"], "RBI")
         self.assertTrue(is_career_locally_dirty(session))
@@ -182,17 +189,110 @@ class TestCareerTotalsState(unittest.TestCase):
     def test_year_range_change_persists(self) -> None:
         session = dict(_SAMPLE_FILTERS)
         session["career_year_range_filter"] = (2000, 2018)
-        sync_career_filter_change(session, reason="filter_change")
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
         self.assertEqual(session["career_state"]["filters"]["career_year_range_filter"], (2000, 2018))
         prepare_career_totals_page(session)
         self.assertEqual(session["career_year_range_filter"], (2000, 2018))
+
+    def test_year_range_list_normalizes_to_tuple(self) -> None:
+        self.assertEqual(normalize_career_year_range([2005, 2020]), (2005, 2020))
+        self.assertEqual(normalize_career_year_range((2005, 2020)), (2005, 2020))
+
+    def test_valid_year_range_not_reset_to_default(self) -> None:
+        session = {"career_year_range_filter": (2005, 2020)}
+        prepare_career_year_range(session, 1871, 2024, (2010, 2024))
+        self.assertEqual(session["career_year_range_filter"], (2005, 2020))
+
+    def test_phone_year_range_beats_stale_cloud(self) -> None:
+        session = {**_SAMPLE_FILTERS, "career_year_range_filter": (2005, 2020)}
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
+        stale = {
+            "career_state": {
+                "filters": {**_SAMPLE_FILTERS, "career_year_range_filter": (2010, 2024)},
+            }
+        }
+        self.assertFalse(apply_cloud_career_state_if_allowed(session, stale))
+        self.assertEqual(session["career_year_range_filter"], (2005, 2020))
+
+    def test_dell_restores_newer_cloud_year_range(self) -> None:
+        session: dict = {"active_page": "Career Totals"}
+        cloud = {
+            "career_state": {
+                "filters": {**_SAMPLE_FILTERS, "career_year_range_filter": (1998, 2016)},
+            },
+            "baseball_workspace_state": {
+                "career_filters": {**_SAMPLE_FILTERS, "career_year_range_filter": (1998, 2016)},
+            },
+        }
+        self.assertTrue(apply_cloud_career_state_if_allowed(session, cloud))
+        self.assertEqual(session["career_year_range_filter"], (1998, 2016))
+
+    def test_franchise_league_phone_edit_syncs_canonical(self) -> None:
+        session = dict(_SAMPLE_FILTERS)
+        session["career_team_filter"] = ["American League"]
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
+        self.assertEqual(session["career_state"]["filters"]["career_team_filter"], ["American League"])
+
+    def test_all_teams_valid_and_preserved(self) -> None:
+        session = {"career_team_filter": ["All Teams"]}
+        options = ["All Teams", "American League", "National League", "New York Yankees"]
+        prepare_career_multiselect_filter(session, "career_team_filter", options, ["All Teams"])
+        self.assertEqual(session["career_team_filter"], ["All Teams"])
+        write_canonical_career_state(
+            session,
+            filters={"career_team_filter": ["All Teams"]},
+            reason="test",
+        )
+        self.assertEqual(session["career_state"]["filters"]["career_team_filter"], ["All Teams"])
+
+    def test_team_filter_preserved_when_options_rebuilt(self) -> None:
+        session = {"career_team_filter": ["New York Yankees"]}
+        mark_career_local_edit(session)
+        options = ["All Teams", "American League", "National League"]
+        merged = prepare_career_multiselect_filter(
+            session,
+            "career_team_filter",
+            options,
+            ["All Teams"],
+        )
+        self.assertIn("New York Yankees", merged)
+        self.assertEqual(session["career_team_filter"], ["New York Yankees"])
+
+    def test_position_filter_change_does_not_erase_team_filter(self) -> None:
+        session = {
+            "career_team_filter": ["American League"],
+            "career_position_filter": ["OF"],
+        }
+        mark_career_local_edit(session)
+        flush_career_filter_edits(session, reason="filter_change")
+        session["career_position_filter"] = ["SS"]
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
+        self.assertEqual(session["career_state"]["filters"]["career_team_filter"], ["American League"])
+        self.assertEqual(session["career_state"]["filters"]["career_position_filter"], ["SS"])
+
+    def test_phone_team_filter_beats_stale_cloud(self) -> None:
+        session = {**_SAMPLE_FILTERS, "career_team_filter": ["American League"]}
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
+        stale = {
+            "career_state": {
+                "filters": {**_SAMPLE_FILTERS, "career_team_filter": ["All Teams"]},
+            }
+        }
+        self.assertFalse(apply_cloud_career_state_if_allowed(session, stale))
+        self.assertEqual(session["career_team_filter"], ["American League"])
 
     def test_triples_min_zero_to_two_persists(self) -> None:
         session = dict(_SAMPLE_FILTERS)
         session["career_3B_min"] = 0
         write_canonical_career_state(session, filters={**_SAMPLE_FILTERS, "career_3B_min": 0}, reason="setup")
         session["career_3B_min"] = 2
-        sync_career_filter_change(session, reason="filter_change")
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
         self.assertEqual(session["career_state"]["filters"]["career_3B_min"], 2)
         self.assertTrue(is_career_locally_dirty(session))
         prepare_career_totals_page(session)
@@ -202,7 +302,8 @@ class TestCareerTotalsState(unittest.TestCase):
         session = dict(_SAMPLE_FILTERS)
         session["career_HR_min"] = 0
         session["career_3B_min"] = 0
-        sync_career_filter_change(session, reason="filter_change")
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
         self.assertIn("career_HR_min", session["career_state"]["filters"])
         self.assertIn("career_3B_min", session["career_state"]["filters"])
         self.assertEqual(session["career_state"]["filters"]["career_HR_min"], 0)
@@ -214,7 +315,8 @@ class TestCareerTotalsState(unittest.TestCase):
             "career_3B_min": 2,
             "career_year_range_filter": (2005, 2020),
         }
-        sync_career_filter_change(session, reason="filter_change")
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
         stale_cloud = {
             "career_state": {
                 "filters": {**_SAMPLE_FILTERS, "career_3B_min": 0, "career_year_range_filter": (2010, 2024)},
@@ -228,7 +330,8 @@ class TestCareerTotalsState(unittest.TestCase):
         session = dict(_SAMPLE_FILTERS)
         for key in CAREER_STAT_MIN_KEYS:
             session[key] = 1 if key == "career_3B_min" else 0
-        sync_career_filter_change(session, reason="filter_change")
+        mark_career_filter_pending_sync(session)
+        flush_career_filter_edits(session, reason="filter_change")
         canonical = session["career_state"]["filters"]
         for key in CAREER_STAT_MIN_KEYS:
             self.assertIn(key, canonical)
