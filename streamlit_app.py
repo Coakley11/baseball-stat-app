@@ -10884,6 +10884,7 @@ PAGE_STATE_DEBUG_PREFIXES = {
     "Valuation": ("value_",),
     "Fantasy Sleepers & Busts": ("fantasy_market_", "sleeper_", "fantasy_pts_"),
     "Draft Assistant Simulator": ("draft_", "fantasy_draft_"),
+    "Draft Room Simulator": ("draft_room_", "room_"),
     "Draft Simulation Test Mode": ("draft_lab_",),
     "Live Draft Room": ("live_draft_", "live_slot_"),
     "Fantasy Standings Tracker": ("standings_",),
