@@ -6,6 +6,7 @@ import unittest
 
 from comparison_state import (
     COMPARISON_DIRTY_KEY,
+    apply_comparison_source_state_from_ami,
     clear_comparison_local_edit,
     ensure_compare_multiselect,
     gather_comparison_players,
@@ -201,6 +202,30 @@ class TestComparisonState(unittest.TestCase):
         }
         players = prepare_comparison_tool_page(session, self.label_map, _resolve)
         self.assertEqual(players, ["Francisco Lindor", "Aaron Judge"])
+
+    def test_ami_return_restores_players_and_chart_settings(self) -> None:
+        session: dict = {}
+        source = {
+            "source_page": "Comparison Tool",
+            "entity_params": {
+                "compare_players": ["Francisco Lindor", "Aaron Judge"],
+                "player_a_label": "Francisco Lindor",
+                "player_b_label": "Aaron Judge",
+            },
+            "filter_params": {
+                "compare_stat": "OPS",
+                "compare_x_axis_mode": "Player Age",
+                "compare_trend_mode": "Smoothed Moving Average",
+            },
+        }
+        apply_comparison_source_state_from_ami(session, source)
+        self.assertEqual(session["compare_players"], ["Francisco Lindor", "Aaron Judge"])
+        self.assertEqual(session["sig_player_a_clean"], "Francisco Lindor")
+        self.assertEqual(session["sig_player_b_clean"], "Aaron Judge")
+        self.assertEqual(session["compare_stat"], "OPS")
+        self.assertEqual(session["compare_x_axis_mode"], "Player Age")
+        self.assertFalse(session.get(COMPARISON_DIRTY_KEY))
+        self.assertNotIn("pending_compare_players", session)
 
 
 if __name__ == "__main__":

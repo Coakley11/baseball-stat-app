@@ -12127,6 +12127,16 @@ if active_page == "Historical Explorer":
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
 
 if active_page == "Career Totals":
+    from career_totals_state import (
+        commit_career_filters_from_session,
+        prepare_career_totals_filters,
+        prepare_career_totals_page,
+        render_career_totals_state_debug,
+    )
+
+    prepare_career_totals_page(st.session_state)
+    prepare_career_totals_filters(st.session_state)
+
     render_section_header(
         "📚 Career Totals",
         "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team."
@@ -12299,6 +12309,9 @@ if active_page == "Career Totals":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_career,
     )
+    commit_career_filters_from_session(st.session_state, reason="page_rerun")
+    if developer_mode_enabled():
+        render_career_totals_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()

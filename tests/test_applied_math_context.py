@@ -49,7 +49,7 @@ class TestBaseballSourceState(unittest.TestCase):
         self.assertEqual(session["compare_x_axis_mode"], "Age")
         self.assertEqual(session["sig_player_a_clean"], "Miguel Cabrera (DET)")
 
-    def test_apply_source_state_sets_pending_keys(self) -> None:
+    def test_apply_source_state_sets_canonical_comparison_keys(self) -> None:
         session: dict = {}
         source = build_source_state(
             "Comparison Tool",
@@ -60,8 +60,9 @@ class TestBaseballSourceState(unittest.TestCase):
             },
         )
         apply_source_state_to_session(session, source)
-        self.assertEqual(session["pending_sig_player_a"], "Juan Soto (NYY)")
-        self.assertEqual(session["pending_compare_players"], ["Juan Soto (NYY)", "Aaron Judge (NYY)"])
+        self.assertEqual(session["sig_player_a_clean"], "Juan Soto (NYY)")
+        self.assertEqual(session["compare_players"], ["Juan Soto (NYY)", "Aaron Judge (NYY)"])
+        self.assertNotIn("pending_compare_players", session)
         self.assertEqual(session["_navigate_to_page"], "Comparison Tool")
         self.assertEqual(session["_ami_return_restore_page"], "Comparison Tool")
 

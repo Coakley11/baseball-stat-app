@@ -40,6 +40,25 @@ class TestBaseballPersistence(unittest.TestCase):
             ["Juan Soto (NYY)", "Francisco Lindor (NYM)"],
         )
 
+    def test_build_disk_state_includes_career_state(self) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Career Totals",
+            "page_filter_state": {},
+            "career_state": {
+                "filters": {
+                    "career_year_range_filter": (2010, 2024),
+                    "career_sort_stat_filter": "HR",
+                }
+            },
+            "career_year_range_filter": (2010, 2024),
+            "career_sort_stat_filter": "HR",
+        }
+        blob = build_baseball_disk_state(st)
+        self.assertEqual(blob.get("career_state", {}).get("filters", {}).get("career_sort_stat_filter"), "HR")
+        meta = blob.get("baseball_workspace_state") or {}
+        self.assertEqual(meta.get("career_filters", {}).get("career_sort_stat_filter"), "HR")
+
     def test_apply_disk_state_sets_navigation_and_players(self) -> None:
         st = MagicMock()
         st.session_state = {

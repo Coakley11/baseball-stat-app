@@ -154,6 +154,29 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
             if fk in session_state and session_state[fk] is not None:
                 filter_params[fk] = _copy_widget_value(session_state[fk])
 
+    elif p == "Career Totals":
+        try:
+            from career_totals_state import CAREER_FILTER_KEYS, canonical_career_filters, gather_career_filters
+
+            canonical = canonical_career_filters(session_state) or gather_career_filters(session_state)
+            for fk in CAREER_FILTER_KEYS:
+                if fk in canonical:
+                    filter_params[fk] = _copy_widget_value(canonical[fk])
+                elif fk in session_state and session_state[fk] is not None:
+                    filter_params[fk] = _copy_widget_value(session_state[fk])
+        except ImportError:
+            for fk in (
+                "career_year_range_filter",
+                "career_sort_stat_filter",
+                "career_batting_hand_filter",
+                "career_position_filter_mode",
+                "career_position_filter",
+                "career_team_filter",
+                "career_by_team_toggle_filter",
+            ):
+                if fk in session_state and session_state[fk] is not None:
+                    filter_params[fk] = _copy_widget_value(session_state[fk])
+
     elif "draft" in p.lower():
         dq = session_state.get("draft_queue")
         if isinstance(dq, list) and dq:
@@ -171,7 +194,12 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
     }
 
 
-def apply_source_state_to_session(session_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+def apply_source_state_to_session(
+    session_state: dict[str, Any],
+    source_state: dict[str, Any],
+    *,
+    schedule_navigation: bool = True,
+) -> None:
     """Map stored source_state into baseball pending-restore session keys."""
     if not source_state:
         return
@@ -181,10 +209,12 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
     chart = dict(source_state.get("chart_params") or {})
 
     page = str(source_state.get("source_page") or source_state.get("page_params", {}).get("page") or "").strip()
-    if page:
+    if page and schedule_navigation:
         session_state["_navigate_to_page"] = page
         session_state["_skip_page_restore_for"] = page
         session_state["_ami_return_restore_page"] = page
+    elif page:
+        session_state.pop("_navigate_to_page", None)
         try:
             from page_state import _collect_keys_for_page
 
@@ -209,6 +239,37 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
             tp = ent.get("player_label") or wp.get("single_trend_dashboard_player")
             if tp:
                 session_state["single_trend_dashboard_player"] = str(tp)
+        return
+
+    if page == "Comparison Tool":
+        try:
+            from comparison_state import apply_comparison_source_state_from_ami
+
+            apply_comparison_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            cp = ent.get("compare_players") or wp.get("compare_players")
+            if isinstance(cp, list) and cp:
+                session_state["pending_compare_players"] = copy.deepcopy(cp[:3])
+            pa = ent.get("player_a_label") or wp.get("sig_player_a_clean")
+            pb = ent.get("player_b_label") or wp.get("sig_player_b_clean")
+            if pa:
+                session_state["pending_sig_player_a"] = str(pa)
+            if pb:
+                session_state["pending_sig_player_b"] = str(pb)
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
+        return
+
+    if page == "Career Totals":
+        try:
+            from career_totals_state import apply_career_source_state_from_ami
+
+            apply_career_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
         return
 
     for key in (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -452,6 +453,35 @@ def apply_cloud_comparison_state_if_allowed(
 def record_comparison_sync_trace(session: dict[str, Any], *, winner: str, reason: str) -> None:
     session["_comparison_sync_winner"] = winner
     session["_comparison_sync_reason"] = reason
+
+
+def apply_comparison_source_state_from_ami(session: dict[str, Any], source_state: dict[str, Any]) -> None:
+    """Restore Comparison Tool snapshot from Applied Math return."""
+    wp = dict(source_state.get("widget_params") or {})
+    ent = dict(source_state.get("entity_params") or {})
+    filt = dict(source_state.get("filter_params") or {})
+
+    cp = ent.get("compare_players") or wp.get("compare_players")
+    players: list[str] = []
+    if isinstance(cp, list) and cp:
+        players = [str(p).strip() for p in cp if p][:3]
+    else:
+        pa = ent.get("player_a_label") or wp.get("sig_player_a_clean")
+        pb = ent.get("player_b_label") or wp.get("sig_player_b_clean")
+        players = [str(p) for p in (pa, pb) if p]
+
+    write_canonical_comparison_state(session, players, reason="ami_return", local_edit=False)
+    clear_comparison_local_edit(session)
+
+    for fk in COMPARISON_CHART_KEYS:
+        if fk in filt:
+            session[fk] = copy.deepcopy(filt[fk])
+            session[f"{fk}_saved"] = copy.deepcopy(filt[fk])
+        elif fk in wp:
+            session[fk] = copy.deepcopy(wp[fk])
+            session[f"{fk}_saved"] = copy.deepcopy(wp[fk])
+    _sync_chart_meta(session)
+    _sync_page_filter_comparison_block(session)
 
 
 def render_comparison_state_debug(

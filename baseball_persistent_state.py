@@ -41,7 +41,7 @@ _INSIGHT_KEYS = (
     "_ami_dismissed_insight_ids",
 )
 
-_WORKSPACE_KEYS = ("comparison_state", "trend_state")
+_WORKSPACE_KEYS = ("comparison_state", "trend_state", "career_state")
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
@@ -99,16 +99,38 @@ def _historical_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
     return {k: block[k] for k in keys if k in block}
 
 
+def _career_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from career_totals_state import CAREER_FILTER_KEYS
+    except ImportError:
+        CAREER_FILTER_KEYS = (
+            "career_year_range_filter",
+            "career_sort_stat_filter",
+            "career_batting_hand_filter",
+            "career_position_filter_mode",
+            "career_position_filter",
+            "career_team_filter",
+            "career_by_team_toggle_filter",
+        )
+    inner = block.get("career_state")
+    if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
+        return dict(inner["filters"])
+    return {k: block[k] for k in CAREER_FILTER_KEYS if k in block}
+
+
 def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: str) -> dict[str, Any]:
     cmp_block = _page_block(state, "Comparison Tool")
     trend_block = _page_block(state, "Trend Value")
     hist_block = _page_block(state, "Historical Explorer")
+    career_block = _page_block(state, "Career Totals")
     draft_block = _page_block(state, "Draft Room")
     cmp_meta = state.get("comparison_state") if isinstance(state.get("comparison_state"), dict) else {}
     comparison_players = cmp_meta.get("players") or cmp_block.get("compare_players")
     trend_meta = state.get("trend_state") if isinstance(state.get("trend_state"), dict) else {}
     trend_players = trend_meta.get("players_multi") or trend_block.get("trend_players_multi")
     trend_chart_player = trend_meta.get("chart_player") or trend_block.get("single_trend_dashboard_player")
+    career_meta = state.get("career_state") if isinstance(state.get("career_state"), dict) else {}
+    career_filters = career_meta.get("filters") or _career_filter_summary(career_block) or None
     return {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "updated_at": _utc_now_iso(),
@@ -120,6 +142,7 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         "comparison_player_b": cmp_meta.get("player_b") or cmp_block.get("sig_player_b_clean"),
         "trend_players": trend_block.get("trend_players_multi"),
         "historical_filters": _historical_filter_summary(hist_block) or None,
+        "career_filters": career_filters,
         "draft_state": {
             k: draft_block[k]
             for k in ("room_your_team", "room_team_count", "room_rounds", "room_format")
@@ -190,6 +213,8 @@ def _comparison_players_from_workspace_blob(state: dict[str, Any]) -> list[str] 
 def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     """Apply one authoritative workspace blob atomically (page + all page_filter_state)."""
     ss = st.session_state
+    pre_restore_session_page = str(ss.get("active_page") or "").strip()
+    pre_restore_user_nav = bool(ss.get("_suite_page_user_nav"))
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
         ss["page_filter_state"] = copy.deepcopy(pf)
@@ -211,21 +236,32 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             ss[key] = val
 
     blob_page = str(state.get("active_page") or "").strip()
-    session_page = str(ss.get("active_page") or "").strip()
+    session_page_after_blob = str(ss.get("active_page") or "").strip()
     last_persisted = str(ss.get("_suite_last_persisted_page") or "").strip()
     user_owns_page = bool(
-        ss.get("_suite_page_user_nav")
-        or (session_page and last_persisted and session_page == last_persisted)
+        pre_restore_user_nav
+        or (
+            pre_restore_session_page
+            and last_persisted
+            and pre_restore_session_page == last_persisted
+        )
     )
     active = blob_page
     overwrite_source = "workspace_blob"
-    if user_owns_page and session_page and blob_page and session_page != blob_page:
-        active = session_page
+    if (
+        user_owns_page
+        and pre_restore_session_page
+        and blob_page
+        and pre_restore_session_page != blob_page
+    ):
+        active = pre_restore_session_page
         overwrite_source = "user_page_preserved"
-    elif session_page:
-        active = session_page
     elif blob_page:
         active = blob_page
+    elif pre_restore_session_page:
+        active = pre_restore_session_page
+    elif session_page_after_blob:
+        active = session_page_after_blob
     ss["_suite_page_overwrite_source"] = overwrite_source
     if active:
         _clear_page_widget_keys(ss, active)
@@ -237,6 +273,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
 
             clear_comparison_local_edit(ss)
+            try:
+                from career_totals_state import clear_career_local_edit
+
+                clear_career_local_edit(ss)
+            except ImportError:
+                pass
             if active == "Comparison Tool":
                 restore_comparison_page_filters(ss, ss["page_filter_state"])
             elif active == "Trend Value":
@@ -309,6 +351,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
+    try:
+        from career_totals_state import apply_cloud_career_state_if_allowed
+
+        apply_cloud_career_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -356,6 +405,12 @@ def autosave_baseball_state(st: Any) -> None:
             and st.session_state.get("_suite_persist_last_save_cloud")
         ):
             clear_comparison_local_edit(st.session_state)
+            try:
+                from career_totals_state import clear_career_local_edit
+
+                clear_career_local_edit(st.session_state)
+            except ImportError:
+                pass
     except ImportError:
         pass
 
@@ -369,6 +424,12 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from comparison_state import clear_comparison_local_edit
 
             clear_comparison_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from career_totals_state import clear_career_local_edit
+
+            clear_career_local_edit(st.session_state)
         except ImportError:
             pass
     return saved
