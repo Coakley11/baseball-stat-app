@@ -223,6 +223,36 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
         except ImportError:
             pass
 
+    elif p == "Leaderboards":
+        try:
+            from leaderboards_state import canonical_leaderboards_filters, gather_leaderboards_filters, is_leaderboards_state_key
+
+            canonical = canonical_leaderboards_filters(session_state) or gather_leaderboards_filters(session_state)
+            for fk, val in canonical.items():
+                if is_leaderboards_state_key(fk):
+                    filter_params[fk] = _copy_widget_value(val)
+            for fk, val in session_state.items():
+                if is_leaderboards_state_key(str(fk)) and str(fk) not in filter_params and val is not None:
+                    filter_params[str(fk)] = _copy_widget_value(val)
+        except ImportError:
+            pass
+
+    elif p in ("Fantasy Sleepers & Busts", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"):
+        try:
+            from fantasy_state import gather_fantasy_section, is_fantasy_state_key, section_for_page
+
+            section = section_for_page(p)
+            if section:
+                canonical = gather_fantasy_section(session_state, section)
+                for fk, val in canonical.items():
+                    if is_fantasy_state_key(fk):
+                        filter_params[fk] = _copy_widget_value(val)
+                for fk, val in session_state.items():
+                    if is_fantasy_state_key(str(fk)) and str(fk) not in filter_params and val is not None:
+                        filter_params[str(fk)] = _copy_widget_value(val)
+        except ImportError:
+            pass
+
     elif "draft" in p.lower():
         try:
             from draft_state import canonical_draft_workflow, gather_draft_workflow
@@ -363,6 +393,28 @@ def apply_source_state_to_session(
             from projections_state import apply_projections_source_state_from_ami
 
             apply_projections_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
+        return
+
+    if page == "Leaderboards":
+        try:
+            from leaderboards_state import apply_leaderboards_source_state_from_ami
+
+            apply_leaderboards_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            for key, val in {**wp, **filt}.items():
+                if val is not None and val != "":
+                    session_state[key] = copy.deepcopy(val)
+        return
+
+    if page in ("Fantasy Sleepers & Busts", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"):
+        try:
+            from fantasy_state import apply_fantasy_source_state_from_ami
+
+            apply_fantasy_source_state_from_ami(session_state, source_state)
         except ImportError:
             for key, val in {**wp, **filt}.items():
                 if val is not None and val != "":

@@ -49,6 +49,8 @@ _WORKSPACE_KEYS = (
     "historical_state",
     "valuation_state",
     "projections_state",
+    "leaderboards_state",
+    "fantasy_state",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
@@ -140,6 +142,24 @@ def _projections_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
+def _leaderboards_filter_summary(block: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from leaderboards_state import _filters_from_block
+
+        return _filters_from_block(block)
+    except ImportError:
+        return {}
+
+
+def _fantasy_section_filter_summary(session: dict[str, Any], section: str) -> dict[str, Any] | None:
+    try:
+        from fantasy_state import _flat_from_meta_for_envelope
+
+        return _flat_from_meta_for_envelope(session, section)
+    except ImportError:
+        return None
+
+
 def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: str) -> dict[str, Any]:
     cmp_block = _page_block(state, "Comparison Tool")
     trend_block = _page_block(state, "Trend Value")
@@ -177,6 +197,28 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
             projections_filters = None
     if not projections_filters:
         projections_filters = _projections_filter_summary(ml_block) or None
+    lb_block = _page_block(state, "Leaderboards")
+    lb_meta = state.get("leaderboards_state") if isinstance(state.get("leaderboards_state"), dict) else {}
+    leaderboards_filters = lb_meta.get("filters") or _leaderboards_filter_summary(lb_block) or None
+    fantasy_meta = state.get("fantasy_state") if isinstance(state.get("fantasy_state"), dict) else {}
+    fantasy_sleepers_filters = None
+    fantasy_standings_filters = None
+    fantasy_lineup_filters = None
+    if fantasy_meta:
+        try:
+            from fantasy_state import _flat_from_meta_for_envelope
+
+            fantasy_sleepers_filters = _flat_from_meta_for_envelope(state, "sleepers")
+            fantasy_standings_filters = _flat_from_meta_for_envelope(state, "standings")
+            fantasy_lineup_filters = _flat_from_meta_for_envelope(state, "lineup")
+        except ImportError:
+            pass
+    if not fantasy_sleepers_filters:
+        fantasy_sleepers_filters = _fantasy_section_filter_summary(state, "sleepers")
+    if not fantasy_standings_filters:
+        fantasy_standings_filters = _fantasy_section_filter_summary(state, "standings")
+    if not fantasy_lineup_filters:
+        fantasy_lineup_filters = _fantasy_section_filter_summary(state, "lineup")
     draft_meta = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
     draft_workflow = None
     if draft_meta:
@@ -206,6 +248,10 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         "historical_filters": historical_filters,
         "valuation_filters": valuation_filters,
         "projections_filters": projections_filters,
+        "leaderboards_filters": leaderboards_filters,
+        "fantasy_sleepers_filters": fantasy_sleepers_filters,
+        "fantasy_standings_filters": fantasy_standings_filters,
+        "fantasy_lineup_filters": fantasy_lineup_filters,
         "draft_state": {
             k: draft_block[k]
             for k in ("room_your_team", "room_team_count", "room_rounds", "room_format")
@@ -367,6 +413,18 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 clear_projections_local_edit(ss)
             except ImportError:
                 pass
+            try:
+                from leaderboards_state import clear_leaderboards_local_edit
+
+                clear_leaderboards_local_edit(ss)
+            except ImportError:
+                pass
+            try:
+                from fantasy_state import clear_fantasy_local_edit
+
+                clear_fantasy_local_edit(ss)
+            except ImportError:
+                pass
             if active == "Comparison Tool":
                 restore_comparison_page_filters(ss, ss["page_filter_state"])
             elif active == "Trend Value":
@@ -381,6 +439,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 from projections_state import restore_projections_page_filters
 
                 restore_projections_page_filters(ss, ss["page_filter_state"])
+            elif active == "Leaderboards":
+                from leaderboards_state import restore_leaderboards_page_filters
+
+                restore_leaderboards_page_filters(ss, ss["page_filter_state"])
+            elif active in ("Fantasy Sleepers & Busts", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"):
+                from fantasy_state import restore_fantasy_page_filters
+
+                restore_fantasy_page_filters(ss, ss["page_filter_state"], active)
             else:
                 pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         except ImportError:
@@ -482,6 +548,20 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
+    try:
+        from leaderboards_state import apply_cloud_leaderboards_state_if_allowed
+
+        apply_cloud_leaderboards_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
+    try:
+        from fantasy_state import apply_cloud_fantasy_state_if_allowed
+
+        apply_cloud_fantasy_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -559,6 +639,18 @@ def autosave_baseball_state(st: Any) -> None:
                 clear_projections_local_edit(st.session_state)
             except ImportError:
                 pass
+            try:
+                from leaderboards_state import clear_leaderboards_local_edit
+
+                clear_leaderboards_local_edit(st.session_state)
+            except ImportError:
+                pass
+            try:
+                from fantasy_state import clear_fantasy_local_edit
+
+                clear_fantasy_local_edit(st.session_state)
+            except ImportError:
+                pass
     except ImportError:
         pass
 
@@ -614,6 +706,18 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from projections_state import clear_projections_local_edit
 
             clear_projections_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from leaderboards_state import clear_leaderboards_local_edit
+
+            clear_leaderboards_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from fantasy_state import clear_fantasy_local_edit
+
+            clear_fantasy_local_edit(st.session_state)
         except ImportError:
             pass
     return saved

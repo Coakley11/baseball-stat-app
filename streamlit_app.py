@@ -12474,13 +12474,50 @@ if active_page == "Career Totals":
     )
     render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
 
+def leaderboards_filter_changed():
+    try:
+        from leaderboards_state import mark_leaderboards_filter_pending_sync
+
+        mark_leaderboards_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+def fantasy_filter_changed():
+    try:
+        from fantasy_state import mark_fantasy_filter_pending_sync, section_for_page
+
+        section = section_for_page(st.session_state.get("active_page", ""))
+        if section:
+            mark_fantasy_filter_pending_sync(st.session_state, section)
+    except Exception:
+        pass
+
+
 if active_page == "Leaderboards":
+    from leaderboards_state import (
+        flush_leaderboards_filter_edits,
+        prepare_leaderboards_filters,
+        prepare_leaderboards_page,
+        prepare_leaderboards_year_range,
+        render_leaderboards_state_debug,
+    )
+
+    prepare_leaderboards_page(st.session_state)
+    prepare_leaderboards_filters(st.session_state)
+
     render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
+        prepare_leaderboards_year_range(
+            st.session_state,
+            year_min,
+            year_max,
+            (max(year_min, 2020), year_max),
+        )
         validate_slider_range(
             "leaders_year_range_filter",
             year_min,
@@ -12492,6 +12529,7 @@ if active_page == "Leaderboards":
             min_value=year_min,
             max_value=year_max,
             key="leaders_year_range_filter",
+            on_change=leaderboards_filter_changed,
         )
     with c2:
         init_state_once("leaders_top_n_filter", 25)
@@ -12500,6 +12538,7 @@ if active_page == "Leaderboards":
             min_value=5,
             max_value=100,
             key="leaders_top_n_filter",
+            on_change=leaderboards_filter_changed,
         )
     with c3:
         validate_state_option("leaders_sort_stat_filter", leaders_sort_options, "score")
@@ -12507,6 +12546,7 @@ if active_page == "Leaderboards":
             "Sort by",
             leaders_sort_options,
             key="leaders_sort_stat_filter",
+            on_change=leaderboards_filter_changed,
         )
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
@@ -12517,7 +12557,7 @@ if active_page == "Leaderboards":
         weight_cols = st.columns(4)
         for i, stat in enumerate(weight_stats):
             with weight_cols[i % 4]:
-                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}")
+                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}", on_change=leaderboards_filter_changed)
 
     filtered_leaders = yearly_df[(yearly_df["yearID"] >= range_leaders[0]) & (yearly_df["yearID"] <= range_leaders[1])].copy()
     leaderboard = filtered_leaders.groupby(["fullName", "bats"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
@@ -12556,6 +12596,9 @@ if active_page == "Leaderboards":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_leaders,
     )
+    flush_leaderboards_filter_edits(st.session_state, st, reason="leaderboards_page_save")
+    if developer_mode_enabled():
+        render_leaderboards_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -14027,6 +14070,16 @@ if active_page == "Trend Value":
 
 
 if active_page == "Fantasy Sleepers & Busts":
+    from fantasy_state import (
+        flush_fantasy_section_edits,
+        prepare_fantasy_sleepers_filters,
+        prepare_fantasy_sleepers_page,
+        render_fantasy_state_debug,
+    )
+
+    prepare_fantasy_sleepers_page(st.session_state)
+    prepare_fantasy_sleepers_filters(st.session_state)
+
     render_section_header(
         "💎 Fantasy Sleepers & Busts",
         "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
@@ -14052,10 +14105,10 @@ if active_page == "Fantasy Sleepers & Busts":
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
-        fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window")
+        fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
     with c2:
         validate_state_option("fantasy_market_format", _fantasy_format_options, "5x5 Roto")
-        fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format")
+        fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format", on_change=fantasy_filter_changed)
     with c3:
         validate_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
         fantasy_min_g = st.number_input(
@@ -14063,6 +14116,7 @@ if active_page == "Fantasy Sleepers & Busts":
             min_value=0,
             max_value=800,
             key="fantasy_market_min_g",
+            on_change=fantasy_filter_changed,
         )
     with c4:
         validate_number_state("fantasy_market_min_ab", 150, min_value=0, max_value=2500)
@@ -14071,6 +14125,7 @@ if active_page == "Fantasy Sleepers & Busts":
             min_value=0,
             max_value=2500,
             key="fantasy_market_min_ab",
+            on_change=fantasy_filter_changed,
         )
 
     init_state_once("fantasy_market_top_n", 15)
@@ -14079,6 +14134,7 @@ if active_page == "Fantasy Sleepers & Busts":
         min_value=5,
         max_value=50,
         key="fantasy_market_top_n",
+        on_change=fantasy_filter_changed,
     )
 
     sleeper_team_name = None
@@ -14098,6 +14154,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=1000,
                     step=10,
                     key="sleeper_max_market_rank",
+                    on_change=fantasy_filter_changed,
                 )
             with sf2:
                 validate_number_state("sleeper_max_model_rank", 350, min_value=1, max_value=1000)
@@ -14107,6 +14164,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=1000,
                     step=10,
                     key="sleeper_max_model_rank",
+                    on_change=fantasy_filter_changed,
                 )
             with sf3:
                 validate_number_state("sleeper_min_proj_hr", 0, min_value=0, max_value=80)
@@ -14116,6 +14174,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=80,
                     step=1,
                     key="sleeper_min_proj_hr",
+                    on_change=fantasy_filter_changed,
                 )
             with sf4:
                 init_state_once("sleeper_min_expected_value", 0.10)
@@ -14125,6 +14184,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=1.00,
                     step=0.01,
                     key="sleeper_min_expected_value",
+                    on_change=fantasy_filter_changed,
                 )
         with tab_draft:
             st.caption("Focus on available players who fit your roster needs.")
@@ -14132,6 +14192,7 @@ if active_page == "Fantasy Sleepers & Busts":
             st.checkbox(
                 "Use Draft Room needs and remove already drafted players",
                 key="sleeper_use_draft_room_needs",
+                on_change=fantasy_filter_changed,
             )
     sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", False)
     sleeper_max_market_rank = st.session_state.get("sleeper_max_market_rank", 350)
@@ -14635,6 +14696,9 @@ if active_page == "Fantasy Sleepers & Busts":
         default_rank_stat="Fantasy Edge",
     )
 
+    flush_fantasy_section_edits(st.session_state, "sleepers", st, reason="fantasy_sleepers_page_save")
+    if developer_mode_enabled():
+        render_fantasy_state_debug(st, st.session_state, active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -16367,6 +16431,16 @@ if active_page == "Live Draft Room":
 
 
 if active_page == "Fantasy Standings Tracker":
+    from fantasy_state import (
+        flush_fantasy_section_edits,
+        prepare_fantasy_standings_filters,
+        prepare_fantasy_standings_page,
+        render_fantasy_state_debug,
+    )
+
+    prepare_fantasy_standings_page(st.session_state)
+    prepare_fantasy_standings_filters(st.session_state)
+
     render_section_header(
         "📊 Fantasy Standings Tracker",
         "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
@@ -16380,6 +16454,7 @@ if active_page == "Fantasy Standings Tracker":
         "Scoring Format",
         _standings_format_options,
         key="standings_scoring_format",
+        on_change=fantasy_filter_changed,
     )
 
     # Do not use a session_state key on file_uploader here.
@@ -16392,6 +16467,7 @@ if active_page == "Fantasy Standings Tracker":
         _standings_source_options,
         horizontal=True,
         key="standings_stats_source",
+        on_change=fantasy_filter_changed,
     )
 
     stats_file = None
@@ -16406,6 +16482,7 @@ if active_page == "Fantasy Standings Tracker":
             max_value=2035,
             step=1,
             key="standings_api_season",
+            on_change=fantasy_filter_changed,
         )
     elif stats_source == "Upload CSV":
         stats_file = st.file_uploader(
@@ -16500,6 +16577,9 @@ if active_page == "Fantasy Standings Tracker":
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
+    flush_fantasy_section_edits(st.session_state, "standings", st, reason="fantasy_standings_page_save")
+    if developer_mode_enabled():
+        render_fantasy_state_debug(st, st.session_state, active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -16549,6 +16629,16 @@ def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None,
 
 
 if active_page == "Fantasy Lineup Assistant":
+    from fantasy_state import (
+        flush_fantasy_section_edits,
+        prepare_fantasy_lineup_filters,
+        prepare_fantasy_lineup_page,
+        render_fantasy_state_debug,
+    )
+
+    prepare_fantasy_lineup_page(st.session_state)
+    prepare_fantasy_lineup_filters(st.session_state)
+
     render_section_header(
         "🧠 Fantasy Lineup Assistant / Start-Sit AI",
         "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch."
@@ -16578,13 +16668,14 @@ if active_page == "Fantasy Lineup Assistant":
         l1, l2, l3 = st.columns(3)
         with l1:
             ensure_select_in_options("lineup_team", lineup_teams, default_lineup_team if default_lineup_team in lineup_teams else lineup_teams[0])
-            lineup_team = st.selectbox("Fantasy Team", lineup_teams, key="lineup_team")
+            lineup_team = st.selectbox("Fantasy Team", lineup_teams, key="lineup_team", on_change=fantasy_filter_changed)
         with l2:
             ensure_select_in_options("lineup_format", _lineup_format_options, "5x5 Roto")
             lineup_format = st.selectbox(
                 "Lineup Scoring Mode",
                 _lineup_format_options,
                 key="lineup_format",
+                on_change=fantasy_filter_changed,
             )
         with l3:
             ensure_widget_state("lineup_bench_rows", 12)
@@ -16594,6 +16685,7 @@ if active_page == "Fantasy Lineup Assistant":
                 max_value=25,
                 value=int(st.session_state["lineup_bench_rows"]),
                 key="lineup_bench_rows",
+                on_change=fantasy_filter_changed,
             )
 
         with st.expander("Starting lineup slots (optional)"):
@@ -16602,12 +16694,14 @@ if active_page == "Fantasy Lineup Assistant":
                 "Include UTIL slot",
                 key="lineup_include_util",
                 help="Uncheck if your league has no UTIL. A custom slot list below replaces defaults when provided.",
+                on_change=fantasy_filter_changed,
             )
             custom_slots_text = st.text_input(
                 "Custom slot order (comma-separated)",
                 placeholder="e.g. C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL",
                 key="lineup_custom_slots",
                 help="Valid tokens: C, 1B, 2B, 3B, SS, OF, LF, CF, RF, UTIL. Leave blank for default order.",
+                on_change=fantasy_filter_changed,
             )
 
         custom_weights = None
@@ -16955,6 +17049,9 @@ if active_page == "Fantasy Lineup Assistant":
                             )
 
     save_page_state(active_page)
+    flush_fantasy_section_edits(st.session_state, "lineup", st, reason="fantasy_lineup_page_save")
+    if developer_mode_enabled():
+        render_fantasy_state_debug(st, st.session_state, active_page)
     render_page_filters_debug(active_page)
 
 
