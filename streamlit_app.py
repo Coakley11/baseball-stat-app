@@ -12507,9 +12507,10 @@ if active_page == "Comparison Tool":
     _canonical_players = prepare_comparison_tool_page(
         st.session_state, clean_label_map_compare, resolve_fullname_to_clean_label
     )
+    winner = "local_edit" if st.session_state.get("comparison_state_dirty") else "canonical"
     record_comparison_sync_trace(
         st.session_state,
-        winner="canonical",
+        winner=winner,
         reason=f"prepare_on_load ({len(_canonical_players)} players)",
     )
 

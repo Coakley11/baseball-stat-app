@@ -3,11 +3,36 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 _TEAM_SUFFIX = re.compile(r"^(.+?)\s+\(([A-Z]{2,4})\)$")
 
+COMPARISON_DIRTY_KEY = "comparison_state_dirty"
+COMPARISON_LOCAL_EDIT_TS_KEY = "comparison_state_last_local_edit_ts"
+_SUITE_LOCAL_DIRTY = "_suite_persist_local_dirty::baseball"
+
 ResolveFn = Callable[[str, dict[str, Any]], str | None]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def is_comparison_locally_dirty(session: dict[str, Any]) -> bool:
+    return bool(session.get(COMPARISON_DIRTY_KEY))
+
+
+def mark_comparison_local_edit(session: dict[str, Any]) -> None:
+    session[COMPARISON_DIRTY_KEY] = True
+    session[COMPARISON_LOCAL_EDIT_TS_KEY] = _utc_now_iso()
+    session[_SUITE_LOCAL_DIRTY] = True
+
+
+def clear_comparison_local_edit(session: dict[str, Any]) -> None:
+    session.pop(COMPARISON_DIRTY_KEY, None)
+    session.pop(COMPARISON_LOCAL_EDIT_TS_KEY, None)
+    session[_SUITE_LOCAL_DIRTY] = False
 
 
 def normalize_compare_label(
@@ -68,24 +93,55 @@ def _sig_slot_players(session: dict[str, Any], label_map: dict[str, Any], resolv
     return out
 
 
+def _widget_compare_players(session: dict[str, Any]) -> list[str] | None:
+    """Return multiselect widget snapshot if present (empty list is valid)."""
+    if "compare_players" not in session:
+        return None
+    val = session.get("compare_players")
+    if not isinstance(val, list):
+        return None
+    return list(val)
+
+
 def gather_comparison_players(
     session: dict[str, Any],
     label_map: dict[str, Any],
     resolve_fn: ResolveFn,
+    *,
+    allow_persisted_fallback: bool = True,
 ) -> list[str]:
-    """Merge players from all known keys (most specific lists first)."""
-    candidates: list[list[str]] = []
+    """Merge players from known keys; respect local widget edits over stale saved/cloud."""
+    if is_comparison_locally_dirty(session):
+        allow_persisted_fallback = False
+        widget = _widget_compare_players(session)
+        if widget is not None:
+            return reconcile_compare_player_list(widget, label_map, resolve_fn)
+        meta = session.get("comparison_state")
+        if isinstance(meta, dict) and isinstance(meta.get("players"), list):
+            return reconcile_compare_player_list(meta["players"], label_map, resolve_fn)
+        return []
 
-    for key in ("compare_players", "compare_players_saved", "pending_compare_players"):
+    widget = _widget_compare_players(session)
+    widget_key_present = "compare_players" in session
+    if widget is not None:
+        if is_comparison_locally_dirty(session) or widget:
+            return reconcile_compare_player_list(widget, label_map, resolve_fn)
+
+    if not allow_persisted_fallback:
+        return []
+
+    candidates: list[list[str]] = []
+    for key in ("compare_players_saved", "pending_compare_players"):
         val = session.get(key)
         if isinstance(val, list) and val:
             reconciled = reconcile_compare_player_list(val, label_map, resolve_fn)
             if reconciled:
                 candidates.append(reconciled)
 
-    sig_players = _sig_slot_players(session, label_map, resolve_fn)
-    if sig_players:
-        candidates.append(sig_players)
+    if not widget_key_present:
+        sig_players = _sig_slot_players(session, label_map, resolve_fn)
+        if sig_players:
+            candidates.append(sig_players)
 
     meta = session.get("comparison_state")
     if isinstance(meta, dict):
@@ -114,11 +170,42 @@ def gather_comparison_players(
     return []
 
 
+def _sync_page_filter_comparison_block(session: dict[str, Any]) -> None:
+    pf = session.setdefault("page_filter_state", {})
+    if not isinstance(pf, dict):
+        return
+    block = pf.setdefault("Comparison Tool", {})
+    if not isinstance(block, dict):
+        block = {}
+        pf["Comparison Tool"] = block
+    players = session.get("compare_players")
+    if isinstance(players, list):
+        block["compare_players"] = list(players)
+        block["compare_players_saved"] = list(players)
+    meta = session.get("comparison_state")
+    if isinstance(meta, dict):
+        block["comparison_state"] = {
+            "player_a": meta.get("player_a"),
+            "player_b": meta.get("player_b"),
+            "players": list(meta.get("players") or []),
+            "last_write_reason": meta.get("last_write_reason"),
+        }
+    for sk, bk in (
+        ("sig_player_a_clean", "sig_player_a_clean"),
+        ("sig_player_b_clean", "sig_player_b_clean"),
+    ):
+        if sk in session:
+            block[bk] = session[sk]
+        else:
+            block.pop(bk, None)
+
+
 def write_canonical_comparison_state(
     session: dict[str, Any],
     players: list[str],
     *,
     reason: str = "",
+    local_edit: bool = False,
 ) -> list[str]:
     """Write one canonical player list to every comparison session key."""
     clean = [str(p).strip() for p in players if p][:3]
@@ -142,6 +229,9 @@ def write_canonical_comparison_state(
     session.pop("pending_sig_player_a", None)
     session.pop("pending_sig_player_b", None)
     session.pop("pending_compare_clear_player_b", None)
+    _sync_page_filter_comparison_block(session)
+    if local_edit:
+        mark_comparison_local_edit(session)
     return clean
 
 
@@ -150,7 +240,22 @@ def prepare_comparison_tool_page(
     label_map: dict[str, Any],
     resolve_fn: ResolveFn,
 ) -> list[str]:
-    """Reconcile all comparison keys before widgets render."""
+    """Reconcile comparison keys before widgets render; never override local widget edits."""
+    if is_comparison_locally_dirty(session):
+        widget = _widget_compare_players(session)
+        players = (
+            reconcile_compare_player_list(widget, label_map, resolve_fn)
+            if widget is not None
+            else reconcile_compare_player_list(
+                (session.get("comparison_state") or {}).get("players"),
+                label_map,
+                resolve_fn,
+            )
+        )
+        return write_canonical_comparison_state(
+            session, players, reason="local_edit_preserve", local_edit=True
+        )
+
     pending = session.get("pending_compare_players")
     if isinstance(pending, list) and pending:
         merged = reconcile_compare_player_list(pending, label_map, resolve_fn)
@@ -171,8 +276,11 @@ def sync_compare_from_multiselect(
     label_map: dict[str, Any],
     resolve_fn: ResolveFn,
 ) -> list[str]:
+    """User changed multiselect — this device owns canonical state (including empty)."""
     players = reconcile_compare_player_list(selected, label_map, resolve_fn)
-    return write_canonical_comparison_state(session, players, reason="multiselect_change")
+    return write_canonical_comparison_state(
+        session, players, reason="multiselect_change", local_edit=True
+    )
 
 
 def sync_compare_from_sig_ab(
@@ -187,10 +295,9 @@ def sync_compare_from_sig_ab(
         players.append(a)
     if b and b not in players:
         players.append(b)
-    for p in reconcile_compare_player_list(session.get("compare_players") or [], label_map, resolve_fn):
-        if p not in players and len(players) < 3:
-            players.append(p)
-    return write_canonical_comparison_state(session, players, reason="sig_ab_change")
+    return write_canonical_comparison_state(
+        session, players, reason="sig_ab_change", local_edit=True
+    )
 
 
 def ensure_compare_multiselect(
@@ -201,14 +308,55 @@ def ensure_compare_multiselect(
 ) -> list[str]:
     """Ensure multiselect session value uses canonical labels present in options."""
     opts_set = set(options)
-    players = reconcile_compare_player_list(session.get("compare_players") or [], label_map, resolve_fn)
-    if not players:
-        players = reconcile_compare_player_list(
-            session.get("compare_players_saved") or [], label_map, resolve_fn
-        )
+    if is_comparison_locally_dirty(session):
+        widget = _widget_compare_players(session)
+        players = reconcile_compare_player_list(widget or [], label_map, resolve_fn)
+    else:
+        players = reconcile_compare_player_list(session.get("compare_players") or [], label_map, resolve_fn)
+        if players == [] and _widget_compare_players(session) is None:
+            players = reconcile_compare_player_list(
+                session.get("compare_players_saved") or [], label_map, resolve_fn
+            )
     players = [p for p in players if p in opts_set][:3]
-    write_canonical_comparison_state(session, players, reason="ensure_multiselect")
+    write_canonical_comparison_state(
+        session,
+        players,
+        reason="ensure_multiselect",
+        local_edit=is_comparison_locally_dirty(session),
+    )
     return session.get("compare_players") or []
+
+
+def apply_cloud_comparison_state_if_allowed(
+    session: dict[str, Any],
+    state: dict[str, Any],
+    label_map: dict[str, Any],
+    resolve_fn: ResolveFn,
+) -> bool:
+    """Apply comparison players from cloud restore only when this device has no local edits."""
+    if is_comparison_locally_dirty(session):
+        return False
+    pf = state.get("page_filter_state")
+    players: list[str] = []
+    if isinstance(pf, dict):
+        block = pf.get("Comparison Tool")
+        if isinstance(block, dict):
+            players = reconcile_compare_player_list(block.get("compare_players"), label_map, resolve_fn)
+            if not players:
+                meta = block.get("comparison_state")
+                if isinstance(meta, dict):
+                    players = reconcile_compare_player_list(meta.get("players"), label_map, resolve_fn)
+    if not players:
+        meta = state.get("comparison_state")
+        if isinstance(meta, dict):
+            players = reconcile_compare_player_list(meta.get("players"), label_map, resolve_fn)
+        ws = state.get("baseball_workspace_state")
+        if not players and isinstance(ws, dict):
+            players = reconcile_compare_player_list(ws.get("comparison_players"), label_map, resolve_fn)
+    if not players and state.get("active_page") != "Comparison Tool":
+        return False
+    write_canonical_comparison_state(session, players, reason="cloud_restore")
+    return bool(players)
 
 
 def record_comparison_sync_trace(session: dict[str, Any], *, winner: str, reason: str) -> None:
@@ -224,14 +372,6 @@ def render_comparison_state_debug(
     selected_labels: list[str] | None = None,
 ) -> None:
     """Developer panel: show every comparison player key and canonical state."""
-    try:
-        from suite_user_persistence import state_file_path
-
-        app_id = "baseball"
-    except ImportError:
-        state_file_path = None  # type: ignore[assignment]
-        app_id = "baseball"
-
     meta = session.get("comparison_state")
     if not isinstance(meta, dict):
         meta = {}
@@ -256,6 +396,8 @@ def render_comparison_state_debug(
         "comparison_state.player_b": meta.get("player_b"),
         "comparison_state.players": meta.get("players"),
         "last_write_reason": meta.get("last_write_reason"),
+        "comparison_state_dirty": session.get(COMPARISON_DIRTY_KEY),
+        "comparison_state_last_local_edit_ts": session.get(COMPARISON_LOCAL_EDIT_TS_KEY),
     }
     sig_rows = {
         "sig_player_a_clean": session.get("sig_player_a_clean"),
@@ -270,6 +412,7 @@ def render_comparison_state_debug(
         "cloud_applied_comparison_players": cloud_players,
         "last_restored_players": restored_players,
         "last_saved_reason": session.get("_suite_persist_last_save_reason"),
+        "suite_local_dirty": session.get(_SUITE_LOCAL_DIRTY),
     }
     decision_rows = {
         "sync_winner": session.get("_comparison_sync_winner"),
@@ -281,11 +424,11 @@ def render_comparison_state_debug(
         st.caption("Canonical comparison_state drives top multiselect + bottom sig tests.")
         st.markdown("**Top UI**")
         for k, v in top_rows.items():
-            if v is not None and v != "" and v != []:
+            if v is not None and v != "":
                 st.text(f"{k}: {v}")
         st.markdown("**Canonical**")
         for k, v in canonical_rows.items():
-            if v is not None and v != "" and v != []:
+            if v is not None and v != "":
                 st.text(f"{k}: {v}")
         st.markdown("**Stat test (sig A/B)**")
         for k, v in sig_rows.items():
@@ -293,9 +436,9 @@ def render_comparison_state_debug(
                 st.text(f"{k}: {v}")
         st.markdown("**Persistence**")
         for k, v in persist_rows.items():
-            if v is not None and v != "" and v != []:
+            if v is not None and v != "" and v is not False:
                 st.text(f"{k}: {v}")
         st.markdown("**Decision**")
         for k, v in decision_rows.items():
-            if v is not None and v != "" and v != []:
+            if v is not None and v != "" and v is not []:
                 st.text(f"{k}: {v}")

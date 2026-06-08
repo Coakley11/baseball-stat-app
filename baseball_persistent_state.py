@@ -222,13 +222,30 @@ def sync_baseball_cloud_workspace(st: Any) -> bool:
 
 
 def autosave_baseball_state(st: Any) -> None:
+    before_save_at = st.session_state.get("_suite_persist_last_save_at")
     autosave_if_changed(st, APP_ID, build_state=build_baseball_disk_state)
+    try:
+        from comparison_state import clear_comparison_local_edit
+
+        after_save_at = st.session_state.get("_suite_persist_last_save_at")
+        if after_save_at and after_save_at != before_save_at:
+            clear_comparison_local_edit(st.session_state)
+    except ImportError:
+        pass
 
 
 def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
     if reason:
         st.session_state["_suite_pending_save_reason"] = reason
-    return force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
+    saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
+    if saved:
+        try:
+            from comparison_state import clear_comparison_local_edit
+
+            clear_comparison_local_edit(st.session_state)
+        except ImportError:
+            pass
+    return saved
 
 
 def default_reset_baseball_session(st: Any) -> None:

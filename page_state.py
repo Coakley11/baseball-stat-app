@@ -237,6 +237,15 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
         and skip_restore != curr
         and ami_restore != curr
     ):
+        if curr == "Comparison Tool":
+            try:
+                from comparison_state import is_comparison_locally_dirty
+
+                if is_comparison_locally_dirty(session):
+                    session["_page_state_last_active"] = curr
+                    return
+            except ImportError:
+                pass
         restore_page_state(session, curr, store)
 
     session["_page_state_last_active"] = curr

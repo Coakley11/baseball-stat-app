@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-08-comparison-canonical-state-v6"
+SUITE_BUILD_LABEL = "2026-06-08-comparison-local-edit-v7"
 GIT_COMMIT_SHORT = "5b1dae7"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
