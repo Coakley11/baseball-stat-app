@@ -94,8 +94,18 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
         }
 
     elif p == "Trend Value":
-        multi = session_state.get("trend_players_multi") or session_state.get("trend_force_multi_labels")
-        pl = session_state.get("single_trend_dashboard_player")
+        ts = session_state.get("trend_state")
+        multi = None
+        pl = None
+        if isinstance(ts, dict):
+            if isinstance(ts.get("players_multi"), list):
+                multi = ts["players_multi"]
+            if ts.get("chart_player"):
+                pl = ts.get("chart_player")
+        if multi is None:
+            multi = session_state.get("trend_players_multi") or session_state.get("trend_force_multi_labels")
+        if pl is None:
+            pl = session_state.get("single_trend_dashboard_player")
         if isinstance(multi, list) and multi:
             labels = [_copy_widget_value(x) for x in multi[:6]]
             entity_params["trend_players_multi"] = labels
@@ -183,14 +193,29 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
         except Exception:
             pass
 
-    # Drop stale pending-restore keys so fresh source_state wins.
+    snap = chart.get("historical_snapshot")
+    if isinstance(snap, dict):
+        session_state["_ami_historical_snapshot"] = copy.deepcopy(snap)
+
+    if page == "Trend Value":
+        try:
+            from trend_state import apply_trend_source_state_from_ami
+
+            apply_trend_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            multi = chart.get("trend_players_multi") or ent.get("trend_players_multi")
+            if isinstance(multi, list):
+                session_state["trend_players_multi"] = copy.deepcopy(multi[:6])
+            tp = ent.get("player_label") or wp.get("single_trend_dashboard_player")
+            if tp:
+                session_state["single_trend_dashboard_player"] = str(tp)
+        return
+
     for key in (
         "compare_players",
         "compare_players_saved",
         "sig_player_a_clean",
         "sig_player_b_clean",
-        "trend_players_multi",
-        "trend_force_multi_labels",
     ):
         session_state.pop(key, None)
 
@@ -207,18 +232,6 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
             ):
                 session_state[f"{key}_saved"] = copy.deepcopy(val)
 
-    if chart.get("stats"):
-        session_state["single_trend_dashboard_stats"] = copy.deepcopy(chart["stats"])
-    multi = chart.get("trend_players_multi") or ent.get("trend_players_multi")
-    if isinstance(multi, list) and multi:
-        labels = copy.deepcopy(multi[:6])
-        session_state["trend_force_multi_labels"] = labels[:3]
-        session_state["trend_players_multi"] = labels[:3]
-        session_state["pending_trend_players"] = labels
-    snap = chart.get("historical_snapshot")
-    if isinstance(snap, dict):
-        session_state["_ami_historical_snapshot"] = copy.deepcopy(snap)
-
     cp = ent.get("compare_players") or wp.get("compare_players")
     if isinstance(cp, list) and cp:
         session_state["pending_compare_players"] = copy.deepcopy(cp[:3])
@@ -228,10 +241,6 @@ def apply_source_state_to_session(session_state: dict[str, Any], source_state: d
         session_state["pending_sig_player_a"] = str(pa)
     if pb:
         session_state["pending_sig_player_b"] = str(pb)
-    tp = ent.get("player_label") or wp.get("single_trend_dashboard_player")
-    if tp:
-        session_state["pending_trend_player"] = str(tp)
-        session_state["single_trend_dashboard_player"] = str(tp)
 
 def cache_page_context(session_state: dict[str, Any], page: str, ctx: dict[str, Any]) -> None:
     if not page or not ctx:

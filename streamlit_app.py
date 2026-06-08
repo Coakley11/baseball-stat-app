@@ -11765,7 +11765,7 @@ render_applied_math_sidebar_entry(
         if build_source_state
         else None
     ),
-    on_after_send=lambda: force_save_baseball_state(st, reason="applied_math_send"),
+    on_after_send=lambda: _force_save_before_ami_return(active_page),
 )
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
@@ -12492,6 +12492,54 @@ def compare_settings_changed():
         ]:
             if _key in st.session_state:
                 st.session_state[f"{_key}_saved"] = st.session_state[_key]
+
+
+def trend_chart_player_changed():
+    try:
+        from trend_state import sync_trend_chart_player_change
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_trend_chart_player_change(
+            st.session_state,
+            st.session_state.get("single_trend_dashboard_player"),
+            label_map,
+            resolve_fullname_to_clean_label,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def trend_multi_changed():
+    try:
+        from trend_state import sync_trend_multi_change
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_trend_multi_change(
+            st.session_state,
+            st.session_state.get("trend_players_multi"),
+            label_map,
+            resolve_fullname_to_clean_label,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def trend_settings_changed():
+    try:
+        from trend_state import sync_trend_settings_change
+
+        sync_trend_settings_change(st.session_state, reason="settings_change")
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
 
 
 def _sig_years_changed(key):
@@ -13384,35 +13432,16 @@ if active_page == "Trend Value":
     full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
     full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
 
-    # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
-    _stp = st.session_state.get("single_trend_dashboard_player")
-    if _stp is not None and full_trend_labels and _stp not in full_trend_labels:
-        _resolved_stp = resolve_fullname_to_clean_label(_stp, full_trend_label_map)
-        if _resolved_stp and _resolved_stp in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _resolved_stp
-        else:
-            st.session_state.pop("single_trend_dashboard_player", None)
-    _pending_resume_trend = st.session_state.pop("pending_trend_player", None)
-    if _pending_resume_trend and full_trend_labels:
-        _resolved_pending = resolve_fullname_to_clean_label(_pending_resume_trend, full_trend_label_map)
-        if _resolved_pending and _resolved_pending in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _resolved_pending
-    _tmp_multi = st.session_state.get("trend_players_multi")
-    if isinstance(_tmp_multi, list) and full_trend_labels:
-        _filtered_multi = [x for x in _tmp_multi if x in full_trend_labels]
-        if _filtered_multi != _tmp_multi:
-            st.session_state["trend_players_multi"] = _filtered_multi
+    from trend_state import (
+        canonical_chart_player,
+        is_trend_locally_dirty,
+        prepare_trend_chart_options,
+        prepare_trend_value_page,
+        render_trend_state_debug,
+    )
 
-    if "trend_force_single_label" in st.session_state:
-        _tsl = st.session_state.pop("trend_force_single_label")
-        if _tsl in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _tsl
-
-    if "trend_force_multi_labels" in st.session_state:
-        _tml = st.session_state.pop("trend_force_multi_labels")
-        _tml = [x for x in _tml if x in full_trend_labels]
-        if _tml:
-            st.session_state["trend_players_multi"] = _tml
+    prepare_trend_value_page(st.session_state, full_trend_label_map, resolve_fullname_to_clean_label)
+    prepare_trend_chart_options(st.session_state)
 
     _pending_trendcompare = st.session_state.pop("_suite_pending_trendcompare_names", None)
     if _pending_trendcompare and full_trend_labels:
@@ -13421,10 +13450,29 @@ if active_page == "Trend Value":
             _lbl = resolve_fullname_to_clean_label(str(_nm).strip(), full_trend_label_map)
             if _lbl and _lbl in full_trend_labels and _lbl not in _resolved_tc:
                 _resolved_tc.append(_lbl)
-        if len(_resolved_tc) >= 2:
-            st.session_state["trend_players_multi"] = _resolved_tc[:6]
-            st.session_state["trend_force_multi_labels"] = _resolved_tc[:6]
-            st.session_state["single_trend_dashboard_player"] = _resolved_tc[0]
+        if _resolved_tc:
+            from trend_state import write_canonical_trend_state
+
+            write_canonical_trend_state(
+                st.session_state,
+                chart_player=_resolved_tc[0],
+                players_multi=_resolved_tc[:6],
+                reason="trendcompare_transfer",
+            )
+
+    _chart_key = st.session_state.get("single_trend_dashboard_player")
+    if _chart_key and full_trend_labels and _chart_key not in full_trend_labels:
+        _resolved_chart = resolve_fullname_to_clean_label(_chart_key, full_trend_label_map)
+        if _resolved_chart and _resolved_chart in full_trend_labels:
+            st.session_state["single_trend_dashboard_player"] = _resolved_chart
+        elif not is_trend_locally_dirty(st.session_state):
+            st.session_state.pop("single_trend_dashboard_player", None)
+
+    _multi_key = st.session_state.get("trend_players_multi")
+    if isinstance(_multi_key, list) and full_trend_labels:
+        _filtered_multi = [x for x in _multi_key if x in full_trend_labels]
+        if _filtered_multi != _multi_key:
+            st.session_state["trend_players_multi"] = _filtered_multi
 
     st.caption(
         "Pick any player from the **full database**. When you use **Send to Trend Page** elsewhere, the **first** player you send anchors this dashboard; "
@@ -13433,13 +13481,22 @@ if active_page == "Trend Value":
 
     recent_span_df = recent_baseline_trend
 
-    single_trend_label = st.selectbox(
-        "Select Player (full database)",
-        full_trend_labels,
-        key="single_trend_dashboard_player"
-    )
-    single_trend_id = full_trend_label_map[single_trend_label]
-    single_player_name = single_trend_label.split(" (")[0].strip()
+    _chart_select_kwargs: dict = {
+        "label": "Select Player (full database)",
+        "options": full_trend_labels,
+        "key": "single_trend_dashboard_player",
+        "on_change": trend_chart_player_changed,
+    }
+    if (
+        "single_trend_dashboard_player" not in st.session_state
+        and canonical_chart_player(st.session_state) is None
+        and not is_trend_locally_dirty(st.session_state)
+    ):
+        _chart_select_kwargs["index"] = None
+        _chart_select_kwargs["placeholder"] = "Select a player"
+    single_trend_label = st.selectbox(**_chart_select_kwargs)
+    if not single_trend_label:
+        st.info("Select a player to view the single-player trend dashboard.")
 
     dashboard_stat_options = ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "H", "BB"]
     default_dashboard_stats = ["HR", "RBI", "R", "SB", "OPS"]
@@ -13447,7 +13504,8 @@ if active_page == "Trend Value":
         "Stats to graph for selected player",
         dashboard_stat_options,
         default=default_dashboard_stats,
-        key="single_trend_dashboard_stats"
+        key="single_trend_dashboard_stats",
+        on_change=trend_settings_changed,
     )
 
     dash_mode_col1, dash_mode_col2 = st.columns(2)
@@ -13456,7 +13514,8 @@ if active_page == "Trend Value":
             "Single-Player Dashboard Mode",
             ["Actual Values", "Smoothed Moving Average"],
             horizontal=True,
-            key="single_trend_dashboard_mode"
+            key="single_trend_dashboard_mode",
+            on_change=trend_settings_changed,
         )
     with dash_mode_col2:
         single_dashboard_smooth_window = 3
@@ -13464,11 +13523,25 @@ if active_page == "Trend Value":
             single_dashboard_smooth_window = st.slider(
                 "Single-Player Smoothing Window",
                 2, 7, 3,
-                key="single_trend_dashboard_smooth_window"
+                key="single_trend_dashboard_smooth_window",
+                on_change=trend_settings_changed,
             )
 
-    selected_player_history = recent_span_df[recent_span_df["playerID"] == single_trend_id].copy()
-    if selected_player_history.empty:
+    if not single_trend_label:
+        single_trend_id = None
+        single_player_name = ""
+    else:
+        single_trend_id = full_trend_label_map[single_trend_label]
+        single_player_name = single_trend_label.split(" (")[0].strip()
+
+    selected_player_history = (
+        recent_span_df[recent_span_df["playerID"] == single_trend_id].copy()
+        if single_trend_id
+        else pd.DataFrame()
+    )
+    if not single_trend_id:
+        pass
+    elif selected_player_history.empty:
         st.info("No trend history available for that player in the selected window.")
     else:
         selected_player_summary = trend_value_df[trend_value_df["playerID"] == single_trend_id]
@@ -13566,21 +13639,30 @@ if active_page == "Trend Value":
         "Select players to view trend",
         full_trend_labels,
         max_selections=6,
-        key="trend_players_multi"
+        key="trend_players_multi",
+        on_change=trend_multi_changed,
     )
     selected_ids_trend = [full_trend_label_map[label] for label in selected_labels_trend]
     if len(selected_labels_trend) >= 2:
         record_workflow_comparison_group(selected_labels_trend[:3])
-    stat_choice_trend = st.selectbox("Choose Trend Stat to Plot", ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"], key="trend_plot_stat")
+    stat_choice_trend = st.selectbox(
+        "Choose Trend Stat to Plot",
+        ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
+        key="trend_plot_stat",
+        on_change=trend_settings_changed,
+    )
     trend_chart_mode = st.radio(
         "Trend Chart Mode",
         ["Actual Values", "Smoothed Moving Average"],
         horizontal=True,
-        key="trend_chart_mode"
+        key="trend_chart_mode",
+        on_change=trend_settings_changed,
     )
     trend_smooth_window = 3
     if trend_chart_mode == "Smoothed Moving Average":
-        trend_smooth_window = st.slider("Trend Smoothing Window", 2, 7, 3, key="trend_smooth_window")
+        trend_smooth_window = st.slider(
+            "Trend Smoothing Window", 2, 7, 3, key="trend_smooth_window", on_change=trend_settings_changed
+        )
 
     if selected_ids_trend:
         player_trend = recent_span_df[recent_span_df["playerID"].isin(selected_ids_trend)].sort_values(["fullName", "yearID"])
@@ -13672,6 +13754,8 @@ if active_page == "Trend Value":
     else:
         st.info("Select one to three players to view trend charts.")
 
+    if developer_mode_enabled():
+        render_trend_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 

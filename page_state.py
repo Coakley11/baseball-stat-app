@@ -48,6 +48,9 @@ PAGE_STATE_REGISTRY = {
             "trend_sort_col", "trend_players_multi", "single_trend_dashboard_player",
             "trend_plot_stat", "trend_chart_mode", "trend_smooth_window",
             "trend_anchor_fullname", "trend_multi_queue_fullnames",
+            "trend_state",
+            "single_trend_dashboard_stats", "single_trend_dashboard_mode",
+            "single_trend_dashboard_smooth_window",
         ],
         "prefixes": ["trend_"],
     },
@@ -199,6 +202,13 @@ def restore_page_state(session, page_name: str, store: dict):
             return restore_comparison_page_filters(session, store)
         except ImportError:
             pass
+    if page_name == "Trend Value":
+        try:
+            from trend_state import restore_trend_page_filters
+
+            return restore_trend_page_filters(session, store)
+        except ImportError:
+            pass
     snapshot = store.get(page_name)
     if not snapshot:
         return False
@@ -249,6 +259,15 @@ def handle_sidebar_page_state(session, active_page: str, normalize_page_key, pen
                 from comparison_state import is_comparison_locally_dirty
 
                 if is_comparison_locally_dirty(session):
+                    session["_page_state_last_active"] = curr
+                    return
+            except ImportError:
+                pass
+        if curr == "Trend Value":
+            try:
+                from trend_state import is_trend_locally_dirty
+
+                if is_trend_locally_dirty(session):
                     session["_page_state_last_active"] = curr
                     return
             except ImportError:

@@ -41,7 +41,7 @@ _INSIGHT_KEYS = (
     "_ami_dismissed_insight_ids",
 )
 
-_WORKSPACE_KEYS = ("comparison_state",)
+_WORKSPACE_KEYS = ("comparison_state", "trend_state")
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
@@ -106,6 +106,9 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
     draft_block = _page_block(state, "Draft Room")
     cmp_meta = state.get("comparison_state") if isinstance(state.get("comparison_state"), dict) else {}
     comparison_players = cmp_meta.get("players") or cmp_block.get("compare_players")
+    trend_meta = state.get("trend_state") if isinstance(state.get("trend_state"), dict) else {}
+    trend_players = trend_meta.get("players_multi") or trend_block.get("trend_players_multi")
+    trend_chart_player = trend_meta.get("chart_player") or trend_block.get("single_trend_dashboard_player")
     return {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "updated_at": _utc_now_iso(),
@@ -217,6 +220,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             clear_comparison_local_edit(ss)
             if active == "Comparison Tool":
                 restore_comparison_page_filters(ss, ss["page_filter_state"])
+            elif active == "Trend Value":
+                from trend_state import restore_trend_page_filters
+
+                restore_trend_page_filters(ss, ss["page_filter_state"])
             else:
                 pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         except ImportError:
@@ -239,6 +246,47 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 clear_comparison_local_edit(ss)
                 ss["_comparison_restored_players"] = list(restored_players)
                 ss["_comparison_restore_source"] = ss.get("_suite_persist_last_restore_source", "workspace")
+    except ImportError:
+        pass
+
+    try:
+        from trend_state import clear_trend_local_edit, is_trend_locally_dirty, write_canonical_trend_state
+
+        if not is_trend_locally_dirty(ss):
+            ts = state.get("trend_state")
+            chart_player = None
+            players_multi = None
+            if isinstance(ts, dict):
+                if "chart_player" in ts:
+                    chart_player = ts.get("chart_player") or ""
+                if isinstance(ts.get("players_multi"), list):
+                    players_multi = [str(p) for p in ts["players_multi"] if p]
+            if players_multi is None:
+                pf = state.get("page_filter_state")
+                if isinstance(pf, dict):
+                    block = pf.get("Trend Value")
+                    if isinstance(block, dict):
+                        if chart_player is None and block.get("single_trend_dashboard_player"):
+                            chart_player = str(block.get("single_trend_dashboard_player"))
+                        tm = block.get("trend_players_multi")
+                        if isinstance(tm, list):
+                            players_multi = [str(p) for p in tm if p]
+            meta_ws = state.get("baseball_workspace_state")
+            if isinstance(meta_ws, dict):
+                if players_multi is None and isinstance(meta_ws.get("trend_players"), list):
+                    players_multi = [str(p) for p in meta_ws["trend_players"] if p]
+                if chart_player is None and meta_ws.get("trend_chart_player"):
+                    chart_player = str(meta_ws.get("trend_chart_player"))
+            if chart_player is not None or players_multi is not None:
+                write_canonical_trend_state(
+                    ss,
+                    chart_player=chart_player if chart_player is not None else "",
+                    players_multi=players_multi if players_multi is not None else [],
+                    reason="workspace_restore",
+                )
+                clear_trend_local_edit(ss)
+                ss["_trend_restored_players_multi"] = list(players_multi or [])
+                ss["_trend_restore_source"] = ss.get("_suite_persist_last_restore_source", "workspace")
     except ImportError:
         pass
 

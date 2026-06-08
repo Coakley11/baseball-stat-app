@@ -938,7 +938,14 @@ def force_autosave(
         from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
 
         block_key = _autosave_block_key(app_id)
-        bypass_block = reason in ("comparison_edit", "page_change", "insight_persist", "insight_hydrate")
+        bypass_block = reason in (
+            "comparison_edit",
+            "trend_edit",
+            "page_change",
+            "insight_persist",
+            "insight_hydrate",
+            "applied_math_send",
+        )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
             st.session_state["_suite_autosave_block_reason"] = st.session_state.get(
