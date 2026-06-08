@@ -395,6 +395,24 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "device_id": local_meta.get("device_id") or ss.get("_suite_device_id"),
     }
     cloud_top_cs = cloud_state.get("comparison_state") if isinstance(cloud_state.get("comparison_state"), dict) else {}
+    startup_rows = {
+        "cloud_fetch_attempted": ss.get("_suite_cloud_fetch_attempted"),
+        "cloud_fetch_success": ss.get("_suite_cloud_fetch_success"),
+        "cloud_fetch_user_id": ss.get("_suite_cloud_fetch_user_id"),
+        "cloud_fetch_updated_at": ss.get("_suite_cloud_fetch_updated_at"),
+        "cloud_fetch_active_page": ss.get("_suite_cloud_fetch_active_page"),
+        "cloud_fetch_comparison_players": ss.get("_suite_cloud_fetch_comparison_players"),
+        "restore_decision": ss.get("_suite_restore_decision"),
+        "restore_should_apply": ss.get("_suite_restore_should_apply"),
+        "restore_apply_reason": ss.get("_suite_restore_apply_reason"),
+        "restore_skip_reason": ss.get("_suite_restore_skip_reason") or ss.get("_suite_persist_restore_skip_reason"),
+        "restore_pick_source": ss.get("_suite_restore_pick_source"),
+        "already_synced_before_restore": ss.get("_suite_already_synced_before_restore"),
+        "comparison_mismatch_detected": ss.get("_suite_workspace_comparison_mismatch"),
+        "disk_restore_after_cloud": ss.get("_suite_disk_restore_after_cloud"),
+        "post_restore_active_page": ss.get("_suite_post_restore_active_page"),
+        "post_restore_comparison_players": ss.get("_suite_post_restore_comparison_players"),
+    }
     decision_rows = {
         "cloud_loaded": ss.get("_suite_workspace_cloud_loaded"),
         "local_loaded": ss.get("_suite_workspace_local_loaded"),
@@ -458,6 +476,10 @@ def render_cross_device_sync_debug(st: Any) -> None:
 
     with st.sidebar.expander("Workspace sync trace", expanded=True):
         st.caption(f"Authoritative blob: baseball_workspace_state ({FULL_SESSION_KEY}).")
+        st.markdown("**Startup restore (Dell read path)**")
+        for k, v in startup_rows.items():
+            if v is not None and v != "":
+                st.text(f"{k}: {v}")
         st.markdown("**Cloud workspace**")
         for k, v in cloud_rows.items():
             if v is not None and v != "" and v != {}:

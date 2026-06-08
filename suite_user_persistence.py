@@ -254,6 +254,51 @@ def _record_workspace_sync_trace(
     st.session_state["_suite_persist_debug_pick_reason"] = reason
 
 
+def _record_startup_restore_diagnostics(
+    st: Any,
+    app_id: str,
+    *,
+    cloud_state: dict[str, Any],
+    cloud_ts: str | None,
+    disk_state: dict[str, Any],
+    disk_ts: str | None,
+    picked_source: str,
+    picked_reason: str,
+    should_apply: bool,
+    apply_reason: str,
+    skip_reason: str | None = None,
+    applied: bool = False,
+) -> None:
+    try:
+        from suite_cloud_state import probe_cloud_restore_diagnostics
+    except ImportError:
+        probe_cloud_restore_diagnostics = None  # type: ignore[assignment]
+
+    diag = probe_cloud_restore_diagnostics(st, app_id) if probe_cloud_restore_diagnostics else {}
+    cloud_players = _workspace_comparison_players(cloud_state) if cloud_state else []
+    st.session_state["_suite_cloud_fetch_attempted"] = True
+    st.session_state["_suite_cloud_fetch_success"] = bool(cloud_state) or bool(
+        diag.get("cloud_has_full_session")
+    )
+    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or "")[:32] or None
+    st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts or diag.get("cloud_updated_at")
+    st.session_state["_suite_cloud_fetch_active_page"] = (
+        cloud_state.get("active_page")
+        if isinstance(cloud_state, dict)
+        else None
+    )
+    st.session_state["_suite_cloud_fetch_comparison_players"] = cloud_players or None
+    st.session_state["_suite_restore_decision"] = "applied" if applied else "skipped"
+    st.session_state["_suite_restore_skip_reason"] = skip_reason
+    st.session_state["_suite_restore_should_apply"] = should_apply
+    st.session_state["_suite_restore_apply_reason"] = apply_reason
+    st.session_state["_suite_restore_pick_source"] = picked_source
+    st.session_state["_suite_restore_pick_reason"] = picked_reason
+    st.session_state["_suite_disk_restore_after_cloud"] = picked_source == "disk" and bool(cloud_state)
+    st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
+    st.session_state["_suite_post_restore_comparison_players"] = _session_comparison_players(st) or None
+
+
 def sync_workspace_protocol(
     st: Any,
     app_id: str,
@@ -292,21 +337,41 @@ def sync_workspace_protocol(
         return False
 
     dirty_key = _local_dirty_key(app_id)
-    if st.session_state.get(dirty_key):
-        st.session_state["_suite_persist_restore_skip_reason"] = "local unsaved edits — workspace sync skipped"
-        return False
 
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
 
+    cloud_epoch = parse_persist_timestamp(cloud_ts)
+    disk_epoch = parse_persist_timestamp(disk_ts)
+    cloud_newer_than_disk = bool(cloud_ts and cloud_epoch > disk_epoch)
+
+    if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
+        reason = "local unsaved edits — workspace sync skipped"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state=cloud_state, cloud_ts=cloud_ts,
+            disk_state=disk_state, disk_ts=disk_ts,
+            picked_source="none", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
+        return False
+
     if not cloud_state and not disk_state:
+        reason = "no workspace blob"
         _record_workspace_sync_trace(
             st, app_id, cloud_state={}, cloud_ts=cloud_ts, disk_state={}, disk_ts=disk_ts,
             winner="none", reason="empty", applied=False,
         )
-        st.session_state["_suite_persist_restore_skip_reason"] = "no workspace blob"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state={}, cloud_ts=cloud_ts, disk_state={}, disk_ts=disk_ts,
+            picked_source="none", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
         return False
 
     picked = pick_restore_session(
@@ -323,15 +388,22 @@ def sync_workspace_protocol(
             disk_state=disk_state, disk_ts=disk_ts, winner="none",
             reason=picked.reason, applied=False,
         )
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state=cloud_state, cloud_ts=cloud_ts,
+            disk_state=disk_state, disk_ts=disk_ts,
+            picked_source="none", picked_reason=picked.reason,
+            should_apply=False, apply_reason="", skip_reason=picked.reason,
+        )
         return False
 
     synced_key = _workspace_synced_key(app_id)
     applied_key = _applied_cloud_ts_key(app_id)
     applied_ts = st.session_state.get(applied_key)
-    cloud_epoch = parse_persist_timestamp(cloud_ts)
     applied_epoch = parse_persist_timestamp(applied_ts)
-    first_sync = not st.session_state.get(synced_key)
-    cloud_newer = bool(cloud_ts and cloud_epoch > applied_epoch)
+    already_synced = bool(st.session_state.get(synced_key))
+    first_sync = not already_synced
+    cloud_newer_than_applied = bool(cloud_ts and cloud_epoch > applied_epoch)
     page = str(picked.state.get("active_page") or "")
     current_page = _session_workspace_page(st)
     page_mismatch = bool(page and current_page and page != current_page)
@@ -344,14 +416,49 @@ def sync_workspace_protocol(
     st.session_state["_suite_workspace_cloud_comparison_players"] = cloud_players or None
     st.session_state["_suite_workspace_local_comparison_players"] = local_players or None
     st.session_state["_suite_workspace_comparison_mismatch"] = comparison_mismatch
+    st.session_state["_suite_already_synced_before_restore"] = already_synced
 
-    should_apply = first_sync or cloud_newer or page_mismatch or comparison_mismatch
+    apply_reasons: list[str] = []
+    if first_sync:
+        apply_reasons.append("first_sync")
+    if cloud_newer_than_applied:
+        apply_reasons.append("cloud_newer_than_applied")
+    if cloud_newer_than_disk:
+        apply_reasons.append("cloud_newer_than_disk")
+    if page_mismatch:
+        apply_reasons.append("page_mismatch")
+    if comparison_mismatch:
+        apply_reasons.append("comparison_mismatch")
+
+    should_apply = bool(
+        picked.state
+        and (
+            first_sync
+            or cloud_newer_than_applied
+            or cloud_newer_than_disk
+            or page_mismatch
+            or comparison_mismatch
+        )
+    )
+    apply_reason = ", ".join(apply_reasons) if apply_reasons else "none"
+
+    if cloud_newer_than_disk and picked.source == "cloud":
+        st.session_state.pop(synced_key, None)
+
     if not should_apply:
-        st.session_state["_suite_persist_restore_skip_reason"] = "workspace already synced this session"
+        skip_reason = f"workspace already synced ({apply_reason or 'no trigger'})"
+        st.session_state["_suite_persist_restore_skip_reason"] = skip_reason
         _record_workspace_sync_trace(
             st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
             disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
             reason="already synced", applied=False,
+        )
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state=cloud_state, cloud_ts=cloud_ts,
+            disk_state=disk_state, disk_ts=disk_ts,
+            picked_source=picked.source, picked_reason=picked.reason,
+            should_apply=False, apply_reason=apply_reason, skip_reason=skip_reason,
         )
         return False
 
@@ -391,6 +498,13 @@ def sync_workspace_protocol(
         st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
         disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
         reason=picked.reason, applied=True, applied_state=picked.state,
+    )
+    _record_startup_restore_diagnostics(
+        st, app_id,
+        cloud_state=cloud_state, cloud_ts=cloud_ts,
+        disk_state=disk_state, disk_ts=disk_ts,
+        picked_source=picked.source, picked_reason=picked.reason,
+        should_apply=True, apply_reason=apply_reason, skip_reason=None, applied=True,
     )
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
     return True

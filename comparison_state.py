@@ -24,15 +24,14 @@ def is_comparison_locally_dirty(session: dict[str, Any]) -> bool:
 
 
 def mark_comparison_local_edit(session: dict[str, Any]) -> None:
+    """Comparison-only dirty flag — does not block cross-device cloud fetch."""
     session[COMPARISON_DIRTY_KEY] = True
     session[COMPARISON_LOCAL_EDIT_TS_KEY] = _utc_now_iso()
-    session[_SUITE_LOCAL_DIRTY] = True
 
 
 def clear_comparison_local_edit(session: dict[str, Any]) -> None:
     session.pop(COMPARISON_DIRTY_KEY, None)
     session.pop(COMPARISON_LOCAL_EDIT_TS_KEY, None)
-    session[_SUITE_LOCAL_DIRTY] = False
 
 
 def normalize_compare_label(

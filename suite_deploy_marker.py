@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-08-comparison-cloud-sync-v8"
+SUITE_BUILD_LABEL = "2026-06-08-dell-cloud-restore-v9"
 GIT_COMMIT_SHORT = "5b1dae7"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
