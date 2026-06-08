@@ -29,6 +29,10 @@ INSIGHT_ELIGIBLE_PAGES: dict[str, frozenset[str]] = {
         "Career Totals",
         "Valuation",
         "ML Predictions",
+        "Leaderboards",
+        "Fantasy Sleepers & Busts",
+        "Fantasy Standings Tracker",
+        "Fantasy Lineup Assistant",
         "Draft Assistant Simulator",
         "Live Draft Room",
         "Draft Room Simulator",
@@ -74,6 +78,16 @@ _INSIGHT_PAGE_ALIASES: dict[str, str] = {
     "comparison tool": "Comparison Tool",
     "valuation": "Valuation",
     "ml predictions": "ML Predictions",
+    "leaderboards": "Leaderboards",
+    "fantasy standings": "Fantasy Standings Tracker",
+    "fantasy standings tracker": "Fantasy Standings Tracker",
+    "standings tracker": "Fantasy Standings Tracker",
+    "fantasy sleepers": "Fantasy Sleepers & Busts",
+    "fantasy sleepers & busts": "Fantasy Sleepers & Busts",
+    "sleepers & busts": "Fantasy Sleepers & Busts",
+    "fantasy lineup": "Fantasy Lineup Assistant",
+    "fantasy lineup assistant": "Fantasy Lineup Assistant",
+    "lineup assistant": "Fantasy Lineup Assistant",
 }
 
 
@@ -1109,6 +1123,12 @@ def render_insight_sync_debug(st: Any) -> None:
         "return_context_source_page": rc.get("source_page"),
         "return_context_has_valuation_filters": any(str(k).startswith("value_") for k in rc_filters),
         "return_context_has_projections_filters": any(str(k).startswith("ml_") for k in rc_filters),
+        "return_context_has_leaderboards_filters": any(str(k).startswith("leaders_") for k in rc_filters),
+        "return_context_has_fantasy_sleepers_filters": any(
+            str(k).startswith(("fantasy_market_", "sleeper_", "fantasy_pts_")) for k in rc_filters
+        ),
+        "return_context_has_fantasy_standings_filters": any(str(k).startswith("standings_") for k in rc_filters),
+        "return_context_has_fantasy_lineup_filters": any(str(k).startswith("lineup_") for k in rc_filters),
         "insight_return_phase": ss.get("_ami_insight_return_phase"),
         "insight_return_preserve": ss.get("insight_return_preserve", ss.get("_ami_insight_return_preserve")),
         "ami_resume_consumed": ss.get("ami_resume_consumed"),
