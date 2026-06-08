@@ -182,9 +182,24 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
                     filter_params[str(fk)] = _copy_widget_value(val)
 
     elif "draft" in p.lower():
-        dq = session_state.get("draft_queue")
-        if isinstance(dq, list) and dq:
-            entity_params["draft_queue"] = [_copy_widget_value(x) for x in dq[:6]]
+        try:
+            from draft_state import canonical_draft_workflow, gather_draft_workflow
+
+            dw = canonical_draft_workflow(session_state) or gather_draft_workflow(session_state)
+            if isinstance(dw, dict):
+                q = dw.get("queue") if isinstance(dw.get("queue"), list) else session_state.get("draft_queue")
+                if isinstance(q, list) and q:
+                    entity_params["draft_queue"] = [_copy_widget_value(x) for x in q[:6]]
+                focus = dw.get("watchlist_focus")
+                favorites = dw.get("watchlist_favorites")
+                if isinstance(focus, list) and focus:
+                    entity_params["watchlist_focus"] = [_copy_widget_value(x) for x in focus[:20]]
+                if isinstance(favorites, list) and favorites:
+                    entity_params["watchlist_favorites"] = [_copy_widget_value(x) for x in favorites[:20]]
+        except ImportError:
+            dq = session_state.get("draft_queue")
+            if isinstance(dq, list) and dq:
+                entity_params["draft_queue"] = [_copy_widget_value(x) for x in dq[:6]]
 
     return {
         "source_app": "baseball",
@@ -274,6 +289,26 @@ def apply_source_state_to_session(
             for key, val in {**wp, **filt}.items():
                 if val is not None and val != "":
                     session_state[key] = copy.deepcopy(val)
+        return
+
+    if page and "draft" in page.lower():
+        try:
+            from draft_state import apply_draft_source_state_from_ami
+
+            apply_draft_source_state_from_ami(session_state, source_state)
+        except ImportError:
+            dq = ent.get("draft_queue") or wp.get("draft_queue")
+            if isinstance(dq, list):
+                session_state["draft_queue"] = copy.deepcopy(dq[:6])
+            focus = ent.get("watchlist_focus") or wp.get("draft_assistant_focus_players")
+            favorites = ent.get("watchlist_favorites") or wp.get("workflow_favorite_targets")
+            if isinstance(focus, list):
+                session_state["draft_assistant_focus_players"] = copy.deepcopy(focus[:20])
+            if isinstance(favorites, list):
+                session_state["workflow_favorite_targets"] = copy.deepcopy(favorites[:20])
+        for key, val in {**wp, **filt}.items():
+            if val is not None and val != "":
+                session_state[key] = copy.deepcopy(val)
         return
 
     for key in (

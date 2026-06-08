@@ -41,7 +41,7 @@ _INSIGHT_KEYS = (
     "_ami_dismissed_insight_ids",
 )
 
-_WORKSPACE_KEYS = ("comparison_state", "trend_state", "career_state")
+_WORKSPACE_KEYS = ("comparison_state", "trend_state", "career_state", "draft_state")
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
@@ -112,7 +112,7 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
     trend_block = _page_block(state, "Trend Value")
     hist_block = _page_block(state, "Historical Explorer")
     career_block = _page_block(state, "Career Totals")
-    draft_block = _page_block(state, "Draft Room")
+    draft_block = _page_block(state, "Draft Room Simulator") or _page_block(state, "Draft Room")
     cmp_meta = state.get("comparison_state") if isinstance(state.get("comparison_state"), dict) else {}
     comparison_players = cmp_meta.get("players") or cmp_block.get("compare_players")
     trend_meta = state.get("trend_state") if isinstance(state.get("trend_state"), dict) else {}
@@ -120,6 +120,21 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
     trend_chart_player = trend_meta.get("chart_player") or trend_block.get("single_trend_dashboard_player")
     career_meta = state.get("career_state") if isinstance(state.get("career_state"), dict) else {}
     career_filters = career_meta.get("filters") or _career_filter_summary(career_block) or None
+    draft_meta = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
+    draft_workflow = None
+    if draft_meta:
+        draft_workflow = {
+            "queue": draft_meta.get("queue"),
+            "watchlist_focus": draft_meta.get("watchlist_focus"),
+            "watchlist_favorites": draft_meta.get("watchlist_favorites"),
+        }
+    if not draft_workflow or not any(draft_workflow.values()):
+        try:
+            from draft_state import _draft_workflow_from_blob
+
+            draft_workflow = _draft_workflow_from_blob(state)
+        except ImportError:
+            draft_workflow = None
     return {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "updated_at": _utc_now_iso(),
@@ -138,6 +153,7 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
             if k in draft_block
         }
         or None,
+        "draft_workflow": draft_workflow if draft_workflow and any(draft_workflow.values()) else None,
     }
 
 
@@ -268,6 +284,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 clear_career_local_edit(ss)
             except ImportError:
                 pass
+            try:
+                from draft_state import clear_draft_local_edit
+
+                clear_draft_local_edit(ss)
+            except ImportError:
+                pass
             if active == "Comparison Tool":
                 restore_comparison_page_filters(ss, ss["page_filter_state"])
             elif active == "Trend Value":
@@ -347,6 +369,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
+    try:
+        from draft_state import apply_cloud_draft_state_if_allowed
+
+        apply_cloud_draft_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -400,6 +429,12 @@ def autosave_baseball_state(st: Any) -> None:
                 clear_career_local_edit(st.session_state)
             except ImportError:
                 pass
+            try:
+                from draft_state import clear_draft_local_edit
+
+                clear_draft_local_edit(st.session_state)
+            except ImportError:
+                pass
     except ImportError:
         pass
 
@@ -431,6 +466,12 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from career_totals_state import clear_career_local_edit
 
             clear_career_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from draft_state import clear_draft_local_edit
+
+            clear_draft_local_edit(st.session_state)
         except ImportError:
             pass
     return saved

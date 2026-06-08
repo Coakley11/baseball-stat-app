@@ -7343,16 +7343,20 @@ def build_clean_player_label_map_from_ids(df):
 
 
 def add_player_to_queue(player_name):
+    from draft_state import add_player_to_draft_queue
+
     player_name = str(player_name).strip()
     if not player_name:
         return "No player selected."
-    q = st.session_state.get("draft_queue", [])
-    if not isinstance(q, list):
-        q = []
-    if player_name not in q:
-        q.append(player_name)
-    st.session_state["draft_queue"] = q
-    _workflow_normalize_draft_queue()
+    _, added = add_player_to_draft_queue(st.session_state, player_name)
+    if not added:
+        return f"{player_name} is already in your Draft Queue."
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="draft_edit")
+    except Exception:
+        pass
     return f"Queued {player_name}."
 
 
@@ -9696,16 +9700,18 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
         return msg, None
 
     if action == "Add to Watchlist":
+        from draft_state import add_player_to_watchlist
+
         st.session_state["pending_draft_assistant_player"] = display
-        focus = st.session_state.get("draft_assistant_focus_players", [])
-        if not isinstance(focus, list):
-            focus = []
-        focus = plr_act.dedupe_append_name(focus, display, cap=10)
-        st.session_state["draft_assistant_focus_players"] = focus
-        fav = st.session_state.get("workflow_favorite_targets", [])
-        st.session_state["workflow_favorite_targets"] = plr_act.dedupe_append_name(
-            fav, display, cap=wf_sb.FAVORITES_CAP
-        )
+        focus, added = add_player_to_watchlist(st.session_state, display)
+        if not added:
+            return f"{display} is already on your Watchlist.", None
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="draft_edit")
+        except Exception:
+            pass
         return f"Added {display} to Watchlist.", None
 
     if action == "Add as trade target to acquire":
@@ -10600,7 +10606,9 @@ def record_workflow_comparison_group(labels):
 
 
 def _workflow_normalize_draft_queue():
-    st.session_state["draft_queue"] = wf_sb.normalize_dedupe_queue(st.session_state.get("draft_queue"))
+    from draft_state import sync_draft_queue
+
+    sync_draft_queue(st.session_state, st.session_state.get("draft_queue"), reason="normalize_queue")
 
 
 def _drafted_player_names_from_room():
@@ -10617,6 +10625,8 @@ def _drafted_player_names_from_room():
 
 def _auto_remove_drafted_from_queue():
     """Remove drafted players from Draft Queue, but leave Watchlist/Tracked Players untouched."""
+    from draft_state import sync_draft_queue
+
     _workflow_normalize_draft_queue()
     drafted = _drafted_player_names_from_room()
     if not drafted:
@@ -10625,21 +10635,43 @@ def _auto_remove_drafted_from_queue():
     kept = [p for p in q if str(p).strip() not in drafted]
     removed = [p for p in q if str(p).strip() in drafted]
     if removed:
-        st.session_state["draft_queue"] = kept
+        sync_draft_queue(st.session_state, kept, reason="auto_remove_drafted")
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="draft_edit")
+        except Exception:
+            pass
     return removed
 
 
 def _move_queue_item(idx, delta):
+    from draft_state import mark_draft_pending_sync, sync_draft_queue
+
     q = list(st.session_state.get("draft_queue", []) or [])
     new_idx = idx + delta
     if idx < 0 or idx >= len(q) or new_idx < 0 or new_idx >= len(q):
         return
     q[idx], q[new_idx] = q[new_idx], q[idx]
-    st.session_state["draft_queue"] = q
+    sync_draft_queue(st.session_state, q, reason="reorder_queue")
+    mark_draft_pending_sync(st.session_state)
 
 
 def _clear_workflow_list(key):
-    st.session_state[key] = []
+    from draft_state import clear_draft_queue, clear_watchlist
+
+    if key == "draft_queue":
+        clear_draft_queue(st.session_state, reason="clear_queue")
+    elif key in ("draft_assistant_focus_players", "workflow_favorite_targets"):
+        clear_watchlist(st.session_state, reason="clear_watchlist")
+    else:
+        st.session_state[key] = []
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="draft_edit")
+    except Exception:
+        pass
 
 
 def render_persistent_workflow_sidebar(_yearly_df_local=None):
@@ -11905,7 +11937,26 @@ if developer_mode_enabled():
         pass
 render_page_state_debug(active_page)
 app_tutorial.maybe_open_tutorial_dialog()
+try:
+    from draft_state import flush_draft_workflow_edits, prepare_draft_workflow, render_draft_state_debug
+
+    prepare_draft_workflow(st.session_state)
+except ImportError:
+    prepare_draft_workflow = None  # type: ignore[misc, assignment]
+    flush_draft_workflow_edits = None  # type: ignore[misc, assignment]
+    render_draft_state_debug = None  # type: ignore[misc, assignment]
 render_persistent_workflow_sidebar(yearly_df)
+if developer_mode_enabled():
+    try:
+        if render_draft_state_debug is not None:
+            render_draft_state_debug(st, st.session_state)
+    except Exception:
+        pass
+try:
+    if flush_draft_workflow_edits is not None:
+        flush_draft_workflow_edits(st.session_state, st, reason="draft_sidebar_flush")
+except Exception:
+    pass
 
 if active_page == "Historical Explorer":
     render_section_header(
