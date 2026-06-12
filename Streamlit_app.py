@@ -463,21 +463,17 @@ pp.inject_polish_css(st, app_slug="baseball")
 
 try:
     from suite_resume_launch import apply_suite_resume_launch
-
-    apply_suite_resume_launch(st, "baseball")
 except Exception:
-    pass
+    apply_suite_resume_launch = None  # type: ignore
 
 try:
     from baseball_persistent_state import (
         autosave_baseball_state,
         default_reset_baseball_session,
-        restore_baseball_disk_state_once,
+        force_save_baseball_state,
     )
-    from suite_user_persistence import render_reset_controls, show_persistence_messages
+    from suite_user_persistence import render_reset_controls
 
-    restore_baseball_disk_state_once(st)
-    show_persistence_messages(st)
     render_reset_controls(
         st,
         "baseball",
@@ -486,6 +482,12 @@ try:
     )
 except Exception:
     pass
+
+if apply_suite_resume_launch:
+    try:
+        apply_suite_resume_launch(st, "baseball")
+    except Exception:
+        pass
 
 st.markdown("""
 <style>
@@ -825,6 +827,23 @@ def resolve_fullname_to_clean_label(full_name, label_map):
     base = " ".join(fullname_base_from_label(fn).split())
     if base in label_map:
         return base
+    # Legacy team-suffix labels from older saves, e.g. "Juan Soto (NYY)".
+    if fn.endswith(")") and "(" in fn:
+        suffix = fn[fn.rfind("(") + 1 : -1].strip()
+        if suffix.isupper() and 2 <= len(suffix) <= 4:
+            base_from_team = fn[: fn.rfind("(")].strip()
+            if base_from_team in label_map:
+                return base_from_team
+            base_matches = [
+                lbl for lbl in label_map.keys() if fullname_base_from_label(lbl) == base_from_team
+            ]
+            if len(base_matches) == 1:
+                return base_matches[0]
+            if len(base_matches) > 1:
+                return sorted(base_matches)[0]
+            resolved = resolve_fullname_to_clean_label(base_from_team, label_map)
+            if resolved:
+                return resolved
     candidates = sorted([lbl for lbl in label_map.keys() if lbl.startswith(fn + " (")])
     if candidates:
         return candidates[0]
@@ -942,16 +961,31 @@ def register_players_sent_to_trend_page(full_name, label_map):
 
 
 def append_compare_player_ordered(full_name, label_map):
-    """Queue one player for the Comparison Tool using Player A / Player B slots.
+    """Queue one player for the Comparison Tool using Player A / Player B slots."""
+    try:
+        from comparison_state import (
+            gather_comparison_players,
+            normalize_compare_label,
+            write_canonical_comparison_state,
+        )
+    except ImportError:
+        gather_comparison_players = None  # type: ignore[assignment]
 
-    Rules:
-    - If Player A is empty, the sent player becomes Player A.
-    - If Player A is already set, the sent player becomes Player B (replacing any prior B).
-    - ``pending_compare_players`` is kept in sync so the top multiselect matches A/B.
-    """
     lbl = resolve_fullname_to_clean_label(full_name, label_map)
     if not lbl:
         return False
+
+    if gather_comparison_players is not None:
+        current = gather_comparison_players(st.session_state, label_map, resolve_fullname_to_clean_label)
+        a = current[0] if len(current) >= 1 else None
+        b = current[1] if len(current) >= 2 else None
+        if not a:
+            return bool(write_canonical_comparison_state(st.session_state, [lbl], reason="send_player_a"))
+        if a == lbl:
+            return True
+        if not b or b == lbl:
+            return bool(write_canonical_comparison_state(st.session_state, [a, lbl], reason="send_player_b"))
+        return bool(write_canonical_comparison_state(st.session_state, [a, lbl], reason="send_replace_b"))
 
     a = st.session_state.get("sig_player_a_clean")
     b = st.session_state.get("sig_player_b_clean")
@@ -959,7 +993,6 @@ def append_compare_player_ordered(full_name, label_map):
     b = b if isinstance(b, str) and b in label_map else None
 
     old_compare = [x for x in (st.session_state.get("compare_players") or []) if isinstance(x, str) and x in label_map]
-    # When navigating from other pages, sig A/B session may be unset while compare_players still holds the last UI selection.
     if a is None and old_compare:
         a = old_compare[0]
     if b is None and len(old_compare) > 1:
@@ -987,7 +1020,6 @@ def append_compare_player_ordered(full_name, label_map):
         st.session_state["pending_compare_players"] = merged[:3]
         return True
 
-    # Both slots occupied by different players: new send replaces Player B.
     st.session_state["pending_sig_player_a"] = a
     st.session_state["pending_sig_player_b"] = lbl
     merged = [a, lbl]
@@ -1344,7 +1376,7 @@ def add_rate_stats(df):
     df["OPS"] = pd.to_numeric(df["OBP"] + df["SLG"], errors="coerce")
     return df
 
-def apply_stat_min_filters(df, prefix):
+def apply_stat_min_filters(df, prefix, on_change=None):
     df = df.copy()
     stat_columns = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     for col in stat_columns:
@@ -1373,6 +1405,7 @@ def apply_stat_min_filters(df, prefix):
                         value=0,
                         step=1,
                         key=f"{prefix}_{stat}_min",
+                        on_change=on_change,
                         help=(
                             f"Minimum {stat} combined across selected lookback years."
                             if prefix == "trend"
@@ -1391,6 +1424,7 @@ def apply_stat_min_filters(df, prefix):
                         step=0.001,
                         format="%.3f",
                         key=f"{prefix}_{stat}_min",
+                        on_change=on_change,
                         help=(
                             f"Minimum {stat} based on the selected trend-window data."
                             if prefix == "trend"
@@ -1612,22 +1646,60 @@ def make_trend_insight_summary(row):
     rbi_trend = pd.to_numeric(row.get("RBI_trend", np.nan), errors="coerce")
     sb_trend = pd.to_numeric(row.get("SB_trend", np.nan), errors="coerce")
     xbh_trend = pd.to_numeric(row.get("XBH_noHR_trend", np.nan), errors="coerce")
-    proj_ops = pd.to_numeric(row.get("proj_OPS", np.nan), errors="coerce")
-    proj_hr = pd.to_numeric(row.get("proj_HR", np.nan), errors="coerce")
-    proj_rbi = pd.to_numeric(row.get("proj_RBI", np.nan), errors="coerce")
-    proj_sb = pd.to_numeric(row.get("proj_SB", np.nan), errors="coerce")
-    proj_xbh = pd.to_numeric(row.get("proj_XBH", np.nan), errors="coerce")
     trend_type = classify_trend(row)
     label = "a breakout candidate" if trend_type == "breakout" else ("a decline risk" if trend_type == "decline" else "a stable profile")
-    return (
-        f"{player} looks like {label}. "
-        f"OPS trend is {fmt_rate_4(ops_trend)} per year, HR trend is {fmt_count_1(hr_trend)}, "
-        f"2B+3B trend is {fmt_count_1(xbh_trend)}, RBI trend is {fmt_count_1(rbi_trend)}, "
-        f"and SB trend is {fmt_count_1(sb_trend)}. "
-        f"If the recent pattern continues, the next-season trend estimate is roughly "
-        f"{fmt_rate_4(proj_ops)} OPS, {fmt_count_1(proj_hr)} HR, {fmt_count_1(proj_xbh)} doubles/triples, "
-        f"{fmt_count_1(proj_rbi)} RBI, and {fmt_count_1(proj_sb)} SB."
-    )
+
+    trend_bits = []
+    if pd.notna(ops_trend):
+        trend_bits.append(f"OPS trend {fmt_rate_3(ops_trend)}/yr")
+    if pd.notna(hr_trend):
+        trend_bits.append(f"HR trend {fmt_int(hr_trend)}/yr")
+    if pd.notna(xbh_trend):
+        trend_bits.append(f"2B+3B trend {fmt_int(xbh_trend)}/yr")
+    if pd.notna(rbi_trend):
+        trend_bits.append(f"RBI trend {fmt_int(rbi_trend)}/yr")
+    if pd.notna(sb_trend):
+        trend_bits.append(f"SB trend {fmt_int(sb_trend)}/yr")
+    trend_sentence = ", ".join(trend_bits) + "." if trend_bits else "Trend slopes unavailable."
+
+    proj_bits = []
+    rate_proj = [
+        ("OPS", "proj_OPS"),
+        ("AVG", "proj_BA"),
+        ("OBP", "proj_OBP"),
+        ("SLG", "proj_SLG"),
+    ]
+    for stat_label, col in rate_proj:
+        val = pd.to_numeric(row.get(col, np.nan), errors="coerce")
+        if pd.notna(val):
+            proj_bits.append(f"{stat_label} {val:.3f}")
+    count_proj = [
+        ("HR", "proj_HR"),
+        ("RBI", "proj_RBI"),
+        ("SB", "proj_SB"),
+        ("doubles", "proj_2B"),
+        ("triples", "proj_3B"),
+    ]
+    for stat_label, col in count_proj:
+        val = pd.to_numeric(row.get(col, np.nan), errors="coerce")
+        if pd.notna(val):
+            proj_bits.append(f"{int(round(val))} {stat_label}")
+    war_val = pd.to_numeric(row.get("proj_WAR", np.nan), errors="coerce")
+    if pd.notna(war_val):
+        proj_bits.append(f"WAR {war_val:.1f}")
+    if not any(
+        pd.notna(pd.to_numeric(row.get(c, np.nan), errors="coerce"))
+        for c in ("proj_2B", "proj_3B")
+    ):
+        xbh_val = pd.to_numeric(row.get("proj_XBH", np.nan), errors="coerce")
+        if pd.notna(xbh_val):
+            proj_bits.append(f"{int(round(xbh_val))} doubles/triples")
+    if proj_bits:
+        proj_sentence = "Next year projection: " + ", ".join(proj_bits) + "."
+    else:
+        proj_sentence = "Next year projection unavailable."
+
+    return f"{player} looks like {label}. {trend_sentence} {proj_sentence}"
 
 def make_valuation_summary(row):
     player = row.get("fullName", "This player")
@@ -3527,7 +3599,7 @@ def _insight_name_col(df):
     return None
 
 
-def _select_insight_row(df, *, key, label="Select player for insight", default_name=None):
+def _select_insight_row(df, *, key, label="Select player for insight", default_name=None, on_change=None):
     """Select a player from a dataframe and return the matching row for section summaries."""
     if df is None or df.empty:
         return None
@@ -3544,7 +3616,7 @@ def _select_insight_row(df, *, key, label="Select player for insight", default_n
     if saved not in options:
         saved = default_name if default_name in options else options[0]
         st.session_state[key] = saved
-    selected = st.selectbox(label, options, key=key)
+    selected = st.selectbox(label, options, key=key, on_change=on_change)
     st.markdown(f"**Selected:** <span style='color:#b42318;font-weight:800'>{selected}</span>", unsafe_allow_html=True)
     match = df[df[name_col].astype(str).str.strip().eq(str(selected).strip())]
     return match.iloc[0] if not match.empty else None
@@ -4023,6 +4095,12 @@ def _on_ml_predictions_refresh_click():
     _clear_ml_tuning_cache()
     st.session_state.pop(ML_PREDICTIONS_STATUS_KEY, None)
     st.session_state.pop(ML_LAST_TUNING_SIG_KEY, None)
+    try:
+        from projections_state import mark_projections_pipeline_refresh
+
+        mark_projections_pipeline_refresh(st.session_state)
+    except Exception:
+        pass
 
 
 def _ml_enrich_predictions_for_storage(pred_df, yearly_source, ml_lookback, ml_projection_style):
@@ -7271,16 +7349,20 @@ def build_clean_player_label_map_from_ids(df):
 
 
 def add_player_to_queue(player_name):
+    from draft_state import add_player_to_draft_queue
+
     player_name = str(player_name).strip()
     if not player_name:
         return "No player selected."
-    q = st.session_state.get("draft_queue", [])
-    if not isinstance(q, list):
-        q = []
-    if player_name not in q:
-        q.append(player_name)
-    st.session_state["draft_queue"] = q
-    _workflow_normalize_draft_queue()
+    _, added = add_player_to_draft_queue(st.session_state, player_name)
+    if not added:
+        return f"{player_name} is already in your Draft Queue."
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="draft_edit")
+    except Exception:
+        pass
     return f"Queued {player_name}."
 
 
@@ -9624,16 +9706,18 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
         return msg, None
 
     if action == "Add to Watchlist":
+        from draft_state import add_player_to_watchlist
+
         st.session_state["pending_draft_assistant_player"] = display
-        focus = st.session_state.get("draft_assistant_focus_players", [])
-        if not isinstance(focus, list):
-            focus = []
-        focus = plr_act.dedupe_append_name(focus, display, cap=10)
-        st.session_state["draft_assistant_focus_players"] = focus
-        fav = st.session_state.get("workflow_favorite_targets", [])
-        st.session_state["workflow_favorite_targets"] = plr_act.dedupe_append_name(
-            fav, display, cap=wf_sb.FAVORITES_CAP
-        )
+        focus, added = add_player_to_watchlist(st.session_state, display)
+        if not added:
+            return f"{display} is already on your Watchlist.", None
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="draft_edit")
+        except Exception:
+            pass
         return f"Added {display} to Watchlist.", None
 
     if action == "Add as trade target to acquire":
@@ -10528,7 +10612,9 @@ def record_workflow_comparison_group(labels):
 
 
 def _workflow_normalize_draft_queue():
-    st.session_state["draft_queue"] = wf_sb.normalize_dedupe_queue(st.session_state.get("draft_queue"))
+    from draft_state import sync_draft_queue
+
+    sync_draft_queue(st.session_state, st.session_state.get("draft_queue"), reason="normalize_queue")
 
 
 def _drafted_player_names_from_room():
@@ -10545,6 +10631,8 @@ def _drafted_player_names_from_room():
 
 def _auto_remove_drafted_from_queue():
     """Remove drafted players from Draft Queue, but leave Watchlist/Tracked Players untouched."""
+    from draft_state import sync_draft_queue
+
     _workflow_normalize_draft_queue()
     drafted = _drafted_player_names_from_room()
     if not drafted:
@@ -10553,21 +10641,43 @@ def _auto_remove_drafted_from_queue():
     kept = [p for p in q if str(p).strip() not in drafted]
     removed = [p for p in q if str(p).strip() in drafted]
     if removed:
-        st.session_state["draft_queue"] = kept
+        sync_draft_queue(st.session_state, kept, reason="auto_remove_drafted")
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="draft_edit")
+        except Exception:
+            pass
     return removed
 
 
 def _move_queue_item(idx, delta):
+    from draft_state import mark_draft_pending_sync, sync_draft_queue
+
     q = list(st.session_state.get("draft_queue", []) or [])
     new_idx = idx + delta
     if idx < 0 or idx >= len(q) or new_idx < 0 or new_idx >= len(q):
         return
     q[idx], q[new_idx] = q[new_idx], q[idx]
-    st.session_state["draft_queue"] = q
+    sync_draft_queue(st.session_state, q, reason="reorder_queue")
+    mark_draft_pending_sync(st.session_state)
 
 
 def _clear_workflow_list(key):
-    st.session_state[key] = []
+    from draft_state import clear_draft_queue, clear_watchlist
+
+    if key == "draft_queue":
+        clear_draft_queue(st.session_state, reason="clear_queue")
+    elif key in ("draft_assistant_focus_players", "workflow_favorite_targets"):
+        clear_watchlist(st.session_state, reason="clear_watchlist")
+    else:
+        st.session_state[key] = []
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="draft_edit")
+    except Exception:
+        pass
 
 
 def render_persistent_workflow_sidebar(_yearly_df_local=None):
@@ -10774,6 +10884,7 @@ PAGE_STATE_DEBUG_PREFIXES = {
     "Valuation": ("value_",),
     "Fantasy Sleepers & Busts": ("fantasy_market_", "sleeper_", "fantasy_pts_"),
     "Draft Assistant Simulator": ("draft_", "fantasy_draft_"),
+    "Draft Room Simulator": ("draft_room_", "room_"),
     "Draft Simulation Test Mode": ("draft_lab_",),
     "Live Draft Room": ("live_draft_", "live_slot_"),
     "Fantasy Standings Tracker": ("standings_",),
@@ -10786,6 +10897,14 @@ DEVELOPER_MODE_KEY = "app_developer_mode"
 
 def developer_mode_enabled() -> bool:
     """When False (default), hide debug/diagnostic UI and skip expensive debug work."""
+    try:
+        raw = st.query_params.get("dev")
+    except Exception:
+        raw = None
+    if raw is not None:
+        val = str(raw[0] if isinstance(raw, list) else raw).strip().lower()
+        if val in ("1", "true", "yes", "on"):
+            return True
     return bool(st.session_state.get(DEVELOPER_MODE_KEY, False))
 
 
@@ -10819,17 +10938,49 @@ def init_state_once(key, default):
 
 
 def validate_state_option(key, options, default=None):
-    """Selectbox/radio: init once; if stored value is invalid, fall back to default or first option."""
+    """Selectbox/radio: init once; tolerate redeploy enum drift with nearest mapping."""
     opts = list(options)
     if not opts:
         return
     fallback = default if default is not None else opts[0]
     if fallback not in opts:
         fallback = opts[0]
+    warn_key = f"_suite_validate_warn::{key}"
+    stale_key = f"_suite_stale_option::{key}"
     if key not in st.session_state:
         st.session_state[key] = fallback
-    elif st.session_state[key] not in opts:
-        st.session_state[key] = fallback
+        st.session_state.pop(warn_key, None)
+        st.session_state.pop(stale_key, None)
+        return
+    current = st.session_state[key]
+    if current in opts:
+        st.session_state.pop(warn_key, None)
+        return
+    stale = current
+    mapped = None
+    stale_l = str(stale).lower()
+    for opt in opts:
+        if str(opt).lower() == stale_l:
+            mapped = opt
+            break
+    if mapped is None:
+        for opt in opts:
+            opt_l = str(opt).lower()
+            if stale_l in opt_l or opt_l in stale_l:
+                mapped = opt
+                break
+    if mapped is not None:
+        st.session_state[stale_key] = stale
+        st.session_state[key] = mapped
+        if developer_mode_enabled():
+            st.session_state[warn_key] = f"Mapped restored value '{stale}' → '{mapped}'"
+        return
+    st.session_state[stale_key] = stale
+    st.session_state[key] = fallback
+    if developer_mode_enabled():
+        st.session_state[warn_key] = (
+            f"Restored value '{stale}' is not in current options; using '{fallback}'"
+        )
 
 
 def validate_multiselect_options(key, options, default=None):
@@ -10845,19 +10996,18 @@ def validate_multiselect_options(key, options, default=None):
 
 def validate_slider_range(key, min_value, max_value, default=None):
     """Range slider: init once; clamp stored tuple into bounds."""
+    from year_range_state import sanitize_year_range
+
+    min_value = int(min_value)
+    max_value = int(max_value)
     if default is None:
-        default = (int(min_value), int(max_value))
-    lo_def, hi_def = default
-    if key not in st.session_state:
-        st.session_state[key] = (int(lo_def), int(hi_def))
+        default = (min_value, max_value)
+    raw = st.session_state.get(key) if key in st.session_state else None
+    sanitized = sanitize_year_range(raw, min_value, max_value, default)
+    if sanitized is None:
+        st.session_state[key] = (min_value, max_value)
     else:
-        cur = st.session_state.get(key)
-        if not isinstance(cur, (tuple, list)) or len(cur) != 2:
-            st.session_state[key] = (int(lo_def), int(hi_def))
-        else:
-            lo = max(int(min_value), min(int(cur[0]), int(max_value)))
-            hi = max(lo, min(int(cur[1]), int(max_value)))
-            st.session_state[key] = (lo, hi)
+        st.session_state[key] = sanitized
 
 
 def validate_number_state(key, default, min_value=None, max_value=None, as_int=True):
@@ -11261,10 +11411,13 @@ def _apply_transfer_players_to_compare(players: dict):
     label_map = get_clean_player_label_map_yearly(yearly_df)
     mode = str((players or {}).get("mode", "none")).lower()
     if mode in ("", "none"):
-        st.session_state["compare_players"] = []
-        st.session_state["compare_players_saved"] = []
-        st.session_state.pop("pending_compare_players", None)
-        st.session_state.pop("pending_compare_clear_player_b", None)
+        try:
+            from comparison_state import write_canonical_comparison_state
+
+            write_canonical_comparison_state(st.session_state, [], reason="transfer_clear")
+        except Exception:
+            st.session_state["compare_players"] = []
+            st.session_state["compare_players_saved"] = []
         return
     labels = list(players.get("labels") or [])
     if not labels:
@@ -11274,13 +11427,13 @@ def _apply_transfer_players_to_compare(players: dict):
                 labels.append(lbl)
     if not labels:
         return
-    st.session_state["pending_compare_players"] = labels[:3]
-    st.session_state["compare_players"] = labels[:3]
-    st.session_state["compare_players_saved"] = labels[:3]
-    if labels:
-        st.session_state["pending_sig_player_a"] = labels[0]
-    if len(labels) > 1:
-        st.session_state["pending_sig_player_b"] = labels[1]
+    try:
+        from comparison_state import write_canonical_comparison_state
+
+        write_canonical_comparison_state(st.session_state, labels[:3], reason="transfer_apply")
+    except Exception:
+        st.session_state["compare_players"] = labels[:3]
+        st.session_state["compare_players_saved"] = labels[:3]
 
 
 def _valid_trend_chart_labels(candidate_labels, label_map, *, lag_years=None, min_seasons=2):
@@ -11561,8 +11714,86 @@ def render_contextual_page_nav(
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# Page navigation: consume scheduled navigation BEFORE the sidebar radio is instantiated.
+def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: object) -> None:
+    try:
+        from suite_user_persistence import record_sidebar_nav_diagnostics
+
+        record_sidebar_nav_diagnostics(
+            st,
+            phase=phase,
+            rerun_source=rerun_source,
+            **kwargs,
+        )
+    except Exception:
+        pass
+
+
+def _on_sidebar_page_change() -> None:
+    """Manual sidebar navigation wins over cloud page restore in the same run."""
+    pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
+    st.session_state["active_page"] = pick
+    try:
+        from suite_user_persistence import claim_user_page_ownership
+
+        claim_user_page_ownership(st, "baseball", pick)
+    except Exception:
+        st.session_state["_suite_page_user_nav"] = True
+        st.session_state.pop("_suite_cloud_target_page", None)
+    st.session_state.pop("_suite_page_enforce_rerun", None)
+    st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
+    _record_sidebar_nav_trace(
+        "on_change_after",
+        rerun_source="sidebar_radio_on_change",
+        requested_page=pick,
+    )
+
+
+def _align_active_page_from_sidebar() -> None:
+    pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
+    active = normalize_page_key(st.session_state.get("active_page") or "")
+    if pick and pick != active:
+        st.session_state["active_page"] = pick
+        try:
+            from suite_user_persistence import claim_user_page_ownership
+
+            claim_user_page_ownership(st, "baseball", pick)
+        except Exception:
+            st.session_state["_suite_page_user_nav"] = True
+            st.session_state.pop("_suite_cloud_target_page", None)
+        st.session_state.pop("_suite_page_enforce_rerun", None)
+        st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
+        _record_sidebar_nav_trace(
+            "align_before_sync",
+            rerun_source="sidebar_align",
+            requested_page=pick,
+        )
+
+
+# Page navigation: authoritative workspace sync, then consume scheduled navigation BEFORE sidebar radio.
+st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
+_record_sidebar_nav_trace("run_start_before_align")
+_align_active_page_from_sidebar()
+try:
+    from baseball_persistent_state import prepare_baseball_workspace
+
+    prepare_baseball_workspace(st)
+except Exception:
+    pass
+_record_sidebar_nav_trace("after_prepare_workspace")
+try:
+    from suite_user_persistence import show_persistence_messages
+
+    show_persistence_messages(st)
+except Exception:
+    pass
 _consume_scheduled_navigation()
+
+try:
+    from suite_resume_launch import finalize_ami_return_restore
+
+    finalize_ami_return_restore(st, "baseball")
+except Exception:
+    pass
 
 try:
     from suite_command_center_link import render_command_center_sidebar_link
@@ -11583,23 +11814,93 @@ _selected_page = st.sidebar.radio(
     PAGE_OPTIONS,
     key=MAIN_SIDEBAR_PAGE_KEY,
     format_func=page_option_label,
+    on_change=_on_sidebar_page_change,
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
+_record_sidebar_nav_trace(
+    "after_sidebar_radio",
+    rerun_source="sidebar_render",
+    requested_page=active_page,
+)
+
+st.session_state.pop("_suite_cloud_target_page", None)
+st.session_state.pop("_suite_page_enforce_rerun", None)
+
+_prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
+_user_nav = bool(st.session_state.get("_suite_page_user_nav"))
+_page_changed = active_page != _prev_persisted_page
+if _page_changed or _user_nav:
+    _did_save = False
+    if _user_nav or _page_changed:
+        try:
+            force_save_baseball_state(st, reason="page_change")
+            _did_save = True
+        except Exception:
+            pass
+    try:
+        from applied_math_return_insight import SESSION_RETURN_PAGE_KEY, consume_ami_return_resume
+
+        _ret_page = str(st.session_state.get(SESSION_RETURN_PAGE_KEY) or "").strip()
+        if _ret_page and active_page != _ret_page:
+            st.session_state.pop("_ami_insight_return_preserve", None)
+            consume_ami_return_resume(st, "baseball")
+    except Exception:
+        pass
+    st.session_state["_suite_last_persisted_page"] = active_page
+    st.session_state.pop("_suite_page_user_nav", None)
+    st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
+    _record_sidebar_nav_trace(
+        "page_change_after_save",
+        rerun_source="page_change",
+        active_page_after=active_page,
+        page_change_detected=_page_changed or _user_nav,
+        page_change_force_save=_did_save,
+    )
+
+_record_sidebar_nav_trace(
+    "nav_final",
+    active_page_after=active_page,
+    page_overwrite_source=st.session_state.get("_suite_page_overwrite_source") or "",
+)
+
+from suite_analytical_question import render_applied_math_sidebar_entry
 
 try:
-    from suite_analytical_question import build_context_from_session, render_analyze_with_applied_math_sidebar
-
-    _ami_ctx, _ami_summary = build_context_from_session("baseball", active_page, st.session_state)
-    render_analyze_with_applied_math_sidebar(
-        st,
-        source_app="baseball",
-        source_page=active_page,
-        context=_ami_ctx,
-        context_summary=_ami_summary,
-    )
+    from applied_math_context import build_baseball_applied_math_context, build_source_state
 except Exception:
-    pass
+    build_baseball_applied_math_context = None  # type: ignore[misc, assignment]
+    build_source_state = None  # type: ignore[misc, assignment]
+
+
+def _force_save_before_ami_return(active_page: str) -> None:
+    """Persist baseball state after AMI send so return links restore draft context."""
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason=f"ami_send:{active_page}")
+    except Exception:
+        pass
+
+
+render_applied_math_sidebar_entry(
+    st,
+    source_app="baseball",
+    source_page=active_page,
+    session_state=st.session_state,
+    developer_mode=developer_mode_enabled(),
+    context_extra_builder=(
+        lambda: build_baseball_applied_math_context(active_page, st.session_state)
+        if build_baseball_applied_math_context
+        else None
+    ),
+    source_state_builder=(
+        lambda: build_source_state(active_page, st.session_state)
+        if build_source_state
+        else None
+    ),
+    on_after_send=lambda: _force_save_before_ami_return(active_page),
+)
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(
@@ -11615,6 +11916,22 @@ migrate_legacy_widget_keys()
 pdemo.apply_pending_draft_demo(st)
 pdemo.schedule_page_demo(st, active_page)
 
+from suite_analytical_question import render_suite_applied_math_insight
+
+try:
+    from applied_math_return_insight import hydrate_applied_math_insight_for_session
+
+    hydrate_applied_math_insight_for_session(st, "baseball")
+    if st.session_state.pop("_suite_persist_insight_dirty", None):
+        try:
+            force_save_baseball_state(st, reason="insight_hydrate")
+        except Exception:
+            pass
+except Exception:
+    pass
+
+render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
+
 # Drop snapshotted button widget keys (they must never be restored into session_state).
 for _ephemeral_key in list(st.session_state.keys()):
     if pg_state._is_ephemeral_widget_key(_ephemeral_key):
@@ -11623,11 +11940,65 @@ for _ephemeral_key in list(st.session_state.keys()):
 if not pp.is_screenshot_mode(st):
     st.sidebar.caption("Filters are remembered as you move between pages.")
 render_developer_mode_sidebar_toggle()
+if developer_mode_enabled():
+    try:
+        from baseball_persistent_state import render_cross_device_sync_debug
+
+        render_cross_device_sync_debug(st)
+    except Exception:
+        pass
+    try:
+        from applied_math_return_insight import render_insight_sync_debug
+
+        render_insight_sync_debug(st)
+    except Exception:
+        pass
 render_page_state_debug(active_page)
 app_tutorial.maybe_open_tutorial_dialog()
+try:
+    from draft_state import flush_draft_workflow_edits, prepare_draft_workflow, render_draft_state_debug
+
+    prepare_draft_workflow(st.session_state)
+except ImportError:
+    prepare_draft_workflow = None  # type: ignore[misc, assignment]
+    flush_draft_workflow_edits = None  # type: ignore[misc, assignment]
+    render_draft_state_debug = None  # type: ignore[misc, assignment]
 render_persistent_workflow_sidebar(yearly_df)
+if developer_mode_enabled():
+    try:
+        if render_draft_state_debug is not None:
+            render_draft_state_debug(st, st.session_state)
+    except Exception:
+        pass
+try:
+    if flush_draft_workflow_edits is not None:
+        flush_draft_workflow_edits(st.session_state, st, reason="draft_sidebar_flush")
+except Exception:
+    pass
+
+
+def historical_filter_changed():
+    try:
+        from historical_state import mark_historical_filter_pending_sync
+
+        mark_historical_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
 
 if active_page == "Historical Explorer":
+    from historical_state import (
+        flush_historical_filter_edits,
+        prepare_historical_explorer_filters,
+        prepare_historical_explorer_page,
+        prepare_historical_multiselect_filter,
+        prepare_historical_year_range,
+        render_historical_state_debug,
+    )
+
+    prepare_historical_explorer_page(st.session_state)
+    prepare_historical_explorer_filters(st.session_state)
+
     render_section_header(
         "🔎 Historical Explorer",
         "Find individual player seasons. Split-team seasons can stay as separate team rows or be combined into one primary-team season row."
@@ -11640,6 +12011,12 @@ if active_page == "Historical Explorer":
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
     with hc1:
+        prepare_historical_year_range(
+            st.session_state,
+            year_min,
+            year_max,
+            (default_start_hist, year_max),
+        )
         validate_slider_range(
             "historical_year_range_filter",
             year_min,
@@ -11651,6 +12028,7 @@ if active_page == "Historical Explorer":
             min_value=year_min,
             max_value=year_max,
             key="historical_year_range_filter",
+            on_change=historical_filter_changed,
         )
     with hc2:
         validate_state_option("historical_sort_stat_filter", sort_options_hist, "HR")
@@ -11658,6 +12036,7 @@ if active_page == "Historical Explorer":
             "Sort by",
             sort_options_hist,
             key="historical_sort_stat_filter",
+            on_change=historical_filter_changed,
         )
     with hc3:
         validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
@@ -11665,17 +12044,25 @@ if active_page == "Historical Explorer":
             "Order",
             ["Descending", "Ascending"],
             key="historical_sort_order_filter",
+            on_change=historical_filter_changed,
         )
 
     with st.expander("Advanced filters", expanded=False):
         c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
             bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
+            prepare_historical_multiselect_filter(
+                st.session_state,
+                "historical_batting_hand_filter",
+                bats_options,
+                bats_options,
+            )
             validate_multiselect_options("historical_batting_hand_filter", bats_options, bats_options)
             hist_bats = st.multiselect(
                 "Batting Hand",
                 bats_options,
                 key="historical_batting_hand_filter",
+                on_change=historical_filter_changed,
             )
         with c_mode:
             validate_state_option(
@@ -11688,30 +12075,46 @@ if active_page == "Historical Explorer":
                 ["Season Primary Position", "Career Primary Position"],
                 key="historical_position_filter_mode",
                 help="Season mode filters by the player’s primary position for that season. Career mode filters by the player’s full-career primary position from Fielding.csv games.",
+                on_change=historical_filter_changed,
             )
         hist_position_source_col = "careerPrimaryPos" if hist_position_filter_mode == "Career Primary Position" else "primaryPos"
         with c3:
             pos_options = _hist_explorer_pos_options(hist_position_source_col)
+            prepare_historical_multiselect_filter(
+                st.session_state,
+                "historical_position_filter",
+                pos_options,
+                pos_options,
+            )
             validate_multiselect_options("historical_position_filter", pos_options, pos_options)
             hist_pos = st.multiselect(
                 "Primary Position",
                 pos_options,
                 key="historical_position_filter",
+                on_change=historical_filter_changed,
             )
         with c4:
             actual_team_names = _hist_explorer_franchise_names_for_teams()
             hist_team_options = ["All Teams", "American League", "National League"] + actual_team_names
+            prepare_historical_multiselect_filter(
+                st.session_state,
+                "historical_team_filter",
+                hist_team_options,
+                ["All Teams"],
+            )
             validate_multiselect_options("historical_team_filter", hist_team_options, ["All Teams"])
             hist_teams = st.multiselect(
                 "Franchise / League",
                 hist_team_options,
                 key="historical_team_filter",
+                on_change=historical_filter_changed,
             )
         init_state_once("historical_combine_split_seasons_filter", False)
         combine_split_seasons = st.toggle(
             "Combine split-team seasons into one primary-team row",
             key="historical_combine_split_seasons_filter",
             help="OFF = one row per player/year/team. ON = one row per player/year, with Team assigned to the team where he had the most games/AB in that season.",
+            on_change=historical_filter_changed,
         )
 
     hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
@@ -11762,7 +12165,7 @@ if active_page == "Historical Explorer":
     else:
         hist["displayPosition"] = ""
 
-    hist = apply_stat_min_filters(hist, "hist")
+    hist = apply_stat_min_filters(hist, "hist", on_change=historical_filter_changed)
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
 
@@ -11790,6 +12193,34 @@ if active_page == "Historical Explorer":
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    try:
+        from applied_math_context import cache_page_context
+
+        top_rows = []
+        for _, row in hist_display_raw.head(5).iterrows():
+            entry: dict = {"player": str(row.get("fullName") or "").strip()}
+            yr = row.get("yearID")
+            if yr is not None and pd.notna(yr):
+                entry["year"] = int(yr)
+            if hist_sort_stat in row.index:
+                entry[str(hist_sort_stat)] = row.get(hist_sort_stat)
+            if entry.get("player"):
+                top_rows.append(entry)
+        snap = {
+            "sort_stat": str(hist_sort_stat),
+            "year_range": f"{hist_year_range[0]}–{hist_year_range[1]}",
+            "row_count": int(len(hist_display_raw)),
+            "top_players": [r["player"] for r in top_rows],
+            "top_rows": top_rows,
+        }
+        st.session_state["_ami_historical_snapshot"] = snap
+        cache_page_context(
+            st.session_state,
+            "Historical Explorer",
+            {"historical_snapshot": snap, "metrics": [str(hist_sort_stat)]},
+        )
+    except Exception:
+        pass
     _hist_action_names = []
     if "fullName" in hist_display_raw.columns:
         _hist_action_names = list(
@@ -11811,6 +12242,9 @@ if active_page == "Historical Explorer":
         transfer_name_col="fullName",
         default_rank_stat=hist_sort_stat,
     )
+    flush_historical_filter_edits(st.session_state, st, reason="historical_page_save")
+    if developer_mode_enabled():
+        render_historical_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
@@ -11820,7 +12254,29 @@ if active_page == "Historical Explorer":
     )
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
 
+
+def career_filter_changed():
+    try:
+        from career_totals_state import mark_career_filter_pending_sync
+
+        mark_career_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
 if active_page == "Career Totals":
+    from career_totals_state import (
+        flush_career_filter_edits,
+        prepare_career_multiselect_filter,
+        prepare_career_totals_filters,
+        prepare_career_totals_page,
+        prepare_career_year_range,
+        render_career_totals_state_debug,
+        render_career_totals_sync_trace,
+    )
+
+    prepare_career_totals_page(st.session_state)
+    prepare_career_totals_filters(st.session_state)
+
     render_section_header(
         "📚 Career Totals",
         "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team."
@@ -11830,8 +12286,8 @@ if active_page == "Career Totals":
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
     cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
-        validate_slider_range(
-            "career_year_range_filter",
+        prepare_career_year_range(
+            st.session_state,
             year_min,
             year_max,
             (max(year_min, 2010), year_max),
@@ -11841,6 +12297,7 @@ if active_page == "Career Totals":
             min_value=year_min,
             max_value=year_max,
             key="career_year_range_filter",
+            on_change=career_filter_changed,
         )
     with cc2:
         validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
@@ -11848,17 +12305,24 @@ if active_page == "Career Totals":
             "Sort by",
             career_sort_options,
             key="career_sort_stat_filter",
+            on_change=career_filter_changed,
         )
 
     with st.expander("Advanced filters", expanded=False):
         c2, c3, c4 = st.columns(3)
         with c2:
             bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
-            validate_multiselect_options("career_batting_hand_filter", bats_options_career, bats_options_career)
+            bats_options_career = prepare_career_multiselect_filter(
+                st.session_state,
+                "career_batting_hand_filter",
+                bats_options_career,
+                bats_options_career,
+            )
             bats_filter_career = st.multiselect(
                 "Batting Hand",
                 bats_options_career,
                 key="career_batting_hand_filter",
+                on_change=career_filter_changed,
             )
         with c3:
             validate_state_option(
@@ -11871,30 +12335,46 @@ if active_page == "Career Totals":
                 ["Career Primary Position", "Season Primary Position"],
                 key="career_position_filter_mode",
                 help="Career mode uses each player's full-career primary position from Fielding.csv games. Season mode includes only seasons where the selected position was that player's primary position that year.",
+                on_change=career_filter_changed,
             )
         position_source_col = "careerPrimaryPos" if position_filter_mode == "Career Primary Position" else "primaryPos"
         with c4:
             pos_options_career = sorted([x for x in batting_df[position_source_col].dropna().unique() if str(x).strip() != "" and x not in ["PH", "PR"]])
-            validate_multiselect_options("career_position_filter", pos_options_career, pos_options_career)
+            pos_options_career = prepare_career_multiselect_filter(
+                st.session_state,
+                "career_position_filter",
+                pos_options_career,
+                pos_options_career,
+            )
             pos_filter_career = st.multiselect(
                 "Position",
                 pos_options_career,
                 key="career_position_filter",
+                on_change=career_filter_changed,
             )
         actual_team_names_career = sorted(set(batting_df["teamName"].dropna().astype(str)).intersection(set(team_id_to_name.values())))
         team_options_career = ["All Teams", "American League", "National League"] + actual_team_names_career
-        validate_multiselect_options("career_team_filter", team_options_career, ["All Teams"])
+        team_options_career = prepare_career_multiselect_filter(
+            st.session_state,
+            "career_team_filter",
+            team_options_career,
+            ["All Teams"],
+        )
         team_filter_career = st.multiselect(
             "Franchise / League",
             team_options_career,
             key="career_team_filter",
+            on_change=career_filter_changed,
         )
         init_state_once("career_by_team_toggle_filter", False)
         show_career_by_team = st.toggle(
             "Show career totals separately by team",
             key="career_by_team_toggle_filter",
             help="OFF = one row per player with a Primary Team. ON = one row per player/team, and stat minimums are applied to each team row separately.",
+            on_change=career_filter_changed,
         )
+
+    flush_career_filter_edits(st.session_state, st, reason="career_filter_flush")
 
     filtered_career = batting_df[(batting_df["yearID"] >= range_career[0]) & (batting_df["yearID"] <= range_career[1])].copy()
     if bats_filter_career:
@@ -11956,7 +12436,7 @@ if active_page == "Career Totals":
         career_mode_note = "Total-career mode: one row per player. Franchise/league filters first limit the data included, then Team becomes the primary team within that filtered data. Position is based on Fielding.csv games."
 
     career_totals = add_rate_stats(career_totals)
-    career_totals = apply_stat_min_filters(career_totals, "career")
+    career_totals = apply_stat_min_filters(career_totals, "career", on_change=career_filter_changed)
     career_totals = safe_round_rate_stats(career_totals)
     st.caption(career_mode_note)
 
@@ -11993,6 +12473,10 @@ if active_page == "Career Totals":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_career,
     )
+    flush_career_filter_edits(st.session_state, st, reason="career_page_save")
+    if developer_mode_enabled():
+        render_career_totals_sync_trace(st, st.session_state)
+        render_career_totals_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
@@ -12002,13 +12486,50 @@ if active_page == "Career Totals":
     )
     render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
 
+def leaderboards_filter_changed():
+    try:
+        from leaderboards_state import mark_leaderboards_filter_pending_sync
+
+        mark_leaderboards_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+def fantasy_filter_changed():
+    try:
+        from fantasy_state import mark_fantasy_filter_pending_sync, section_for_page
+
+        section = section_for_page(st.session_state.get("active_page", ""))
+        if section:
+            mark_fantasy_filter_pending_sync(st.session_state, section)
+    except Exception:
+        pass
+
+
 if active_page == "Leaderboards":
+    from leaderboards_state import (
+        flush_leaderboards_filter_edits,
+        prepare_leaderboards_filters,
+        prepare_leaderboards_page,
+        prepare_leaderboards_year_range,
+        render_leaderboards_state_debug,
+    )
+
+    prepare_leaderboards_page(st.session_state)
+    prepare_leaderboards_filters(st.session_state)
+
     render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
+        prepare_leaderboards_year_range(
+            st.session_state,
+            year_min,
+            year_max,
+            (max(year_min, 2020), year_max),
+        )
         validate_slider_range(
             "leaders_year_range_filter",
             year_min,
@@ -12020,6 +12541,7 @@ if active_page == "Leaderboards":
             min_value=year_min,
             max_value=year_max,
             key="leaders_year_range_filter",
+            on_change=leaderboards_filter_changed,
         )
     with c2:
         init_state_once("leaders_top_n_filter", 25)
@@ -12028,6 +12550,7 @@ if active_page == "Leaderboards":
             min_value=5,
             max_value=100,
             key="leaders_top_n_filter",
+            on_change=leaderboards_filter_changed,
         )
     with c3:
         validate_state_option("leaders_sort_stat_filter", leaders_sort_options, "score")
@@ -12035,6 +12558,7 @@ if active_page == "Leaderboards":
             "Sort by",
             leaders_sort_options,
             key="leaders_sort_stat_filter",
+            on_change=leaderboards_filter_changed,
         )
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
@@ -12045,7 +12569,7 @@ if active_page == "Leaderboards":
         weight_cols = st.columns(4)
         for i, stat in enumerate(weight_stats):
             with weight_cols[i % 4]:
-                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}")
+                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}", on_change=leaderboards_filter_changed)
 
     filtered_leaders = yearly_df[(yearly_df["yearID"] >= range_leaders[0]) & (yearly_df["yearID"] <= range_leaders[1])].copy()
     leaderboard = filtered_leaders.groupby(["fullName", "bats"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
@@ -12084,6 +12608,9 @@ if active_page == "Leaderboards":
         transfer_name_col="fullName",
         default_rank_stat=sort_stat_leaders,
     )
+    flush_leaderboards_filter_edits(st.session_state, st, reason="leaderboards_page_save")
+    if developer_mode_enabled():
+        render_leaderboards_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -12197,37 +12724,125 @@ def _format_sig_table(df):
 
 def compare_top_changed():
     selected = st.session_state.get("compare_players", [])
-    if isinstance(selected, list):
-        st.session_state["compare_players_saved"] = selected[:3]
-        if len(selected) >= 2:
-            record_workflow_comparison_group(selected[:3])
-        if len(selected) >= 1:
-            st.session_state["pending_sig_player_a"] = selected[0]
-        if len(selected) >= 2:
-            st.session_state["pending_sig_player_b"] = selected[1]
-            record_workflow_comparison_pair(selected[0], selected[1])
-            try:
-                from baseball_activity import log_player_comparison
+    if not isinstance(selected, list):
+        return
+    try:
+        from comparison_state import record_comparison_sync_trace, sync_compare_from_multiselect
 
-                sig = tuple(sorted(selected[:2]))
-                if st.session_state.get("_cc_compare_activity_sig") != sig:
-                    st.session_state["_cc_compare_activity_sig"] = sig
-                    log_player_comparison(selected[0], selected[1])
-            except Exception:
-                pass
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_compare_from_multiselect(
+            st.session_state, selected, label_map, resolve_fullname_to_clean_label
+        )
+        record_comparison_sync_trace(
+            st.session_state, winner="multiselect", reason="compare_top_changed"
+        )
+        selected = st.session_state.get("compare_players") or []
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="comparison_edit")
+        except Exception:
+            pass
+    except Exception:
+        selected = [x for x in selected if isinstance(x, str)][:3]
+    if len(selected) >= 2:
+        record_workflow_comparison_group(selected[:3])
+    if len(selected) >= 2:
+        record_workflow_comparison_pair(selected[0], selected[1])
+        try:
+            from baseball_activity import log_player_comparison
+
+            sig = tuple(sorted(selected[:2]))
+            if st.session_state.get("_cc_compare_activity_sig") != sig:
+                st.session_state["_cc_compare_activity_sig"] = sig
+                log_player_comparison(selected[0], selected[1])
+        except Exception:
+            pass
 
 
 def compare_settings_changed():
-    for _key in [
-        "compare_stat",
-        "compare_x_axis_mode",
-        "compare_year_range",
-        "compare_age_range",
-        "compare_trend_mode",
-        "compare_smooth_window",
-    ]:
-        if _key in st.session_state:
-            st.session_state[f"{_key}_saved"] = st.session_state[_key]
+    try:
+        from comparison_state import mark_comparison_local_edit, record_comparison_field_write
+
+        mark_comparison_local_edit(st.session_state)
+        for _key in [
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ]:
+            if _key in st.session_state:
+                st.session_state[f"{_key}_saved"] = st.session_state[_key]
+                record_comparison_field_write(
+                    st.session_state, _key, "widget", new=st.session_state[_key]
+                )
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="comparison_edit")
+        except Exception:
+            pass
+    except Exception:
+        for _key in [
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ]:
+            if _key in st.session_state:
+                st.session_state[f"{_key}_saved"] = st.session_state[_key]
+
+
+def trend_chart_player_changed():
+    try:
+        from trend_state import sync_trend_chart_player_change
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_trend_chart_player_change(
+            st.session_state,
+            st.session_state.get("single_trend_dashboard_player"),
+            label_map,
+            resolve_fullname_to_clean_label,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def trend_multi_changed():
+    try:
+        from trend_state import sync_trend_multi_change
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_trend_multi_change(
+            st.session_state,
+            st.session_state.get("trend_players_multi"),
+            label_map,
+            resolve_fullname_to_clean_label,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def trend_settings_changed():
+    try:
+        from trend_state import sync_trend_settings_change
+
+        sync_trend_settings_change(st.session_state, reason="settings_change")
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
 
 
 def _sig_years_changed(key):
@@ -12236,20 +12851,22 @@ def _sig_years_changed(key):
 
 
 def sig_players_changed():
-    a = st.session_state.get("sig_player_a_clean")
-    b = st.session_state.get("sig_player_b_clean")
-    selected = []
-    if a:
-        selected.append(a)
-    if b and b not in selected:
-        selected.append(b)
-    current = st.session_state.get("compare_players", [])
-    if isinstance(current, list):
-        for p in current:
-            if p not in selected and len(selected) < 3:
-                selected.append(p)
-    st.session_state["compare_players_saved"] = selected[:3]
-    st.session_state["pending_compare_players"] = selected[:3]
+    try:
+        from comparison_state import record_comparison_sync_trace, sync_compare_from_sig_ab
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_compare_from_sig_ab(st.session_state, label_map, resolve_fullname_to_clean_label)
+        record_comparison_sync_trace(st.session_state, winner="sig_ab", reason="sig_players_changed")
+    except Exception:
+        a = st.session_state.get("sig_player_a_clean")
+        b = st.session_state.get("sig_player_b_clean")
+        selected = []
+        if a:
+            selected.append(a)
+        if b and b not in selected:
+            selected.append(b)
+        st.session_state["compare_players_saved"] = selected[:3]
+        st.session_state["pending_compare_players"] = selected[:3]
 
 
 if active_page == "Comparison Tool":
@@ -12260,36 +12877,29 @@ if active_page == "Comparison Tool":
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
 
-    # Safe two-way sync setup.
-    # Apply pending Player A/B changes to the top selector BEFORE the widget is created.
-    pending_compare = st.session_state.pop("pending_compare_players", None)
-    if isinstance(pending_compare, list) and pending_compare:
-        opts_set = set(compare_player_options)
-        normalized = [p for p in pending_compare if p in opts_set][:3]
-        if not normalized:
-            st.warning(
-                "Send to Comparison: could not match those names to Lahman player labels. "
-                "Try the Comparison page dropdown if the table uses nicknames or extra text."
-            )
-        else:
-            # Drop stale multiselect session so navigation from other pages always applies the send.
-            st.session_state.pop("compare_players", None)
-            st.session_state["compare_players"] = normalized
-            st.session_state["compare_players_saved"] = normalized
+    from comparison_state import (
+        ensure_compare_multiselect,
+        prepare_comparison_chart_options,
+        prepare_comparison_tool_page,
+        record_comparison_sync_trace,
+        render_comparison_state_debug,
+    )
 
-    if st.session_state.pop("pending_compare_clear_player_b", False):
-        st.session_state.pop("sig_player_b_clean", None)
+    _canonical_players = prepare_comparison_tool_page(
+        st.session_state, clean_label_map_compare, resolve_fullname_to_clean_label
+    )
+    prepare_comparison_chart_options(st.session_state)
+    winner = "local_edit" if st.session_state.get("comparison_state_dirty") else "canonical"
+    record_comparison_sync_trace(
+        st.session_state,
+        winner=winner,
+        reason=f"prepare_on_load ({len(_canonical_players)} players)",
+    )
 
-    default_compare_labels = []
-    for _sig_key in ["pending_sig_player_a", "pending_sig_player_b", "sig_player_a_clean", "sig_player_b_clean"]:
-        _lbl = st.session_state.get(_sig_key)
-        if _lbl in compare_player_options and _lbl not in default_compare_labels:
-            default_compare_labels.append(_lbl)
-    if not default_compare_labels:
-        saved_compare = st.session_state.get("compare_players_saved", [])
-        if isinstance(saved_compare, list):
-            default_compare_labels = [p for p in saved_compare if p in compare_player_options][:3]
-
+    try:
+        from comparison_state import is_comparison_locally_dirty as _cmp_locally_dirty
+    except Exception:
+        _cmp_locally_dirty = lambda _s: False  # noqa: E731
     for _key in [
         "compare_stat",
         "compare_x_axis_mode",
@@ -12298,18 +12908,24 @@ if active_page == "Comparison Tool":
         "compare_trend_mode",
         "compare_smooth_window",
     ]:
+        if _cmp_locally_dirty(st.session_state):
+            continue
         _saved = st.session_state.get(f"{_key}_saved")
         if _saved is not None and _key not in st.session_state:
             st.session_state[_key] = _saved
 
-    _compare_init = default_compare_labels[:3] if default_compare_labels else []
-    ensure_multiselect_state("compare_players", compare_player_options, _compare_init)
+    ensure_compare_multiselect(
+        st.session_state,
+        clean_label_map_compare,
+        resolve_fullname_to_clean_label,
+        compare_player_options,
+    )
     selected_labels_compare = st.multiselect(
         "Select up to 3 players",
         options=compare_player_options,
         max_selections=3,
         key="compare_players",
-        on_change=compare_top_changed
+        on_change=compare_top_changed,
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     comparison_action_team = st.session_state.get("room_your_team")
@@ -12380,27 +12996,37 @@ if active_page == "Comparison Tool":
         )
         compare_age_range = (16, 50)
         if compare_x_axis_mode == "Season Year":
-            _saved_cmp_year_range = st.session_state.get("compare_year_range")
-            if (
-                isinstance(_saved_cmp_year_range, tuple)
-                and len(_saved_cmp_year_range) == 2
-                and (_saved_cmp_year_range[0] < compare_year_range[0] or _saved_cmp_year_range[1] > compare_year_range[1])
-            ):
-                st.session_state.pop("compare_year_range", None)
-            validate_slider_range(
-                "compare_year_range",
-                compare_year_range[0],
-                compare_year_range[1],
-                compare_year_range,
+            from year_range_state import sanitize_year_range
+
+            _slider_min = int(compare_year_range[0])
+            _slider_max = int(compare_year_range[1])
+            _default_cmp_year_range = (_slider_min, _slider_max)
+            _raw_cmp_year_range = st.session_state.get("compare_year_range")
+            _sanitized_cmp_year_range = sanitize_year_range(
+                _raw_cmp_year_range,
+                _slider_min,
+                _slider_max,
+                _default_cmp_year_range,
             )
-            compare_year_range = st.slider(
-                "Season Year Range",
-                min_value=compare_year_range[0],
-                max_value=compare_year_range[1],
-                key="compare_year_range",
-                on_change=compare_settings_changed,
-                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
-            )
+            st.session_state["_dev_compare_year_range_raw"] = _raw_cmp_year_range
+            st.session_state["_dev_compare_year_range_sanitized"] = _sanitized_cmp_year_range
+            if _slider_min >= _slider_max:
+                compare_year_range = (_slider_min, _slider_max)
+                st.session_state["compare_year_range"] = compare_year_range
+                st.caption(
+                    f"Season year range fixed to {_slider_min} "
+                    "(selected player data has a single season year)."
+                )
+            else:
+                st.session_state["compare_year_range"] = _sanitized_cmp_year_range
+                compare_year_range = st.slider(
+                    "Season Year Range",
+                    min_value=_slider_min,
+                    max_value=_slider_max,
+                    key="compare_year_range",
+                    on_change=compare_settings_changed,
+                    help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
+                )
         else:
             validate_slider_range("compare_age_range", 16, 50, (16, 50))
             compare_age_range = st.slider(
@@ -12529,6 +13155,26 @@ if active_page == "Comparison Tool":
             st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
         else:
             st.info(make_advanced_trend_commentary(compare_intel, stat_choice_compare))
+            try:
+                from applied_math_context import cache_page_context
+
+                cmp_ctx: dict = {"comparison_stats": [str(stat_choice_compare)]}
+                diffs = []
+                for _, row in compare_intel.iterrows():
+                    name = str(row.get("Player") or row.get("player") or "").strip()
+                    if not name:
+                        continue
+                    entry = {"player": name.split(" (")[0]}
+                    for col in ("Slope", "Recent Slope", "R-squared", "Net Change", "Trend Direction"):
+                        if col in row.index and pd.notna(row.get(col)):
+                            entry[col] = row.get(col)
+                    diffs.append(entry)
+                if diffs:
+                    cmp_ctx["comparison_differences"] = diffs[:4]
+                st.session_state["_ami_comparison_context"] = cmp_ctx
+                cache_page_context(st.session_state, "Comparison Tool", cmp_ctx)
+            except Exception:
+                pass
             render_output_table(
                 format_advanced_trend_table(clean_ui_columns(compare_intel)),
                 key="comparison_advanced_trend_intelligence",
@@ -12566,21 +13212,26 @@ if active_page == "Comparison Tool":
         clean_label_map_sig = clean_label_map_compare
         all_player_options_sig = compare_player_options
 
-        # Apply pending top-player changes to Player A/B BEFORE the selectboxes are created.
-        pending_a = st.session_state.pop("pending_sig_player_a", None)
-        pending_b = st.session_state.pop("pending_sig_player_b", None)
-        if pending_a in all_player_options_sig:
-            st.session_state["sig_player_a_clean"] = pending_a
-        if pending_b in all_player_options_sig:
-            st.session_state["sig_player_b_clean"] = pending_b
-
-        # Bottom Player A/B dropdowns show the top-selected comparison players first,
-        # but still allow any player in the database.
         sig_priority_options = [p for p in selected_labels_compare if p in all_player_options_sig]
         sig_dropdown_options = sig_priority_options + [p for p in all_player_options_sig if p not in sig_priority_options]
 
+        if len(selected_labels_compare) >= 1:
+            validate_state_option(
+                "sig_player_a_clean",
+                sig_dropdown_options,
+                selected_labels_compare[0],
+            )
+        if len(selected_labels_compare) >= 2:
+            validate_state_option(
+                "sig_player_b_clean",
+                sig_dropdown_options,
+                selected_labels_compare[1],
+            )
+        elif st.session_state.get("sig_player_b_clean") not in (None, selected_labels_compare[:1]):
+            st.session_state.pop("sig_player_b_clean", None)
+
         sig_default_a_index = 0
-        sig_default_b_index = 1 if len(sig_dropdown_options) > 1 else 0
+        sig_default_b_index = min(1, len(sig_dropdown_options) - 1) if len(sig_dropdown_options) > 1 else 0
 
         saved_a = st.session_state.get("sig_player_a_clean")
         saved_b = st.session_state.get("sig_player_b_clean")
@@ -12594,6 +13245,8 @@ if active_page == "Comparison Tool":
             sig_default_b_index = sig_dropdown_options.index(saved_b)
         elif len(selected_labels_compare) >= 2 and selected_labels_compare[1] in sig_dropdown_options:
             sig_default_b_index = sig_dropdown_options.index(selected_labels_compare[1])
+        elif len(selected_labels_compare) < 2:
+            sig_default_b_index = sig_default_a_index
 
         with sig_col1:
             sig_player_a_label = st.selectbox(
@@ -12830,6 +13483,15 @@ if active_page == "Comparison Tool":
         label="Use these filters in another tool…",
         extra_context={"compare_selected_labels": selected_labels_compare},
     )
+    if developer_mode_enabled():
+        render_comparison_state_debug(
+            st,
+            st.session_state,
+            clean_label_map_compare,
+            selected_labels=selected_labels_compare,
+        )
+    save_page_state(active_page)
+    render_page_filters_debug(active_page)
 
 
 if active_page == "Trend Value":
@@ -12837,16 +13499,27 @@ if active_page == "Trend Value":
     try:
         from baseball_event_trace import render_trend_value_deploy_banner
 
-        render_trend_value_deploy_banner(st)
+        render_trend_value_deploy_banner(st, developer_mode=developer_mode_enabled())
     except Exception as exc:
         st.error(f"Trend deploy marker failed to load: {exc}")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    try:
+        from trend_state import prepare_trend_top_filters
+
+        prepare_trend_top_filters(st.session_state)
+    except Exception:
+        pass
     _trend_lag_options = [3, 4, 5]
     c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("trend_lag", _trend_lag_options, 3)
-        lag_trend = st.selectbox("Trend Window (Years)", _trend_lag_options, key="trend_lag")
+        lag_trend = st.selectbox(
+            "Trend Window (Years)",
+            _trend_lag_options,
+            key="trend_lag",
+            on_change=trend_settings_changed,
+        )
     with c2:
         validate_number_state("trend_min_g", 50, min_value=0, max_value=800)
         min_g_trend = st.number_input(
@@ -12854,6 +13527,7 @@ if active_page == "Trend Value":
             min_value=0,
             max_value=800,
             key="trend_min_g",
+            on_change=trend_settings_changed,
         )
     with c3:
         validate_state_option("trend_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
@@ -12862,6 +13536,7 @@ if active_page == "Trend Value":
             FANTASY_POSITION_FILTER_OPTIONS,
             key="trend_position_filter",
             help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+            on_change=trend_settings_changed,
         )
 
     max_year_trend = int(yearly_df["yearID"].max())
@@ -12929,7 +13604,12 @@ if active_page == "Trend Value":
 
     _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
     validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
-    sort_col = st.selectbox("Sort By Trend Stat", _trend_sort_options, key="trend_sort_col")
+    sort_col = st.selectbox(
+        "Sort By Trend Stat",
+        _trend_sort_options,
+        key="trend_sort_col",
+        on_change=trend_settings_changed,
+    )
     trend_label_to_column = {"R Δ": "R_trend", "H Δ": "H_trend", "2B Δ": "2B_trend", "3B Δ": "3B_trend", "HR Δ": "HR_trend", "RBI Δ": "RBI_trend", "SB Δ": "SB_trend", "BB Δ": "BB_trend", "BA Δ": "BA_trend", "OBP Δ": "OBP_trend", "SLG Δ": "SLG_trend", "OPS Δ": "OPS_trend"}
     selected_trend_col = trend_label_to_column[sort_col]
     selected_trend_name = sort_col.replace(" Δ", "")
@@ -12997,6 +13677,8 @@ if active_page == "Trend Value":
     breakout_df = trend_value_df[
         ["fullName", "Position", "bats", "OPS_trend", "HR_trend", "XBH_noHR_trend", "RBI_trend", "SB_trend"]
     ].copy()
+    top_breakouts_full = trend_value_df.sort_values("OPS_trend", ascending=False).head(10)
+    biggest_declines_full = trend_value_df.sort_values("OPS_trend", ascending=True).head(10)
     top_breakouts = breakout_df.sort_values("OPS_trend", ascending=False).head(10)
     biggest_declines = breakout_df.sort_values("OPS_trend", ascending=True).head(10)
 
@@ -13040,12 +13722,12 @@ if active_page == "Trend Value":
     )
 
     st.subheader("Insight Summary")
-    trend_insight_pool = pd.concat([top_breakouts, biggest_declines], ignore_index=True)
+    trend_insight_pool = pd.concat([top_breakouts_full, biggest_declines_full], ignore_index=True)
     trend_selected = _select_insight_row(
         trend_insight_pool,
         key="trend_breakout_decline_selected_player",
         label="Choose a breakout or decline player",
-        default_name=top_breakouts.iloc[0]["fullName"] if not top_breakouts.empty else None,
+        default_name=top_breakouts_full.iloc[0]["fullName"] if not top_breakouts_full.empty else None,
     )
     if trend_selected is not None:
         if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
@@ -13071,35 +13753,16 @@ if active_page == "Trend Value":
     full_trend_label_map = get_clean_player_label_map_yearly(yearly_df)
     full_trend_labels = get_sorted_clean_player_label_keys(yearly_df)
 
-    # Streamlit raises if widget session_state is not in options (e.g. plain name vs "Name (years)" label).
-    _stp = st.session_state.get("single_trend_dashboard_player")
-    if _stp is not None and full_trend_labels and _stp not in full_trend_labels:
-        _resolved_stp = resolve_fullname_to_clean_label(_stp, full_trend_label_map)
-        if _resolved_stp and _resolved_stp in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _resolved_stp
-        else:
-            st.session_state.pop("single_trend_dashboard_player", None)
-    _pending_resume_trend = st.session_state.pop("pending_trend_player", None)
-    if _pending_resume_trend and full_trend_labels:
-        _resolved_pending = resolve_fullname_to_clean_label(_pending_resume_trend, full_trend_label_map)
-        if _resolved_pending and _resolved_pending in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _resolved_pending
-    _tmp_multi = st.session_state.get("trend_players_multi")
-    if isinstance(_tmp_multi, list) and full_trend_labels:
-        _filtered_multi = [x for x in _tmp_multi if x in full_trend_labels]
-        if _filtered_multi != _tmp_multi:
-            st.session_state["trend_players_multi"] = _filtered_multi
+    from trend_state import (
+        canonical_chart_player,
+        is_trend_locally_dirty,
+        prepare_trend_chart_options,
+        prepare_trend_value_page,
+        render_trend_state_debug,
+    )
 
-    if "trend_force_single_label" in st.session_state:
-        _tsl = st.session_state.pop("trend_force_single_label")
-        if _tsl in full_trend_labels:
-            st.session_state["single_trend_dashboard_player"] = _tsl
-
-    if "trend_force_multi_labels" in st.session_state:
-        _tml = st.session_state.pop("trend_force_multi_labels")
-        _tml = [x for x in _tml if x in full_trend_labels]
-        if _tml:
-            st.session_state["trend_players_multi"] = _tml
+    prepare_trend_value_page(st.session_state, full_trend_label_map, resolve_fullname_to_clean_label)
+    prepare_trend_chart_options(st.session_state)
 
     _pending_trendcompare = st.session_state.pop("_suite_pending_trendcompare_names", None)
     if _pending_trendcompare and full_trend_labels:
@@ -13108,10 +13771,29 @@ if active_page == "Trend Value":
             _lbl = resolve_fullname_to_clean_label(str(_nm).strip(), full_trend_label_map)
             if _lbl and _lbl in full_trend_labels and _lbl not in _resolved_tc:
                 _resolved_tc.append(_lbl)
-        if len(_resolved_tc) >= 2:
-            st.session_state["trend_players_multi"] = _resolved_tc[:6]
-            st.session_state["trend_force_multi_labels"] = _resolved_tc[:6]
-            st.session_state["single_trend_dashboard_player"] = _resolved_tc[0]
+        if _resolved_tc:
+            from trend_state import write_canonical_trend_state
+
+            write_canonical_trend_state(
+                st.session_state,
+                chart_player=_resolved_tc[0],
+                players_multi=_resolved_tc[:6],
+                reason="trendcompare_transfer",
+            )
+
+    _chart_key = st.session_state.get("single_trend_dashboard_player")
+    if _chart_key and full_trend_labels and _chart_key not in full_trend_labels:
+        _resolved_chart = resolve_fullname_to_clean_label(_chart_key, full_trend_label_map)
+        if _resolved_chart and _resolved_chart in full_trend_labels:
+            st.session_state["single_trend_dashboard_player"] = _resolved_chart
+        elif not is_trend_locally_dirty(st.session_state):
+            st.session_state.pop("single_trend_dashboard_player", None)
+
+    _multi_key = st.session_state.get("trend_players_multi")
+    if isinstance(_multi_key, list) and full_trend_labels:
+        _filtered_multi = [x for x in _multi_key if x in full_trend_labels]
+        if _filtered_multi != _multi_key:
+            st.session_state["trend_players_multi"] = _filtered_multi
 
     st.caption(
         "Pick any player from the **full database**. When you use **Send to Trend Page** elsewhere, the **first** player you send anchors this dashboard; "
@@ -13120,13 +13802,22 @@ if active_page == "Trend Value":
 
     recent_span_df = recent_baseline_trend
 
-    single_trend_label = st.selectbox(
-        "Select Player (full database)",
-        full_trend_labels,
-        key="single_trend_dashboard_player"
-    )
-    single_trend_id = full_trend_label_map[single_trend_label]
-    single_player_name = single_trend_label.split(" (")[0].strip()
+    _chart_select_kwargs: dict = {
+        "label": "Select Player (full database)",
+        "options": full_trend_labels,
+        "key": "single_trend_dashboard_player",
+        "on_change": trend_chart_player_changed,
+    }
+    if (
+        "single_trend_dashboard_player" not in st.session_state
+        and canonical_chart_player(st.session_state) is None
+        and not is_trend_locally_dirty(st.session_state)
+    ):
+        _chart_select_kwargs["index"] = None
+        _chart_select_kwargs["placeholder"] = "Select a player"
+    single_trend_label = st.selectbox(**_chart_select_kwargs)
+    if not single_trend_label:
+        st.info("Select a player to view the single-player trend dashboard.")
 
     dashboard_stat_options = ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "H", "BB"]
     default_dashboard_stats = ["HR", "RBI", "R", "SB", "OPS"]
@@ -13134,7 +13825,8 @@ if active_page == "Trend Value":
         "Stats to graph for selected player",
         dashboard_stat_options,
         default=default_dashboard_stats,
-        key="single_trend_dashboard_stats"
+        key="single_trend_dashboard_stats",
+        on_change=trend_settings_changed,
     )
 
     dash_mode_col1, dash_mode_col2 = st.columns(2)
@@ -13143,7 +13835,8 @@ if active_page == "Trend Value":
             "Single-Player Dashboard Mode",
             ["Actual Values", "Smoothed Moving Average"],
             horizontal=True,
-            key="single_trend_dashboard_mode"
+            key="single_trend_dashboard_mode",
+            on_change=trend_settings_changed,
         )
     with dash_mode_col2:
         single_dashboard_smooth_window = 3
@@ -13151,16 +13844,48 @@ if active_page == "Trend Value":
             single_dashboard_smooth_window = st.slider(
                 "Single-Player Smoothing Window",
                 2, 7, 3,
-                key="single_trend_dashboard_smooth_window"
+                key="single_trend_dashboard_smooth_window",
+                on_change=trend_settings_changed,
             )
 
-    selected_player_history = recent_span_df[recent_span_df["playerID"] == single_trend_id].copy()
-    if selected_player_history.empty:
+    if not single_trend_label:
+        single_trend_id = None
+        single_player_name = ""
+    else:
+        single_trend_id = full_trend_label_map[single_trend_label]
+        single_player_name = single_trend_label.split(" (")[0].strip()
+
+    selected_player_history = (
+        recent_span_df[recent_span_df["playerID"] == single_trend_id].copy()
+        if single_trend_id
+        else pd.DataFrame()
+    )
+    if not single_trend_id:
+        pass
+    elif selected_player_history.empty:
         st.info("No trend history available for that player in the selected window.")
     else:
         selected_player_summary = trend_value_df[trend_value_df["playerID"] == single_trend_id]
         if not selected_player_summary.empty:
             st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
+            try:
+                from applied_math_context import record_trend_intel
+
+                stat_choice_single = str(st.session_state.get("trend_plot_stat") or "OPS")
+                single_intel = build_advanced_trend_intelligence(
+                    recent_span_df, [single_trend_id], stat_choice_single
+                )
+                if not single_intel.empty:
+                    record_trend_intel(
+                        st.session_state,
+                        player=single_player_name,
+                        stat=stat_choice_single,
+                        intel_row=single_intel.iloc[0].to_dict(),
+                        year_start=int(recent_years_trend[0]) if recent_years_trend else None,
+                        year_end=int(recent_years_trend[-1]) if recent_years_trend else None,
+                    )
+            except Exception:
+                pass
 
             trend_snapshot_cols = [
                 "fullName", "R_trend", "HR_trend", "RBI_trend", "SB_trend",
@@ -13235,21 +13960,30 @@ if active_page == "Trend Value":
         "Select players to view trend",
         full_trend_labels,
         max_selections=6,
-        key="trend_players_multi"
+        key="trend_players_multi",
+        on_change=trend_multi_changed,
     )
     selected_ids_trend = [full_trend_label_map[label] for label in selected_labels_trend]
     if len(selected_labels_trend) >= 2:
         record_workflow_comparison_group(selected_labels_trend[:3])
-    stat_choice_trend = st.selectbox("Choose Trend Stat to Plot", ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"], key="trend_plot_stat")
+    stat_choice_trend = st.selectbox(
+        "Choose Trend Stat to Plot",
+        ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
+        key="trend_plot_stat",
+        on_change=trend_settings_changed,
+    )
     trend_chart_mode = st.radio(
         "Trend Chart Mode",
         ["Actual Values", "Smoothed Moving Average"],
         horizontal=True,
-        key="trend_chart_mode"
+        key="trend_chart_mode",
+        on_change=trend_settings_changed,
     )
     trend_smooth_window = 3
     if trend_chart_mode == "Smoothed Moving Average":
-        trend_smooth_window = st.slider("Trend Smoothing Window", 2, 7, 3, key="trend_smooth_window")
+        trend_smooth_window = st.slider(
+            "Trend Smoothing Window", 2, 7, 3, key="trend_smooth_window", on_change=trend_settings_changed
+        )
 
     if selected_ids_trend:
         player_trend = recent_span_df[recent_span_df["playerID"].isin(selected_ids_trend)].sort_values(["fullName", "yearID"])
@@ -13308,6 +14042,20 @@ if active_page == "Trend Value":
         if trend_intel.empty:
             st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
         else:
+            try:
+                from applied_math_context import record_trend_intel
+
+                anchor = selected_labels_trend[0] if selected_labels_trend else ""
+                record_trend_intel(
+                    st.session_state,
+                    player=anchor,
+                    stat=str(stat_choice_trend),
+                    intel_row=trend_intel.iloc[0].to_dict() if not trend_intel.empty else None,
+                    year_start=int(recent_years_trend[0]) if recent_years_trend else None,
+                    year_end=int(recent_years_trend[-1]) if recent_years_trend else None,
+                )
+            except Exception:
+                pass
             st.info(make_advanced_trend_commentary(trend_intel, stat_choice_trend))
             render_output_table(
                 format_advanced_trend_table(clean_ui_columns(trend_intel)),
@@ -13327,11 +14075,23 @@ if active_page == "Trend Value":
     else:
         st.info("Select one to three players to view trend charts.")
 
+    if developer_mode_enabled():
+        render_trend_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
 if active_page == "Fantasy Sleepers & Busts":
+    from fantasy_state import (
+        flush_fantasy_section_edits,
+        prepare_fantasy_sleepers_filters,
+        prepare_fantasy_sleepers_page,
+        render_fantasy_state_debug,
+    )
+
+    prepare_fantasy_sleepers_page(st.session_state)
+    prepare_fantasy_sleepers_filters(st.session_state)
+
     render_section_header(
         "💎 Fantasy Sleepers & Busts",
         "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
@@ -13357,10 +14117,10 @@ if active_page == "Fantasy Sleepers & Busts":
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
-        fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window")
+        fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
     with c2:
         validate_state_option("fantasy_market_format", _fantasy_format_options, "5x5 Roto")
-        fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format")
+        fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format", on_change=fantasy_filter_changed)
     with c3:
         validate_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
         fantasy_min_g = st.number_input(
@@ -13368,6 +14128,7 @@ if active_page == "Fantasy Sleepers & Busts":
             min_value=0,
             max_value=800,
             key="fantasy_market_min_g",
+            on_change=fantasy_filter_changed,
         )
     with c4:
         validate_number_state("fantasy_market_min_ab", 150, min_value=0, max_value=2500)
@@ -13376,6 +14137,7 @@ if active_page == "Fantasy Sleepers & Busts":
             min_value=0,
             max_value=2500,
             key="fantasy_market_min_ab",
+            on_change=fantasy_filter_changed,
         )
 
     init_state_once("fantasy_market_top_n", 15)
@@ -13384,6 +14146,7 @@ if active_page == "Fantasy Sleepers & Busts":
         min_value=5,
         max_value=50,
         key="fantasy_market_top_n",
+        on_change=fantasy_filter_changed,
     )
 
     sleeper_team_name = None
@@ -13403,6 +14166,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=1000,
                     step=10,
                     key="sleeper_max_market_rank",
+                    on_change=fantasy_filter_changed,
                 )
             with sf2:
                 validate_number_state("sleeper_max_model_rank", 350, min_value=1, max_value=1000)
@@ -13412,6 +14176,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=1000,
                     step=10,
                     key="sleeper_max_model_rank",
+                    on_change=fantasy_filter_changed,
                 )
             with sf3:
                 validate_number_state("sleeper_min_proj_hr", 0, min_value=0, max_value=80)
@@ -13421,6 +14186,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=80,
                     step=1,
                     key="sleeper_min_proj_hr",
+                    on_change=fantasy_filter_changed,
                 )
             with sf4:
                 init_state_once("sleeper_min_expected_value", 0.10)
@@ -13430,6 +14196,7 @@ if active_page == "Fantasy Sleepers & Busts":
                     max_value=1.00,
                     step=0.01,
                     key="sleeper_min_expected_value",
+                    on_change=fantasy_filter_changed,
                 )
         with tab_draft:
             st.caption("Focus on available players who fit your roster needs.")
@@ -13437,6 +14204,7 @@ if active_page == "Fantasy Sleepers & Busts":
             st.checkbox(
                 "Use Draft Room needs and remove already drafted players",
                 key="sleeper_use_draft_room_needs",
+                on_change=fantasy_filter_changed,
             )
     sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", False)
     sleeper_max_market_rank = st.session_state.get("sleeper_max_market_rank", 350)
@@ -13940,6 +14708,9 @@ if active_page == "Fantasy Sleepers & Busts":
         default_rank_stat="Fantasy Edge",
     )
 
+    flush_fantasy_section_edits(st.session_state, "sleepers", st, reason="fantasy_sleepers_page_save")
+    if developer_mode_enabled():
+        render_fantasy_state_debug(st, st.session_state, active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -14949,6 +15720,8 @@ if active_page == "Draft Room Simulator":
                     f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
                 )
 
+    save_page_state(active_page)
+    render_page_filters_debug(active_page)
 
 
 if active_page == "Draft Simulation Test Mode":
@@ -15670,6 +16443,16 @@ if active_page == "Live Draft Room":
 
 
 if active_page == "Fantasy Standings Tracker":
+    from fantasy_state import (
+        flush_fantasy_section_edits,
+        prepare_fantasy_standings_filters,
+        prepare_fantasy_standings_page,
+        render_fantasy_state_debug,
+    )
+
+    prepare_fantasy_standings_page(st.session_state)
+    prepare_fantasy_standings_filters(st.session_state)
+
     render_section_header(
         "📊 Fantasy Standings Tracker",
         "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
@@ -15683,6 +16466,7 @@ if active_page == "Fantasy Standings Tracker":
         "Scoring Format",
         _standings_format_options,
         key="standings_scoring_format",
+        on_change=fantasy_filter_changed,
     )
 
     # Do not use a session_state key on file_uploader here.
@@ -15695,6 +16479,7 @@ if active_page == "Fantasy Standings Tracker":
         _standings_source_options,
         horizontal=True,
         key="standings_stats_source",
+        on_change=fantasy_filter_changed,
     )
 
     stats_file = None
@@ -15709,6 +16494,7 @@ if active_page == "Fantasy Standings Tracker":
             max_value=2035,
             step=1,
             key="standings_api_season",
+            on_change=fantasy_filter_changed,
         )
     elif stats_source == "Upload CSV":
         stats_file = st.file_uploader(
@@ -15803,6 +16589,9 @@ if active_page == "Fantasy Standings Tracker":
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
+    flush_fantasy_section_edits(st.session_state, "standings", st, reason="fantasy_standings_page_save")
+    if developer_mode_enabled():
+        render_fantasy_state_debug(st, st.session_state, active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -15852,6 +16641,16 @@ def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None,
 
 
 if active_page == "Fantasy Lineup Assistant":
+    from fantasy_state import (
+        flush_fantasy_section_edits,
+        prepare_fantasy_lineup_filters,
+        prepare_fantasy_lineup_page,
+        render_fantasy_state_debug,
+    )
+
+    prepare_fantasy_lineup_page(st.session_state)
+    prepare_fantasy_lineup_filters(st.session_state)
+
     render_section_header(
         "🧠 Fantasy Lineup Assistant / Start-Sit AI",
         "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch."
@@ -15881,13 +16680,14 @@ if active_page == "Fantasy Lineup Assistant":
         l1, l2, l3 = st.columns(3)
         with l1:
             ensure_select_in_options("lineup_team", lineup_teams, default_lineup_team if default_lineup_team in lineup_teams else lineup_teams[0])
-            lineup_team = st.selectbox("Fantasy Team", lineup_teams, key="lineup_team")
+            lineup_team = st.selectbox("Fantasy Team", lineup_teams, key="lineup_team", on_change=fantasy_filter_changed)
         with l2:
             ensure_select_in_options("lineup_format", _lineup_format_options, "5x5 Roto")
             lineup_format = st.selectbox(
                 "Lineup Scoring Mode",
                 _lineup_format_options,
                 key="lineup_format",
+                on_change=fantasy_filter_changed,
             )
         with l3:
             ensure_widget_state("lineup_bench_rows", 12)
@@ -15897,6 +16697,7 @@ if active_page == "Fantasy Lineup Assistant":
                 max_value=25,
                 value=int(st.session_state["lineup_bench_rows"]),
                 key="lineup_bench_rows",
+                on_change=fantasy_filter_changed,
             )
 
         with st.expander("Starting lineup slots (optional)"):
@@ -15905,12 +16706,14 @@ if active_page == "Fantasy Lineup Assistant":
                 "Include UTIL slot",
                 key="lineup_include_util",
                 help="Uncheck if your league has no UTIL. A custom slot list below replaces defaults when provided.",
+                on_change=fantasy_filter_changed,
             )
             custom_slots_text = st.text_input(
                 "Custom slot order (comma-separated)",
                 placeholder="e.g. C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL",
                 key="lineup_custom_slots",
                 help="Valid tokens: C, 1B, 2B, 3B, SS, OF, LF, CF, RF, UTIL. Leave blank for default order.",
+                on_change=fantasy_filter_changed,
             )
 
         custom_weights = None
@@ -16258,10 +17061,41 @@ if active_page == "Fantasy Lineup Assistant":
                             )
 
     save_page_state(active_page)
+    flush_fantasy_section_edits(st.session_state, "lineup", st, reason="fantasy_lineup_page_save")
+    if developer_mode_enabled():
+        render_fantasy_state_debug(st, st.session_state, active_page)
     render_page_filters_debug(active_page)
 
 
+def valuation_filter_changed():
+    try:
+        from valuation_state import mark_valuation_filter_pending_sync
+
+        mark_valuation_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+def projections_filter_changed():
+    try:
+        from projections_state import mark_projections_filter_pending_sync
+
+        mark_projections_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
 if active_page == "Valuation":
+    from valuation_state import (
+        flush_valuation_filter_edits,
+        prepare_valuation_filters,
+        prepare_valuation_page,
+        render_valuation_state_debug,
+    )
+
+    prepare_valuation_page(st.session_state)
+    prepare_valuation_filters(st.session_state)
+
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -16270,7 +17104,7 @@ if active_page == "Valuation":
     c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
-        lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag")
+        lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag", on_change=valuation_filter_changed)
     with c2:
         validate_number_state("value_min_g", 50, min_value=0, max_value=800)
         min_g_value = st.number_input(
@@ -16278,6 +17112,7 @@ if active_page == "Valuation":
             min_value=0,
             max_value=800,
             key="value_min_g",
+            on_change=valuation_filter_changed,
         )
     with c3:
         validate_state_option("value_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
@@ -16286,6 +17121,7 @@ if active_page == "Valuation":
             FANTASY_POSITION_FILTER_OPTIONS,
             key="value_position_filter",
             help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
+            on_change=valuation_filter_changed,
         )
 
     max_year_value = int(yearly_df["yearID"].max())
@@ -16300,6 +17136,7 @@ if active_page == "Valuation":
         value_sync_enabled = st.checkbox(
             "Remove already drafted players and allow drafting from Valuation page",
             key="value_use_draft_room_sync",
+            on_change=valuation_filter_changed,
         )
         if value_sync_enabled:
             value_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
@@ -16313,6 +17150,7 @@ if active_page == "Valuation":
                         "My Draft Room Team",
                         value_team_options,
                         key="value_sync_team_for_draft",
+                        on_change=valuation_filter_changed,
                     )
                 st.caption(f"Removed {len(set(value_drafted_names))} already drafted player(s) from this page.")
             else:
@@ -16333,7 +17171,7 @@ if active_page == "Valuation":
         ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
     )
     agg_value = agg_value[agg_value["G"] >= min_g_value].copy()
-    agg_value = apply_stat_min_filters(agg_value, "value")
+    agg_value = apply_stat_min_filters(agg_value, "value", on_change=valuation_filter_changed)
 
     trend_value = compute_player_trend_table(
         recent_data_value,
@@ -16349,9 +17187,9 @@ if active_page == "Valuation":
         st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
         c5, c6 = st.columns(2)
         with c5:
-            w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current")
+            w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current", on_change=valuation_filter_changed)
         with c6:
-            w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend")
+            w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend", on_change=valuation_filter_changed)
 
     valuation_df["Trend_Score"] = (
         valuation_df["R_trend"].fillna(0) * 1.0 + valuation_df["H_trend"].fillna(0) * 0.5 +
@@ -16443,6 +17281,7 @@ if active_page == "Valuation":
         key="valuation_selected_player",
         label="Choose a player to explain",
         default_name=valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else None,
+        on_change=valuation_filter_changed,
     )
     if selected_value_row is not None:
         st.info(make_valuation_summary(selected_value_row))
@@ -16451,11 +17290,24 @@ if active_page == "Valuation":
     if not best_value_row.empty:
         st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
 
+    flush_valuation_filter_edits(st.session_state, st, reason="valuation_page_save")
+    if developer_mode_enabled():
+        render_valuation_state_debug(st, st.session_state)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
 if active_page == "ML Predictions":
+    from projections_state import (
+        flush_projections_filter_edits,
+        prepare_projections_filters,
+        prepare_projections_page,
+        render_projections_state_debug,
+    )
+
+    prepare_projections_page(st.session_state)
+    prepare_projections_filters(st.session_state)
+
     if pp.skip_heavy_work(st):
         st.session_state.setdefault("ml_max_players", 100)
     if pp.is_demo_mode(st) or pp.is_screenshot_mode(st):
@@ -16489,11 +17341,11 @@ if active_page == "ML Predictions":
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback")
+            ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback", on_change=projections_filter_changed)
         with c2:
-            ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 75, key="ml_min_games")
+            ml_min_games = st.number_input("Minimum Games in Lookback Window", 0, 800, 75, key="ml_min_games", on_change=projections_filter_changed)
         with c3:
-            ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=2, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud. Fantasy-relevant players with recent playing time are still included when possible.")
+            ml_max_players = st.selectbox("Projection Scope", [100, 150, 300, 500], index=2, key="ml_max_players", help="Lower numbers are much faster on Streamlit Cloud. Fantasy-relevant players with recent playing time are still included when possible.", on_change=projections_filter_changed)
 
         ml_min_ab = st.number_input(
             "Minimum Recent AB in Lookback Window",
@@ -16502,6 +17354,7 @@ if active_page == "ML Predictions":
             200,
             key="ml_min_ab",
             help="Primary AB filter. Players with at least 75 recent AB and 30 recent games can still qualify as fantasy-relevant breakouts.",
+            on_change=projections_filter_changed,
         )
 
         with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
@@ -16515,16 +17368,17 @@ if active_page == "ML Predictions":
                     "Conservative adds more regression and lowers volatility. Balanced keeps the normal model behavior. "
                     "Aggressive trusts upside/recent signals more and regresses less."
                 ),
+                on_change=projections_filter_changed,
             )
             a1, a2, a3, a4 = st.columns(4)
             with a1:
-                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength")
+                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength", on_change=projections_filter_changed)
             with a2:
-                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength")
+                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength", on_change=projections_filter_changed)
             with a3:
-                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight")
+                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight", on_change=projections_filter_changed)
             with a4:
-                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors")
+                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors", on_change=projections_filter_changed)
             _ml_style_mode = "Aggressive / Upside" if ml_projection_style == "Aggressive" else ml_projection_style
             _ml_style_factors = get_draft_projection_factors(_ml_style_mode)
             effective_regression_strength = float(
@@ -16543,6 +17397,7 @@ if active_page == "ML Predictions":
                 value=True,
                 key="ml_auto_apply_tuning",
                 help="Turn off to adjust multiple sliders, then click **Apply tuning changes** once.",
+                on_change=projections_filter_changed,
             )
 
         _tune_cols = st.columns([1, 2])
@@ -16553,6 +17408,12 @@ if active_page == "ML Predictions":
                 help="Re-blend projections using current sliders without retraining Random Forest models.",
             ):
                 st.session_state["ml_tuning_apply_requested"] = True
+                try:
+                    from projections_state import mark_projections_filter_pending_sync
+
+                    mark_projections_filter_pending_sync(st.session_state)
+                except Exception:
+                    pass
         with _tune_cols[1]:
             if not st.session_state.get("ml_auto_apply_tuning", True):
                 st.caption("Auto-apply is off — use this button after changing sliders.")
@@ -16691,6 +17552,7 @@ if active_page == "ML Predictions":
                 FANTASY_POSITION_FILTER_OPTIONS,
                 key="ml_position_filter",
                 help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                on_change=projections_filter_changed,
             )
         with _ml_tbl_c2:
             validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
@@ -16699,6 +17561,7 @@ if active_page == "ML Predictions":
                 ML_DISPLAY_SORT_OPTIONS,
                 key="ml_sort_by",
                 help="Display-only — does not regenerate ML projections.",
+                on_change=projections_filter_changed,
             )
 
         if st.session_state.get("ml_predictions_have_run", False):
@@ -16771,6 +17634,7 @@ if active_page == "ML Predictions":
                         key="ml_projection_insight_player",
                         label="Selected Projection Insight player",
                         default_name=ml_display.iloc[0]["Player"] if "Player" in ml_display.columns else None,
+                        on_change=projections_filter_changed,
                     )
                     if selected_ml_row is not None:
                         st.success(make_ml_prediction_summary(selected_ml_row, _ml_insight_stat_from_sort(ml_sort_by)))
@@ -16780,7 +17644,7 @@ if active_page == "ML Predictions":
                     if not age_curve_df.empty:
                         age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
                         if age_stats:
-                            age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat")
+                            age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat", on_change=projections_filter_changed)
                             age_view = age_curve_df[age_curve_df["Stat"] == age_view_stat].rename(columns={"Age Adjustment": "Expected Age Change"})
                             age_curve_table = format_display_table(age_view, rate_cols=["Expected Age Change"])
                             render_output_table(age_curve_table, key="ml_age_curve", file_name="ml_age_curve.csv")
@@ -16788,7 +17652,7 @@ if active_page == "ML Predictions":
                 st.subheader("What Stats Matter Most?")
                 importance_options = [s for s in ML_TARGET_STATS if s in ml_models]
                 if importance_options:
-                    importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat")
+                    importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat", on_change=projections_filter_changed)
                     importance_df = ml_models[importance_stat]["importance"].head(15).copy()
                     importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
                     importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
@@ -16845,6 +17709,9 @@ if active_page == "ML Predictions":
             ),
         )
 
+        flush_projections_filter_edits(st.session_state, st, reason="projections_page_save")
+        if developer_mode_enabled():
+            render_projections_state_debug(st, st.session_state)
         save_page_state(active_page)
         render_page_filters_debug(active_page)
 
@@ -16860,6 +17727,19 @@ try:
     from baseball_persistent_state import autosave_baseball_state
 
     autosave_baseball_state(st)
+    if st.session_state.get("_suite_persist_insight_dirty"):
+        try:
+            force_save_baseball_state(st, reason="insight_persist")
+            st.session_state.pop("_suite_persist_insight_dirty", None)
+        except Exception:
+            pass
+except Exception:
+    pass
+
+try:
+    from suite_user_persistence import clear_workspace_autosave_block
+
+    clear_workspace_autosave_block(st, "baseball")
 except Exception:
     pass
 
