@@ -28,12 +28,6 @@ CAREER_STAT_MIN_KEYS = tuple(f"career_{col}_min" for col in CAREER_STAT_COLUMNS)
 
 CAREER_ALL_STATE_KEYS = CAREER_FILTER_KEYS + CAREER_STAT_MIN_KEYS
 
-CAREER_PENDING_SYNC_KEY = "_career_filters_pending_sync"
-CAREER_TEAM_PSEUDO_OPTIONS = frozenset({"All Teams", "American League", "National League"})
-CAREER_SYNC_TRACE_KEY = "_career_totals_sync_trace"
-CAREER_SYNC_TRACE_LOG_KEY = "_career_totals_sync_trace_log"
-
-
 def _career_page_filter_block(session: dict[str, Any]) -> dict[str, Any]:
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
@@ -186,12 +180,6 @@ def record_career_cloud_restore_trace(
         and live.get("cloud_career_year_range") != phone_payload.get("career_year_range_filter")
     ):
         session["_career_cloud_fetch_mismatch"] = True
-        if (
-            live.get("cloud_career_team_filter") is not None
-            and phone_payload.get("career_team_filter") is not None
-            and live.get("cloud_career_team_filter") != phone_payload.get("career_team_filter")
-        ):
-            session["_career_cloud_fetch_mismatch"] = True
     record_career_sync_trace(
         session,
         "cloud_restore",
@@ -325,32 +313,6 @@ def _filters_from_block(block: dict[str, Any]) -> dict[str, Any]:
         if is_career_state_key(key):
             out[key] = _normalize_filter_value(key, val)
     return out
-
-
-def _record_career_render_overwrite(
-    session: dict[str, Any],
-    *,
-    source: str,
-    key: str,
-    before: Any,
-    after: Any,
-) -> None:
-    restored = session.get("_career_restored_filters")
-    restored_val = restored.get(key) if isinstance(restored, dict) else None
-    canonical_val = (canonical_career_filters(session) or {}).get(key)
-    if restored_val is not None and after != restored_val:
-        session["_career_render_overwrite_detected"] = True
-        session["_career_overwrite_source"] = source
-        record_career_sync_trace(
-            session,
-            "render_overwrite",
-            overwrite_source=source,
-            overwrite_key=key,
-            before=before,
-            after=after,
-            restored_value=restored_val,
-            canonical_value=canonical_val,
-        )
 
 
 def canonical_career_filters(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -492,13 +454,11 @@ def prepare_career_totals_page(session: dict[str, Any]) -> dict[str, Any]:
         return meta
 
     filt = gather_career_filters(session)
-    meta = write_canonical_career_state(
+    return write_canonical_career_state(
         session,
         filters=filt,
         reason="reconcile_on_load" if filt else "empty",
     )
-    record_career_sync_trace(session, "prepare_career_totals_page", branch="reconcile_on_load")
-    return meta
 
 
 def prepare_career_totals_filters(session: dict[str, Any]) -> None:
@@ -526,11 +486,9 @@ def prepare_career_totals_filters(session: dict[str, Any]) -> None:
 def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str, Any]) -> bool:
     if is_career_locally_dirty(session):
         record_career_field_write(session, "page_filter_restore", "blocked_local_dirty")
-        record_career_cloud_restore_trace(session, applied=False, skipped_reason="local_dirty_page_restore")
         return False
     snapshot = store.get("Career Totals") if isinstance(store, dict) else None
     if not isinstance(snapshot, dict):
-        record_career_cloud_restore_trace(session, applied=False, skipped_reason="no_page_snapshot")
         return False
     for key, value in snapshot.items():
         if key == "career_state":
@@ -557,8 +515,6 @@ def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str,
             local_edit=False,
             sync_widget_keys=False,
         )
-    session["_career_restored_filters"] = copy.deepcopy(_filters_from_block(snapshot))
-    record_career_sync_trace(session, "dell_page_restore", restore_applied=True)
     return True
 
 
@@ -584,11 +540,7 @@ def prepare_career_year_range(
     sanitized = sanitize_year_range(raw, int(min_year), int(max_year), preserve_default)
     if sanitized is None:
         sanitized = (int(min_year), int(max_year))
-    before = session.get(key)
     session[key] = (int(sanitized[0]), int(sanitized[1]))
-    if before is not None and before != session[key]:
-        _record_career_render_overwrite(session, source="prepare_career_year_range", key=key, before=before, after=session[key])
-    record_career_sync_trace(session, "prepare_year_range", final_widget_year_range=session[key])
     return session[key]
 
 
@@ -624,10 +576,6 @@ def prepare_career_multiselect_filter(
         session[key] = [x for x in current if x in opts]
     else:
         session[key] = [x for x in current if x in merged_opts]
-    if key == "career_team_filter" and current != session[key]:
-        _record_career_render_overwrite(session, source="prepare_career_multiselect_filter", key=key, before=current, after=session[key])
-    if key == "career_team_filter":
-        record_career_sync_trace(session, "prepare_team_filter", final_widget_team_filter=session[key])
     return merged_opts
 
 
@@ -652,14 +600,13 @@ def flush_career_filter_edits(session: dict[str, Any], st_obj: Any = None, *, re
         local_edit=True,
         sync_widget_keys=False,
     )
-    record_career_sync_trace(session, "phone_after_edit", edit_reason=reason, pending_was=pending, changed=changed)
     if st_obj is not None:
         try:
             from baseball_persistent_state import force_save_baseball_state
 
             force_save_baseball_state(st_obj, reason="career_edit")
         except Exception:
-            record_career_force_save_result(session, attempted=True, success=False, reason="career_edit")
+            pass
     return True
 
 
@@ -683,14 +630,7 @@ def commit_career_filters_from_session(session: dict[str, Any], *, reason: str =
 
 
 def apply_cloud_career_state_if_allowed(session: dict[str, Any], state: dict[str, Any]) -> bool:
-    cloud_snapshot = {
-        "cloud_fetch_success": True,
-        "cloud_career_year_range": _career_filters_from_blob(state).get("career_year_range_filter"),
-        "cloud_career_team_filter": _career_filters_from_blob(state).get("career_team_filter"),
-        "cloud_updated_at": session.get("_suite_applied_cloud_ts_baseball"),
-    }
     if is_career_locally_dirty(session):
-        record_career_cloud_restore_trace(session, applied=False, skipped_reason="local_dirty", cloud_snapshot=cloud_snapshot)
         return False
     filters: dict[str, Any] = {}
     cs = state.get("career_state")
@@ -707,13 +647,11 @@ def apply_cloud_career_state_if_allowed(session: dict[str, Any], state: dict[str
         if isinstance(ws, dict) and isinstance(ws.get("career_filters"), dict):
             filters = {k: v for k, v in ws["career_filters"].items() if is_career_state_key(k)}
     if not filters:
-        record_career_cloud_restore_trace(session, applied=False, skipped_reason="no_filters_in_cloud", cloud_snapshot=cloud_snapshot)
         return False
     write_canonical_career_state(session, filters=filters, reason="cloud_restore")
     clear_career_local_edit(session)
     session["_career_restored_filters"] = copy.deepcopy(filters)
     session["_career_restore_source"] = session.get("_suite_persist_last_restore_source", "cloud")
-    record_career_cloud_restore_trace(session, applied=True, cloud_snapshot=cloud_snapshot)
     return True
 
 
@@ -777,60 +715,3 @@ def render_career_totals_state_debug(st: Any, session: dict[str, Any]) -> None:
         for k, v in rows.items():
             if v is not None and v != "" and v is not False and v != {}:
                 st.text(f"{k}: {v}")
-def render_career_totals_sync_trace(st: Any, session: dict[str, Any]) -> None:
-    """Developer panel — phone/Dell Career Totals sync trace with A/B/C/D classification."""
-    live = load_live_cloud_career_snapshot()
-    layers = snapshot_career_sync_layers(session)
-    failure = classify_career_sync_failure(session)
-    restored = session.get("_career_restored_filters") if isinstance(session.get("_career_restored_filters"), dict) else {}
-
-    phone_rows = {
-        "career_year_range raw widget": layers.get("career_year_range_widget"),
-        "career_year_range canonical": layers.get("career_year_range_canonical"),
-        "career_year_range page_filter_state": layers.get("career_year_range_page_filter_state"),
-        "career_year_range cloud payload": layers.get("career_year_range_cloud_payload"),
-        "career_team_filter raw widget": layers.get("career_team_filter_widget"),
-        "career_team_filter canonical": layers.get("career_team_filter_canonical"),
-        "career_team_filter page_filter_state": layers.get("career_team_filter_page_filter_state"),
-        "career_team_filter cloud payload": layers.get("career_team_filter_cloud_payload"),
-        "pending edit flag": layers.get("pending_edit_flag"),
-        "dirty flag": layers.get("dirty_flag"),
-        "force_save attempted": layers.get("force_save_attempted"),
-        "force_save success": layers.get("force_save_success"),
-        "cloud updated_at": layers.get("cloud_updated_at"),
-        "cloud_save": layers.get("cloud_save"),
-        "cloud_block_reason": layers.get("cloud_block_reason"),
-        "last_force_save_reason": layers.get("last_force_save_reason"),
-    }
-    dell_rows = {
-        "cloud fetched success": live.get("cloud_fetch_success"),
-        "cloud career_year_range": live.get("cloud_career_year_range"),
-        "cloud career_team_filter": live.get("cloud_career_team_filter"),
-        "cloud updated_at (live fetch)": live.get("cloud_updated_at"),
-        "restore applied/skipped": session.get("_career_restore_skipped_reason") or bool(restored),
-        "restore skipped reason": session.get("_career_restore_skipped_reason"),
-        "restored career_year_range": restored.get("career_year_range_filter"),
-        "restored career_team_filter": restored.get("career_team_filter"),
-        "final widget year range": session.get("career_year_range_filter"),
-        "final widget franchise/team filter": session.get("career_team_filter"),
-        "overwrite source if changed": session.get("_career_overwrite_source"),
-    }
-    with st.sidebar.expander("Career Totals Sync Trace", expanded=True):
-        st.caption("Failure class: A=phone not writing cloud · B=fetch mismatch · C=restore rejected · D=render overwrite")
-        if failure:
-            st.error(f"Classified failure: {failure}")
-        else:
-            st.success("No failure classified yet")
-        st.markdown("**PHONE after edit**")
-        for k, v in phone_rows.items():
-            if v is not None and v != "" and v is not False:
-                st.text(f"{k}: {v}")
-        st.markdown("**DELL after refresh**")
-        for k, v in dell_rows.items():
-            if v is not None and v != "" and v is not False:
-                st.text(f"{k}: {v}")
-        last = session.get(CAREER_SYNC_TRACE_KEY)
-        if isinstance(last, dict):
-            st.markdown("**Last trace event**")
-            st.json(last)
-

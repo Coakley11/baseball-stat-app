@@ -11872,6 +11872,17 @@ except Exception:
     build_baseball_applied_math_context = None  # type: ignore[misc, assignment]
     build_source_state = None  # type: ignore[misc, assignment]
 
+
+def _force_save_before_ami_return(active_page: str) -> None:
+    """Persist baseball state after AMI send so return links restore draft context."""
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason=f"ami_send:{active_page}")
+    except Exception:
+        pass
+
+
 render_applied_math_sidebar_entry(
     st,
     source_app="baseball",

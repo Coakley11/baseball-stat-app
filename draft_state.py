@@ -468,3 +468,159 @@ def render_draft_state_debug(st: Any, session: dict[str, Any]) -> None:
         for k, v in rows.items():
             if v is not None and v != "" and v is not False and v != {}:
                 st.text(f"{k}: {v}")
+
+
+def _compact_player_rows(df_or_rows: Any, *, limit: int = 10) -> list[dict[str, Any]]:
+    """JSON-safe player rows for AMI source_state (names + key metrics only)."""
+    import pandas as pd
+
+    rows: list[dict[str, Any]] = []
+    if isinstance(df_or_rows, pd.DataFrame):
+        if df_or_rows.empty:
+            return rows
+        for _, row in df_or_rows.head(limit).iterrows():
+            name = str(row.get("Player") or row.get("fullName") or "").strip()
+            if not name:
+                continue
+            entry: dict[str, Any] = {"player": name}
+            for col in (
+                "Primary Position",
+                "Expected Fantasy Value",
+                "Model Rank",
+                "Market Rank",
+                "Sleeper Score",
+                "Draft Fit Score",
+            ):
+                if col in row.index and pd.notna(row[col]):
+                    entry[col] = row[col]
+            rows.append(entry)
+        return rows
+    if isinstance(df_or_rows, list):
+        for item in df_or_rows[:limit]:
+            if isinstance(item, dict):
+                name = str(item.get("Player") or item.get("fullName") or item.get("player") or "").strip()
+                if name:
+                    rows.append({"player": name, **{k: v for k, v in item.items() if k in ("Primary Position", "Expected Fantasy Value")}})
+            elif item:
+                rows.append({"player": str(item).strip()})
+    return rows
+
+
+def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, Any]:
+    """
+    JSON-safe draft context for AMI source_state and solver context.
+
+    Includes queue, watchlist, live draft pick/roster, recommendations, sleepers, and settings.
+    """
+    dw = gather_draft_workflow(session)
+    snapshot: dict[str, Any] = {
+        "page": page,
+        "draft_queue": list(dw.get("queue") or [])[:12],
+        "watchlist_focus": list(dw.get("watchlist_focus") or [])[:20],
+        "watchlist_favorites": list(dw.get("watchlist_favorites") or [])[:20],
+    }
+    scoring: dict[str, Any] = {}
+    for key in (
+        "draft_format",
+        "draft_lab_scoring_type",
+        "draft_lab_format",
+        "fantasy_draft_projection_style",
+        "room_format",
+        "room_your_team",
+        "room_team_count",
+        "room_rounds",
+        "draft_window",
+        "draft_top_n",
+    ):
+        val = session.get(key)
+        if val is not None and str(val).strip() not in ("", "—"):
+            scoring[key] = val
+    if scoring:
+        snapshot["scoring_settings"] = scoring
+
+    room = session.get("live_draft_room")
+    if isinstance(room, dict) and room:
+        try:
+            from streamlit_app import (
+                live_draft_current_slot,
+                live_draft_recommendations,
+                serialize_live_draft_room,
+            )
+
+            serialized = serialize_live_draft_room(room)
+            snapshot["draft_state"] = {
+                "status": serialized.get("status"),
+                "current_pick_index": serialized.get("current_pick_index"),
+                "draft_room_id": serialized.get("draft_room_id"),
+            }
+            cfg = dict(serialized.get("config") or room.get("config") or {})
+            for k in ("scoring_type", "draft_type", "league_name", "picks_per_team", "num_teams", "your_team"):
+                if cfg.get(k) is not None:
+                    scoring.setdefault(k, cfg.get(k))
+            if scoring:
+                snapshot["scoring_settings"] = scoring
+            slot = live_draft_current_slot(room)
+            if slot:
+                idx = int(serialized.get("current_pick_index") or 0)
+                num_teams = int(cfg.get("num_teams") or len(room.get("teams") or []) or 12)
+                snapshot["current_pick"] = int(slot.get("Pick") or idx + 1)
+                snapshot["draft_round"] = (idx // num_teams) + 1 if num_teams else None
+                your_team = str(slot.get("Team") or cfg.get("your_team") or session.get("room_your_team") or "")
+                if your_team:
+                    snapshot["your_team"] = your_team
+                    roster = (room.get("rosters") or {}).get(your_team) or []
+                    snapshot["user_roster"] = [
+                        str(p.get("fullName") or p.get("Player") or p)[:80]
+                        for p in roster[:24]
+                        if isinstance(p, dict)
+                    ]
+            top_rec, best_avail, _pos_fit, sleepers = live_draft_recommendations(room, top_n=8)
+            snapshot["recommended_players"] = _compact_player_rows(top_rec)
+            snapshot["available_players"] = _compact_player_rows(best_avail)
+            snapshot["sleepers"] = _compact_player_rows(sleepers)
+        except Exception:
+            pass
+
+    drt = session.get("draft_room_table")
+    if drt is not None and hasattr(drt, "head"):
+        try:
+            snapshot["draft_room_board"] = drt.head(24).to_dict(orient="records")
+        except Exception:
+            pass
+
+    cached = session.get("_ami_draft_snapshot")
+    if isinstance(cached, dict):
+        for k, v in cached.items():
+            if k not in snapshot or not snapshot.get(k):
+                snapshot[k] = v
+
+    return snapshot
+
+
+def build_draft_ami_trace(source_state: dict[str, Any]) -> dict[str, Any]:
+    """Trace flags for baseball draft AMI packaging (debug + acceptance)."""
+    import json
+
+    ent = dict(source_state.get("entity_params") or {})
+    snap = ent.get("draft_snapshot") if isinstance(ent.get("draft_snapshot"), dict) else {}
+    payload = json.dumps(source_state, default=str)
+    player_count = 0
+    for key in ("user_roster", "draft_queue", "recommended_players", "available_players", "sleepers", "watchlist_focus"):
+        block = snap.get(key)
+        if isinstance(block, list):
+            player_count += len(block)
+    return {
+        "source_app": source_state.get("source_app") or "baseball",
+        "source_page": source_state.get("source_page"),
+        "source_state_keys": sorted(source_state.keys()),
+        "source_state_has_draft_state": bool(snap.get("draft_state")),
+        "source_state_has_roster": bool(snap.get("user_roster")),
+        "source_state_has_available_players": bool(snap.get("available_players")),
+        "source_state_has_recommendations": bool(snap.get("recommended_players")),
+        "source_state_has_sleepers": bool(snap.get("sleepers")),
+        "source_state_has_scoring_settings": bool(snap.get("scoring_settings")),
+        "source_state_has_selected_players": bool(snap.get("draft_queue") or snap.get("watchlist_focus")),
+        "source_state_player_count": player_count,
+        "source_state_payload_size": len(payload),
+    }
+

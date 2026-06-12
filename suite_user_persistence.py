@@ -243,6 +243,9 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "insight_persist",
     "insight_hydrate",
     "applied_math_send",
+    "music_coach_send",
+    "song_edit",
+    "practice_edit",
 })
 
 
@@ -365,6 +368,7 @@ def _release_user_page_ownership_after_save(st: Any, saved_page: str) -> None:
     if owned and saved and owned == saved:
         st.session_state.pop(SESSION_USER_OWNED_PAGE_KEY, None)
         st.session_state["_suite_last_persisted_page"] = saved
+        st.session_state.pop("_suite_page_user_nav", None)
 
 
 def record_page_navigation_startup_diagnostics(st: Any, app_id: str) -> None:
@@ -577,10 +581,11 @@ def sync_workspace_protocol(
 
     try:
         from suite_cloud_state import (
-            has_resume_query_params,
             load_cloud_full_session,
             parse_persist_timestamp,
             pick_restore_session,
+            reconcile_stale_resume_session_flags,
+            should_skip_workspace_restore_for_resume,
         )
     except ImportError:
         st.session_state["_suite_persist_restore_skip_reason"] = "cloud module missing"
@@ -590,8 +595,39 @@ def sync_workspace_protocol(
         )
         return False
 
-    if has_resume_query_params(st, app_id):
+    stale_cleared = reconcile_stale_resume_session_flags(st, app_id)
+    st.session_state["_suite_stale_resume_flags_cleared"] = stale_cleared or None
+    skip_resume_restore = should_skip_workspace_restore_for_resume(st, app_id, reconcile_first=False)
+    if skip_resume_restore:
         st.session_state["_suite_resume_insight_hydration_only"] = True
+        reason = "resume query params — workspace sync skipped"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
+        _record_workspace_sync_trace(
+            st,
+            app_id,
+            cloud_state={},
+            cloud_ts=None,
+            disk_state={},
+            disk_ts=None,
+            winner="none",
+            reason=reason,
+            applied=False,
+        )
+        _record_startup_restore_diagnostics(
+            st,
+            app_id,
+            cloud_state={},
+            cloud_ts=None,
+            disk_state={},
+            disk_ts=None,
+            picked_source="none",
+            picked_reason=reason,
+            should_apply=False,
+            apply_reason="",
+            skip_reason=reason,
+        )
+        return False
 
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
@@ -677,7 +713,7 @@ def sync_workspace_protocol(
     already_synced = bool(st.session_state.get(synced_key))
     first_sync = not already_synced
     cloud_newer_than_applied = bool(cloud_ts and cloud_epoch > applied_epoch)
-    page = str(picked.state.get("active_page") or "")
+    page = _workspace_page_from_blob(app_id, picked.state)
     current_page = _session_workspace_page(st)
     page_mismatch = bool(page and current_page and page != current_page)
     cloud_players = _workspace_comparison_players(picked.state) if picked.source == "cloud" else []
@@ -972,8 +1008,39 @@ def restore_once(
     return True
 
 
+def _workspace_page_from_blob(app_id: str, state: dict[str, Any]) -> str:
+    """Extract navigable page id from a persisted workspace blob."""
+    if not isinstance(state, dict):
+        return ""
+    app = str(app_id or "").strip()
+    if app == "music":
+        core = state.get("core") if isinstance(state.get("core"), dict) else {}
+        session = state.get("session") if isinstance(state.get("session"), dict) else {}
+        meta = state.get("music_workspace_state") if isinstance(state.get("music_workspace_state"), dict) else {}
+        page = str(
+            meta.get("studio_page")
+            or core.get("studio_page")
+            or session.get("studio_page")
+            or meta.get("page")
+            or ""
+        ).strip()
+        return page
+    return str(state.get("active_page") or "").strip()
+
+
 def _session_workspace_page(st: Any) -> str:
     ss = st.session_state
+    app_id = str(ss.get("_suite_persist_app_id") or "").strip()
+    if app_id == "music":
+        studio = str(ss.get("studio_page") or "").strip()
+        if studio:
+            return studio
+    coach_page = str(ss.get("_music_coach_workspace_page") or "").strip()
+    if coach_page:
+        return coach_page
+    studio = str(ss.get("studio_page") or "").strip()
+    if studio:
+        return studio
     active = str(ss.get("active_page") or "").strip()
     sidebar = str(ss.get("main_sidebar_page") or "").strip()
     if sidebar and active and sidebar != active:
@@ -1117,7 +1184,7 @@ def sync_cloud_workspace_before_sidebar(
         )
         return False
 
-    cloud_page = str(picked.state.get("active_page") or "").strip()
+    cloud_page = _workspace_page_from_blob(app_id, picked.state)
     current_page = _session_workspace_page(st)
     applied_key = _applied_cloud_ts_key(app_id)
     applied_ts = st.session_state.get(applied_key)
@@ -1244,6 +1311,7 @@ def force_autosave(
             "insight_persist",
             "insight_hydrate",
             "applied_math_send",
+            "music_coach_send",
         )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True

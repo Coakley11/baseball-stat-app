@@ -129,5 +129,48 @@ class TestBaseballAppliedMathContext(unittest.TestCase):
         self.assertEqual(session["_ami_trend_summary"]["slope"], 1.2)
 
 
+    def test_draft_source_state_includes_ami_snapshot_and_trace(self) -> None:
+        session = {
+            "draft_queue": ["Juan Soto (NYY)", "Aaron Judge (NYY)"],
+            "draft_assistant_focus_players": ["Corbin Carroll (ARI)"],
+            "draft_format": "Rotisserie",
+            "room_your_team": "Team Daniel",
+            "room_team_count": 12,
+        }
+        ss = build_source_state("Draft Assistant Simulator", session)
+        snap = ss["entity_params"].get("draft_snapshot")
+        self.assertIsInstance(snap, dict)
+        self.assertEqual(snap.get("draft_queue"), ["Juan Soto (NYY)", "Aaron Judge (NYY)"])
+        self.assertIn("scoring_settings", snap)
+        trace = ss.get("ami_trace")
+        self.assertIsInstance(trace, dict)
+        self.assertEqual(trace.get("source_app"), "baseball")
+        self.assertTrue(trace.get("source_state_has_selected_players"))
+        self.assertIn("source_state_keys", trace)
+
+
+    def test_draft_applied_math_context_includes_snapshot_and_guidance(self) -> None:
+        session = {
+            "draft_queue": ["Corbin Carroll (ARI)"],
+            "_ami_draft_snapshot": {
+                "current_pick": 18,
+                "draft_round": 2,
+                "user_roster": ["Aaron Judge", "Juan Soto"],
+                "recommended_players": [
+                    {"player": "Corbin Carroll"},
+                    {"player": "Elly De La Cruz"},
+                ],
+                "sleepers": [{"player": "Junior Caminero"}],
+                "scoring_settings": {"draft_format": "Rotisserie"},
+            },
+        }
+        ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
+        self.assertIn("draft_snapshot", ctx)
+        self.assertEqual(ctx.get("current_pick"), 18)
+        self.assertIn("ami_guidance", ctx)
+        self.assertIn("Corbin Carroll", ctx.get("recommended_players", []))
+        self.assertEqual(len(ctx.get("roster", [])), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,13 +34,19 @@ def remember_saved_item(
     *,
     title: str,
     payload: dict[str, Any] | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Persist a song, player, portfolio, simulation, etc. for this account."""
-    import suite_storage as storage
+    try:
+        import suite_storage as storage
+    except ImportError:
+        import suite_storage_supabase as storage
 
-    storage.upsert_saved_item(
+    result = storage.upsert_saved_item(
         app, item_type, item_key, title=title, payload=payload
     )
+    if isinstance(result, dict):
+        return result
+    return {"write_mode": "upsert", "duplicate_handled": False}
 
 
 def forget_saved_item(app: str, item_type: str, item_key: str) -> None:

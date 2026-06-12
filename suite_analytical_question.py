@@ -32,12 +32,57 @@ _SOURCE_AREA: dict[str, str] = {
     "baseball": "sports",
     "nba": "sports",
     "investment": "forecasting",
+    "music": "music",
 }
 
 _SOURCE_LABELS: dict[str, str] = {
     "baseball": "Baseball",
     "nba": "NBA",
     "investment": "Investment",
+    "music": "Music",
+}
+
+_SOURCE_APP_ID_ALIASES: dict[str, str] = {
+    "music": "music",
+    "music practice coach": "music",
+    "music coach": "music",
+    "music practice": "music",
+    "baseball": "baseball",
+    "baseball stat app": "baseball",
+    "nba": "nba",
+    "nba playoff companion": "nba",
+    "investment": "investment",
+    "investment portfolio analyzer": "investment",
+}
+
+
+def normalize_source_app_id(
+    source_app: str,
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Map display labels and context values to canonical suite app ids."""
+    raw = str(source_app or "").strip().lower()
+    if raw in _SOURCE_APP_ID_ALIASES:
+        return _SOURCE_APP_ID_ALIASES[raw]
+    if raw in _SOURCE_LABELS:
+        return raw
+    if context and isinstance(context, dict):
+        ctx_raw = str(context.get("source_app") or "").strip().lower()
+        if ctx_raw in _SOURCE_APP_ID_ALIASES:
+            return _SOURCE_APP_ID_ALIASES[ctx_raw]
+        if ctx_raw in _SOURCE_LABELS:
+            return ctx_raw
+        if "music" in ctx_raw and "math" not in ctx_raw:
+            return "music"
+    if "music" in raw and "math" not in raw:
+        return "music"
+    return raw
+
+_MUSIC_COACH_PLACEHOLDERS: dict[str, str] = {
+    "practice": "e.g. How should I practice this song?",
+    "backing": "e.g. How do I use Backing Track Studio?",
+    "custom": "e.g. What scale works over this progression?",
+    "karaoke": "e.g. How do I use Karaoke mode?",
 }
 
 # Only these keys may appear in user-facing context output.
@@ -94,6 +139,14 @@ _PUBLIC_CONTEXT_KEYS = (
     "rebalance_recommendation",
     "total_drift",
     "historical_comparison",
+    "draft_snapshot",
+    "roster",
+    "recommended_players",
+    "sleepers",
+    "scoring_settings",
+    "ami_guidance",
+    "projection",
+    "watchlist",
 )
 
 _CONTEXT_LABELS = {
@@ -156,8 +209,32 @@ def default_area_for_source(source_app: str) -> str:
 
 
 def source_app_label(source_app: str) -> str:
-    key = str(source_app or "").strip()
+    key = str(source_app or "").strip().lower()
+    if key == "music":
+        return "Music Practice Coach"
     return _SOURCE_LABELS.get(key, key.replace("_", " ").title())
+
+
+def source_question_card_title(
+    source_app: str,
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Normalized Continue / activity title for cross-app questions."""
+    app = normalize_source_app_id(source_app, context)
+    if app == "music":
+        return "Music Coach question from Music"
+    label = _SOURCE_LABELS.get(app, app.replace("_", " ").title())
+    if app in {"baseball", "nba", "investment"}:
+        return f"Applied Math question from {label}"
+    return f"Question from {label}"
+
+
+def music_coach_question_placeholder(source_page: str) -> str:
+    page = str(source_page or "").strip().lower()
+    return _MUSIC_COACH_PLACEHOLDERS.get(
+        page,
+        "e.g. What notes are in C minor?",
+    )
 
 
 def _normalize_question(text: str) -> str:
@@ -267,16 +344,26 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
     try:
         from suite_account import remember_saved_item
 
-        remember_saved_item(
-            "applied_intelligence",
-            _CONTEXT_ITEM_TYPE,
-            qid,
-            title=str(payload.get("question") or "Applied Math question")[:200],
-            payload=blob,
-        )
+        store_apps: list[str] = ["applied_intelligence"]
+        src_app = str(payload.get("source_app") or "").strip().lower()
+        if src_app and src_app not in store_apps:
+            store_apps.append(src_app)
+        for app_name in store_apps:
+            remember_saved_item(
+                app_name,
+                _CONTEXT_ITEM_TYPE,
+                qid,
+                title=str(payload.get("question") or "Applied Math question")[:200],
+                payload=blob,
+            )
         return
     except Exception as exc:
         log.warning("remember_saved_item failed for analytical context: %s", exc)
+
+
+def persist_question_context_blob(payload: dict[str, Any]) -> None:
+    """Public wrapper: persist question send snapshot (context + source_state) by question_id."""
+    _store_question_context_blob(payload)
 
 
 def load_analytical_question_context(question_id: str) -> dict[str, Any]:
@@ -290,15 +377,26 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     if not qid:
         return {}
     resume_key = f"ai:question:{qid}"
+    search_apps = ["applied_intelligence"]
     try:
         from suite_account import load_saved_items
 
-        rows = load_saved_items(app="applied_intelligence", item_type=_CONTEXT_ITEM_TYPE, limit=50)
-        for row in rows:
-            if str(row.get("item_key") or "") == qid:
-                payload = row.get("payload")
-                if isinstance(payload, dict):
-                    return copy.deepcopy(payload)
+        for app_name in search_apps:
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
+            for row in rows:
+                if str(row.get("item_key") or "") == qid:
+                    payload = row.get("payload")
+                    if isinstance(payload, dict):
+                        return copy.deepcopy(payload)
+        for app_name in ("investment", "baseball", "nba", "music"):
+            if app_name in search_apps:
+                continue
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
+            for row in rows:
+                if str(row.get("item_key") or "") == qid:
+                    payload = row.get("payload")
+                    if isinstance(payload, dict):
+                        return copy.deepcopy(payload)
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
     try:
@@ -348,20 +446,39 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     page = str(m.get("page") or _qp("suite_page") or "Solve a Problem").strip()
 
     ctx: dict[str, Any] = {}
+    source_state: dict[str, Any] = {}
+    hydrate_source = "none"
+
+    # Blob-first: full context by question_id before metrics/URL (avoids truncated deep links).
+    if qid:
+        blob_payload = load_analytical_question_payload(qid)
+        blob_ctx = blob_payload.get("context") if isinstance(blob_payload.get("context"), dict) else {}
+        if blob_ctx:
+            ctx = copy.deepcopy(blob_ctx)
+            hydrate_source = "question_id_blob"
+        blob_ss = blob_payload.get("source_state") if isinstance(blob_payload.get("source_state"), dict) else {}
+        if blob_ss:
+            source_state = copy.deepcopy(blob_ss)
+
+    metrics_ctx: dict[str, Any] = {}
     if isinstance(m.get("context"), dict):
-        ctx = copy.deepcopy(m["context"])
+        metrics_ctx = copy.deepcopy(m["context"])
     elif m.get("context_json"):
         try:
             parsed = json.loads(str(m["context_json"]))
             if isinstance(parsed, dict):
-                ctx = parsed
+                metrics_ctx = parsed
         except json.JSONDecodeError:
             pass
-    if not ctx and qid:
-        ctx = load_analytical_question_context(qid)
-    source_state: dict[str, Any] = {}
-    if qid:
-        source_state = load_analytical_question_source_state(qid)
+    if metrics_ctx:
+        if not ctx:
+            ctx = metrics_ctx
+            hydrate_source = "metrics"
+        else:
+            for key, val in metrics_ctx.items():
+                if key not in ctx or not ctx.get(key):
+                    ctx[key] = val
+
     if not ctx:
         raw_ctx = _qp("suite_ai_context")
         if raw_ctx:
@@ -369,6 +486,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
                 parsed = json.loads(raw_ctx)
                 if isinstance(parsed, dict):
                     ctx = parsed
+                    hydrate_source = "url_query"
             except json.JSONDecodeError:
                 pass
 
@@ -389,6 +507,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         ss["_suite_ai_context"] = json.dumps(ctx, ensure_ascii=False)
     if source_state:
         ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
+    ss["_suite_ai_hydrate_source"] = hydrate_source
 
 
 def _format_context_value(key: str, val: Any) -> str:
@@ -434,13 +553,13 @@ def format_context_lines(context: dict[str, Any] | None) -> list[str]:
 
 def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str, str]:
     """Return (title, subtitle, button_label) for Command Center Continue cards."""
-    label = source_app_label(str(payload.get("source_app") or ""))
+    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    app = normalize_source_app_id(str(payload.get("source_app") or ""), ctx)
     question = str(payload.get("question") or "").strip()
-    return (
-        f"Applied Math question from {label}",
-        question,
-        ANALYTICAL_QUESTION_BUTTON_LABEL,
-    )
+    title = source_question_card_title(app, ctx)
+    if app == "music":
+        return (title, question, "Continue with Music Coach →")
+    return (title, question, ANALYTICAL_QUESTION_BUTTON_LABEL)
 
 
 def analytical_question_storage_subtitle(payload: dict[str, Any]) -> str:
@@ -573,6 +692,10 @@ def build_applied_math_resume_url(payload: dict[str, Any], *, base_url: str = ""
     from suite_deep_links import build_resume_action_url
 
     metrics = metrics_for_applied_math_resume(payload)
+    metrics["source_app"] = normalize_source_app_id(
+        str(payload.get("source_app") or ""),
+        dict(payload.get("context") or {}),
+    )
     return build_resume_action_url(
         "applied_intelligence",
         resume_key=str(payload.get("resume_key") or ""),
@@ -625,7 +748,14 @@ def submit_analytical_question(
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
     if not duplicate:
         metrics = metrics_for_applied_math_resume(payload)
-        summary = f"Asked Applied Math: {payload['question'][:80]}"
+        metrics["source_app"] = normalize_source_app_id(
+            str(payload.get("source_app") or ""),
+            dict(payload.get("context") or {}),
+        )
+        if metrics["source_app"] == "music":
+            summary = f"Asked Music Coach: {payload['question'][:80]}"
+        else:
+            summary = f"Asked Applied Math: {payload['question'][:80]}"
         try:
             from suite_activity_client import record_activity
 
@@ -639,7 +769,13 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
     _upsert_applied_intelligence_resume(payload, action_url=action_url)
-    if not duplicate:
+    ss = payload.get("source_state")
+    refresh_blob = not duplicate or (
+        str(payload.get("source_app") or "").strip().lower() == "investment"
+        and isinstance(ss, dict)
+        and bool(ss.get("entity_params"))
+    )
+    if refresh_blob:
         _store_question_context_blob(payload)
     if session_state is not None:
         session_state["_ami_last_send"] = {
@@ -703,8 +839,15 @@ def render_analyze_with_applied_math_sidebar(
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
-    st.sidebar.markdown("### Analyze with Applied Math")
-    st.sidebar.caption("Ask a math question about what you are viewing.")
+    is_music = str(source_app or "").strip().lower() == "music"
+    if is_music:
+        st.sidebar.markdown("### Ask the Music Coach")
+        st.sidebar.caption(
+            "Get help with practice, theory, navigation, backing tracks, karaoke, or this app."
+        )
+    else:
+        st.sidebar.markdown("### Analyze with Applied Math")
+        st.sidebar.caption("Ask a math question about what you are viewing.")
 
     last = ss.get("_ami_last_send")
     if (
@@ -712,14 +855,21 @@ def render_analyze_with_applied_math_sidebar(
         and last.get("source_app") == source_app
         and _recent_duplicate_send(ss, str(last.get("question_id") or ""))
     ):
-        st.sidebar.success(
-            "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+        sent_msg = (
+            "Question sent to Command Center. Open Command Center to continue with the Music Coach."
+            if is_music
+            else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
         )
+        st.sidebar.success(sent_msg)
 
     question = st.sidebar.text_area(
         "Question",
         value=str(ss.get(question_key) or default_question or "").strip(),
-        placeholder="e.g. Is this trend meaningful statistically?",
+        placeholder=(
+            music_coach_question_placeholder(source_page)
+            if is_music
+            else "e.g. Is this trend meaningful statistically?"
+        ),
         height=88,
         key=question_key,
         label_visibility="visible",
@@ -759,14 +909,20 @@ def render_analyze_with_applied_math_sidebar(
             )
             ss["_last_analytical_question"] = result
             ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
+            dup_msg = (
+                "That question was already sent recently. Open Command Center to continue with the Music Coach."
+                if is_music
+                else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+            )
+            ok_msg = (
+                "Question sent to Command Center. Open Command Center to continue with the Music Coach."
+                if is_music
+                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+            )
             if result.get("duplicate"):
-                st.sidebar.info(
-                    "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
-                )
+                st.sidebar.info(dup_msg)
             else:
-                st.sidebar.success(
-                    "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
-                )
+                st.sidebar.success(ok_msg)
             if on_after_send is not None and not result.get("duplicate"):
                 try:
                     on_after_send()
@@ -1050,8 +1206,60 @@ def build_context_from_session(
                 val = getattr(hr_obj, attr, None) if not isinstance(hr_obj, dict) else hr_obj.get(attr)
                 if val is not None and val != "":
                     ctx[key] = val
+    elif app == "music":
+        try:
+            from music_coach_context import (
+                coach_page_display_name,
+                resolve_coach_source_page,
+            )
+
+            coach_page = resolve_coach_source_page(session_state)
+            ctx["page"] = coach_page_display_name(coach_page)
+            ctx["workflow"] = "Music practice coach"
+            song = session_state.get("selected_song")
+            if isinstance(song, dict):
+                title = str(song.get("title") or "").strip()
+                artist = str(song.get("artist") or "").strip()
+                if title:
+                    ctx["song"] = f"{title} — {artist}" if artist else title
+            instrument = str(session_state.get("instrument") or "").strip()
+            if instrument:
+                ctx["instrument"] = instrument
+            display_key = str(session_state.get("display_key") or "").strip()
+            if display_key:
+                ctx["display_key"] = display_key
+            section = str(session_state.get("practice_focus_section") or "").strip()
+            if section:
+                ctx["practice_section"] = section
+            summary = ctx.get("song") or ctx["page"]
+        except Exception:
+            ctx["workflow"] = "Music practice coach"
+            summary = page_display
 
     return ctx, summary
+
+
+def render_music_coach_sidebar_entry(
+    st: Any,
+    *,
+    source_page: str,
+    session_state: dict[str, Any] | None = None,
+    context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
+    source_state_builder: Callable[[], dict[str, Any] | None] | None = None,
+    developer_mode: bool = False,
+    on_after_send: Callable[[], None] | None = None,
+) -> None:
+    """Music Practice Coach sidebar — Ask the Music Coach (not Applied Math wording)."""
+    render_applied_math_sidebar_entry(
+        st,
+        source_app="music",
+        source_page=source_page,
+        session_state=session_state,
+        context_extra_builder=context_extra_builder,
+        source_state_builder=source_state_builder,
+        developer_mode=developer_mode,
+        on_after_send=on_after_send,
+    )
 
 
 def render_suite_applied_math_insight(

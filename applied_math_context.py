@@ -255,7 +255,12 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
 
     elif "draft" in p.lower():
         try:
-            from draft_state import canonical_draft_workflow, gather_draft_workflow
+            from draft_state import (
+                build_draft_ami_trace,
+                canonical_draft_workflow,
+                gather_draft_ami_snapshot,
+                gather_draft_workflow,
+            )
 
             dw = canonical_draft_workflow(session_state) or gather_draft_workflow(session_state)
             if isinstance(dw, dict):
@@ -268,12 +273,19 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
                     entity_params["watchlist_focus"] = [_copy_widget_value(x) for x in focus[:20]]
                 if isinstance(favorites, list) and favorites:
                     entity_params["watchlist_favorites"] = [_copy_widget_value(x) for x in favorites[:20]]
+            draft_snapshot = gather_draft_ami_snapshot(p, session_state)
+            if draft_snapshot:
+                entity_params["draft_snapshot"] = draft_snapshot
+                filt = dict(filter_params)
+                if isinstance(draft_snapshot.get("scoring_settings"), dict):
+                    filt.update(draft_snapshot["scoring_settings"])
+                filter_params = filt
         except ImportError:
             dq = session_state.get("draft_queue")
             if isinstance(dq, list) and dq:
                 entity_params["draft_queue"] = [_copy_widget_value(x) for x in dq[:6]]
 
-    return {
+    result = {
         "source_app": "baseball",
         "source_page": p,
         "page_params": {"page": p},
@@ -283,6 +295,14 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
         "chart_params": chart_params,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if "draft" in p.lower():
+        try:
+            from draft_state import build_draft_ami_trace
+
+            result["ami_trace"] = build_draft_ami_trace(result)
+        except ImportError:
+            pass
+    return result
 
 
 def apply_source_state_to_session(
@@ -605,9 +625,39 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
         if isinstance(dq, list) and dq:
             ctx["player"] = _player_name(dq[0])
             ctx["players"] = [_player_name(x) for x in dq[:4]]
+        try:
+            from draft_state import gather_draft_ami_snapshot
+
+            snap = gather_draft_ami_snapshot(p, session_state)
+            if snap:
+                ctx["draft_snapshot"] = snap
+                if snap.get("current_pick"):
+                    ctx["current_pick"] = snap["current_pick"]
+                if snap.get("draft_round"):
+                    ctx["draft_round"] = snap["draft_round"]
+                if snap.get("user_roster"):
+                    ctx["roster"] = snap["user_roster"][:12]
+                if snap.get("recommended_players"):
+                    ctx["recommended_players"] = [
+                        r.get("player") for r in snap["recommended_players"][:6] if isinstance(r, dict)
+                    ]
+                if snap.get("sleepers"):
+                    ctx["sleepers"] = [
+                        r.get("player") for r in snap["sleepers"][:6] if isinstance(r, dict)
+                    ]
+                if snap.get("scoring_settings"):
+                    ctx["scoring_settings"] = snap["scoring_settings"]
+                ctx["ami_guidance"] = (
+                    "Answer using the user's live draft context: roster, available pool, "
+                    "recommendations, sleepers, and scoring settings in draft_snapshot."
+                )
+        except ImportError:
+            pass
         proj = session_state.get("_ami_draft_projection")
         if isinstance(proj, dict):
             ctx["draft_projection"] = proj
+        rnd = ctx.get("draft_round")
+        summary = f"Draft · round {rnd}" if rnd else "Fantasy draft"
 
     cached = get_cached_page_context(session_state, p)
     if cached:
