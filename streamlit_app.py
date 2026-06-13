@@ -874,7 +874,23 @@ def _canonical_draft_board_df():
 
         return get_canonical_draft_board(st.session_state)
     except Exception:
-        return st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+        try:
+            from draft_room_state import coerce_board_table
+
+            return coerce_board_table(st.session_state.get("draft_room_table"))
+        except Exception:
+            return pd.DataFrame(columns=["Round", "Pick", "Team", "Player"])
+
+
+def _session_draft_board_df():
+    """Coerce session draft_room_table to DataFrame (safe after cloud/disk blob restore)."""
+    try:
+        from draft_room_state import ensure_runtime_draft_board, prepare_draft_room_state
+
+        prepare_draft_room_state(st.session_state)
+        return ensure_runtime_draft_board(st.session_state)
+    except Exception:
+        return _canonical_draft_board_df()
 
 
 def get_next_open_draft_pick_team():
@@ -10501,9 +10517,15 @@ def build_draft_room_table_from_assistant(my_roster, other_rosters, my_team_name
 
 
 def sync_draft_room_to_assistant_from_table(draft_room_table, my_team_name):
-    if draft_room_table is None or len(draft_room_table) == 0:
+    try:
+        from draft_room_state import coerce_board_table
+
+        df = coerce_board_table(draft_room_table)
+    except Exception:
+        df = draft_room_table if hasattr(draft_room_table, "copy") else pd.DataFrame()
+    if df is None or getattr(df, "empty", True):
         return [], []
-    df = draft_room_table.copy()
+    df = df.copy()
     if "Player" not in df.columns or "Team" not in df.columns:
         return [], []
     df = df[df["Player"].astype(str).str.strip() != ""].copy()
@@ -15630,7 +15652,7 @@ if active_page == "Draft Room Simulator":
     )
 
     _room_pick_no = 1
-    _room_tbl = st.session_state.get("draft_room_table", pd.DataFrame())
+    _room_tbl = _session_draft_board_df()
     if not _room_tbl.empty and "Player" in _room_tbl.columns:
         _room_pick_no = max(1, int(_room_tbl["Player"].astype(str).str.strip().ne("").sum()) + 1)
     room_df, _ = apply_draft_pick_scoring(
@@ -15654,7 +15676,7 @@ if active_page == "Draft Room Simulator":
             pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
         st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
 
-    current_table = st.session_state.get("draft_room_table", pd.DataFrame())
+    current_table = _session_draft_board_df()
     has_real_picks = (
         not current_table.empty
         and "Player" in current_table.columns
@@ -15747,7 +15769,7 @@ if active_page == "Draft Room Simulator":
                 st.rerun()
 
         # Widget key is Streamlit-owned (versioned). Seed/cache/table are app-owned.
-        edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
+        edited_draft = _session_draft_board_df()
         try:
             from draft_room_state import (
                 DRAFT_ROOM_EDITOR_CACHE_KEY,
@@ -15763,7 +15785,7 @@ if active_page == "Draft Room Simulator":
             )
 
             initial_df, widget_key = prepare_board_editor_for_render(
-                st.session_state, st.session_state["draft_room_table"]
+                st.session_state, _session_draft_board_df()
             )
             st.session_state["_draft_room_last_widget_key"] = widget_key
             editor_return = st.data_editor(
@@ -15780,7 +15802,7 @@ if active_page == "Draft Room Simulator":
             )
             render_raw_widget_state_debug(st, widget_key)
             if st.session_state.pop("_draft_room_skip_editor_resolve_clobber", False):
-                edited_draft = st.session_state.get("draft_room_table", initial_df)
+                edited_draft = _session_draft_board_df()
                 if hasattr(edited_draft, "copy"):
                     edited_draft = edited_draft.copy()
                 pick_count = table_pick_count(edited_draft)
@@ -15841,7 +15863,7 @@ if active_page == "Draft Room Simulator":
             render_board_debug_expander(st, widget_key, editor_return)
         except Exception as exc:
             edited_draft = st.data_editor(
-                st.session_state["draft_room_table"],
+                _session_draft_board_df(),
                 num_rows="fixed",
                 use_container_width=True,
                 column_config={
@@ -16883,7 +16905,7 @@ if active_page == "Fantasy Standings Tracker":
         current_stats = normalize_uploaded_stat_columns(current_stats)
 
     if not current_stats.empty:
-        draft_table = st.session_state.get("draft_room_table", pd.DataFrame())
+        draft_table = _session_draft_board_df()
         if draft_table.empty:
             st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
         else:

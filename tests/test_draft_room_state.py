@@ -27,6 +27,7 @@ from draft_room_state import (
     apply_restored_board_to_session,
     bump_editor_version,
     build_snake_board,
+    coerce_board_table,
     commit_draft_room_table,
     commit_draft_room_table_if_changed,
     draft_board_diagnostics,
@@ -377,6 +378,27 @@ class TestCanonicalDraftBoard(unittest.TestCase):
         write_canonical_draft_room_state(session, table, reason="test")
         board = get_canonical_draft_board(session)
         self.assertEqual(table_pick_count(board), 2)
+
+    def test_coerce_board_table_from_persisted_blob(self) -> None:
+        table = _sample_table(picks=2)
+        blob = table_to_persist_dict(table)
+        session = {DRAFT_ROOM_TABLE_KEY: copy.deepcopy(blob), DRAFT_ROOM_STATE_KEY: copy.deepcopy(blob)}
+        coerced = coerce_board_table(session[DRAFT_ROOM_TABLE_KEY])
+        self.assertIsInstance(coerced, pd.DataFrame)
+        self.assertEqual(table_pick_count(coerced), 2)
+        board = get_canonical_draft_board(session)
+        self.assertIsInstance(board, pd.DataFrame)
+        self.assertEqual(table_pick_count(board), 2)
+        self.assertTrue(hasattr(session[DRAFT_ROOM_TABLE_KEY], "to_dict"))
+
+    def test_prepare_draft_room_state_coerces_blob_session_key(self) -> None:
+        table = _sample_table(picks=1)
+        blob = table_to_persist_dict(table)
+        session = {DRAFT_ROOM_TABLE_KEY: copy.deepcopy(blob)}
+        out = prepare_draft_room_state(session)
+        self.assertIsInstance(out, pd.DataFrame)
+        self.assertIsInstance(session[DRAFT_ROOM_TABLE_KEY], pd.DataFrame)
+        self.assertEqual(table_pick_count(out), 1)
 
 
     def test_canonical_meta_persists_in_blob(self) -> None:
