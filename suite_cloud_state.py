@@ -441,6 +441,16 @@ def pick_restore_session(
     except ImportError:
         cloud_has_ld = disk_has_ld = False
 
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        cloud_dr = draft_room_restore_stats(cloud_state)
+        disk_dr = draft_room_restore_stats(disk_state)
+        cloud_has_dr = cloud_dr["pick_count"] > 0
+        disk_has_dr = disk_dr["pick_count"] > 0
+    except ImportError:
+        cloud_has_dr = disk_has_dr = False
+
     if disk_epoch > cloud_epoch:
         return RestorePickResult(
             disk_state,
@@ -473,6 +483,42 @@ def pick_restore_session(
             cloud_state,
             "cloud",
             "cloud has live draft; disk missing",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if disk_has_dr and not cloud_has_dr:
+        return RestorePickResult(
+            disk_state,
+            "disk",
+            "disk has draft room board; cloud missing",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if cloud_has_dr and not disk_has_dr:
+        return RestorePickResult(
+            cloud_state,
+            "cloud",
+            "cloud has draft room board; disk missing",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if disk_has_dr and cloud_has_dr and disk_dr["pick_count"] > cloud_dr["pick_count"]:
+        return RestorePickResult(
+            disk_state,
+            "disk",
+            f"disk has more draft room picks ({disk_dr['pick_count']} > {cloud_dr['pick_count']})",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if cloud_has_dr and disk_has_dr and cloud_dr["pick_count"] > disk_dr["pick_count"]:
+        return RestorePickResult(
+            cloud_state,
+            "cloud",
+            f"cloud has more draft room picks ({cloud_dr['pick_count']} > {disk_dr['pick_count']})",
             cloud_ts,
             disk_ts,
         )

@@ -46,6 +46,7 @@ _WORKSPACE_KEYS = (
     "trend_state",
     "career_state",
     "draft_state",
+    "draft_room_state",
     "live_draft_state",
     "historical_state",
     "valuation_state",
@@ -242,7 +243,7 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         live_draft_summary = live_draft_envelope_summary(state)
     except ImportError:
         live_draft_summary = None
-    return {
+    out = {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "updated_at": _utc_now_iso(),
         "device_id": _get_device_id(st),
@@ -269,10 +270,28 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         "draft_workflow": draft_workflow if draft_workflow and any(draft_workflow.values()) else None,
         "live_draft": live_draft_summary,
     }
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        dr = draft_room_restore_stats(state)
+        if dr.get("pick_count", 0) > 0:
+            out["draft_room"] = {
+                "pick_count": dr["pick_count"],
+                "board_rows": dr.get("pool_count"),
+            }
+    except ImportError:
+        pass
+    return out
 
 
 def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     ss = st.session_state
+    try:
+        from draft_room_state import sync_draft_room_session_before_save
+
+        sync_draft_room_session_before_save(ss)
+    except ImportError:
+        pass
     try:
         from live_draft_state import sync_live_draft_session_before_save
 
@@ -309,10 +328,13 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     save_reason = str(ss.pop("_suite_pending_save_reason", None) or "autosave")
     state["baseball_workspace_state"] = _build_workspace_envelope(st, state, save_reason=save_reason)
     try:
+        from draft_room_state import enrich_save_payload_with_draft_room, sanitize_state_dict_for_json as sanitize_draft_room
         from live_draft_state import enrich_save_payload_with_live_draft, sanitize_state_dict_for_json
 
+        state, _ = enrich_save_payload_with_draft_room(ss, state)
         state, _ = enrich_save_payload_with_live_draft(ss, state)
         state = sanitize_state_dict_for_json(state)
+        state = sanitize_draft_room(state)
     except ImportError:
         pass
     return state
@@ -551,6 +573,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         pass
 
     try:
+        from draft_room_state import apply_cloud_draft_room_state_if_allowed, prepare_draft_room_state
+
+        apply_cloud_draft_room_state_if_allowed(ss, state)
+        prepare_draft_room_state(ss)
+    except ImportError:
+        pass
+
+    try:
         from live_draft_state import apply_cloud_live_draft_state_if_allowed, prepare_live_draft_state
 
         apply_cloud_live_draft_state_if_allowed(ss, state)
@@ -659,6 +689,12 @@ def autosave_baseball_state(st: Any) -> None:
             except ImportError:
                 pass
             try:
+                from draft_room_state import clear_draft_room_local_edit
+
+                clear_draft_room_local_edit(st.session_state)
+            except ImportError:
+                pass
+            try:
                 from historical_state import clear_historical_local_edit
 
                 clear_historical_local_edit(st.session_state)
@@ -731,6 +767,12 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from live_draft_state import clear_live_draft_local_edit
 
             clear_live_draft_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from draft_room_state import clear_draft_room_local_edit
+
+            clear_draft_room_local_edit(st.session_state)
         except ImportError:
             pass
         try:
@@ -893,6 +935,16 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "local_live_draft_pick_count": ss.get("local_live_draft_pick_count"),
         "cloud_has_live_draft_state": ss.get("cloud_has_live_draft_state"),
         "cloud_live_draft_pick_count": ss.get("cloud_live_draft_pick_count"),
+        "local_has_draft_room_board": ss.get("local_has_draft_room_board"),
+        "local_draft_room_pick_count": ss.get("local_draft_room_pick_count"),
+        "cloud_has_draft_room_board": ss.get("cloud_has_draft_room_board"),
+        "cloud_draft_room_pick_count": ss.get("cloud_draft_room_pick_count"),
+        "active_draft_page": ss.get("active_draft_page"),
+        "draft_board_source_key": ss.get("draft_board_source_key"),
+        "session_has_draft_board": ss.get("session_has_draft_board"),
+        "session_pick_count": ss.get("session_pick_count"),
+        "payload_has_draft_board": ss.get("payload_has_draft_board"),
+        "cloud_payload_pick_count": ss.get("cloud_payload_pick_count"),
         "restore_winner_reason_detail": ss.get("restore_winner_reason_detail"),
         "already_synced_why": ss.get("already_synced_why"),
         "local_disk_updated_at": ss.get("local_disk_updated_at"),
@@ -930,6 +982,20 @@ def render_cross_device_sync_debug(st: Any) -> None:
             live_draft_rows["cloud_live_draft"] = cloud_ld
     except ImportError:
         live_draft_rows = {}
+    try:
+        from draft_room_state import draft_board_diagnostics, draft_room_restore_stats
+
+        board_diag = draft_board_diagnostics(ss)
+        dr_stats = draft_room_restore_stats(ss)
+        draft_board_rows = {
+            **board_diag,
+            "restored_draft_room_pick_count": dr_stats.get("pick_count"),
+            "restored_draft_room_rows": dr_stats.get("pool_count"),
+            "cloud_payload_has_draft_board": ss.get("cloud_payload_has_draft_board"),
+            "last_draft_room_save_trace": ss.get("_draft_room_last_save_trace"),
+        }
+    except ImportError:
+        draft_board_rows = {}
     decision_rows = {
         "cloud_loaded": ss.get("_suite_workspace_cloud_loaded"),
         "local_loaded": ss.get("_suite_workspace_local_loaded"),
@@ -1030,6 +1096,10 @@ def render_cross_device_sync_debug(st: Any) -> None:
                 st.text(f"{k}: {v}")
         st.markdown("**Live draft**")
         for k, v in live_draft_rows.items():
+            if v is not None and v != "" and v != {}:
+                st.text(f"{k}: {v}")
+        st.markdown("**Draft board (Simulator + Live)**")
+        for k, v in draft_board_rows.items():
             if v is not None and v != "" and v != {}:
                 st.text(f"{k}: {v}")
         st.markdown("**Final**")

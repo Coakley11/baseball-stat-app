@@ -234,6 +234,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "trend_edit",
     "career_edit",
     "draft_edit",
+    "draft_room_pick",
     "live_draft_pick",
     "live_draft_manual_save",
     "live_draft_start",
@@ -251,11 +252,59 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "practice_edit",
 })
 
-_LIVE_DRAFT_CLOUD_SAVE_REASONS = frozenset({
+_DRAFT_BOARD_CLOUD_SAVE_REASONS = frozenset({
+    "draft_room_pick",
     "live_draft_pick",
     "live_draft_manual_save",
     "live_draft_start",
 })
+
+
+def _merge_cloud_draft_room_before_save(
+    st: Any,
+    app_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Never let an empty local session wipe a cloud in-progress Draft Room Simulator board."""
+    if app_id != "baseball":
+        return state
+    try:
+        from draft_room_state import (
+            DRAFT_ROOM_PAGE_BLOCK,
+            DRAFT_ROOM_STATE_KEY,
+            DRAFT_ROOM_TABLE_KEY,
+            _draft_room_from_blob,
+            is_draft_room_locally_dirty,
+            table_pick_count,
+        )
+        from suite_cloud_state import load_cloud_full_session
+    except ImportError:
+        return state
+
+    local = _draft_room_from_blob(state)
+    if local and table_pick_count(local) > 0:
+        return state
+    if is_draft_room_locally_dirty(st.session_state):
+        return state
+
+    cloud_state, _ = load_cloud_full_session(app_id)
+    if not isinstance(cloud_state, dict) or not cloud_state:
+        return state
+    cloud_dr = _draft_room_from_blob(cloud_state)
+    if not cloud_dr or table_pick_count(cloud_dr) <= 0:
+        return state
+
+    out = copy.deepcopy(state)
+    out[DRAFT_ROOM_STATE_KEY] = copy.deepcopy(cloud_dr)
+    out[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
+    pf = out.setdefault("page_filter_state", {})
+    if not isinstance(pf, dict):
+        pf = {}
+        out["page_filter_state"] = pf
+    block = pf.setdefault(DRAFT_ROOM_PAGE_BLOCK, {})
+    if isinstance(block, dict):
+        block[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
+    return out
 
 
 def _merge_cloud_live_draft_before_save(
@@ -311,7 +360,7 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
-    if save_reason in _LIVE_DRAFT_CLOUD_SAVE_REASONS:
+    if save_reason in _DRAFT_BOARD_CLOUD_SAVE_REASONS:
         return None
     if save_reason in _FORCE_SAVE_CLOUD_REASONS:
         if save_reason == "page_change":
@@ -326,6 +375,14 @@ def _cloud_autosave_blocked_reason(
 
             local_ld = _live_draft_from_blob(state)
             if local_ld and local_ld.get("draft_room_id"):
+                return None
+        except ImportError:
+            pass
+        try:
+            from draft_room_state import _draft_room_from_blob, table_pick_count
+
+            local_dr = _draft_room_from_blob(state)
+            if local_dr and table_pick_count(local_dr) > 0:
                 return None
         except ImportError:
             pass
@@ -398,6 +455,28 @@ def _preserve_cloud_widget_fields_on_page_change(
                     pf = {}
                     out["page_filter_state"] = pf
                 pf["Trend Value"] = copy.deepcopy(trend_block)
+    try:
+        from draft_room_state import (
+            DRAFT_ROOM_PAGE_BLOCK,
+            DRAFT_ROOM_STATE_KEY,
+            DRAFT_ROOM_TABLE_KEY,
+            _draft_room_from_blob,
+            table_pick_count,
+        )
+
+        local_dr = _draft_room_from_blob(out)
+        if not (local_dr and table_pick_count(local_dr) > 0):
+            cloud_dr = _draft_room_from_blob(cloud_state)
+            if cloud_dr and table_pick_count(cloud_dr) > 0:
+                out[DRAFT_ROOM_STATE_KEY] = copy.deepcopy(cloud_dr)
+                out[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
+                pf = out.setdefault("page_filter_state", {})
+                if isinstance(pf, dict):
+                    block = pf.setdefault(DRAFT_ROOM_PAGE_BLOCK, {})
+                    if isinstance(block, dict):
+                        block[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
+    except ImportError:
+        pass
     try:
         from live_draft_state import (
             LIVE_DRAFT_PAGE_BLOCK,
@@ -651,6 +730,22 @@ def _record_startup_restore_diagnostics(
         st.session_state["cloud_live_draft_pick_count"] = cloud_ld["pick_count"]
         st.session_state["local_has_live_draft_state"] = disk_ld["has_live_draft_state"]
         st.session_state["local_live_draft_pick_count"] = disk_ld["pick_count"]
+    except ImportError:
+        pass
+    try:
+        from draft_room_state import draft_board_diagnostics, draft_room_restore_stats
+
+        cloud_dr = draft_room_restore_stats(cloud_state)
+        disk_dr = draft_room_restore_stats(disk_state)
+        st.session_state["cloud_has_draft_room_board"] = cloud_dr["has_draft_board"]
+        st.session_state["cloud_draft_room_pick_count"] = cloud_dr["pick_count"]
+        st.session_state["local_has_draft_room_board"] = disk_dr["has_draft_board"]
+        st.session_state["local_draft_room_pick_count"] = disk_dr["pick_count"]
+        board = draft_board_diagnostics(st.session_state)
+        st.session_state["active_draft_page"] = board.get("active_draft_page")
+        st.session_state["draft_board_source_key"] = board.get("draft_board_source_key")
+        st.session_state["session_has_draft_board"] = board.get("session_has_draft_board")
+        st.session_state["session_pick_count"] = board.get("session_pick_count")
     except ImportError:
         pass
     st.session_state["restore_winner_reason_detail"] = picked_reason
@@ -959,6 +1054,14 @@ def sync_workspace_protocol(
                     )
             except Exception as exc:
                 st.session_state["_suite_push_local_draft_error"] = f"{type(exc).__name__}: {exc}"
+            try:
+                from draft_room_state import draft_room_restore_stats, push_local_draft_room_to_cloud
+
+                if draft_room_restore_stats(picked.state).get("pick_count", 0) > 0:
+                    st.session_state["_suite_push_local_draft_room_after_disk_restore"] = True
+                    push_local_draft_room_to_cloud(st, st.session_state)
+            except Exception as exc:
+                st.session_state["_suite_push_local_draft_room_error"] = f"{type(exc).__name__}: {exc}"
 
     _record_workspace_sync_trace(
         st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -1443,6 +1546,7 @@ def force_autosave(
             "trend_edit",
             "career_edit",
             "draft_edit",
+            "draft_room_pick",
             "live_draft_pick",
             "live_draft_manual_save",
             "live_draft_start",
@@ -1478,6 +1582,7 @@ def force_autosave(
         state = build_state(st)
         preserved_on_page_change = False
         if app_id == "baseball":
+            state = _merge_cloud_draft_room_before_save(st, app_id, state)
             state = _merge_cloud_live_draft_before_save(st, app_id, state)
             if reason == "page_change":
                 ld_before = None
@@ -1600,6 +1705,7 @@ def autosave_if_changed(
 
         state = build_state(st)
         if app_id == "baseball":
+            state = _merge_cloud_draft_room_before_save(st, app_id, state)
             state = _merge_cloud_live_draft_before_save(st, app_id, state)
             try:
                 from live_draft_state import record_live_draft_cloud_save_diagnostics

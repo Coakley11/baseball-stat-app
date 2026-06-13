@@ -11800,6 +11800,12 @@ try:
     prepare_live_draft_state(st.session_state)
 except Exception:
     pass
+try:
+    from draft_room_state import prepare_draft_room_state
+
+    prepare_draft_room_state(st.session_state)
+except Exception:
+    pass
 _record_sidebar_nav_trace("after_prepare_workspace")
 try:
     from suite_user_persistence import show_persistence_messages
@@ -15588,6 +15594,12 @@ if active_page == "Draft Room Simulator":
             }
         )
         st.session_state["draft_room_table"] = edited_draft.copy()
+        try:
+            from draft_room_state import commit_draft_room_table
+
+            commit_draft_room_table(st, st.session_state, edited_draft, reason="board_edit")
+        except Exception:
+            pass
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (
@@ -15753,6 +15765,11 @@ if active_page == "Draft Room Simulator":
                     f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
                     f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
                 )
+
+    if developer_mode_enabled():
+        from draft_room_state import render_draft_board_diagnostics
+
+        render_draft_board_diagnostics(st)
 
     save_page_state(active_page)
     render_page_filters_debug(active_page)
