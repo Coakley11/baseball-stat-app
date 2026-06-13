@@ -238,6 +238,10 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "live_draft_pick",
     "live_draft_manual_save",
     "live_draft_start",
+    "manual_save",
+    "simulator_add_player",
+    "simulator_paste",
+    "board_edit",
     "historical_edit",
     "valuation_edit",
     "projections_edit",
@@ -257,6 +261,10 @@ _DRAFT_BOARD_CLOUD_SAVE_REASONS = frozenset({
     "live_draft_pick",
     "live_draft_manual_save",
     "live_draft_start",
+    "manual_save",
+    "simulator_add_player",
+    "simulator_paste",
+    "board_edit",
 })
 
 
@@ -853,6 +861,17 @@ def sync_workspace_protocol(
     except ImportError:
         live_draft_disk_beats_stale_cloud = False
 
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        _cloud_dr = draft_room_restore_stats(cloud_state)
+        _disk_dr = draft_room_restore_stats(disk_state)
+        draft_room_disk_beats_stale_cloud = bool(
+            _disk_dr.get("pick_count", 0) > _cloud_dr.get("pick_count", 0)
+        )
+    except ImportError:
+        draft_room_disk_beats_stale_cloud = False
+
     if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
         reason = "local unsaved edits — workspace sync skipped"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -950,6 +969,8 @@ def sync_workspace_protocol(
         apply_reasons.append("disk_newer_than_cloud")
     if live_draft_disk_beats_stale_cloud:
         apply_reasons.append("live_draft_disk_beats_stale_cloud")
+    if draft_room_disk_beats_stale_cloud:
+        apply_reasons.append("draft_room_disk_beats_stale_cloud")
     page_mismatch_apply = bool(
         page_mismatch
         and (first_sync or cloud_newer_than_applied or cloud_newer_than_disk)
@@ -976,6 +997,7 @@ def sync_workspace_protocol(
             or cloud_newer_than_disk
             or disk_newer_than_cloud
             or live_draft_disk_beats_stale_cloud
+            or draft_room_disk_beats_stale_cloud
             or page_mismatch_apply
             or comparison_mismatch_apply
         )
@@ -1550,6 +1572,10 @@ def force_autosave(
             "live_draft_pick",
             "live_draft_manual_save",
             "live_draft_start",
+            "manual_save",
+            "simulator_add_player",
+            "simulator_paste",
+            "board_edit",
             "historical_edit",
             "valuation_edit",
             "projections_edit",

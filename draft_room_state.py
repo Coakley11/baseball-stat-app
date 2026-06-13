@@ -1799,7 +1799,7 @@ def commit_draft_room_table(
     trace["persisted_pick_count"] = int(blob.get("pick_count") or table_pick_count(blob))
     trace["persisted_rows"] = table_row_count(blob)
     fp = hashlib.sha256(json.dumps(blob, sort_keys=True, default=str).encode()).hexdigest()[:16]
-    if session.get("_draft_room_save_fp") == fp and reason == "board_edit":
+    if session.get("_draft_room_save_fp") == fp and reason in ("board_edit",):
         trace["skipped"] = "blob_unchanged"
         trace.update(draft_board_diagnostics(session))
         session["_draft_room_last_save_trace"] = trace
@@ -1810,7 +1810,7 @@ def commit_draft_room_table(
     try:
         from baseball_persistent_state import force_save_baseball_state
 
-        trace["saved"] = bool(force_save_baseball_state(st, reason="draft_room_pick"))
+        trace["saved"] = bool(force_save_baseball_state(st, reason=reason or "draft_room_pick"))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
         trace["saved_pick_count"] = table_pick_count(table)
@@ -1863,6 +1863,21 @@ def unified_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def persist_draft_board_to_storage(
+    st: Any,
+    session: dict[str, Any],
+    table: Any,
+    *,
+    reason: str = "draft_room_pick",
+) -> dict[str, Any]:
+    """Write canonical board blob and force-save disk + cloud."""
+    board = coerce_board_table(table)
+    session[DRAFT_ROOM_TABLE_KEY] = board.copy()
+    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = board.copy()
+    write_canonical_draft_room_state(session, board, reason=reason, local_edit=True)
+    return commit_draft_room_table(st, session, board, reason=reason)
+
+
 def save_draft_board_now(
     st: Any,
     session: dict[str, Any],
@@ -1908,7 +1923,19 @@ def save_draft_board_now(
     save_trace = commit_draft_room_table(st, session, board, reason="manual_save", editor_key=wkey)
     trace.update(save_trace)
     trace["saved_pick_count"] = pick_count
+    trace["saved_disk"] = bool(trace.get("disk"))
+    trace["saved_cloud"] = bool(trace.get("cloud"))
     trace["cloud_timestamp_before"] = cloud_ts_before
+    try:
+        from baseball_persistent_state import build_baseball_disk_state
+
+        disk_preview = build_baseball_disk_state(st)
+        dr_stats = draft_room_restore_stats(disk_preview)
+        trace["disk_payload_pick_count"] = dr_stats.get("pick_count")
+        trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))
+        trace["cloud_payload_pick_count"] = session.get("cloud_payload_pick_count")
+    except Exception as exc:
+        trace["disk_payload_preview_error"] = f"{type(exc).__name__}: {exc}"
 
     cloud_ts_after = None
     try:
@@ -1950,6 +1977,10 @@ def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> 
         "draft_room_pick_count": board.get("draft_room_pick_count"),
         "payload_has_draft_board": session.get("payload_has_draft_board"),
         "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
+        "restored_draft_room_pick_count": session.get("restored_draft_room_pick_count"),
+        "restore_source": session.get("restore_source"),
+        "local_has_draft_room_board": session.get("local_has_draft_room_board"),
+        "cloud_has_draft_room_board": session.get("cloud_has_draft_room_board"),
         "last_draft_room_save_trace": trace if isinstance(trace, dict) else None,
     }
     session["_draft_room_board_tab_diagnostics"] = out
@@ -1973,13 +2004,25 @@ def render_board_tab_diagnostics(st: Any) -> None:
             "draft_room_pick_count",
             "payload_has_draft_board",
             "cloud_payload_pick_count",
+            "restored_draft_room_pick_count",
+            "restore_source",
+            "local_has_draft_room_board",
+            "cloud_has_draft_room_board",
         ):
-            st.text(f"{key}: {diag.get(key)}")
+            val = diag.get(key)
+            if val is None:
+                val = ss.get(key)
+            if val is not None and val != "":
+                st.text(f"{key}: {val}")
         trace = diag.get("last_draft_room_save_trace")
         if isinstance(trace, dict):
             st.text(f"last_draft_room_save_trace.reason: {trace.get('reason')}")
             st.text(f"last_draft_room_save_trace.saved: {trace.get('saved')}")
             st.text(f"last_draft_room_save_trace.saved_pick_count: {trace.get('saved_pick_count')}")
+            st.text(f"last_draft_room_save_trace.saved_disk: {trace.get('saved_disk')}")
+            st.text(f"last_draft_room_save_trace.saved_cloud: {trace.get('saved_cloud')}")
+            st.text(f"last_draft_room_save_trace.disk_payload_pick_count: {trace.get('disk_payload_pick_count')}")
+            st.text(f"last_draft_room_save_trace.cloud_payload_pick_count: {trace.get('cloud_payload_pick_count')}")
             st.text(f"last_draft_room_save_trace.error: {trace.get('error') or ''}")
         if isinstance(manual, dict) and manual.get("path") == "save_draft_board_now":
             st.text(f"manual_save.cloud_timestamp_before: {manual.get('cloud_timestamp_before')}")
@@ -2035,7 +2078,7 @@ def push_local_draft_room_to_cloud(st: Any, session: dict[str, Any]) -> dict[str
         from baseball_persistent_state import force_save_baseball_state
 
         sync_draft_room_session_before_save(session)
-        trace["saved"] = bool(force_save_baseball_state(st, reason="draft_room_pick"))
+        trace["saved"] = bool(force_save_baseball_state(st, reason=reason or "draft_room_pick"))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
         trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))

@@ -15663,6 +15663,25 @@ if active_page == "Draft Room Simulator":
     )
 
     player_options_room = [""] + sorted(room_df["fullName"].dropna().unique().tolist())
+    try:
+        from draft_player_names import (
+            build_draft_player_name_index,
+            draft_pool_display_names,
+            resolve_draft_player_name,
+            search_draft_pool_names,
+            validate_draft_board_players,
+            validate_draft_player_lines,
+        )
+
+        _draft_name_index = build_draft_player_name_index(room_df)
+        _draft_pool_names = draft_pool_display_names(room_df)
+    except Exception:
+        _draft_name_index = {str(n).lower(): str(n) for n in player_options_room if n}
+        _draft_pool_names = [n for n in player_options_room if n]
+        resolve_draft_player_name = None  # type: ignore[assignment]
+        search_draft_pool_names = None  # type: ignore[assignment]
+        validate_draft_player_lines = None  # type: ignore[assignment]
+        validate_draft_board_players = None  # type: ignore[assignment]
 
     if "draft_room_table" not in st.session_state:
         pick_rows = []
@@ -15698,7 +15717,7 @@ if active_page == "Draft Room Simulator":
         st.subheader("Live draft board")
         st.caption(
             "Practice board for mock drafts and recommendation testing. "
-            "**Type** player names in cells, **paste** a list, or use **Add drafted player**. "
+            "**Add drafted player** (search real names) or **paste** a list from another draft tracker. "
             "When **Live Draft Room** is active, picks sync here automatically."
         )
         try:
@@ -15716,19 +15735,51 @@ if active_page == "Draft Room Simulator":
         add_col, paste_col, reset_col = st.columns([2, 2, 1])
         with add_col:
             with st.form("draft_room_add_player_form", clear_on_submit=True):
-                add_name = st.text_input(
+                add_query = st.text_input(
                     "Add drafted player",
-                    key="draft_room_add_player_name",
-                    placeholder="e.g. Aaron Judge",
+                    key="draft_room_add_player_query",
+                    placeholder="Type first letters — e.g. FRAN for Francisco Lindor",
                 )
+                add_matches = (
+                    search_draft_pool_names(add_query, _draft_pool_names, limit=20)
+                    if search_draft_pool_names and len(str(add_query or "").strip()) >= 2
+                    else []
+                )
+                add_pick = ""
+                if add_matches:
+                    add_pick = st.selectbox(
+                        "Matching players",
+                        add_matches,
+                        key="draft_room_add_player_pick",
+                    )
+                elif str(add_query or "").strip():
+                    st.caption("No matches — try more letters or check spelling.")
                 if st.form_submit_button("Add to next pick", type="primary"):
-                    from draft_room_state import add_player_to_next_open_pick
+                    from draft_room_state import add_player_to_next_open_pick, persist_draft_board_to_storage
 
-                    res = add_player_to_next_open_pick(st.session_state, add_name)
-                    if res.get("ok"):
-                        st.success(res.get("message"))
-                    else:
-                        st.error(res.get("message") or res.get("error"))
+                    canonical = add_pick
+                    if not canonical and resolve_draft_player_name:
+                        canonical, suggestions = resolve_draft_player_name(
+                            add_query, _draft_name_index, all_names=_draft_pool_names
+                        )
+                        if not canonical and suggestions:
+                            st.error(
+                                f"No exact match for '{add_query}'. Did you mean: {', '.join(suggestions[:3])}?"
+                            )
+                    if canonical:
+                        res = add_player_to_next_open_pick(st.session_state, canonical)
+                        if res.get("ok"):
+                            persist_draft_board_to_storage(
+                                st,
+                                st.session_state,
+                                st.session_state.get("draft_room_table"),
+                                reason="simulator_add_player",
+                            )
+                            st.success(res.get("message"))
+                        else:
+                            st.error(res.get("message") or res.get("error"))
+                    elif not str(add_query or "").strip():
+                        st.error("Type a player name and select a match.")
         with paste_col:
             with st.form("draft_room_paste_form", clear_on_submit=True):
                 paste_text = st.text_area(
@@ -15736,15 +15787,52 @@ if active_page == "Draft Room Simulator":
                     key="draft_room_paste_players",
                     height=100,
                     placeholder="Aaron Judge\nBobby Witt Jr.\nJuan Soto",
+                    help="Paste a pick list from a spreadsheet or draft tracker. "
+                    "Names are matched to the real player pool before filling picks.",
+                )
+                st.caption(
+                    "Paste names you already drafted elsewhere (one per line). "
+                    "The app matches each line to the real player pool, shows fixes for typos, "
+                    "then fills picks 1, 2, 3… in order."
                 )
                 if st.form_submit_button("Fill board from paste"):
-                    from draft_room_state import paste_players_to_board
+                    from draft_room_state import paste_players_to_board, persist_draft_board_to_storage
+                    from draft_room_state import _parse_pasted_player_lines
 
-                    res = paste_players_to_board(st.session_state, paste_text)
-                    if res.get("ok"):
-                        st.success(res.get("message"))
+                    lines = _parse_pasted_player_lines(paste_text)
+                    if validate_draft_player_lines:
+                        report = validate_draft_player_lines(
+                            lines, _draft_name_index, all_names=_draft_pool_names
+                        )
+                        if report.get("unmatched"):
+                            st.warning("Some pasted names did not match the player pool:")
+                            for row in report["unmatched"]:
+                                sug = ", ".join(row.get("suggestions") or []) or "—"
+                                st.text(f"  • {row.get('input')} → suggestions: {sug}")
+                        if report.get("duplicates"):
+                            st.info(f"Skipped duplicate(s): {', '.join(report['duplicates'])}")
+                        canonical_lines = report.get("canonical_names") or []
+                        if not canonical_lines:
+                            st.error("No valid player names to paste.")
+                        else:
+                            paste_body = "\n".join(canonical_lines)
+                            res = paste_players_to_board(st.session_state, paste_body)
+                            if res.get("ok"):
+                                persist_draft_board_to_storage(
+                                    st,
+                                    st.session_state,
+                                    st.session_state.get("draft_room_table"),
+                                    reason="simulator_paste",
+                                )
+                                st.success(res.get("message"))
+                            else:
+                                st.error(res.get("message") or res.get("error"))
                     else:
-                        st.error(res.get("message") or res.get("error"))
+                        res = paste_players_to_board(st.session_state, paste_text)
+                        if res.get("ok"):
+                            st.success(res.get("message"))
+                        else:
+                            st.error(res.get("message") or res.get("error"))
         with reset_col:
             st.write("")
             if st.button(
@@ -15795,7 +15883,11 @@ if active_page == "Draft Room Simulator":
                 use_container_width=True,
                 column_config={
                     "Team": st.column_config.TextColumn("Team", disabled=True),
-                    "Player": st.column_config.TextColumn("Player", help="Type or paste player names"),
+                    "Player": st.column_config.SelectboxColumn(
+                        "Player",
+                        options=player_options_room,
+                        help="Select a real player from the draft pool",
+                    ),
                     "Round": st.column_config.NumberColumn("Round", disabled=True),
                     "Pick": st.column_config.NumberColumn("Pick", disabled=True),
                 },
@@ -15843,21 +15935,44 @@ if active_page == "Draft Room Simulator":
                     type="primary",
                     help="Write the current board from the editor to disk and cloud.",
                 ):
-                    result = save_draft_board_now(
-                        st, st.session_state, board=edited_draft, widget_key=widget_key
-                    )
-                    picks = int(result.get("saved_pick_count") or 0)
-                    if result.get("saved") and result.get("cloud"):
-                        st.success(
-                            f"Saved {picks} pick(s) to disk and cloud. "
-                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
+                    blocked = False
+                    if validate_draft_board_players:
+                        board_check = validate_draft_board_players(
+                            edited_draft,
+                            _draft_name_index,
+                            all_names=_draft_pool_names,
                         )
-                    elif result.get("saved"):
-                        st.warning(
-                            f"Saved {picks} pick(s) to disk only. Cloud error: {result.get('error') or 'unknown'}"
+                        if board_check.get("invalid"):
+                            st.error("Cannot save — some Player cells are not in the draft pool:")
+                            for row in board_check["invalid"]:
+                                sug = ", ".join(row.get("suggestions") or []) or "—"
+                                st.text(f"  • {row.get('input')} → suggestions: {sug}")
+                            blocked = True
+                        if board_check.get("duplicates"):
+                            st.warning(
+                                "Duplicate drafted players: " + ", ".join(board_check["duplicates"])
+                            )
+                    if not blocked:
+                        result = save_draft_board_now(
+                            st, st.session_state, board=edited_draft, widget_key=widget_key
                         )
-                    else:
-                        st.error(f"Save failed: {result.get('error') or 'unknown'}")
+                    if not blocked:
+                        picks = int(result.get("saved_pick_count") or 0)
+                        disk_n = result.get("disk_payload_pick_count")
+                        cloud_n = result.get("cloud_payload_pick_count")
+                        if result.get("saved") and result.get("cloud"):
+                            st.success(
+                                f"Saved {picks} pick(s) to disk and cloud "
+                                f"(disk payload: {disk_n}, cloud payload: {cloud_n}). "
+                                f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
+                            )
+                        elif result.get("saved"):
+                            st.warning(
+                                f"Saved {picks} pick(s) to disk only (disk payload: {disk_n}). "
+                                f"Cloud error: {result.get('error') or 'unknown'}"
+                            )
+                        else:
+                            st.error(f"Save failed: {result.get('error') or 'unknown'}")
 
             render_board_tab_diagnostics(st)
             render_board_debug_expander(st, widget_key, editor_return)

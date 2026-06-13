@@ -47,6 +47,7 @@ from draft_room_state import (
     reset_canonical_draft_board,
     resolve_active_board,
     save_draft_board_now,
+    persist_draft_board_to_storage,
     sanitize_state_dict_for_json,
     sync_live_draft_room_to_canonical_board,
     set_canonical_draft_meta,
@@ -203,6 +204,28 @@ class TestDraftRoomPersistence(unittest.TestCase):
         mock_force.assert_called_once()
         self.assertEqual(trace.get("saved_pick_count"), 3)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
+
+    def test_manual_save_survives_disk_refresh(self) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Draft Room Simulator",
+            "main_sidebar_page": "Draft Room Simulator",
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            "room_team_names": "Team 1\nTeam 2",
+            "room_rounds": 5,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=3),
+        }
+        table = st.session_state[DRAFT_ROOM_TABLE_KEY]
+        with patch("baseball_persistent_state.force_save_baseball_state", return_value=True):
+            with patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-01-01T00:00:00Z")):
+                trace = save_draft_board_now(st, st.session_state, board=table)
+        self.assertEqual(trace.get("saved_pick_count"), 3)
+        disk_state = build_baseball_disk_state(st)
+        st2 = MagicMock()
+        st2.session_state = {"active_page": "Draft Room Simulator", "main_sidebar_page": "Draft Room Simulator"}
+        apply_baseball_disk_state(st2, disk_state)
+        prepare_draft_room_state(st2.session_state)
+        self.assertEqual(len(get_all_drafted_player_names(st2.session_state)), 3)
 
     def test_editor_widget_key_is_versioned(self) -> None:
         session = {DRAFT_ROOM_EDITOR_VERSION_KEY: 2}
@@ -463,6 +486,28 @@ class TestCanonicalDraftBoard(unittest.TestCase):
         prepare_draft_room_state(dell_session)
         names = get_all_drafted_player_names(dell_session)
         self.assertEqual(len(names), 3)
+
+
+class TestPickRestoreDraftRoom(unittest.TestCase):
+    def test_disk_board_beats_newer_empty_cloud(self) -> None:
+        from suite_cloud_state import pick_restore_session
+
+        table = _sample_table(picks=3)
+        blob = table_to_persist_dict(table)
+        cloud = {
+            "active_page": "Draft Room Simulator",
+            DRAFT_ROOM_STATE_KEY: table_to_persist_dict(_sample_table(picks=0)),
+        }
+        disk = {"active_page": "Draft Room Simulator", DRAFT_ROOM_STATE_KEY: blob}
+        picked = pick_restore_session(
+            cloud,
+            "2026-06-13T02:00:00+00:00",
+            disk,
+            "2026-06-13T01:00:00+00:00",
+            cloud_first=True,
+        )
+        self.assertEqual(picked.source, "disk")
+        self.assertIn("draft room", picked.reason.lower())
 
 
     def test_delete_active_draft_clears_board_and_live(self) -> None:

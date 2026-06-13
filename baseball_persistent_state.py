@@ -577,6 +577,17 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
 
         apply_cloud_draft_room_state_if_allowed(ss, state)
         prepare_draft_room_state(ss)
+        try:
+            from draft_room_state import draft_room_restore_stats
+
+            dr = draft_room_restore_stats(ss)
+            ss["restored_draft_room_pick_count"] = dr.get("pick_count")
+            ss["restore_source"] = ss.get("_draft_room_restore_source") or ss.get("_suite_restore_pick_source")
+            ss["local_has_draft_room_board"] = dr.get("has_draft_board")
+            cloud_dr = draft_room_restore_stats(state)
+            ss["cloud_has_draft_room_board"] = cloud_dr.get("has_draft_board")
+        except ImportError:
+            pass
     except ImportError:
         pass
 

@@ -461,6 +461,25 @@ def pick_restore_session(
         )
 
     if cloud_epoch > disk_epoch:
+        if disk_has_dr and not cloud_has_dr:
+            return RestorePickResult(
+                disk_state,
+                "disk",
+                "disk has draft room board; cloud newer but empty board",
+                cloud_ts,
+                disk_ts,
+            )
+        if disk_has_dr and cloud_has_dr and disk_dr["pick_count"] > cloud_dr["pick_count"]:
+            return RestorePickResult(
+                disk_state,
+                "disk",
+                (
+                    f"disk has more draft room picks despite newer cloud "
+                    f"({disk_dr['pick_count']} > {cloud_dr['pick_count']})"
+                ),
+                cloud_ts,
+                disk_ts,
+            )
         return RestorePickResult(
             cloud_state,
             "cloud",
