@@ -10,12 +10,15 @@ import pandas as pd
 
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from draft_room_state import (
+    DRAFT_ROOM_DIRTY_KEY,
+    DRAFT_ROOM_DIRTY_KEY,
     DRAFT_ROOM_EDITOR_CACHE_KEY,
     DRAFT_ROOM_EDITOR_SEED_KEY,
     DRAFT_ROOM_EDITOR_VERSION_KEY,
     DRAFT_ROOM_STATE_KEY,
     DRAFT_ROOM_TABLE_KEY,
     apply_cloud_draft_room_state_if_allowed,
+    apply_programmatic_board_update,
     apply_restored_board_to_session,
     bump_editor_version,
     commit_draft_room_table,
@@ -35,6 +38,7 @@ from draft_room_state import (
     table_pick_count,
     table_picks_fingerprint,
     table_to_persist_dict,
+    widget_state_has_edits,
     write_canonical_draft_room_state,
 )
 
@@ -246,6 +250,35 @@ class TestDraftRoomPersistence(unittest.TestCase):
     def test_detect_player_column_finds_player(self) -> None:
         table = _sample_table(picks=2)
         self.assertEqual(detect_player_column(table), "Player")
+
+    def test_widget_state_has_edits_false_when_empty(self) -> None:
+        self.assertFalse(widget_state_has_edits({"edited_rows": {}, "added_rows": [], "deleted_rows": []}))
+        self.assertTrue(widget_state_has_edits({"edited_rows": {0: {"Player": "A"}}, "added_rows": [], "deleted_rows": []}))
+
+    def test_resolve_prefers_table_when_widget_has_no_edits(self) -> None:
+        st = MagicMock()
+        widget_key = "draft_room_board_editor_1"
+        filled = _sample_table(picks=3)
+        st.session_state = {
+            widget_key: {"edited_rows": {}, "added_rows": [], "deleted_rows": []},
+        }
+        session: dict = {
+            DRAFT_ROOM_EDITOR_SEED_KEY: filled,
+            DRAFT_ROOM_TABLE_KEY: filled,
+        }
+        active, source, count = resolve_active_board(session, widget_key, filled, st=st)
+        assert active is not None
+        self.assertEqual(count, 3)
+        self.assertIn("draft_room_table", source)
+
+    def test_apply_programmatic_board_update_syncs_seed(self) -> None:
+        session: dict = {DRAFT_ROOM_EDITOR_VERSION_KEY: 0}
+        table = _sample_table(picks=2)
+        out = apply_programmatic_board_update(session, table, bump_widget=False)
+        self.assertEqual(table_pick_count(out), 2)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 2)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_SEED_KEY]), 2)
+        self.assertTrue(session.get(DRAFT_ROOM_DIRTY_KEY))
 
 
 if __name__ == "__main__":

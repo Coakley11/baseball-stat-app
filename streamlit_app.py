@@ -10430,7 +10430,12 @@ def add_player_to_next_draft_room_pick(player_name, team_name):
         table.loc[idx, "Team"] = team_name
 
     table.loc[idx, "Player"] = player_name
-    st.session_state["draft_room_table"] = table
+    try:
+        from draft_room_state import apply_programmatic_board_update
+
+        apply_programmatic_board_update(st.session_state, table, reason="draft_player_button")
+    except Exception:
+        st.session_state["draft_room_table"] = table
     _auto_remove_drafted_from_queue()
     pick_num = table.loc[idx, "Pick"] if "Pick" in table.columns else idx + 1
     return f"Drafted {player_name} to {team_name} at pick {pick_num}."
@@ -15576,9 +15581,37 @@ if active_page == "Draft Room Simulator":
     with dr_tab_board:
         st.subheader("Live draft board")
         st.caption(
-            "Snake-draft grid. **Draft Assistant** reads this state automatically for next-pick rankings "
-            "(including **Strategy** hints on scarcity, timing, and value vs ADP — hitter pool only here)."
+            "Log picks with **Quick draft** (button below) or choose a name in each **Player** dropdown cell, "
+            "then **Save Draft Board Now**. Draft Assistant → **Draft this player** also writes here when it is your turn. "
+            "**Simulate Draft Pick** does not update this board."
         )
+
+        qd1, qd2, qd3 = st.columns([2, 1, 1])
+        with qd1:
+            quick_player = st.selectbox(
+                "Quick draft — player",
+                player_options_room,
+                key="draft_room_quick_draft_player",
+                help="Logs the player to the next open row for the selected fantasy team.",
+            )
+        with qd2:
+            _qt_idx = room_team_names.index(your_team) if your_team in room_team_names else 0
+            quick_team = st.selectbox(
+                "Fantasy team",
+                room_team_names,
+                index=_qt_idx,
+                key="draft_room_quick_draft_team",
+            )
+        with qd3:
+            st.write("")
+            st.write("")
+            if st.button("Log pick to board", type="primary", key="draft_room_quick_draft_btn"):
+                if not str(quick_player).strip():
+                    st.warning("Select a player first.")
+                else:
+                    msg = add_player_to_next_draft_room_pick(quick_player, quick_team)
+                    st.success(msg)
+                    st.rerun()
 
         # Widget key is Streamlit-owned (versioned). Seed/cache/table are app-owned.
         edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
@@ -15589,6 +15622,7 @@ if active_page == "Draft Room Simulator":
                 record_board_editor_diagnostics,
                 render_board_debug_expander,
                 render_board_tab_diagnostics,
+                render_pick_entry_workflow_debug,
                 render_raw_widget_state_debug,
                 resolve_active_board,
                 save_draft_board_now,
@@ -15609,6 +15643,7 @@ if active_page == "Draft Room Simulator":
                 },
             )
             render_raw_widget_state_debug(st, widget_key)
+            render_pick_entry_workflow_debug(st, st.session_state, player_names_pool=player_options_room)
             edited_draft, _source, pick_count = resolve_active_board(
                 st.session_state, widget_key, editor_return, st=st
             )

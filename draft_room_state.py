@@ -322,6 +322,38 @@ def _coerce_data_editor_widget_state(raw: Any) -> dict[str, Any] | None:
     return None
 
 
+def widget_state_has_edits(raw: Any) -> bool:
+    """True when keyed data_editor session value contains user edits."""
+    widget_dict = _coerce_data_editor_widget_state(raw)
+    if widget_dict is None:
+        return False
+    edited = widget_dict.get("edited_rows") or {}
+    added = widget_dict.get("added_rows") or []
+    deleted = widget_dict.get("deleted_rows") or []
+    return bool(edited) or bool(added) or bool(deleted)
+
+
+def apply_programmatic_board_update(
+    session: dict[str, Any],
+    table: Any,
+    *,
+    bump_widget: bool = True,
+    reason: str = "programmatic_pick",
+) -> pd.DataFrame:
+    """After button/API pick entry — sync table, seed, cache; refresh widget from seed."""
+    normalized = normalize_board_table(table) if is_runtime_table(table) else pd.DataFrame()
+    session[DRAFT_ROOM_TABLE_KEY] = normalized.copy()
+    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = normalized.copy()
+    sync_editor_seed(session, normalized, force_reset=True)
+    session["_draft_room_picks_fp"] = table_picks_fingerprint(normalized)
+    session.pop("_draft_room_save_fp", None)
+    mark_draft_room_local_edit(session)
+    if bump_widget:
+        bump_editor_version(session)
+    session["_draft_room_last_programmatic_pick_reason"] = reason
+    return normalized
+
+
 def _base_board_for_reconstruction(session: dict[str, Any]) -> pd.DataFrame:
     for key in (DRAFT_ROOM_EDITOR_SEED_KEY, DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_EDITOR_CACHE_KEY):
         val = session.get(key)
@@ -380,6 +412,173 @@ def reconstruct_board_from_widget_state(widget_state: dict[str, Any], base: Any)
             out = pd.concat([out, pd.DataFrame(new_rows)], ignore_index=True)
 
     return normalize_board_table(out) if is_runtime_table(out) else out
+
+
+_PICK_ENTRY_KEY_TERMS = (
+    "draft",
+    "room",
+    "board",
+    "pick",
+    "player",
+    "roster",
+    "queue",
+    "assistant",
+    "selected",
+    "simulat",
+)
+
+
+def _drafted_players_from_table(table: Any) -> list[str]:
+    if not is_runtime_table(table) or table.empty:
+        return []
+    col = detect_player_column(table)
+    if not col or col not in table.columns:
+        return []
+    names = [str(v).strip() for v in table[col].tolist() if _player_cell_filled(v)]
+    return list(dict.fromkeys(names))
+
+
+def _session_keys_matching(session: dict[str, Any], *terms: str) -> list[str]:
+    lowered = [t.lower() for t in terms]
+    return sorted(
+        str(k)
+        for k in session.keys()
+        if any(t in str(k).lower() for t in lowered)
+    )
+
+
+def _preview_session_value(val: Any, *, limit: int = 200) -> str:
+    if is_runtime_table(val):
+        return f"DataFrame rows={len(val)} picks={table_pick_count(val)}"
+    if isinstance(val, (list, tuple)):
+        return repr(list(val)[:8])[:limit]
+    if isinstance(val, dict):
+        return repr({str(k): val[k] for k in list(val.keys())[:6]})[:limit]
+    return repr(val)[:limit]
+
+
+def collect_pick_entry_diagnostics(
+    session: dict[str, Any],
+    st: Any | None = None,
+    *,
+    player_names_pool: list[str] | None = None,
+) -> dict[str, Any]:
+    """Locate where drafted player names actually live in session state."""
+    table = session.get(DRAFT_ROOM_TABLE_KEY)
+    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
+    drafted = _drafted_players_from_table(table)
+    info: dict[str, Any] = {
+        "workflow_primary_board_tab": "Select a player from the Player dropdown in each grid row, OR use Quick draft below.",
+        "workflow_draft_assistant": "Draft Assistant → Player actions popover → Draft this player (only on your snake-draft turn).",
+        "workflow_not_board_writes": "Simulate Draft Pick, Add to Queue, and Send to Comparison do NOT write the board.",
+        "draft_room_table_pick_count": table_pick_count(table),
+        "draft_room_table_drafted_players": drafted[:20],
+        "draft_room_editor_cache_pick_count": table_pick_count(cache),
+        "draft_room_editor_seed_pick_count": table_pick_count(seed),
+        "draft_queue": list(session.get("draft_queue") or [])[:15],
+        "pending_draft_assistant_player": session.get("pending_draft_assistant_player"),
+        "room_your_team": session.get("room_your_team"),
+        "next_open_pick_team": None,
+        "simulated_draft_room_pick_count": table_pick_count(session.get("simulated_draft_room_table")),
+        "live_draft_board_pick_count": 0,
+    }
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        live = session.get(LIVE_DRAFT_ROOM_KEY) or {}
+        board = live.get("draft_board") if isinstance(live, dict) else None
+        if isinstance(board, list):
+            info["live_draft_board_pick_count"] = len(board)
+    except Exception:
+        pass
+
+    if is_runtime_table(table) and not table.empty and "Player" in table.columns and "Team" in table.columns:
+        t = table.copy()
+        open_mask = t["Player"].fillna("").astype(str).str.strip().eq("")
+        if open_mask.any():
+            if "Pick" in t.columns:
+                t = t.sort_values("Pick", kind="stable")
+            for _, row in t.iterrows():
+                if str(row.get("Player", "")).strip() == "":
+                    info["next_open_pick_team"] = str(row.get("Team", "")).strip()
+                    break
+        yt = str(session.get("room_your_team") or "").strip()
+        nxt = str(info.get("next_open_pick_team") or "").strip()
+        info["is_your_team_on_clock"] = bool(yt and nxt and yt == nxt)
+
+    related_keys = _session_keys_matching(session, *_PICK_ENTRY_KEY_TERMS)
+    info["draft_related_session_keys"] = related_keys[:40]
+    snapshots: dict[str, str] = {}
+    for key in related_keys[:25]:
+        snapshots[key] = _preview_session_value(session.get(key))
+    info["draft_related_session_snapshots"] = snapshots
+
+    pool = [str(p).strip() for p in (player_names_pool or []) if str(p).strip()]
+    if pool and drafted:
+        info["drafted_players_found_in_pool"] = [p for p in drafted if p in pool]
+    if pool:
+        name_hits: dict[str, list[str]] = {}
+        for name in drafted[:10]:
+            hits = [
+                k
+                for k in related_keys
+                if name.lower() in _preview_session_value(session.get(k)).lower()
+            ]
+            if hits:
+                name_hits[name] = hits[:5]
+        if name_hits:
+            info["session_keys_mentioning_drafted_players"] = name_hits
+
+    widget_key = session.get("_draft_room_last_widget_key") or editor_widget_key(session)
+    if st is not None:
+        _, widget_raw = find_widget_state_in_session(st, widget_key)
+        info["data_editor_widget_has_edits"] = widget_state_has_edits(widget_raw)
+        info["data_editor_key_checked"] = widget_key
+    info["last_programmatic_pick_reason"] = session.get("_draft_room_last_programmatic_pick_reason")
+    session["_draft_room_pick_entry_diagnostics"] = info
+    return info
+
+
+def render_pick_entry_workflow_debug(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    player_names_pool: list[str] | None = None,
+) -> None:
+    """How picks enter the board — and where session state stores them."""
+    info = collect_pick_entry_diagnostics(session, st, player_names_pool=player_names_pool)
+    with st.expander("Pick entry workflow debug", expanded=False):
+        st.markdown("**How to log picks**")
+        for key in (
+            "workflow_primary_board_tab",
+            "workflow_draft_assistant",
+            "workflow_not_board_writes",
+        ):
+            st.text(info.get(key, ""))
+        st.markdown("**Where picks are stored now**")
+        for key in (
+            "draft_room_table_pick_count",
+            "draft_room_table_drafted_players",
+            "draft_room_editor_cache_pick_count",
+            "draft_room_editor_seed_pick_count",
+            "draft_queue",
+            "pending_draft_assistant_player",
+            "room_your_team",
+            "next_open_pick_team",
+            "is_your_team_on_clock",
+            "data_editor_widget_has_edits",
+            "data_editor_key_checked",
+            "simulated_draft_room_pick_count",
+            "live_draft_board_pick_count",
+            "last_programmatic_pick_reason",
+        ):
+            if key in info and info[key] is not None and info[key] != "" and info[key] != []:
+                st.text(f"{key}: {info[key]}")
+        st.markdown("**Draft-related session keys**")
+        st.text(f"draft_related_session_keys: {info.get('draft_related_session_keys')}")
+        for key, preview in (info.get("draft_related_session_snapshots") or {}).items():
+            st.text(f"  {key}: {preview}")
 
 
 def find_widget_state_in_session(st: Any, widget_key: str) -> tuple[str, Any]:
@@ -479,6 +678,12 @@ def render_raw_widget_state_debug(st: Any, widget_key: str) -> None:
 def _board_from_raw_source(name: str, raw: Any, session: dict[str, Any]) -> tuple[pd.DataFrame | None, str, int]:
     widget_dict = _coerce_data_editor_widget_state(raw)
     if widget_dict is not None:
+        if not widget_state_has_edits(raw):
+            base = _base_board_for_reconstruction(session)
+            count = table_pick_count(base)
+            if count > 0:
+                return base.copy(), f"draft_room_table_via_seed:{name}", count
+            return None, name, 0
         base = _base_board_for_reconstruction(session)
         reconstructed = reconstruct_board_from_widget_state(widget_dict, base)
         count = table_pick_count(reconstructed)
