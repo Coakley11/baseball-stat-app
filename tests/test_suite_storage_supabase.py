@@ -11,6 +11,7 @@ from suite_storage_supabase import (
     _merge_state_metrics,
     _pick_best_state_row,
     load_current_states,
+    save_current_state_with_result,
 )
 
 
@@ -89,6 +90,33 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         baseball = states.get("baseball") or {}
         blob = (baseball.get("metrics") or {}).get(_FULL_SESSION_KEY) or {}
         self.assertEqual((blob.get("draft_room_state") or {}).get("pick_count"), 3)
+
+    def test_save_current_state_with_result_patch_when_row_exists(self) -> None:
+        existing = [
+            {
+                "app": "baseball",
+                "user_id": "user-1",
+                "updated_at": "2026-06-13T02:22:32",
+                "metrics": {"full_session": _full_session(0)},
+            }
+        ]
+        with patch("suite_storage_supabase._cloud_user_id", return_value="user-1"):
+            with patch("suite_storage_supabase.load_current_state_rows", return_value=existing):
+                with patch("suite_storage_supabase._request", return_value=[{"app": "baseball"}]) as mock_req:
+                    with patch("suite_storage_supabase.load_current_states", return_value={}):
+                        result = __import__(
+                            "suite_storage_supabase",
+                            fromlist=["save_current_state_with_result"],
+                        ).save_current_state_with_result(
+                            "baseball",
+                            page="Draft Room Simulator",
+                            summary="test",
+                            metrics={"full_session": _full_session(3)},
+                        )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("write_mode"), "patch")
+        mock_req.assert_called_once()
+        self.assertEqual(mock_req.call_args.args[0], "PATCH")
 
     def test_merge_state_metrics_keeps_richer_full_session(self) -> None:
         existing = {

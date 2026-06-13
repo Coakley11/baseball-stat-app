@@ -220,7 +220,7 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
         self.assertTrue(trace.get("save_button_clicked"))
 
-    def test_save_draft_board_now_attempts_direct_cloud_when_force_cloud_fails(self) -> None:
+    def test_save_draft_board_now_always_attempts_direct_cloud(self) -> None:
         st = MagicMock()
         table = _sample_table(picks=3)
         session: dict = {
@@ -230,7 +230,7 @@ class TestDraftRoomPersistence(unittest.TestCase):
 
         def _fake_force(_st: MagicMock, *, reason: str = "") -> bool:
             session["_suite_persist_last_save_disk"] = True
-            session["_suite_persist_last_save_cloud"] = False
+            session["_suite_persist_last_save_cloud"] = True
             session["payload_has_draft_board"] = True
             session["cloud_payload_pick_count"] = 3
             return True
@@ -244,11 +244,13 @@ class TestDraftRoomPersistence(unittest.TestCase):
                         "cloud_payload_pick_count": 3,
                         "payload_has_draft_board": True,
                         "cloud_timestamp_after": "2026-06-13T03:00:00Z",
+                        "supabase_row_pick_count_after_write": 3,
                     },
                 ) as mock_direct:
                     trace = save_draft_board_now(st, session, board=table)
         mock_direct.assert_called_once()
         self.assertTrue(trace.get("direct_cloud_save_attempted"))
+        self.assertTrue(trace.get("direct_cloud_save_ok"))
         self.assertTrue(trace.get("saved_cloud"))
         self.assertEqual(trace.get("saved_pick_count"), 3)
 

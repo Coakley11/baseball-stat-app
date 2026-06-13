@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 FULL_SESSION_KEY = "full_session"
+_LAST_CLOUD_WRITE: dict[str, Any] = {}
+
+
+def last_cloud_write_meta() -> dict[str, Any]:
+    return dict(_LAST_CLOUD_WRITE)
 
 PickSource = Literal["cloud", "disk", "none"]
 
@@ -221,15 +226,10 @@ def _parse_ts(ts: str | None) -> float:
 
 
 def _import_storage() -> tuple[Any, str]:
-    """Resolve storage backend; standalone deploys use ``suite_storage_supabase``."""
-    try:
-        import suite_storage as storage
+    """Always use PostgREST backend for full_session read/write (standalone deploys)."""
+    import suite_storage_supabase as storage
 
-        return storage, "suite_storage"
-    except ImportError:
-        import suite_storage_supabase as storage
-
-        return storage, "suite_storage_supabase"
+    return storage, "suite_storage_supabase"
 
 
 def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
@@ -361,6 +361,7 @@ def save_cloud_full_session_with_result(
     *,
     page: str = "",
     summary: str = "",
+    min_draft_pick_count: int = 0,
 ) -> tuple[bool, str]:
     """Persist full_session to Supabase. Returns (ok, error_message)."""
     if not state:
@@ -380,12 +381,52 @@ def save_cloud_full_session_with_result(
     try:
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(app_id)
-        storage.save_current_state(
-            app_key,
-            page=page or "",
-            summary=summary or "Last session",
-            metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+        global _LAST_CLOUD_WRITE
+        _LAST_CLOUD_WRITE = {}
+        expected_picks = int(min_draft_pick_count or 0)
+        if expected_picks <= 0:
+            try:
+                from draft_room_state import draft_room_restore_stats
+
+                expected_picks = int(draft_room_restore_stats(state).get("pick_count") or 0)
+            except ImportError:
+                expected_picks = 0
+
+        write_result: dict[str, Any] = {}
+        if hasattr(storage, "save_current_state_with_result"):
+            write_result = storage.save_current_state_with_result(
+                app_key,
+                page=page or "",
+                summary=summary or "Last session",
+                metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+            )
+        else:
+            storage.save_current_state(
+                app_key,
+                page=page or "",
+                summary=summary or "Last session",
+                metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+            )
+            write_result = {"ok": True, "write_mode": "legacy"}
+
+        _LAST_CLOUD_WRITE = dict(write_result)
+        if not write_result.get("ok", True):
+            return False, str(write_result.get("cloud_write_error") or "cloud_write_failed")
+
+        boundary = (
+            storage.load_cloud_row_diagnostics(app_id)
+            if hasattr(storage, "load_cloud_row_diagnostics")
+            else read_cloud_persistence_boundary(app_id)
         )
+        readback_picks = int(boundary.get("supabase_row_pick_count_after_write") or 0)
+        if expected_picks > 0 and readback_picks < expected_picks:
+            return (
+                False,
+                (
+                    f"readback_pick_mismatch:expected={expected_picks} "
+                    f"got={readback_picks} write_mode={write_result.get('write_mode')}"
+                ),
+            )
         return True, ""
     except Exception as exc:
         return False, f"{type(exc).__name__}:{exc}"

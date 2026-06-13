@@ -15940,13 +15940,22 @@ if active_page == "Draft Room Simulator":
                     if (
                         result.get("saved")
                         and result.get("saved_cloud")
-                        and int(cloud_n or 0) > 0
+                        and int(result.get("supabase_row_pick_count_after_write") or 0) >= picks
                         and picks > 0
                     ):
                         st.success(
                             f"Saved {picks} pick(s) to disk and cloud "
-                            f"(disk payload: {disk_n}, cloud payload: {cloud_n}). "
-                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
+                            f"(Supabase readback: {result.get('supabase_row_pick_count_after_write')}, "
+                            f"payload: {cloud_n}). "
+                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → "
+                            f"{result.get('cloud_timestamp_after') or result.get('supabase_row_updated_at_after_write') or '—'}"
+                        )
+                    elif result.get("saved") and picks > 0 and result.get("direct_cloud_save_attempted"):
+                        st.warning(
+                            f"Saved {picks} pick(s) to disk; cloud readback failed "
+                            f"(readback={result.get('supabase_row_pick_count_after_write')}, "
+                            f"payload={cloud_n}). "
+                            f"Error: {result.get('cloud_write_error') or result.get('error') or 'unknown'}"
                         )
                     elif result.get("saved") and picks > 0:
                         st.warning(

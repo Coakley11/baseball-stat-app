@@ -265,48 +265,112 @@ def save_current_state(
     summary: str = "",
     metrics: dict[str, Any] | None = None,
 ) -> None:
+    save_current_state_with_result(app, page=page, summary=summary, metrics=metrics)
+
+
+def save_current_state_with_result(
+    app: str,
+    *,
+    page: str = "",
+    summary: str = "",
+    metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write app state to Supabase; returns write mode + target ids for diagnostics."""
     app_key = normalize_app_key(app)
+    uid = _cloud_user_id() or ""
+    result: dict[str, Any] = {
+        "ok": False,
+        "write_mode": "skipped",
+        "cloud_target_user_id": uid[:32] if uid else "",
+        "cloud_target_app_id": app_key,
+        "cloud_write_error": "",
+        "rows_written": 0,
+        "updated_at": "",
+    }
     if app_key not in ACTIVE_APP_KEYS:
-        return
+        result["cloud_write_error"] = f"inactive_app:{app_key}"
+        return result
+    if not uid:
+        result["cloud_write_error"] = "local_account_no_cloud_user"
+        return result
+
     merged_metrics = _merge_state_metrics(app_key, metrics)
-    body: dict[str, Any] = {
-        "app": app_key,
+    updated_at = _now_iso()
+    patch_body = {
         "page": page or "",
         "summary": summary or "",
         "metrics": merged_metrics,
-        "updated_at": _now_iso(),
+        "updated_at": updated_at,
     }
-    uid = _cloud_user_id()
-    if uid:
-        body["user_id"] = uid
-    patch_body = {
-        "page": body["page"],
-        "summary": body["summary"],
+    patch_params = {"user_id": f"eq.{uid}", "app": f"eq.{app_key}"}
+    body: dict[str, Any] = {
+        "user_id": uid,
+        "app": app_key,
+        "page": patch_body["page"],
+        "summary": patch_body["summary"],
         "metrics": merged_metrics,
-        "updated_at": body["updated_at"],
+        "updated_at": updated_at,
     }
-    patch_params: dict[str, str] = {"app": f"eq.{app_key}"}
-    if uid:
-        patch_params["user_id"] = f"eq.{uid}"
+
     try:
-        post_params = {"on_conflict": _STATE_CONFLICT_COLS} if uid else None
-        _request(
-            "POST",
-            _TABLE_STATE,
-            params=post_params,
-            json_body=body,
-            prefer="resolution=merge-duplicates,return=minimal",
-        )
-    except RuntimeError as exc:
-        if not uid or not _is_duplicate_key_error(exc):
+        existing_rows = load_current_state_rows(app_key)
+        if existing_rows:
+            rows = _request(
+                "PATCH",
+                _TABLE_STATE,
+                params=patch_params,
+                json_body=patch_body,
+                prefer="return=representation",
+            )
+            if isinstance(rows, list) and rows:
+                result["ok"] = True
+                result["write_mode"] = "patch"
+                result["rows_written"] = len(rows)
+                result["updated_at"] = updated_at
+                return result
+
+        post_params = {"on_conflict": _STATE_CONFLICT_COLS}
+        try:
+            rows = _request(
+                "POST",
+                _TABLE_STATE,
+                params=post_params,
+                json_body=body,
+                prefer="resolution=merge-duplicates,return=representation",
+            )
+            if isinstance(rows, list) and rows:
+                result["ok"] = True
+                result["write_mode"] = "upsert"
+                result["rows_written"] = len(rows)
+                result["updated_at"] = updated_at
+                return result
+            result["ok"] = True
+            result["write_mode"] = "upsert"
+            result["rows_written"] = 0
+            result["updated_at"] = updated_at
+            return result
+        except RuntimeError as exc:
+            if not _is_duplicate_key_error(exc):
+                raise
+            rows = _request(
+                "PATCH",
+                _TABLE_STATE,
+                params=patch_params,
+                json_body=patch_body,
+                prefer="return=representation",
+            )
+            if isinstance(rows, list) and rows:
+                result["ok"] = True
+                result["write_mode"] = "patch_after_conflict"
+                result["rows_written"] = len(rows)
+                result["updated_at"] = updated_at
+                return result
             raise
-        _request(
-            "PATCH",
-            _TABLE_STATE,
-            params=patch_params,
-            json_body=patch_body,
-            prefer="return=minimal",
-        )
+    except RuntimeError as exc:
+        result["cloud_write_error"] = str(exc)
+    except Exception as exc:
+        result["cloud_write_error"] = f"{type(exc).__name__}:{exc}"
+    return result
 
 
 def upsert_resume_item(

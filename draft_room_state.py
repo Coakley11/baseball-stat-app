@@ -2436,6 +2436,7 @@ _BOARD_MANUAL_SAVE_FIELDS = (
     "cloud_blocked_reason",
     "direct_cloud_save_attempted",
     "direct_cloud_save_ok",
+    "cloud_write_mode",
     "cloud_target_user_id",
     "cloud_target_app_id",
     "supabase_row_pick_count_after_write",
@@ -2476,6 +2477,12 @@ def _attach_cloud_boundary_diagnostics(
                 "cloud_row_pick_counts": boundary.get("cloud_row_pick_counts"),
             }
         )
+        try:
+            from suite_cloud_state import last_cloud_write_meta
+
+            trace["cloud_write_mode"] = last_cloud_write_meta().get("write_mode")
+        except ImportError:
+            pass
         if boundary.get("cloud_load_error") and not trace.get("cloud_write_error"):
             trace["cloud_readback_error"] = boundary.get("cloud_load_error")
     except Exception as exc:
@@ -2600,7 +2607,14 @@ def save_draft_board_direct_to_cloud(
             return trace
 
         page, summary = session_page_summary("baseball", state)
-        ok, cloud_err = save_cloud_full_session_with_result("baseball", state, page=page, summary=summary)
+        expected_picks = int(trace.get("cloud_payload_pick_count") or 0)
+        ok, cloud_err = save_cloud_full_session_with_result(
+            "baseball",
+            state,
+            page=page,
+            summary=summary,
+            min_draft_pick_count=expected_picks,
+        )
         trace["saved_cloud"] = ok
         trace["cloud_write_error"] = cloud_err or ""
         if cloud_err:
@@ -2609,9 +2623,14 @@ def save_draft_board_direct_to_cloud(
         else:
             session.pop("_suite_persist_last_cloud_error", None)
 
+        _attach_cloud_boundary_diagnostics(trace)
         cloud_after, ts_after = load_cloud_full_session("baseball")
-        trace["cloud_timestamp_after"] = ts_after
-        trace["cloud_timestamp_changed"] = bool(ts_after and ts_after != ts_before)
+        trace["cloud_timestamp_after"] = ts_after or trace.get("supabase_row_updated_at_after_write")
+        trace["cloud_timestamp_changed"] = bool(
+            ts_after
+            and trace.get("cloud_timestamp_before")
+            and ts_after != trace.get("cloud_timestamp_before")
+        )
         trace["cloud_pick_count_after"] = draft_room_restore_stats(cloud_after).get("pick_count")
         if ok:
             session["_suite_persist_last_save_cloud"] = True
@@ -2619,8 +2638,18 @@ def save_draft_board_direct_to_cloud(
             cloud_stats = _refresh_cloud_draft_room_stats(session, cloud_ts=ts_after)
             trace.update(cloud_stats)
             _attach_cloud_boundary_diagnostics(trace)
-            if int(trace.get("cloud_pick_count_after") or 0) > 0:
+            readback = int(trace.get("supabase_row_pick_count_after_write") or 0)
+            if readback < expected_picks:
+                trace["saved_cloud"] = False
+                trace["error"] = (
+                    f"readback_pick_mismatch:expected={expected_picks} got={readback}"
+                )
+                trace["cloud_write_error"] = trace["error"]
+                session["_suite_persist_last_cloud_error"] = trace["error"]
+            elif readback > 0:
                 clear_draft_room_local_edit(session)
+        else:
+            session["_suite_persist_last_save_cloud"] = False
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
         trace["cloud_write_error"] = trace["error"]
@@ -2700,10 +2729,25 @@ def save_draft_board_now(
         or ""
     )
 
-    if pick_count > 0 and not trace.get("saved_cloud"):
+    if pick_count > 0:
         trace["direct_cloud_save_attempted"] = True
         direct = save_draft_board_direct_to_cloud(st, session, board=board)
         trace["direct_cloud_save_ok"] = bool(direct.get("saved_cloud"))
+        trace["cloud_write_mode"] = direct.get("cloud_write_mode")
+        for key in (
+            "cloud_target_user_id",
+            "cloud_target_app_id",
+            "cloud_write_error",
+            "cloud_row_count",
+            "cloud_row_pick_counts",
+            "supabase_row_pick_count_after_write",
+            "supabase_row_updated_at_after_write",
+            "cloud_fetch_pick_count",
+            "cloud_timestamp_after",
+            "cloud_timestamp_changed",
+        ):
+            if direct.get(key) is not None and direct.get(key) != "":
+                trace[key] = direct.get(key)
         if direct.get("saved_cloud"):
             trace["saved_cloud"] = True
             trace["cloud"] = True
@@ -2712,9 +2756,14 @@ def save_draft_board_now(
             trace["payload_has_draft_board"] = direct.get("payload_has_draft_board")
             trace.pop("error", None)
             trace.pop("cloud_write_error", None)
-        elif direct.get("error") and not trace.get("error"):
-            trace["error"] = direct.get("error")
-            trace["cloud_write_error"] = direct.get("cloud_write_error") or direct.get("error")
+            session["_suite_persist_last_save_cloud"] = True
+        else:
+            trace["saved_cloud"] = False
+            trace["cloud"] = False
+            if direct.get("error"):
+                trace["error"] = direct.get("error")
+                trace["cloud_write_error"] = direct.get("cloud_write_error") or direct.get("error")
+            session["_suite_persist_last_save_cloud"] = False
 
     if trace.get("saved") and pick_count > 0:
         sync_editor_seed(session, board, force_reset=True)
