@@ -867,9 +867,35 @@ def fullname_base_from_label(label):
     return str(label).split(" (")[0].strip()
 
 
+def _canonical_draft_board_df():
+    """Single source of truth for drafted players across the app."""
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        return get_canonical_draft_board(st.session_state)
+    except Exception:
+        try:
+            from draft_room_state import coerce_board_table
+
+            return coerce_board_table(st.session_state.get("draft_room_table"))
+        except Exception:
+            return pd.DataFrame(columns=["Round", "Pick", "Team", "Player"])
+
+
+def _session_draft_board_df():
+    """Coerce session draft_room_table to DataFrame (safe after cloud/disk blob restore)."""
+    try:
+        from draft_room_state import ensure_runtime_draft_board, prepare_draft_room_state
+
+        prepare_draft_room_state(st.session_state)
+        return ensure_runtime_draft_board(st.session_state)
+    except Exception:
+        return _canonical_draft_board_df()
+
+
 def get_next_open_draft_pick_team():
     """Team whose row has the next empty Player slot in Draft Room table pick order."""
-    table = st.session_state.get("draft_room_table", pd.DataFrame())
+    table = _canonical_draft_board_df()
     if table.empty or "Player" not in table.columns or "Team" not in table.columns:
         return None
     t = table.copy()
@@ -7374,8 +7400,17 @@ def has_draft_room_context() -> bool:
     return bool(get_draft_room_team_options())
 
 
+def _drafted_player_names_canonical() -> list[str]:
+    try:
+        from draft_room_state import get_all_drafted_player_names
+
+        return get_all_drafted_player_names(st.session_state)
+    except Exception:
+        return list(_drafted_player_names_from_room())
+
+
 def simulate_drafting_player(player_name, team_name):
-    table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+    table = _canonical_draft_board_df()
     if table.empty or "Player" not in table.columns or "Team" not in table.columns:
         return pd.DataFrame(), _NO_DRAFT_CONTEXT_MSG
 
@@ -7426,7 +7461,7 @@ def _rows_for_player_names(player_names, lookup_df, name_col):
 
 
 def _team_players_from_draft_room(team_name):
-    table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+    table = _canonical_draft_board_df()
     if table.empty or "Team" not in table.columns or "Player" not in table.columns:
         return []
     team_rows = table[
@@ -9629,10 +9664,16 @@ def live_draft_push_analysis_to_session(room):
 
 
 def _persist_live_draft_room(room, *, reason: str, rerun: bool = True) -> None:
-    """Write canonical live draft state and force-save to disk/cloud."""
+    """Write canonical live draft state, sync to draft_room_table, force-save."""
     from live_draft_state import commit_live_draft_room
 
     commit_live_draft_room(st, st.session_state, room, reason=reason)
+    try:
+        from draft_room_state import sync_live_draft_room_to_canonical_board
+
+        sync_live_draft_room_to_canonical_board(st.session_state, room)
+    except Exception:
+        pass
     if rerun:
         st.rerun()
 
@@ -9641,7 +9682,7 @@ def player_on_fantasy_team(player_name, fantasy_team):
     """Return True if player_name is already on fantasy_team in Draft Room."""
     if not fantasy_team:
         return False
-    table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+    table = _canonical_draft_board_df()
     if table.empty or "Team" not in table.columns or "Player" not in table.columns:
         return False
     team_rows = table[table["Team"].astype(str) == str(fantasy_team)]
@@ -9677,9 +9718,15 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
     record_workflow_recent_player(display)
 
     if action == "Draft player to next pick":
-        if not is_users_draft_turn(user_draft_team):
-            return "Not your pick on the draft board right now.", None
-        if not teams:
+        from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, get_active_draft_mode
+
+        if get_active_draft_mode(st.session_state) == ACTIVE_DRAFT_MODE_LIVE:
+            if user_draft_team and not is_users_draft_turn(user_draft_team):
+                return (
+                    "Not your pick on the board right now — use Add to Queue, or log picks via the board.",
+                    None,
+                )
+        if not teams and not _player_draft_action_available():
             return "Open Draft Room Simulator first to set up teams.", None
         return add_player_to_next_draft_room_pick(sp, team_name), None
 
@@ -10128,6 +10175,20 @@ def _maybe_show_projection_breakdown_dialog(dialog_state_key: str):
     _render_projection_breakdown_dialog(bundle)
 
 
+def _player_draft_action_available() -> bool:
+    """Canonical board can accept a pick (practice, live sync, or manual tracking)."""
+    if get_draft_room_team_options():
+        return True
+    return bool(str(st.session_state.get("room_your_team") or "").strip())
+
+
+def _on_active_draft_return_click():
+    from draft_room_state import get_active_draft_status
+
+    status = get_active_draft_status(st.session_state)
+    st.session_state["_navigate_to_page"] = status.get("return_page") or "Draft Room Simulator"
+
+
 def player_quick_actions_popover(
     player_options,
     *,
@@ -10162,7 +10223,7 @@ def player_quick_actions_popover(
         )
         sfx = _qa_key_suffix(f"{key}|{pick}")
         on_my = player_on_fantasy_team(pick, team_for_draft) if team_for_draft else False
-        can_draft = bool(user_draft_team) and is_users_draft_turn(user_draft_team)
+        can_draft = _player_draft_action_available()
 
         _render_player_action_button_row(
             pick,
@@ -10387,31 +10448,84 @@ def clickable_player_draft_table(df, player_col="Player", team_name=None, key="c
 
 
 def get_draft_room_team_options():
-    table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+    table = _canonical_draft_board_df()
     if table.empty or "Team" not in table.columns:
         return []
     return sorted(table["Team"].dropna().astype(str).unique().tolist())
 
 
-def _on_draft_room_quick_draft_click():
-    """Button callback — read selectbox values from session_state keys."""
-    from draft_room_state import log_quick_draft_pick
+def add_player_to_next_draft_room_pick(player_name, team_name=None):
+    """Add player to next open pick on the canonical board (team optional)."""
+    from draft_room_state import add_player_to_next_open_pick, persist_draft_board_to_storage
 
-    log_quick_draft_pick(
-        st.session_state,
-        st.session_state.get("draft_room_quick_draft_player", ""),
-        st.session_state.get("draft_room_quick_draft_team", ""),
-    )
-
-
-def add_player_to_next_draft_room_pick(player_name, team_name):
-    """Add selected player to the next open Draft Room row for the selected team."""
-    from draft_room_state import log_quick_draft_pick
-
-    trace = log_quick_draft_pick(st.session_state, player_name, team_name)
-    if trace.get("ok"):
+    result = add_player_to_next_open_pick(st.session_state, player_name)
+    if result.get("ok"):
         _auto_remove_drafted_from_queue()
-    return str(trace.get("message") or trace.get("error") or "Quick draft failed.")
+        try:
+            persist_draft_board_to_storage(
+                st,
+                st.session_state,
+                st.session_state.get("draft_room_table"),
+                reason="simulator_add_player",
+            )
+        except Exception:
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_pick")
+            except Exception:
+                pass
+    return str(result.get("message") or result.get("error") or "Could not add player.")
+
+
+def draft_top_queue_player():
+    """Draft #1 queue player onto the canonical board."""
+    from draft_state import draft_top_queue_player as _draft_top
+    from draft_room_state import persist_draft_board_to_storage
+
+    result = _draft_top(st.session_state)
+    if result.get("ok"):
+        try:
+            persist_draft_board_to_storage(
+                st,
+                st.session_state,
+                st.session_state.get("draft_room_table"),
+                reason="draft_queue_pick",
+            )
+        except Exception:
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_queue_pick")
+            except Exception:
+                pass
+        return str(result.get("message") or "Drafted from queue.")
+    return str(result.get("message") or result.get("error") or "Could not draft from queue.")
+
+
+def draft_queue_player_at_index(idx: int):
+    """Draft a specific queue player onto the canonical board."""
+    from draft_state import draft_queue_player_at_index as _draft_at
+    from draft_room_state import persist_draft_board_to_storage
+
+    result = _draft_at(st.session_state, idx)
+    if result.get("ok"):
+        try:
+            persist_draft_board_to_storage(
+                st,
+                st.session_state,
+                st.session_state.get("draft_room_table"),
+                reason="draft_queue_pick",
+            )
+        except Exception:
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_queue_pick")
+            except Exception:
+                pass
+        return str(result.get("message") or "Drafted from queue.")
+    return str(result.get("message") or result.get("error") or "Could not draft from queue.")
 
 
 def build_draft_room_table_from_assistant(my_roster, other_rosters, my_team_name="My Team", other_team_name="Other Rosters"):
@@ -10429,9 +10543,15 @@ def build_draft_room_table_from_assistant(my_roster, other_rosters, my_team_name
 
 
 def sync_draft_room_to_assistant_from_table(draft_room_table, my_team_name):
-    if draft_room_table is None or len(draft_room_table) == 0:
+    try:
+        from draft_room_state import coerce_board_table
+
+        df = coerce_board_table(draft_room_table)
+    except Exception:
+        df = draft_room_table if hasattr(draft_room_table, "copy") else pd.DataFrame()
+    if df is None or getattr(df, "empty", True):
         return [], []
-    df = draft_room_table.copy()
+    df = df.copy()
     if "Player" not in df.columns or "Team" not in df.columns:
         return [], []
     df = df[df["Player"].astype(str).str.strip() != ""].copy()
@@ -10612,7 +10732,7 @@ def _workflow_normalize_draft_queue():
 
 def _drafted_player_names_from_room():
     """Names already drafted by any team; used only to prune unavailable draft queue items."""
-    table = st.session_state.get("draft_room_table", pd.DataFrame())
+    table = _canonical_draft_board_df()
     if table is None or getattr(table, "empty", True) or "Player" not in table.columns:
         return set()
     return {
@@ -10675,6 +10795,12 @@ def _clear_workflow_list(key):
 
 def render_persistent_workflow_sidebar(_yearly_df_local=None):
     """Persistent workflow panel: draft queue, watchlist, and tracked players."""
+    try:
+        from draft_room_state import render_active_draft_banner
+
+        render_active_draft_banner(st, st.session_state)
+    except Exception:
+        pass
     _workflow_normalize_draft_queue()
     removed_drafted = _auto_remove_drafted_from_queue()
 
@@ -10710,68 +10836,92 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     if not isinstance(transfer_batches, list):
         transfer_batches = []
 
-    st.sidebar.divider()
-    st.sidebar.markdown("### Watchlist & Draft Queue")
-    st.sidebar.caption("Quick reference that persists while you switch pages.")
+    try:
+        from draft_room_state import get_active_draft_mode, ACTIVE_DRAFT_MODE_LIVE
 
-    with st.sidebar.expander("Draft queue", expanded=bool(dq)):
-        if not dq:
-            st.caption("Empty — add players with **Queue player** in Player Actions.")
-        else:
-            for idx, pname in enumerate(dq[:20]):
-                label = str(pname).strip()
-                c_rank, c_name, c_up, c_down = st.columns([0.18, 0.52, 0.15, 0.15])
-                c_rank.caption(f"{idx + 1}.")
-                c_name.caption(label[:42] + ("…" if len(label) > 42 else ""))
-                if c_up.button("↑", key=f"sidebar_queue_up_{idx}", disabled=idx == 0):
-                    _move_queue_item(idx, -1)
-                    st.rerun()
-                if c_down.button("↓", key=f"sidebar_queue_down_{idx}", disabled=idx == len(dq) - 1):
-                    _move_queue_item(idx, 1)
-                    st.rerun()
-            if len(dq) > 20:
-                st.caption(f"+{len(dq) - 20} more")
-        clear_q, _ = st.columns([1, 1])
-        if clear_q.button("Clear Draft Queue", key="sidebar_clear_draft_queue", disabled=not bool(dq)):
+        live_draft_active = get_active_draft_mode(st.session_state) == ACTIVE_DRAFT_MODE_LIVE
+    except Exception:
+        live_draft_active = False
+
+    st.sidebar.divider()
+    st.sidebar.markdown("### Draft from lists")
+    st.sidebar.caption(
+        "Scroll the sidebar — these buttons draft to the **next open pick** on the canonical board "
+        "(visible on every page)."
+    )
+
+    st.sidebar.markdown("**Draft queue**")
+    if not dq:
+        st.sidebar.caption("Empty — add players with **Queue player** in Player Actions.")
+    else:
+        top_name = str(dq[0]).strip()
+        top_label = top_name[:36] + ("…" if len(top_name) > 36 else "")
+        if st.sidebar.button(
+            f"Draft top: {top_label}",
+            key="sidebar_draft_top_queue_player",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state["workflow_sidebar_flash"] = draft_top_queue_player()
+            st.rerun()
+        for idx, pname in enumerate(dq[:12]):
+            label = str(pname).strip()
+            c_rank, c_name, c_draft = st.sidebar.columns([0.12, 0.58, 0.30])
+            c_rank.caption(f"{idx + 1}.")
+            c_name.caption(label[:36] + ("…" if len(label) > 36 else ""))
+            if c_draft.button("Draft", key=f"sidebar_queue_draft_{idx}", use_container_width=True):
+                st.session_state["workflow_sidebar_flash"] = draft_queue_player_at_index(idx)
+                st.rerun()
+        if len(dq) > 12:
+            st.sidebar.caption(f"+{len(dq) - 12} more in queue")
+        if st.sidebar.button("Clear Draft Queue", key="sidebar_clear_draft_queue", disabled=not bool(dq)):
             _clear_workflow_list("draft_queue")
             st.rerun()
 
-    with st.sidebar.expander("Watchlist", expanded=bool(watch)):
-        if not watch:
-            st.caption("Empty — use **Add to Watchlist** from Player Actions.")
-        else:
-            for pname in reversed(watch[-12:]):
-                st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
-            if len(watch) > 12:
-                st.caption(f"+{len(watch) - 12} more")
-        if st.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
+    st.sidebar.markdown("**Watchlist**")
+    if not watch:
+        st.sidebar.caption("Empty — use **Add to Watchlist** from Player Actions.")
+    else:
+        for idx, pname in enumerate(list(reversed(watch[-12:]))):
+            label = str(pname).strip()
+            w_name, w_draft = st.sidebar.columns([0.68, 0.32])
+            w_name.caption(label[:38] + ("…" if len(label) > 38 else ""))
+            if w_draft.button("Draft", key=f"sidebar_watch_draft_{idx}", use_container_width=True):
+                st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+                st.rerun()
+        if len(watch) > 12:
+            st.sidebar.caption(f"+{len(watch) - 12} more")
+        if st.sidebar.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
             _clear_workflow_list("draft_assistant_focus_players")
             _clear_workflow_list("workflow_favorite_targets")
             st.rerun()
 
-    with st.sidebar.expander("Tracked players", expanded=False):
-        if not rv and not pairs:
-            st.caption("Updates when you select, send, compare, or analyze players.")
-        if rv:
-            st.caption("Recently viewed")
-            for pname in reversed(rv[-8:]):
-                st.caption("• " + str(pname).strip()[:46] + ("…" if len(str(pname).strip()) > 46 else ""))
-        if pairs:
-            st.caption("Recent comparisons")
-            for pair in reversed(pairs[-5:]):
-                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
-                    names = [str(x).strip() for x in pair if str(x).strip()]
-                    label = " vs ".join(names)
-                    st.caption("• " + label[:54] + ("…" if len(label) > 54 else ""))
-        if st.button(
-            "Clear Tracked Players",
-            key="sidebar_clear_tracked_players",
-            disabled=not bool(rv or pairs or transfer_batches),
-        ):
-            _clear_workflow_list("workflow_recently_viewed")
-            _clear_workflow_list("workflow_recent_compare_pairs")
-            _clear_workflow_list(wf_sb.SESSION_TRANSFER_BATCHES)
-            st.rerun()
+    st.sidebar.markdown("**Tracked players**")
+    if not rv:
+        st.sidebar.caption("Recently viewed players appear here after you analyze or compare.")
+    else:
+        for idx, pname in enumerate(list(reversed(rv[-8:]))):
+            label = str(pname).strip()
+            t_name, t_draft = st.sidebar.columns([0.68, 0.32])
+            t_name.caption("• " + label[:36] + ("…" if len(label) > 36 else ""))
+            if t_draft.button("Draft", key=f"sidebar_tracked_draft_{idx}", use_container_width=True):
+                st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+                st.rerun()
+    if pairs:
+        st.sidebar.caption("Recent comparisons")
+        for pair in reversed(pairs[-3:]):
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                names = [str(x).strip() for x in pair if str(x).strip()]
+                st.sidebar.caption("• " + " vs ".join(names)[:50])
+    if st.sidebar.button(
+        "Clear Tracked Players",
+        key="sidebar_clear_tracked_players",
+        disabled=not bool(rv or pairs or transfer_batches),
+    ):
+        _clear_workflow_list("workflow_recently_viewed")
+        _clear_workflow_list("workflow_recent_compare_pairs")
+        _clear_workflow_list(wf_sb.SESSION_TRANSFER_BATCHES)
+        st.rerun()
 
 
 PAGE_OPTIONS = [
@@ -13572,9 +13722,8 @@ if active_page == "Trend Value":
             key="trend_use_draft_room_sync",
         )
         if trend_sync_enabled:
-            trend_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
-            if not trend_room_table.empty and "Player" in trend_room_table.columns:
-                trend_drafted_names = trend_room_table["Player"].dropna().astype(str).str.strip().tolist()
+            trend_drafted_names = _drafted_player_names_canonical()
+            if trend_drafted_names:
                 trend_team_options = get_draft_room_team_options()
                 if trend_team_options:
                     default_trend_team = st.session_state.get("room_your_team", trend_team_options[0])
@@ -13587,8 +13736,6 @@ if active_page == "Trend Value":
                 st.caption(f"Removed {len(set(trend_drafted_names))} already drafted player(s) from Trend page views.")
             else:
                 st.caption("No Draft Room picks found yet.")
-        else:
-            trend_drafted_names = []
 
     trend_sync_enabled = st.session_state.get("trend_use_draft_room_sync", True)
     if trend_sync_enabled and trend_drafted_names:
@@ -14218,13 +14365,29 @@ if active_page == "Fantasy Sleepers & Busts":
                 )
         with tab_draft:
             st.caption("Focus on available players who fit your roster needs.")
-            init_state_once("sleeper_use_draft_room_needs", False)
-            st.checkbox(
+            try:
+                from draft_room_state import get_active_draft_status
+
+                _sleeper_active_draft = bool(get_active_draft_status(st.session_state).get("active"))
+            except Exception:
+                _sleeper_active_draft = False
+            init_state_once("sleeper_use_draft_room_needs", True)
+            sleeper_sync_checkbox = st.checkbox(
                 "Use Draft Room needs and remove already drafted players",
                 key="sleeper_use_draft_room_needs",
                 on_change=fantasy_filter_changed,
+                disabled=_sleeper_active_draft,
             )
-    sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", False)
+            if _sleeper_active_draft:
+                st.caption("Active draft — always synced to the canonical Draft Room board.")
+    sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", True)
+    try:
+        from draft_room_state import get_active_draft_status
+
+        if get_active_draft_status(st.session_state).get("active"):
+            sleeper_sync_enabled = True
+    except Exception:
+        pass
     sleeper_max_market_rank = st.session_state.get("sleeper_max_market_rank", 350)
     sleeper_max_model_rank = st.session_state.get("sleeper_max_model_rank", 350)
     sleeper_min_proj_hr = st.session_state.get("sleeper_min_proj_hr", 0)
@@ -14232,7 +14395,7 @@ if active_page == "Fantasy Sleepers & Busts":
     fantasy_top_n = int(st.session_state.get("fantasy_market_top_n", 15))
 
     if sleeper_sync_enabled:
-        draft_room_for_sleepers = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+        draft_room_for_sleepers = _canonical_draft_board_df()
         if draft_room_for_sleepers.empty or "Player" not in draft_room_for_sleepers.columns or "Team" not in draft_room_for_sleepers.columns:
             st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
         else:
@@ -14832,11 +14995,13 @@ if active_page == "Draft Assistant Simulator":
         ):
             pp.instructional_caption(
                 st,
-                "Picks come from Draft Room Simulator (draft_room_table). "
+                "Picks come from the canonical draft board (Draft Room Simulator / Live Draft Room). "
                 "Choose your fantasy team name so needs and availability match your roster.",
             )
 
-            draft_room_table_for_assistant = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
+            from draft_room_state import get_canonical_draft_board
+
+            draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
 
             if draft_room_table_for_assistant.empty or "Player" not in draft_room_table_for_assistant.columns:
                 st.warning("No Draft Room picks yet. Add picks in Draft Room Simulator, then return here.")
@@ -15197,6 +15362,21 @@ if active_page == "Draft Assistant Simulator":
             )
 
         recs["Strategy"] = recs.apply(_strategy_for_row, axis=1)
+        try:
+            from applied_math_context import cache_draft_assistant_ami_context
+
+            cache_draft_assistant_ami_context(
+                st.session_state,
+                page="Draft Assistant Simulator",
+                recs_df=recs,
+                current_pick=int(current_pick),
+                my_roster=my_roster,
+                drafted_total=len(drafted_or_owned_players),
+                draft_format=str(draft_format),
+                assistant_team=str(assistant_my_team_name),
+            )
+        except Exception:
+            pass
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 
@@ -15509,7 +15689,7 @@ if active_page == "Draft Room Simulator":
     )
 
     _room_pick_no = 1
-    _room_tbl = st.session_state.get("draft_room_table", pd.DataFrame())
+    _room_tbl = _session_draft_board_df()
     if not _room_tbl.empty and "Player" in _room_tbl.columns:
         _room_pick_no = max(1, int(_room_tbl["Player"].astype(str).str.strip().ne("").sum()) + 1)
     room_df, _ = apply_draft_pick_scoring(
@@ -15533,13 +15713,21 @@ if active_page == "Draft Room Simulator":
             pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
         st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
 
-    current_table = st.session_state.get("draft_room_table", pd.DataFrame())
+    try:
+        from draft_room_state import draft_room_restore_stats, prepare_draft_room_state
+
+        prepare_draft_room_state(st.session_state)
+        _canonical_pick_count = draft_room_restore_stats(st.session_state).get("pick_count", 0)
+    except Exception:
+        _canonical_pick_count = 0
+
+    current_table = _session_draft_board_df()
     has_real_picks = (
         not current_table.empty
         and "Player" in current_table.columns
         and current_table["Player"].astype(str).str.strip().ne("").any()
     )
-    if (not has_real_picks) and len(current_table) != total_picks:
+    if _canonical_pick_count == 0 and (not has_real_picks) and len(current_table) != total_picks:
         pick_rows = []
         for pick in range(1, total_picks + 1):
             rnd = ((pick - 1) // int(room_team_count)) + 1
@@ -15554,108 +15742,159 @@ if active_page == "Draft Room Simulator":
     with dr_tab_board:
         st.subheader("Live draft board")
         st.caption(
-            "Log picks with **Quick draft** (button below) or choose a name in each **Player** dropdown cell, "
-            "then **Save Draft Board Now**. Draft Assistant → **Draft this player** also writes here when it is your turn. "
-            "**Simulate Draft Pick** does not update this board."
+            "Use **Assign player to pick** below (searchable player list). "
+            "Then click **Save Draft Board Now**. Live Draft Room picks sync here automatically."
         )
-
-        with st.form("draft_room_quick_draft_form", clear_on_submit=False):
-            qd1, qd2, qd3 = st.columns([2, 1, 1])
-            with qd1:
-                st.selectbox(
-                    "Quick draft — player",
-                    player_options_room,
-                    key="draft_room_quick_draft_player",
-                    help="Choose a player name (not the blank first option).",
-                )
-            with qd2:
-                _qt_idx = room_team_names.index(your_team) if your_team in room_team_names else 0
-                st.selectbox(
-                    "Fantasy team",
-                    room_team_names,
-                    index=_qt_idx,
-                    key="draft_room_quick_draft_team",
-                )
-            with qd3:
-                st.write("")
-                st.write("")
-                quick_draft_submitted = st.form_submit_button(
-                    "Log pick to board",
-                    type="primary",
-                )
-
-        if quick_draft_submitted:
-            from draft_room_state import log_quick_draft_pick
-
-            _qd_trace = log_quick_draft_pick(
-                st.session_state,
-                st.session_state.get("draft_room_quick_draft_player", ""),
-                st.session_state.get("draft_room_quick_draft_team", ""),
-            )
-            if not _qd_trace.get("ok"):
-                st.error(_qd_trace.get("message") or _qd_trace.get("error") or "Quick draft failed.")
-
         try:
-            from draft_room_state import render_quick_draft_status
+            from draft_room_state import render_canonical_draft_banner
 
-            render_quick_draft_status(st, st.session_state)
-        except Exception as _qd_status_exc:
-            st.warning(f"Quick draft status unavailable: {_qd_status_exc}")
+            render_canonical_draft_banner(st, st.session_state)
+        except Exception:
+            pass
 
-        # Widget key is Streamlit-owned (versioned). Seed/cache/table are app-owned.
-        edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
+        reset_col, delete_live_col, _sp = st.columns([1, 1, 2])
+        with reset_col:
+            if st.button(
+                "Reset Draft Room Simulator",
+                key="draft_room_reset_simulator_btn",
+                help="Clear the practice/canonical board only. Use for a fresh mock draft.",
+            ):
+                from draft_room_state import persist_draft_board_to_storage, reset_simulator_board_only
+
+                reset_simulator_board_only(st.session_state)
+                persist_draft_board_to_storage(
+                    st,
+                    st.session_state,
+                    st.session_state.get("draft_room_table"),
+                    reason="reset_canonical_board",
+                )
+                st.success("Simulator board cleared.")
+                st.rerun()
+        with delete_live_col:
+            if st.button(
+                "Delete Live Draft Room draft",
+                key="draft_room_delete_live_draft_btn",
+                help="Remove the Live Draft Room record only. Simulator board and queue stay.",
+            ):
+                from draft_room_state import delete_live_draft_only, persist_draft_board_to_storage
+
+                delete_live_draft_only(st.session_state)
+                try:
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    force_save_baseball_state(st, reason="live_draft_delete")
+                except Exception:
+                    persist_draft_board_to_storage(
+                        st,
+                        st.session_state,
+                        st.session_state.get("draft_room_table"),
+                        reason="live_draft_delete",
+                    )
+                st.success("Live Draft Room draft deleted. Simulator board unchanged.")
+                st.rerun()
+
+        edited_draft = _session_draft_board_df()
         try:
             from draft_room_state import (
-                DRAFT_ROOM_EDITOR_CACHE_KEY,
-                prepare_board_editor_for_render,
-                preserve_richer_session_board,
-                record_board_editor_diagnostics,
-                render_board_debug_expander,
+                assign_player_to_board_row,
+                open_pick_row_options,
+                record_board_assignment_diagnostics,
                 render_board_tab_diagnostics,
-                render_pick_entry_workflow_debug,
-                render_raw_widget_state_debug,
-                resolve_active_board,
                 save_draft_board_now,
                 table_pick_count,
             )
 
-            initial_df, widget_key = prepare_board_editor_for_render(
-                st.session_state, st.session_state["draft_room_table"]
+            try:
+                from draft_player_names import draft_pool_display_names, search_draft_pool_names
+
+                _assign_pool_names = draft_pool_display_names(room_df)
+            except Exception:
+                _assign_pool_names = [p for p in player_options_room if p]
+                search_draft_pool_names = None  # type: ignore[assignment]
+
+            pick_count = table_pick_count(edited_draft)
+            record_board_assignment_diagnostics(
+                st.session_state, pick_count=pick_count, source="board_display"
             )
-            st.session_state["_draft_room_last_widget_key"] = widget_key
-            editor_return = st.data_editor(
-                initial_df,
-                key=widget_key,
-                num_rows="fixed",
+
+            display_cols = [c for c in ("Round", "Pick", "Team", "Player") if c in edited_draft.columns]
+            st.dataframe(
+                edited_draft[display_cols] if display_cols else edited_draft,
                 use_container_width=True,
-                column_config={
-                    "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
-                    "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
-                },
+                hide_index=True,
             )
-            render_raw_widget_state_debug(st, widget_key)
-            render_pick_entry_workflow_debug(st, st.session_state, player_names_pool=player_options_room)
-            if st.session_state.pop("_draft_room_skip_editor_resolve_clobber", False):
-                edited_draft = st.session_state.get("draft_room_table", initial_df)
-                if hasattr(edited_draft, "copy"):
-                    edited_draft = edited_draft.copy()
-                pick_count = table_pick_count(edited_draft)
-                st.session_state["_draft_room_active_board_source"] = "draft_room_table:quick_draft"
-                st.session_state["_draft_room_active_board_pick_count"] = pick_count
+
+            open_picks = open_pick_row_options(edited_draft)
+            st.markdown("**Assign player to pick**")
+            if not open_picks:
+                st.info("Board is full — reset the simulator to start a new mock draft.")
             else:
-                edited_draft, _source, pick_count = resolve_active_board(
-                    st.session_state, widget_key, editor_return, st=st
-                )
-                edited_draft, pick_count, _preserve_note = preserve_richer_session_board(
-                    st.session_state, edited_draft, pick_count
-                )
-            if edited_draft is None:
-                edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
-            else:
-                edited_draft = edited_draft.copy()
-            st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
-            st.session_state["draft_room_table"] = edited_draft.copy()
-            record_board_editor_diagnostics(st.session_state, edited_draft, editor_key=widget_key)
+                pick_labels = [label for _, label in open_picks]
+                pick_row_by_label = {label: idx for idx, label in open_picks}
+                pick_col, search_col = st.columns([1, 2])
+                with pick_col:
+                    selected_pick_label = st.selectbox(
+                        "Pick",
+                        pick_labels,
+                        key="dr_board_assign_pick_label",
+                    )
+                with search_col:
+                    search_q = st.text_input(
+                        "Search player",
+                        key="dr_board_assign_search",
+                        placeholder="Type player name, e.g. Aaron Judge or FRA",
+                    )
+                    matches: list[str] = []
+                    if search_draft_pool_names and len(str(search_q or "").strip()) >= 2:
+                        matches = search_draft_pool_names(
+                            str(search_q), _assign_pool_names, limit=30
+                        )
+                    elif str(search_q or "").strip():
+                        q = str(search_q).lower()
+                        matches = [n for n in _assign_pool_names if q in n.lower()][:30]
+                    selected_player = ""
+                    if matches:
+                        selected_player = st.selectbox(
+                            "Matching players",
+                            matches,
+                            key="dr_board_assign_player_pick",
+                        )
+                    elif str(search_q or "").strip():
+                        st.caption("No matches — try more letters.")
+
+                if st.button("Set player on pick", type="primary", key="dr_board_assign_submit"):
+                    row_idx = pick_row_by_label.get(selected_pick_label)
+                    if row_idx is None:
+                        st.error("Pick row not found.")
+                    elif not selected_player:
+                        st.error("Search and select a player first.")
+                    else:
+                        res = assign_player_to_board_row(
+                            st.session_state, row_idx, selected_player
+                        )
+                        if res.get("ok"):
+                            st.success(res.get("message"))
+                            st.rerun()
+                        else:
+                            st.error(res.get("message") or res.get("error"))
+
+            edited_draft = _session_draft_board_df()
+            pick_count = table_pick_count(edited_draft)
+            record_board_assignment_diagnostics(
+                st.session_state, pick_count=pick_count, source="board_display"
+            )
+            try:
+                from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, ACTIVE_DRAFT_MODE_MANUAL, get_active_draft_mode, set_canonical_draft_meta
+
+                if get_active_draft_mode(st.session_state) != ACTIVE_DRAFT_MODE_LIVE:
+                    set_canonical_draft_meta(
+                        st.session_state,
+                        mode=ACTIVE_DRAFT_MODE_MANUAL,
+                        source="board_pick_assign",
+                        pick_count=pick_count,
+                    )
+            except Exception:
+                pass
 
             save_col, _save_sp = st.columns([1, 3])
             with save_col:
@@ -15663,38 +15902,35 @@ if active_page == "Draft Room Simulator":
                     "Save Draft Board Now",
                     key="draft_room_manual_save_btn",
                     type="primary",
-                    help="Write the current board from the editor to disk and cloud.",
+                    help="Write the current board to disk and cloud.",
                 ):
-                    result = save_draft_board_now(
-                        st, st.session_state, board=edited_draft, widget_key=widget_key
-                    )
+                    result = save_draft_board_now(st, st.session_state, board=edited_draft)
                     picks = int(result.get("saved_pick_count") or 0)
-                    if result.get("saved") and result.get("cloud"):
+                    disk_n = result.get("disk_payload_pick_count")
+                    cloud_n = result.get("cloud_payload_pick_count")
+                    if (
+                        result.get("saved")
+                        and result.get("saved_cloud")
+                        and int(cloud_n or 0) > 0
+                        and picks > 0
+                    ):
                         st.success(
-                            f"Saved {picks} pick(s) to disk and cloud. "
+                            f"Saved {picks} pick(s) to disk and cloud "
+                            f"(disk payload: {disk_n}, cloud payload: {cloud_n}). "
                             f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
                         )
-                    elif result.get("saved"):
+                    elif result.get("saved") and picks > 0:
                         st.warning(
-                            f"Saved {picks} pick(s) to disk only. Cloud error: {result.get('error') or 'unknown'}"
+                            f"Saved {picks} pick(s) to disk only (disk payload: {disk_n}). "
+                            f"Cloud error: {result.get('error') or 'unknown'}"
                         )
                     else:
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
 
             render_board_tab_diagnostics(st)
-            render_board_debug_expander(st, widget_key, editor_return)
         except Exception as exc:
-            edited_draft = st.data_editor(
-                st.session_state["draft_room_table"],
-                num_rows="fixed",
-                use_container_width=True,
-                column_config={
-                    "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
-                    "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
-                },
-            )
-            st.session_state["draft_room_table"] = edited_draft.copy()
-            st.error(f"Draft board editor error: {type(exc).__name__}: {exc}")
+            st.dataframe(_session_draft_board_df(), use_container_width=True, hide_index=True)
+            st.error(f"Draft board error: {type(exc).__name__}: {exc}")
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (
@@ -16727,7 +16963,7 @@ if active_page == "Fantasy Standings Tracker":
         current_stats = normalize_uploaded_stat_columns(current_stats)
 
     if not current_stats.empty:
-        draft_table = st.session_state.get("draft_room_table", pd.DataFrame())
+        draft_table = _session_draft_board_df()
         if draft_table.empty:
             st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
         else:
@@ -17328,9 +17564,8 @@ if active_page == "Valuation":
             on_change=valuation_filter_changed,
         )
         if value_sync_enabled:
-            value_room_table = st.session_state.get("draft_room_table", pd.DataFrame()).copy()
-            if not value_room_table.empty and "Player" in value_room_table.columns:
-                value_drafted_names = value_room_table["Player"].dropna().astype(str).str.strip().tolist()
+            value_drafted_names = _drafted_player_names_canonical()
+            if value_drafted_names:
                 value_team_options = get_draft_room_team_options()
                 if value_team_options:
                     default_value_team = st.session_state.get("room_your_team", value_team_options[0])
