@@ -171,6 +171,54 @@ class TestBaseballAppliedMathContext(unittest.TestCase):
         self.assertIn("Corbin Carroll", ctx.get("recommended_players", []))
         self.assertEqual(len(ctx.get("roster", [])), 2)
 
+    def test_cache_draft_assistant_ami_context_populates_projection(self) -> None:
+        import pandas as pd
+
+        from applied_math_context import build_baseball_applied_math_context, cache_draft_assistant_ami_context
+
+        session: dict = {
+            "room_your_team": "Daniel",
+            "room_team_count": 2,
+            "room_rounds": 5,
+            "room_team_names": "Daniel\nTeam 2",
+            "draft_room_table": pd.DataFrame(
+                [
+                    {"Round": 1, "Pick": 1, "Team": "Daniel", "Player": "Aaron Judge"},
+                    {"Round": 1, "Pick": 2, "Team": "Team 2", "Player": ""},
+                ]
+            ),
+        }
+        recs = pd.DataFrame(
+            [
+                {
+                    "fullName": "Corbin Carroll",
+                    "Primary Position": "OF",
+                    "Model Rank": 12,
+                    "Market Rank": 18,
+                    "Expected Fantasy Value": 0.82,
+                    "Draft Fit Score": 0.91,
+                    "Reason": "Pick note: strong fit.",
+                }
+            ]
+        )
+        cache_draft_assistant_ami_context(
+            session,
+            page="Draft Assistant Simulator",
+            recs_df=recs,
+            current_pick=3,
+            my_roster=["Aaron Judge"],
+            drafted_total=1,
+            draft_format="5x5 Roto",
+            assistant_team="Daniel",
+        )
+        proj = session.get("_ami_draft_projection")
+        self.assertIsInstance(proj, dict)
+        self.assertEqual(proj.get("top_pick"), "Corbin Carroll")
+        self.assertEqual(proj.get("current_pick"), 3)
+        ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
+        self.assertIn("draft_projection", ctx)
+        self.assertEqual(ctx["draft_projection"]["top_pick"], "Corbin Carroll")
+
 
 if __name__ == "__main__":
     unittest.main()

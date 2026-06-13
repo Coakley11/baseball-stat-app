@@ -15303,6 +15303,21 @@ if active_page == "Draft Assistant Simulator":
             )
 
         recs["Strategy"] = recs.apply(_strategy_for_row, axis=1)
+        try:
+            from applied_math_context import cache_draft_assistant_ami_context
+
+            cache_draft_assistant_ami_context(
+                st.session_state,
+                page="Draft Assistant Simulator",
+                recs_df=recs,
+                current_pick=int(current_pick),
+                my_roster=my_roster,
+                drafted_total=len(drafted_or_owned_players),
+                draft_format=str(draft_format),
+                assistant_team=str(assistant_my_team_name),
+            )
+        except Exception:
+            pass
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 

@@ -510,6 +510,75 @@ def get_cached_page_context(session_state: dict[str, Any], page: str) -> dict[st
     return dict(block) if isinstance(block, dict) else {}
 
 
+def cache_draft_assistant_ami_context(
+    session_state: dict[str, Any],
+    *,
+    page: str,
+    recs_df: Any,
+    current_pick: int,
+    my_roster: list[str],
+    drafted_total: int,
+    draft_format: str,
+    assistant_team: str,
+) -> None:
+    """Cache top recommendation + canonical draft snapshot for AMI send."""
+    try:
+        import pandas as pd
+        from draft_state import gather_draft_ami_snapshot
+    except Exception:
+        return
+
+    draft_proj: dict[str, Any] = {
+        "current_pick": int(current_pick),
+        "my_roster_size": len(my_roster),
+        "drafted_total": int(drafted_total),
+        "draft_format": str(draft_format),
+        "assistant_team": str(assistant_team),
+    }
+    top_rows = []
+    if recs_df is not None and not getattr(recs_df, "empty", True):
+        for _, row in recs_df.head(6).iterrows():
+            name = str(row.get("fullName") or row.get("Player") or "").strip()
+            if not name:
+                continue
+            entry: dict[str, Any] = {"player": name}
+            for col in (
+                "Primary Position",
+                "Model Rank",
+                "Market Rank",
+                "Expected Fantasy Value",
+                "Draft Fit Score",
+                "Fantasy Edge",
+                "Scarcity Score",
+            ):
+                if col in row.index and pd.notna(row.get(col)):
+                    entry[col] = row.get(col)
+            if str(row.get("Reason") or "").strip():
+                entry["reason"] = str(row.get("Reason"))[:240]
+            top_rows.append(entry)
+        if top_rows:
+            draft_proj["top_pick"] = top_rows[0]["player"]
+            draft_proj["top_recommendations"] = top_rows
+
+    session_state["_ami_draft_projection"] = draft_proj
+    snap = gather_draft_ami_snapshot(page, session_state)
+    if top_rows:
+        snap["assistant_top_pick"] = top_rows[0]
+        snap["recommended_players"] = top_rows
+    session_state["_ami_draft_snapshot"] = snap
+    cache_page_context(
+        session_state,
+        page,
+        {
+            "draft_projection": draft_proj,
+            "current_pick": int(current_pick),
+            "draft_round": snap.get("draft_round"),
+            "roster": list(my_roster)[:12],
+            "draft_format": str(draft_format),
+        },
+    )
+
+
 def record_trend_intel(
     session_state: dict[str, Any],
     *,
