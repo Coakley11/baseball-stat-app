@@ -30,14 +30,16 @@ from draft_room_state import (
     coerce_board_table,
     commit_draft_room_table,
     commit_draft_room_table_if_changed,
+    capture_board_from_data_editor,
     draft_board_diagnostics,
     draft_room_restore_stats,
     detect_player_column,
+    delete_live_draft_only,
     editor_widget_key,
     enrich_save_payload_with_draft_room,
     get_canonical_draft_board,
     delete_active_draft,
-    delete_live_draft_only,
+    is_board_editor_widget_key,
     get_all_drafted_player_names,
     paste_players_to_board,
     reset_simulator_board_only,
@@ -487,6 +489,45 @@ class TestCanonicalDraftBoard(unittest.TestCase):
         prepare_draft_room_state(dell_session)
         names = get_all_drafted_player_names(dell_session)
         self.assertEqual(len(names), 3)
+
+
+class TestEditorCapture(unittest.TestCase):
+    def test_capture_prefers_editor_return(self) -> None:
+        base = _sample_table(picks=0)
+        edited = _sample_table(picks=2)
+        session: dict = {
+            DRAFT_ROOM_TABLE_KEY: base,
+            DRAFT_ROOM_EDITOR_CACHE_KEY: base.copy(),
+        }
+        captured, count, source = capture_board_from_data_editor(
+            session, "draft_room_board_editor_0", edited
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(source, "editor_return")
+
+    def test_capture_reconstructs_widget_edited_rows(self) -> None:
+        base = _sample_table(picks=0)
+        session: dict = {
+            DRAFT_ROOM_TABLE_KEY: base,
+            DRAFT_ROOM_EDITOR_SEED_KEY: base.copy(),
+            "draft_room_board_editor_0": {
+                "edited_rows": {0: {"Player": "Aaron Judge"}, 2: {"Player": "Juan Soto"}},
+                "added_rows": [],
+                "deleted_rows": [],
+            },
+        }
+        st = MagicMock()
+        st.session_state = session
+        captured, count, source = capture_board_from_data_editor(
+            session, "draft_room_board_editor_0", base, st=st
+        )
+        self.assertEqual(count, 2)
+        self.assertIn("widget_reconstructed", source)
+        self.assertEqual(captured.at[0, "Player"], "Aaron Judge")
+
+    def test_is_board_editor_widget_key_excludes_cache(self) -> None:
+        self.assertTrue(is_board_editor_widget_key("draft_room_board_editor_0"))
+        self.assertFalse(is_board_editor_widget_key(DRAFT_ROOM_EDITOR_CACHE_KEY))
 
 
 class TestPickRestoreDraftRoom(unittest.TestCase):

@@ -15742,8 +15742,8 @@ if active_page == "Draft Room Simulator":
     with dr_tab_board:
         st.subheader("Live draft board")
         st.caption(
-            "Select players in the **Player** column (type letters to filter the list), then click "
-            "**Save Draft Board Now**. When **Live Draft Room** is active, picks sync here automatically."
+            "Click a **Player** cell, type letters to filter (e.g. FRA), select a real player, "
+            "then click **Save Draft Board Now**. Live Draft Room picks sync here automatically."
         )
         try:
             from draft_room_state import render_canonical_draft_banner
@@ -15798,19 +15798,19 @@ if active_page == "Draft Room Simulator":
         try:
             from draft_room_state import (
                 DRAFT_ROOM_EDITOR_CACHE_KEY,
+                capture_board_from_data_editor,
                 prepare_board_editor_for_render,
-                preserve_richer_session_board,
                 record_board_editor_diagnostics,
                 render_board_debug_expander,
                 render_board_tab_diagnostics,
                 render_raw_widget_state_debug,
-                resolve_active_board,
                 save_draft_board_now,
+                sync_editor_seed,
                 table_pick_count,
             )
 
             initial_df, widget_key = prepare_board_editor_for_render(
-                st.session_state, _session_draft_board_df()
+                st.session_state, _session_draft_board_df(), st=st
             )
             st.session_state["_draft_room_last_widget_key"] = widget_key
             editor_return = st.data_editor(
@@ -15839,27 +15839,14 @@ if active_page == "Draft Room Simulator":
                 st.session_state["_draft_room_active_board_source"] = "draft_room_table:programmatic"
                 st.session_state["_draft_room_active_board_pick_count"] = pick_count
             else:
-                edited_draft, _source, pick_count = resolve_active_board(
+                edited_draft, pick_count, _capture_src = capture_board_from_data_editor(
                     st.session_state, widget_key, editor_return, st=st
                 )
-                edited_draft, pick_count, _preserve_note = preserve_richer_session_board(
-                    st.session_state, edited_draft, pick_count
-                )
-            if edited_draft is None:
-                edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
-            else:
-                edited_draft = edited_draft.copy()
-            try:
-                from draft_room_state import _draft_room_from_blob
-
-                _blob = _draft_room_from_blob(st.session_state) or {}
-                _canonical_picks = table_pick_count(_blob)
-            except Exception:
-                _canonical_picks = table_pick_count(st.session_state.get("draft_room_table"))
-            _session_picks = table_pick_count(st.session_state.get("draft_room_table"))
-            if pick_count > 0 or max(_canonical_picks, _session_picks) == 0:
+            edited_draft = edited_draft.copy() if hasattr(edited_draft, "copy") else initial_df
+            if pick_count > 0:
                 st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
                 st.session_state["draft_room_table"] = edited_draft.copy()
+                sync_editor_seed(st.session_state, edited_draft, force_reset=True)
             try:
                 from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, ACTIVE_DRAFT_MODE_MANUAL, get_active_draft_mode, set_canonical_draft_meta
 

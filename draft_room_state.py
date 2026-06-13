@@ -99,17 +99,132 @@ def apply_restored_board_to_session(
     return table
 
 
-def prepare_board_editor_for_render(session: dict[str, Any], canonical_table: Any) -> tuple[pd.DataFrame, str]:
+def is_board_editor_widget_key(key: str) -> bool:
+    """True only for versioned Streamlit widget keys (draft_room_board_editor_0), not cache/seed."""
+    prefix = f"{DRAFT_ROOM_EDITOR_KEY_PREFIX}_"
+    text = str(key)
+    if not text.startswith(prefix):
+        return False
+    if text in (DRAFT_ROOM_EDITOR_CACHE_KEY, DRAFT_ROOM_EDITOR_SEED_KEY):
+        return False
+    suffix = text[len(prefix) :]
+    return suffix.isdigit()
+
+
+def apply_pending_widget_edits_to_board(
+    session: dict[str, Any],
+    base: pd.DataFrame,
+    st: Any,
+    widget_key: str,
+) -> pd.DataFrame:
+    """Merge keyed data_editor edited_rows into base before render."""
+    _, raw = find_widget_state_in_session(st, widget_key)
+    widget_dict = _coerce_data_editor_widget_state(raw)
+    if not widget_dict or not widget_state_has_edits(raw):
+        return base
+    reconstructed = reconstruct_board_from_widget_state(widget_dict, base)
+    norm = normalize_board_table(reconstructed)
+    if norm is not None and table_pick_count(norm) >= table_pick_count(base):
+        return norm
+    return base
+
+
+def capture_board_from_data_editor(
+    session: dict[str, Any],
+    widget_key: str,
+    editor_return: Any,
+    *,
+    st: Any | None = None,
+) -> tuple[pd.DataFrame, int, str]:
+    """
+    Authoritative board capture after st.data_editor.
+    Prefers editor_return, then widget edited_rows reconstruction, then session table.
+    """
+    sources: list[tuple[pd.DataFrame, str]] = []
+    debug: dict[str, Any] = {
+        "widget_key": widget_key,
+        "editor_return_type": type(editor_return).__name__ if editor_return is not None else "missing",
+        "editor_return_pick_count": table_pick_count(editor_return) if is_runtime_table(editor_return) else 0,
+    }
+
+    if is_runtime_table(editor_return):
+        norm = normalize_board_table(editor_return)
+        if norm is not None:
+            sources.append((norm, "editor_return"))
+
+    read_key = widget_key
+    raw_widget: Any = None
+    if st is not None:
+        read_key, raw_widget = find_widget_state_in_session(st, widget_key)
+        debug["read_key"] = read_key
+        debug["widget_state_type"] = type(raw_widget).__name__ if raw_widget is not None else "missing"
+        widget_dict = _coerce_data_editor_widget_state(raw_widget)
+        if widget_dict is not None:
+            debug["widget_state_keys"] = sorted(str(k) for k in widget_dict.keys())
+            debug["edited_rows"] = widget_dict.get("edited_rows")
+            debug["added_rows"] = widget_dict.get("added_rows")
+            debug["deleted_rows"] = widget_dict.get("deleted_rows")
+            base = sources[0][0].copy() if sources else _base_board_for_reconstruction(session)
+            reconstructed = reconstruct_board_from_widget_state(widget_dict, base)
+            norm = normalize_board_table(reconstructed)
+            if norm is not None:
+                sources.append((norm, f"widget_reconstructed:{read_key}"))
+                debug["widget_reconstructed_pick_count"] = table_pick_count(norm)
+        elif is_runtime_table(raw_widget):
+            norm = normalize_board_table(raw_widget)
+            if norm is not None:
+                sources.append((norm, f"widget_dataframe:{read_key}"))
+        debug["widget_state_repr"] = repr(raw_widget)[:2000]
+
+    for key in (DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_EDITOR_CACHE_KEY, DRAFT_ROOM_EDITOR_SEED_KEY):
+        val = session.get(key)
+        if is_runtime_table(val):
+            norm = normalize_board_table(val)
+            if norm is not None:
+                sources.append((norm, key))
+
+    best = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    best_count = -1
+    best_source = "empty_fallback"
+    for df, src in sources:
+        count = table_pick_count(df)
+        if count > best_count:
+            best_count = count
+            best = df
+            best_source = src
+
+    if best_count < 0:
+        best_count = 0
+
+    debug["capture_source"] = best_source
+    debug["capture_pick_count"] = best_count
+    session["_draft_room_widget_capture_debug"] = debug
+    session["_draft_room_active_board_source"] = best_source
+    session["_draft_room_active_board_pick_count"] = best_count
+    return best.copy(), best_count, best_source
+
+
+def prepare_board_editor_for_render(
+    session: dict[str, Any],
+    canonical_table: Any,
+    *,
+    st: Any | None = None,
+    widget_key: str | None = None,
+) -> tuple[pd.DataFrame, str]:
     """Return (initial_df, widget_key) for st.data_editor — never touches widget session key."""
     if not is_runtime_table(canonical_table):
         canonical_table = pd.DataFrame()
     if DRAFT_ROOM_EDITOR_VERSION_KEY not in session:
         session[DRAFT_ROOM_EDITOR_VERSION_KEY] = 0
-    sync_editor_seed(session, canonical_table)
+    wkey = widget_key or editor_widget_key(session)
+    table = canonical_table.copy() if is_runtime_table(canonical_table) else pd.DataFrame()
+    if st is not None:
+        table = apply_pending_widget_edits_to_board(session, table, st, wkey)
+    sync_editor_seed(session, table, force_reset=table_pick_count(table) > 0)
     seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
-    initial = seed.copy() if is_runtime_table(seed) else canonical_table.copy()
+    initial = seed.copy() if is_runtime_table(seed) else table.copy()
     session["_draft_room_editor_column_order"] = _column_names_list(initial)
-    return initial, editor_widget_key(session)
+    return initial, wkey
 
 
 def is_runtime_table(table: Any) -> bool:
@@ -1190,7 +1305,7 @@ def render_raw_widget_state_debug(st: Any, widget_key: str) -> None:
     """Immediately under the Board editor — raw Streamlit widget state."""
     ss = st.session_state
     info = inspect_widget_state_debug(st, ss, widget_key)
-    with st.expander("Raw widget state debug", expanded=False):
+    with st.expander("Raw widget state debug", expanded=True):
         for key in (
             "actual_widget_key_rendered",
             "actual_widget_key_read",
@@ -1257,7 +1372,7 @@ def resolve_active_board(
         if widget_raw is not None:
             candidates.append((read_key, widget_raw))
     for key in _draft_related_session_keys(session):
-        if key.startswith(DRAFT_ROOM_EDITOR_KEY_PREFIX):
+        if is_board_editor_widget_key(key):
             candidates.append((key, session.get(key)))
     candidates.extend(
         [
@@ -1756,11 +1871,20 @@ def read_board_for_save(
     st: Any | None = None,
     widget_key: str | None = None,
 ) -> pd.DataFrame | None:
-    """Read board for manual save — prefer widget session state, then render return, then cache."""
+    """Read board for manual save — prefer explicit board, then capture from editor."""
     wkey = widget_key or editor_widget_key(session)
+    if is_runtime_table(board) and table_pick_count(board) > 0:
+        norm = normalize_board_table(board)
+        return (norm if norm is not None else board).copy()
+    if st is not None:
+        captured, count, _ = capture_board_from_data_editor(session, wkey, board, st=st)
+        if count > 0:
+            return captured
     active, _, _ = resolve_active_board(session, wkey, board, st=st)
-    if is_runtime_table(active):
+    if is_runtime_table(active) and table_pick_count(active) > 0:
         return active.copy()
+    if is_runtime_table(board):
+        return board.copy()
     return None
 
 
@@ -2051,27 +2175,26 @@ def save_draft_board_now(
 def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
     """Live Board-tab fields shown directly under the editor."""
     widget_key = session.get("_draft_room_last_widget_key") or editor_widget_key(session)
-    editor_return = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
-    active, source, active_picks = resolve_active_board(session, widget_key, editor_return, st=st)
-    if is_runtime_table(active):
-        session[DRAFT_ROOM_EDITOR_CACHE_KEY] = active.copy()
-        session[DRAFT_ROOM_TABLE_KEY] = active.copy()
+    capture_dbg = session.get("_draft_room_widget_capture_debug")
+    if isinstance(capture_dbg, dict):
+        active_picks = int(capture_dbg.get("capture_pick_count") or 0)
+        source = str(capture_dbg.get("capture_source") or "")
+    else:
+        active_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        source = str(session.get("_draft_room_active_board_source") or "")
     editor_diag = session.get("_draft_room_editor_diagnostics")
-    if not isinstance(editor_diag, dict) and is_runtime_table(active):
-        editor_diag = record_board_editor_diagnostics(session, active, editor_key=widget_key)
-    board = draft_board_diagnostics(session)
     trace = session.get("_draft_room_last_save_trace")
     out = {
         "data_editor_key": widget_key,
-        "editor_state_exists": is_runtime_table(active),
+        "editor_state_exists": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)) > 0,
         "editor_version": session.get(DRAFT_ROOM_EDITOR_VERSION_KEY),
-        "active_board_source": source,
+        "active_board_source": session.get("_draft_room_active_board_source") or source,
         "data_editor_returned_pick_count": active_picks,
         "commit_input_pick_count": (
             editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else active_picks
         ),
-        "session_pick_count": board.get("session_pick_count"),
-        "draft_room_pick_count": board.get("draft_room_pick_count"),
+        "session_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "draft_room_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
         "payload_has_draft_board": session.get("payload_has_draft_board"),
         "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
         "restored_draft_room_pick_count": session.get("restored_draft_room_pick_count"),
@@ -2135,6 +2258,23 @@ def render_board_tab_diagnostics(st: Any) -> None:
         active_picks = diag.get("draft_room_pick_count") or diag.get("session_pick_count")
         if active_picks is not None:
             st.text(f"active_board_pick_count: {active_picks}")
+        capture_dbg = ss.get("_draft_room_widget_capture_debug")
+        if isinstance(capture_dbg, dict):
+            st.markdown("**Editor capture (this run)**")
+            for key in (
+                "widget_key",
+                "read_key",
+                "widget_state_type",
+                "editor_return_type",
+                "editor_return_pick_count",
+                "widget_reconstructed_pick_count",
+                "capture_source",
+                "capture_pick_count",
+                "edited_rows",
+            ):
+                val = capture_dbg.get(key)
+                if val is not None and val != "":
+                    st.text(f"{key}: {val}")
 
 
 def render_draft_board_diagnostics(st: Any) -> None:
