@@ -69,6 +69,8 @@ class HardeningResult:
     stage_d_cites_data: bool = False
     stage_e_analyst: bool = False
     stage_f_grounded: bool = True
+    stage_g_quality: bool = True
+    player_trustworthy: bool = False
     route_id: str = ""
     draft_mode: str = ""
     missing_context: list[str] = field(default_factory=list)
@@ -244,6 +246,21 @@ QUESTION_FAMILIES: list[HardeningCase] = [
 ]
 
 
+QUALITY_BY_FAMILY: dict[str, str] = {
+    "draft_market_next_catcher": "next_catcher",
+    "draft_compare_olson_schwarber": "olson_vs_schwarber",
+    "draft_player_why": "jose_ramirez",
+    "draft_roster_needs": "team_needs",
+    "draft_hitter_pitcher": "hitter_vs_pitcher",
+    "live_make_it_back": "make_it_back",
+    "sleepers_take": "sleepers",
+    "trend_forecast": "trend_interpretation",
+    "historical_bonds": "historical_filters",
+    "compare_power": "comparison_power",
+    "compare_why_better": "comparison_why",
+}
+
+
 def _ensure_ami_import() -> None:
     if not AMI_REPO.is_dir():
         raise SystemExit(f"Applied Intelligence repo not found: {AMI_REPO}")
@@ -369,6 +386,7 @@ def run_hardening_pass() -> dict[str, Any]:
     from ami_acceptance_harness import audit_page_context
 
     from ami_grounded_answer_audit import audit_draft_compare_olson_schwarber, audit_draft_market_catcher
+    from ami_answer_quality_audit import QUALITY_CASES, evaluate_answer_quality
 
     from components.applied_math_solvers import solve_suite_question
 
@@ -440,6 +458,16 @@ def run_hardening_pass() -> dict[str, Any]:
             if not ga.passed:
                 row.failures.extend(ga.failures)
 
+        quality_id = QUALITY_BY_FAMILY.get(case.family_id)
+        if quality_id:
+            qcase = next((c for c in QUALITY_CASES if c.case_id == quality_id), None)
+            if qcase:
+                qa = evaluate_answer_quality(qcase, ctx, text)
+                row.stage_g_quality = qa.player_trustworthy
+                row.player_trustworthy = qa.player_trustworthy
+                if not qa.player_trustworthy:
+                    row.failures.extend(qa.failures[:4])
+
         if not row.stage_a_context:
             row.failures.append(f"Missing context: {row.missing_context[:5]}")
         if not row.stage_b_route:
@@ -457,6 +485,8 @@ def run_hardening_pass() -> dict[str, Any]:
                 row.failures.append("Answer too thin for quantitative explanation")
         if not row.stage_f_grounded:
             row.failures.append("Grounded answer audit failed")
+        if not row.stage_g_quality:
+            row.failures.append("Answer quality audit failed (fantasy-player trust bar)")
 
         row.passed = not row.failures
         row.notes.append(f"analyst_levels={_analyst_levels(text)}")
@@ -468,7 +498,15 @@ def run_hardening_pass() -> dict[str, Any]:
         "build_label": SUITE_BUILD_LABEL,
         "commit": GIT_COMMIT_SHORT,
         "method": "question_family_hardening_pass",
-        "pipeline_stages": ["A_context", "B_route", "C_mode", "D_cites_data", "E_analyst_structure", "F_grounded_answer"],
+        "pipeline_stages": [
+            "A_context",
+            "B_route",
+            "C_mode",
+            "D_cites_data",
+            "E_analyst_structure",
+            "F_grounded_answer",
+            "G_answer_quality",
+        ],
         "summary": {
             "total": len(results),
             "passed": passed,
