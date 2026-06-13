@@ -1302,6 +1302,7 @@ def force_autosave(
             "trend_edit",
             "career_edit",
             "draft_edit",
+            "live_draft_pick",
             "historical_edit",
             "valuation_edit",
             "projections_edit",
@@ -1453,8 +1454,8 @@ def autosave_if_changed(
             if cloud_err:
                 st.session_state["_suite_persist_last_cloud_error"] = cloud_err
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True
-    except Exception:
-        pass
+    except Exception as exc:
+        st.session_state["_suite_autosave_last_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def show_persistence_messages(st: Any) -> None:

@@ -209,6 +209,13 @@ def restore_page_state(session, page_name: str, store: dict):
             return restore_trend_page_filters(session, store)
         except ImportError:
             pass
+    if page_name == "Live Draft Room":
+        try:
+            from live_draft_state import restore_live_draft_page_filters
+
+            return restore_live_draft_page_filters(session, store)
+        except ImportError:
+            pass
     snapshot = store.get(page_name)
     if not snapshot:
         return False

@@ -46,6 +46,7 @@ _WORKSPACE_KEYS = (
     "trend_state",
     "career_state",
     "draft_state",
+    "live_draft_state",
     "historical_state",
     "valuation_state",
     "projections_state",
@@ -234,6 +235,13 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
             draft_workflow = _draft_workflow_from_blob(state)
         except ImportError:
             draft_workflow = None
+    live_draft_summary = None
+    try:
+        from live_draft_state import live_draft_envelope_summary
+
+        live_draft_summary = live_draft_envelope_summary(state)
+    except ImportError:
+        live_draft_summary = None
     return {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "updated_at": _utc_now_iso(),
@@ -259,6 +267,7 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
         }
         or None,
         "draft_workflow": draft_workflow if draft_workflow and any(draft_workflow.values()) else None,
+        "live_draft": live_draft_summary,
     }
 
 
@@ -293,6 +302,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
                 state[key] = ss[key]
     save_reason = str(ss.pop("_suite_pending_save_reason", None) or "autosave")
     state["baseball_workspace_state"] = _build_workspace_envelope(st, state, save_reason=save_reason)
+    try:
+        from live_draft_state import sanitize_state_dict_for_json
+
+        state = sanitize_state_dict_for_json(state)
+    except ImportError:
+        pass
     return state
 
 
@@ -528,6 +543,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         pass
 
     try:
+        from live_draft_state import apply_cloud_live_draft_state_if_allowed, prepare_live_draft_state
+
+        apply_cloud_live_draft_state_if_allowed(ss, state)
+        prepare_live_draft_state(ss)
+    except ImportError:
+        pass
+
+    try:
         from historical_state import apply_cloud_historical_state_if_allowed
 
         apply_cloud_historical_state_if_allowed(ss, state)
@@ -622,6 +645,12 @@ def autosave_baseball_state(st: Any) -> None:
             except ImportError:
                 pass
             try:
+                from live_draft_state import clear_live_draft_local_edit
+
+                clear_live_draft_local_edit(st.session_state)
+            except ImportError:
+                pass
+            try:
                 from historical_state import clear_historical_local_edit
 
                 clear_historical_local_edit(st.session_state)
@@ -688,6 +717,12 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
             from draft_state import clear_draft_local_edit
 
             clear_draft_local_edit(st.session_state)
+        except ImportError:
+            pass
+        try:
+            from live_draft_state import clear_live_draft_local_edit
+
+            clear_live_draft_local_edit(st.session_state)
         except ImportError:
             pass
         try:

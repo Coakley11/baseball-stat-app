@@ -538,6 +538,12 @@ def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, A
     if scoring:
         snapshot["scoring_settings"] = scoring
 
+    try:
+        from live_draft_state import prepare_live_draft_state
+
+        prepare_live_draft_state(session)
+    except ImportError:
+        pass
     room = session.get("live_draft_room")
     if isinstance(room, dict) and room:
         try:

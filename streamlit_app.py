@@ -8769,9 +8769,15 @@ def build_live_draft_room_metadata(config, host_team=None):
 
 
 def serialize_live_draft_room(room):
-    """JSON-friendly snapshot for future persistence / reconnect (local stub)."""
+    """JSON-friendly snapshot for persistence / AMI / reconnect."""
     if not room:
         return {}
+    try:
+        from live_draft_state import room_to_persist_dict
+
+        return room_to_persist_dict(room)
+    except ImportError:
+        pass
     meta = room.get("meta", {})
     return {
         "draft_room_id": room.get("draft_room_id"),
@@ -9620,6 +9626,15 @@ def live_draft_push_analysis_to_session(room):
         "source": "Live Draft Room",
     }
     return True
+
+
+def _persist_live_draft_room(room, *, reason: str, rerun: bool = True) -> None:
+    """Write canonical live draft state and force-save to disk/cloud."""
+    from live_draft_state import commit_live_draft_room
+
+    commit_live_draft_room(st, st.session_state, room, reason=reason)
+    if rerun:
+        st.rerun()
 
 
 def player_on_fantasy_team(player_name, fantasy_team):
@@ -16025,13 +16040,17 @@ if active_page == "Live Draft Room":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    from live_draft_state import prepare_live_draft_state, render_live_draft_save_diagnostics
+
+    prepare_live_draft_state(st.session_state)
+    if developer_mode_enabled():
+        render_live_draft_save_diagnostics(st)
     st.markdown(
         """
         <div class="section-card">
-            <div class="section-title">Live Fantasy Draft Prototype</div>
+            <div class="section-title">Live Fantasy Draft</div>
             <div class="small-note">
-                This version stores everything in local session state for a stable single-browser draft experience.
-                The structure is ready for a future multi-drafter sync layer.
+                Draft board, picks, pool, and settings persist to disk and cloud — reopen after refresh or on another device.
             </div>
         </div>
         """,
@@ -16115,8 +16134,7 @@ if active_page == "Live Draft Room":
             reset_live = st.button("Reset Draft Room", key="live_draft_reset_btn")
 
         if reset_live:
-            st.session_state["live_draft_room"] = None
-            st.rerun()
+            _persist_live_draft_room(None, reason="reset_draft")
 
         if start_live:
             fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
@@ -16160,9 +16178,8 @@ if active_page == "Live Draft Room":
                 }
                 new_room = live_draft_init_room(config, pool_live)
                 live_draft_start(new_room)
-                st.session_state["live_draft_room"] = new_room
                 st.success(f"Live draft started — Room ID **{new_room['draft_room_id']}**")
-                st.rerun()
+                _persist_live_draft_room(new_room, reason="start_draft")
 
     room = st.session_state.get("live_draft_room")
 
@@ -16199,44 +16216,39 @@ if active_page == "Live Draft Room":
             if remaining <= 0 and room.get("timer_handled_index") != idx:
                 ok, msg = live_draft_auto_pick(room)
                 room["timer_handled_index"] = idx
-                st.session_state["live_draft_room"] = room
                 if ok:
                     st.toast(msg)
                 else:
                     st.warning(msg)
-                st.rerun()
+                _persist_live_draft_room(room, reason="timer_auto_pick")
 
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
         with ctrl1:
             if st.button("Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
                 room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
                 room["status"] = "paused"
-                st.session_state["live_draft_room"] = room
-                st.rerun()
+                _persist_live_draft_room(room, reason="pause_draft")
         with ctrl2:
             if st.button("Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume"):
                 room["status"] = "in_progress"
                 pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
                 room["timer_started_at"] = time.time() - (int(cfg.get("timer_seconds", 60)) - pause_left)
                 room["paused_remaining_seconds"] = None
-                st.session_state["live_draft_room"] = room
-                st.rerun()
+                _persist_live_draft_room(room, reason="resume_draft")
         with ctrl3:
             if st.button("Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
                 live_draft_reset_timer(room)
-                st.session_state["live_draft_room"] = room
-                st.rerun()
+                _persist_live_draft_room(room, reason="reset_timer")
         with ctrl4:
             if st.button("Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
                 if room.get("status") == "paused":
                     room["status"] = "in_progress"
                 ok, msg = live_draft_auto_pick(room)
-                st.session_state["live_draft_room"] = room
                 if ok:
                     st.success(msg)
                 else:
                     st.warning(msg)
-                st.rerun()
+                _persist_live_draft_room(room, reason="auto_pick")
         st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
@@ -16322,12 +16334,11 @@ if active_page == "Live Draft Room":
                         row = scored_pick.iloc[0]
                         verdict = _live_draft_pick_verdict(row, "manual pick", gaps)
                         ok, msg = live_draft_make_pick(room, row.to_dict(), verdict=verdict)
-                        st.session_state["live_draft_room"] = room
                         if ok:
                             st.success(msg)
                         else:
                             st.error(msg)
-                        st.rerun()
+                        _persist_live_draft_room(room, reason="manual_pick")
 
         with board_col:
             st.subheader("Draft Board")
