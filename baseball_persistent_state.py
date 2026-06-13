@@ -369,15 +369,35 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     ss = st.session_state
     pre_restore_session_page = str(ss.get("active_page") or "").strip()
     pre_restore_user_nav = bool(ss.get("_suite_page_user_nav"))
+    skip_draft_room = False
+    try:
+        from draft_room_state import DRAFT_ROOM_STATE_KEY, DRAFT_ROOM_TABLE_KEY, is_draft_room_locally_dirty
+
+        skip_draft_room = is_draft_room_locally_dirty(ss)
+    except ImportError:
+        DRAFT_ROOM_STATE_KEY = "draft_room_state"
+        DRAFT_ROOM_TABLE_KEY = "draft_room_table"
+
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
-        ss["page_filter_state"] = copy.deepcopy(pf)
+        if skip_draft_room:
+            new_pf = copy.deepcopy(pf)
+            existing_pf = ss.get("page_filter_state")
+            if isinstance(existing_pf, dict):
+                dr_block = existing_pf.get("Draft Room Simulator")
+                if isinstance(dr_block, dict):
+                    new_pf["Draft Room Simulator"] = copy.deepcopy(dr_block)
+            ss["page_filter_state"] = new_pf
+        else:
+            ss["page_filter_state"] = copy.deepcopy(pf)
     else:
         ss.setdefault("page_filter_state", {})
 
     preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
+            continue
+        if skip_draft_room and key in (DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_STATE_KEY):
             continue
         if preserve_insight and key in _INSIGHT_KEYS:
             continue

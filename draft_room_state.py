@@ -20,6 +20,7 @@ DRAFT_ROOM_EDITOR_KEY = DRAFT_ROOM_EDITOR_KEY_PREFIX
 DRAFT_ROOM_STATE_KEY = "draft_room_state"
 DRAFT_ROOM_DIRTY_KEY = "draft_room_state_dirty"
 DRAFT_ROOM_LOCAL_EDIT_TS_KEY = "draft_room_state_last_local_edit_ts"
+SUITE_LOCAL_DIRTY_BASEBALL_KEY = "_suite_local_dirty::baseball"
 DRAFT_ROOM_PERSIST_SCHEMA = 1
 
 DRAFT_ROOM_SETTINGS_KEYS = (
@@ -493,13 +494,7 @@ def apply_programmatic_board_update(
     reason: str = "programmatic_pick",
 ) -> pd.DataFrame:
     """After button/API pick entry — sync table, seed, cache, canonical blob; refresh widget."""
-    normalized = normalize_board_table(table) if is_runtime_table(table) else pd.DataFrame()
-    session[DRAFT_ROOM_TABLE_KEY] = normalized.copy()
-    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = normalized.copy()
-    sync_editor_seed(session, normalized, force_reset=True)
-    session["_draft_room_picks_fp"] = table_picks_fingerprint(normalized)
-    session.pop("_draft_room_save_fp", None)
-    write_canonical_draft_room_state(session, normalized, reason=reason, local_edit=True)
+    normalized = sync_board_to_session_keys(session, table, local_edit=True, reason=reason)
     if bump_widget:
         bump_editor_version(session)
     session["_draft_room_last_programmatic_pick_reason"] = reason
@@ -646,16 +641,20 @@ def record_board_assignment_diagnostics(
     source: str = "pick_assignment",
 ) -> None:
     submit = session.get(_BOARD_ASSIGN_SUBMIT_TRACE_KEY)
+    submit_after = (
+        int(submit.get("after_pick_count") or 0) if isinstance(submit, dict) else 0
+    )
+    effective = max(int(pick_count or 0), effective_board_pick_count(session), submit_after)
     if isinstance(submit, dict) and submit.get("assignment_button_clicked"):
         merged = dict(submit)
-        merged["capture_pick_count"] = pick_count
-        merged["editor_return_pick_count"] = pick_count
-        merged["widget_reconstructed_pick_count"] = pick_count
+        merged["capture_pick_count"] = effective
+        merged["editor_return_pick_count"] = effective
+        merged["widget_reconstructed_pick_count"] = effective
         session["_draft_room_widget_capture_debug"] = {
             "capture_source": "board_assign_submit",
-            "capture_pick_count": pick_count,
-            "editor_return_pick_count": pick_count,
-            "widget_reconstructed_pick_count": pick_count,
+            "capture_pick_count": effective,
+            "editor_return_pick_count": effective,
+            "widget_reconstructed_pick_count": effective,
             "editor_return_type": "assignment_form",
             "edited_rows": "n/a (form assignment, not data_editor)",
             **merged,
@@ -663,14 +662,14 @@ def record_board_assignment_diagnostics(
     else:
         session["_draft_room_widget_capture_debug"] = {
             "capture_source": source,
-            "capture_pick_count": pick_count,
-            "editor_return_pick_count": pick_count,
-            "widget_reconstructed_pick_count": pick_count,
+            "capture_pick_count": effective,
+            "editor_return_pick_count": effective,
+            "widget_reconstructed_pick_count": effective,
             "editor_return_type": "assignment_form",
             "edited_rows": "n/a (form assignment, not data_editor)",
         }
     session["_draft_room_active_board_source"] = f"draft_room_table:{source}"
-    session["_draft_room_active_board_pick_count"] = pick_count
+    session["_draft_room_active_board_pick_count"] = effective
 
 
 def submit_board_pick_assignment(
@@ -1833,11 +1832,52 @@ def is_draft_room_locally_dirty(session: dict[str, Any]) -> bool:
 def mark_draft_room_local_edit(session: dict[str, Any]) -> None:
     session[DRAFT_ROOM_DIRTY_KEY] = True
     session[DRAFT_ROOM_LOCAL_EDIT_TS_KEY] = _utc_now_iso()
+    session[SUITE_LOCAL_DIRTY_BASEBALL_KEY] = True
 
 
 def clear_draft_room_local_edit(session: dict[str, Any]) -> None:
     session.pop(DRAFT_ROOM_DIRTY_KEY, None)
     session.pop(DRAFT_ROOM_LOCAL_EDIT_TS_KEY, None)
+
+
+def effective_board_pick_count(session: dict[str, Any]) -> int:
+    """Best-effort filled-pick count across runtime, cache, blob, and last submit trace."""
+    counts = [
+        table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        table_pick_count(session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)),
+    ]
+    blob = _draft_room_from_blob(session)
+    if isinstance(blob, dict):
+        counts.append(table_pick_count(blob))
+    submit = session.get(_BOARD_ASSIGN_SUBMIT_TRACE_KEY)
+    if isinstance(submit, dict):
+        counts.append(int(submit.get("after_pick_count") or 0))
+    return max((int(c) for c in counts if c is not None), default=0)
+
+
+def sync_board_to_session_keys(
+    session: dict[str, Any],
+    table: Any,
+    *,
+    local_edit: bool = True,
+    reason: str = "board_sync",
+) -> pd.DataFrame:
+    """Write board to every session key draft tools and diagnostics read."""
+    normalized = normalize_board_table(table) if is_runtime_table(table) else coerce_board_table(table)
+    pick_count = table_pick_count(normalized)
+    session[DRAFT_ROOM_TABLE_KEY] = normalized.copy()
+    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = normalized.copy()
+    sync_editor_seed(session, normalized, force_reset=True)
+    session["_draft_room_picks_fp"] = table_picks_fingerprint(normalized)
+    session.pop("_draft_room_save_fp", None)
+    write_canonical_draft_room_state(session, normalized, reason=reason, local_edit=local_edit)
+    session["local_has_draft_room_board"] = pick_count > 0
+    session["local_draft_room_pick_count"] = pick_count
+    session["session_pick_count"] = pick_count
+    session["_draft_room_active_board_pick_count"] = pick_count
+    if local_edit:
+        mark_draft_room_local_edit(session)
+    return normalized
 
 
 def _room_settings_from_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -1884,6 +1924,12 @@ def write_canonical_draft_room_state(
 
 def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
     """Hydrate runtime draft_room_table from canonical blob without clobbering in-memory picks."""
+    richest, rich_count, rich_source = _resolve_richest_draft_board(session)
+    submit = session.get(_BOARD_ASSIGN_SUBMIT_TRACE_KEY)
+    submit_after = (
+        int(submit.get("after_pick_count") or 0) if isinstance(submit, dict) else 0
+    )
+
     runtime = session.get(DRAFT_ROOM_TABLE_KEY)
     if not is_runtime_table(runtime):
         coerced = coerce_board_table(runtime)
@@ -1892,6 +1938,27 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
     runtime_picks = table_pick_count(runtime)
     cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
     cache_picks = table_pick_count(cache) if is_runtime_table(cache) else 0
+
+    prefer_richest = (
+        is_draft_room_locally_dirty(session)
+        or submit_after > runtime_picks
+        or rich_count > runtime_picks
+    )
+    if prefer_richest and rich_count > 0 and richest is not None:
+        blob = _draft_room_from_blob(session)
+        if isinstance(blob, dict):
+            saved_meta = blob.get("canonical_draft_meta")
+            if isinstance(saved_meta, dict):
+                session[CANONICAL_DRAFT_META_KEY] = copy.deepcopy(saved_meta)
+            for key in DRAFT_ROOM_SETTINGS_KEYS:
+                if key in blob:
+                    session[key] = blob[key]
+        return sync_board_to_session_keys(
+            session,
+            richest,
+            local_edit=is_draft_room_locally_dirty(session) or submit_after > 0,
+            reason=f"prepare_richest:{rich_source}",
+        )
 
     if is_draft_room_locally_dirty(session):
         best = cache if cache_picks >= runtime_picks and is_runtime_table(cache) else runtime
@@ -1927,7 +1994,8 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
     table = runtime
     if isinstance(blob, dict) and blob.get("table_records") is not None:
         restored = table_from_persist_dict(blob)
-        if restored is not None:
+        restored_picks = table_pick_count(restored) if restored is not None else 0
+        if restored is not None and restored_picks >= runtime_picks:
             for key in DRAFT_ROOM_SETTINGS_KEYS:
                 if key in blob:
                     session[key] = blob[key]
@@ -2392,30 +2460,31 @@ def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> 
     """Live Board-tab fields shown directly under the editor."""
     widget_key = session.get("_draft_room_last_widget_key") or editor_widget_key(session)
     capture_dbg = session.get("_draft_room_widget_capture_debug")
+    effective_picks = effective_board_pick_count(session)
     if isinstance(capture_dbg, dict):
-        active_picks = int(capture_dbg.get("capture_pick_count") or 0)
+        active_picks = max(int(capture_dbg.get("capture_pick_count") or 0), effective_picks)
         source = str(capture_dbg.get("capture_source") or "")
     else:
-        active_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        active_picks = effective_picks
         source = str(session.get("_draft_room_active_board_source") or "")
     editor_diag = session.get("_draft_room_editor_diagnostics")
     trace = session.get("_draft_room_last_save_trace")
     out = {
         "data_editor_key": widget_key,
-        "editor_state_exists": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)) > 0,
+        "editor_state_exists": effective_picks > 0,
         "editor_version": session.get(DRAFT_ROOM_EDITOR_VERSION_KEY),
         "active_board_source": session.get("_draft_room_active_board_source") or source,
         "data_editor_returned_pick_count": active_picks,
         "commit_input_pick_count": (
             editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else active_picks
         ),
-        "session_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
-        "draft_room_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "session_pick_count": effective_picks,
+        "draft_room_pick_count": effective_picks,
         "payload_has_draft_board": session.get("payload_has_draft_board"),
         "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
         "restored_draft_room_pick_count": session.get("restored_draft_room_pick_count"),
         "restore_source": session.get("restore_source"),
-        "local_has_draft_room_board": session.get("local_has_draft_room_board"),
+        "local_has_draft_room_board": effective_picks > 0,
         "cloud_has_draft_room_board": session.get("cloud_has_draft_room_board"),
         "last_draft_room_save_trace": trace if isinstance(trace, dict) else None,
     }
