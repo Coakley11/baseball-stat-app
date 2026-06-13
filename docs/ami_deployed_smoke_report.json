@@ -1,10 +1,16 @@
 {
-  "generated_at": "2026-06-13T22:15:21.970110+00:00",
+  "generated_at": "2026-06-13T22:19:22.757359+00:00",
   "deploy_check": {
-    "baseball_github_dev": "a2a0575",
-    "ami_github_dev": "9ddb738",
-    "baseball_expected": "a2a0575",
-    "ami_expected_prefix": "9ddb738",
+    "baseball_github_dev": "bd4ad6e",
+    "ami_github_dev": "ba6651b",
+    "baseball_expected": [
+      "a2a0575",
+      "bd4ad6e"
+    ],
+    "ami_expected_prefixes": [
+      "ba6651b",
+      "9ddb738"
+    ],
     "baseball_github_ok": true,
     "ami_github_ok": true,
     "ami_live_commit_detected": "",

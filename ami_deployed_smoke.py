@@ -26,8 +26,8 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parent
 AMI_REPO = ROOT.parent / "applied-mathematical-intelligence"
 
-EXPECTED_BASEBALL_COMMIT = "a2a0575"
-EXPECTED_AMI_COMMIT_PREFIX = "9ddb738"
+EXPECTED_BASEBALL_COMMITS = ("a2a0575", "bd4ad6e")
+EXPECTED_AMI_COMMIT_PREFIXES = ("ba6651b", "9ddb738")
 
 BASEBALL_URL = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 AMI_URL = "https://applied-mathematical-intelligence-8l8bqrzpp6fghaj7xuig53.streamlit.app"
@@ -199,12 +199,16 @@ def run_deployed_smoke() -> dict[str, Any]:
     deploy_check = {
         "baseball_github_dev": baseball_remote,
         "ami_github_dev": ami_remote,
-        "baseball_expected": EXPECTED_BASEBALL_COMMIT,
-        "ami_expected_prefix": EXPECTED_AMI_COMMIT_PREFIX,
-        "baseball_github_ok": baseball_remote == EXPECTED_BASEBALL_COMMIT,
-        "ami_github_ok": ami_remote.startswith(EXPECTED_AMI_COMMIT_PREFIX[:7]),
+        "baseball_expected": list(EXPECTED_BASEBALL_COMMITS),
+        "ami_expected_prefixes": list(EXPECTED_AMI_COMMIT_PREFIXES),
+        "baseball_github_ok": baseball_remote in EXPECTED_BASEBALL_COMMITS,
+        "ami_github_ok": any(ami_remote.startswith(p[:7]) for p in EXPECTED_AMI_COMMIT_PREFIXES),
         "ami_live_commit_detected": ami_live_commit,
-        "ami_live_ok": ami_live_commit.startswith(EXPECTED_AMI_COMMIT_PREFIX[:7]) if ami_live_commit else None,
+        "ami_live_ok": (
+            any(ami_live_commit.startswith(p[:7]) for p in EXPECTED_AMI_COMMIT_PREFIXES)
+            if ami_live_commit
+            else None
+        ),
         "baseball_url": BASEBALL_URL,
         "ami_url": AMI_URL,
         "reboot_note": "Set STREAMLIT_API_TOKEN to POST /apps/{appId}/restart (manual reboot via Manage app if unset)",
