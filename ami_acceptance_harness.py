@@ -133,6 +133,23 @@ _CONTEXT_PATHS: dict[str, list[tuple[str, ...]]] = {
         ("valuation_snapshot", "top_valuation_players"),
         ("players",),
     ],
+    "player_a": [
+        ("player_a",),
+    ],
+    "player_b": [
+        ("player_b",),
+    ],
+    "comparison_stats": [
+        ("comparison_stats",),
+        ("_ami_comparison_context", "comparison_stats"),
+    ],
+    "historical_snapshot": [
+        ("historical_snapshot",),
+    ],
+    "filters_applied": [
+        ("filters_applied",),
+        ("historical_snapshot", "year_range"),
+    ],
 }
 
 
@@ -337,6 +354,38 @@ def simulate_analyst_response(ctx: dict[str, Any], question: str) -> str:
             f"trend={ts.get('summary', ts)}; draft_status={ds}."
         )
 
+    if "better than" in q or "more valuable for power" in q or "more balanced" in q:
+        pa = ctx.get("player_a") or "Player A"
+        pb = ctx.get("player_b") or "Player B"
+        stats = ctx.get("comparison_stats") or []
+        diffs = ctx.get("comparison_differences") or []
+        return (
+            f"**Compare {pa} vs {pb}** on {stats or 'selected stats'}. "
+            f"Differences: {diffs[:2]}. Weight power vs balance from comparison_differences."
+        )
+
+    if "showing up" in q or "outlier" in q or "top-ranked" in q:
+        snap = ctx.get("historical_snapshot") or {}
+        filt = ctx.get("filters_applied") or snap.get("year_range") or ""
+        rows = snap.get("top_rows") or []
+        return (
+            f"**Historical filter read:** {filt}; sort **{snap.get('sort_stat', 'stat')}**. "
+            f"Top rows: {rows[:2]}. Outlier check vs peers in filtered window."
+        )
+
+    if "prioritize steal" in q or "prioritize speed" in q or "steals" in q:
+        cats = resolve_context_value(ctx, "category_needs")[0] or []
+        return (
+            f"**Category priority:** roster category_needs {cats}. "
+            "Prioritize SB if SB is a gap; compare available SB leaders vs HR needs."
+        )
+
+    if "hitter" in q and "pitcher" in q:
+        return (
+            "**Hitter vs pitcher:** weigh roster construction, positional scarcity, "
+            "and category_needs against available hitter/pitcher value at current pick."
+        )
+
     return f"Context page={ctx.get('page')}; keys={sorted(ctx.keys())[:12]}"
 
 
@@ -417,6 +466,43 @@ def run_acceptance_check(test_id: str, page: str, question: str, ctx: dict[str, 
         if not ctx.get("draft_status"):
             result.passed = False
             result.failures.append("No draft_status")
+
+    elif test_id == "T7_comparison":
+        if not ctx.get("player_a") or not ctx.get("player_b"):
+            result.passed = False
+            result.failures.append("Missing player_a/player_b")
+        if "compare" not in result.stub_response.lower() and "vs" not in result.stub_response.lower():
+            result.passed = False
+            result.failures.append("Comparison stub did not reference both players")
+
+    elif test_id == "T8_historical":
+        if not ctx.get("historical_snapshot"):
+            result.passed = False
+            result.failures.append("No historical_snapshot")
+        if "bonds" not in result.stub_response.lower() and "historical" not in result.stub_response.lower():
+            result.passed = False
+            result.failures.append("Historical stub did not cite filter/table context")
+
+    elif test_id == "T9_category_priority":
+        if not resolve_context_value(ctx, "category_needs")[0]:
+            result.passed = False
+            result.failures.append("No category_needs for steals-priority question")
+        if "sb" not in result.stub_response.lower() and "steal" not in result.stub_response.lower():
+            result.passed = False
+            result.failures.append("Category stub did not address steals/SB")
+
+    elif test_id == "T10_hitter_pitcher":
+        if "hitter" not in result.stub_response.lower() or "pitcher" not in result.stub_response.lower():
+            result.passed = False
+            result.failures.append("Hitter/pitcher stub missing position tradeoff language")
+
+    elif test_id == "T11_draft_market":
+        if not resolve_context_value(ctx, "available_players")[0]:
+            result.passed = False
+            result.failures.append("No available_players for draft-market question")
+        if "catcher" not in question.lower() and "next" not in result.stub_response.lower():
+            result.passed = False
+            result.failures.append("Draft-market stub missing next-pick language")
 
     if not ctx.get("ami_answer_template"):
         result.passed = False
@@ -729,6 +815,74 @@ def build_jose_ramirez_question_context() -> tuple[dict[str, Any], dict[str, Any
     return session, ctx
 
 
+def build_realistic_comparison_session() -> dict[str, Any]:
+    """Soto vs Judge comparison with HR trend diffs."""
+    session = build_realistic_draft_assistant_session()
+    from applied_math_context import build_baseball_applied_math_context, cache_page_context
+
+    session["sig_player_a_clean"] = "Juan Soto"
+    session["sig_player_b_clean"] = "Aaron Judge"
+    cmp_ctx: dict[str, Any] = {
+        "comparison_stats": ["HR"],
+        "comparison_differences": [
+            {"player": "Juan Soto", "Slope": 2.1, "R-squared": 0.62, "Net Change": 8},
+            {"player": "Aaron Judge", "Slope": 1.2, "R-squared": 0.48, "Net Change": 5},
+        ],
+    }
+    session["_ami_comparison_context"] = cmp_ctx
+    cache_page_context(session, "Comparison Tool", cmp_ctx)
+    session["_acceptance_ctx"] = build_baseball_applied_math_context("Comparison Tool", session)
+    return session
+
+
+def build_realistic_historical_session() -> dict[str, Any]:
+    """Bonds-era HR leaderboard with active filters."""
+    session = build_realistic_draft_assistant_session()
+    from applied_math_context import build_baseball_applied_math_context, cache_page_context
+
+    hist: dict[str, Any] = {
+        "sort_stat": "HR",
+        "year_range": "2000-2007",
+        "row_count": 50,
+        "top_players": ["Barry Bonds", "Alex Rodriguez", "Sammy Sosa"],
+        "top_rows": [
+            {"player": "Barry Bonds", "HR": 73, "BB": 232, "OBP": 0.515, "SLG": 0.863},
+            {"player": "Alex Rodriguez", "HR": 54, "BB": 80},
+            {"player": "Sammy Sosa", "HR": 49, "BB": 58},
+        ],
+    }
+    session["_ami_historical_snapshot"] = hist
+    session["historical_year_range_filter"] = [2000, 2007]
+    session["historical_sort_stat_filter"] = "HR"
+    session["historical_selected_player"] = "Barry Bonds"
+    cache_page_context(session, "Historical Explorer", {"historical_snapshot": hist})
+    session["_acceptance_ctx"] = build_baseball_applied_math_context("Historical Explorer", session)
+    return session
+
+
+def build_draft_category_context() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Draft board with SB category gap for steals-priority questions."""
+    session = build_realistic_draft_assistant_session()
+    from applied_math_context import build_baseball_applied_math_context
+
+    ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    snap["category_needs"] = ["SB", "HR"]
+    snap["needed_positions"] = ["C", "SS"]
+    avail = list(snap.get("available_players") or [])
+    avail.extend(
+        [
+            {"player": "Elly De La Cruz", "Primary Position": "SS", "Fantasy Edge": 6, "Market Rank": 20, "SB": 67},
+            {"player": "Corbin Carroll", "Primary Position": "OF", "Fantasy Edge": 4, "Market Rank": 18, "SB": 54},
+        ]
+    )
+    snap["available_players"] = avail[:10]
+    snap["best_available_players"] = avail[:6]
+    ctx["draft_snapshot"] = snap
+    ctx["category_needs"] = ["SB", "HR"]
+    return session, ctx
+
+
 def run_full_acceptance_suite() -> dict[str, Any]:
     """Run all acceptance tests; return JSON-serializable report."""
     cases: list[tuple[str, str, str, dict[str, Any]]] = []
@@ -753,6 +907,44 @@ def run_full_acceptance_suite() -> dict[str, Any]:
     tv = build_realistic_trend_valuation_session()
     cases.append(("T6_valuation_trend", "Trend Value", "Is this player undervalued?", tv["_trend_ctx"]))
     cases.append(("T6_valuation_trend", "Valuation", "How risky is this pick?", tv["_valuation_ctx"]))
+
+    cmp = build_realistic_comparison_session()
+    cases.append(
+        ("T7_comparison", "Comparison Tool", "Which player is more valuable for power?", cmp["_acceptance_ctx"])
+    )
+
+    hist = build_realistic_historical_session()
+    cases.append(
+        (
+            "T8_historical",
+            "Historical Explorer",
+            "Why does Barry Bonds keep showing up with these filters?",
+            hist["_acceptance_ctx"],
+        )
+    )
+
+    _, ctx_cat = build_draft_category_context()
+    cases.append(
+        (
+            "T9_category_priority",
+            "Draft Assistant Simulator",
+            "Should I prioritize steals right now based on my draft?",
+            ctx_cat,
+        )
+    )
+    cases.append(
+        ("T10_hitter_pitcher", "Draft Assistant Simulator", "Should I take a hitter or pitcher?", ctx_cat)
+    )
+
+    _, ctx_market = build_draft_market_catcher_context()
+    cases.append(
+        (
+            "T11_draft_market",
+            "Draft Assistant Simulator",
+            "Who is likely to be the next catcher picked in this draft?",
+            ctx_market,
+        )
+    )
 
     results = [run_acceptance_check(tid, page, q, ctx) for tid, page, q, ctx in cases]
     passed = sum(1 for r in results if r.passed)

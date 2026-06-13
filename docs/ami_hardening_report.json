@@ -1,0 +1,325 @@
+{
+  "generated_at": "2026-06-13T22:01:43.501516+00:00",
+  "build_label": "2026-06-13-ami-acceptance-harness-v18",
+  "commit": "0e1f8d3",
+  "method": "question_family_hardening_pass",
+  "pipeline_stages": [
+    "A_context",
+    "B_route",
+    "C_mode",
+    "D_cites_data",
+    "E_analyst_structure"
+  ],
+  "summary": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "ready_for_manual_acceptance": true
+  },
+  "results": [
+    {
+      "family_id": "draft_next_pick",
+      "page": "Draft Assistant Simulator",
+      "question": "Who should I draft next?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "next_pick",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz) at pick **6** (round **2**), lean **Cal Raleigh** over **Bobby Witt Jr.** for the next selection.\n\nThis fits **C/SS · HR + SB** in **5x5 Rot",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "draft_roster_needs",
+      "page": "Draft Assistant Simulator",
+      "question": "What does my roster need?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "roster_needs",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Roster diagnosis:** your **2**-player roster (Juan Soto, Elly De La Cruz) needs **C, SS** and category help in **HR, SB**.\n\nYour saved board shows gaps at **C, SS** with category pressure on **HR, S",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "draft_category_steals",
+      "page": "Draft Assistant Simulator",
+      "question": "Should I prioritize steals right now based on my draft?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "category",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz), prioritize the player who closes your weakest category in **5x5 Roto** — often **Cal Raleigh** over raw rank.\n\nCategory-balance optimizatio",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "draft_hitter_pitcher",
+      "page": "Draft Assistant Simulator",
+      "question": "Should I take a hitter or pitcher?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "hitter_pitcher",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "At pick **6** (round **2**), weigh **hitter** vs **pitcher** by **C/SS · SB + HR** and whether your league rewards pitching scarcity now — lean **Cal Raleigh** if hitters close bigger category gaps.\n\n",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "draft_market_next_catcher",
+      "page": "Draft Assistant Simulator",
+      "question": "Who is likely to be the next catcher picked in this draft?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_market_prediction",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Cal Raleigh** is already off the board. The next **Catcher** most likely selected is **William Contreras** — highest-ranked remaining **Catcher** on your saved board.\n\nRanked by Market Rank / ADP am",
+      "notes": [
+        "analyst_levels=5"
+      ]
+    },
+    {
+      "family_id": "draft_player_why",
+      "page": "Draft Assistant Simulator",
+      "question": "Why is Jose Ramirez the best player to draft for me right now?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "player_why",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Jose Ramirez** is a good player, but **Cal Raleigh** is the better fit on your current board because **C/SS · HR + SB** and recommendation priority favor **Cal Raleigh**.\n\n**Jose Ramirez** (3B) on y",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "draft_weakest_category",
+      "page": "Draft Assistant Simulator",
+      "question": "Which category am I weakest in?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "weakest_category",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "Your weakest tracked category gap is **SB** — prioritize available players who move **SB** most at pick **6** (round **2**).\n\nCategory diagnosis from saved board: needs **C/SS · SB + HR**; recommendat",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "draft_safety_upside",
+      "page": "Draft Assistant Simulator",
+      "question": "Who is safest vs highest upside?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "safety_upside",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Safest pick: Cal Raleigh** (recommendation/floor). **Highest upside: Bobby Witt Jr.** (variance/ceiling) at pick **6** (round **2**).\n\nRisk spectrum on your board at pick **6** (round **2**) — floor",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "live_on_clock",
+      "page": "Live Draft Room",
+      "question": "I'm on the clock. Who should I take?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "next_pick",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz) at pick **5** (round **2**), lean **Cal Raleigh** for the next selection.\n\nThis fits **C · HR + SB** in **5x5 Roto** — not just raw rank. Qu",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "live_make_it_back",
+      "page": "Live Draft Room",
+      "question": "Will William Contreras make it back to me?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_market_prediction",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**William Contreras** is likely to be drafted before your next pick based on Market Rank order among remaining **Catcher** options at pick **5** (round **2**).\n\nDraft-flow read: **Cal Raleigh** is alr",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "sleepers_take",
+      "page": "Fantasy Sleepers & Busts",
+      "question": "Should I take this sleeper?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "sleeper",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Take Junior Caminero** as a probability-weighted upside pick when draft cost is low enough that hitting the ceiling pays for several misses (5 players already drafted — **Junior Caminero** not among",
+      "notes": [
+        "analyst_levels=6"
+      ]
+    },
+    {
+      "family_id": "trend_forecast",
+      "page": "Trend Value",
+      "question": "This player has a good trend. Is he likely to do well next season in doubles?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_trend_significance",
+      "draft_mode": "",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "Yes — the Up HR trend looks meaningful at your thresholds.",
+      "notes": [
+        "analyst_levels=3"
+      ]
+    },
+    {
+      "family_id": "valuation_over_under",
+      "page": "Valuation",
+      "question": "Is this player overvalued or undervalued?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_valuation",
+      "draft_mode": "",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Junior Caminero** looks **overvalued** at Valuation Score **0.84** — market may be ahead of recent production/trend.",
+      "notes": [
+        "analyst_levels=5"
+      ]
+    },
+    {
+      "family_id": "compare_power",
+      "page": "Comparison Tool",
+      "question": "Which player is more valuable for power?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_player_comparison",
+      "draft_mode": "",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Juan Soto** leads under current weights (score **1.49** vs **0.51**).",
+      "notes": [
+        "analyst_levels=1"
+      ]
+    },
+    {
+      "family_id": "compare_why_better",
+      "page": "Comparison Tool",
+      "question": "Why is Juan Soto better than Aaron Judge?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_player_comparison",
+      "draft_mode": "",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Juan Soto** leads under current weights (score **1.49** vs **0.51**).",
+      "notes": [
+        "analyst_levels=1"
+      ]
+    },
+    {
+      "family_id": "historical_bonds",
+      "page": "Historical Explorer",
+      "question": "Why does Barry Bonds keep showing up with these filters?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "route_id": "baseball_historical_comparison",
+      "draft_mode": "",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "Snapshot on **HR**",
+      "notes": [
+        "analyst_levels=1"
+      ]
+    }
+  ]
+}

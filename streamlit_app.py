@@ -17810,24 +17810,29 @@ if active_page == "Valuation":
     if selected_value_row is not None:
         st.info(make_valuation_summary(selected_value_row))
 
-    best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
-    if not best_value_row.empty:
-        st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
-
     try:
         from applied_math_context import cache_valuation_ami_context
 
+        sel_name = (
+            str(selected_value_row.get("fullName", "")).strip()
+            if selected_value_row is not None
+            else (
+                valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"]
+                if not valuation_df.empty
+                else ""
+            )
+        )
         cache_valuation_ami_context(
             st.session_state,
             valuation_df=valuation_df,
-            selected_player=str(
-                selected_value_row.get("fullName")
-                if selected_value_row is not None
-                else (valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else "")
-            ),
+            selected_player=sel_name,
         )
     except Exception:
         pass
+
+    best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
+    if not best_value_row.empty:
+        st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
 
     flush_valuation_filter_edits(st.session_state, st, reason="valuation_page_save")
     if developer_mode_enabled():

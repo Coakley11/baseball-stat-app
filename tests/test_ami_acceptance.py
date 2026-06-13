@@ -19,7 +19,7 @@ class TestAmiAcceptanceSuite(unittest.TestCase):
     def test_full_suite_passes(self) -> None:
         report = run_full_acceptance_suite()
         self.assertEqual(report["summary"]["failed"], 0, report["summary"])
-        self.assertGreaterEqual(report["summary"]["passed"], 8)
+        self.assertGreaterEqual(report["summary"]["passed"], 13)
 
     def test_draft_assistant_context_complete(self) -> None:
         session = build_realistic_draft_assistant_session()

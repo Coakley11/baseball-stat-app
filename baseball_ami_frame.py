@@ -62,6 +62,16 @@ PAGE_ACCEPTANCE_QUESTIONS: dict[str, list[str]] = {
         "Is now the right time to draft him?",
         "What is his risk profile?",
     ],
+    "Comparison Tool": [
+        "Why is Player A better than Player B?",
+        "Which player is more valuable for power?",
+        "Which player is more balanced?",
+    ],
+    "Historical Explorer": [
+        "Why does this player keep showing up with these filters?",
+        "Who are the statistical outliers in this table?",
+        "What explains the top-ranked players here?",
+    ],
 }
 
 PAGE_CONTEXT_REQUIREMENTS: dict[str, list[str]] = {
@@ -113,6 +123,17 @@ PAGE_CONTEXT_REQUIREMENTS: dict[str, list[str]] = {
         "top_valuation_players",
         "draft_status",
         "canonical_drafted_players",
+    ],
+    "Comparison Tool": [
+        "player_a",
+        "player_b",
+        "comparison_stats",
+    ],
+    "Historical Explorer": [
+        "historical_snapshot",
+        "filters_applied",
+        "player",
+        "metrics",
     ],
 }
 
