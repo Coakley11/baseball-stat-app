@@ -3,23 +3,30 @@
 from __future__ import annotations
 
 import json
+import copy
 import unittest
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
+from draft_state import DRAFT_QUEUE_KEY, write_canonical_draft_state
 from draft_room_state import (
+    ACTIVE_DRAFT_MODE_LIVE,
+    ACTIVE_DRAFT_MODE_MANUAL,
+    CANONICAL_DRAFT_META_KEY,
     DRAFT_ROOM_DIRTY_KEY,
     DRAFT_ROOM_EDITOR_CACHE_KEY,
     DRAFT_ROOM_EDITOR_SEED_KEY,
     DRAFT_ROOM_EDITOR_VERSION_KEY,
     DRAFT_ROOM_STATE_KEY,
     DRAFT_ROOM_TABLE_KEY,
+    add_player_to_next_open_pick,
     apply_cloud_draft_room_state_if_allowed,
     apply_programmatic_board_update,
     apply_restored_board_to_session,
     bump_editor_version,
+    build_snake_board,
     commit_draft_room_table,
     commit_draft_room_table_if_changed,
     draft_board_diagnostics,
@@ -27,14 +34,21 @@ from draft_room_state import (
     detect_player_column,
     editor_widget_key,
     enrich_save_payload_with_draft_room,
-    log_quick_draft_pick,
+    get_canonical_draft_board,
+    delete_active_draft,
+    get_all_drafted_player_names,
+    paste_players_to_board,
+    reset_simulator_board_only,
     prepare_board_editor_for_render,
     prepare_draft_room_state,
     preserve_richer_session_board,
     reconstruct_board_from_widget_state,
+    reset_canonical_draft_board,
     resolve_active_board,
     save_draft_board_now,
     sanitize_state_dict_for_json,
+    sync_live_draft_room_to_canonical_board,
+    set_canonical_draft_meta,
     table_from_persist_dict,
     table_pick_count,
     table_picks_fingerprint,
@@ -282,15 +296,12 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertTrue(session.get(DRAFT_ROOM_DIRTY_KEY))
 
     def test_log_quick_draft_pick_adds_player(self) -> None:
+        """Legacy quick-draft path still adds via next-open-pick (deprecated UI)."""
         session: dict = {DRAFT_ROOM_EDITOR_VERSION_KEY: 0, DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0)}
-        trace = log_quick_draft_pick(session, "Aaron Judge", "Team 1")
-        self.assertTrue(trace.get("ok"))
-        self.assertTrue(trace.get("quick_draft_button_clicked"))
-        self.assertEqual(trace.get("selected_player"), "Aaron Judge")
-        self.assertTrue(trace.get("apply_programmatic_board_update_called"))
-        self.assertEqual(trace.get("after_pick_count"), 1)
+        res = add_player_to_next_open_pick(session, "Aaron Judge")
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("after_pick_count"), 1)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
-        self.assertTrue(session.get("_draft_room_skip_editor_resolve_clobber"))
 
     def test_preserve_richer_session_board_keeps_runtime(self) -> None:
         session: dict = {DRAFT_ROOM_TABLE_KEY: _sample_table(picks=2)}
@@ -299,6 +310,161 @@ class TestDraftRoomPersistence(unittest.TestCase):
         assert out is not None
         self.assertEqual(count, 2)
         self.assertEqual(note, "preserved_session_table")
+
+
+class TestCanonicalDraftBoard(unittest.TestCase):
+    def test_add_player_to_next_open_pick(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        res = add_player_to_next_open_pick(session, "Aaron Judge")
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("after_pick_count"), 1)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
+        self.assertEqual(session[DRAFT_ROOM_TABLE_KEY].loc[0, "Player"], "Aaron Judge")
+
+    def test_paste_players_to_board(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        text = "1. Aaron Judge\n2. Bobby Witt Jr.\n3. Juan Soto"
+        res = paste_players_to_board(session, text)
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("added_count"), 3)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
+
+    def test_reset_canonical_draft_board(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            "room_team_names": "Alpha\nBeta",
+            "room_rounds": 2,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=5),
+        }
+        out = reset_canonical_draft_board(session)
+        self.assertEqual(table_pick_count(out), 0)
+        self.assertEqual(len(out), 4)
+        meta = session.get(CANONICAL_DRAFT_META_KEY) or {}
+        self.assertEqual(meta.get("pick_count"), 0)
+
+    def test_sync_live_draft_room_to_canonical_board(self) -> None:
+        session: dict = {DRAFT_ROOM_EDITOR_VERSION_KEY: 0}
+        room = {
+            "status": "in_progress",
+            "teams": ["Team A", "Team B"],
+            "config": {"picks_per_team": 2, "your_team": "Team A"},
+            "pick_order": [
+                {"Round": 1, "Pick": 1, "Team": "Team A"},
+                {"Round": 1, "Pick": 2, "Team": "Team B"},
+                {"Round": 2, "Pick": 3, "Team": "Team B"},
+                {"Round": 2, "Pick": 4, "Team": "Team A"},
+            ],
+            "draft_board": [
+                {"Pick": 1, "fullName": "Aaron Judge", "Fantasy Team": "Team A"},
+                {"Pick": 2, "fullName": "Bobby Witt Jr.", "Fantasy Team": "Team B"},
+            ],
+        }
+        out = sync_live_draft_room_to_canonical_board(session, room)
+        self.assertEqual(table_pick_count(out), 2)
+        self.assertEqual(session.get("room_team_count"), 2)
+        meta = session.get(CANONICAL_DRAFT_META_KEY) or {}
+        self.assertEqual(meta.get("active_mode"), ACTIVE_DRAFT_MODE_LIVE)
+
+    def test_get_canonical_draft_board_unifies_runtime(self) -> None:
+        session: dict = {}
+        table = _sample_table(picks=2)
+        write_canonical_draft_room_state(session, table, reason="test")
+        board = get_canonical_draft_board(session)
+        self.assertEqual(table_pick_count(board), 2)
+
+
+    def test_canonical_meta_persists_in_blob(self) -> None:
+        session: dict = {}
+        table = _sample_table(picks=2)
+        set_canonical_draft_meta(session, mode=ACTIVE_DRAFT_MODE_MANUAL, source="test", pick_count=2)
+        write_canonical_draft_room_state(session, table, reason="test")
+        blob = session[DRAFT_ROOM_STATE_KEY]
+        self.assertIn("canonical_draft_meta", blob)
+        self.assertEqual(blob["canonical_draft_meta"].get("pick_count"), 2)
+
+        session2: dict = {DRAFT_ROOM_STATE_KEY: copy.deepcopy(blob)}
+        restored = prepare_draft_room_state(session2)
+        assert restored is not None
+        self.assertEqual(table_pick_count(restored), 2)
+        self.assertEqual(session2.get(CANONICAL_DRAFT_META_KEY, {}).get("pick_count"), 2)
+
+    def test_acceptance_three_players_survive_disk_refresh(self) -> None:
+        """Simulate: paste 3 players → save to disk → fresh session (browser refresh)."""
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Draft Room Simulator",
+            "main_sidebar_page": "Draft Room Simulator",
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            "room_team_names": "Team 1\nTeam 2",
+            "room_rounds": 5,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        res = paste_players_to_board(
+            st.session_state,
+            "Aaron Judge\nBobby Witt Jr.\nJuan Soto",
+        )
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("added_count"), 3)
+
+        disk_state = build_baseball_disk_state(st)
+        st2 = MagicMock()
+        st2.session_state = {"active_page": "Draft Room Simulator", "main_sidebar_page": "Draft Room Simulator"}
+        apply_baseball_disk_state(st2, disk_state)
+        prepare_draft_room_state(st2.session_state)
+        names = get_all_drafted_player_names(st2.session_state)
+        self.assertEqual(len(names), 3)
+        self.assertIn("Aaron Judge", names)
+
+    def test_acceptance_three_players_survive_cloud_cross_device(self) -> None:
+        """Simulate: phone saves 3 picks → cloud payload → Dell restores."""
+        phone_session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            "room_team_names": "Team 1\nTeam 2",
+            "room_rounds": 5,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        paste_players_to_board(phone_session, "Aaron Judge\nBobby Witt Jr.\nJuan Soto")
+        write_canonical_draft_room_state(phone_session, phone_session[DRAFT_ROOM_TABLE_KEY], reason="phone_save")
+
+        cloud_payload, diag = enrich_save_payload_with_draft_room(phone_session, {"active_page": "Draft Room Simulator"})
+        self.assertTrue(diag["payload_has_draft_board"])
+        self.assertEqual(diag["cloud_payload_pick_count"], 3)
+
+        dell_session: dict = {"active_page": "Draft Room Simulator"}
+        self.assertTrue(apply_cloud_draft_room_state_if_allowed(dell_session, cloud_payload))
+        prepare_draft_room_state(dell_session)
+        names = get_all_drafted_player_names(dell_session)
+        self.assertEqual(len(names), 3)
+
+
+    def test_delete_active_draft_clears_board_and_live(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=3),
+            "live_draft_room": {"status": "completed", "draft_room_id": "X1"},
+            DRAFT_QUEUE_KEY: ["Aaron Judge"],
+        }
+        write_canonical_draft_state(session, queue=["Aaron Judge"], reason="setup")
+        trace = delete_active_draft(session)
+        self.assertTrue(trace.get("ok"))
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 0)
+        self.assertEqual(session.get(DRAFT_QUEUE_KEY), [])
+
+    def test_reset_simulator_only_keeps_live_record(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=2),
+            "live_draft_room": {"status": "completed", "draft_room_id": "X1", "draft_board": [{"Pick": 1}]},
+        }
+        reset_simulator_board_only(session)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 0)
+        self.assertIsNotNone(session.get("live_draft_room"))
 
 
 if __name__ == "__main__":

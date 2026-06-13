@@ -32,6 +32,11 @@ DRAFT_ROOM_SETTINGS_KEYS = (
     "fantasy_draft_projection_style",
 )
 
+# One canonical draft board: runtime draft_room_table + blob draft_room_state.
+CANONICAL_DRAFT_META_KEY = "canonical_draft_meta"
+ACTIVE_DRAFT_MODE_LIVE = "live_draft_room"
+ACTIVE_DRAFT_MODE_MANUAL = "draft_room_simulator"
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -354,124 +359,128 @@ def apply_programmatic_board_update(
     return normalized
 
 
-def find_next_open_pick_row(table: Any, team_name: str) -> tuple[int | None, dict[str, Any]]:
-    """Next open Player row for team_name, else next league-wide open row."""
-    meta: dict[str, Any] = {
-        "quick_draft_selected_team": str(team_name).strip(),
-        "quick_draft_target_row_index": None,
-        "quick_draft_target_pick": None,
-        "quick_draft_target_round": None,
-        "used_fallback_open_row": False,
-        "blocked_reason": "",
-    }
-    if not is_runtime_table(table) or table.empty:
-        meta["blocked_reason"] = "table_missing"
-        return None, meta
-    if "Player" not in table.columns or "Team" not in table.columns:
-        meta["blocked_reason"] = "missing_team_player_columns"
-        return None, meta
+def get_canonical_draft_meta(session: dict[str, Any]) -> dict[str, Any]:
+    meta = session.get(CANONICAL_DRAFT_META_KEY)
+    return dict(meta) if isinstance(meta, dict) else {}
 
+
+def get_active_draft_mode(session: dict[str, Any]) -> str:
+    meta = get_canonical_draft_meta(session)
+    mode = str(meta.get("active_mode") or "").strip()
+    if mode in (ACTIVE_DRAFT_MODE_LIVE, ACTIVE_DRAFT_MODE_MANUAL):
+        return mode
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused"):
+            return ACTIVE_DRAFT_MODE_LIVE
+    except Exception:
+        pass
+    return ACTIVE_DRAFT_MODE_MANUAL
+
+
+def set_canonical_draft_meta(session: dict[str, Any], *, mode: str, source: str, pick_count: int | None = None) -> None:
+    meta = get_canonical_draft_meta(session)
+    meta["active_mode"] = mode
+    meta["source"] = source
+    meta["last_updated_at"] = _utc_now_iso()
+    if pick_count is not None:
+        meta["pick_count"] = pick_count
+    session[CANONICAL_DRAFT_META_KEY] = meta
+
+
+def build_snake_board(team_names: list[str], *, rounds: int) -> pd.DataFrame:
+    """Snake-order grid with empty Player cells."""
+    teams = [str(t).strip() for t in team_names if str(t).strip()]
+    if not teams:
+        teams = ["Team 1", "Team 2"]
+    team_count = len(teams)
+    rows: list[dict[str, Any]] = []
+    for pick in range(1, int(rounds) * team_count + 1):
+        rnd = ((pick - 1) // team_count) + 1
+        within_round = (pick - 1) % team_count
+        team = teams[within_round] if rnd % 2 == 1 else teams[::-1][within_round]
+        rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
+    return pd.DataFrame(rows)
+
+
+def get_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
+    """Single board every draft tool should read."""
+    prepare_draft_room_state(session)
+    table = session.get(DRAFT_ROOM_TABLE_KEY)
+    if is_runtime_table(table):
+        return table.copy()
+    return pd.DataFrame(columns=["Round", "Pick", "Team", "Player"])
+
+
+def get_all_drafted_player_names(session: dict[str, Any]) -> list[str]:
+    return _drafted_players_from_table(get_canonical_draft_board(session))
+
+
+def _next_open_row_index(table: pd.DataFrame) -> int | None:
+    if not is_runtime_table(table) or table.empty or "Player" not in table.columns:
+        return None
     work = table.copy()
     if "Pick" in work.columns:
         work = work.sort_values("Pick", kind="stable").reset_index(drop=True)
     else:
         work = work.reset_index(drop=True)
-
-    team_name = str(team_name).strip()
-    open_mask = work["Player"].fillna("").astype(str).str.strip().eq("")
-    team_rows = work.index[open_mask & work["Team"].astype(str).eq(team_name)].tolist()
-    if team_rows:
-        idx = int(team_rows[0])
-    else:
-        any_open = work.index[open_mask].tolist()
-        if not any_open:
-            meta["blocked_reason"] = "board_full"
-            return None, meta
-        idx = int(any_open[0])
-        work.at[idx, "Team"] = team_name
-        meta["used_fallback_open_row"] = True
-
-    meta["quick_draft_target_row_index"] = idx
-    if "Pick" in work.columns:
-        meta["quick_draft_target_pick"] = work.at[idx, "Pick"]
-    else:
-        meta["quick_draft_target_pick"] = idx + 1
-    if "Round" in work.columns:
-        meta["quick_draft_target_round"] = work.at[idx, "Round"]
-    return idx, meta
+    for idx, row in work.iterrows():
+        if not _player_cell_filled(row.get("Player")):
+            return int(idx)
+    return None
 
 
-def log_quick_draft_pick(
-    session: dict[str, Any],
-    player_name: Any,
-    team_name: Any,
-) -> dict[str, Any]:
-    """Quick draft button path with full trace — no snake-turn gate."""
+def _parse_pasted_player_lines(text: str) -> list[str]:
+    names: list[str] = []
+    import re
+
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"^\d+[\.\)\:]?\s*", "", line).strip()
+        if line:
+            names.append(line)
+    return list(dict.fromkeys(names))
+
+
+def add_player_to_next_open_pick(session: dict[str, Any], player_name: Any) -> dict[str, Any]:
+    """Simulator-fast path: next open pick row, no team selection."""
     player_name = str(player_name or "").strip()
-    team_name = str(team_name or "").strip()
-    trace: dict[str, Any] = {
-        "quick_draft_button_clicked": True,
-        "selected_player": player_name,
-        "selected_team": team_name,
-        "quick_draft_selected_player": player_name,
-        "quick_draft_selected_team": team_name,
-        "target_row_index": None,
+    result: dict[str, Any] = {
+        "ok": False,
+        "player": player_name,
         "target_pick": None,
-        "target_round": None,
-        "blocked_reason": "",
-        "apply_programmatic_board_update_called": False,
-        "input_player": player_name,
-        "input_team": team_name,
+        "target_row_index": None,
         "before_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
         "after_pick_count": 0,
-        "updated_row_index": None,
-        "error": "",
-        "ok": False,
         "message": "",
+        "error": "",
     }
-
-    if "draft_room_table" not in session:
-        trace["error"] = "no_draft_room_table"
-        trace["message"] = "No Draft Room table exists yet. Open Draft Room Simulator first."
-        session["_draft_room_last_quick_draft_trace"] = trace
-        return trace
-
-    table = session.get(DRAFT_ROOM_TABLE_KEY)
-    if not is_runtime_table(table):
-        trace["error"] = "table_not_dataframe"
-        trace["message"] = "Draft Room table is not initialized."
-        session["_draft_room_last_quick_draft_trace"] = trace
-        return trace
-
-    table = table.copy()
     if not player_name:
-        trace["error"] = "no_player_selected"
-        trace["message"] = "Select a player first."
-        session["_draft_room_last_quick_draft_trace"] = trace
-        return trace
+        result["error"] = "no_player_selected"
+        result["message"] = "Enter a player name first."
+        return result
 
-    existing = [str(v).strip() for v in table.get("Player", pd.Series(dtype=object)).tolist() if _player_cell_filled(v)]
+    table = get_canonical_draft_board(session)
+    if table.empty:
+        teams = [str(session.get("room_your_team") or "Team 1")]
+        rounds = int(session.get("room_rounds") or 20)
+        table = build_snake_board(teams, rounds=rounds)
+
+    existing = get_all_drafted_player_names(session)
     if player_name in existing:
-        trace["error"] = "player_already_drafted"
-        trace["message"] = f"{player_name} is already drafted."
-        session["_draft_room_last_quick_draft_trace"] = trace
-        return trace
+        result["error"] = "player_already_drafted"
+        result["message"] = f"{player_name} is already on the board."
+        return result
 
-    row_idx, row_meta = find_next_open_pick_row(table, team_name)
-    trace.update(row_meta)
-    trace["target_row_index"] = row_meta.get("quick_draft_target_row_index")
-    trace["target_pick"] = row_meta.get("quick_draft_target_pick")
-    trace["target_round"] = row_meta.get("quick_draft_target_round")
-    trace["blocked_reason"] = str(row_meta.get("blocked_reason") or "")
+    row_idx = _next_open_row_index(table)
     if row_idx is None:
-        trace["error"] = row_meta.get("blocked_reason") or "no_open_row"
-        trace["message"] = (
-            "Draft Room is full. No open pick rows remain."
-            if trace["error"] == "board_full"
-            else f"Could not log pick: {trace['error']}"
-        )
-        session["_draft_room_last_quick_draft_trace"] = trace
-        return trace
+        result["error"] = "board_full"
+        result["message"] = "Board is full — no open pick rows."
+        return result
 
     if "Pick" in table.columns:
         table = table.sort_values("Pick", kind="stable").reset_index(drop=True)
@@ -479,29 +488,306 @@ def log_quick_draft_pick(
         table = table.reset_index(drop=True)
 
     table.at[row_idx, "Player"] = player_name
-    if trace.get("used_fallback_open_row"):
-        table.at[row_idx, "Team"] = team_name
-    trace["updated_row_index"] = row_idx
+    result["target_row_index"] = row_idx
+    if "Pick" in table.columns:
+        result["target_pick"] = table.at[row_idx, "Pick"]
 
+    updated = apply_programmatic_board_update(session, table, reason="simulator_add_player")
+    result["after_pick_count"] = table_pick_count(updated)
+    result["ok"] = True
+    pick_n = result.get("target_pick") or (row_idx + 1)
+    result["message"] = f"Logged {player_name} to pick {pick_n}."
+    set_canonical_draft_meta(
+        session,
+        mode=ACTIVE_DRAFT_MODE_MANUAL,
+        source="draft_room_simulator",
+        pick_count=result["after_pick_count"],
+    )
+    session["_draft_room_simulator_last_add"] = result
+    return result
+
+
+def paste_players_to_board(session: dict[str, Any], text: str) -> dict[str, Any]:
+    """Fill next open rows from pasted list (numbered or plain lines)."""
+    names = _parse_pasted_player_lines(text)
+    result: dict[str, Any] = {
+        "ok": False,
+        "parsed_count": len(names),
+        "added_count": 0,
+        "before_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "after_pick_count": 0,
+        "message": "",
+        "error": "",
+    }
+    if not names:
+        result["error"] = "no_players_parsed"
+        result["message"] = "Paste one player per line."
+        return result
+
+    table = get_canonical_draft_board(session)
+    if table.empty:
+        team_lines = str(session.get("room_team_names") or session.get("room_your_team") or "Team 1")
+        teams = [x.strip() for x in team_lines.splitlines() if x.strip()] or ["Team 1"]
+        table = build_snake_board(teams, rounds=int(session.get("room_rounds") or 20))
+
+    if "Pick" in table.columns:
+        table = table.sort_values("Pick", kind="stable").reset_index(drop=True)
+    else:
+        table = table.reset_index(drop=True)
+
+    existing = set(get_all_drafted_player_names(session))
+    added = 0
+    for name in names:
+        if name in existing:
+            continue
+        row_idx = _next_open_row_index(table)
+        if row_idx is None:
+            break
+        table.at[row_idx, "Player"] = name
+        existing.add(name)
+        added += 1
+
+    if added == 0:
+        result["error"] = "nothing_added"
+        result["message"] = "No new players added (board full or all duplicates)."
+        return result
+
+    updated = apply_programmatic_board_update(session, table, reason="simulator_paste")
+    result["added_count"] = added
+    result["after_pick_count"] = table_pick_count(updated)
+    result["ok"] = True
+    result["message"] = f"Pasted {added} player(s) onto the board."
+    set_canonical_draft_meta(
+        session,
+        mode=ACTIVE_DRAFT_MODE_MANUAL,
+        source="draft_room_simulator_paste",
+        pick_count=result["after_pick_count"],
+    )
+    session["_draft_room_simulator_last_paste"] = result
+    return result
+
+
+def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
+    """Fresh snake board — Start New Draft."""
+    team_lines = str(session.get("room_team_names") or "")
+    teams = [x.strip() for x in team_lines.splitlines() if x.strip()]
+    if not teams:
+        teams = [str(session.get("room_your_team") or "Team 1"), "Team 2"]
+    rounds = int(session.get("room_rounds") or 20)
+    table = build_snake_board(teams, rounds=rounds)
+    out = apply_programmatic_board_update(session, table, reason="reset_canonical_board")
+    set_canonical_draft_meta(session, mode=ACTIVE_DRAFT_MODE_MANUAL, source="reset", pick_count=0)
+    session.pop("_draft_room_skip_editor_resolve_clobber", None)
+    return out
+
+
+def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
+    """Option B: clear practice board only; Live Draft Room record stays if present."""
+    out = reset_canonical_draft_board(session)
+    set_canonical_draft_meta(
+        session,
+        mode=ACTIVE_DRAFT_MODE_MANUAL,
+        source="simulator_reset_only",
+        pick_count=0,
+    )
+    return out
+
+
+def delete_active_draft(session: dict[str, Any], *, clear_queue: bool = True) -> dict[str, Any]:
+    """Option A: wipe live draft + canonical board + draft queue (fresh start)."""
+    trace: dict[str, Any] = {
+        "ok": True,
+        "cleared_live": False,
+        "cleared_board": False,
+        "cleared_queue": False,
+    }
     try:
-        updated = apply_programmatic_board_update(session, table, reason="quick_draft")
-        trace["apply_programmatic_board_update_called"] = True
-        trace["after_pick_count"] = table_pick_count(updated)
-        pick_n = trace.get("quick_draft_target_pick") or (row_idx + 1)
-        trace["ok"] = True
-        trace["message"] = f"Logged {player_name} to pick {pick_n}."
-        session["_draft_room_quick_draft_flash"] = trace["message"]
-        session["_draft_room_quick_draft_applied"] = True
-        session["_draft_room_skip_editor_resolve_clobber"] = True
-    except Exception as exc:
-        trace["error"] = f"{type(exc).__name__}: {exc}"
-        trace["message"] = f"Quick draft failed: {trace['error']}"
-        session[DRAFT_ROOM_TABLE_KEY] = table
-        session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()
-        sync_editor_seed(session, table, force_reset=True)
+        from live_draft_state import clear_live_draft_state
 
-    session["_draft_room_last_quick_draft_trace"] = trace
+        clear_live_draft_state(session, reason="delete_active_draft")
+        trace["cleared_live"] = True
+    except Exception:
+        session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
+        trace["cleared_live"] = True
+    reset_canonical_draft_board(session)
+    trace["cleared_board"] = True
+    session[CANONICAL_DRAFT_META_KEY] = {}
+    session.pop("_canonical_draft_last_live_sync", None)
+    if clear_queue:
+        try:
+            from draft_state import clear_draft_queue
+
+            clear_draft_queue(session, reason="delete_active_draft")
+            trace["cleared_queue"] = True
+        except Exception:
+            pass
     return trace
+
+
+def get_active_draft_status(session: dict[str, Any]) -> dict[str, Any]:
+    """Cross-page summary: mode, pick progress, queue size, live clock."""
+    mode = get_active_draft_mode(session)
+    picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+    queue = session.get("draft_queue") or []
+    queue_len = len(queue) if isinstance(queue, list) else 0
+    status: dict[str, Any] = {
+        "active": picks > 0 or mode == ACTIVE_DRAFT_MODE_LIVE,
+        "mode": mode,
+        "pick_count": picks,
+        "queue_len": queue_len,
+        "current_round": None,
+        "current_pick": None,
+        "my_next_pick": None,
+        "your_team": str(session.get("room_your_team") or "").strip() or None,
+        "live_status": None,
+        "return_page": "Live Draft Room" if mode == ACTIVE_DRAFT_MODE_LIVE else "Draft Room Simulator",
+    }
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+
+        prepare_live_draft_state(session)
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if isinstance(room, dict) and room:
+            status["live_status"] = str(room.get("status") or "")
+            if status["live_status"] in ("in_progress", "paused"):
+                status["active"] = True
+            pick_order = list(room.get("pick_order") or [])
+            idx = int(room.get("current_pick_index") or 0)
+            if idx < len(pick_order):
+                slot = pick_order[idx]
+                if isinstance(slot, dict):
+                    status["current_round"] = slot.get("Round")
+                    status["current_pick"] = slot.get("Pick")
+            your_team = str(
+                (room.get("config") or {}).get("your_team")
+                or (room.get("config") or {}).get("user_team")
+                or session.get("room_your_team")
+                or ""
+            ).strip()
+            if your_team:
+                status["your_team"] = your_team
+                for i in range(idx, len(pick_order)):
+                    slot_i = pick_order[i]
+                    if isinstance(slot_i, dict) and str(slot_i.get("Team") or "").strip() == your_team:
+                        status["my_next_pick"] = slot_i.get("Pick")
+                        break
+    except Exception:
+        pass
+    if not status["current_pick"] and picks > 0:
+        status["current_pick"] = picks + 1
+    if not status["current_round"] and picks > 0:
+        team_count = int(session.get("room_team_count") or 12)
+        status["current_round"] = ((picks) // team_count) + 1 if team_count else None
+    return status
+
+
+def render_active_draft_banner(st: Any, session: dict[str, Any]) -> None:
+    """Global banner when a draft is active — visible on every page."""
+    status = get_active_draft_status(session)
+    if not status.get("active"):
+        return
+    mode = status.get("mode")
+    label = "Live Draft" if mode == ACTIVE_DRAFT_MODE_LIVE else "Practice Draft"
+    parts = [f"**{label}** · **{status.get('pick_count', 0)}** pick(s) logged"]
+    if status.get("current_round") and status.get("current_pick"):
+        parts.append(f"Round **{status['current_round']}** · Pick **{status['current_pick']}**")
+    if status.get("my_next_pick"):
+        parts.append(f"My next pick: **{status['my_next_pick']}**")
+    if status.get("queue_len"):
+        parts.append(f"Queue: **{status['queue_len']}**")
+    col_msg, col_btn = st.sidebar.columns([3, 1])
+    with col_msg:
+        st.info(" · ".join(parts))
+    with col_btn:
+        if st.button("Return to Draft", key="active_draft_return_btn", use_container_width=True):
+            session["_navigate_to_page"] = status.get("return_page") or "Draft Room Simulator"
+            st.rerun()
+
+
+def sync_live_draft_room_to_canonical_board(session: dict[str, Any], room: Any) -> pd.DataFrame:
+    """Live Draft Room → canonical draft_room_table (auto after each pick)."""
+    if not isinstance(room, dict):
+        return pd.DataFrame()
+    cfg = dict(room.get("config") or {})
+    teams = list(room.get("teams") or [])
+    picks_per_team = int(cfg.get("picks_per_team") or cfg.get("rounds") or session.get("room_rounds") or 15)
+    pick_order = list(room.get("pick_order") or [])
+    if not pick_order and teams:
+        pick_order = []
+        pick_no = 1
+        for rnd in range(1, picks_per_team + 1):
+            round_teams = teams if rnd % 2 == 1 else list(reversed(teams))
+            for team in round_teams:
+                pick_order.append({"Round": rnd, "Pick": pick_no, "Team": team})
+                pick_no += 1
+
+    rows: list[dict[str, Any]] = []
+    for slot in pick_order:
+        if isinstance(slot, dict):
+            rows.append(
+                {
+                    "Round": slot.get("Round"),
+                    "Pick": slot.get("Pick"),
+                    "Team": slot.get("Team"),
+                    "Player": "",
+                }
+            )
+    table = pd.DataFrame(rows) if rows else build_snake_board(teams or ["Team 1"], rounds=picks_per_team)
+
+    picks_by_number: dict[int, tuple[str, str]] = {}
+    for rec in room.get("draft_board") or []:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            pick_n = int(rec.get("Pick"))
+        except (TypeError, ValueError):
+            continue
+        player = str(rec.get("fullName") or rec.get("Player") or "").strip()
+        team = str(rec.get("Fantasy Team") or rec.get("Team") or "").strip()
+        if player:
+            picks_by_number[pick_n] = (player, team)
+
+    if not table.empty and "Pick" in table.columns:
+        table = table.sort_values("Pick", kind="stable").reset_index(drop=True)
+        for idx, row in table.iterrows():
+            try:
+                pk = int(row["Pick"])
+            except (TypeError, ValueError):
+                continue
+            if pk in picks_by_number:
+                player, team = picks_by_number[pk]
+                table.at[idx, "Player"] = player
+                if team:
+                    table.at[idx, "Team"] = team
+
+    if teams:
+        session["room_team_names"] = "\n".join(teams)
+        session["room_team_count"] = len(teams)
+    session["room_rounds"] = picks_per_team
+    your_team = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
+    if your_team:
+        session["room_your_team"] = your_team
+    if cfg.get("scoring_type"):
+        session["room_format"] = str(cfg.get("scoring_type"))
+
+    out = apply_programmatic_board_update(session, table, reason="live_draft_sync")
+    set_canonical_draft_meta(
+        session,
+        mode=ACTIVE_DRAFT_MODE_LIVE,
+        source="live_draft_room",
+        pick_count=table_pick_count(out),
+    )
+    session["_canonical_draft_last_live_sync"] = _utc_now_iso()
+    return out
+
+
+def render_canonical_draft_banner(st: Any, session: dict[str, Any]) -> None:
+    mode = get_active_draft_mode(session)
+    meta = get_canonical_draft_meta(session)
+    picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+    label = "Live Draft Room (auto-sync)" if mode == ACTIVE_DRAFT_MODE_LIVE else "Draft Room Simulator (manual)"
+    st.info(f"**Canonical draft board:** {label} · **{picks}** pick(s) logged · source: `{meta.get('source', '—')}`")
 
 
 def preserve_richer_session_board(
@@ -586,20 +872,6 @@ def reconstruct_board_from_widget_state(widget_state: dict[str, Any], base: Any)
     return normalize_board_table(out) if is_runtime_table(out) else out
 
 
-_PICK_ENTRY_KEY_TERMS = (
-    "draft",
-    "room",
-    "board",
-    "pick",
-    "player",
-    "roster",
-    "queue",
-    "assistant",
-    "selected",
-    "simulat",
-)
-
-
 def _drafted_players_from_table(table: Any) -> list[str]:
     if not is_runtime_table(table) or table.empty:
         return []
@@ -608,197 +880,6 @@ def _drafted_players_from_table(table: Any) -> list[str]:
         return []
     names = [str(v).strip() for v in table[col].tolist() if _player_cell_filled(v)]
     return list(dict.fromkeys(names))
-
-
-def _session_keys_matching(session: dict[str, Any], *terms: str) -> list[str]:
-    lowered = [t.lower() for t in terms]
-    return sorted(
-        str(k)
-        for k in session.keys()
-        if any(t in str(k).lower() for t in lowered)
-    )
-
-
-def _preview_session_value(val: Any, *, limit: int = 200) -> str:
-    if is_runtime_table(val):
-        return f"DataFrame rows={len(val)} picks={table_pick_count(val)}"
-    if isinstance(val, (list, tuple)):
-        return repr(list(val)[:8])[:limit]
-    if isinstance(val, dict):
-        return repr({str(k): val[k] for k in list(val.keys())[:6]})[:limit]
-    return repr(val)[:limit]
-
-
-def collect_pick_entry_diagnostics(
-    session: dict[str, Any],
-    st: Any | None = None,
-    *,
-    player_names_pool: list[str] | None = None,
-) -> dict[str, Any]:
-    """Locate where drafted player names actually live in session state."""
-    table = session.get(DRAFT_ROOM_TABLE_KEY)
-    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
-    seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
-    drafted = _drafted_players_from_table(table)
-    info: dict[str, Any] = {
-        "workflow_primary_board_tab": "Select a player from the Player dropdown in each grid row, OR use Quick draft below.",
-        "workflow_draft_assistant": "Draft Assistant → Player actions popover → Draft this player (only on your snake-draft turn).",
-        "workflow_not_board_writes": "Simulate Draft Pick, Add to Queue, and Send to Comparison do NOT write the board.",
-        "draft_room_table_pick_count": table_pick_count(table),
-        "draft_room_table_drafted_players": drafted[:20],
-        "draft_room_editor_cache_pick_count": table_pick_count(cache),
-        "draft_room_editor_seed_pick_count": table_pick_count(seed),
-        "draft_queue": list(session.get("draft_queue") or [])[:15],
-        "pending_draft_assistant_player": session.get("pending_draft_assistant_player"),
-        "room_your_team": session.get("room_your_team"),
-        "next_open_pick_team": None,
-        "simulated_draft_room_pick_count": table_pick_count(session.get("simulated_draft_room_table")),
-        "live_draft_board_pick_count": 0,
-    }
-    try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY
-
-        live = session.get(LIVE_DRAFT_ROOM_KEY) or {}
-        board = live.get("draft_board") if isinstance(live, dict) else None
-        if isinstance(board, list):
-            info["live_draft_board_pick_count"] = len(board)
-    except Exception:
-        pass
-
-    if is_runtime_table(table) and not table.empty and "Player" in table.columns and "Team" in table.columns:
-        t = table.copy()
-        open_mask = t["Player"].fillna("").astype(str).str.strip().eq("")
-        if open_mask.any():
-            if "Pick" in t.columns:
-                t = t.sort_values("Pick", kind="stable")
-            for _, row in t.iterrows():
-                if str(row.get("Player", "")).strip() == "":
-                    info["next_open_pick_team"] = str(row.get("Team", "")).strip()
-                    break
-        yt = str(session.get("room_your_team") or "").strip()
-        nxt = str(info.get("next_open_pick_team") or "").strip()
-        info["is_your_team_on_clock"] = bool(yt and nxt and yt == nxt)
-
-    related_keys = _session_keys_matching(session, *_PICK_ENTRY_KEY_TERMS)
-    info["draft_related_session_keys"] = related_keys[:40]
-    snapshots: dict[str, str] = {}
-    for key in related_keys[:25]:
-        snapshots[key] = _preview_session_value(session.get(key))
-    info["draft_related_session_snapshots"] = snapshots
-
-    pool = [str(p).strip() for p in (player_names_pool or []) if str(p).strip()]
-    if pool and drafted:
-        info["drafted_players_found_in_pool"] = [p for p in drafted if p in pool]
-    if pool:
-        name_hits: dict[str, list[str]] = {}
-        for name in drafted[:10]:
-            hits = [
-                k
-                for k in related_keys
-                if name.lower() in _preview_session_value(session.get(k)).lower()
-            ]
-            if hits:
-                name_hits[name] = hits[:5]
-        if name_hits:
-            info["session_keys_mentioning_drafted_players"] = name_hits
-
-    widget_key = session.get("_draft_room_last_widget_key") or editor_widget_key(session)
-    if st is not None:
-        _, widget_raw = find_widget_state_in_session(st, widget_key)
-        info["data_editor_widget_has_edits"] = widget_state_has_edits(widget_raw)
-        info["data_editor_key_checked"] = widget_key
-    info["last_programmatic_pick_reason"] = session.get("_draft_room_last_programmatic_pick_reason")
-    session["_draft_room_pick_entry_diagnostics"] = info
-    return info
-
-
-def render_pick_entry_workflow_debug(
-    st: Any,
-    session: dict[str, Any],
-    *,
-    player_names_pool: list[str] | None = None,
-) -> None:
-    """How picks enter the board — and where session state stores them."""
-    info = collect_pick_entry_diagnostics(session, st, player_names_pool=player_names_pool)
-    with st.expander("Pick entry workflow debug", expanded=False):
-        st.markdown("**How to log picks**")
-        for key in (
-            "workflow_primary_board_tab",
-            "workflow_draft_assistant",
-            "workflow_not_board_writes",
-        ):
-            st.text(info.get(key, ""))
-        st.markdown("**Where picks are stored now**")
-        for key in (
-            "draft_room_table_pick_count",
-            "draft_room_table_drafted_players",
-            "draft_room_editor_cache_pick_count",
-            "draft_room_editor_seed_pick_count",
-            "draft_queue",
-            "pending_draft_assistant_player",
-            "room_your_team",
-            "next_open_pick_team",
-            "is_your_team_on_clock",
-            "data_editor_widget_has_edits",
-            "data_editor_key_checked",
-            "simulated_draft_room_pick_count",
-            "live_draft_board_pick_count",
-            "last_programmatic_pick_reason",
-        ):
-            if key in info and info[key] is not None and info[key] != "" and info[key] != []:
-                st.text(f"{key}: {info[key]}")
-        st.markdown("**Draft-related session keys**")
-        st.text(f"draft_related_session_keys: {info.get('draft_related_session_keys')}")
-        for key, preview in (info.get("draft_related_session_snapshots") or {}).items():
-            st.text(f"  {key}: {preview}")
-
-
-def render_quick_draft_status(st: Any, session: dict[str, Any]) -> None:
-    """Always-visible quick draft result + trace."""
-    trace = session.get("_draft_room_last_quick_draft_trace")
-    flash = session.get("_draft_room_quick_draft_flash")
-    active_count = int(session.get("_draft_room_active_board_pick_count") or 0)
-    table_count = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
-    with st.container(border=True):
-        st.markdown("**Quick draft status**")
-        if flash:
-            st.success(str(flash))
-        elif isinstance(trace, dict) and trace.get("error"):
-            st.error(str(trace.get("message") or trace.get("error")))
-        st.text(f"draft_room_table_pick_count: {table_count}")
-        st.text(f"active_board_pick_count: {active_count}")
-        seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
-        if is_runtime_table(seed):
-            st.text(f"seed_player_non_empty: {column_non_empty_counts(seed).get('Player', 0)}")
-        st.markdown("**Last quick draft trace**")
-        if not isinstance(trace, dict):
-            st.warning("No quick draft trace recorded yet — click Log pick to board to run the traced path.")
-            return
-        for key in (
-            "quick_draft_button_clicked",
-            "selected_player",
-            "selected_team",
-            "target_row_index",
-            "target_pick",
-            "target_round",
-            "before_pick_count",
-            "after_pick_count",
-            "apply_programmatic_board_update_called",
-            "blocked_reason",
-            "error",
-            "message",
-            "quick_draft_selected_player",
-            "quick_draft_selected_team",
-            "quick_draft_target_row_index",
-            "quick_draft_target_pick",
-            "updated_row_index",
-            "used_fallback_open_row",
-        ):
-            val = trace.get(key)
-            if val is None:
-                st.text(f"{key}: (none)")
-            else:
-                st.text(f"{key}: {val}")
 
 
 def find_widget_state_in_session(st: Any, widget_key: str) -> tuple[str, Any]:
@@ -1123,7 +1204,7 @@ def draft_room_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
-    """Unified diagnostics: Draft Room Simulator vs Live Draft Room."""
+    """Unified diagnostics: canonical draft board (simulator + live)."""
     from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_restore_stats
 
     room_stats = draft_room_restore_stats(session)
@@ -1136,7 +1217,15 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     session_pick_count = max(room_stats["pick_count"], runtime_picks, cache_picks)
     session_has_board = session_pick_count > 0
 
-    if session_has_board:
+    canonical_meta = get_canonical_draft_meta(session)
+    active_mode = get_active_draft_mode(session)
+
+    if active_mode == ACTIVE_DRAFT_MODE_LIVE and live_stats["has_live_draft_state"]:
+        source_key = LIVE_DRAFT_ROOM_KEY
+        active_draft_page = "Live Draft Room"
+        session_pick_count = max(session_pick_count, live_stats["pick_count"])
+        session_has_board = True
+    elif session_has_board:
         source_key = DRAFT_ROOM_EDITOR_CACHE_KEY if cache_picks >= runtime_picks else DRAFT_ROOM_TABLE_KEY
         active_draft_page = DRAFT_ROOM_PAGE_BLOCK
     elif live_stats["pick_count"] > 0 or live_stats["has_live_draft_state"]:
@@ -1150,6 +1239,8 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "active_draft_page": active_draft_page or active_page or None,
+        "active_draft_mode": active_mode,
+        "canonical_draft_meta": canonical_meta,
         "draft_board_source_key": source_key or None,
         "session_has_draft_board": session_has_board,
         "session_pick_count": session_pick_count,
@@ -1204,6 +1295,9 @@ def write_canonical_draft_room_state(
     settings = _room_settings_from_session(session)
     blob = table_to_persist_dict(table, settings=settings)
     blob["last_write_reason"] = reason or None
+    meta = get_canonical_draft_meta(session)
+    if meta:
+        blob["canonical_draft_meta"] = _json_safe(meta)
     session[DRAFT_ROOM_STATE_KEY] = blob
     if is_runtime_table(table):
         session[DRAFT_ROOM_TABLE_KEY] = table
@@ -1248,6 +1342,9 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame | None:
             for key in DRAFT_ROOM_SETTINGS_KEYS:
                 if key in blob:
                     session[key] = blob[key]
+            saved_meta = blob.get("canonical_draft_meta")
+            if isinstance(saved_meta, dict):
+                session[CANONICAL_DRAFT_META_KEY] = copy.deepcopy(saved_meta)
             return apply_restored_board_to_session(session, restored, blob=blob, bump_widget=True)
     if is_runtime_table(table):
         write_canonical_draft_room_state(session, table, reason="session_hydrate", local_edit=False)
@@ -1300,6 +1397,10 @@ def enrich_save_payload_with_draft_room(
     out = copy.deepcopy(state)
     out[DRAFT_ROOM_STATE_KEY] = safe_blob
     out[DRAFT_ROOM_TABLE_KEY] = safe_blob
+    meta = get_canonical_draft_meta(session)
+    if meta:
+        out[CANONICAL_DRAFT_META_KEY] = copy.deepcopy(_json_safe(meta))
+        safe_blob["canonical_draft_meta"] = _json_safe(meta)
     pf = out.setdefault("page_filter_state", {})
     if not isinstance(pf, dict):
         pf = {}
@@ -1464,6 +1565,15 @@ def commit_draft_room_table(
     trace.update(editor_diag)
 
     write_canonical_draft_room_state(session, table, reason=reason, local_edit=True)
+    if reason == "live_draft_sync":
+        pass
+    elif reason not in ("simulator_add_player", "simulator_paste", "reset_canonical_board"):
+        set_canonical_draft_meta(
+            session,
+            mode=ACTIVE_DRAFT_MODE_MANUAL,
+            source=reason,
+            pick_count=table_pick_count(table),
+        )
     blob = _draft_room_from_blob(session) or {}
     trace["persisted_pick_count"] = int(blob.get("pick_count") or table_pick_count(blob))
     trace["persisted_rows"] = table_row_count(blob)

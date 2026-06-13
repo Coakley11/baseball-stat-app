@@ -332,6 +332,53 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
     return q, True
 
 
+def remove_player_from_draft_queue(
+    session: dict[str, Any],
+    player_name: str,
+    *,
+    reason: str = "remove_from_queue",
+) -> tuple[list[str], bool]:
+    name = str(player_name or "").strip()
+    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    if name not in q:
+        return q, False
+    q = [p for p in q if p != name]
+    sync_draft_queue(session, q, reason=reason)
+    return q, True
+
+
+def draft_player_from_queue(session: dict[str, Any], player_name: str) -> dict[str, Any]:
+    """Add player to canonical board at next open pick; remove from queue."""
+    from draft_room_state import add_player_to_next_open_pick
+
+    name = str(player_name or "").strip()
+    result = add_player_to_next_open_pick(session, name)
+    if result.get("ok"):
+        remove_player_from_draft_queue(session, name, reason="drafted_from_queue")
+        q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+        result["queue_after"] = q
+        result["message"] = f"Drafted {name} from queue. Next up: {q[0] if q else '—'}."
+    return result
+
+
+def draft_top_queue_player(session: dict[str, Any]) -> dict[str, Any]:
+    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    if not q:
+        return {"ok": False, "error": "empty_queue", "message": "Draft queue is empty."}
+    return draft_player_from_queue(session, q[0])
+
+
+def draft_queue_player_at_index(session: dict[str, Any], index: int) -> dict[str, Any]:
+    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "bad_index", "message": "Invalid queue index."}
+    if idx < 0 or idx >= len(q):
+        return {"ok": False, "error": "bad_index", "message": "Queue index out of range."}
+    return draft_player_from_queue(session, q[idx])
+
+
 def add_player_to_watchlist(session: dict[str, Any], player_name: str) -> tuple[list[str], bool]:
     from player_actions import dedupe_append_name
 
@@ -587,10 +634,34 @@ def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, A
         except Exception:
             pass
 
-    drt = session.get("draft_room_table")
+    drt = None
+    drafted_names: list[str] = []
+    try:
+        from draft_room_state import (
+            get_active_draft_mode,
+            get_all_drafted_player_names,
+            get_canonical_draft_board,
+            get_canonical_draft_meta,
+        )
+
+        drt = get_canonical_draft_board(session)
+        meta = get_canonical_draft_meta(session)
+        snapshot["canonical_draft_meta"] = meta
+        snapshot["active_draft_mode"] = get_active_draft_mode(session)
+        drafted_names = get_all_drafted_player_names(session)
+        snapshot["canonical_drafted_players"] = drafted_names[:48]
+    except Exception:
+        drt = session.get("draft_room_table")
     if drt is not None and hasattr(drt, "head"):
         try:
-            snapshot["draft_room_board"] = drt.head(24).to_dict(orient="records")
+            filled = drt[drt["Player"].astype(str).str.strip().ne("")] if "Player" in drt.columns else drt
+            snapshot["draft_room_board"] = filled.head(24).to_dict(orient="records")
+            if not drafted_names and "Player" in drt.columns:
+                snapshot["canonical_drafted_players"] = [
+                    str(p).strip()
+                    for p in drt["Player"].astype(str).str.strip().tolist()
+                    if str(p).strip()
+                ][:48]
         except Exception:
             pass
 

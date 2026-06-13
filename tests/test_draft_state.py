@@ -17,6 +17,7 @@ from draft_state import (
     apply_cloud_draft_state_if_allowed,
     apply_draft_source_state_from_ami,
     clear_draft_queue,
+    draft_top_queue_player,
     flush_draft_workflow_edits,
     is_draft_locally_dirty,
     mark_draft_local_edit,
@@ -185,6 +186,25 @@ class TestDraftState(unittest.TestCase):
         session: dict = {}
         sync_draft_queue(session, ["B", "A", "B", ""], reason="test")
         self.assertEqual(session[DRAFT_QUEUE_KEY], ["B", "A"])
+
+    def test_draft_top_queue_player_updates_board_and_queue(self) -> None:
+        import pandas as pd
+        from draft_room_state import DRAFT_ROOM_EDITOR_VERSION_KEY, DRAFT_ROOM_TABLE_KEY, get_all_drafted_player_names, table_pick_count
+
+        empty_board = pd.DataFrame(
+            [{"Round": 1, "Pick": i + 1, "Team": f"Team {(i % 2) + 1}", "Player": ""} for i in range(8)]
+        )
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: empty_board,
+            DRAFT_QUEUE_KEY: ["Aaron Judge", "Bobby Witt Jr.", "Julio Rodríguez"],
+        }
+        write_canonical_draft_state(session, queue=session[DRAFT_QUEUE_KEY], reason="setup")
+        result = draft_top_queue_player(session)
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
+        self.assertIn("Aaron Judge", get_all_drafted_player_names(session))
+        self.assertEqual(session[DRAFT_QUEUE_KEY], ["Bobby Witt Jr.", "Julio Rodríguez"])
 
 
 if __name__ == "__main__":
