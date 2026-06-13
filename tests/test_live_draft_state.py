@@ -274,5 +274,43 @@ class TestLiveDraftCloudSave(unittest.TestCase):
         self.assertEqual(room.get("current_pick_index"), 2)
 
 
+class TestLiveDraftDirectCloudSave(unittest.TestCase):
+    def test_direct_cloud_save_trace_on_disabled(self) -> None:
+        from live_draft_state import save_live_draft_direct_to_cloud
+
+        st = MagicMock()
+        session: dict = {"page_filter_state": {}}
+        st.session_state = session
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=False):
+            trace = save_live_draft_direct_to_cloud(st, session, _sample_room())
+        self.assertFalse(trace["saved_cloud"])
+        self.assertEqual(trace["error"], "cloud_storage_disabled")
+
+    def test_direct_cloud_save_calls_supabase(self) -> None:
+        from live_draft_state import save_live_draft_direct_to_cloud
+
+        st = MagicMock()
+        session: dict = {"active_page": "Live Draft Room", "page_filter_state": {}}
+        st.session_state = session
+        cloud_after = {LIVE_DRAFT_STATE_KEY: room_to_persist_dict(_sample_room())}
+
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=True), patch(
+            "live_draft_state.get_account_user_id", create=True, return_value="uuid-test"
+        ), patch("live_draft_state.account_mode", create=True, return_value="cloud"), patch(
+            "suite_cloud_state.load_cloud_full_session",
+            side_effect=[({}, "2026-06-13T00:00:00"), (cloud_after, "2026-06-13T01:00:00")],
+        ), patch(
+            "suite_cloud_state.save_cloud_full_session_with_result", return_value=(True, "")
+        ), patch("baseball_persistent_state.build_baseball_disk_state") as mock_build:
+            mock_build.return_value = {"active_page": "Live Draft Room"}
+            with patch("suite_user.get_account_user_id", return_value="uuid-test"), patch(
+                "suite_user.account_mode", return_value="cloud"
+            ):
+                trace = save_live_draft_direct_to_cloud(st, session, _sample_room())
+        self.assertTrue(trace["saved_cloud"])
+        self.assertTrue(trace["cloud_payload_has_live_draft_state"])
+        self.assertTrue(trace["cloud_timestamp_changed"])
+
+
 if __name__ == "__main__":
     unittest.main()

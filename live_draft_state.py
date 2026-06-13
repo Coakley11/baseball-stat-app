@@ -492,6 +492,115 @@ def commit_live_draft_room(st: Any, session: dict[str, Any], room: dict[str, Any
     return trace
 
 
+def save_live_draft_direct_to_cloud(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Explicit Supabase full_session write for live draft — bypasses autosave triggers.
+    Reports payload build, cloud enablement, timestamp before/after, and errors.
+    """
+    trace: dict[str, Any] = {
+        "path": "direct_cloud_save",
+        "saved_cloud": False,
+        "cloud_timestamp_changed": False,
+        "error": "",
+    }
+    try:
+        from suite_storage_config import cloud_storage_enabled
+        from suite_user import account_mode, get_account_user_id
+
+        trace["cloud_storage_enabled"] = cloud_storage_enabled()
+        trace["account_user_id"] = str(get_account_user_id() or "")[:40]
+        trace["account_storage_mode"] = account_mode()
+    except Exception as exc:
+        trace["cloud_storage_enabled"] = False
+        trace["error"] = f"config:{type(exc).__name__}:{exc}"
+        session["_live_draft_direct_cloud_trace"] = trace
+        return trace
+
+    if not trace["cloud_storage_enabled"]:
+        trace["error"] = "cloud_storage_disabled"
+        session["_live_draft_direct_cloud_trace"] = trace
+        return trace
+
+    try:
+        from suite_cloud_state import load_cloud_full_session, save_cloud_full_session_with_result, session_page_summary
+        from baseball_persistent_state import build_baseball_disk_state
+
+        cloud_before, ts_before = load_cloud_full_session("baseball")
+        trace["cloud_updated_at_before"] = ts_before
+        trace["cloud_existing_has_live_draft_state_before_save"] = bool(
+            _live_draft_from_blob(cloud_before or {}) and _live_draft_from_blob(cloud_before or {}).get("draft_room_id")
+        )
+
+        if room is not None:
+            write_canonical_live_draft_state(session, room, reason="direct_cloud_save", local_edit=True)
+        elif session.get(LIVE_DRAFT_ROOM_KEY):
+            sync_live_draft_session_before_save(session)
+
+        session["_suite_pending_save_reason"] = "live_draft_direct_cloud"
+        state = build_baseball_disk_state(st)
+        state, enrich_diag = enrich_save_payload_with_live_draft(session, state)
+        trace["live_draft_injected_from_session"] = enrich_diag.get("injected_from_session")
+        record_live_draft_cloud_save_diagnostics(
+            session,
+            payload=state,
+            enrich_diag=enrich_diag,
+            cloud_existing_before=trace["cloud_existing_has_live_draft_state_before_save"],
+            preserved_on_page_change=False,
+        )
+        trace.update(live_draft_payload_diagnostics(state))
+
+        import json
+
+        raw = json.dumps(state, default=str)
+        trace["payload_json_ok"] = True
+        trace["payload_bytes"] = len(raw)
+    except Exception as exc:
+        trace["payload_json_ok"] = False
+        trace["error"] = f"payload_build:{type(exc).__name__}:{exc}"
+        session["_live_draft_direct_cloud_trace"] = trace
+        return trace
+
+    if not trace.get("cloud_payload_has_live_draft_state"):
+        trace["error"] = "payload_missing_live_draft_state"
+        session["_live_draft_direct_cloud_trace"] = trace
+        return trace
+
+    page, summary = session_page_summary("baseball", state)
+    ok, cloud_err = save_cloud_full_session_with_result("baseball", state, page=page, summary=summary)
+    trace["saved_cloud"] = ok
+    trace["cloud_write_error"] = cloud_err or ""
+    if cloud_err:
+        trace["error"] = cloud_err
+        session["_suite_persist_last_cloud_error"] = cloud_err
+        session["_suite_autosave_cloud_blocked_reason"] = None
+
+    cloud_after, ts_after = load_cloud_full_session("baseball")
+    trace["cloud_updated_at_after"] = ts_after
+    trace["cloud_timestamp_changed"] = bool(ts_after and ts_after != ts_before)
+    trace["cloud_has_live_draft_after_read"] = bool(
+        _live_draft_from_blob(cloud_after or {}) and _live_draft_from_blob(cloud_after or {}).get("draft_room_id")
+    )
+    if ok:
+        session["_suite_persist_last_save_cloud"] = True
+        session["_suite_persist_last_save_reason"] = "live_draft_direct_cloud"
+        session["_suite_cloud_fetch_updated_at"] = ts_after
+        session.pop("_suite_persist_last_cloud_error", None)
+        if trace["cloud_has_live_draft_after_read"]:
+            clear_live_draft_local_edit(session)
+    trace["last_live_draft_save_success"] = bool(
+        ok and trace.get("cloud_payload_has_live_draft_state") and trace.get("cloud_has_live_draft_after_read")
+    )
+    session["_live_draft_direct_cloud_trace"] = trace
+    session["_live_draft_last_save_trace"] = trace
+    session["last_live_draft_save_success"] = trace["last_live_draft_save_success"]
+    session["last_live_draft_save_error"] = trace.get("error") or ""
+    return trace
+
+
 def verify_json_serializable(state: dict[str, Any]) -> tuple[bool, str]:
     try:
         json.dumps(sanitize_state_dict_for_json(state), ensure_ascii=False)
@@ -544,6 +653,22 @@ def render_live_draft_save_diagnostics(st: Any) -> None:
         st.text(f"cloud_payload_has_live_draft_state: {ss.get('cloud_payload_has_live_draft_state')}")
         st.text(f"cloud_payload_pick_count: {ss.get('cloud_payload_pick_count')}")
         st.text(f"cloud_payload_pool_count: {ss.get('cloud_payload_pool_count')}")
+        direct = ss.get("_live_draft_direct_cloud_trace")
+        if isinstance(direct, dict):
+            st.markdown("**Direct cloud save (last)**")
+            for key, val in direct.items():
+                st.text(f"{key}: {val}")
+        st.text(f"_suite_persist_last_cloud_error: {ss.get('_suite_persist_last_cloud_error')}")
+        st.text(f"_suite_force_autosave_last_error: {ss.get('_suite_force_autosave_last_error')}")
+        st.text(f"_suite_last_save_payload_bytes: {ss.get('_suite_last_save_payload_bytes')}")
+        st.text(f"cloud_fetch_updated_at: {ss.get('_suite_cloud_fetch_updated_at')}")
+        try:
+            from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+
+            st.text(f"deploy_build: {SUITE_BUILD_LABEL}")
+            st.text(f"deploy_commit: {GIT_COMMIT_SHORT}")
+        except ImportError:
+            pass
         st.text(f"persist_restore_applied: {ss.get('_suite_persist_restore_applied')}")
         st.text(f"persist_restore_source: {ss.get('_suite_persist_last_restore_source')}")
         ok, err = verify_json_serializable(

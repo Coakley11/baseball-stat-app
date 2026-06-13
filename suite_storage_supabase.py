@@ -353,12 +353,17 @@ def load_current_states() -> dict[str, dict[str, Any]]:
         metrics = row.get("metrics")
         if not isinstance(metrics, dict):
             metrics = {}
-        out[app] = {
+        candidate = {
             "page": str(row.get("page") or ""),
             "summary": str(row.get("summary") or ""),
             "metrics": metrics,
             "updated_at": str(row.get("updated_at") or "")[:19],
         }
+        prior = out.get(app)
+        if prior and prior.get("updated_at") and candidate.get("updated_at"):
+            if str(prior.get("updated_at")) >= str(candidate.get("updated_at")):
+                continue
+        out[app] = candidate
     return out
 
 

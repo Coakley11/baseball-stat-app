@@ -16063,6 +16063,11 @@ if active_page == "Live Draft Room":
 
     prepare_live_draft_state(st.session_state)
     if developer_mode_enabled():
+        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+
+        st.caption(
+            f"Build `{SUITE_BUILD_LABEL}` · commit `{GIT_COMMIT_SHORT}` · branch `{GIT_BRANCH}`"
+        )
         render_live_draft_save_diagnostics(st)
     st.markdown(
         """
@@ -16080,14 +16085,32 @@ if active_page == "Live Draft Room":
         st.session_state["live_draft_room"] = None
     room = st.session_state.get("live_draft_room")
     if room and isinstance(room, dict) and room.get("status") in ("in_progress", "paused"):
-        if st.button("Save draft now", key="live_draft_manual_save_btn", help="Force-save board to disk and cloud (Developer Mode aid)."):
-            from live_draft_state import commit_live_draft_room
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            if st.button("Save draft now", key="live_draft_manual_save_btn", help="Force-save via normal autosave path."):
+                from live_draft_state import commit_live_draft_room
 
-            trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
-            if trace.get("last_live_draft_save_success"):
-                st.success("Draft saved to disk and cloud.")
-            else:
-                st.error(f"Save failed: {trace.get('last_live_draft_save_error') or 'unknown'}")
+                trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
+                if trace.get("last_live_draft_save_success"):
+                    st.success("Draft saved to disk and cloud.")
+                else:
+                    st.error(f"Save failed: {trace.get('last_live_draft_save_error') or trace.get('error') or 'unknown'}")
+        with sc2:
+            if st.button(
+                "Save Draft to Cloud Now",
+                key="live_draft_direct_cloud_btn",
+                help="Write live_draft_state directly to Supabase full_session (isolation test).",
+            ):
+                from live_draft_state import save_live_draft_direct_to_cloud
+
+                trace = save_live_draft_direct_to_cloud(st, st.session_state, room)
+                if trace.get("last_live_draft_save_success"):
+                    st.success(
+                        f"Cloud updated · picks={trace.get('cloud_payload_pick_count')} · "
+                        f"ts={trace.get('cloud_updated_at_after')}"
+                    )
+                else:
+                    st.error(f"Cloud save failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
     market_df_live = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 

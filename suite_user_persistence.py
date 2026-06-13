@@ -1457,16 +1457,31 @@ def force_autosave(
                 pass
         if reason == "page_change" and app_id != "baseball":
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
-        blob = json.dumps(state, sort_keys=True, default=str)
+        try:
+            blob = json.dumps(state, sort_keys=True, default=str)
+        except Exception as exc:
+            err = f"payload_json_error:{type(exc).__name__}:{exc}"
+            st.session_state["_suite_force_autosave_last_error"] = err
+            st.session_state["_suite_autosave_last_error"] = err
+            return False
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
+        st.session_state["_suite_last_save_payload_bytes"] = len(blob)
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
         cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=reason)
         saved_cloud = False
+        cloud_err = ""
         if cloud_block:
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
+            cloud_err = cloud_block
         else:
-            saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
+            from suite_cloud_state import save_cloud_full_session_with_result
+
+            saved_cloud, cloud_err = save_cloud_full_session_with_result(
+                app_id, state, page=page, summary=summary
+            )
+            if cloud_err:
+                st.session_state["_suite_persist_last_cloud_error"] = cloud_err
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
@@ -1476,6 +1491,10 @@ def force_autosave(
             if saved_cloud:
                 _, cloud_ts = load_cloud_full_session(app_id)
                 st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()
+                st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts
+                st.session_state.pop("_suite_persist_last_cloud_error", None)
+            elif cloud_err:
+                st.session_state["_suite_persist_last_cloud_error"] = cloud_err
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
@@ -1489,8 +1508,10 @@ def force_autosave(
             )
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        err = f"{type(exc).__name__}:{exc}"
+        st.session_state["_suite_force_autosave_last_error"] = err
+        st.session_state["_suite_autosave_last_error"] = err
     return False
 
 
