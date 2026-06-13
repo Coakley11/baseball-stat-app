@@ -375,7 +375,22 @@ def save_cloud_full_session_with_result(
     try:
         import json
 
-        payload = json.dumps(state, default=str)
+        serde_diag: dict[str, Any] = {}
+        try:
+            from live_draft_state import sanitize_state_dict_for_json as sanitize_live_draft
+            from draft_room_state import sanitize_state_dict_for_json as sanitize_draft_room
+
+            state = sanitize_live_draft(state)
+            state = sanitize_draft_room(state, diag=serde_diag)
+        except ImportError:
+            pass
+
+        try:
+            json.dumps(state)
+        except TypeError as exc:
+            err_key = str(serde_diag.get("json_serialization_error_key") or f"{type(exc).__name__}: {exc}")
+            offenders = serde_diag.get("non_json_safe_keys") or []
+            return False, f"payload_json_error:{err_key}:keys={offenders}"
     except Exception as exc:
         return False, f"payload_json_error:{type(exc).__name__}:{exc}"
     try:

@@ -1922,6 +1922,18 @@ def _room_settings_from_session(session: dict[str, Any]) -> dict[str, Any]:
     return {k: session[k] for k in DRAFT_ROOM_SETTINGS_KEYS if k in session}
 
 
+def _room_settings_from_blob(state: dict[str, Any]) -> dict[str, Any]:
+    settings = {k: state[k] for k in DRAFT_ROOM_SETTINGS_KEYS if k in state}
+    pf = state.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get(DRAFT_ROOM_PAGE_BLOCK)
+        if isinstance(block, dict):
+            for key in DRAFT_ROOM_SETTINGS_KEYS:
+                if key in block and key not in settings:
+                    settings[key] = block[key]
+    return settings
+
+
 def _sync_page_filter_draft_room_block(session: dict[str, Any], *, blob: dict[str, Any] | None = None) -> None:
     pf = session.setdefault("page_filter_state", {})
     if not isinstance(pf, dict):
@@ -2162,12 +2174,28 @@ def enrich_save_payload_with_draft_room(
     return out, diag
 
 
-def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
+def sanitize_state_dict_for_json(
+    state: dict[str, Any],
+    *,
+    diag: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Ensure persisted full_session has no runtime DataFrames (Supabase uses strict JSON)."""
+    report: dict[str, Any] = diag if diag is not None else {}
+    report.setdefault("dataframe_keys_in_payload", [])
+    report.setdefault("non_json_safe_keys", [])
+    report.setdefault("stripped_runtime_keys", [])
+    report.setdefault("json_serialization_error_key", "")
+
+    report["payload_pick_count_before_json"] = int(
+        draft_room_restore_stats(state).get("pick_count") or 0
+    )
+    _collect_dataframe_paths(state, "", report["dataframe_keys_in_payload"])
+
     out = copy.deepcopy(state)
     table = out.get(DRAFT_ROOM_TABLE_KEY)
     blob = out.get(DRAFT_ROOM_STATE_KEY)
     if is_runtime_table(table):
-        blob = table_to_persist_dict(table)
+        blob = table_to_persist_dict(table, settings=_room_settings_from_blob(out))
     elif is_persisted_table_blob(table):
         blob = copy.deepcopy(table)
     elif isinstance(blob, dict) and blob.get("table_records") is not None:
@@ -2177,18 +2205,125 @@ def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(block, dict):
             pr = block.get(DRAFT_ROOM_TABLE_KEY)
             if is_runtime_table(pr):
-                blob = table_to_persist_dict(pr)
+                blob = table_to_persist_dict(pr, settings=_room_settings_from_blob(out))
             elif is_persisted_table_blob(pr):
                 blob = copy.deepcopy(pr)
     if blob:
-        out[DRAFT_ROOM_STATE_KEY] = copy.deepcopy(blob)
-        out[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(blob)
+        safe_blob = copy.deepcopy(blob)
+        out[DRAFT_ROOM_STATE_KEY] = safe_blob
+        out[DRAFT_ROOM_TABLE_KEY] = safe_blob
         pf = out.get("page_filter_state")
         if isinstance(pf, dict):
             page_block = pf.setdefault(DRAFT_ROOM_PAGE_BLOCK, {})
             if isinstance(page_block, dict):
-                page_block[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(blob)
+                page_block[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(safe_blob)
+
+    runtime_strip_keys = (
+        DRAFT_ROOM_EDITOR_CACHE_KEY,
+        DRAFT_ROOM_EDITOR_SEED_KEY,
+        DRAFT_ROOM_EDITOR_VERSION_KEY,
+    )
+    for key in runtime_strip_keys:
+        if key in out:
+            out.pop(key, None)
+            report["stripped_runtime_keys"].append(key)
+
+    pf = out.get("page_filter_state")
+    if isinstance(pf, dict):
+        for page_name, block in pf.items():
+            if not isinstance(block, dict):
+                continue
+            for key in list(block.keys()):
+                if key in runtime_strip_keys:
+                    block.pop(key, None)
+                    report["stripped_runtime_keys"].append(f"page_filter_state.{page_name}.{key}")
+                elif key == DRAFT_ROOM_TABLE_KEY and is_runtime_table(block.get(key)):
+                    block[key] = copy.deepcopy(
+                        table_to_persist_dict(block[key], settings=_room_settings_from_blob(out))
+                    )
+                elif is_runtime_table(block.get(key)):
+                    block.pop(key, None)
+                    report["stripped_runtime_keys"].append(f"page_filter_state.{page_name}.{key}")
+
+    out = _deep_convert_runtime_tables(out, report)
+    report["payload_pick_count_after_sanitize"] = int(
+        draft_room_restore_stats(out).get("pick_count") or 0
+    )
+    ok, err, offenders = verify_json_serializable(out)
+    report["json_serialization_ok"] = ok
+    if not ok:
+        report["json_serialization_error_key"] = err
+        report["non_json_safe_keys"] = offenders
+    else:
+        report["json_serialization_error_key"] = ""
     return out
+
+
+def _collect_dataframe_paths(obj: Any, path: str, out: list[str]) -> None:
+    if is_runtime_table(obj) or isinstance(obj, pd.DataFrame):
+        out.append(path or "<root>")
+        return
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            child = f"{path}.{key}" if path else str(key)
+            _collect_dataframe_paths(val, child, out)
+    elif isinstance(obj, list):
+        for idx, val in enumerate(obj):
+            _collect_dataframe_paths(val, f"{path}[{idx}]", out)
+
+
+def _deep_convert_runtime_tables(obj: Any, report: dict[str, Any]) -> Any:
+    if is_runtime_table(obj):
+        return table_to_persist_dict(obj)
+    if isinstance(obj, pd.DataFrame):
+        return _json_safe(obj.to_dict(orient="records"))
+    if isinstance(obj, dict):
+        converted: dict[str, Any] = {}
+        for key, val in obj.items():
+            if key in (
+                DRAFT_ROOM_EDITOR_CACHE_KEY,
+                DRAFT_ROOM_EDITOR_SEED_KEY,
+                DRAFT_ROOM_EDITOR_VERSION_KEY,
+            ):
+                report["stripped_runtime_keys"].append(str(key))
+                continue
+            converted[key] = _deep_convert_runtime_tables(val, report)
+        return converted
+    if isinstance(obj, list):
+        return [_deep_convert_runtime_tables(val, report) for val in obj]
+    if isinstance(obj, tuple):
+        return [_deep_convert_runtime_tables(val, report) for val in obj]
+    return obj
+
+
+def _find_non_json_keys(obj: Any, path: str = "") -> list[str]:
+    offenders: list[str] = []
+    if is_runtime_table(obj) or isinstance(obj, pd.DataFrame):
+        return [path or "<root>"]
+    try:
+        json.dumps(obj)
+        return offenders
+    except TypeError:
+        pass
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            child = f"{path}.{key}" if path else str(key)
+            offenders.extend(_find_non_json_keys(val, child))
+    elif isinstance(obj, list):
+        for idx, val in enumerate(obj):
+            offenders.extend(_find_non_json_keys(val, f"{path}[{idx}]"))
+    else:
+        offenders.append(path or "<root>")
+    return offenders
+
+
+def verify_json_serializable(state: dict[str, Any]) -> tuple[bool, str, list[str]]:
+    """Strict JSON check (no default=str) — matches Supabase requests encoding."""
+    try:
+        json.dumps(state)
+        return True, "", []
+    except TypeError as exc:
+        return False, f"{type(exc).__name__}: {exc}", _find_non_json_keys(state)
 
 
 def read_board_for_save(
@@ -2468,6 +2603,11 @@ _MANUAL_SAVE_READBACK_FIELDS = (
     "cloud_target_user_id",
     "cloud_target_app_id",
     "cloud_payload_pick_count",
+    "payload_pick_count_before_json",
+    "payload_pick_count_after_sanitize",
+    "dataframe_keys_in_payload",
+    "non_json_safe_keys",
+    "json_serialization_error_key",
     "supabase_row_pick_count_after_write",
     "supabase_row_updated_at_after_write",
     "cloud_row_count",
@@ -2727,6 +2867,32 @@ def save_draft_board_direct_to_cloud(
 
         page, summary = session_page_summary("baseball", state)
         expected_picks = int(trace.get("cloud_payload_pick_count") or 0)
+
+        serde_diag: dict[str, Any] = {}
+        try:
+            from live_draft_state import sanitize_state_dict_for_json as sanitize_live_draft
+
+            state = sanitize_live_draft(state)
+        except ImportError:
+            pass
+        state = sanitize_state_dict_for_json(state, diag=serde_diag)
+        for key in (
+            "json_serialization_error_key",
+            "non_json_safe_keys",
+            "dataframe_keys_in_payload",
+            "payload_pick_count_before_json",
+            "payload_pick_count_after_sanitize",
+            "json_serialization_ok",
+            "stripped_runtime_keys",
+        ):
+            if key in serde_diag:
+                trace[key] = serde_diag[key]
+
+        if serde_diag.get("json_serialization_ok") is False:
+            trace["error"] = str(serde_diag.get("json_serialization_error_key") or "json_not_serializable")
+            trace["cloud_write_error"] = trace["error"]
+            return trace
+
         ok, cloud_err = save_cloud_full_session_with_result(
             "baseball",
             state,
@@ -2890,6 +3056,11 @@ def _save_draft_board_now_impl(
             "cloud_fetch_pick_count",
             "cloud_timestamp_after",
             "cloud_timestamp_changed",
+            "json_serialization_error_key",
+            "non_json_safe_keys",
+            "dataframe_keys_in_payload",
+            "payload_pick_count_before_json",
+            "payload_pick_count_after_sanitize",
         ):
             if direct.get(key) is not None and direct.get(key) != "":
                 trace[key] = direct.get(key)

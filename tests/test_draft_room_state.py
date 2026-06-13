@@ -71,6 +71,7 @@ from draft_room_state import (
     table_pick_count,
     table_picks_fingerprint,
     table_to_persist_dict,
+    verify_json_serializable,
     widget_state_has_edits,
     write_canonical_draft_room_state,
 )
@@ -107,6 +108,54 @@ class TestDraftRoomSerialization(unittest.TestCase):
         safe = sanitize_state_dict_for_json(state)
         self.assertIsInstance(safe[DRAFT_ROOM_TABLE_KEY], dict)
         self.assertIn("table_records", safe[DRAFT_ROOM_TABLE_KEY])
+
+    def test_sanitize_strips_editor_cache_from_page_filter(self) -> None:
+        table = _sample_table(picks=3)
+        state = {
+            DRAFT_ROOM_TABLE_KEY: table,
+            "page_filter_state": {
+                "Draft Room Simulator": {
+                    DRAFT_ROOM_TABLE_KEY: table,
+                    DRAFT_ROOM_EDITOR_CACHE_KEY: table.copy(),
+                    DRAFT_ROOM_EDITOR_SEED_KEY: table.copy(),
+                }
+            },
+        }
+        diag: dict = {}
+        safe = sanitize_state_dict_for_json(state, diag=diag)
+        block = safe["page_filter_state"]["Draft Room Simulator"]
+        self.assertNotIn(DRAFT_ROOM_EDITOR_CACHE_KEY, block)
+        self.assertNotIn(DRAFT_ROOM_EDITOR_SEED_KEY, block)
+        self.assertIsInstance(block[DRAFT_ROOM_TABLE_KEY], dict)
+        ok, err, offenders = verify_json_serializable(safe)
+        self.assertTrue(ok, msg=f"{err} offenders={offenders}")
+        self.assertEqual(diag.get("payload_pick_count_after_sanitize"), 3)
+        self.assertIn("draft_room_table", diag.get("dataframe_keys_in_payload") or [])
+
+    def test_build_disk_state_is_strict_json_serializable(self) -> None:
+        st = MagicMock()
+        table = _sample_table(picks=3)
+        st.session_state = {
+            "active_page": "Draft Room Simulator",
+            "main_sidebar_page": "Draft Room Simulator",
+            DRAFT_ROOM_TABLE_KEY: table,
+            DRAFT_ROOM_EDITOR_CACHE_KEY: table.copy(),
+            DRAFT_ROOM_EDITOR_SEED_KEY: table.copy(),
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 1,
+            "page_filter_state": {
+                "Draft Room Simulator": {
+                    DRAFT_ROOM_EDITOR_CACHE_KEY: table.copy(),
+                }
+            },
+            "room_your_team": "Team 1",
+            "room_team_count": 4,
+            "room_rounds": 3,
+            "room_format": "Snake",
+        }
+        state = build_baseball_disk_state(st)
+        ok, err, offenders = verify_json_serializable(state)
+        self.assertTrue(ok, msg=f"{err} offenders={offenders}")
+        self.assertGreaterEqual(draft_room_restore_stats(state)["pick_count"], 3)
 
 
 class TestDraftRoomPersistence(unittest.TestCase):

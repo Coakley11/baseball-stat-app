@@ -166,6 +166,10 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "draft_room_state",
     "draft_room_state_dirty",
     "draft_room_state_last_local_edit_ts",
+    "draft_room_table",
+    "draft_room_board_editor_cache",
+    "draft_room_board_editor_seed",
+    "draft_room_board_editor_version",
 })
 
 
