@@ -790,6 +790,7 @@ def build_submit_context(
     *,
     context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
     context_extra: dict[str, Any] | None = None,
+    question: str = "",
 ) -> dict[str, Any]:
     """Fresh context at Send time — page hooks may run after sidebar render."""
     ctx, _ = build_context_from_session(source_app, source_page, session_state)
@@ -803,6 +804,13 @@ def build_submit_context(
         extra = context_extra
     if extra:
         ctx = merge_analytical_context(ctx, extra)
+    if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
+        try:
+            from applied_math_context import attach_question_player_to_context
+
+            attach_question_player_to_context(ctx, str(question).strip(), session_state)
+        except Exception:
+            log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
     return ctx
 
 
@@ -879,6 +887,7 @@ def render_analyze_with_applied_math_sidebar(
                 ss,
                 context_extra_builder=context_extra_builder,
                 context_extra=context,
+                question=q,
             )
             submit_source_state: dict[str, Any] | None = None
             if source_state_builder is not None:

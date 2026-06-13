@@ -3,12 +3,93 @@
 from __future__ import annotations
 
 import copy
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 
 def _player_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip()
+
+
+_QUESTION_PLAYER_PATTERNS: tuple[str, ...] = (
+    r"why is (.+?) the best",
+    r"why is (.+?) a good",
+    r"why is (.+?) worth",
+    r"should i draft (.+?)(?:\?|\s|$)",
+    r"is (.+?) (?:worth|available|the best)",
+    r"how risky is (.+?)(?:\?|\s|$)",
+)
+
+
+def extract_player_from_question(question: str) -> str:
+    """Pull a player name from a free-text AMI question (e.g. Jose Ramirez)."""
+    q = str(question or "").strip()
+    low = q.lower()
+    for pat in _QUESTION_PLAYER_PATTERNS:
+        m = re.search(pat, low, flags=re.I)
+        if not m:
+            continue
+        name = q[m.start(1) : m.end(1)].strip().strip("?").strip()
+        if len(name) >= 3 and name.lower() not in ("this player", "this pick", "he", "him", "this sleeper"):
+            return name
+    return ""
+
+
+def _find_player_row_in_pools(name: str, *pools: Any) -> dict[str, Any] | None:
+    target = _player_name(name).lower()
+    if not target:
+        return None
+    for pool in pools:
+        if not isinstance(pool, list):
+            continue
+        for item in pool:
+            if isinstance(item, dict):
+                row_name = _player_name(item.get("player") or item.get("Player") or item.get("fullName"))
+                if row_name.lower() == target:
+                    return item
+            elif item and _player_name(item).lower() == target:
+                return {"player": _player_name(item)}
+    return None
+
+
+def attach_question_player_to_context(
+    ctx: dict[str, Any],
+    question: str,
+    session_state: dict[str, Any],
+) -> None:
+    """At AMI send: bind question-named player to context (overrides queue-default player)."""
+    name = extract_player_from_question(question)
+    if not name:
+        return
+    ctx["question_player"] = name
+    ctx["player"] = name
+    existing = ctx.get("players") if isinstance(ctx.get("players"), list) else []
+    ctx["players"] = [name] + [p for p in existing if _player_name(p).lower() != name.lower()][:3]
+    try:
+        from baseball_ami_frame import player_draft_status
+
+        ds = player_draft_status(session_state, name)
+        if isinstance(ds, dict) and ds.get("player"):
+            ctx["draft_status"] = ds
+    except Exception:
+        pass
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    proj = ctx.get("draft_projection") if isinstance(ctx.get("draft_projection"), dict) else {}
+    row = _find_player_row_in_pools(
+        name,
+        snap.get("recommended_players"),
+        snap.get("available_players"),
+        snap.get("best_available_players"),
+        proj.get("top_recommendations"),
+        proj.get("available_players"),
+        proj.get("best_available"),
+        ctx.get("available_players"),
+        ctx.get("recommended_players"),
+        ctx.get("best_available"),
+    )
+    if row:
+        ctx["question_player_row"] = row
 
 
 def _copy_widget_value(val: Any) -> Any:

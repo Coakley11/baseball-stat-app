@@ -3,7 +3,7 @@
 **Date:** 2026-06-13  
 **Build:** `2026-06-13-ami-acceptance-harness-v18` · commit `0e1f8d3` · branch `dev`  
 **Automated stub harness:** 8/8 PASS (context send path only)  
-**Real solver run:** **6/6 PASS** (AMI solver fix in `applied-mathematical-intelligence`)  
+**Real solver run:** **7/7 PASS** (includes Jose Ramirez player-why question after send-path fix)  
 **Machine-readable:** `docs/ami_manual_acceptance_report.json`  
 **Runner:** `python ami_manual_acceptance.py`
 
@@ -127,25 +127,48 @@ Treat this sleeper as a probability-weighted upside pick…
 
 ---
 
-## 4. Root cause (next work — Command Center / AMI solver)
+## 4. Deployed failure: “Why is Jose Ramirez the best…?” (2026-06-13)
 
-**Do not add Baseball AMI send features until these pass manual deploy testing.**
+**Symptom:** Local 6/6 passed, but deployed answer was generic / irrelevant to saved draft.
 
-| Issue | Where | Fix direction |
-|-------|-------|---------------|
-| `ami_answer_template` ignored | `applied-mathematical-intelligence/components/applied_math_solvers.py` | Map template levels → `coach_sections` / output sections explicitly |
-| No `roster_needs` / `best_values` question modes | `_draft_question_mode()` | Add modes; read `needed_positions`, `category_needs`, `available_players`, `best_available` |
-| Sleeper name not hydrated | `_draft_context_bundle()` + sleepers `cache_*` | Map `sleeper_candidates[0]` → `sleepers` + `player` |
-| Scarcity index not cited | `_build_baseball_draft_coach_sections()` | Pull `position_scarcity` from ctx/snap into scarcity section |
-| Queue/watchlist/tracked not cited | Same | Include in alternatives / direct answer when present |
-| ADP parse bug | `_parse_draft_projection()` / pick defaults | Fix when `draft_projection` is structured dict not string |
-| Deploy verification | Streamlit Cloud | User reboot + confirm `deploy_build` v18 |
+**Root causes (send + solver):**
 
-**Diagnostics already exist** in Applied Intelligence: `components/applied_math_context_diagnostics.py` (Developer Mode). Use `hydrate_source` + **Fields received** to prove blob-first hydration on deploy.
+| # | Issue | Effect |
+|---|--------|--------|
+| 1 | `ctx["player"]` set from **draft queue[0]**, not question text | AMI solved for wrong player |
+| 2 | No `player_why` solver mode | Question fell through to ADP/value-edge or generic draft copy |
+| 3 | Question-named player not in top-12 `available_players` cache | Solver had board but not Jose row/metrics unless in question binding |
+
+**Fixes applied:**
+
+- **Baseball send:** `attach_question_player_to_context()` at submit → sets `question_player`, `player`, `draft_status`, `question_player_row`
+- **AMI solver:** `player_why` mode evaluates named player vs board, availability, alternatives
+- **Harness:** 7th manual test — “Why is Jose Ramirez the best player to draft for me right now?”
+
+**Expected deployed answer pattern:**
+
+> **Jose Ramirez** is a good player, but **Cal Raleigh** is the better fit on your current board because C/SS + HR/SB needs…
+
+(or “strong pick” if Jose is top recommendation; or “not available — already drafted” if on board)
 
 ---
 
-## 5. Re-run commands
+## 5. Root cause history (prior solver gaps — fixed in 56da4b0)
+
+**Do not add Baseball AMI send features until deploy manual passes.**
+
+| Issue | Where | Fix direction |
+|-------|-------|---------------|
+| `ami_answer_template` ignored | `applied_math_solvers.py` | Map template levels → `coach_sections` |
+| No `roster_needs` / `best_values` modes | `_draft_question_mode()` | Added |
+| Sleeper name not hydrated | `_draft_context_bundle()` | `sleeper_candidates` mapping |
+| ADP parse bug | `_parse_draft_projection()` | Dict-aware parsing |
+
+**Diagnostics:** Applied Intelligence Developer Mode → `hydrate_source=question_id_blob`, confirm `question_player`, `draft_snapshot`, `draft_status`.
+
+---
+
+## 6. Re-run commands
 
 ```bash
 # Context + stub harness (Baseball repo)

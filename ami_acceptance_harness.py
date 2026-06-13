@@ -632,6 +632,35 @@ def build_realistic_trend_valuation_session() -> dict[str, Any]:
     return session
 
 
+def build_jose_ramirez_question_context() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Deployed-style send path: draft board + question-named player (Jose Ramirez)."""
+    session = build_realistic_draft_assistant_session()
+    from applied_math_context import attach_question_player_to_context, build_baseball_applied_math_context
+
+    question = "Why is Jose Ramirez the best player to draft for me right now?"
+    ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
+    jose_row = {
+        "player": "Jose Ramirez",
+        "Primary Position": "3B",
+        "Market Rank": 22,
+        "Model Rank": 18,
+        "Fantasy Edge": 4,
+        "Reason": "Elite 3B power; helps HR category need.",
+    }
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    avail = list(snap.get("available_players") or [])
+    if not any(str(r.get("player", "")).lower() == "jose ramirez" for r in avail if isinstance(r, dict)):
+        avail = [jose_row, *avail]
+    snap["available_players"] = avail[:12]
+    recs = list(snap.get("recommended_players") or [])
+    if not any("jose ramirez" in str(r.get("player", "")).lower() for r in recs if isinstance(r, dict)):
+        recs.append(jose_row)
+    snap["recommended_players"] = recs
+    ctx["draft_snapshot"] = snap
+    attach_question_player_to_context(ctx, question, session)
+    return session, ctx
+
+
 def run_full_acceptance_suite() -> dict[str, Any]:
     """Run all acceptance tests; return JSON-serializable report."""
     cases: list[tuple[str, str, str, dict[str, Any]]] = []
