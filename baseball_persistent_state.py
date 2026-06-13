@@ -393,6 +393,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         ss["active_page"] = active
         ss["main_sidebar_page"] = active
         ss["_navigate_to_page"] = active
+        ss["_suite_last_persisted_page"] = active
         ss.pop("_suite_cloud_target_page", None)
         try:
             from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
@@ -882,6 +883,22 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "workspace_sync_skipped_no_apply": ss.get("_suite_workspace_sync_skipped_no_apply"),
         "autosave_cloud_blocked_reason": ss.get("_suite_autosave_cloud_blocked_reason"),
     }
+    try:
+        from live_draft_state import live_draft_envelope_summary, live_draft_restore_diagnostics
+
+        live_draft_rows = dict(live_draft_restore_diagnostics(ss))
+        live_draft_rows["last_live_draft_save_reason"] = ss.get("last_live_draft_save_reason")
+        live_draft_rows["last_live_draft_save_success"] = ss.get("last_live_draft_save_success")
+        live_draft_rows["last_live_draft_save_error"] = ss.get("last_live_draft_save_error")
+        live_draft_rows["saved_live_draft_state_present"] = ss.get("saved_live_draft_state_present")
+        live_draft_rows["saved_pick_count"] = ss.get("saved_pick_count")
+        live_draft_rows["saved_current_pick_index"] = ss.get("saved_current_pick_index")
+        live_draft_rows["saved_pool_count"] = ss.get("saved_pool_count")
+        cloud_ld = live_draft_envelope_summary(cloud_state)
+        if cloud_ld:
+            live_draft_rows["cloud_live_draft"] = cloud_ld
+    except ImportError:
+        live_draft_rows = {}
     decision_rows = {
         "cloud_loaded": ss.get("_suite_workspace_cloud_loaded"),
         "local_loaded": ss.get("_suite_workspace_local_loaded"),
@@ -979,6 +996,10 @@ def render_cross_device_sync_debug(st: Any) -> None:
         st.markdown("**Autosave**")
         for k, v in autosave_rows.items():
             if v is not None and v != "":
+                st.text(f"{k}: {v}")
+        st.markdown("**Live draft**")
+        for k, v in live_draft_rows.items():
+            if v is not None and v != "" and v != {}:
                 st.text(f"{k}: {v}")
         st.markdown("**Final**")
         for k, v in final_rows.items():

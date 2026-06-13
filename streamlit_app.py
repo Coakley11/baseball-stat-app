@@ -11794,6 +11794,12 @@ try:
     prepare_baseball_workspace(st)
 except Exception:
     pass
+try:
+    from live_draft_state import prepare_live_draft_state
+
+    prepare_live_draft_state(st.session_state)
+except Exception:
+    pass
 _record_sidebar_nav_trace("after_prepare_workspace")
 try:
     from suite_user_persistence import show_persistence_messages
@@ -11838,6 +11844,19 @@ _record_sidebar_nav_trace(
     rerun_source="sidebar_render",
     requested_page=active_page,
 )
+
+try:
+    from live_draft_state import has_active_live_draft
+
+    if has_active_live_draft(st.session_state) and active_page != "Live Draft Room":
+        st.sidebar.info("Live draft in progress — picks are saved to cloud.")
+        if st.sidebar.button("Resume Live Draft", key="resume_live_draft_sidebar"):
+            st.session_state["active_page"] = "Live Draft Room"
+            st.session_state["main_sidebar_page"] = "Live Draft Room"
+            st.session_state["_navigate_to_page"] = "Live Draft Room"
+            st.rerun()
+except Exception:
+    pass
 
 st.session_state.pop("_suite_cloud_target_page", None)
 st.session_state.pop("_suite_page_enforce_rerun", None)
@@ -16060,6 +16079,15 @@ if active_page == "Live Draft Room":
     if "live_draft_room" not in st.session_state:
         st.session_state["live_draft_room"] = None
     room = st.session_state.get("live_draft_room")
+    if room and isinstance(room, dict) and room.get("status") in ("in_progress", "paused"):
+        if st.button("Save draft now", key="live_draft_manual_save_btn", help="Force-save board to disk and cloud (Developer Mode aid)."):
+            from live_draft_state import commit_live_draft_room
+
+            trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
+            if trace.get("last_live_draft_save_success"):
+                st.success("Draft saved to disk and cloud.")
+            else:
+                st.error(f"Save failed: {trace.get('last_live_draft_save_error') or 'unknown'}")
     market_df_live = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 

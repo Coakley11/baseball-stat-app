@@ -134,6 +134,21 @@ def canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
     return copy.deepcopy(meta) if isinstance(meta, dict) and meta.get("draft_room_id") else None
 
 
+def has_active_live_draft(session: dict[str, Any]) -> bool:
+    """True when a resumable live draft exists in session (any page)."""
+    blob = canonical_live_draft(session)
+    if not blob:
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if isinstance(room, dict) and room.get("draft_room_id"):
+            blob = room_to_persist_dict(room) if is_runtime_room(room) else room
+        elif is_persisted_room_blob(room):
+            blob = room
+    if not isinstance(blob, dict) or not blob.get("draft_room_id"):
+        return False
+    status = str(blob.get("status") or "").strip()
+    return status in ("in_progress", "paused", "not_started")
+
+
 def is_live_draft_locally_dirty(session: dict[str, Any]) -> bool:
     return bool(session.get(LIVE_DRAFT_DIRTY_KEY))
 
@@ -331,21 +346,46 @@ def commit_live_draft_room(st: Any, session: dict[str, Any], room: dict[str, Any
         clear_live_draft_state(session, reason=reason)
     else:
         write_canonical_live_draft_state(session, room, reason=reason, local_edit=True)
+    blob = canonical_live_draft(session) or {}
+    board = blob.get("draft_board") or []
+    save_reason = "live_draft_manual_save" if reason == "manual_save" else "live_draft_pick"
     try:
         from baseball_persistent_state import force_save_baseball_state
 
-        trace["saved"] = bool(force_save_baseball_state(st, reason="live_draft_pick"))
+        trace["saved"] = bool(force_save_baseball_state(st, reason=save_reason))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
         if session.get("_suite_persist_last_cloud_error"):
             trace["error"] = str(session.get("_suite_persist_last_cloud_error"))
         elif session.get("_suite_autosave_last_error"):
             trace["error"] = str(session.get("_suite_autosave_last_error"))
+        elif session.get("_suite_autosave_cloud_blocked_reason"):
+            trace["error"] = f"cloud_blocked:{session.get('_suite_autosave_cloud_blocked_reason')}"
         if trace["saved"]:
             clear_live_draft_local_edit(session)
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
+    trace.update(
+        {
+            "last_live_draft_save_reason": save_reason,
+            "last_live_draft_save_success": bool(trace["saved"]),
+            "last_live_draft_save_error": trace.get("error") or "",
+            "saved_live_draft_state_present": bool(blob.get("draft_room_id")),
+            "saved_pick_count": len(board) if isinstance(board, list) else 0,
+            "saved_current_pick_index": blob.get("current_pick_index"),
+            "saved_pool_count": len(blob.get("pool_records") or []),
+            "saved_cloud": trace["cloud"],
+            "saved_disk": trace["disk"],
+        }
+    )
     session["_live_draft_last_save_trace"] = trace
+    session["last_live_draft_save_reason"] = save_reason
+    session["last_live_draft_save_success"] = trace["last_live_draft_save_success"]
+    session["last_live_draft_save_error"] = trace["last_live_draft_save_error"]
+    session["saved_live_draft_state_present"] = trace["saved_live_draft_state_present"]
+    session["saved_pick_count"] = trace["saved_pick_count"]
+    session["saved_current_pick_index"] = trace["saved_current_pick_index"]
+    session["saved_pool_count"] = trace["saved_pool_count"]
     return trace
 
 
@@ -357,15 +397,47 @@ def verify_json_serializable(state: dict[str, Any]) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def live_draft_restore_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Developer Mode fields for restore path."""
+    blob = canonical_live_draft(session) or {}
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    pool_len = 0
+    if isinstance(room, dict) and is_runtime_room(room):
+        pool = room.get("pool")
+        pool_len = len(pool) if hasattr(pool, "__len__") else 0
+    elif blob:
+        pool_len = len(blob.get("pool_records") or [])
+    board = blob.get("draft_board") or []
+    return {
+        "live_draft_restore_source": session.get("_live_draft_restore_source"),
+        "live_draft_state_present": bool(blob.get("draft_room_id")),
+        "live_draft_room_hydrated": isinstance(room, dict) and is_runtime_room(room),
+        "restored_pick_count": len(board) if isinstance(board, list) else 0,
+        "restored_current_pick_index": blob.get("current_pick_index"),
+        "restored_pool_count": pool_len,
+        "restored_status": blob.get("status"),
+        "live_draft_locally_dirty": is_live_draft_locally_dirty(session),
+    }
+
+
 def render_live_draft_save_diagnostics(st: Any) -> None:
-    """Developer Mode panel for last live draft save."""
+    """Developer Mode panel for last live draft save and restore."""
     ss = st.session_state
     trace = ss.get("_live_draft_last_save_trace")
-    if not isinstance(trace, dict):
-        return
-    with st.expander("Live draft save trace", expanded=False):
-        for key, val in trace.items():
+    restore = live_draft_restore_diagnostics(ss)
+    with st.expander("Live draft save / restore trace", expanded=False):
+        st.markdown("**Last save**")
+        if isinstance(trace, dict):
+            for key, val in trace.items():
+                st.text(f"{key}: {val}")
+        else:
+            st.text("last_save_trace: (none)")
+        st.markdown("**Restore (this session)**")
+        for key, val in restore.items():
             st.text(f"{key}: {val}")
+        st.text(f"cloud_autosave_blocked: {ss.get('_suite_autosave_cloud_blocked_reason')}")
+        st.text(f"persist_restore_applied: {ss.get('_suite_persist_restore_applied')}")
+        st.text(f"persist_restore_source: {ss.get('_suite_persist_last_restore_source')}")
         ok, err = verify_json_serializable(
             {"live_draft_state": ss.get(LIVE_DRAFT_STATE_KEY), "live_draft_room": ss.get(LIVE_DRAFT_ROOM_KEY)}
         )

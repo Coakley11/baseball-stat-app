@@ -234,6 +234,9 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "trend_edit",
     "career_edit",
     "draft_edit",
+    "live_draft_pick",
+    "live_draft_manual_save",
+    "live_draft_start",
     "historical_edit",
     "valuation_edit",
     "projections_edit",
@@ -248,6 +251,58 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "practice_edit",
 })
 
+_LIVE_DRAFT_CLOUD_SAVE_REASONS = frozenset({
+    "live_draft_pick",
+    "live_draft_manual_save",
+    "live_draft_start",
+})
+
+
+def _merge_cloud_live_draft_before_save(
+    st: Any,
+    app_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Never let an empty local session wipe a cloud in-progress live draft on autosave."""
+    if app_id != "baseball":
+        return state
+    try:
+        from live_draft_state import (
+            LIVE_DRAFT_PAGE_BLOCK,
+            LIVE_DRAFT_ROOM_KEY,
+            LIVE_DRAFT_STATE_KEY,
+            _live_draft_from_blob,
+            is_live_draft_locally_dirty,
+        )
+        from suite_cloud_state import load_cloud_full_session
+    except ImportError:
+        return state
+
+    local = _live_draft_from_blob(state)
+    if local and local.get("draft_room_id"):
+        return state
+    if is_live_draft_locally_dirty(st.session_state):
+        return state
+
+    cloud_state, _ = load_cloud_full_session(app_id)
+    if not isinstance(cloud_state, dict) or not cloud_state:
+        return state
+    cloud_ld = _live_draft_from_blob(cloud_state)
+    if not cloud_ld or not cloud_ld.get("draft_room_id"):
+        return state
+
+    out = copy.deepcopy(state)
+    out[LIVE_DRAFT_STATE_KEY] = copy.deepcopy(cloud_ld)
+    out[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
+    pf = out.setdefault("page_filter_state", {})
+    if not isinstance(pf, dict):
+        pf = {}
+        out["page_filter_state"] = pf
+    block = pf.setdefault(LIVE_DRAFT_PAGE_BLOCK, {})
+    if isinstance(block, dict):
+        block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
+    return out
+
 
 def _cloud_autosave_blocked_reason(
     st: Any,
@@ -256,6 +311,8 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
+    if save_reason in _LIVE_DRAFT_CLOUD_SAVE_REASONS:
+        return None
     if save_reason in _FORCE_SAVE_CLOUD_REASONS:
         if save_reason == "page_change":
             return None
@@ -263,6 +320,15 @@ def _cloud_autosave_blocked_reason(
             return None
     elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
+    if app_id == "baseball":
+        try:
+            from live_draft_state import _live_draft_from_blob
+
+            local_ld = _live_draft_from_blob(state)
+            if local_ld and local_ld.get("draft_room_id"):
+                return None
+        except ImportError:
+            pass
     if app_id != "baseball":
         return None
     local_players = _workspace_comparison_players(state)
@@ -332,6 +398,30 @@ def _preserve_cloud_widget_fields_on_page_change(
                     pf = {}
                     out["page_filter_state"] = pf
                 pf["Trend Value"] = copy.deepcopy(trend_block)
+    try:
+        from live_draft_state import (
+            LIVE_DRAFT_PAGE_BLOCK,
+            LIVE_DRAFT_ROOM_KEY,
+            LIVE_DRAFT_STATE_KEY,
+            _live_draft_from_blob,
+        )
+        from suite_cloud_state import load_cloud_full_session
+
+        local_ld = _live_draft_from_blob(out)
+        if not (local_ld and local_ld.get("draft_room_id")):
+            cloud_state, _ = load_cloud_full_session(app_id)
+            if isinstance(cloud_state, dict) and cloud_state:
+                cloud_ld = _live_draft_from_blob(cloud_state)
+                if cloud_ld and cloud_ld.get("draft_room_id"):
+                    out[LIVE_DRAFT_STATE_KEY] = copy.deepcopy(cloud_ld)
+                    out[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
+                    pf = out.setdefault("page_filter_state", {})
+                    if isinstance(pf, dict):
+                        block = pf.setdefault(LIVE_DRAFT_PAGE_BLOCK, {})
+                        if isinstance(block, dict):
+                            block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
+    except ImportError:
+        pass
     return out
 
 
@@ -1303,6 +1393,8 @@ def force_autosave(
             "career_edit",
             "draft_edit",
             "live_draft_pick",
+            "live_draft_manual_save",
+            "live_draft_start",
             "historical_edit",
             "valuation_edit",
             "projections_edit",
@@ -1324,6 +1416,8 @@ def force_autosave(
         if reason:
             st.session_state["_suite_pending_save_reason"] = reason
         state = build_state(st)
+        if app_id == "baseball":
+            state = _merge_cloud_live_draft_before_save(st, app_id, state)
         if reason == "page_change":
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
@@ -1396,6 +1490,8 @@ def autosave_if_changed(
             return
 
         state = build_state(st)
+        if app_id == "baseball":
+            state = _merge_cloud_live_draft_before_save(st, app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         key = f"_suite_autosave_fp::{app_id}"
