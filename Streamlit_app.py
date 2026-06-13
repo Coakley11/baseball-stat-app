@@ -14830,6 +14830,22 @@ if active_page == "Fantasy Sleepers & Busts":
         sleepers_display = format_fantasy_table(clean_ui_columns(sleepers_display))
         busts_display = format_fantasy_table(clean_ui_columns(busts_display))
 
+        try:
+            from applied_math_context import cache_fantasy_sleepers_ami_context
+
+            cache_fantasy_sleepers_ami_context(
+                st.session_state,
+                sleepers_df=sleepers,
+                busts_df=busts,
+                synced_roster=sleeper_synced_roster,
+                drafted_exclusions=sleeper_synced_drafted,
+                needed_positions=sleeper_auto_positions,
+                fantasy_format=str(fantasy_format),
+                top_n=fantasy_top_n,
+            )
+        except Exception:
+            pass
+
         st.caption("Sleepers and bust risks are filtered by market rank, model rank, projected HR, and expected fantasy value so the output focuses on draftable players rather than fringe names.")
 
         c8, c9 = st.columns(2)
@@ -15374,6 +15390,11 @@ if active_page == "Draft Assistant Simulator":
                 drafted_total=len(drafted_or_owned_players),
                 draft_format=str(draft_format),
                 assistant_team=str(assistant_my_team_name),
+                needed_positions=needed_positions,
+                category_needs=category_needs,
+                drafted_players=sorted(list(drafted_or_owned_players)),
+                best_available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(6),
+                position_scarcity=median_scarcity_dropoff,
             )
         except Exception:
             pass
@@ -15822,8 +15843,6 @@ if active_page == "Draft Room Simulator":
                 open_pick_row_options,
                 pick_label_row_map,
                 record_board_assignment_diagnostics,
-                render_board_tab_diagnostics,
-                save_draft_board_now,
                 submit_board_pick_assignment,
                 table_pick_count,
             )
@@ -15925,14 +15944,39 @@ if active_page == "Draft Room Simulator":
             except Exception:
                 pass
 
-            save_col, _save_sp = st.columns([1, 3])
-            with save_col:
-                if st.button(
-                    "Save Draft Board Now",
-                    key="draft_room_manual_save_btn",
-                    type="primary",
-                    help="Write the current board to disk and cloud.",
-                ):
+        except Exception as exc:
+            st.dataframe(_session_draft_board_df(), use_container_width=True, hide_index=True)
+            st.error(f"Draft board error: {type(exc).__name__}: {exc}")
+
+        edited_draft = _session_draft_board_df()
+        try:
+            from draft_room_state import (
+                MANUAL_SAVE_BUTTON_KEY,
+                MANUAL_SAVE_REQUEST_KEY,
+                record_manual_save_button_click,
+                record_manual_save_error,
+                render_board_tab_diagnostics,
+                render_manual_save_readback_panel,
+                save_draft_board_now,
+                table_pick_count,
+            )
+
+            def _on_manual_save_click() -> None:
+                record_manual_save_button_click(st.session_state)
+
+            st.markdown("**Save draft board**")
+            save_clicked = st.button(
+                "Save Draft Board Now",
+                key=MANUAL_SAVE_BUTTON_KEY,
+                type="primary",
+                help="Write the current board to disk and cloud.",
+                on_click=_on_manual_save_click,
+            )
+            if save_clicked:
+                record_manual_save_button_click(st.session_state)
+
+            if st.session_state.pop(MANUAL_SAVE_REQUEST_KEY, False):
+                try:
                     result = save_draft_board_now(st, st.session_state, board=edited_draft)
                     picks = int(result.get("saved_pick_count") or 0)
                     disk_n = result.get("disk_payload_pick_count")
@@ -15940,13 +15984,22 @@ if active_page == "Draft Room Simulator":
                     if (
                         result.get("saved")
                         and result.get("saved_cloud")
-                        and int(cloud_n or 0) > 0
+                        and int(result.get("supabase_row_pick_count_after_write") or 0) >= picks
                         and picks > 0
                     ):
                         st.success(
                             f"Saved {picks} pick(s) to disk and cloud "
-                            f"(disk payload: {disk_n}, cloud payload: {cloud_n}). "
-                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
+                            f"(Supabase readback: {result.get('supabase_row_pick_count_after_write')}, "
+                            f"payload: {cloud_n}). "
+                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → "
+                            f"{result.get('cloud_timestamp_after') or result.get('supabase_row_updated_at_after_write') or '—'}"
+                        )
+                    elif result.get("saved") and picks > 0 and result.get("direct_cloud_save_attempted"):
+                        st.warning(
+                            f"Saved {picks} pick(s) to disk; cloud readback failed "
+                            f"(readback={result.get('supabase_row_pick_count_after_write')}, "
+                            f"payload={cloud_n}). "
+                            f"Error: {result.get('cloud_write_error') or result.get('error') or 'unknown'}"
                         )
                     elif result.get("saved") and picks > 0:
                         st.warning(
@@ -15955,11 +16008,14 @@ if active_page == "Draft Room Simulator":
                         )
                     else:
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
+                except Exception as exc:
+                    record_manual_save_error(st.session_state, exc)
+                    st.error(f"Save failed: {type(exc).__name__}: {exc}")
 
+            render_manual_save_readback_panel(st)
             render_board_tab_diagnostics(st)
         except Exception as exc:
-            st.dataframe(_session_draft_board_df(), use_container_width=True, hide_index=True)
-            st.error(f"Draft board error: {type(exc).__name__}: {exc}")
+            st.error(f"Manual save panel error: {type(exc).__name__}: {exc}")
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (
@@ -16704,6 +16760,20 @@ if active_page == "Live Draft Room":
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
                 _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=6)
+                try:
+                    from applied_math_context import cache_live_draft_ami_context
+
+                    cache_live_draft_ami_context(
+                        st.session_state,
+                        page="Live Draft Room",
+                        room=room,
+                        top_rec_df=top_rec,
+                        best_avail_df=best_avail,
+                        pos_fit_df=pos_fit,
+                        value_sleep_df=value_sleep,
+                    )
+                except Exception:
+                    pass
                 st.markdown("##### Recommended picks")
                 _render_live_draft_rec_cards(top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
