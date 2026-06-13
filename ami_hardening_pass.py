@@ -68,6 +68,7 @@ class HardeningResult:
     stage_c_mode: bool = False
     stage_d_cites_data: bool = False
     stage_e_analyst: bool = False
+    stage_f_grounded: bool = True
     route_id: str = ""
     draft_mode: str = ""
     missing_context: list[str] = field(default_factory=list)
@@ -123,7 +124,17 @@ QUESTION_FAMILIES: list[HardeningCase] = [
         forbidden_routes=("baseball_future_accumulation",),
         context_markers=("draft_snapshot", "drafted_players"),
         answer_markers=("cal raleigh", "contreras", "catcher"),
-        forbidden_answer=("julio rodriguez",),
+        forbidden_answer=("julio rodriguez", "no clear remaining", "pick 19", "pick **19**"),
+    ),
+    HardeningCase(
+        "draft_compare_olson_schwarber",
+        "Draft Assistant Simulator",
+        "Which player would be better to draft, Matt Olson or Kyle Schwarber?",
+        "baseball_draft_decision",
+        "draft_player_compare",
+        context_markers=("draft_snapshot", "available_players"),
+        answer_markers=("olson", "schwarber"),
+        forbidden_answer=("juan soto", "aaron judge", "julio rodriguez", "attach ops"),
     ),
     HardeningCase(
         "draft_player_why",
@@ -256,6 +267,25 @@ def _scenario_for_family(case: HardeningCase) -> dict[str, Any]:
     )
 
     fid = case.family_id
+    if fid == "draft_compare_olson_schwarber":
+        session = build_realistic_draft_assistant_session()
+        from applied_math_context import attach_question_player_to_context, build_baseball_applied_math_context
+
+        ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
+        rows = [
+            {"player": "Matt Olson", "Primary Position": "1B", "Market Rank": 30, "Fantasy Edge": 22},
+            {"player": "Kyle Schwarber", "Primary Position": "OF", "Market Rank": 18, "Fantasy Edge": 12},
+        ]
+        snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+        snap["available_players"] = rows
+        snap["current_pick"] = 8
+        snap["draft_round"] = 1
+        ctx["draft_snapshot"] = snap
+        ctx["available_players"] = rows
+        ctx["current_pick"] = 8
+        ctx["draft_round"] = 1
+        attach_question_player_to_context(ctx, case.question, session)
+        return ctx
     if fid == "draft_player_why":
         _, ctx = build_jose_ramirez_question_context()
         return dict(ctx)
@@ -338,6 +368,8 @@ def run_hardening_pass() -> dict[str, Any]:
     _ensure_ami_import()
     from ami_acceptance_harness import audit_page_context
 
+    from ami_grounded_answer_audit import audit_draft_compare_olson_schwarber, audit_draft_market_catcher
+
     from components.applied_math_solvers import solve_suite_question
 
     from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
@@ -396,6 +428,18 @@ def run_hardening_pass() -> dict[str, Any]:
         else:
             row.stage_e_analyst = len(text) > 30 and row.stage_d_cites_data
 
+        row.stage_f_grounded = True
+        if case.family_id == "draft_market_next_catcher":
+            ga = audit_draft_market_catcher(case.question, ctx, text, thin_context=False)
+            row.stage_f_grounded = ga.passed
+            if not ga.passed:
+                row.failures.extend(ga.failures)
+        elif case.family_id == "draft_compare_olson_schwarber":
+            ga = audit_draft_compare_olson_schwarber(case.question, ctx, text)
+            row.stage_f_grounded = ga.passed
+            if not ga.passed:
+                row.failures.extend(ga.failures)
+
         if not row.stage_a_context:
             row.failures.append(f"Missing context: {row.missing_context[:5]}")
         if not row.stage_b_route:
@@ -411,6 +455,8 @@ def run_hardening_pass() -> dict[str, Any]:
                 )
             else:
                 row.failures.append("Answer too thin for quantitative explanation")
+        if not row.stage_f_grounded:
+            row.failures.append("Grounded answer audit failed")
 
         row.passed = not row.failures
         row.notes.append(f"analyst_levels={_analyst_levels(text)}")
@@ -422,7 +468,7 @@ def run_hardening_pass() -> dict[str, Any]:
         "build_label": SUITE_BUILD_LABEL,
         "commit": GIT_COMMIT_SHORT,
         "method": "question_family_hardening_pass",
-        "pipeline_stages": ["A_context", "B_route", "C_mode", "D_cites_data", "E_analyst_structure"],
+        "pipeline_stages": ["A_context", "B_route", "C_mode", "D_cites_data", "E_analyst_structure", "F_grounded_answer"],
         "summary": {
             "total": len(results),
             "passed": passed,

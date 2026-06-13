@@ -53,12 +53,52 @@ def _find_player_row_in_pools(name: str, *pools: Any) -> dict[str, Any] | None:
     return None
 
 
+def extract_comparison_players_from_question(question: str) -> tuple[str, str]:
+    """Extract two players from X vs Y / X or Y draft compare questions."""
+    try:
+        from components.draft_market_question import extract_draft_compare_players
+
+        return extract_draft_compare_players(question)
+    except ImportError:
+        pass
+    q = str(question or "").strip()
+    m = re.search(r"(.+?)\s+(?:vs\.?|versus|or)\s+(.+?)(?:\?|\s*$)", q, flags=re.I)
+    if not m:
+        return "", ""
+    a = q[m.start(1) : m.end(1)].strip().strip("?,").strip()
+    b = q[m.start(2) : m.end(2)].strip().strip("?,").strip()
+    if len(a) >= 3 and len(b) >= 3:
+        return a, b
+    return "", ""
+
+
 def attach_question_player_to_context(
     ctx: dict[str, Any],
     question: str,
     session_state: dict[str, Any],
 ) -> None:
-    """At AMI send: bind question-named player to context (overrides queue-default player)."""
+    """At AMI send: bind question-named player(s) to context."""
+    comp_a, comp_b = extract_comparison_players_from_question(question)
+    if comp_a and comp_b:
+        ctx["player_a"] = comp_a
+        ctx["player_b"] = comp_b
+        ctx["players"] = [comp_a, comp_b]
+        snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+        for label, name in (("player_a_row", comp_a), ("player_b_row", comp_b)):
+            row = _find_player_row_in_pools(
+                name,
+                snap.get("recommended_players"),
+                snap.get("available_players"),
+                snap.get("best_available_players"),
+                ctx.get("available_players"),
+                ctx.get("recommended_players"),
+                ctx.get("best_available"),
+                snap.get("draft_room_board"),
+            )
+            if row:
+                ctx[label] = row
+        return
+
     name = extract_player_from_question(question)
     if not name:
         return
@@ -653,6 +693,10 @@ def cache_draft_assistant_ami_context(
     if avail_rows:
         draft_proj["available_players"] = avail_rows
 
+    team_count = int(session_state.get("room_team_count") or session_state.get("draft_teams") or 10)
+    draft_round = max(1, (int(current_pick) - 1) // max(team_count, 1) + 1)
+    draft_proj["draft_round"] = draft_round
+
     session_state["_ami_draft_projection"] = draft_proj
     snap = gather_draft_ami_snapshot(page, session_state)
     if top_rows:
@@ -662,6 +706,8 @@ def cache_draft_assistant_ami_context(
         snap["best_available_players"] = best_rows
     if avail_rows:
         snap["available_players"] = avail_rows
+    snap["current_pick"] = int(current_pick)
+    snap["draft_round"] = draft_round
     if needed_positions:
         snap["needed_positions"] = list(needed_positions)[:8]
     if category_needs:
@@ -1121,16 +1167,21 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                     ctx["category_needs"] = snap["category_needs"]
                 if snap.get("recommended_players"):
                     ctx["recommended_players"] = [
-                        r.get("player") for r in snap["recommended_players"][:6] if isinstance(r, dict)
+                        r if isinstance(r, dict) else {"player": str(r)}
+                        for r in snap["recommended_players"][:12]
+                    ]
+                if snap.get("available_players"):
+                    ctx["available_players"] = [
+                        r if isinstance(r, dict) else {"player": str(r)}
+                        for r in snap["available_players"][:24]
                     ]
                 if snap.get("best_available_players"):
                     ctx["best_available"] = [
-                        r.get("player") for r in snap["best_available_players"][:6] if isinstance(r, dict)
+                        r if isinstance(r, dict) else {"player": str(r)}
+                        for r in snap["best_available_players"][:12]
                     ]
-                elif snap.get("available_players"):
-                    ctx["best_available"] = [
-                        r.get("player") for r in snap["available_players"][:6] if isinstance(r, dict)
-                    ]
+                elif snap.get("available_players") and not ctx.get("best_available"):
+                    ctx["best_available"] = ctx["available_players"][:12]
                 if snap.get("sleepers"):
                     ctx["sleepers"] = [
                         r.get("player") for r in snap["sleepers"][:6] if isinstance(r, dict)

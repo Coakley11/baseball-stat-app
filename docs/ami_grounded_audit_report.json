@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-06-13T22:56:14.873632+00:00",
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0
+  },
+  "results": [
+    {
+      "case_id": "catcher_market_full",
+      "question": "Who is likely to be the next catcher picked in this draft?",
+      "audit_id": "draft_market_catcher",
+      "passed": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_market_prediction",
+      "failures": [],
+      "evidence_found": [
+        "named catcher from pool: william contreras"
+      ],
+      "short_answer": "**Cal Raleigh** is already off the board. The next **Catcher** most likely selected is **William Contreras** — highest-ranked remaining **Catcher** on your saved board.\n\nAt pick **7** (round **2**), remaining **Catcher**"
+    },
+    {
+      "case_id": "catcher_market_thin",
+      "question": "Who is likely to be the next catcher picked in this draft?",
+      "audit_id": "draft_market_catcher_thin",
+      "passed": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_market_prediction",
+      "failures": [],
+      "evidence_found": [],
+      "short_answer": "I do not have enough **Catcher** pool data in context to name the next pick confidently.\n\nAttach **available_players** with **Primary Position** from Draft Assistant before asking who is next at **Catcher**.\n\nCannot rank"
+    },
+    {
+      "case_id": "olson_schwarber",
+      "question": "Which player would be better to draft, Matt Olson or Kyle Schwarber?",
+      "audit_id": "draft_compare_olson_schwarber",
+      "passed": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_player_compare",
+      "failures": [],
+      "evidence_found": [
+        "market rank",
+        "fantasy edge",
+        "available",
+        "drafted",
+        "1b",
+        "of",
+        "position"
+      ],
+      "short_answer": "**Matt Olson** is the better draft pick over **Kyle Schwarber** at pick **8** (round **1**) based on board value and roster fit (Market Rank 18 vs 30, Fantasy Edge 22 vs 12, Matt Olson fills 1B need).\n\nDraft compare at p"
+    }
+  ]
+}

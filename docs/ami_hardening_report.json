@@ -1,18 +1,19 @@
 {
-  "generated_at": "2026-06-13T22:01:43.501516+00:00",
-  "build_label": "2026-06-13-ami-acceptance-harness-v18",
-  "commit": "0e1f8d3",
+  "generated_at": "2026-06-13T22:56:16.544799+00:00",
+  "build_label": "2026-06-13-ami-hardening-pass",
+  "commit": "a2a0575",
   "method": "question_family_hardening_pass",
   "pipeline_stages": [
     "A_context",
     "B_route",
     "C_mode",
     "D_cites_data",
-    "E_analyst_structure"
+    "E_analyst_structure",
+    "F_grounded_answer"
   ],
   "summary": {
-    "total": 16,
-    "passed": 16,
+    "total": 17,
+    "passed": 17,
     "failed": 0,
     "ready_for_manual_acceptance": true
   },
@@ -27,11 +28,12 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "next_pick",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz) at pick **6** (round **2**), lean **Cal Raleigh** over **Bobby Witt Jr.** for the next selection.\n\nThis fits **C/SS · HR + SB** in **5x5 Rot",
+      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz) at pick **6** (round **1**), lean **Cal Raleigh** over **Bobby Witt Jr.** for the next selection.\n\nThis fits **C/SS · HR + SB** in **5x5 Rot",
       "notes": [
         "analyst_levels=6"
       ]
@@ -46,6 +48,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "roster_needs",
       "missing_context": [],
@@ -65,6 +68,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "category",
       "missing_context": [],
@@ -84,11 +88,12 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "hitter_pitcher",
       "missing_context": [],
       "failures": [],
-      "short_answer": "At pick **6** (round **2**), weigh **hitter** vs **pitcher** by **C/SS · SB + HR** and whether your league rewards pitching scarcity now — lean **Cal Raleigh** if hitters close bigger category gaps.\n\n",
+      "short_answer": "At pick **6** (round **1**), weigh **hitter** vs **pitcher** by **C/SS · SB + HR** and whether your league rewards pitching scarcity now — lean **Cal Raleigh** if hitters close bigger category gaps.\n\n",
       "notes": [
         "analyst_levels=6"
       ]
@@ -103,13 +108,34 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "draft_market_prediction",
       "missing_context": [],
       "failures": [],
-      "short_answer": "**Cal Raleigh** is already off the board. The next **Catcher** most likely selected is **William Contreras** — highest-ranked remaining **Catcher** on your saved board.\n\nRanked by Market Rank / ADP am",
+      "short_answer": "**Cal Raleigh** is already off the board. The next **Catcher** most likely selected is **William Contreras** — highest-ranked remaining **Catcher** on your saved board.\n\nAt pick **7** (round **2**), r",
       "notes": [
-        "analyst_levels=5"
+        "analyst_levels=4"
+      ]
+    },
+    {
+      "family_id": "draft_compare_olson_schwarber",
+      "page": "Draft Assistant Simulator",
+      "question": "Which player would be better to draft, Matt Olson or Kyle Schwarber?",
+      "passed": true,
+      "stage_a_context": true,
+      "stage_b_route": true,
+      "stage_c_mode": true,
+      "stage_d_cites_data": true,
+      "stage_e_analyst": true,
+      "stage_f_grounded": true,
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_player_compare",
+      "missing_context": [],
+      "failures": [],
+      "short_answer": "**Kyle Schwarber** is the better draft pick over **Matt Olson** at pick **8** (round **1**) based on board value and roster fit (Market Rank 18 vs 30, Fantasy Edge 22 vs 12).\n\nDraft compare at pick **",
+      "notes": [
+        "analyst_levels=6"
       ]
     },
     {
@@ -122,6 +148,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "player_why",
       "missing_context": [],
@@ -141,11 +168,12 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "weakest_category",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Your weakest tracked category gap is **SB** — prioritize available players who move **SB** most at pick **6** (round **2**).\n\nCategory diagnosis from saved board: needs **C/SS · SB + HR**; recommendat",
+      "short_answer": "Your weakest tracked category gap is **SB** — prioritize available players who move **SB** most at pick **6** (round **1**).\n\nCategory diagnosis from saved board: needs **C/SS · SB + HR**; recommendat",
       "notes": [
         "analyst_levels=6"
       ]
@@ -160,11 +188,12 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "safety_upside",
       "missing_context": [],
       "failures": [],
-      "short_answer": "**Safest pick: Cal Raleigh** (recommendation/floor). **Highest upside: Bobby Witt Jr.** (variance/ceiling) at pick **6** (round **2**).\n\nRisk spectrum on your board at pick **6** (round **2**) — floor",
+      "short_answer": "**Safest pick: Cal Raleigh** (recommendation/floor). **Highest upside: Bobby Witt Jr.** (variance/ceiling) at pick **6** (round **1**).\n\nRisk spectrum on your board at pick **6** (round **1**) — floor",
       "notes": [
         "analyst_levels=6"
       ]
@@ -179,6 +208,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "next_pick",
       "missing_context": [],
@@ -198,13 +228,14 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "draft_market_prediction",
       "missing_context": [],
       "failures": [],
       "short_answer": "**William Contreras** is likely to be drafted before your next pick based on Market Rank order among remaining **Catcher** options at pick **5** (round **2**).\n\nDraft-flow read: **Cal Raleigh** is alr",
       "notes": [
-        "analyst_levels=6"
+        "analyst_levels=5"
       ]
     },
     {
@@ -217,6 +248,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_draft_decision",
       "draft_mode": "sleeper",
       "missing_context": [],
@@ -236,6 +268,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_trend_significance",
       "draft_mode": "",
       "missing_context": [],
@@ -255,6 +288,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_valuation",
       "draft_mode": "",
       "missing_context": [],
@@ -274,6 +308,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_player_comparison",
       "draft_mode": "",
       "missing_context": [],
@@ -293,6 +328,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_player_comparison",
       "draft_mode": "",
       "missing_context": [],
@@ -312,6 +348,7 @@
       "stage_c_mode": true,
       "stage_d_cites_data": true,
       "stage_e_analyst": true,
+      "stage_f_grounded": true,
       "route_id": "baseball_historical_comparison",
       "draft_mode": "",
       "missing_context": [],
