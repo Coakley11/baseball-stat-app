@@ -8,7 +8,7 @@ from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-06-13-baseball-ami-analyst-frame-v17"
 
-GIT_COMMIT_SHORT = "c4b40f4"
+GIT_COMMIT_SHORT = "3989247"
 
 GIT_BRANCH = "dev"
 

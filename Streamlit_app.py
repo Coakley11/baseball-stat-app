@@ -15394,6 +15394,7 @@ if active_page == "Draft Assistant Simulator":
                 category_needs=category_needs,
                 drafted_players=sorted(list(drafted_or_owned_players)),
                 best_available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(6),
+                available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(12),
                 position_scarcity=median_scarcity_dropoff,
             )
         except Exception:
@@ -17812,6 +17813,21 @@ if active_page == "Valuation":
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
     if not best_value_row.empty:
         st.success(f"💰 Best valuation profile: {make_valuation_summary(best_value_row.iloc[0])}")
+
+    try:
+        from applied_math_context import cache_valuation_ami_context
+
+        cache_valuation_ami_context(
+            st.session_state,
+            valuation_df=valuation_df,
+            selected_player=str(
+                selected_value_row.get("fullName")
+                if selected_value_row is not None
+                else (valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else "")
+            ),
+        )
+    except Exception:
+        pass
 
     flush_valuation_filter_edits(st.session_state, st, reason="valuation_page_save")
     if developer_mode_enabled():
