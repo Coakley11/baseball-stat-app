@@ -252,6 +252,10 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
                         filter_params[str(fk)] = _copy_widget_value(val)
         except ImportError:
             pass
+        if p == "Fantasy Sleepers & Busts":
+            sleepers_snap = gather_sleepers_ami_snapshot(session_state)
+            if sleepers_snap:
+                entity_params["sleepers_snapshot"] = sleepers_snap
 
     elif "draft" in p.lower():
         try:
@@ -520,10 +524,16 @@ def cache_draft_assistant_ami_context(
     drafted_total: int,
     draft_format: str,
     assistant_team: str,
+    needed_positions: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    drafted_players: list[str] | None = None,
+    best_available_df: Any = None,
+    position_scarcity: Any = None,
 ) -> None:
     """Cache top recommendation + canonical draft snapshot for AMI send."""
     try:
         import pandas as pd
+        from draft_ami_helpers import compact_recommendation_rows, draft_ami_guidance
         from draft_state import gather_draft_ami_snapshot
     except Exception:
         return
@@ -534,47 +544,207 @@ def cache_draft_assistant_ami_context(
         "drafted_total": int(drafted_total),
         "draft_format": str(draft_format),
         "assistant_team": str(assistant_team),
+        "my_roster": list(my_roster)[:16],
     }
-    top_rows = []
-    if recs_df is not None and not getattr(recs_df, "empty", True):
-        for _, row in recs_df.head(6).iterrows():
-            name = str(row.get("fullName") or row.get("Player") or "").strip()
-            if not name:
-                continue
-            entry: dict[str, Any] = {"player": name}
-            for col in (
-                "Primary Position",
-                "Model Rank",
-                "Market Rank",
-                "Expected Fantasy Value",
-                "Draft Fit Score",
-                "Fantasy Edge",
-                "Scarcity Score",
-            ):
-                if col in row.index and pd.notna(row.get(col)):
-                    entry[col] = row.get(col)
-            if str(row.get("Reason") or "").strip():
-                entry["reason"] = str(row.get("Reason"))[:240]
-            top_rows.append(entry)
-        if top_rows:
-            draft_proj["top_pick"] = top_rows[0]["player"]
-            draft_proj["top_recommendations"] = top_rows
+    if needed_positions:
+        draft_proj["needed_positions"] = list(needed_positions)[:8]
+    if category_needs:
+        draft_proj["category_needs"] = list(category_needs)[:8]
+    if drafted_players:
+        draft_proj["drafted_players"] = list(drafted_players)[:48]
+    if position_scarcity is not None:
+        try:
+            draft_proj["position_scarcity"] = float(position_scarcity)
+        except (TypeError, ValueError):
+            draft_proj["position_scarcity"] = position_scarcity
+
+    top_rows = compact_recommendation_rows(recs_df, limit=6)
+    if top_rows:
+        draft_proj["top_pick"] = top_rows[0]["player"]
+        draft_proj["top_recommendations"] = top_rows
+
+    best_rows = compact_recommendation_rows(best_available_df, limit=6)
+    if best_rows:
+        draft_proj["best_available"] = best_rows
 
     session_state["_ami_draft_projection"] = draft_proj
     snap = gather_draft_ami_snapshot(page, session_state)
     if top_rows:
         snap["assistant_top_pick"] = top_rows[0]
         snap["recommended_players"] = top_rows
+    if best_rows:
+        snap["best_available_players"] = best_rows
+    if needed_positions:
+        snap["needed_positions"] = list(needed_positions)[:8]
+    if category_needs:
+        snap["category_needs"] = list(category_needs)[:8]
+    if drafted_players:
+        snap["drafted_players"] = list(drafted_players)[:48]
+    if my_roster:
+        snap["user_roster"] = list(my_roster)[:16]
     session_state["_ami_draft_snapshot"] = snap
     cache_page_context(
         session_state,
         page,
         {
             "draft_projection": draft_proj,
+            "draft_snapshot": snap,
             "current_pick": int(current_pick),
             "draft_round": snap.get("draft_round"),
             "roster": list(my_roster)[:12],
             "draft_format": str(draft_format),
+            "ami_guidance": draft_ami_guidance(page),
+        },
+    )
+
+
+def cache_live_draft_ami_context(
+    session_state: dict[str, Any],
+    *,
+    page: str = "Live Draft Room",
+    room: dict[str, Any] | None = None,
+    top_rec_df: Any = None,
+    best_avail_df: Any = None,
+    pos_fit_df: Any = None,
+    value_sleep_df: Any = None,
+) -> None:
+    """Cache live draft recommendations and board state for AMI send."""
+    try:
+        from draft_ami_helpers import compact_recommendation_rows, draft_ami_guidance, gather_live_draft_ami_section
+        from draft_state import gather_draft_ami_snapshot
+    except Exception:
+        return
+
+    live_section = gather_live_draft_ami_section(session_state, room)
+    if top_rec_df is not None:
+        live_section["recommended_players"] = compact_recommendation_rows(top_rec_df, limit=8)
+    if best_avail_df is not None:
+        live_section["available_players"] = compact_recommendation_rows(best_avail_df, limit=8)
+    if pos_fit_df is not None:
+        live_section["positional_fits"] = compact_recommendation_rows(pos_fit_df, limit=8)
+    if value_sleep_df is not None:
+        live_section["sleepers"] = compact_recommendation_rows(value_sleep_df, limit=8)
+
+    snap = gather_draft_ami_snapshot(page, session_state)
+    for key, val in live_section.items():
+        if val is not None and val != "" and val != []:
+            snap[key] = val
+
+    draft_proj = {
+        "current_pick": snap.get("current_pick"),
+        "draft_round": snap.get("draft_round"),
+        "my_next_pick": snap.get("my_next_pick"),
+        "on_clock_team": snap.get("on_clock_team"),
+        "my_pick_now": bool(snap.get("my_pick_now")),
+        "top_pick": (
+            live_section.get("recommended_players", [{}])[0].get("player")
+            if live_section.get("recommended_players")
+            else None
+        ),
+        "top_recommendations": live_section.get("recommended_players") or [],
+        "best_available": live_section.get("available_players") or [],
+        "needed_positions": live_section.get("needed_positions") or [],
+        "my_roster": snap.get("user_roster") or [],
+    }
+    session_state["_ami_draft_projection"] = draft_proj
+    session_state["_ami_draft_snapshot"] = snap
+    cache_page_context(
+        session_state,
+        page,
+        {
+            "draft_projection": draft_proj,
+            "draft_snapshot": snap,
+            "ami_guidance": draft_ami_guidance(page),
+            "current_pick": snap.get("current_pick"),
+            "draft_round": snap.get("draft_round"),
+            "roster": snap.get("user_roster") or [],
+        },
+    )
+
+
+def gather_sleepers_ami_snapshot(session_state: dict[str, Any]) -> dict[str, Any]:
+    """JSON-safe sleepers page context for AMI."""
+    cached = session_state.get("_ami_sleepers_snapshot")
+    if isinstance(cached, dict) and cached.get("sleeper_candidates"):
+        return copy.deepcopy(cached)
+
+    snap: dict[str, Any] = {
+        "page": "Fantasy Sleepers & Busts",
+        "fantasy_format": session_state.get("fantasy_market_format"),
+        "projection_window": session_state.get("fantasy_market_window"),
+        "draft_sync_enabled": bool(session_state.get("sleeper_use_draft_room_needs", True)),
+        "sync_team": session_state.get("sleeper_sync_team"),
+        "focus_needed_positions": session_state.get("sleeper_focus_needed_positions"),
+    }
+    try:
+        from draft_room_state import get_all_drafted_player_names, get_canonical_draft_board, get_canonical_draft_meta
+
+        board = get_canonical_draft_board(session_state)
+        snap["canonical_draft_meta"] = get_canonical_draft_meta(session_state)
+        snap["drafted_exclusions"] = get_all_drafted_player_names(session_state)[:48]
+        if board is not None and hasattr(board, "head"):
+            filled = board[board["Player"].astype(str).str.strip().ne("")] if "Player" in board.columns else board
+            snap["canonical_draft_board"] = filled.head(24).to_dict(orient="records")
+            team = session_state.get("sleeper_sync_team") or session_state.get("room_your_team")
+            if team and "Team" in board.columns:
+                snap["synced_roster"] = (
+                    board[board["Team"].astype(str) == str(team)]["Player"]
+                    .dropna()
+                    .astype(str)
+                    .tolist()[:16]
+                )
+    except Exception:
+        pass
+
+    dw = session_state.get("draft_queue")
+    if isinstance(dw, list) and dw:
+        snap["draft_queue"] = [_copy_widget_value(x) for x in dw[:6]]
+    focus = session_state.get("draft_assistant_focus_players")
+    if isinstance(focus, list) and focus:
+        snap["watchlist_focus"] = [_copy_widget_value(x) for x in focus[:12]]
+    return snap
+
+
+def cache_fantasy_sleepers_ami_context(
+    session_state: dict[str, Any],
+    *,
+    sleepers_df: Any = None,
+    busts_df: Any = None,
+    synced_roster: list[str] | None = None,
+    drafted_exclusions: list[str] | None = None,
+    needed_positions: list[str] | None = None,
+    fantasy_format: str = "",
+    top_n: int = 12,
+) -> None:
+    """Cache ranked sleeper/bust tables and draft sync state for AMI."""
+    try:
+        from draft_ami_helpers import compact_fantasy_market_rows, draft_ami_guidance
+    except Exception:
+        return
+
+    snap = gather_sleepers_ami_snapshot(session_state)
+    snap["sleeper_candidates"] = compact_fantasy_market_rows(sleepers_df, limit=top_n)
+    snap["bust_risks"] = compact_fantasy_market_rows(busts_df, limit=top_n)
+    if synced_roster:
+        snap["synced_roster"] = list(synced_roster)[:16]
+    if drafted_exclusions:
+        snap["drafted_exclusions"] = list(drafted_exclusions)[:48]
+    if needed_positions:
+        snap["roster_needs"] = list(needed_positions)[:8]
+    if fantasy_format:
+        snap["fantasy_format"] = str(fantasy_format)
+
+    session_state["_ami_sleepers_snapshot"] = snap
+    cache_page_context(
+        session_state,
+        "Fantasy Sleepers & Busts",
+        {
+            "sleepers_snapshot": snap,
+            "sleeper_candidates": [r.get("player") for r in snap.get("sleeper_candidates", []) if r.get("player")],
+            "bust_risks": [r.get("player") for r in snap.get("bust_risks", []) if r.get("player")],
+            "drafted_exclusions": snap.get("drafted_exclusions") or [],
+            "roster_needs": snap.get("roster_needs") or [],
+            "ami_guidance": draft_ami_guidance("Fantasy Sleepers & Busts"),
         },
     )
 
@@ -695,38 +865,81 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
             ctx["player"] = _player_name(dq[0])
             ctx["players"] = [_player_name(x) for x in dq[:4]]
         try:
+            from draft_ami_helpers import draft_ami_guidance
             from draft_state import gather_draft_ami_snapshot
 
-            snap = gather_draft_ami_snapshot(p, session_state)
+            snap = session_state.get("_ami_draft_snapshot")
+            if not isinstance(snap, dict) or not snap:
+                snap = gather_draft_ami_snapshot(p, session_state)
             if snap:
                 ctx["draft_snapshot"] = snap
                 if snap.get("current_pick"):
                     ctx["current_pick"] = snap["current_pick"]
                 if snap.get("draft_round"):
                     ctx["draft_round"] = snap["draft_round"]
+                if snap.get("my_next_pick"):
+                    ctx["my_next_pick"] = snap["my_next_pick"]
                 if snap.get("user_roster"):
                     ctx["roster"] = snap["user_roster"][:12]
+                if snap.get("needed_positions"):
+                    ctx["needed_positions"] = snap["needed_positions"]
+                if snap.get("category_needs"):
+                    ctx["category_needs"] = snap["category_needs"]
                 if snap.get("recommended_players"):
                     ctx["recommended_players"] = [
                         r.get("player") for r in snap["recommended_players"][:6] if isinstance(r, dict)
+                    ]
+                if snap.get("best_available_players"):
+                    ctx["best_available"] = [
+                        r.get("player") for r in snap["best_available_players"][:6] if isinstance(r, dict)
+                    ]
+                elif snap.get("available_players"):
+                    ctx["best_available"] = [
+                        r.get("player") for r in snap["available_players"][:6] if isinstance(r, dict)
                     ]
                 if snap.get("sleepers"):
                     ctx["sleepers"] = [
                         r.get("player") for r in snap["sleepers"][:6] if isinstance(r, dict)
                     ]
+                if snap.get("canonical_drafted_players"):
+                    ctx["drafted_players"] = snap["canonical_drafted_players"][:24]
                 if snap.get("scoring_settings"):
                     ctx["scoring_settings"] = snap["scoring_settings"]
-                ctx["ami_guidance"] = (
-                    "Answer using the user's live draft context: roster, available pool, "
-                    "recommendations, sleepers, and scoring settings in draft_snapshot."
-                )
+                ctx["ami_guidance"] = draft_ami_guidance(p)
         except ImportError:
             pass
         proj = session_state.get("_ami_draft_projection")
         if isinstance(proj, dict):
             ctx["draft_projection"] = proj
-        rnd = ctx.get("draft_round")
-        summary = f"Draft · round {rnd}" if rnd else "Fantasy draft"
+
+    elif p == "Fantasy Sleepers & Busts":
+        try:
+            from draft_ami_helpers import draft_ami_guidance
+
+            snap = session_state.get("_ami_sleepers_snapshot")
+            if not isinstance(snap, dict) or not snap.get("sleeper_candidates"):
+                snap = gather_sleepers_ami_snapshot(session_state)
+            if snap:
+                ctx["sleepers_snapshot"] = snap
+                if snap.get("sleeper_candidates"):
+                    ctx["sleeper_candidates"] = [
+                        r.get("player") for r in snap["sleeper_candidates"][:8] if isinstance(r, dict)
+                    ]
+                if snap.get("bust_risks"):
+                    ctx["bust_risks"] = [
+                        r.get("player") for r in snap["bust_risks"][:8] if isinstance(r, dict)
+                    ]
+                if snap.get("drafted_exclusions"):
+                    ctx["drafted_exclusions"] = snap["drafted_exclusions"][:24]
+                if snap.get("synced_roster"):
+                    ctx["roster"] = snap["synced_roster"][:12]
+                if snap.get("roster_needs"):
+                    ctx["roster_needs"] = snap["roster_needs"]
+                if snap.get("canonical_draft_board"):
+                    ctx["canonical_draft_board"] = snap["canonical_draft_board"][:12]
+                ctx["ami_guidance"] = draft_ami_guidance(p)
+        except ImportError:
+            pass
 
     cached = get_cached_page_context(session_state, p)
     if cached:

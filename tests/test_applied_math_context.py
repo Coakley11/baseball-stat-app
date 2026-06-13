@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from applied_math_context import (
     apply_source_state_to_session,
@@ -210,14 +211,132 @@ class TestBaseballAppliedMathContext(unittest.TestCase):
             drafted_total=1,
             draft_format="5x5 Roto",
             assistant_team="Daniel",
+            needed_positions=["OF", "SS"],
+            category_needs=["HR", "SB"],
+            drafted_players=["Aaron Judge"],
+            best_available_df=recs,
+            position_scarcity=2.5,
         )
         proj = session.get("_ami_draft_projection")
         self.assertIsInstance(proj, dict)
         self.assertEqual(proj.get("top_pick"), "Corbin Carroll")
         self.assertEqual(proj.get("current_pick"), 3)
+        self.assertEqual(proj.get("needed_positions"), ["OF", "SS"])
+        self.assertIn("best_available", proj)
         ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
         self.assertIn("draft_projection", ctx)
         self.assertEqual(ctx["draft_projection"]["top_pick"], "Corbin Carroll")
+        self.assertIn("needed_positions", ctx.get("draft_snapshot", {}))
+        self.assertIn("ami_guidance", ctx)
+
+    def test_cache_fantasy_sleepers_ami_context(self) -> None:
+        import pandas as pd
+
+        from applied_math_context import (
+            build_baseball_applied_math_context,
+            build_source_state,
+            cache_fantasy_sleepers_ami_context,
+        )
+
+        sleepers = pd.DataFrame(
+            [
+                {
+                    "fullName": "Junior Caminero",
+                    "Primary Position": "3B",
+                    "Market Rank": 120,
+                    "Model Rank": 45,
+                    "Fantasy Edge": 75,
+                    "Reason": "Model ranks him much higher than ADP.",
+                }
+            ]
+        )
+        busts = pd.DataFrame(
+            [
+                {
+                    "fullName": "Overrated Player",
+                    "Primary Position": "OF",
+                    "Market Rank": 30,
+                    "Model Rank": 90,
+                    "Fantasy Edge": -60,
+                    "Reason": "Market ahead of model.",
+                }
+            ]
+        )
+        session: dict = {
+            "fantasy_market_format": "5x5 Roto",
+            "sleeper_use_draft_room_needs": True,
+            "sleeper_sync_team": "Daniel",
+        }
+        cache_fantasy_sleepers_ami_context(
+            session,
+            sleepers_df=sleepers,
+            busts_df=busts,
+            synced_roster=["Aaron Judge"],
+            drafted_exclusions=["Aaron Judge", "Juan Soto"],
+            needed_positions=["3B", "SS"],
+            fantasy_format="5x5 Roto",
+        )
+        snap = session.get("_ami_sleepers_snapshot")
+        self.assertIsInstance(snap, dict)
+        self.assertEqual(snap["sleeper_candidates"][0]["player"], "Junior Caminero")
+        self.assertEqual(snap["drafted_exclusions"], ["Aaron Judge", "Juan Soto"])
+        ss = build_source_state("Fantasy Sleepers & Busts", session)
+        self.assertIn("sleepers_snapshot", ss["entity_params"])
+        ctx = build_baseball_applied_math_context("Fantasy Sleepers & Busts", session)
+        self.assertIn("sleepers_snapshot", ctx)
+        self.assertIn("Junior Caminero", ctx.get("sleeper_candidates", []))
+        self.assertIn("ami_guidance", ctx)
+
+    def test_cache_live_draft_ami_context(self) -> None:
+        from applied_math_context import build_baseball_applied_math_context, cache_live_draft_ami_context
+        import pandas as pd
+
+        recs = pd.DataFrame(
+            [{"fullName": "Elly De La Cruz", "Primary Position": "SS", "Expected Fantasy Value": 0.77}]
+        )
+        session: dict = {
+            "live_draft_room": {
+                "status": "in_progress",
+                "current_pick_index": 2,
+                "config": {"num_teams": 2, "your_team": "Daniel", "timer_seconds": 60},
+                "teams": ["Daniel", "Team 2"],
+                "pick_order": [
+                    {"Round": 1, "Pick": 1, "Team": "Daniel"},
+                    {"Round": 1, "Pick": 2, "Team": "Team 2"},
+                    {"Round": 2, "Pick": 3, "Team": "Team 2"},
+                ],
+                "rosters": {"Daniel": [{"fullName": "Aaron Judge"}]},
+                "draft_board": [
+                    {"Round": 1, "Pick": 1, "Draft Team": "Daniel", "Player": "Aaron Judge"},
+                ],
+            },
+            "_ami_draft_snapshot": {
+                "current_pick": 2,
+                "draft_round": 1,
+                "user_roster": ["Aaron Judge"],
+            },
+        }
+        with mock.patch(
+            "draft_ami_helpers.gather_live_draft_ami_section",
+            return_value={
+                "current_pick": 2,
+                "draft_round": 1,
+                "my_next_pick": 3,
+                "recommended_players": [{"player": "Elly De La Cruz"}],
+                "available_players": [{"player": "Elly De La Cruz"}],
+            },
+        ):
+            cache_live_draft_ami_context(
+                session,
+                top_rec_df=recs,
+                best_avail_df=recs,
+            )
+        proj = session.get("_ami_draft_projection")
+        self.assertIsInstance(proj, dict)
+        self.assertEqual(proj.get("my_next_pick"), 3)
+        ctx = build_baseball_applied_math_context("Live Draft Room", session)
+        self.assertIn("draft_projection", ctx)
+        self.assertIn("ami_guidance", ctx)
 
 
 if __name__ == "__main__":

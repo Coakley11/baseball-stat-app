@@ -591,48 +591,22 @@ def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, A
         prepare_live_draft_state(session)
     except ImportError:
         pass
-    room = session.get("live_draft_room")
-    if isinstance(room, dict) and room:
-        try:
-            from streamlit_app import (
-                live_draft_current_slot,
-                live_draft_recommendations,
-                serialize_live_draft_room,
-            )
+    try:
+        from draft_ami_helpers import gather_live_draft_ami_section
 
-            serialized = serialize_live_draft_room(room)
-            snapshot["draft_state"] = {
-                "status": serialized.get("status"),
-                "current_pick_index": serialized.get("current_pick_index"),
-                "draft_room_id": serialized.get("draft_room_id"),
-            }
-            cfg = dict(serialized.get("config") or room.get("config") or {})
-            for k in ("scoring_type", "draft_type", "league_name", "picks_per_team", "num_teams", "your_team"):
-                if cfg.get(k) is not None:
-                    scoring.setdefault(k, cfg.get(k))
-            if scoring:
+        live_room = session.get("live_draft_room")
+        live_section = gather_live_draft_ami_section(
+            session, live_room if isinstance(live_room, dict) else None
+        )
+        if live_section:
+            for key, val in live_section.items():
+                if val is not None and val != "" and val != []:
+                    snapshot[key] = val
+            if live_section.get("scoring_settings"):
+                scoring.update(live_section["scoring_settings"])
                 snapshot["scoring_settings"] = scoring
-            slot = live_draft_current_slot(room)
-            if slot:
-                idx = int(serialized.get("current_pick_index") or 0)
-                num_teams = int(cfg.get("num_teams") or len(room.get("teams") or []) or 12)
-                snapshot["current_pick"] = int(slot.get("Pick") or idx + 1)
-                snapshot["draft_round"] = (idx // num_teams) + 1 if num_teams else None
-                your_team = str(slot.get("Team") or cfg.get("your_team") or session.get("room_your_team") or "")
-                if your_team:
-                    snapshot["your_team"] = your_team
-                    roster = (room.get("rosters") or {}).get(your_team) or []
-                    snapshot["user_roster"] = [
-                        str(p.get("fullName") or p.get("Player") or p)[:80]
-                        for p in roster[:24]
-                        if isinstance(p, dict)
-                    ]
-            top_rec, best_avail, _pos_fit, sleepers = live_draft_recommendations(room, top_n=8)
-            snapshot["recommended_players"] = _compact_player_rows(top_rec)
-            snapshot["available_players"] = _compact_player_rows(best_avail)
-            snapshot["sleepers"] = _compact_player_rows(sleepers)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     drt = None
     drafted_names: list[str] = []

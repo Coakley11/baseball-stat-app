@@ -14830,6 +14830,22 @@ if active_page == "Fantasy Sleepers & Busts":
         sleepers_display = format_fantasy_table(clean_ui_columns(sleepers_display))
         busts_display = format_fantasy_table(clean_ui_columns(busts_display))
 
+        try:
+            from applied_math_context import cache_fantasy_sleepers_ami_context
+
+            cache_fantasy_sleepers_ami_context(
+                st.session_state,
+                sleepers_df=sleepers,
+                busts_df=busts,
+                synced_roster=sleeper_synced_roster,
+                drafted_exclusions=sleeper_synced_drafted,
+                needed_positions=sleeper_auto_positions,
+                fantasy_format=str(fantasy_format),
+                top_n=fantasy_top_n,
+            )
+        except Exception:
+            pass
+
         st.caption("Sleepers and bust risks are filtered by market rank, model rank, projected HR, and expected fantasy value so the output focuses on draftable players rather than fringe names.")
 
         c8, c9 = st.columns(2)
@@ -15374,6 +15390,11 @@ if active_page == "Draft Assistant Simulator":
                 drafted_total=len(drafted_or_owned_players),
                 draft_format=str(draft_format),
                 assistant_team=str(assistant_my_team_name),
+                needed_positions=needed_positions,
+                category_needs=category_needs,
+                drafted_players=sorted(list(drafted_or_owned_players)),
+                best_available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(6),
+                position_scarcity=median_scarcity_dropoff,
             )
         except Exception:
             pass
@@ -16739,6 +16760,20 @@ if active_page == "Live Draft Room":
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
                 _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=6)
+                try:
+                    from applied_math_context import cache_live_draft_ami_context
+
+                    cache_live_draft_ami_context(
+                        st.session_state,
+                        page="Live Draft Room",
+                        room=room,
+                        top_rec_df=top_rec,
+                        best_avail_df=best_avail,
+                        pos_fit_df=pos_fit,
+                        value_sleep_df=value_sleep,
+                    )
+                except Exception:
+                    pass
                 st.markdown("##### Recommended picks")
                 _render_live_draft_rec_cards(top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
