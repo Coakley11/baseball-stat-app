@@ -15823,6 +15823,7 @@ if active_page == "Draft Room Simulator":
                 pick_label_row_map,
                 record_board_assignment_diagnostics,
                 render_board_tab_diagnostics,
+                render_manual_save_readback_panel,
                 save_draft_board_now,
                 submit_board_pick_assignment,
                 table_pick_count,
@@ -15965,6 +15966,7 @@ if active_page == "Draft Room Simulator":
                     else:
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
 
+            render_manual_save_readback_panel(st)
             render_board_tab_diagnostics(st)
         except Exception as exc:
             st.dataframe(_session_draft_board_df(), use_container_width=True, hide_index=True)

@@ -2420,6 +2420,87 @@ def persist_draft_board_to_storage(
 
 _BOARD_MANUAL_SAVE_TRACE_KEY = "_draft_room_manual_save_result"
 
+_MANUAL_SAVE_READBACK_FIELDS = (
+    "save_button_clicked",
+    "saved_cloud",
+    "direct_cloud_save_attempted",
+    "direct_cloud_save_ok",
+    "cloud_write_mode",
+    "cloud_write_error",
+    "cloud_blocked_reason",
+    "cloud_target_user_id",
+    "cloud_target_app_id",
+    "cloud_payload_pick_count",
+    "supabase_row_pick_count_after_write",
+    "supabase_row_updated_at_after_write",
+    "cloud_row_count",
+    "cloud_row_pick_counts",
+    "cloud_timestamp_before",
+    "cloud_timestamp_after",
+    "cloud_fetch_pick_count",
+    "cloud_fetch_updated_at",
+    "error",
+)
+
+
+def _format_diag_value(val: Any) -> str:
+    if val is None:
+        return "—"
+    if val is False:
+        return "False"
+    if val is True:
+        return "True"
+    if val == "":
+        return "—"
+    return str(val)
+
+
+def _deploy_build_label() -> str:
+    try:
+        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+
+        return f"{SUITE_BUILD_LABEL} · {GIT_COMMIT_SHORT} · {GIT_BRANCH}"
+    except Exception:
+        return "deploy_marker_unavailable"
+
+
+def render_manual_save_readback_panel(st: Any) -> None:
+    """Always-visible Supabase readback panel directly under Save Draft Board Now."""
+    ss = st.session_state
+    manual = ss.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
+    if not isinstance(manual, dict):
+        manual = {}
+    with st.container(border=True):
+        st.markdown("**Manual save — Supabase readback**")
+        st.caption(f"deploy_build: {_deploy_build_label()}")
+        if manual.get("path") != "save_draft_board_now":
+            st.caption("Click **Save Draft Board Now** to populate readback fields.")
+        for key in _MANUAL_SAVE_READBACK_FIELDS:
+            val = manual.get(key)
+            if val is None and key in (
+                "cloud_fetch_pick_count",
+                "cloud_fetch_updated_at",
+                "supabase_row_pick_count_after_write",
+                "supabase_row_updated_at_after_write",
+                "cloud_row_count",
+                "cloud_row_pick_counts",
+            ):
+                val = ss.get(key)
+            st.text(f"{key}: {_format_diag_value(val)}")
+        readback = int(manual.get("supabase_row_pick_count_after_write") or ss.get("supabase_row_pick_count_after_write") or 0)
+        saved = int(manual.get("saved_pick_count") or ss.get("session_pick_count") or 0)
+        if manual.get("save_button_clicked"):
+            if manual.get("saved_cloud") and readback >= saved and saved > 0:
+                st.success(f"Supabase readback OK: {readback} pick(s) persisted.")
+            elif manual.get("direct_cloud_save_attempted"):
+                st.warning(
+                    "Cloud readback not confirmed. "
+                    f"payload={manual.get('cloud_payload_pick_count')} "
+                    f"readback={readback} "
+                    f"error={manual.get('cloud_write_error') or manual.get('error') or '—'}"
+                )
+
+
 _BOARD_MANUAL_SAVE_FIELDS = (
     "save_button_clicked",
     "save_reason",
@@ -2443,6 +2524,7 @@ _BOARD_MANUAL_SAVE_FIELDS = (
     "supabase_row_updated_at_after_write",
     "cloud_row_count",
     "cloud_row_pick_counts",
+    "cloud_fetch_pick_count",
     "error",
 )
 
@@ -2799,6 +2881,9 @@ def save_draft_board_now(
 
     session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
     session["_draft_room_last_save_trace"] = trace
+    for key in _MANUAL_SAVE_READBACK_FIELDS:
+        if key in trace and trace.get(key) is not None:
+            session[key] = trace.get(key)
     return trace
 
 
@@ -2839,6 +2924,11 @@ def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> 
         "cloud_fetch_app_id": session.get("cloud_fetch_app_id"),
         "cloud_fetch_pick_count": session.get("cloud_fetch_pick_count"),
         "cloud_fetch_updated_at": session.get("cloud_fetch_updated_at"),
+        "supabase_row_pick_count_after_write": session.get("supabase_row_pick_count_after_write"),
+        "supabase_row_updated_at_after_write": session.get("supabase_row_updated_at_after_write"),
+        "cloud_row_count": session.get("cloud_row_count"),
+        "cloud_row_pick_counts": session.get("cloud_row_pick_counts"),
+        "deploy_build": _deploy_build_label(),
         "last_draft_room_save_trace": trace if isinstance(trace, dict) else None,
     }
     session["_draft_room_board_tab_diagnostics"] = out
@@ -2849,9 +2939,11 @@ def render_board_tab_diagnostics(st: Any) -> None:
     """Always-visible Board tab status panel (not dev-mode only)."""
     ss = st.session_state
     diag = board_tab_diagnostics(ss, st=st)
-    manual = ss.get("_draft_room_manual_save_result")
+    render_manual_save_readback_panel(st)
+    manual = ss.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
     with st.container(border=True):
         st.markdown("**Board save status**")
+        st.caption(f"deploy_build: {diag.get('deploy_build') or _deploy_build_label()}")
         for key in (
             "data_editor_key",
             "editor_state_exists",
@@ -2877,14 +2969,15 @@ def render_board_tab_diagnostics(st: Any) -> None:
             "cloud_fetch_updated_at",
             "supabase_row_pick_count_after_write",
             "supabase_row_updated_at_after_write",
+            "cloud_row_count",
+            "cloud_row_pick_counts",
             "_suite_autosave_block_kept_pick_loss",
             "_suite_autosave_skipped_draft_room_drop",
         ):
             val = diag.get(key)
             if val is None:
                 val = ss.get(key)
-            if val is not None and val != "":
-                st.text(f"{key}: {val}")
+            st.text(f"{key}: {_format_diag_value(val)}")
         trace = diag.get("last_draft_room_save_trace")
         if isinstance(trace, dict):
             st.text(f"last_draft_room_save_trace.reason: {trace.get('reason')}")
@@ -2898,27 +2991,9 @@ def render_board_tab_diagnostics(st: Any) -> None:
             st.text(f"last_draft_room_save_trace.last_save_reason: {trace.get('last_save_reason') or ss.get('_suite_persist_last_save_reason')}")
             st.text(f"last_draft_room_save_trace.error: {trace.get('error') or ''}")
         if isinstance(manual, dict) and manual.get("path") == "save_draft_board_now":
-            st.markdown("**Manual save (last click)**")
+            st.markdown("**Manual save trace (raw)**")
             for key in _BOARD_MANUAL_SAVE_FIELDS:
-                val = manual.get(key)
-                if val is not None and val != "":
-                    st.text(f"{key}: {val}")
-            for extra_key in (
-                "cloud_has_draft_room_board_after",
-                "cloud_draft_room_pick_count_after",
-                "direct_cloud_save_attempted",
-                "direct_cloud_save_ok",
-                "cloud_target_user_id",
-                "cloud_target_app_id",
-                "supabase_row_pick_count_after_write",
-                "supabase_row_updated_at_after_write",
-                "cloud_fetch_pick_count",
-                "cloud_row_count",
-                "cloud_row_pick_counts",
-            ):
-                val = manual.get(extra_key)
-                if val is not None and val != "":
-                    st.text(f"{extra_key}: {val}")
+                st.text(f"{key}: {_format_diag_value(manual.get(key))}")
         active_picks = diag.get("draft_room_pick_count") or diag.get("session_pick_count")
         if active_picks is not None:
             st.text(f"active_board_pick_count: {active_picks}")
