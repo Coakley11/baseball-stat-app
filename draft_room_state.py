@@ -622,6 +622,29 @@ def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     return out
 
 
+def delete_live_draft_only(session: dict[str, Any]) -> dict[str, Any]:
+    """Clear Live Draft Room state only — canonical simulator board and queue stay."""
+    trace: dict[str, Any] = {"ok": True, "cleared_live": False}
+    try:
+        from live_draft_state import clear_live_draft_state
+
+        clear_live_draft_state(session, reason="delete_live_draft_only")
+        trace["cleared_live"] = True
+    except Exception:
+        session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
+        trace["cleared_live"] = True
+    meta = get_canonical_draft_meta(session)
+    if meta.get("active_mode") == ACTIVE_DRAFT_MODE_LIVE:
+        set_canonical_draft_meta(
+            session,
+            mode=ACTIVE_DRAFT_MODE_MANUAL,
+            source="live_draft_deleted",
+            pick_count=table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        )
+    return trace
+
+
 def delete_active_draft(session: dict[str, Any], *, clear_queue: bool = True) -> dict[str, Any]:
     """Option A: wipe live draft + canonical board + draft queue (fresh start)."""
     trace: dict[str, Any] = {
@@ -1987,6 +2010,17 @@ def save_draft_board_now(
     trace["saved_pick_count"] = pick_count
     trace["saved_disk"] = bool(trace.get("disk"))
     trace["saved_cloud"] = bool(trace.get("cloud"))
+    if trace.get("saved") and pick_count > 0:
+        sync_editor_seed(session, board, force_reset=True)
+        session[DRAFT_ROOM_EDITOR_CACHE_KEY] = board.copy()
+        try:
+            from suite_user_persistence import _autosave_block_key
+
+            session[_autosave_block_key("baseball")] = True
+            session["_suite_autosave_block_reason"] = "post_manual_save"
+            session["restored_draft_room_pick_count"] = pick_count
+        except ImportError:
+            pass
     trace["cloud_timestamp_before"] = cloud_ts_before
     try:
         from baseball_persistent_state import build_baseball_disk_state

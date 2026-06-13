@@ -180,6 +180,9 @@ def clear_workspace_autosave_block(st: Any, app_id: str) -> None:
                     f"restored={restored} session={session_picks}"
                 )
                 return
+            if session_picks > 0:
+                st.session_state["_suite_autosave_block_kept_has_picks"] = session_picks
+                return
         except ImportError:
             pass
     st.session_state.pop(_autosave_block_key(app_id), None)
@@ -257,6 +260,8 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "board_edit",
     "draft_queue_pick",
     "draft_pick",
+    "live_draft_delete",
+    "reset_canonical_board",
     "historical_edit",
     "valuation_edit",
     "projections_edit",
@@ -282,6 +287,8 @@ _DRAFT_BOARD_CLOUD_SAVE_REASONS = frozenset({
     "board_edit",
     "draft_queue_pick",
     "draft_pick",
+    "live_draft_delete",
+    "reset_canonical_board",
 })
 
 
@@ -1599,6 +1606,8 @@ def force_autosave(
             "board_edit",
             "draft_queue_pick",
             "draft_pick",
+            "live_draft_delete",
+            "reset_canonical_board",
             "historical_edit",
             "valuation_edit",
             "projections_edit",

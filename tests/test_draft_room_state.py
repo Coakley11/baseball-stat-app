@@ -37,6 +37,7 @@ from draft_room_state import (
     enrich_save_payload_with_draft_room,
     get_canonical_draft_board,
     delete_active_draft,
+    delete_live_draft_only,
     get_all_drafted_player_names,
     paste_players_to_board,
     reset_simulator_board_only,
@@ -551,6 +552,19 @@ class TestDraftRoomSyncGuards(unittest.TestCase):
         filled = table[table["Player"].astype(str).str.strip() != ""]
         self.assertEqual(len(filled), 8)
         self.assertEqual(str(filled.iloc[5]["Player"]), "Aaron Judge")
+
+
+    def test_delete_live_draft_only_keeps_board(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=3),
+            "live_draft_room": {"status": "completed", "draft_room_id": "X1"},
+            CANONICAL_DRAFT_META_KEY: {"active_mode": ACTIVE_DRAFT_MODE_LIVE},
+        }
+        trace = delete_live_draft_only(session)
+        self.assertTrue(trace.get("cleared_live"))
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
+        self.assertIsNone(session.get("live_draft_room"))
 
 
 class TestDeleteActiveDraft(unittest.TestCase):
