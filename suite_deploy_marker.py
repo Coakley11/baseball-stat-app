@@ -8,7 +8,7 @@ from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-06-13-draft-ami-phase1-context-v16"
 
-GIT_COMMIT_SHORT = "5817ca3"
+GIT_COMMIT_SHORT = "c4b40f4"
 
 GIT_BRANCH = "dev"
 
