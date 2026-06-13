@@ -411,8 +411,14 @@ def log_quick_draft_pick(
     team_name = str(team_name or "").strip()
     trace: dict[str, Any] = {
         "quick_draft_button_clicked": True,
+        "selected_player": player_name,
+        "selected_team": team_name,
         "quick_draft_selected_player": player_name,
         "quick_draft_selected_team": team_name,
+        "target_row_index": None,
+        "target_pick": None,
+        "target_round": None,
+        "blocked_reason": "",
         "apply_programmatic_board_update_called": False,
         "input_player": player_name,
         "input_team": team_name,
@@ -453,6 +459,10 @@ def log_quick_draft_pick(
 
     row_idx, row_meta = find_next_open_pick_row(table, team_name)
     trace.update(row_meta)
+    trace["target_row_index"] = row_meta.get("quick_draft_target_row_index")
+    trace["target_pick"] = row_meta.get("quick_draft_target_pick")
+    trace["target_round"] = row_meta.get("quick_draft_target_round")
+    trace["blocked_reason"] = str(row_meta.get("blocked_reason") or "")
     if row_idx is None:
         trace["error"] = row_meta.get("blocked_reason") or "no_open_row"
         trace["message"] = (
@@ -481,6 +491,8 @@ def log_quick_draft_pick(
         trace["ok"] = True
         trace["message"] = f"Logged {player_name} to pick {pick_n}."
         session["_draft_room_quick_draft_flash"] = trace["message"]
+        session["_draft_room_quick_draft_applied"] = True
+        session["_draft_room_skip_editor_resolve_clobber"] = True
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
         trace["message"] = f"Quick draft failed: {trace['error']}"
@@ -745,38 +757,48 @@ def render_quick_draft_status(st: Any, session: dict[str, Any]) -> None:
     """Always-visible quick draft result + trace."""
     trace = session.get("_draft_room_last_quick_draft_trace")
     flash = session.get("_draft_room_quick_draft_flash")
-    if flash:
-        st.success(str(flash))
     active_count = int(session.get("_draft_room_active_board_pick_count") or 0)
     table_count = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
     with st.container(border=True):
         st.markdown("**Quick draft status**")
+        if flash:
+            st.success(str(flash))
+        elif isinstance(trace, dict) and trace.get("error"):
+            st.error(str(trace.get("message") or trace.get("error")))
         st.text(f"draft_room_table_pick_count: {table_count}")
         st.text(f"active_board_pick_count: {active_count}")
         seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
         if is_runtime_table(seed):
             st.text(f"seed_player_non_empty: {column_non_empty_counts(seed).get('Player', 0)}")
-        if isinstance(trace, dict):
-            st.text(f"last_quick_draft_trace.ok: {trace.get('ok')}")
-            for key in (
-                "quick_draft_button_clicked",
-                "quick_draft_selected_player",
-                "quick_draft_selected_team",
-                "quick_draft_target_pick",
-                "quick_draft_target_round",
-                "quick_draft_target_row_index",
-                "apply_programmatic_board_update_called",
-                "input_player",
-                "input_team",
-                "before_pick_count",
-                "after_pick_count",
-                "updated_row_index",
-                "used_fallback_open_row",
-                "error",
-                "message",
-            ):
-                if key in trace and trace[key] not in (None, "", False):
-                    st.text(f"last_quick_draft_trace.{key}: {trace[key]}")
+        st.markdown("**Last quick draft trace**")
+        if not isinstance(trace, dict):
+            st.warning("No quick draft trace recorded yet — click Log pick to board to run the traced path.")
+            return
+        for key in (
+            "quick_draft_button_clicked",
+            "selected_player",
+            "selected_team",
+            "target_row_index",
+            "target_pick",
+            "target_round",
+            "before_pick_count",
+            "after_pick_count",
+            "apply_programmatic_board_update_called",
+            "blocked_reason",
+            "error",
+            "message",
+            "quick_draft_selected_player",
+            "quick_draft_selected_team",
+            "quick_draft_target_row_index",
+            "quick_draft_target_pick",
+            "updated_row_index",
+            "used_fallback_open_row",
+        ):
+            val = trace.get(key)
+            if val is None:
+                st.text(f"{key}: (none)")
+            else:
+                st.text(f"{key}: {val}")
 
 
 def find_widget_state_in_session(st: Any, widget_key: str) -> tuple[str, Any]:
@@ -1200,8 +1222,9 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame | None:
 
     if is_draft_room_locally_dirty(session):
         best = cache if cache_picks >= runtime_picks and is_runtime_table(cache) else runtime
-        if is_runtime_table(best) and table_pick_count(best) > 0:
-            write_canonical_draft_room_state(session, best, reason="dirty_runtime_preserve", local_edit=True)
+        if is_runtime_table(best):
+            if table_pick_count(best) > 0:
+                write_canonical_draft_room_state(session, best, reason="dirty_runtime_preserve", local_edit=True)
             session[DRAFT_ROOM_EDITOR_CACHE_KEY] = best.copy()
             sync_editor_seed(session, best, force_reset=True)
             return best

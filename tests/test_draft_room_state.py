@@ -286,9 +286,11 @@ class TestDraftRoomPersistence(unittest.TestCase):
         trace = log_quick_draft_pick(session, "Aaron Judge", "Team 1")
         self.assertTrue(trace.get("ok"))
         self.assertTrue(trace.get("quick_draft_button_clicked"))
+        self.assertEqual(trace.get("selected_player"), "Aaron Judge")
         self.assertTrue(trace.get("apply_programmatic_board_update_called"))
         self.assertEqual(trace.get("after_pick_count"), 1)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
+        self.assertTrue(session.get("_draft_room_skip_editor_resolve_clobber"))
 
     def test_preserve_richer_session_board_keeps_runtime(self) -> None:
         session: dict = {DRAFT_ROOM_TABLE_KEY: _sample_table(picks=2)}

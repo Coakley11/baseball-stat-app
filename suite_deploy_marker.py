@@ -6,7 +6,7 @@ from __future__ import annotations
 
 
 
-SUITE_BUILD_LABEL = "2026-06-13-draft-room-quick-draft-fix-v9"
+SUITE_BUILD_LABEL = "2026-06-13-draft-room-quick-draft-form-v10"
 
 GIT_COMMIT_SHORT = "42ad94f"
 

@@ -15559,31 +15559,48 @@ if active_page == "Draft Room Simulator":
             "**Simulate Draft Pick** does not update this board."
         )
 
-        qd1, qd2, qd3 = st.columns([2, 1, 1])
-        with qd1:
-            quick_player = st.selectbox(
-                "Quick draft — player",
-                player_options_room,
-                key="draft_room_quick_draft_player",
-                help="Logs the player to the next open row for the selected fantasy team.",
+        with st.form("draft_room_quick_draft_form", clear_on_submit=False):
+            qd1, qd2, qd3 = st.columns([2, 1, 1])
+            with qd1:
+                st.selectbox(
+                    "Quick draft — player",
+                    player_options_room,
+                    key="draft_room_quick_draft_player",
+                    help="Choose a player name (not the blank first option).",
+                )
+            with qd2:
+                _qt_idx = room_team_names.index(your_team) if your_team in room_team_names else 0
+                st.selectbox(
+                    "Fantasy team",
+                    room_team_names,
+                    index=_qt_idx,
+                    key="draft_room_quick_draft_team",
+                )
+            with qd3:
+                st.write("")
+                st.write("")
+                quick_draft_submitted = st.form_submit_button(
+                    "Log pick to board",
+                    type="primary",
+                )
+
+        if quick_draft_submitted:
+            from draft_room_state import log_quick_draft_pick
+
+            _qd_trace = log_quick_draft_pick(
+                st.session_state,
+                st.session_state.get("draft_room_quick_draft_player", ""),
+                st.session_state.get("draft_room_quick_draft_team", ""),
             )
-        with qd2:
-            _qt_idx = room_team_names.index(your_team) if your_team in room_team_names else 0
-            quick_team = st.selectbox(
-                "Fantasy team",
-                room_team_names,
-                index=_qt_idx,
-                key="draft_room_quick_draft_team",
-            )
-        with qd3:
-            st.write("")
-            st.write("")
-            st.button(
-                "Log pick to board",
-                type="primary",
-                key="draft_room_quick_draft_btn",
-                on_click=_on_draft_room_quick_draft_click,
-            )
+            if not _qd_trace.get("ok"):
+                st.error(_qd_trace.get("message") or _qd_trace.get("error") or "Quick draft failed.")
+
+        try:
+            from draft_room_state import render_quick_draft_status
+
+            render_quick_draft_status(st, st.session_state)
+        except Exception as _qd_status_exc:
+            st.warning(f"Quick draft status unavailable: {_qd_status_exc}")
 
         # Widget key is Streamlit-owned (versioned). Seed/cache/table are app-owned.
         edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
@@ -15596,10 +15613,10 @@ if active_page == "Draft Room Simulator":
                 render_board_debug_expander,
                 render_board_tab_diagnostics,
                 render_pick_entry_workflow_debug,
-                render_quick_draft_status,
                 render_raw_widget_state_debug,
                 resolve_active_board,
                 save_draft_board_now,
+                table_pick_count,
             )
 
             initial_df, widget_key = prepare_board_editor_for_render(
@@ -15618,12 +15635,20 @@ if active_page == "Draft Room Simulator":
             )
             render_raw_widget_state_debug(st, widget_key)
             render_pick_entry_workflow_debug(st, st.session_state, player_names_pool=player_options_room)
-            edited_draft, _source, pick_count = resolve_active_board(
-                st.session_state, widget_key, editor_return, st=st
-            )
-            edited_draft, pick_count, _preserve_note = preserve_richer_session_board(
-                st.session_state, edited_draft, pick_count
-            )
+            if st.session_state.pop("_draft_room_skip_editor_resolve_clobber", False):
+                edited_draft = st.session_state.get("draft_room_table", initial_df)
+                if hasattr(edited_draft, "copy"):
+                    edited_draft = edited_draft.copy()
+                pick_count = table_pick_count(edited_draft)
+                st.session_state["_draft_room_active_board_source"] = "draft_room_table:quick_draft"
+                st.session_state["_draft_room_active_board_pick_count"] = pick_count
+            else:
+                edited_draft, _source, pick_count = resolve_active_board(
+                    st.session_state, widget_key, editor_return, st=st
+                )
+                edited_draft, pick_count, _preserve_note = preserve_richer_session_board(
+                    st.session_state, edited_draft, pick_count
+                )
             if edited_draft is None:
                 edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
             else:
@@ -15631,7 +15656,6 @@ if active_page == "Draft Room Simulator":
             st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
             st.session_state["draft_room_table"] = edited_draft.copy()
             record_board_editor_diagnostics(st.session_state, edited_draft, editor_key=widget_key)
-            render_quick_draft_status(st, st.session_state)
 
             save_col, _save_sp = st.columns([1, 3])
             with save_col:
