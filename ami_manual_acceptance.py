@@ -38,7 +38,36 @@ MANUAL_QUESTIONS: list[tuple[str, str, str]] = [
         "Why is Jose Ramirez the best player to draft for me right now?",
         "jose_ramirez",
     ),
+    (
+        "Draft Assistant Simulator",
+        "Who is likely to be the next catcher picked in this draft?",
+        "draft_market_catcher",
+    ),
+    (
+        "Draft Assistant Simulator",
+        "Which position is likely to run next?",
+        "draft_market_position_run",
+    ),
+    (
+        "Draft Assistant Simulator",
+        "Will William Contreras make it back to me?",
+        "draft_market_make_it_back",
+    ),
+    (
+        "Draft Assistant Simulator",
+        "Is a catcher run coming?",
+        "draft_market_catcher_run",
+    ),
 ]
+
+WRONG_DRAFT_MARKET_ROUTES: frozenset[str] = frozenset(
+    {
+        "baseball_future_accumulation",
+        "baseball_player_comparison",
+        "baseball_projection_realism",
+        "baseball_valuation",
+    }
+)
 
 ANALYST_LEVELS: list[tuple[str, tuple[str, ...]]] = [
     ("direct_recommendation", ("draft", "lean", "recommend", "take", "target", "prioritize")),
@@ -95,6 +124,7 @@ def _ensure_ami_import() -> None:
 
 def _scenario_context(scenario_key: str, question: str = "") -> dict[str, Any]:
     from ami_acceptance_harness import (
+        build_draft_market_catcher_context,
         build_jose_ramirez_question_context,
         build_realistic_draft_assistant_session,
         build_realistic_sleepers_session,
@@ -102,6 +132,13 @@ def _scenario_context(scenario_key: str, question: str = "") -> dict[str, Any]:
 
     if scenario_key == "jose_ramirez":
         _, ctx = build_jose_ramirez_question_context()
+        return dict(ctx)
+    if scenario_key.startswith("draft_market"):
+        _, ctx = build_draft_market_catcher_context()
+        if scenario_key == "draft_market_make_it_back":
+            from applied_math_context import attach_question_player_to_context
+
+            attach_question_player_to_context(ctx, question, {})
         return dict(ctx)
     if scenario_key == "sleepers":
         session = build_realistic_sleepers_session()
@@ -272,6 +309,41 @@ def run_manual_acceptance() -> dict[str, Any]:
                 row.failures.append("Answer did not compare Jose Ramirez to board recommendations/alternatives")
             if ctx.get("question_player", "").lower() != "jose ramirez":
                 row.failures.append("Send context missing question_player=Jose Ramirez")
+        if scenario_key.startswith("draft_market"):
+            mode = (getattr(solved, "computed", {}) or {}).get("draft_mode")
+            if mode != "draft_market_prediction":
+                row.failures.append(f"Expected draft_market_prediction mode, got {mode}")
+            if row.route_problem_type_id in WRONG_DRAFT_MARKET_ROUTES:
+                row.failures.append(
+                    f"Draft-market question routed to {row.route_problem_type_id} (projection/compare path)"
+                )
+            low = row.full_text.lower()
+            if "julio" in low and "rodriguez" in low:
+                row.failures.append("Answer incorrectly referenced Julio Rodriguez (stale comparison context)")
+            if scenario_key == "draft_market_catcher":
+                if "cal raleigh" not in low:
+                    row.failures.append("Next-catcher answer did not note Cal Raleigh on the board")
+                if not any(n in low for n in ("william contreras", "contreras", "rutschman", "will smith")):
+                    row.failures.append("Next-catcher answer did not name remaining catchers from context")
+                if "off the board" not in low and "already" not in low:
+                    row.failures.append("Next-catcher answer did not state Cal Raleigh is already drafted")
+                if "cal raleigh" in low and "most likely selected is **cal raleigh**" in low.replace(" ", ""):
+                    row.failures.append("Next-catcher answer incorrectly named Cal Raleigh as next pick")
+            if scenario_key == "draft_market_position_run":
+                if not any(tok in low for tok in ("run", "catcher", "position", "scarcity")):
+                    row.failures.append("Position-run answer did not discuss draft flow or position scarcity")
+            if scenario_key == "draft_market_make_it_back":
+                if "william contreras" not in low and "contreras" not in low:
+                    row.failures.append("Make-it-back answer did not name William Contreras from question")
+                if "cal raleigh" in low and "william contreras" not in low:
+                    row.failures.append("Make-it-back answer incorrectly focused on Cal Raleigh instead of William Contreras")
+                if not any(tok in low for tok in ("next pick", "before your", "make it back", "drafted before")):
+                    row.failures.append("Make-it-back answer did not address return timing vs next pick")
+            if scenario_key == "draft_market_catcher_run":
+                if "catcher" not in low:
+                    row.failures.append("Catcher-run answer did not reference catcher position")
+                if "run" not in low:
+                    row.failures.append("Catcher-run answer did not discuss a position run")
 
         row.passed = not row.failures
         row.notes.append(f"draft_mode={(getattr(solved, 'computed', {}) or {}).get('draft_mode')}")

@@ -632,6 +632,74 @@ def build_realistic_trend_valuation_session() -> dict[str, Any]:
     return session
 
 
+def build_draft_market_catcher_context() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Cal Raleigh drafted; remaining catchers ranked for market-prediction questions."""
+    session = build_realistic_draft_assistant_session()
+    from applied_math_context import build_baseball_applied_math_context
+
+    ctx = build_baseball_applied_math_context("Draft Assistant Simulator", session)
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+
+    catcher_rows = [
+        {
+            "player": "Cal Raleigh",
+            "Primary Position": "C",
+            "Market Rank": 35,
+            "Model Rank": 28,
+            "Fantasy Edge": 7,
+        },
+        {
+            "player": "William Contreras",
+            "Primary Position": "C",
+            "Market Rank": 40,
+            "Model Rank": 38,
+            "Fantasy Edge": 5,
+        },
+        {
+            "player": "Adley Rutschman",
+            "Primary Position": "C",
+            "Market Rank": 50,
+            "Model Rank": 45,
+            "Fantasy Edge": 3,
+        },
+        {
+            "player": "Will Smith",
+            "Primary Position": "C",
+            "Market Rank": 55,
+            "Model Rank": 52,
+            "Fantasy Edge": 2,
+        },
+        {
+            "player": "Bobby Witt Jr.",
+            "Primary Position": "SS",
+            "Market Rank": 12,
+            "Fantasy Edge": -3,
+        },
+    ]
+    drafted = list(snap.get("canonical_drafted_players") or ctx.get("drafted_players") or [])
+    if "Cal Raleigh" not in drafted:
+        drafted.append("Cal Raleigh")
+    snap["canonical_drafted_players"] = drafted
+    snap["drafted_players"] = drafted
+    snap["available_players"] = catcher_rows
+    snap["best_available_players"] = catcher_rows[1:4]
+    snap["recommended_players"] = [
+        {"player": "William Contreras", "Primary Position": "C", "Market Rank": 40, "Fantasy Edge": 5},
+        {"player": "Bobby Witt Jr.", "Primary Position": "SS", "Market Rank": 12, "Fantasy Edge": -3},
+    ]
+    snap["current_pick"] = 7
+    snap["draft_round"] = 2
+    snap["my_next_pick"] = 18
+    ctx["draft_snapshot"] = snap
+    ctx["drafted_players"] = drafted
+    ctx["current_pick"] = 7
+    ctx["draft_round"] = 2
+    ctx["recommended_players"] = snap["recommended_players"]
+    ctx["available_players"] = snap["available_players"]
+    ctx["position_scarcity"] = 2.8
+    return session, ctx
+
+
 def build_jose_ramirez_question_context() -> tuple[dict[str, Any], dict[str, Any]]:
     """Deployed-style send path: draft board + question-named player (Jose Ramirez)."""
     session = build_realistic_draft_assistant_session()
