@@ -576,6 +576,94 @@ def _next_open_row_index(table: pd.DataFrame) -> int | None:
     return None
 
 
+def open_pick_row_options(table: Any) -> list[tuple[int, str]]:
+    """Return (dataframe row index, label) for each open Player cell."""
+    df = coerce_board_table(table)
+    if df.empty or "Player" not in df.columns:
+        return []
+    work = df.copy()
+    if "Pick" in work.columns:
+        work = work.sort_values("Pick", kind="stable")
+    options: list[tuple[int, str]] = []
+    for idx, row in work.iterrows():
+        if not _player_cell_filled(row.get("Player")):
+            pick_n = row.get("Pick", "")
+            team = str(row.get("Team", "") or "").strip()
+            label = f"Pick {pick_n} — {team}" if team else f"Pick {pick_n}"
+            options.append((int(idx), label.strip()))
+    return options
+
+
+def record_board_assignment_diagnostics(
+    session: dict[str, Any],
+    *,
+    pick_count: int,
+    source: str = "pick_assignment",
+) -> None:
+    session["_draft_room_widget_capture_debug"] = {
+        "capture_source": source,
+        "capture_pick_count": pick_count,
+        "editor_return_pick_count": pick_count,
+        "widget_reconstructed_pick_count": pick_count,
+        "editor_return_type": "assignment_form",
+        "edited_rows": "n/a (form assignment, not data_editor)",
+    }
+    session["_draft_room_active_board_source"] = f"draft_room_table:{source}"
+    session["_draft_room_active_board_pick_count"] = pick_count
+
+
+def assign_player_to_board_row(
+    session: dict[str, Any],
+    row_index: int,
+    player_name: str,
+) -> dict[str, Any]:
+    """Set official player name on a board row — reliable path bypassing data_editor."""
+    name = str(player_name or "").strip()
+    result: dict[str, Any] = {
+        "ok": False,
+        "player": name,
+        "row_index": row_index,
+        "before_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "after_pick_count": 0,
+        "message": "",
+        "error": "",
+    }
+    if not name:
+        result["error"] = "no_player"
+        result["message"] = "Select a player first."
+        return result
+
+    table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    if table.empty:
+        result["error"] = "empty_board"
+        result["message"] = "Board is empty."
+        return result
+    if row_index < 0 or row_index not in table.index:
+        result["error"] = "bad_row"
+        result["message"] = "Invalid pick row."
+        return result
+
+    existing = set(get_all_drafted_player_names(session))
+    current_at_row = str(table.at[row_index, "Player"] or "").strip()
+    if name in existing and current_at_row != name:
+        result["error"] = "duplicate"
+        result["message"] = f"{name} is already on the board."
+        return result
+
+    table = table.copy()
+    table.at[row_index, "Player"] = name
+    updated = apply_programmatic_board_update(
+        session, table, bump_widget=False, reason="board_pick_assign"
+    )
+    pick_count = table_pick_count(updated)
+    result["after_pick_count"] = pick_count
+    result["ok"] = True
+    pick_label = table.at[row_index, "Pick"] if "Pick" in table.columns else row_index + 1
+    result["message"] = f"Set {name} on pick {pick_label}."
+    record_board_assignment_diagnostics(session, pick_count=pick_count)
+    return result
+
+
 def _parse_pasted_player_lines(text: str) -> list[str]:
     names: list[str] = []
     import re

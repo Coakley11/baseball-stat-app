@@ -25,6 +25,7 @@ from draft_room_state import (
     apply_cloud_draft_room_state_if_allowed,
     apply_programmatic_board_update,
     apply_restored_board_to_session,
+    assign_player_to_board_row,
     bump_editor_version,
     build_snake_board,
     coerce_board_table,
@@ -41,7 +42,9 @@ from draft_room_state import (
     delete_active_draft,
     is_board_editor_widget_key,
     get_all_drafted_player_names,
+    open_pick_row_options,
     paste_players_to_board,
+    record_board_assignment_diagnostics,
     reset_simulator_board_only,
     prepare_board_editor_for_render,
     prepare_draft_room_state,
@@ -631,6 +634,44 @@ class TestDeleteActiveDraft(unittest.TestCase):
         reset_simulator_board_only(session)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 0)
         self.assertIsNotNone(session.get("live_draft_room"))
+
+
+class TestBoardPickAssignment(unittest.TestCase):
+    def test_open_pick_row_options_lists_empty_slots(self) -> None:
+        table = _sample_table(picks=2)
+        options = open_pick_row_options(table)
+        self.assertEqual(len(options), 10)
+        self.assertIn("Pick 3", options[0][1])
+
+    def test_assign_player_to_board_row_sets_player_and_diagnostics(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        res = assign_player_to_board_row(session, 0, "Aaron Judge")
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("after_pick_count"), 1)
+        self.assertEqual(str(session[DRAFT_ROOM_TABLE_KEY].iloc[0]["Player"]), "Aaron Judge")
+        dbg = session.get("_draft_room_widget_capture_debug")
+        self.assertIsInstance(dbg, dict)
+        self.assertEqual(dbg.get("capture_pick_count"), 1)
+        self.assertEqual(session.get("_draft_room_active_board_pick_count"), 1)
+
+    def test_assign_player_rejects_duplicate(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=1),
+        }
+        res = assign_player_to_board_row(session, 1, "Player 1")
+        self.assertFalse(res.get("ok"))
+        self.assertEqual(res.get("error"), "duplicate")
+
+    def test_record_board_assignment_diagnostics(self) -> None:
+        session: dict = {}
+        record_board_assignment_diagnostics(session, pick_count=2, source="board_display")
+        dbg = session["_draft_room_widget_capture_debug"]
+        self.assertEqual(dbg["capture_pick_count"], 2)
+        self.assertEqual(dbg["capture_source"], "board_display")
 
 
 if __name__ == "__main__":
