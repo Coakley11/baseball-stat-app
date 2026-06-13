@@ -39,6 +39,7 @@ from draft_room_state import (
     editor_widget_key,
     effective_board_pick_count,
     enrich_save_payload_with_draft_room,
+    effective_board_pick_count,
     get_canonical_draft_board,
     delete_active_draft,
     is_board_editor_widget_key,
@@ -215,6 +216,56 @@ class TestDraftRoomPersistence(unittest.TestCase):
         mock_force.assert_called_once()
         self.assertEqual(trace.get("saved_pick_count"), 3)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
+        self.assertTrue(trace.get("save_button_clicked"))
+
+    def test_save_draft_board_now_attempts_direct_cloud_when_force_cloud_fails(self) -> None:
+        st = MagicMock()
+        table = _sample_table(picks=3)
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: table,
+        }
+
+        def _fake_force(_st: MagicMock, *, reason: str = "") -> bool:
+            session["_suite_persist_last_save_disk"] = True
+            session["_suite_persist_last_save_cloud"] = False
+            session["payload_has_draft_board"] = True
+            session["cloud_payload_pick_count"] = 3
+            return True
+
+        with patch("baseball_persistent_state.force_save_baseball_state", side_effect=_fake_force):
+            with patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-01-01T00:00:00Z")):
+                with patch(
+                    "draft_room_state.save_draft_board_direct_to_cloud",
+                    return_value={
+                        "saved_cloud": True,
+                        "cloud_payload_pick_count": 3,
+                        "payload_has_draft_board": True,
+                        "cloud_timestamp_after": "2026-06-13T03:00:00Z",
+                    },
+                ) as mock_direct:
+                    trace = save_draft_board_now(st, session, board=table)
+        mock_direct.assert_called_once()
+        self.assertTrue(trace.get("direct_cloud_save_attempted"))
+        self.assertTrue(trace.get("saved_cloud"))
+        self.assertEqual(trace.get("saved_pick_count"), 3)
+
+    def test_enrich_save_payload_uses_richest_runtime_board(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=3),
+            DRAFT_ROOM_STATE_KEY: {
+                "_persist_schema": 1,
+                "table_records": [],
+                "table_columns": ["Round", "Pick", "Team", "Player"],
+                "pick_count": 0,
+            },
+        }
+        state: dict = {"active_page": "Draft Room Simulator"}
+        out, diag = enrich_save_payload_with_draft_room(session, state)
+        self.assertTrue(diag.get("payload_has_draft_board"))
+        self.assertEqual(diag.get("cloud_payload_pick_count"), 3)
+        self.assertEqual(table_pick_count(out.get(DRAFT_ROOM_STATE_KEY)), 3)
 
     def test_manual_save_survives_disk_refresh(self) -> None:
         st = MagicMock()

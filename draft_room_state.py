@@ -2073,15 +2073,20 @@ def enrich_save_payload_with_draft_room(
     diag: dict[str, Any] = {
         "payload_has_draft_board": False,
         "cloud_payload_pick_count": 0,
+        "enrich_source": "",
     }
     sync_draft_room_session_before_save(session)
-    blob = _draft_room_from_blob(session) or _draft_room_from_blob(state)
-    if not blob or not blob.get("table_records"):
-        existing = _draft_room_from_blob(state)
-        if existing:
-            blob = existing
-        else:
-            return state, diag
+    table, pick_count, source = _resolve_richest_draft_board(session)
+    blob: dict[str, Any] | None = None
+    if pick_count > 0 and table is not None:
+        blob = table_to_persist_dict(table, settings=_room_settings_from_session(session))
+        diag["enrich_source"] = source
+    if not blob or table_pick_count(blob) <= 0:
+        blob = _draft_room_from_blob(session) or _draft_room_from_blob(state)
+        if blob:
+            diag["enrich_source"] = diag.get("enrich_source") or "session_blob"
+    if not blob or table_pick_count(blob) <= 0:
+        return state, diag
 
     safe_blob = copy.deepcopy(blob)
     out = copy.deepcopy(state)
@@ -2288,14 +2293,18 @@ def commit_draft_room_table(
     try:
         from baseball_persistent_state import force_save_baseball_state
 
+        trace["force_save_called"] = True
+        trace["force_save_reason"] = reason or session.get("_suite_pending_save_reason") or "draft_room_pick"
         trace["saved"] = bool(force_save_baseball_state(st, reason=reason or "draft_room_pick"))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
         trace["saved_pick_count"] = table_pick_count(table)
         trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))
         trace["cloud_payload_pick_count"] = session.get("cloud_payload_pick_count")
+        trace["cloud_blocked_reason"] = session.get("_suite_autosave_cloud_blocked_reason")
         if session.get("_suite_persist_last_cloud_error"):
-            trace["error"] = str(session.get("_suite_persist_last_cloud_error"))
+            trace["cloud_write_error"] = str(session.get("_suite_persist_last_cloud_error"))
+            trace["error"] = trace["cloud_write_error"]
         elif session.get("_suite_autosave_cloud_blocked_reason"):
             trace["error"] = f"cloud_blocked:{session.get('_suite_autosave_cloud_blocked_reason')}"
         if trace["saved"] and trace["cloud"] and trace.get("payload_has_draft_board"):
@@ -2371,6 +2380,144 @@ def persist_draft_board_to_storage(
     return commit_draft_room_table(st, session, board, reason=reason)
 
 
+_BOARD_MANUAL_SAVE_TRACE_KEY = "_draft_room_manual_save_result"
+
+_BOARD_MANUAL_SAVE_FIELDS = (
+    "save_button_clicked",
+    "save_reason",
+    "saved_pick_count",
+    "saved_disk",
+    "saved_cloud",
+    "disk_payload_pick_count",
+    "cloud_payload_pick_count",
+    "cloud_timestamp_before",
+    "cloud_timestamp_after",
+    "cloud_write_error",
+    "force_save_called",
+    "force_save_reason",
+    "cloud_blocked_reason",
+    "direct_cloud_save_attempted",
+    "direct_cloud_save_ok",
+    "error",
+)
+
+
+def _refresh_cloud_draft_room_stats(
+    session: dict[str, Any],
+    *,
+    cloud_ts: str | None = None,
+) -> dict[str, Any]:
+    """Reload cloud draft-room stats into session after a save attempt."""
+    stats: dict[str, Any] = {
+        "cloud_has_draft_room_board": False,
+        "cloud_draft_room_pick_count": 0,
+        "cloud_fetch_updated_at": cloud_ts,
+    }
+    try:
+        from suite_cloud_state import load_cloud_full_session
+
+        cloud_state, cloud_updated = load_cloud_full_session("baseball")
+        if cloud_ts is None:
+            cloud_ts = cloud_updated
+        stats["cloud_fetch_updated_at"] = cloud_ts
+        cloud_dr = draft_room_restore_stats(cloud_state)
+        stats["cloud_has_draft_room_board"] = bool(cloud_dr.get("has_draft_board"))
+        stats["cloud_draft_room_pick_count"] = int(cloud_dr.get("pick_count") or 0)
+    except Exception as exc:
+        stats["cloud_refresh_error"] = f"{type(exc).__name__}: {exc}"
+    session["cloud_has_draft_room_board"] = stats["cloud_has_draft_room_board"]
+    session["cloud_draft_room_pick_count"] = stats["cloud_draft_room_pick_count"]
+    if stats.get("cloud_fetch_updated_at"):
+        session["cloud_fetch_updated_at"] = stats["cloud_fetch_updated_at"]
+        session["_suite_cloud_fetch_updated_at"] = stats["cloud_fetch_updated_at"]
+    return stats
+
+
+def save_draft_board_direct_to_cloud(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    board: Any = None,
+) -> dict[str, Any]:
+    """Direct Supabase write for manual save when force_autosave cloud leg fails."""
+    trace: dict[str, Any] = {
+        "path": "direct_cloud_save_draft_room",
+        "saved_cloud": False,
+        "cloud_timestamp_changed": False,
+        "cloud_write_error": "",
+        "error": "",
+        "payload_has_draft_board": False,
+        "cloud_payload_pick_count": 0,
+    }
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        trace["cloud_storage_enabled"] = cloud_storage_enabled()
+    except Exception as exc:
+        trace["cloud_storage_enabled"] = False
+        trace["error"] = f"config:{type(exc).__name__}:{exc}"
+        trace["cloud_write_error"] = trace["error"]
+        return trace
+
+    if not trace.get("cloud_storage_enabled"):
+        trace["error"] = "cloud_storage_disabled"
+        trace["cloud_write_error"] = trace["error"]
+        return trace
+
+    try:
+        from suite_cloud_state import load_cloud_full_session, save_cloud_full_session_with_result, session_page_summary
+        from baseball_persistent_state import build_baseball_disk_state
+
+        cloud_before, ts_before = load_cloud_full_session("baseball")
+        trace["cloud_timestamp_before"] = ts_before
+        trace["cloud_pick_count_before"] = draft_room_restore_stats(cloud_before).get("pick_count")
+
+        if is_runtime_table(board) and table_pick_count(board) > 0:
+            sync_board_to_session_keys(session, board, local_edit=True, reason="direct_cloud_save")
+        else:
+            sync_draft_room_session_before_save(session)
+
+        session["_suite_pending_save_reason"] = "manual_save_direct_cloud"
+        session.pop("_suite_autosave_cloud_blocked_reason", None)
+        state = build_baseball_disk_state(st)
+        state, enrich_diag = enrich_save_payload_with_draft_room(session, state)
+        trace["enrich_source"] = enrich_diag.get("enrich_source")
+        trace["payload_has_draft_board"] = bool(enrich_diag.get("payload_has_draft_board"))
+        trace["cloud_payload_pick_count"] = int(enrich_diag.get("cloud_payload_pick_count") or 0)
+        session["payload_has_draft_board"] = trace["payload_has_draft_board"]
+        session["cloud_payload_pick_count"] = trace["cloud_payload_pick_count"]
+
+        if not trace["payload_has_draft_board"]:
+            trace["error"] = "payload_missing_draft_board"
+            trace["cloud_write_error"] = trace["error"]
+            return trace
+
+        page, summary = session_page_summary("baseball", state)
+        ok, cloud_err = save_cloud_full_session_with_result("baseball", state, page=page, summary=summary)
+        trace["saved_cloud"] = ok
+        trace["cloud_write_error"] = cloud_err or ""
+        if cloud_err:
+            trace["error"] = cloud_err
+            session["_suite_persist_last_cloud_error"] = cloud_err
+        else:
+            session.pop("_suite_persist_last_cloud_error", None)
+
+        cloud_after, ts_after = load_cloud_full_session("baseball")
+        trace["cloud_timestamp_after"] = ts_after
+        trace["cloud_timestamp_changed"] = bool(ts_after and ts_after != ts_before)
+        trace["cloud_pick_count_after"] = draft_room_restore_stats(cloud_after).get("pick_count")
+        if ok:
+            session["_suite_persist_last_save_cloud"] = True
+            session["_suite_persist_last_save_reason"] = "manual_save_direct_cloud"
+            _refresh_cloud_draft_room_stats(session, cloud_ts=ts_after)
+            if int(trace.get("cloud_pick_count_after") or 0) > 0:
+                clear_draft_room_local_edit(session)
+    except Exception as exc:
+        trace["error"] = f"{type(exc).__name__}: {exc}"
+        trace["cloud_write_error"] = trace["error"]
+    return trace
+
+
 def save_draft_board_now(
     st: Any,
     session: dict[str, Any],
@@ -2381,10 +2528,18 @@ def save_draft_board_now(
     """Explicit Board-tab save: editor → draft_room_state → disk + cloud."""
     trace: dict[str, Any] = {
         "path": "save_draft_board_now",
+        "save_button_clicked": True,
+        "save_reason": "manual_save",
         "saved": False,
-        "disk": False,
-        "cloud": False,
+        "saved_disk": False,
+        "saved_cloud": False,
         "saved_pick_count": 0,
+        "force_save_called": False,
+        "force_save_reason": "",
+        "cloud_write_error": "",
+        "cloud_blocked_reason": "",
+        "direct_cloud_save_attempted": False,
+        "direct_cloud_save_ok": False,
         "error": "",
     }
     cloud_ts_before = None
@@ -2396,11 +2551,19 @@ def save_draft_board_now(
         trace["cloud_timestamp_before_error"] = f"{type(exc).__name__}: {exc}"
     trace["cloud_timestamp_before"] = cloud_ts_before
 
+    try:
+        from suite_user_persistence import _autosave_block_key
+
+        session.pop(_autosave_block_key("baseball"), None)
+        session.pop("_suite_autosave_block_reason", None)
+    except ImportError:
+        pass
+
     wkey = widget_key or editor_widget_key(session)
     board = read_board_for_save(session, board, st=st, widget_key=wkey)
     if board is None:
         trace["error"] = "editor_state_missing"
-        session["_draft_room_manual_save_result"] = trace
+        session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
         session["_draft_room_last_save_trace"] = trace
         return trace
 
@@ -2408,16 +2571,42 @@ def save_draft_board_now(
     trace["saved_pick_count"] = pick_count
     trace["active_board_source"] = session.get("_draft_room_active_board_source")
     record_board_editor_diagnostics(session, board, editor_key=wkey)
-    session[DRAFT_ROOM_TABLE_KEY] = board.copy()
-    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = board.copy()
-    session["_draft_room_picks_fp"] = table_picks_fingerprint(board)
-    session.pop("_draft_room_save_fp", None)
+    sync_board_to_session_keys(session, board, local_edit=True, reason="manual_save_prepare")
 
     save_trace = commit_draft_room_table(st, session, board, reason="manual_save", editor_key=wkey)
     trace.update(save_trace)
     trace["saved_pick_count"] = pick_count
     trace["saved_disk"] = bool(trace.get("disk"))
     trace["saved_cloud"] = bool(trace.get("cloud"))
+    trace["save_button_clicked"] = True
+    trace["save_reason"] = "manual_save"
+    trace["cloud_blocked_reason"] = (
+        trace.get("cloud_blocked_reason")
+        or session.get("_suite_autosave_cloud_blocked_reason")
+        or ""
+    )
+    trace["cloud_write_error"] = (
+        trace.get("cloud_write_error")
+        or session.get("_suite_persist_last_cloud_error")
+        or ""
+    )
+
+    if pick_count > 0 and not trace.get("saved_cloud"):
+        trace["direct_cloud_save_attempted"] = True
+        direct = save_draft_board_direct_to_cloud(st, session, board=board)
+        trace["direct_cloud_save_ok"] = bool(direct.get("saved_cloud"))
+        if direct.get("saved_cloud"):
+            trace["saved_cloud"] = True
+            trace["cloud"] = True
+            trace["saved"] = True
+            trace["cloud_payload_pick_count"] = direct.get("cloud_payload_pick_count")
+            trace["payload_has_draft_board"] = direct.get("payload_has_draft_board")
+            trace.pop("error", None)
+            trace.pop("cloud_write_error", None)
+        elif direct.get("error") and not trace.get("error"):
+            trace["error"] = direct.get("error")
+            trace["cloud_write_error"] = direct.get("cloud_write_error") or direct.get("error")
+
     if trace.get("saved") and pick_count > 0:
         sync_editor_seed(session, board, force_reset=True)
         session[DRAFT_ROOM_EDITOR_CACHE_KEY] = board.copy()
@@ -2429,29 +2618,27 @@ def save_draft_board_now(
             session["restored_draft_room_pick_count"] = pick_count
         except ImportError:
             pass
-    trace["cloud_timestamp_before"] = cloud_ts_before
+
     try:
         from baseball_persistent_state import build_baseball_disk_state
 
         disk_preview = build_baseball_disk_state(st)
         dr_stats = draft_room_restore_stats(disk_preview)
         trace["disk_payload_pick_count"] = dr_stats.get("pick_count")
-        trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))
-        trace["cloud_payload_pick_count"] = session.get("cloud_payload_pick_count")
+        if trace.get("payload_has_draft_board") is None:
+            trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))
+        if trace.get("cloud_payload_pick_count") is None:
+            trace["cloud_payload_pick_count"] = session.get("cloud_payload_pick_count")
     except Exception as exc:
         trace["disk_payload_preview_error"] = f"{type(exc).__name__}: {exc}"
 
-    cloud_ts_after = None
-    try:
-        from suite_cloud_state import load_cloud_full_session
-
-        _, cloud_ts_after = load_cloud_full_session("baseball")
-    except Exception as exc:
-        trace["cloud_timestamp_after_error"] = f"{type(exc).__name__}: {exc}"
-    trace["cloud_timestamp_after"] = cloud_ts_after
+    cloud_stats = _refresh_cloud_draft_room_stats(session)
+    trace["cloud_timestamp_after"] = cloud_stats.get("cloud_fetch_updated_at")
+    trace["cloud_has_draft_room_board_after"] = cloud_stats.get("cloud_has_draft_room_board")
+    trace["cloud_draft_room_pick_count_after"] = cloud_stats.get("cloud_draft_room_pick_count")
     trace["last_save_reason"] = session.get("_suite_persist_last_save_reason")
 
-    session["_draft_room_manual_save_result"] = trace
+    session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
     session["_draft_room_last_save_trace"] = trace
     return trace
 
@@ -2537,9 +2724,20 @@ def render_board_tab_diagnostics(st: Any) -> None:
             st.text(f"last_draft_room_save_trace.last_save_reason: {trace.get('last_save_reason') or ss.get('_suite_persist_last_save_reason')}")
             st.text(f"last_draft_room_save_trace.error: {trace.get('error') or ''}")
         if isinstance(manual, dict) and manual.get("path") == "save_draft_board_now":
-            st.text(f"manual_save.cloud_timestamp_before: {manual.get('cloud_timestamp_before')}")
-            st.text(f"manual_save.cloud_timestamp_after: {manual.get('cloud_timestamp_after')}")
-            st.text(f"manual_save.last_save_reason: {manual.get('last_save_reason')}")
+            st.markdown("**Manual save (last click)**")
+            for key in _BOARD_MANUAL_SAVE_FIELDS:
+                val = manual.get(key)
+                if val is not None and val != "":
+                    st.text(f"{key}: {val}")
+            for extra_key in (
+                "cloud_has_draft_room_board_after",
+                "cloud_draft_room_pick_count_after",
+                "direct_cloud_save_attempted",
+                "direct_cloud_save_ok",
+            ):
+                val = manual.get(extra_key)
+                if val is not None and val != "":
+                    st.text(f"{extra_key}: {val}")
         active_picks = diag.get("draft_room_pick_count") or diag.get("session_pick_count")
         if active_picks is not None:
             st.text(f"active_board_pick_count: {active_picks}")
