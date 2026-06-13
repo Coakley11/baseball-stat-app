@@ -8,11 +8,11 @@ from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-06-13-draft-room-simulator-persist-v1"
 
-GIT_COMMIT_SHORT = "pending"
+GIT_COMMIT_SHORT = "f9277df"
 
 GIT_BRANCH = "dev"
 
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 
-DEPLOY_COMMITS_INCLUDED = ("7feb3de", "62d1cce", "427212d", "96106e2", "816cc86", "draft-room-persist")
+DEPLOY_COMMITS_INCLUDED = ("7feb3de", "62d1cce", "427212d", "96106e2", "816cc86", "f9277df")
 
