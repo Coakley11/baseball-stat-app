@@ -10393,52 +10393,25 @@ def get_draft_room_team_options():
     return sorted(table["Team"].dropna().astype(str).unique().tolist())
 
 
+def _on_draft_room_quick_draft_click():
+    """Button callback — read selectbox values from session_state keys."""
+    from draft_room_state import log_quick_draft_pick
+
+    log_quick_draft_pick(
+        st.session_state,
+        st.session_state.get("draft_room_quick_draft_player", ""),
+        st.session_state.get("draft_room_quick_draft_team", ""),
+    )
+
+
 def add_player_to_next_draft_room_pick(player_name, team_name):
-    """Add selected player to the next open Draft Room row for the selected team.
+    """Add selected player to the next open Draft Room row for the selected team."""
+    from draft_room_state import log_quick_draft_pick
 
-    If the selected team's next row is unavailable, use the next open row.
-    Returns a message string.
-    """
-    if "draft_room_table" not in st.session_state:
-        return "No Draft Room table exists yet. Open Draft Room Simulator first."
-
-    table = st.session_state["draft_room_table"].copy()
-    if table.empty or "Player" not in table.columns or "Team" not in table.columns:
-        return "Draft Room table is missing Team/Player columns."
-
-    player_name = str(player_name).strip()
-    team_name = str(team_name).strip()
-
-    if not player_name:
-        return "No player selected."
-
-    # Do not draft the same player twice.
-    existing_players = table["Player"].dropna().astype(str).str.strip().tolist()
-    if player_name in existing_players:
-        return f"{player_name} is already drafted."
-
-    open_mask = table["Player"].fillna("").astype(str).str.strip().eq("")
-    team_open_idx = table.index[open_mask & table["Team"].astype(str).eq(team_name)].tolist()
-
-    if team_open_idx:
-        idx = team_open_idx[0]
-    else:
-        any_open_idx = table.index[open_mask].tolist()
-        if not any_open_idx:
-            return "Draft Room is full. No open pick rows remain."
-        idx = any_open_idx[0]
-        table.loc[idx, "Team"] = team_name
-
-    table.loc[idx, "Player"] = player_name
-    try:
-        from draft_room_state import apply_programmatic_board_update
-
-        apply_programmatic_board_update(st.session_state, table, reason="draft_player_button")
-    except Exception:
-        st.session_state["draft_room_table"] = table
-    _auto_remove_drafted_from_queue()
-    pick_num = table.loc[idx, "Pick"] if "Pick" in table.columns else idx + 1
-    return f"Drafted {player_name} to {team_name} at pick {pick_num}."
+    trace = log_quick_draft_pick(st.session_state, player_name, team_name)
+    if trace.get("ok"):
+        _auto_remove_drafted_from_queue()
+    return str(trace.get("message") or trace.get("error") or "Quick draft failed.")
 
 
 def build_draft_room_table_from_assistant(my_roster, other_rosters, my_team_name="My Team", other_team_name="Other Rosters"):
@@ -15605,13 +15578,12 @@ if active_page == "Draft Room Simulator":
         with qd3:
             st.write("")
             st.write("")
-            if st.button("Log pick to board", type="primary", key="draft_room_quick_draft_btn"):
-                if not str(quick_player).strip():
-                    st.warning("Select a player first.")
-                else:
-                    msg = add_player_to_next_draft_room_pick(quick_player, quick_team)
-                    st.success(msg)
-                    st.rerun()
+            st.button(
+                "Log pick to board",
+                type="primary",
+                key="draft_room_quick_draft_btn",
+                on_click=_on_draft_room_quick_draft_click,
+            )
 
         # Widget key is Streamlit-owned (versioned). Seed/cache/table are app-owned.
         edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
@@ -15619,10 +15591,12 @@ if active_page == "Draft Room Simulator":
             from draft_room_state import (
                 DRAFT_ROOM_EDITOR_CACHE_KEY,
                 prepare_board_editor_for_render,
+                preserve_richer_session_board,
                 record_board_editor_diagnostics,
                 render_board_debug_expander,
                 render_board_tab_diagnostics,
                 render_pick_entry_workflow_debug,
+                render_quick_draft_status,
                 render_raw_widget_state_debug,
                 resolve_active_board,
                 save_draft_board_now,
@@ -15647,6 +15621,9 @@ if active_page == "Draft Room Simulator":
             edited_draft, _source, pick_count = resolve_active_board(
                 st.session_state, widget_key, editor_return, st=st
             )
+            edited_draft, pick_count, _preserve_note = preserve_richer_session_board(
+                st.session_state, edited_draft, pick_count
+            )
             if edited_draft is None:
                 edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
             else:
@@ -15654,6 +15631,7 @@ if active_page == "Draft Room Simulator":
             st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
             st.session_state["draft_room_table"] = edited_draft.copy()
             record_board_editor_diagnostics(st.session_state, edited_draft, editor_key=widget_key)
+            render_quick_draft_status(st, st.session_state)
 
             save_col, _save_sp = st.columns([1, 3])
             with save_col:

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 
 
-SUITE_BUILD_LABEL = "2026-06-13-draft-room-pick-entry-v8"
+SUITE_BUILD_LABEL = "2026-06-13-draft-room-quick-draft-fix-v9"
 
 GIT_COMMIT_SHORT = "a87795c"
 
@@ -14,5 +14,5 @@ GIT_BRANCH = "dev"
 
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 
-DEPLOY_COMMITS_INCLUDED = ("7feb3de", "62d1cce", "427212d", "96106e2", "816cc86", "f9277df", "1195c54", "a26dfe8", "8053f27", "38e1018", "10b4376", "cb7ac09", "d19a49f")
+DEPLOY_COMMITS_INCLUDED = ("7feb3de", "62d1cce", "427212d", "96106e2", "816cc86", "f9277df", "1195c54", "a26dfe8", "8053f27", "38e1018", "10b4376", "cb7ac09", "a87795c")
 

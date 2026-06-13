@@ -11,7 +11,6 @@ import pandas as pd
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from draft_room_state import (
     DRAFT_ROOM_DIRTY_KEY,
-    DRAFT_ROOM_DIRTY_KEY,
     DRAFT_ROOM_EDITOR_CACHE_KEY,
     DRAFT_ROOM_EDITOR_SEED_KEY,
     DRAFT_ROOM_EDITOR_VERSION_KEY,
@@ -28,8 +27,10 @@ from draft_room_state import (
     detect_player_column,
     editor_widget_key,
     enrich_save_payload_with_draft_room,
+    log_quick_draft_pick,
     prepare_board_editor_for_render,
     prepare_draft_room_state,
+    preserve_richer_session_board,
     reconstruct_board_from_widget_state,
     resolve_active_board,
     save_draft_board_now,
@@ -279,6 +280,23 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 2)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_SEED_KEY]), 2)
         self.assertTrue(session.get(DRAFT_ROOM_DIRTY_KEY))
+
+    def test_log_quick_draft_pick_adds_player(self) -> None:
+        session: dict = {DRAFT_ROOM_EDITOR_VERSION_KEY: 0, DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0)}
+        trace = log_quick_draft_pick(session, "Aaron Judge", "Team 1")
+        self.assertTrue(trace.get("ok"))
+        self.assertTrue(trace.get("quick_draft_button_clicked"))
+        self.assertTrue(trace.get("apply_programmatic_board_update_called"))
+        self.assertEqual(trace.get("after_pick_count"), 1)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
+
+    def test_preserve_richer_session_board_keeps_runtime(self) -> None:
+        session: dict = {DRAFT_ROOM_TABLE_KEY: _sample_table(picks=2)}
+        empty = _sample_table(picks=0)
+        out, count, note = preserve_richer_session_board(session, empty, 0)
+        assert out is not None
+        self.assertEqual(count, 2)
+        self.assertEqual(note, "preserved_session_table")
 
 
 if __name__ == "__main__":
