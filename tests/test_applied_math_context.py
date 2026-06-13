@@ -286,6 +286,8 @@ class TestBaseballAppliedMathContext(unittest.TestCase):
         self.assertIn("sleepers_snapshot", ctx)
         self.assertIn("Junior Caminero", ctx.get("sleeper_candidates", []))
         self.assertIn("ami_guidance", ctx)
+        self.assertIn("ami_answer_template", ctx)
+        self.assertIn("ami_acceptance_questions", ctx)
 
     def test_cache_live_draft_ami_context(self) -> None:
         from applied_math_context import build_baseball_applied_math_context, cache_live_draft_ami_context
@@ -337,6 +339,28 @@ class TestBaseballAppliedMathContext(unittest.TestCase):
         ctx = build_baseball_applied_math_context("Live Draft Room", session)
         self.assertIn("draft_projection", ctx)
         self.assertIn("ami_guidance", ctx)
+        self.assertIn("ami_answer_template", ctx)
+
+    def test_cache_valuation_ami_context(self) -> None:
+        import pandas as pd
+
+        from applied_math_context import build_baseball_applied_math_context, cache_valuation_ami_context
+
+        df = pd.DataFrame(
+            [
+                {"fullName": "Juan Soto", "Valuation_Score": 0.92, "Perf_Score": 80, "Trend_Score": 12},
+                {"fullName": "Aaron Judge", "Valuation_Score": 0.88, "Perf_Score": 75, "Trend_Score": 10},
+            ]
+        )
+        session: dict = {"valuation_selected_player": "Juan Soto"}
+        cache_valuation_ami_context(session, valuation_df=df, selected_player="Juan Soto")
+        snap = session.get("_ami_valuation_snapshot")
+        self.assertIsInstance(snap, dict)
+        self.assertEqual(snap.get("selected_player"), "Juan Soto")
+        self.assertEqual(len(snap.get("top_valuation_players", [])), 2)
+        ctx = build_baseball_applied_math_context("Valuation", session)
+        self.assertIn("valuation_snapshot", ctx)
+        self.assertIn("ami_acceptance_questions", ctx)
 
 
 if __name__ == "__main__":

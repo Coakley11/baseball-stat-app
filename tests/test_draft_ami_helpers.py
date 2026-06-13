@@ -43,7 +43,8 @@ class TestDraftAmiHelpers(unittest.TestCase):
     def test_draft_ami_guidance_per_page(self) -> None:
         self.assertIn("sleeper", draft_ami_guidance("Fantasy Sleepers & Busts").lower())
         self.assertIn("my_next_pick", draft_ami_guidance("Live Draft Room"))
-        self.assertIn("roster need", draft_ami_guidance("Draft Assistant Simulator").lower())
+        self.assertIn("canonical", draft_ami_guidance("Draft Assistant Simulator").lower())
+        self.assertIn("valuation", draft_ami_guidance("Valuation").lower())
 
 
 if __name__ == "__main__":

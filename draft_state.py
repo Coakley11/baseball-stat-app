@@ -592,7 +592,7 @@ def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, A
     except ImportError:
         pass
     try:
-        from draft_ami_helpers import gather_live_draft_ami_section
+        from draft_ami_helpers import gather_live_draft_ami_section, merge_draft_workflow_into_snapshot
 
         live_room = session.get("live_draft_room")
         live_section = gather_live_draft_ami_section(
@@ -645,6 +645,7 @@ def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, A
             if k not in snapshot or not snapshot.get(k):
                 snapshot[k] = v
 
+    merge_draft_workflow_into_snapshot(session, snapshot)
     return snapshot
 
 

@@ -528,6 +528,7 @@ def cache_draft_assistant_ami_context(
     category_needs: list[str] | None = None,
     drafted_players: list[str] | None = None,
     best_available_df: Any = None,
+    available_df: Any = None,
     position_scarcity: Any = None,
 ) -> None:
     """Cache top recommendation + canonical draft snapshot for AMI send."""
@@ -566,6 +567,9 @@ def cache_draft_assistant_ami_context(
     best_rows = compact_recommendation_rows(best_available_df, limit=6)
     if best_rows:
         draft_proj["best_available"] = best_rows
+    avail_rows = compact_recommendation_rows(available_df or best_available_df, limit=12)
+    if avail_rows:
+        draft_proj["available_players"] = avail_rows
 
     session_state["_ami_draft_projection"] = draft_proj
     snap = gather_draft_ami_snapshot(page, session_state)
@@ -574,6 +578,8 @@ def cache_draft_assistant_ami_context(
         snap["recommended_players"] = top_rows
     if best_rows:
         snap["best_available_players"] = best_rows
+    if avail_rows:
+        snap["available_players"] = avail_rows
     if needed_positions:
         snap["needed_positions"] = list(needed_positions)[:8]
     if category_needs:
@@ -788,7 +794,94 @@ def record_trend_intel(
         if parts:
             summary["summary"] = "; ".join(parts)
     session_state["_ami_trend_summary"] = summary
+    try:
+        from baseball_ami_frame import player_draft_status
+
+        ds = player_draft_status(session_state, player)
+        if ds.get("player"):
+            summary["draft_status"] = ds
+            session_state["_ami_player_draft_status"] = ds
+    except ImportError:
+        pass
     cache_page_context(session_state, "Trend Value", {"trend_summary": summary, "player": summary.get("player"), "metrics": [stat]})
+
+
+def cache_valuation_ami_context(
+    session_state: dict[str, Any],
+    *,
+    valuation_df: Any = None,
+    selected_player: str = "",
+    top_n: int = 10,
+) -> None:
+    """Cache valuation table + draft status for AMI."""
+    try:
+        from baseball_ami_frame import player_draft_status
+        from draft_ami_helpers import draft_ami_guidance
+    except Exception:
+        return
+
+    snap: dict[str, Any] = {
+        "page": "Valuation",
+        "selected_player": str(selected_player or "").strip(),
+        "weights": {
+            "current": session_state.get("value_w_current"),
+            "trend": session_state.get("value_w_trend"),
+        },
+        "filters": {
+            "lag": session_state.get("value_lag"),
+            "position": session_state.get("value_position_filter"),
+            "min_g": session_state.get("value_min_g"),
+        },
+    }
+    top_rows: list[dict[str, Any]] = []
+    if valuation_df is not None and hasattr(valuation_df, "iterrows") and not getattr(valuation_df, "empty", True):
+        import pandas as pd
+
+        ranked = valuation_df.sort_values("Valuation_Score", ascending=False).head(top_n)
+        for _, row in ranked.iterrows():
+            name = str(row.get("fullName") or "").strip()
+            if not name:
+                continue
+            entry: dict[str, Any] = {"player": name}
+            for col in (
+                "Valuation_Score",
+                "Perf_Score",
+                "Trend_Score",
+                "Primary Position",
+                "Market Rank",
+                "Model Rank",
+                "Fantasy Edge",
+                "proj_HR",
+                "proj_SB",
+                "proj_OPS",
+            ):
+                if col in row.index and pd.notna(row.get(col)):
+                    entry[col] = row.get(col)
+            top_rows.append(entry)
+        snap["top_valuation_players"] = top_rows
+        if not snap["selected_player"] and top_rows:
+            snap["selected_player"] = top_rows[0]["player"]
+
+    sel = snap.get("selected_player") or ""
+    if sel:
+        snap["draft_status"] = player_draft_status(session_state, sel)
+    try:
+        from draft_room_state import get_all_drafted_player_names
+
+        snap["canonical_drafted_players"] = get_all_drafted_player_names(session_state)[:48]
+    except Exception:
+        pass
+
+    session_state["_ami_valuation_snapshot"] = snap
+    cache_page_context(
+        session_state,
+        "Valuation",
+        {
+            "valuation_snapshot": snap,
+            "player": snap.get("selected_player"),
+            "ami_guidance": draft_ami_guidance("Valuation"),
+        },
+    )
 
 
 def _is_num(val: Any) -> bool:
@@ -903,6 +996,14 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                     ]
                 if snap.get("canonical_drafted_players"):
                     ctx["drafted_players"] = snap["canonical_drafted_players"][:24]
+                if snap.get("draft_queue"):
+                    ctx["draft_queue"] = snap["draft_queue"][:6]
+                if snap.get("watchlist_focus"):
+                    ctx["watchlist"] = snap["watchlist_focus"][:8]
+                if snap.get("tracked_players"):
+                    ctx["tracked_players"] = snap["tracked_players"][:12]
+                if snap.get("draft_room_board"):
+                    ctx["canonical_draft_board"] = snap["draft_room_board"][:12]
                 if snap.get("scoring_settings"):
                     ctx["scoring_settings"] = snap["scoring_settings"]
                 ctx["ami_guidance"] = draft_ami_guidance(p)
@@ -946,6 +1047,12 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
         for k, v in cached.items():
             if v is not None and v != "" and k not in ctx:
                 ctx[k] = v
+    try:
+        from baseball_ami_frame import attach_baseball_ami_frame
+
+        attach_baseball_ami_frame(ctx, p)
+    except ImportError:
+        pass
     return ctx
 
 

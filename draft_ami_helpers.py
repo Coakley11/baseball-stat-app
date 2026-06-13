@@ -179,7 +179,28 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
                 out["needed_positions"] = gaps[:8]
         except Exception:
             pass
+    merge_draft_workflow_into_snapshot(session, out)
     return out
+
+
+def merge_draft_workflow_into_snapshot(session: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Attach queue, watchlist, and tracked players to any draft AMI snapshot."""
+    try:
+        from draft_state import gather_draft_workflow
+
+        dw = gather_draft_workflow(session)
+        if dw.get("queue"):
+            snapshot["draft_queue"] = list(dw["queue"])[:12]
+        if dw.get("watchlist_focus"):
+            snapshot["watchlist_focus"] = list(dw["watchlist_focus"])[:20]
+        if dw.get("watchlist_favorites"):
+            snapshot["watchlist_favorites"] = list(dw["watchlist_favorites"])[:20]
+    except Exception:
+        pass
+    tracked = session.get("workflow_recently_viewed")
+    if isinstance(tracked, list) and tracked:
+        snapshot["tracked_players"] = [str(x).strip() for x in tracked[:20] if str(x).strip()]
+    return snapshot
 
 
 def draft_ami_guidance(page: str) -> str:
@@ -187,19 +208,38 @@ def draft_ami_guidance(page: str) -> str:
     p = str(page or "").strip()
     if p == "Fantasy Sleepers & Busts":
         return (
-            "Answer using sleeper_candidates, bust_risks, drafted_exclusions, roster_needs, "
-            "and canonical_draft_board in sleepers_snapshot. "
-            "Address: Should I take a sleeper here? Who are undervalued vs market? "
-            "Exclude already-drafted players when recommending."
+            "Use sleepers_snapshot only — not generic rankings. "
+            "Lead with direct sleeper/bust recommendation, roster fit, Fantasy Edge, drafted_exclusions. "
+            "Questions: Should I take this sleeper? Which fits my roster? Highest upside? Safest? "
+            "Structure: direct answer → why → scarcity → risk/upside → alternatives → what-if strategies."
         )
     if p == "Live Draft Room":
         return (
-            "Answer using live draft_snapshot: current round/pick, my_next_pick, on_clock_team, "
-            "user_roster, recommended_players, available_players, queue/watchlist, latest_picks. "
-            "Address: Who should I draft next? What does my roster need? Who are the best values left?"
+            "Use draft_snapshot from saved live draft + canonical board. "
+            "Reference current round, current pick, my_next_pick, on_clock_team, latest_picks, queue, watchlist. "
+            "Questions: On the clock — who to take? Reach or wait? Safest vs highest-upside pick? "
+            "Structure: direct answer → roster fit → scarcity → risk/upside → alternatives → what-if."
+        )
+    if p == "Draft Assistant Simulator":
+        return (
+            "Use draft_snapshot + draft_projection from the saved canonical draft board. "
+            "Reference drafted players, available pool, queue, watchlist, tracked players, needs, scarcity, recs. "
+            "Questions: Who next? Roster needs? Best values? Risk? Power/speed/pitching priority shifts? "
+            "Structure: direct answer → why → scarcity → risk/upside → alternatives → what-if."
+        )
+    if p == "Trend Value":
+        return (
+            "Use trend_summary, metrics, and draft_status for the focused player. "
+            "Tie slope/R²/delta to draft timing and valuation — not generic trend commentary. "
+            "Questions: Over/undervalued? Right time to draft? Risk profile?"
+        )
+    if p == "Valuation":
+        return (
+            "Use valuation_snapshot and draft_status. Compare Valuation Score, trend component, and market rank. "
+            "Questions: Over/undervalued? Right time to draft? Risk profile?"
         )
     return (
         "Answer using draft_snapshot and draft_projection: drafted players, canonical draft board, "
         "queue, top recommendations, roster/team needs, scarcity, and best available. "
-        "Address: Who should I draft next? What does my roster need? Who are the best values left?"
+        "Never give generic advice — use the structured context only."
     )

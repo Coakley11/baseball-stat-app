@@ -140,13 +140,22 @@ _PUBLIC_CONTEXT_KEYS = (
     "total_drift",
     "historical_comparison",
     "draft_snapshot",
+    "draft_projection",
     "roster",
-    "recommended_players",
-    "sleepers",
-    "scoring_settings",
-    "ami_guidance",
-    "projection",
+    "draft_queue",
     "watchlist",
+    "tracked_players",
+    "drafted_players",
+    "best_available",
+    "needed_positions",
+    "category_needs",
+    "sleeper_candidates",
+    "bust_risks",
+    "drafted_exclusions",
+    "valuation_snapshot",
+    "draft_status",
+    "ami_guidance",
+    "ami_quality_rule",
 )
 
 _CONTEXT_LABELS = {
@@ -201,6 +210,22 @@ _CONTEXT_LABELS = {
     "rebalance_recommendation": "Rebalance recommendation",
     "total_drift": "Total drift",
     "historical_comparison": "Historical comparison",
+    "draft_snapshot": "Draft snapshot",
+    "roster": "Roster",
+    "draft_queue": "Draft queue",
+    "watchlist": "Watchlist",
+    "tracked_players": "Tracked players",
+    "drafted_players": "Drafted players",
+    "best_available": "Best available",
+    "needed_positions": "Needed positions",
+    "category_needs": "Category needs",
+    "sleeper_candidates": "Sleeper candidates",
+    "bust_risks": "Bust risks",
+    "drafted_exclusions": "Drafted exclusions",
+    "valuation_snapshot": "Valuation snapshot",
+    "draft_status": "Draft status",
+    "ami_guidance": "AMI guidance",
+    "ami_quality_rule": "AMI quality rule",
 }
 
 
@@ -344,26 +369,16 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
     try:
         from suite_account import remember_saved_item
 
-        store_apps: list[str] = ["applied_intelligence"]
-        src_app = str(payload.get("source_app") or "").strip().lower()
-        if src_app and src_app not in store_apps:
-            store_apps.append(src_app)
-        for app_name in store_apps:
-            remember_saved_item(
-                app_name,
-                _CONTEXT_ITEM_TYPE,
-                qid,
-                title=str(payload.get("question") or "Applied Math question")[:200],
-                payload=blob,
-            )
+        remember_saved_item(
+            "applied_intelligence",
+            _CONTEXT_ITEM_TYPE,
+            qid,
+            title=str(payload.get("question") or "Applied Math question")[:200],
+            payload=blob,
+        )
         return
     except Exception as exc:
         log.warning("remember_saved_item failed for analytical context: %s", exc)
-
-
-def persist_question_context_blob(payload: dict[str, Any]) -> None:
-    """Public wrapper: persist question send snapshot (context + source_state) by question_id."""
-    _store_question_context_blob(payload)
 
 
 def load_analytical_question_context(question_id: str) -> dict[str, Any]:
@@ -377,26 +392,15 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     if not qid:
         return {}
     resume_key = f"ai:question:{qid}"
-    search_apps = ["applied_intelligence"]
     try:
         from suite_account import load_saved_items
 
-        for app_name in search_apps:
-            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
-            for row in rows:
-                if str(row.get("item_key") or "") == qid:
-                    payload = row.get("payload")
-                    if isinstance(payload, dict):
-                        return copy.deepcopy(payload)
-        for app_name in ("investment", "baseball", "nba", "music"):
-            if app_name in search_apps:
-                continue
-            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
-            for row in rows:
-                if str(row.get("item_key") or "") == qid:
-                    payload = row.get("payload")
-                    if isinstance(payload, dict):
-                        return copy.deepcopy(payload)
+        rows = load_saved_items(app="applied_intelligence", item_type=_CONTEXT_ITEM_TYPE, limit=50)
+        for row in rows:
+            if str(row.get("item_key") or "") == qid:
+                payload = row.get("payload")
+                if isinstance(payload, dict):
+                    return copy.deepcopy(payload)
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
     try:
@@ -446,39 +450,20 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     page = str(m.get("page") or _qp("suite_page") or "Solve a Problem").strip()
 
     ctx: dict[str, Any] = {}
-    source_state: dict[str, Any] = {}
-    hydrate_source = "none"
-
-    # Blob-first: full context by question_id before metrics/URL (avoids truncated deep links).
-    if qid:
-        blob_payload = load_analytical_question_payload(qid)
-        blob_ctx = blob_payload.get("context") if isinstance(blob_payload.get("context"), dict) else {}
-        if blob_ctx:
-            ctx = copy.deepcopy(blob_ctx)
-            hydrate_source = "question_id_blob"
-        blob_ss = blob_payload.get("source_state") if isinstance(blob_payload.get("source_state"), dict) else {}
-        if blob_ss:
-            source_state = copy.deepcopy(blob_ss)
-
-    metrics_ctx: dict[str, Any] = {}
     if isinstance(m.get("context"), dict):
-        metrics_ctx = copy.deepcopy(m["context"])
+        ctx = copy.deepcopy(m["context"])
     elif m.get("context_json"):
         try:
             parsed = json.loads(str(m["context_json"]))
             if isinstance(parsed, dict):
-                metrics_ctx = parsed
+                ctx = parsed
         except json.JSONDecodeError:
             pass
-    if metrics_ctx:
-        if not ctx:
-            ctx = metrics_ctx
-            hydrate_source = "metrics"
-        else:
-            for key, val in metrics_ctx.items():
-                if key not in ctx or not ctx.get(key):
-                    ctx[key] = val
-
+    if not ctx and qid:
+        ctx = load_analytical_question_context(qid)
+    source_state: dict[str, Any] = {}
+    if qid:
+        source_state = load_analytical_question_source_state(qid)
     if not ctx:
         raw_ctx = _qp("suite_ai_context")
         if raw_ctx:
@@ -486,7 +471,6 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
                 parsed = json.loads(raw_ctx)
                 if isinstance(parsed, dict):
                     ctx = parsed
-                    hydrate_source = "url_query"
             except json.JSONDecodeError:
                 pass
 
@@ -507,7 +491,6 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         ss["_suite_ai_context"] = json.dumps(ctx, ensure_ascii=False)
     if source_state:
         ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
-    ss["_suite_ai_hydrate_source"] = hydrate_source
 
 
 def _format_context_value(key: str, val: Any) -> str:
@@ -676,6 +659,17 @@ def _display_page_name(source_app: str, page: str) -> str:
 
 def _short_context_summary(ctx: dict[str, Any]) -> str:
     workflow = str(ctx.get("workflow") or "").strip()
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    if snap:
+        parts = ["Fantasy draft"]
+        if snap.get("draft_round") and snap.get("current_pick"):
+            parts.append(f"R{snap['draft_round']} pick {snap['current_pick']}")
+        recs = snap.get("recommended_players") or []
+        if isinstance(recs, list) and recs:
+            names = [str(r.get("player") or r) for r in recs[:3] if r]
+            if names:
+                parts.append(f"top: {', '.join(names)}")
+        return " · ".join(parts)
     if workflow:
         players = ctx.get("players")
         if isinstance(players, list) and players:
@@ -769,13 +763,7 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
     _upsert_applied_intelligence_resume(payload, action_url=action_url)
-    ss = payload.get("source_state")
-    refresh_blob = not duplicate or (
-        str(payload.get("source_app") or "").strip().lower() == "investment"
-        and isinstance(ss, dict)
-        and bool(ss.get("entity_params"))
-    )
-    if refresh_blob:
+    if not duplicate:
         _store_question_context_blob(payload)
     if session_state is not None:
         session_state["_ami_last_send"] = {
@@ -1012,13 +1000,28 @@ def build_context_from_session(
             if fmt:
                 ctx["league_format"] = fmt
                 ctx["draft_format"] = fmt
-            room = session_state.get("draft_room_state") or {}
+            room = session_state.get("live_draft_room") or session_state.get("draft_room_state") or {}
             if isinstance(room, dict):
                 idx = int(room.get("current_pick_index") or 0)
-                num_teams = int(room.get("num_teams") or session_state.get("draft_num_teams") or 12)
+                cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+                num_teams = int(
+                    cfg.get("num_teams")
+                    or room.get("num_teams")
+                    or session_state.get("draft_num_teams")
+                    or session_state.get("room_team_count")
+                    or 12
+                )
                 if idx >= 0 and num_teams > 0:
                     ctx["current_pick"] = idx + 1
                     ctx["draft_round"] = (idx // num_teams) + 1
+                your_team = str(cfg.get("your_team") or session_state.get("room_your_team") or "").strip()
+                if your_team and isinstance(room.get("rosters"), dict):
+                    roster = room["rosters"].get(your_team) or []
+                    ctx["roster"] = [
+                        str(p.get("fullName") or p.get("Player") or p)
+                        for p in roster[:12]
+                        if isinstance(p, dict)
+                    ]
             dq = session_state.get("draft_queue") or []
             if isinstance(dq, list) and dq:
                 ctx["player"] = _player_name(dq[0])
