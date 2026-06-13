@@ -103,6 +103,7 @@ def prepare_board_editor_for_render(session: dict[str, Any], canonical_table: An
     sync_editor_seed(session, canonical_table)
     seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
     initial = seed.copy() if is_runtime_table(seed) else canonical_table.copy()
+    session["_draft_room_editor_column_order"] = _column_names_list(initial)
     return initial, editor_widget_key(session)
 
 
@@ -199,6 +200,12 @@ def table_pick_count(table: Any, *, player_col: str | None = None) -> int:
     return 0
 
 
+def _table_head_preview(table: Any, *, limit: int = 5) -> list[dict[str, Any]]:
+    if not is_runtime_table(table) or table.empty:
+        return []
+    return _json_safe(table.head(limit).to_dict(orient="records"))  # type: ignore[return-value]
+
+
 def _table_filled_rows_preview(table: Any, *, limit: int = 5) -> list[dict[str, Any]]:
     if not is_runtime_table(table) or table.empty:
         return []
@@ -230,6 +237,82 @@ def _source_pick_count(label: str, value: Any) -> dict[str, Any]:
     return {"source": label, "type": type(value).__name__, "pick_count": 0}
 
 
+_COLUMN_LABEL_ALIASES: dict[str, str] = {
+    "player": "Player",
+    "team": "Team",
+    "round": "Round",
+    "pick": "Pick",
+}
+
+
+def _column_names_list(table: Any) -> list[str]:
+    if not is_runtime_table(table):
+        return []
+    return [str(c) for c in table.columns]
+
+
+def _resolve_edit_column_key(col_key: Any, columns: list[str]) -> str | None:
+    """
+    Map data_editor edited_rows column identifiers to dataframe column names.
+    Streamlit may send column names, numeric positions (int or digit str), or labels.
+    """
+    if not columns:
+        return None
+    if col_key is None:
+        return None
+    if isinstance(col_key, str) and col_key.startswith("_"):
+        return None
+
+    if isinstance(col_key, int) and not isinstance(col_key, bool):
+        if 0 <= col_key < len(columns):
+            return columns[col_key]
+        return None
+
+    col_s = str(col_key).strip()
+    if not col_s:
+        return None
+    if col_s in columns:
+        return col_s
+    if col_s.isdigit():
+        idx = int(col_s)
+        if 0 <= idx < len(columns):
+            return columns[idx]
+    lower = col_s.lower()
+    for name in columns:
+        if name.lower() == lower:
+            return name
+    alias = _COLUMN_LABEL_ALIASES.get(lower)
+    if alias and alias in columns:
+        return alias
+    for name in columns:
+        nl = name.lower()
+        if lower in nl or nl in lower:
+            return name
+    return None
+
+
+def _apply_cell_change(out: pd.DataFrame, row_idx: int, col_key: Any, val: Any) -> pd.DataFrame:
+    columns = _column_names_list(out)
+    col_name = _resolve_edit_column_key(col_key, columns)
+    if not col_name:
+        return out
+    if col_name not in out.columns:
+        out[col_name] = None
+    out.at[row_idx, col_name] = val
+    return out
+
+
+def _normalize_row_change_dict(changes: Any, columns: list[str]) -> dict[str, Any]:
+    if not isinstance(changes, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for col_key, val in changes.items():
+        col_name = _resolve_edit_column_key(col_key, columns)
+        if col_name:
+            normalized[col_name] = val
+    return normalized
+
+
 def _coerce_data_editor_widget_state(raw: Any) -> dict[str, Any] | None:
     """Streamlit keyed data_editor stores {edited_rows, added_rows, deleted_rows}."""
     if not isinstance(raw, dict):
@@ -247,12 +330,20 @@ def _base_board_for_reconstruction(session: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _seed_base_source_key(session: dict[str, Any]) -> str:
+    for key in (DRAFT_ROOM_EDITOR_SEED_KEY, DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_EDITOR_CACHE_KEY):
+        if is_runtime_table(session.get(key)):
+            return key
+    return "missing"
+
+
 def reconstruct_board_from_widget_state(widget_state: dict[str, Any], base: Any) -> pd.DataFrame:
     """Apply data_editor delta dict onto seed/base dataframe."""
     out = base.copy() if is_runtime_table(base) else pd.DataFrame()
-    if out.empty and not widget_state:
-        return out
+    if not widget_state:
+        return normalize_board_table(out) if is_runtime_table(out) else out
 
+    columns = _column_names_list(out)
     edited_rows = widget_state.get("edited_rows") or {}
     if isinstance(edited_rows, dict):
         for idx_raw, changes in edited_rows.items():
@@ -264,11 +355,10 @@ def reconstruct_board_from_widget_state(widget_state: dict[str, Any], base: Any)
                 continue
             while len(out) <= idx:
                 out = pd.concat([out, pd.DataFrame([{}])], ignore_index=True)
-            for col, val in changes.items():
-                col_s = str(col)
-                if col_s not in out.columns:
-                    out[col_s] = None
-                out.at[idx, col_s] = val
+                columns = _column_names_list(out)
+            normalized_changes = _normalize_row_change_dict(changes, columns)
+            for col_name, val in normalized_changes.items():
+                out = _apply_cell_change(out, idx, col_name, val)
 
     deleted_rows = widget_state.get("deleted_rows") or []
     if isinstance(deleted_rows, list) and deleted_rows:
@@ -278,7 +368,14 @@ def reconstruct_board_from_widget_state(widget_state: dict[str, Any], base: Any)
 
     added_rows = widget_state.get("added_rows") or []
     if isinstance(added_rows, list) and added_rows:
-        new_rows = [row for row in added_rows if isinstance(row, dict)]
+        columns = _column_names_list(out)
+        new_rows: list[dict[str, Any]] = []
+        for row in added_rows:
+            if not isinstance(row, dict):
+                continue
+            normalized = _normalize_row_change_dict(row, columns)
+            if normalized:
+                new_rows.append(normalized)
         if new_rows:
             out = pd.concat([out, pd.DataFrame(new_rows)], ignore_index=True)
 
@@ -304,12 +401,18 @@ def inspect_widget_state_debug(st: Any, session: dict[str, Any], widget_key: str
     """Raw widget-state probe for Board tab debugging."""
     read_key, raw = find_widget_state_in_session(st, widget_key)
     rendered_key = session.get("_draft_room_last_widget_key") or widget_key
+    base = _base_board_for_reconstruction(session)
     info: dict[str, Any] = {
         "actual_widget_key_rendered": rendered_key,
         "actual_widget_key_read": read_key,
         "widget_key_in_session": read_key in getattr(st, "session_state", {}),
         "widget_state_type": type(raw).__name__ if raw is not None else "missing",
         "widget_state_repr_first_1000_chars": repr(raw)[:1000] if raw is not None else "",
+        "seed_base_source_key": _seed_base_source_key(session),
+        "seed_base_columns": _column_names_list(base),
+        "seed_base_row_count": len(base) if is_runtime_table(base) else 0,
+        "seed_base_non_empty_by_column": column_non_empty_counts(base),
+        "editor_column_order": session.get("_draft_room_editor_column_order"),
     }
     if isinstance(raw, dict):
         info["widget_state_keys"] = sorted(str(k) for k in raw.keys())
@@ -318,6 +421,10 @@ def inspect_widget_state_debug(st: Any, session: dict[str, Any], widget_key: str
         info["widget_state_deleted_rows"] = raw.get("deleted_rows")
         edited = raw.get("edited_rows")
         info["widget_state_edited_row_count"] = len(edited) if isinstance(edited, dict) else 0
+        if isinstance(edited, dict) and edited:
+            first_row = next(iter(edited.values()), {})
+            if isinstance(first_row, dict):
+                info["widget_state_edited_column_keys_sample"] = [str(k) for k in first_row.keys()]
     if is_runtime_table(raw):
         info["widget_state_columns"] = [str(c) for c in raw.columns]
         info["widget_state_row_count"] = len(raw)
@@ -325,10 +432,12 @@ def inspect_widget_state_debug(st: Any, session: dict[str, Any], widget_key: str
         info["widget_state_row_count"] = len(raw)
     widget_dict = _coerce_data_editor_widget_state(raw)
     if widget_dict is not None:
-        base = _base_board_for_reconstruction(session)
         reconstructed = reconstruct_board_from_widget_state(widget_dict, base)
         info["widget_reconstructed_pick_count"] = table_pick_count(reconstructed)
-        info["widget_reconstructed_columns"] = [str(c) for c in reconstructed.columns] if is_runtime_table(reconstructed) else []
+        info["widget_reconstructed_columns"] = _column_names_list(reconstructed)
+        info["widget_reconstructed_non_empty_by_column"] = column_non_empty_counts(reconstructed)
+        info["widget_reconstructed_first_5_rows"] = _table_head_preview(reconstructed, limit=5)
+        info["widget_reconstructed_player_column"] = detect_player_column(reconstructed)
     session["_draft_room_widget_state_debug"] = info
     return info
 
@@ -345,14 +454,23 @@ def render_raw_widget_state_debug(st: Any, widget_key: str) -> None:
             "widget_state_type",
             "widget_state_repr_first_1000_chars",
             "widget_state_keys",
+            "widget_state_edited_column_keys_sample",
             "widget_state_columns",
             "widget_state_row_count",
             "widget_state_edited_row_count",
             "widget_state_edited_rows",
             "widget_state_added_rows",
             "widget_state_deleted_rows",
+            "seed_base_source_key",
+            "seed_base_columns",
+            "seed_base_row_count",
+            "seed_base_non_empty_by_column",
+            "editor_column_order",
             "widget_reconstructed_pick_count",
             "widget_reconstructed_columns",
+            "widget_reconstructed_player_column",
+            "widget_reconstructed_non_empty_by_column",
+            "widget_reconstructed_first_5_rows",
         ):
             if key in info and info[key] is not None and info[key] != "":
                 st.text(f"{key}: {info[key]}")

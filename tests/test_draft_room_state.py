@@ -210,6 +210,22 @@ class TestDraftRoomPersistence(unittest.TestCase):
         reconstructed = reconstruct_board_from_widget_state(widget_state, base)
         self.assertEqual(table_pick_count(reconstructed), 3)
 
+    def test_reconstruct_board_from_numeric_column_indexes(self) -> None:
+        base = _sample_table(picks=0)
+        player_col_idx = list(base.columns).index("Player")
+        widget_state = {
+            "edited_rows": {
+                0: {player_col_idx: "Aaron Judge"},
+                1: {str(player_col_idx): "Juan Soto"},
+                2: {"3": "Corbin Carroll"},
+            },
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        reconstructed = reconstruct_board_from_widget_state(widget_state, base)
+        self.assertEqual(table_pick_count(reconstructed), 3)
+        self.assertEqual(reconstructed.at[0, "Player"], "Aaron Judge")
+
     def test_resolve_active_board_reconstructs_widget_dict(self) -> None:
         st = MagicMock()
         widget_key = "draft_room_board_editor_1"
