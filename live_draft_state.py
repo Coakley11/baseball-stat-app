@@ -293,6 +293,100 @@ def restore_live_draft_page_filters(session: dict[str, Any], store: dict[str, An
     return True
 
 
+def sync_live_draft_session_before_save(session: dict[str, Any]) -> None:
+    """Ensure canonical live_draft_state matches runtime room before any persistence."""
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if is_runtime_room(room) and isinstance(room, dict) and room.get("draft_room_id"):
+        write_canonical_live_draft_state(
+            session,
+            room,
+            reason="pre_save_sync",
+            local_edit=is_live_draft_locally_dirty(session),
+        )
+    elif is_persisted_room_blob(room) and isinstance(room, dict) and room.get("draft_room_id"):
+        restored = room_from_persist_dict(room)
+        if restored:
+            write_canonical_live_draft_state(session, restored, reason="pre_save_sync", local_edit=False)
+
+
+def enrich_save_payload_with_live_draft(
+    session: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Inject JSON-safe live_draft_state into the workspace blob when session has a draft."""
+    diag: dict[str, Any] = {
+        "injected_from_session": False,
+        "cloud_payload_has_live_draft_state": False,
+        "cloud_payload_pick_count": 0,
+        "cloud_payload_pool_count": 0,
+    }
+    sync_live_draft_session_before_save(session)
+    blob = canonical_live_draft(session)
+    if not blob or not blob.get("draft_room_id"):
+        existing = _live_draft_from_blob(state)
+        if existing and existing.get("draft_room_id"):
+            blob = existing
+        else:
+            return state, diag
+
+    if is_persisted_room_blob(blob):
+        safe_blob = copy.deepcopy(blob)
+    elif is_runtime_room(blob):
+        safe_blob = room_to_persist_dict(blob)
+    else:
+        safe_blob = copy.deepcopy(blob)
+
+    had_payload = bool(_live_draft_from_blob(state))
+    out = copy.deepcopy(state)
+    out[LIVE_DRAFT_STATE_KEY] = copy.deepcopy(safe_blob)
+    out[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(safe_blob)
+    pf = out.setdefault("page_filter_state", {})
+    if not isinstance(pf, dict):
+        pf = {}
+        out["page_filter_state"] = pf
+    block = pf.setdefault(LIVE_DRAFT_PAGE_BLOCK, {})
+    if isinstance(block, dict):
+        block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(safe_blob)
+        for key in LIVE_DRAFT_SETTINGS_KEYS:
+            if key in session:
+                block[key] = session[key]
+
+    board = safe_blob.get("draft_board") or []
+    diag["injected_from_session"] = not had_payload
+    diag["cloud_payload_has_live_draft_state"] = True
+    diag["cloud_payload_pick_count"] = len(board) if isinstance(board, list) else 0
+    diag["cloud_payload_pool_count"] = len(safe_blob.get("pool_records") or [])
+    return out, diag
+
+
+def live_draft_payload_diagnostics(state: dict[str, Any]) -> dict[str, Any]:
+    blob = _live_draft_from_blob(state)
+    board = (blob.get("draft_board") or []) if isinstance(blob, dict) else []
+    return {
+        "cloud_payload_has_live_draft_state": bool(isinstance(blob, dict) and blob.get("draft_room_id")),
+        "cloud_payload_pick_count": len(board) if isinstance(board, list) else 0,
+        "cloud_payload_pool_count": len(blob.get("pool_records") or []) if isinstance(blob, dict) else 0,
+    }
+
+
+def record_live_draft_cloud_save_diagnostics(
+    session: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    enrich_diag: dict[str, Any] | None = None,
+    cloud_existing_before: bool = False,
+    preserved_on_page_change: bool = False,
+) -> None:
+    payload_diag = live_draft_payload_diagnostics(payload)
+    session["cloud_existing_has_live_draft_state_before_save"] = cloud_existing_before
+    session["cloud_live_draft_preserved_on_page_change"] = preserved_on_page_change
+    session["cloud_payload_has_live_draft_state"] = payload_diag["cloud_payload_has_live_draft_state"]
+    session["cloud_payload_pick_count"] = payload_diag["cloud_payload_pick_count"]
+    session["cloud_payload_pool_count"] = payload_diag["cloud_payload_pool_count"]
+    if enrich_diag:
+        session["live_draft_injected_from_session"] = enrich_diag.get("injected_from_session")
+
+
 def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
     """Ensure full_session blob is JSON-serializable (pool as records, not DataFrame)."""
     out = copy.deepcopy(state)
@@ -355,20 +449,29 @@ def commit_live_draft_room(st: Any, session: dict[str, Any], room: dict[str, Any
         trace["saved"] = bool(force_save_baseball_state(st, reason=save_reason))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
+        trace["cloud_payload_has_live_draft_state"] = bool(session.get("cloud_payload_has_live_draft_state"))
+        trace["cloud_payload_pick_count"] = session.get("cloud_payload_pick_count")
+        trace["cloud_payload_pool_count"] = session.get("cloud_payload_pool_count")
         if session.get("_suite_persist_last_cloud_error"):
             trace["error"] = str(session.get("_suite_persist_last_cloud_error"))
         elif session.get("_suite_autosave_last_error"):
             trace["error"] = str(session.get("_suite_autosave_last_error"))
         elif session.get("_suite_autosave_cloud_blocked_reason"):
             trace["error"] = f"cloud_blocked:{session.get('_suite_autosave_cloud_blocked_reason')}"
-        if trace["saved"]:
+        elif trace["cloud"] and not trace["cloud_payload_has_live_draft_state"]:
+            trace["error"] = "cloud_saved_without_live_draft_state"
+        if trace["saved"] and trace["cloud"] and trace["cloud_payload_has_live_draft_state"]:
             clear_live_draft_local_edit(session)
+        elif trace["saved"] and not trace["cloud"]:
+            trace["error"] = trace.get("error") or "cloud_write_failed"
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
     trace.update(
         {
             "last_live_draft_save_reason": save_reason,
-            "last_live_draft_save_success": bool(trace["saved"]),
+            "last_live_draft_save_success": bool(
+                trace["saved"] and trace["cloud"] and trace.get("cloud_payload_has_live_draft_state")
+            ),
             "last_live_draft_save_error": trace.get("error") or "",
             "saved_live_draft_state_present": bool(blob.get("draft_room_id")),
             "saved_pick_count": len(board) if isinstance(board, list) else 0,
@@ -436,6 +539,11 @@ def render_live_draft_save_diagnostics(st: Any) -> None:
         for key, val in restore.items():
             st.text(f"{key}: {val}")
         st.text(f"cloud_autosave_blocked: {ss.get('_suite_autosave_cloud_blocked_reason')}")
+        st.text(f"cloud_existing_has_live_draft_state_before_save: {ss.get('cloud_existing_has_live_draft_state_before_save')}")
+        st.text(f"cloud_live_draft_preserved_on_page_change: {ss.get('cloud_live_draft_preserved_on_page_change')}")
+        st.text(f"cloud_payload_has_live_draft_state: {ss.get('cloud_payload_has_live_draft_state')}")
+        st.text(f"cloud_payload_pick_count: {ss.get('cloud_payload_pick_count')}")
+        st.text(f"cloud_payload_pool_count: {ss.get('cloud_payload_pool_count')}")
         st.text(f"persist_restore_applied: {ss.get('_suite_persist_restore_applied')}")
         st.text(f"persist_restore_source: {ss.get('_suite_persist_last_restore_source')}")
         ok, err = verify_json_serializable(

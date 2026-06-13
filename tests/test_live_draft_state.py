@@ -175,15 +175,56 @@ class TestLiveDraftRecommendationsAfterRestore(unittest.TestCase):
 class TestLiveDraftCommit(unittest.TestCase):
     def test_commit_force_save_marks_trace(self) -> None:
         st = MagicMock()
-        session: dict = {"page_filter_state": {}}
+        session: dict = {
+            "page_filter_state": {},
+            "cloud_payload_has_live_draft_state": True,
+            "_suite_persist_last_save_cloud": True,
+            "_suite_persist_last_save_disk": True,
+        }
         st.session_state = session
-        with patch("baseball_persistent_state.force_save_baseball_state", return_value=True) as mock_save:
+
+        def _fake_save(st_obj, *, reason: str = "") -> bool:
+            session["_suite_persist_last_save_cloud"] = True
+            session["cloud_payload_has_live_draft_state"] = True
+            session["cloud_payload_pick_count"] = 2
+            session["cloud_payload_pool_count"] = 3
+            return True
+
+        with patch("baseball_persistent_state.force_save_baseball_state", side_effect=_fake_save) as mock_save:
             trace = commit_live_draft_room(st, session, _sample_room(), reason="manual_pick")
         mock_save.assert_called_once_with(st, reason="live_draft_pick")
         self.assertTrue(trace["saved"])
         self.assertTrue(trace["last_live_draft_save_success"])
         self.assertTrue(trace["saved_live_draft_state_present"])
         self.assertEqual(trace["saved_pick_count"], 2)
+
+
+class TestLiveDraftSavePayloadInjection(unittest.TestCase):
+    def test_build_state_includes_live_draft_on_other_active_page(self) -> None:
+        st = MagicMock()
+        room = _sample_room()
+        st.session_state = {
+            "active_page": "Draft Room Simulator",
+            "page_filter_state": {},
+            LIVE_DRAFT_ROOM_KEY: room,
+            "room_your_team": "Team A",
+        }
+        blob = build_baseball_disk_state(st)
+        self.assertIn(LIVE_DRAFT_STATE_KEY, blob)
+        self.assertTrue(blob[LIVE_DRAFT_STATE_KEY].get("draft_room_id"))
+        self.assertEqual(len(blob[LIVE_DRAFT_STATE_KEY].get("draft_board") or []), 2)
+        pf = blob.get("page_filter_state") or {}
+        self.assertIn("Live Draft Room", pf)
+
+    def test_enrich_injects_from_session_when_state_missing(self) -> None:
+        from live_draft_state import enrich_save_payload_with_live_draft
+
+        session = {LIVE_DRAFT_ROOM_KEY: _sample_room(), "page_filter_state": {}}
+        write_canonical_live_draft_state(session, _sample_room(), reason="test", local_edit=False)
+        out, diag = enrich_save_payload_with_live_draft(session, {"active_page": "Draft Room Simulator"})
+        self.assertTrue(diag["cloud_payload_has_live_draft_state"])
+        self.assertEqual(diag["cloud_payload_pick_count"], 2)
+        self.assertGreater(diag["cloud_payload_pool_count"], 0)
 
 
 class TestLiveDraftCloudSave(unittest.TestCase):

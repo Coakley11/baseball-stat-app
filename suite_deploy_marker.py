@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-11-live-draft-cloud-restore-v1"
-GIT_COMMIT_SHORT = "62d1cce"
+SUITE_BUILD_LABEL = "2026-06-11-live-draft-payload-inject-v2"
+GIT_COMMIT_SHORT = "pending"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 
-# Commits that must be present for live draft cloud persistence + restore.
-DEPLOY_COMMITS_INCLUDED = ("7feb3de", "62d1cce")
+DEPLOY_COMMITS_INCLUDED = ("7feb3de", "62d1cce", "pending")

@@ -273,6 +273,12 @@ def _build_workspace_envelope(st: Any, state: dict[str, Any], *, save_reason: st
 
 def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     ss = st.session_state
+    try:
+        from live_draft_state import sync_live_draft_session_before_save
+
+        sync_live_draft_session_before_save(ss)
+    except ImportError:
+        pass
     active = ss.get("active_page")
     if active:
         try:
@@ -303,8 +309,9 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     save_reason = str(ss.pop("_suite_pending_save_reason", None) or "autosave")
     state["baseball_workspace_state"] = _build_workspace_envelope(st, state, save_reason=save_reason)
     try:
-        from live_draft_state import sanitize_state_dict_for_json
+        from live_draft_state import enrich_save_payload_with_live_draft, sanitize_state_dict_for_json
 
+        state, _ = enrich_save_payload_with_live_draft(ss, state)
         state = sanitize_state_dict_for_json(state)
     except ImportError:
         pass
@@ -894,6 +901,15 @@ def render_cross_device_sync_debug(st: Any) -> None:
         live_draft_rows["saved_pick_count"] = ss.get("saved_pick_count")
         live_draft_rows["saved_current_pick_index"] = ss.get("saved_current_pick_index")
         live_draft_rows["saved_pool_count"] = ss.get("saved_pool_count")
+        live_draft_rows["cloud_payload_has_live_draft_state"] = ss.get("cloud_payload_has_live_draft_state")
+        live_draft_rows["cloud_payload_pick_count"] = ss.get("cloud_payload_pick_count")
+        live_draft_rows["cloud_payload_pool_count"] = ss.get("cloud_payload_pool_count")
+        live_draft_rows["cloud_existing_has_live_draft_state_before_save"] = ss.get(
+            "cloud_existing_has_live_draft_state_before_save"
+        )
+        live_draft_rows["cloud_live_draft_preserved_on_page_change"] = ss.get(
+            "cloud_live_draft_preserved_on_page_change"
+        )
         cloud_ld = live_draft_envelope_summary(cloud_state)
         if cloud_ld:
             live_draft_rows["cloud_live_draft"] = cloud_ld

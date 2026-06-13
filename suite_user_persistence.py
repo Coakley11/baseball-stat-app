@@ -1415,10 +1415,47 @@ def force_autosave(
 
         if reason:
             st.session_state["_suite_pending_save_reason"] = reason
+        cloud_state_before, _ = load_cloud_full_session(app_id)
+        cloud_existing_before = False
+        if app_id == "baseball":
+            try:
+                from live_draft_state import _live_draft_from_blob
+
+                cloud_existing_before = bool(_live_draft_from_blob(cloud_state_before or {}))
+            except ImportError:
+                pass
         state = build_state(st)
+        preserved_on_page_change = False
         if app_id == "baseball":
             state = _merge_cloud_live_draft_before_save(st, app_id, state)
-        if reason == "page_change":
+            if reason == "page_change":
+                ld_before = None
+                try:
+                    from live_draft_state import _live_draft_from_blob
+
+                    ld_before = _live_draft_from_blob(state)
+                except ImportError:
+                    pass
+                state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
+                try:
+                    from live_draft_state import _live_draft_from_blob
+
+                    ld_after = _live_draft_from_blob(state)
+                    preserved_on_page_change = bool(not ld_before and ld_after)
+                except ImportError:
+                    pass
+            try:
+                from live_draft_state import record_live_draft_cloud_save_diagnostics
+
+                record_live_draft_cloud_save_diagnostics(
+                    st.session_state,
+                    payload=state,
+                    cloud_existing_before=cloud_existing_before,
+                    preserved_on_page_change=preserved_on_page_change,
+                )
+            except ImportError:
+                pass
+        if reason == "page_change" and app_id != "baseball":
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
@@ -1492,6 +1529,17 @@ def autosave_if_changed(
         state = build_state(st)
         if app_id == "baseball":
             state = _merge_cloud_live_draft_before_save(st, app_id, state)
+            try:
+                from live_draft_state import record_live_draft_cloud_save_diagnostics
+
+                record_live_draft_cloud_save_diagnostics(
+                    st.session_state,
+                    payload=state,
+                    cloud_existing_before=False,
+                    preserved_on_page_change=False,
+                )
+            except ImportError:
+                pass
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         key = f"_suite_autosave_fp::{app_id}"
