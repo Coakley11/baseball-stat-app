@@ -6,7 +6,7 @@ from __future__ import annotations
 
 
 
-SUITE_BUILD_LABEL = "2026-06-13-baseball-ami-analyst-frame-v17"
+SUITE_BUILD_LABEL = "2026-06-13-ami-acceptance-harness-v18"
 
 GIT_COMMIT_SHORT = "3989247"
 

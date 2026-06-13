@@ -567,7 +567,8 @@ def cache_draft_assistant_ami_context(
     best_rows = compact_recommendation_rows(best_available_df, limit=6)
     if best_rows:
         draft_proj["best_available"] = best_rows
-    avail_rows = compact_recommendation_rows(available_df or best_available_df, limit=12)
+    avail_src = available_df if available_df is not None else best_available_df
+    avail_rows = compact_recommendation_rows(avail_src, limit=12)
     if avail_rows:
         draft_proj["available_players"] = avail_rows
 
@@ -884,6 +885,24 @@ def cache_valuation_ami_context(
     )
 
 
+def _attach_canonical_draft_fields(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+    """Promote canonical draft board + drafted list for any page that needs draft awareness."""
+    try:
+        from draft_room_state import get_all_drafted_player_names, get_canonical_draft_board
+    except ImportError:
+        return
+    if not ctx.get("canonical_drafted_players") and not ctx.get("drafted_players"):
+        names = get_all_drafted_player_names(session_state)[:48]
+        if names:
+            ctx["canonical_drafted_players"] = names
+            ctx["drafted_players"] = names[:24]
+    if not ctx.get("canonical_draft_board"):
+        board = get_canonical_draft_board(session_state)
+        if board is not None and hasattr(board, "head"):
+            filled = board[board["Player"].astype(str).str.strip().ne("")] if "Player" in board.columns else board
+            ctx["canonical_draft_board"] = filled.head(24).to_dict(orient="records")
+
+
 def _is_num(val: Any) -> bool:
     try:
         float(val)
@@ -950,7 +969,48 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
         ami = session_state.get("_ami_trend_summary")
         if isinstance(ami, dict) and ami:
             ctx["trend_summary"] = ami
+            if ami.get("draft_status"):
+                ctx["draft_status"] = ami["draft_status"]
+        try:
+            from baseball_ami_frame import player_draft_status
+            from draft_ami_helpers import draft_ami_guidance
+
+            pl_name = ctx.get("player") or _player_name(pl or ami.get("player") if isinstance(ami, dict) else "")
+            if pl_name and not ctx.get("draft_status"):
+                ctx["draft_status"] = player_draft_status(session_state, pl_name)
+            _attach_canonical_draft_fields(ctx, session_state)
+            ctx["ami_guidance"] = draft_ami_guidance("Trend Value")
+        except ImportError:
+            pass
         ctx["chart_snapshot"] = build_source_state(p, session_state).get("chart_params", {}).get("chart_snapshot")
+
+    elif p == "Valuation":
+        sel = session_state.get("valuation_selected_player")
+        snap = session_state.get("_ami_valuation_snapshot")
+        if not isinstance(snap, dict):
+            snap = {}
+        if sel:
+            ctx["player"] = _player_name(sel)
+        if snap:
+            ctx["valuation_snapshot"] = snap
+            if snap.get("selected_player"):
+                ctx["player"] = _player_name(snap["selected_player"])
+            if snap.get("top_valuation_players"):
+                ctx["players"] = [
+                    r.get("player") for r in snap["top_valuation_players"][:6] if isinstance(r, dict)
+                ]
+            if snap.get("draft_status"):
+                ctx["draft_status"] = snap["draft_status"]
+        try:
+            from baseball_ami_frame import player_draft_status
+            from draft_ami_helpers import draft_ami_guidance
+
+            if ctx.get("player") and not ctx.get("draft_status"):
+                ctx["draft_status"] = player_draft_status(session_state, ctx["player"])
+            _attach_canonical_draft_fields(ctx, session_state)
+            ctx["ami_guidance"] = draft_ami_guidance("Valuation")
+        except ImportError:
+            pass
 
     elif "draft" in low:
         dq = session_state.get("draft_queue") or []
@@ -1012,6 +1072,14 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
         proj = session_state.get("_ami_draft_projection")
         if isinstance(proj, dict):
             ctx["draft_projection"] = proj
+            if proj.get("position_scarcity") is not None and "position_scarcity" not in ctx:
+                ctx["position_scarcity"] = proj["position_scarcity"]
+            if proj.get("available_players") and not ctx.get("available_players"):
+                ctx["available_players"] = proj["available_players"]
+        try:
+            _attach_canonical_draft_fields(ctx, session_state)
+        except Exception:
+            pass
 
     elif p == "Fantasy Sleepers & Busts":
         try:
