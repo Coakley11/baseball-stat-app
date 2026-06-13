@@ -10456,32 +10456,49 @@ def get_draft_room_team_options():
 
 def add_player_to_next_draft_room_pick(player_name, team_name=None):
     """Add player to next open pick on the canonical board (team optional)."""
-    from draft_room_state import add_player_to_next_open_pick
+    from draft_room_state import add_player_to_next_open_pick, persist_draft_board_to_storage
 
     result = add_player_to_next_open_pick(st.session_state, player_name)
     if result.get("ok"):
         _auto_remove_drafted_from_queue()
         try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            force_save_baseball_state(st, reason="draft_pick")
+            persist_draft_board_to_storage(
+                st,
+                st.session_state,
+                st.session_state.get("draft_room_table"),
+                reason="simulator_add_player",
+            )
         except Exception:
-            pass
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_pick")
+            except Exception:
+                pass
     return str(result.get("message") or result.get("error") or "Could not add player.")
 
 
 def draft_top_queue_player():
     """Draft #1 queue player onto the canonical board."""
     from draft_state import draft_top_queue_player as _draft_top
+    from draft_room_state import persist_draft_board_to_storage
 
     result = _draft_top(st.session_state)
     if result.get("ok"):
         try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            force_save_baseball_state(st, reason="draft_queue_pick")
+            persist_draft_board_to_storage(
+                st,
+                st.session_state,
+                st.session_state.get("draft_room_table"),
+                reason="draft_queue_pick",
+            )
         except Exception:
-            pass
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_queue_pick")
+            except Exception:
+                pass
         return str(result.get("message") or "Drafted from queue.")
     return str(result.get("message") or result.get("error") or "Could not draft from queue.")
 
@@ -10489,15 +10506,24 @@ def draft_top_queue_player():
 def draft_queue_player_at_index(idx: int):
     """Draft a specific queue player onto the canonical board."""
     from draft_state import draft_queue_player_at_index as _draft_at
+    from draft_room_state import persist_draft_board_to_storage
 
     result = _draft_at(st.session_state, idx)
     if result.get("ok"):
         try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            force_save_baseball_state(st, reason="draft_queue_pick")
+            persist_draft_board_to_storage(
+                st,
+                st.session_state,
+                st.session_state.get("draft_room_table"),
+                reason="draft_queue_pick",
+            )
         except Exception:
-            pass
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_queue_pick")
+            except Exception:
+                pass
         return str(result.get("message") or "Drafted from queue.")
     return str(result.get("message") or result.get("error") or "Could not draft from queue.")
 
@@ -10818,93 +10844,84 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
         live_draft_active = False
 
     st.sidebar.divider()
-    st.sidebar.markdown("### Watchlist & Draft Queue")
+    st.sidebar.markdown("### Draft from lists")
     st.sidebar.caption(
-        "Quick reference that persists while you switch pages. "
-        "Use **Draft** to add a player to the next open pick on the canonical board."
+        "Scroll the sidebar — these buttons draft to the **next open pick** on the canonical board "
+        "(visible on every page)."
     )
 
-    with st.sidebar.expander("Draft queue", expanded=bool(dq) or live_draft_active):
-        if not dq:
-            st.caption("Empty — add players with **Queue player** in Player Actions.")
-        else:
-            top_name = str(dq[0]).strip()
-            top_label = top_name[:36] + ("…" if len(top_name) > 36 else "")
-            if st.sidebar.button(
-                f"Draft top: {top_label}",
-                key="sidebar_draft_top_queue_player",
-                use_container_width=True,
-                type="primary",
-            ):
-                st.session_state["workflow_sidebar_flash"] = draft_top_queue_player()
+    st.sidebar.markdown("**Draft queue**")
+    if not dq:
+        st.sidebar.caption("Empty — add players with **Queue player** in Player Actions.")
+    else:
+        top_name = str(dq[0]).strip()
+        top_label = top_name[:36] + ("…" if len(top_name) > 36 else "")
+        if st.sidebar.button(
+            f"Draft top: {top_label}",
+            key="sidebar_draft_top_queue_player",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state["workflow_sidebar_flash"] = draft_top_queue_player()
+            st.rerun()
+        for idx, pname in enumerate(dq[:12]):
+            label = str(pname).strip()
+            c_rank, c_name, c_draft = st.sidebar.columns([0.12, 0.58, 0.30])
+            c_rank.caption(f"{idx + 1}.")
+            c_name.caption(label[:36] + ("…" if len(label) > 36 else ""))
+            if c_draft.button("Draft", key=f"sidebar_queue_draft_{idx}", use_container_width=True):
+                st.session_state["workflow_sidebar_flash"] = draft_queue_player_at_index(idx)
                 st.rerun()
-            for idx, pname in enumerate(dq[:20]):
-                label = str(pname).strip()
-                c_rank, c_name, c_draft, c_up, c_down = st.columns([0.14, 0.46, 0.14, 0.13, 0.13])
-                c_rank.caption(f"{idx + 1}.")
-                c_name.caption(label[:42] + ("…" if len(label) > 42 else ""))
-                if c_draft.button("Draft", key=f"sidebar_queue_draft_{idx}"):
-                    st.session_state["workflow_sidebar_flash"] = draft_queue_player_at_index(idx)
-                    st.rerun()
-                if c_up.button("↑", key=f"sidebar_queue_up_{idx}", disabled=idx == 0):
-                    _move_queue_item(idx, -1)
-                    st.rerun()
-                if c_down.button("↓", key=f"sidebar_queue_down_{idx}", disabled=idx == len(dq) - 1):
-                    _move_queue_item(idx, 1)
-                    st.rerun()
-            if len(dq) > 20:
-                st.caption(f"+{len(dq) - 20} more")
-        clear_q, _ = st.columns([1, 1])
-        if clear_q.button("Clear Draft Queue", key="sidebar_clear_draft_queue", disabled=not bool(dq)):
+        if len(dq) > 12:
+            st.sidebar.caption(f"+{len(dq) - 12} more in queue")
+        if st.sidebar.button("Clear Draft Queue", key="sidebar_clear_draft_queue", disabled=not bool(dq)):
             _clear_workflow_list("draft_queue")
             st.rerun()
 
-    with st.sidebar.expander("Watchlist", expanded=bool(watch) or live_draft_active):
-        if not watch:
-            st.caption("Empty — use **Add to Watchlist** from Player Actions.")
-        else:
-            for idx, pname in enumerate(reversed(watch[-12:])):
-                label = str(pname).strip()
-                w_name, w_draft = st.columns([0.72, 0.28])
-                w_name.caption(label[:42] + ("…" if len(label) > 42 else ""))
-                if w_draft.button("Draft", key=f"sidebar_watch_draft_{idx}"):
-                    st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
-                    st.rerun()
-            if len(watch) > 12:
-                st.caption(f"+{len(watch) - 12} more")
-        if st.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
+    st.sidebar.markdown("**Watchlist**")
+    if not watch:
+        st.sidebar.caption("Empty — use **Add to Watchlist** from Player Actions.")
+    else:
+        for idx, pname in enumerate(list(reversed(watch[-12:]))):
+            label = str(pname).strip()
+            w_name, w_draft = st.sidebar.columns([0.68, 0.32])
+            w_name.caption(label[:38] + ("…" if len(label) > 38 else ""))
+            if w_draft.button("Draft", key=f"sidebar_watch_draft_{idx}", use_container_width=True):
+                st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+                st.rerun()
+        if len(watch) > 12:
+            st.sidebar.caption(f"+{len(watch) - 12} more")
+        if st.sidebar.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
             _clear_workflow_list("draft_assistant_focus_players")
             _clear_workflow_list("workflow_favorite_targets")
             st.rerun()
 
-    with st.sidebar.expander("Tracked players", expanded=live_draft_active and bool(rv)):
-        if not rv and not pairs:
-            st.caption("Updates when you select, send, compare, or analyze players.")
-        if rv:
-            st.caption("Recently viewed")
-            for idx, pname in enumerate(reversed(rv[-8:])):
-                label = str(pname).strip()
-                t_name, t_draft = st.columns([0.72, 0.28])
-                t_name.caption("• " + label[:40] + ("…" if len(label) > 40 else ""))
-                if t_draft.button("Draft", key=f"sidebar_tracked_draft_{idx}"):
-                    st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
-                    st.rerun()
-        if pairs:
-            st.caption("Recent comparisons")
-            for pair in reversed(pairs[-5:]):
-                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
-                    names = [str(x).strip() for x in pair if str(x).strip()]
-                    label = " vs ".join(names)
-                    st.caption("• " + label[:54] + ("…" if len(label) > 54 else ""))
-        if st.button(
-            "Clear Tracked Players",
-            key="sidebar_clear_tracked_players",
-            disabled=not bool(rv or pairs or transfer_batches),
-        ):
-            _clear_workflow_list("workflow_recently_viewed")
-            _clear_workflow_list("workflow_recent_compare_pairs")
-            _clear_workflow_list(wf_sb.SESSION_TRANSFER_BATCHES)
-            st.rerun()
+    st.sidebar.markdown("**Tracked players**")
+    if not rv:
+        st.sidebar.caption("Recently viewed players appear here after you analyze or compare.")
+    else:
+        for idx, pname in enumerate(list(reversed(rv[-8:]))):
+            label = str(pname).strip()
+            t_name, t_draft = st.sidebar.columns([0.68, 0.32])
+            t_name.caption("• " + label[:36] + ("…" if len(label) > 36 else ""))
+            if t_draft.button("Draft", key=f"sidebar_tracked_draft_{idx}", use_container_width=True):
+                st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+                st.rerun()
+    if pairs:
+        st.sidebar.caption("Recent comparisons")
+        for pair in reversed(pairs[-3:]):
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                names = [str(x).strip() for x in pair if str(x).strip()]
+                st.sidebar.caption("• " + " vs ".join(names)[:50])
+    if st.sidebar.button(
+        "Clear Tracked Players",
+        key="sidebar_clear_tracked_players",
+        disabled=not bool(rv or pairs or transfer_batches),
+    ):
+        _clear_workflow_list("workflow_recently_viewed")
+        _clear_workflow_list("workflow_recent_compare_pairs")
+        _clear_workflow_list(wf_sb.SESSION_TRANSFER_BATCHES)
+        st.rerun()
 
 
 PAGE_OPTIONS = [
@@ -15715,13 +15732,21 @@ if active_page == "Draft Room Simulator":
             pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
         st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
 
+    try:
+        from draft_room_state import draft_room_restore_stats, prepare_draft_room_state
+
+        prepare_draft_room_state(st.session_state)
+        _canonical_pick_count = draft_room_restore_stats(st.session_state).get("pick_count", 0)
+    except Exception:
+        _canonical_pick_count = 0
+
     current_table = _session_draft_board_df()
     has_real_picks = (
         not current_table.empty
         and "Player" in current_table.columns
         and current_table["Player"].astype(str).str.strip().ne("").any()
     )
-    if (not has_real_picks) and len(current_table) != total_picks:
+    if _canonical_pick_count == 0 and (not has_real_picks) and len(current_table) != total_picks:
         pick_rows = []
         for pick in range(1, total_picks + 1):
             rnd = ((pick - 1) // int(room_team_count)) + 1
@@ -15758,25 +15783,25 @@ if active_page == "Draft Room Simulator":
                 "Add drafted player",
                 key="draft_room_add_player_query",
                 placeholder="Type player name, e.g. Aaron Judge",
-                help="Start typing — matching players from the draft pool appear below.",
+                help="Type at least 2 letters — matching players from the draft pool appear below.",
             )
-            add_matches = (
-                search_draft_pool_names(add_query, _draft_pool_names, limit=20)
-                if search_draft_pool_names and len(str(add_query or "").strip()) >= 2
-                else []
-            )
+            _q = str(add_query or "").strip()
             add_pick = ""
-            if add_matches:
-                add_pick = st.selectbox(
-                    "Matching players",
-                    add_matches,
-                    key="draft_room_add_player_pick",
-                )
-            elif str(add_query or "").strip():
-                st.caption("No matches — try more letters or check spelling.")
+            if search_draft_pool_names and len(_q) >= 2:
+                add_matches = search_draft_pool_names(_q, _draft_pool_names, limit=25)
+                if add_matches:
+                    st.markdown(f"**{len(add_matches)} matching player(s)**")
+                    add_pick = st.selectbox(
+                        "Select matching player",
+                        add_matches,
+                        key="draft_room_add_player_pick",
+                    )
+                else:
+                    st.warning(f'No players match "{_q}". Try more letters or check spelling.')
+            elif _q:
+                st.caption("Type at least 2 letters to search the draft pool.")
             with st.form("draft_room_add_player_form", clear_on_submit=True):
-                st.caption("Select a match above, then click Add to next open pick.")
-                if st.form_submit_button("Add to next pick", type="primary"):
+                if st.form_submit_button("Add to next open pick", type="primary"):
                     from draft_room_state import add_player_to_next_open_pick, persist_draft_board_to_storage
 
                     _q = str(st.session_state.get("draft_room_add_player_query") or "").strip()
@@ -15999,13 +16024,18 @@ if active_page == "Draft Room Simulator":
                         picks = int(result.get("saved_pick_count") or 0)
                         disk_n = result.get("disk_payload_pick_count")
                         cloud_n = result.get("cloud_payload_pick_count")
-                        if result.get("saved") and result.get("cloud"):
+                        if (
+                            result.get("saved")
+                            and result.get("saved_cloud")
+                            and int(cloud_n or 0) > 0
+                            and picks > 0
+                        ):
                             st.success(
                                 f"Saved {picks} pick(s) to disk and cloud "
                                 f"(disk payload: {disk_n}, cloud payload: {cloud_n}). "
                                 f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
                             )
-                        elif result.get("saved"):
+                        elif result.get("saved") and picks > 0:
                             st.warning(
                                 f"Saved {picks} pick(s) to disk only (disk payload: {disk_n}). "
                                 f"Cloud error: {result.get('error') or 'unknown'}"

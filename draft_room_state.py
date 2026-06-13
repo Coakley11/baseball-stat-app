@@ -1869,6 +1869,21 @@ def commit_draft_room_table(
             trace["error"] = f"cloud_blocked:{session.get('_suite_autosave_cloud_blocked_reason')}"
         if trace["saved"] and trace["cloud"] and trace.get("payload_has_draft_board"):
             clear_draft_room_local_edit(session)
+        if trace.get("saved") and int(trace.get("persisted_pick_count") or 0) > 0 and reason in (
+            "manual_save",
+            "simulator_add_player",
+            "simulator_paste",
+        ):
+            try:
+                from baseball_persistent_state import build_baseball_disk_state
+
+                saved_state = build_baseball_disk_state(st)
+                from suite_user_persistence import _lock_fingerprint_after_restore
+
+                _lock_fingerprint_after_restore(st, "baseball", saved_state)
+                session["restored_draft_room_pick_count"] = int(trace.get("persisted_pick_count") or 0)
+            except Exception:
+                pass
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
     session["_draft_room_last_save_trace"] = trace
@@ -1992,6 +2007,7 @@ def save_draft_board_now(
     except Exception as exc:
         trace["cloud_timestamp_after_error"] = f"{type(exc).__name__}: {exc}"
     trace["cloud_timestamp_after"] = cloud_ts_after
+    trace["last_save_reason"] = session.get("_suite_persist_last_save_reason")
 
     session["_draft_room_manual_save_result"] = trace
     session["_draft_room_last_save_trace"] = trace
@@ -2055,6 +2071,11 @@ def render_board_tab_diagnostics(st: Any) -> None:
             "restore_source",
             "local_has_draft_room_board",
             "cloud_has_draft_room_board",
+            "local_draft_room_pick_count",
+            "cloud_draft_room_pick_count",
+            "cloud_fetch_updated_at",
+            "_suite_autosave_block_kept_pick_loss",
+            "_suite_autosave_skipped_draft_room_drop",
         ):
             val = diag.get(key)
             if val is None:
@@ -2071,10 +2092,15 @@ def render_board_tab_diagnostics(st: Any) -> None:
             st.text(f"last_draft_room_save_trace.saved_cloud: {trace.get('saved_cloud')}")
             st.text(f"last_draft_room_save_trace.disk_payload_pick_count: {trace.get('disk_payload_pick_count')}")
             st.text(f"last_draft_room_save_trace.cloud_payload_pick_count: {trace.get('cloud_payload_pick_count')}")
+            st.text(f"last_draft_room_save_trace.last_save_reason: {trace.get('last_save_reason') or ss.get('_suite_persist_last_save_reason')}")
             st.text(f"last_draft_room_save_trace.error: {trace.get('error') or ''}")
         if isinstance(manual, dict) and manual.get("path") == "save_draft_board_now":
             st.text(f"manual_save.cloud_timestamp_before: {manual.get('cloud_timestamp_before')}")
             st.text(f"manual_save.cloud_timestamp_after: {manual.get('cloud_timestamp_after')}")
+            st.text(f"manual_save.last_save_reason: {manual.get('last_save_reason')}")
+        active_picks = diag.get("draft_room_pick_count") or diag.get("session_pick_count")
+        if active_picks is not None:
+            st.text(f"active_board_pick_count: {active_picks}")
 
 
 def render_draft_board_diagnostics(st: Any) -> None:

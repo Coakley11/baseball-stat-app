@@ -584,8 +584,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             ss["restored_draft_room_pick_count"] = dr.get("pick_count")
             ss["restore_source"] = ss.get("_draft_room_restore_source") or ss.get("_suite_restore_pick_source")
             ss["local_has_draft_room_board"] = dr.get("has_draft_board")
+            ss["session_pick_count"] = dr.get("pick_count")
             cloud_dr = draft_room_restore_stats(state)
             ss["cloud_has_draft_room_board"] = cloud_dr.get("has_draft_board")
+            ss["cloud_draft_room_pick_count"] = cloud_dr.get("pick_count")
+            ss["local_draft_room_pick_count"] = dr.get("pick_count")
+            ss["cloud_fetch_updated_at"] = ss.get("_suite_cloud_fetch_updated_at") or ss.get(
+                "cloud_updated_at_at_restore"
+            )
         except ImportError:
             pass
     except ImportError:

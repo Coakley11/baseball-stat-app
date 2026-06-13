@@ -169,6 +169,19 @@ def _lock_fingerprint_after_restore(st: Any, app_id: str, state: dict[str, Any])
 
 def clear_workspace_autosave_block(st: Any, app_id: str) -> None:
     """Call at end of script run to allow autosave on the next rerun."""
+    if app_id == "baseball" and st.session_state.get(_autosave_block_key(app_id)):
+        try:
+            from draft_room_state import draft_room_restore_stats
+
+            restored = int(st.session_state.get("restored_draft_room_pick_count") or 0)
+            session_picks = draft_room_restore_stats(st.session_state).get("pick_count", 0)
+            if restored > 0 and session_picks < restored:
+                st.session_state["_suite_autosave_block_kept_pick_loss"] = (
+                    f"restored={restored} session={session_picks}"
+                )
+                return
+        except ImportError:
+            pass
     st.session_state.pop(_autosave_block_key(app_id), None)
     st.session_state.pop("_cloud_workspace_restored_this_run", None)
     st.session_state.pop("_suite_user_nav_sync_skipped", None)
@@ -242,6 +255,8 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "simulator_add_player",
     "simulator_paste",
     "board_edit",
+    "draft_queue_pick",
+    "draft_pick",
     "historical_edit",
     "valuation_edit",
     "projections_edit",
@@ -265,6 +280,8 @@ _DRAFT_BOARD_CLOUD_SAVE_REASONS = frozenset({
     "simulator_add_player",
     "simulator_paste",
     "board_edit",
+    "draft_queue_pick",
+    "draft_pick",
 })
 
 
@@ -291,7 +308,7 @@ def _merge_cloud_draft_room_before_save(
 
     local = _draft_room_from_blob(state)
     local_picks = table_pick_count(local) if isinstance(local, dict) else 0
-    if local and local_picks > 0:
+    if local and local_picks > 0 and not is_draft_room_locally_dirty(st.session_state):
         return state
     if is_draft_room_locally_dirty(st.session_state):
         return state
@@ -300,7 +317,10 @@ def _merge_cloud_draft_room_before_save(
     if not isinstance(cloud_state, dict) or not cloud_state:
         return state
     cloud_dr = _draft_room_from_blob(cloud_state)
-    if not cloud_dr or table_pick_count(cloud_dr) <= 0:
+    cloud_picks = table_pick_count(cloud_dr) if cloud_dr else 0
+    if not cloud_dr or cloud_picks <= 0:
+        return state
+    if cloud_picks <= local_picks:
         return state
 
     out = copy.deepcopy(state)
@@ -1577,6 +1597,8 @@ def force_autosave(
             "simulator_add_player",
             "simulator_paste",
             "board_edit",
+            "draft_queue_pick",
+            "draft_pick",
             "historical_edit",
             "valuation_edit",
             "projections_edit",
@@ -1734,6 +1756,21 @@ def autosave_if_changed(
         if app_id == "baseball":
             state = _merge_cloud_draft_room_before_save(st, app_id, state)
             state = _merge_cloud_live_draft_before_save(st, app_id, state)
+            try:
+                from draft_room_state import draft_room_restore_stats
+
+                local_picks = draft_room_restore_stats(state).get("pick_count", 0)
+                from suite_cloud_state import load_cloud_full_session
+
+                cloud_state, _ = load_cloud_full_session(app_id)
+                cloud_picks = draft_room_restore_stats(cloud_state or {}).get("pick_count", 0)
+                if cloud_picks > 0 and local_picks < cloud_picks:
+                    st.session_state["_suite_autosave_skipped_draft_room_drop"] = (
+                        f"cloud={cloud_picks} local={local_picks}"
+                    )
+                    return
+            except ImportError:
+                pass
             try:
                 from live_draft_state import record_live_draft_cloud_save_diagnostics
 
