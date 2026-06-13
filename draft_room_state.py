@@ -2419,9 +2419,46 @@ def persist_draft_board_to_storage(
 
 
 _BOARD_MANUAL_SAVE_TRACE_KEY = "_draft_room_manual_save_result"
+MANUAL_SAVE_REQUEST_KEY = "_draft_room_manual_save_requested"
+MANUAL_SAVE_BUTTON_KEY = "dr_manual_save_board_v14"
+
+
+def record_manual_save_button_click(session: dict[str, Any]) -> dict[str, Any]:
+    """Stamp session immediately when Save Draft Board Now is clicked."""
+    ts = _utc_now_iso()
+    stub: dict[str, Any] = {
+        "path": "save_draft_board_now",
+        "save_button_clicked": True,
+        "save_button_timestamp": ts,
+        "save_reason": "manual_save_button_click",
+        "saved": False,
+        "saved_cloud": False,
+        "direct_cloud_save_attempted": False,
+        "direct_cloud_save_ok": False,
+        "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
+    }
+    session[_BOARD_MANUAL_SAVE_TRACE_KEY] = stub
+    session["_draft_room_last_save_trace"] = stub
+    session["save_button_clicked"] = True
+    session["save_button_timestamp"] = ts
+    session[MANUAL_SAVE_REQUEST_KEY] = True
+    return stub
+
+
+def record_manual_save_error(session: dict[str, Any], exc: BaseException) -> None:
+    trace = session.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
+    if not isinstance(trace, dict):
+        trace = record_manual_save_button_click(session)
+    trace["error"] = f"{type(exc).__name__}: {exc}"
+    trace["cloud_write_error"] = trace["error"]
+    trace["saved"] = False
+    trace["saved_cloud"] = False
+    session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
+    session["_draft_room_last_save_trace"] = trace
 
 _MANUAL_SAVE_READBACK_FIELDS = (
     "save_button_clicked",
+    "save_button_timestamp",
     "saved_cloud",
     "direct_cloud_save_attempted",
     "direct_cloud_save_ok",
@@ -2746,9 +2783,11 @@ def save_draft_board_now(
     widget_key: str | None = None,
 ) -> dict[str, Any]:
     """Explicit Board-tab save: editor → draft_room_state → disk + cloud."""
+    click_ts = session.get("save_button_timestamp") or _utc_now_iso()
     trace: dict[str, Any] = {
         "path": "save_draft_board_now",
         "save_button_clicked": True,
+        "save_button_timestamp": click_ts,
         "save_reason": "manual_save",
         "saved": False,
         "saved_disk": False,
@@ -2762,6 +2801,30 @@ def save_draft_board_now(
         "direct_cloud_save_ok": False,
         "error": "",
     }
+    prior = session.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
+    if isinstance(prior, dict):
+        trace["save_button_timestamp"] = prior.get("save_button_timestamp") or click_ts
+    session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
+    session["save_button_clicked"] = True
+    session["save_button_timestamp"] = trace["save_button_timestamp"]
+    try:
+        return _save_draft_board_now_impl(st, session, board=board, widget_key=widget_key, trace=trace)
+    except Exception as exc:
+        trace["error"] = f"{type(exc).__name__}: {exc}"
+        trace["cloud_write_error"] = trace["error"]
+        session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
+        session["_draft_room_last_save_trace"] = trace
+        raise
+
+
+def _save_draft_board_now_impl(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    board: Any = None,
+    widget_key: str | None = None,
+    trace: dict[str, Any],
+) -> dict[str, Any]:
     cloud_ts_before = None
     try:
         from suite_cloud_state import load_cloud_full_session
@@ -2939,7 +3002,6 @@ def render_board_tab_diagnostics(st: Any) -> None:
     """Always-visible Board tab status panel (not dev-mode only)."""
     ss = st.session_state
     diag = board_tab_diagnostics(ss, st=st)
-    render_manual_save_readback_panel(st)
     manual = ss.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
     with st.container(border=True):
         st.markdown("**Board save status**")

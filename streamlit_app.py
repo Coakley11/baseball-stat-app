@@ -15822,9 +15822,6 @@ if active_page == "Draft Room Simulator":
                 open_pick_row_options,
                 pick_label_row_map,
                 record_board_assignment_diagnostics,
-                render_board_tab_diagnostics,
-                render_manual_save_readback_panel,
-                save_draft_board_now,
                 submit_board_pick_assignment,
                 table_pick_count,
             )
@@ -15926,14 +15923,39 @@ if active_page == "Draft Room Simulator":
             except Exception:
                 pass
 
-            save_col, _save_sp = st.columns([1, 3])
-            with save_col:
-                if st.button(
-                    "Save Draft Board Now",
-                    key="draft_room_manual_save_btn",
-                    type="primary",
-                    help="Write the current board to disk and cloud.",
-                ):
+        except Exception as exc:
+            st.dataframe(_session_draft_board_df(), use_container_width=True, hide_index=True)
+            st.error(f"Draft board error: {type(exc).__name__}: {exc}")
+
+        edited_draft = _session_draft_board_df()
+        try:
+            from draft_room_state import (
+                MANUAL_SAVE_BUTTON_KEY,
+                MANUAL_SAVE_REQUEST_KEY,
+                record_manual_save_button_click,
+                record_manual_save_error,
+                render_board_tab_diagnostics,
+                render_manual_save_readback_panel,
+                save_draft_board_now,
+                table_pick_count,
+            )
+
+            def _on_manual_save_click() -> None:
+                record_manual_save_button_click(st.session_state)
+
+            st.markdown("**Save draft board**")
+            save_clicked = st.button(
+                "Save Draft Board Now",
+                key=MANUAL_SAVE_BUTTON_KEY,
+                type="primary",
+                help="Write the current board to disk and cloud.",
+                on_click=_on_manual_save_click,
+            )
+            if save_clicked:
+                record_manual_save_button_click(st.session_state)
+
+            if st.session_state.pop(MANUAL_SAVE_REQUEST_KEY, False):
+                try:
                     result = save_draft_board_now(st, st.session_state, board=edited_draft)
                     picks = int(result.get("saved_pick_count") or 0)
                     disk_n = result.get("disk_payload_pick_count")
@@ -15965,12 +15987,14 @@ if active_page == "Draft Room Simulator":
                         )
                     else:
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
+                except Exception as exc:
+                    record_manual_save_error(st.session_state, exc)
+                    st.error(f"Save failed: {type(exc).__name__}: {exc}")
 
             render_manual_save_readback_panel(st)
             render_board_tab_diagnostics(st)
         except Exception as exc:
-            st.dataframe(_session_draft_board_df(), use_container_width=True, hide_index=True)
-            st.error(f"Draft board error: {type(exc).__name__}: {exc}")
+            st.error(f"Manual save panel error: {type(exc).__name__}: {exc}")
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (

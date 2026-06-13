@@ -21,6 +21,7 @@ from draft_room_state import (
     DRAFT_ROOM_EDITOR_VERSION_KEY,
     DRAFT_ROOM_STATE_KEY,
     DRAFT_ROOM_TABLE_KEY,
+    MANUAL_SAVE_REQUEST_KEY,
     add_player_to_next_open_pick,
     apply_cloud_draft_room_state_if_allowed,
     apply_programmatic_board_update,
@@ -59,6 +60,7 @@ from draft_room_state import (
     preserve_richer_session_board,
     reconstruct_board_from_widget_state,
     reset_canonical_draft_board,
+    record_manual_save_button_click,
     resolve_active_board,
     save_draft_board_now,
     persist_draft_board_to_storage,
@@ -219,6 +221,15 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertEqual(trace.get("saved_pick_count"), 3)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
         self.assertTrue(trace.get("save_button_clicked"))
+
+    def test_record_manual_save_button_click_stamps_session(self) -> None:
+        session: dict = {}
+        stub = record_manual_save_button_click(session)
+        self.assertTrue(stub.get("save_button_clicked"))
+        self.assertTrue(session.get("save_button_clicked"))
+        self.assertTrue(session.get("save_button_timestamp"))
+        self.assertTrue(session.get(MANUAL_SAVE_REQUEST_KEY))
+        self.assertEqual(session["_draft_room_manual_save_result"]["path"], "save_draft_board_now")
 
     def test_save_draft_board_now_always_attempts_direct_cloud(self) -> None:
         st = MagicMock()

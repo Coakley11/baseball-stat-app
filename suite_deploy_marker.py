@@ -6,9 +6,9 @@ from __future__ import annotations
 
 
 
-SUITE_BUILD_LABEL = "2026-06-13-draft-room-cloud-readback-panel-v13"
+SUITE_BUILD_LABEL = "2026-06-13-draft-room-save-button-v14"
 
-GIT_COMMIT_SHORT = "cb66e56"
+GIT_COMMIT_SHORT = "pending"
 
 GIT_BRANCH = "dev"
 
