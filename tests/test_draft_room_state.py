@@ -27,6 +27,7 @@ from draft_room_state import (
     enrich_save_payload_with_draft_room,
     prepare_board_editor_for_render,
     prepare_draft_room_state,
+    reconstruct_board_from_widget_state,
     resolve_active_board,
     save_draft_board_now,
     sanitize_state_dict_for_json,
@@ -195,17 +196,36 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_SEED_KEY]), 2)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_CACHE_KEY]), 2)
 
-    def test_resolve_active_board_prefers_widget_state(self) -> None:
+    def test_reconstruct_board_from_edited_rows(self) -> None:
+        base = _sample_table(picks=0)
+        widget_state = {
+            "edited_rows": {
+                0: {"Player": "Aaron Judge"},
+                1: {"Player": "Juan Soto"},
+                2: {"Player": "Corbin Carroll"},
+            },
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        reconstructed = reconstruct_board_from_widget_state(widget_state, base)
+        self.assertEqual(table_pick_count(reconstructed), 3)
+
+    def test_resolve_active_board_reconstructs_widget_dict(self) -> None:
         st = MagicMock()
-        widget_key = "draft_room_board_editor_0"
-        empty = _sample_table(picks=0)
-        filled = _sample_table(picks=3)
-        st.session_state = {widget_key: filled}
-        session: dict = {DRAFT_ROOM_EDITOR_CACHE_KEY: empty}
-        active, source, count = resolve_active_board(session, widget_key, empty, st=st)
+        widget_key = "draft_room_board_editor_1"
+        base = _sample_table(picks=0)
+        st.session_state = {
+            widget_key: {
+                "edited_rows": {0: {"Player": "Player 1"}, 1: {"Player": "Player 2"}, 2: {"Player": "Player 3"}},
+                "added_rows": [],
+                "deleted_rows": [],
+            }
+        }
+        session: dict = {DRAFT_ROOM_EDITOR_SEED_KEY: base}
+        active, source, count = resolve_active_board(session, widget_key, base, st=st)
         assert active is not None
         self.assertEqual(count, 3)
-        self.assertEqual(source, f"widget:{widget_key}")
+        self.assertTrue(source.startswith("widget_reconstructed:"))
 
     def test_detect_player_column_finds_player(self) -> None:
         table = _sample_table(picks=2)

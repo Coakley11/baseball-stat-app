@@ -15589,6 +15589,7 @@ if active_page == "Draft Room Simulator":
                 record_board_editor_diagnostics,
                 render_board_debug_expander,
                 render_board_tab_diagnostics,
+                render_raw_widget_state_debug,
                 resolve_active_board,
                 save_draft_board_now,
             )
@@ -15607,6 +15608,7 @@ if active_page == "Draft Room Simulator":
                     "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
                 },
             )
+            render_raw_widget_state_debug(st, widget_key)
             edited_draft, _source, pick_count = resolve_active_board(
                 st.session_state, widget_key, editor_return, st=st
             )

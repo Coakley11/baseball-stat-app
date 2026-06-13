@@ -8769,9 +8769,15 @@ def build_live_draft_room_metadata(config, host_team=None):
 
 
 def serialize_live_draft_room(room):
-    """JSON-friendly snapshot for future persistence / reconnect (local stub)."""
+    """JSON-friendly snapshot for persistence / AMI / reconnect."""
     if not room:
         return {}
+    try:
+        from live_draft_state import room_to_persist_dict
+
+        return room_to_persist_dict(room)
+    except ImportError:
+        pass
     meta = room.get("meta", {})
     return {
         "draft_room_id": room.get("draft_room_id"),
@@ -9620,6 +9626,15 @@ def live_draft_push_analysis_to_session(room):
         "source": "Live Draft Room",
     }
     return True
+
+
+def _persist_live_draft_room(room, *, reason: str, rerun: bool = True) -> None:
+    """Write canonical live draft state and force-save to disk/cloud."""
+    from live_draft_state import commit_live_draft_room
+
+    commit_live_draft_room(st, st.session_state, room, reason=reason)
+    if rerun:
+        st.rerun()
 
 
 def player_on_fantasy_team(player_name, fantasy_team):
@@ -11779,6 +11794,18 @@ try:
     prepare_baseball_workspace(st)
 except Exception:
     pass
+try:
+    from live_draft_state import prepare_live_draft_state
+
+    prepare_live_draft_state(st.session_state)
+except Exception:
+    pass
+try:
+    from draft_room_state import prepare_draft_room_state
+
+    prepare_draft_room_state(st.session_state)
+except Exception:
+    pass
 _record_sidebar_nav_trace("after_prepare_workspace")
 try:
     from suite_user_persistence import show_persistence_messages
@@ -11823,6 +11850,19 @@ _record_sidebar_nav_trace(
     rerun_source="sidebar_render",
     requested_page=active_page,
 )
+
+try:
+    from live_draft_state import has_active_live_draft
+
+    if has_active_live_draft(st.session_state) and active_page != "Live Draft Room":
+        st.sidebar.info("Live draft in progress — picks are saved to cloud.")
+        if st.sidebar.button("Resume Live Draft", key="resume_live_draft_sidebar"):
+            st.session_state["active_page"] = "Live Draft Room"
+            st.session_state["main_sidebar_page"] = "Live Draft Room"
+            st.session_state["_navigate_to_page"] = "Live Draft Room"
+            st.rerun()
+except Exception:
+    pass
 
 st.session_state.pop("_suite_cloud_target_page", None)
 st.session_state.pop("_suite_page_enforce_rerun", None)
@@ -15540,20 +15580,84 @@ if active_page == "Draft Room Simulator":
             "(including **Strategy** hints on scarcity, timing, and value vs ADP — hitter pool only here)."
         )
 
-        # Keep the saved draft table in the non-widget key "draft_room_table".
-        # Do not use a data_editor widget key here, because Streamlit can throw
-        # StreamlitValueAssignmentNotAllowedError when a keyed widget is also given
-        # a default value from session_state.
-        edited_draft = st.data_editor(
-            st.session_state["draft_room_table"],
-            num_rows="fixed",
-            use_container_width=True,
-            column_config={
-                "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
-                "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
-            }
-        )
-        st.session_state["draft_room_table"] = edited_draft.copy()
+        # Widget key is Streamlit-owned (versioned). Seed/cache/table are app-owned.
+        edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
+        try:
+            from draft_room_state import (
+                DRAFT_ROOM_EDITOR_CACHE_KEY,
+                prepare_board_editor_for_render,
+                record_board_editor_diagnostics,
+                render_board_debug_expander,
+                render_board_tab_diagnostics,
+                render_raw_widget_state_debug,
+                resolve_active_board,
+                save_draft_board_now,
+            )
+
+            initial_df, widget_key = prepare_board_editor_for_render(
+                st.session_state, st.session_state["draft_room_table"]
+            )
+            st.session_state["_draft_room_last_widget_key"] = widget_key
+            editor_return = st.data_editor(
+                initial_df,
+                key=widget_key,
+                num_rows="fixed",
+                use_container_width=True,
+                column_config={
+                    "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
+                    "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
+                },
+            )
+            render_raw_widget_state_debug(st, widget_key)
+            edited_draft, _source, pick_count = resolve_active_board(
+                st.session_state, widget_key, editor_return, st=st
+            )
+            if edited_draft is None:
+                edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
+            else:
+                edited_draft = edited_draft.copy()
+            st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
+            st.session_state["draft_room_table"] = edited_draft.copy()
+            record_board_editor_diagnostics(st.session_state, edited_draft, editor_key=widget_key)
+
+            save_col, _save_sp = st.columns([1, 3])
+            with save_col:
+                if st.button(
+                    "Save Draft Board Now",
+                    key="draft_room_manual_save_btn",
+                    type="primary",
+                    help="Write the current board from the editor to disk and cloud.",
+                ):
+                    result = save_draft_board_now(
+                        st, st.session_state, board=edited_draft, widget_key=widget_key
+                    )
+                    picks = int(result.get("saved_pick_count") or 0)
+                    if result.get("saved") and result.get("cloud"):
+                        st.success(
+                            f"Saved {picks} pick(s) to disk and cloud. "
+                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
+                        )
+                    elif result.get("saved"):
+                        st.warning(
+                            f"Saved {picks} pick(s) to disk only. Cloud error: {result.get('error') or 'unknown'}"
+                        )
+                    else:
+                        st.error(f"Save failed: {result.get('error') or 'unknown'}")
+
+            render_board_tab_diagnostics(st)
+            render_board_debug_expander(st, widget_key, editor_return)
+        except Exception as exc:
+            edited_draft = st.data_editor(
+                st.session_state["draft_room_table"],
+                num_rows="fixed",
+                use_container_width=True,
+                column_config={
+                    "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
+                    "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
+                },
+            )
+            st.session_state["draft_room_table"] = edited_draft.copy()
+            st.error(f"Draft board editor error: {type(exc).__name__}: {exc}")
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (
@@ -15719,6 +15823,11 @@ if active_page == "Draft Room Simulator":
                     f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
                     f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
                 )
+
+    if developer_mode_enabled():
+        from draft_room_state import render_draft_board_diagnostics
+
+        render_draft_board_diagnostics(st)
 
     save_page_state(active_page)
     render_page_filters_debug(active_page)
@@ -16025,13 +16134,22 @@ if active_page == "Live Draft Room":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    from live_draft_state import prepare_live_draft_state, render_live_draft_save_diagnostics
+
+    prepare_live_draft_state(st.session_state)
+    if developer_mode_enabled():
+        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+
+        st.caption(
+            f"Build `{SUITE_BUILD_LABEL}` · commit `{GIT_COMMIT_SHORT}` · branch `{GIT_BRANCH}`"
+        )
+        render_live_draft_save_diagnostics(st)
     st.markdown(
         """
         <div class="section-card">
-            <div class="section-title">Live Fantasy Draft Prototype</div>
+            <div class="section-title">Live Fantasy Draft</div>
             <div class="small-note">
-                This version stores everything in local session state for a stable single-browser draft experience.
-                The structure is ready for a future multi-drafter sync layer.
+                Draft board, picks, pool, and settings persist to disk and cloud — reopen after refresh or on another device.
             </div>
         </div>
         """,
@@ -16041,6 +16159,48 @@ if active_page == "Live Draft Room":
     if "live_draft_room" not in st.session_state:
         st.session_state["live_draft_room"] = None
     room = st.session_state.get("live_draft_room")
+    if room and isinstance(room, dict) and room.get("status") in ("in_progress", "paused"):
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            if st.button("Save draft now", key="live_draft_manual_save_btn", help="Force-save via normal autosave path."):
+                from live_draft_state import commit_live_draft_room
+
+                trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
+                if trace.get("last_live_draft_save_success"):
+                    st.success("Draft saved to disk and cloud.")
+                else:
+                    st.error(f"Save failed: {trace.get('last_live_draft_save_error') or trace.get('error') or 'unknown'}")
+        with sc2:
+            if st.button(
+                "Save Draft to Cloud Now",
+                key="live_draft_direct_cloud_btn",
+                help="Write live_draft_state directly to Supabase full_session (isolation test).",
+            ):
+                from live_draft_state import save_live_draft_direct_to_cloud
+
+                trace = save_live_draft_direct_to_cloud(st, st.session_state, room)
+                if trace.get("last_live_draft_save_success"):
+                    st.success(
+                        f"Cloud updated · picks={trace.get('cloud_payload_pick_count')} · "
+                        f"ts={trace.get('cloud_updated_at_after')}"
+                    )
+                else:
+                    st.error(f"Cloud save failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
+        if st.button(
+            "Push Local Draft to Cloud Now",
+            key="live_draft_push_local_cloud_btn",
+            help="Load live draft from local disk file (if newer) and push to Supabase.",
+        ):
+            from live_draft_state import push_local_draft_to_cloud
+
+            trace = push_local_draft_to_cloud(st, st.session_state, room)
+            if trace.get("last_live_draft_save_success"):
+                st.success(
+                    f"Local draft pushed · picks={trace.get('cloud_payload_pick_count')} · "
+                    f"ts={trace.get('cloud_updated_at_after')}"
+                )
+            else:
+                st.error(f"Push failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
     market_df_live = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 
@@ -16115,8 +16275,7 @@ if active_page == "Live Draft Room":
             reset_live = st.button("Reset Draft Room", key="live_draft_reset_btn")
 
         if reset_live:
-            st.session_state["live_draft_room"] = None
-            st.rerun()
+            _persist_live_draft_room(None, reason="reset_draft")
 
         if start_live:
             fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
@@ -16160,9 +16319,8 @@ if active_page == "Live Draft Room":
                 }
                 new_room = live_draft_init_room(config, pool_live)
                 live_draft_start(new_room)
-                st.session_state["live_draft_room"] = new_room
                 st.success(f"Live draft started — Room ID **{new_room['draft_room_id']}**")
-                st.rerun()
+                _persist_live_draft_room(new_room, reason="start_draft")
 
     room = st.session_state.get("live_draft_room")
 
@@ -16199,44 +16357,39 @@ if active_page == "Live Draft Room":
             if remaining <= 0 and room.get("timer_handled_index") != idx:
                 ok, msg = live_draft_auto_pick(room)
                 room["timer_handled_index"] = idx
-                st.session_state["live_draft_room"] = room
                 if ok:
                     st.toast(msg)
                 else:
                     st.warning(msg)
-                st.rerun()
+                _persist_live_draft_room(room, reason="timer_auto_pick")
 
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
         with ctrl1:
             if st.button("Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
                 room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
                 room["status"] = "paused"
-                st.session_state["live_draft_room"] = room
-                st.rerun()
+                _persist_live_draft_room(room, reason="pause_draft")
         with ctrl2:
             if st.button("Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume"):
                 room["status"] = "in_progress"
                 pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
                 room["timer_started_at"] = time.time() - (int(cfg.get("timer_seconds", 60)) - pause_left)
                 room["paused_remaining_seconds"] = None
-                st.session_state["live_draft_room"] = room
-                st.rerun()
+                _persist_live_draft_room(room, reason="resume_draft")
         with ctrl3:
             if st.button("Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
                 live_draft_reset_timer(room)
-                st.session_state["live_draft_room"] = room
-                st.rerun()
+                _persist_live_draft_room(room, reason="reset_timer")
         with ctrl4:
             if st.button("Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
                 if room.get("status") == "paused":
                     room["status"] = "in_progress"
                 ok, msg = live_draft_auto_pick(room)
-                st.session_state["live_draft_room"] = room
                 if ok:
                     st.success(msg)
                 else:
                     st.warning(msg)
-                st.rerun()
+                _persist_live_draft_room(room, reason="auto_pick")
         st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
@@ -16322,12 +16475,11 @@ if active_page == "Live Draft Room":
                         row = scored_pick.iloc[0]
                         verdict = _live_draft_pick_verdict(row, "manual pick", gaps)
                         ok, msg = live_draft_make_pick(room, row.to_dict(), verdict=verdict)
-                        st.session_state["live_draft_room"] = room
                         if ok:
                             st.success(msg)
                         else:
                             st.error(msg)
-                        st.rerun()
+                        _persist_live_draft_room(room, reason="manual_pick")
 
         with board_col:
             st.subheader("Draft Board")
