@@ -15796,26 +15796,28 @@ if active_page == "Draft Room Simulator":
         edited_draft = _session_draft_board_df()
         try:
             from draft_room_state import (
-                assign_player_to_board_row,
                 open_pick_row_options,
+                pick_label_row_map,
                 record_board_assignment_diagnostics,
                 render_board_tab_diagnostics,
                 save_draft_board_now,
+                submit_board_pick_assignment,
                 table_pick_count,
             )
 
             try:
-                from draft_player_names import draft_pool_display_names, search_draft_pool_names
+                from draft_player_names import (
+                    build_draft_player_name_index,
+                    draft_pool_display_names,
+                    search_draft_pool_names,
+                )
 
                 _assign_pool_names = draft_pool_display_names(room_df)
+                _assign_name_index = build_draft_player_name_index(room_df)
             except Exception:
                 _assign_pool_names = [p for p in player_options_room if p]
+                _assign_name_index = {}
                 search_draft_pool_names = None  # type: ignore[assignment]
-
-            pick_count = table_pick_count(edited_draft)
-            record_board_assignment_diagnostics(
-                st.session_state, pick_count=pick_count, source="board_display"
-            )
 
             display_cols = [c for c in ("Round", "Pick", "Team", "Player") if c in edited_draft.columns]
             st.dataframe(
@@ -15830,53 +15832,57 @@ if active_page == "Draft Room Simulator":
                 st.info("Board is full — reset the simulator to start a new mock draft.")
             else:
                 pick_labels = [label for _, label in open_picks]
-                pick_row_by_label = {label: idx for idx, label in open_picks}
-                pick_col, search_col = st.columns([1, 2])
-                with pick_col:
-                    selected_pick_label = st.selectbox(
-                        "Pick",
-                        pick_labels,
-                        key="dr_board_assign_pick_label",
+                search_q = st.text_input(
+                    "Search player",
+                    key="dr_board_assign_search",
+                    placeholder="Type player name, e.g. Aaron Judge or FRA",
+                )
+                matches: list[str] = []
+                if search_draft_pool_names and len(str(search_q or "").strip()) >= 2:
+                    matches = search_draft_pool_names(
+                        str(search_q), _assign_pool_names, limit=30
                     )
-                with search_col:
-                    search_q = st.text_input(
-                        "Search player",
-                        key="dr_board_assign_search",
-                        placeholder="Type player name, e.g. Aaron Judge or FRA",
-                    )
-                    matches: list[str] = []
-                    if search_draft_pool_names and len(str(search_q or "").strip()) >= 2:
-                        matches = search_draft_pool_names(
-                            str(search_q), _assign_pool_names, limit=30
-                        )
-                    elif str(search_q or "").strip():
-                        q = str(search_q).lower()
-                        matches = [n for n in _assign_pool_names if q in n.lower()][:30]
-                    selected_player = ""
-                    if matches:
-                        selected_player = st.selectbox(
-                            "Matching players",
-                            matches,
-                            key="dr_board_assign_player_pick",
-                        )
-                    elif str(search_q or "").strip():
-                        st.caption("No matches — try more letters.")
+                elif str(search_q or "").strip():
+                    q = str(search_q).lower()
+                    matches = [n for n in _assign_pool_names if q in n.lower()][:30]
 
-                if st.button("Set player on pick", type="primary", key="dr_board_assign_submit"):
-                    row_idx = pick_row_by_label.get(selected_pick_label)
-                    if row_idx is None:
-                        st.error("Pick row not found.")
-                    elif not selected_player:
-                        st.error("Search and select a player first.")
-                    else:
-                        res = assign_player_to_board_row(
-                            st.session_state, row_idx, selected_player
+                with st.form("dr_board_assign_form", clear_on_submit=False):
+                    pick_col, player_col = st.columns([1, 2])
+                    with pick_col:
+                        st.selectbox(
+                            "Pick",
+                            pick_labels,
+                            key="dr_board_form_pick",
                         )
-                        if res.get("ok"):
-                            st.success(res.get("message"))
-                            st.rerun()
-                        else:
-                            st.error(res.get("message") or res.get("error"))
+                    with player_col:
+                        player_options = matches if matches else ["— type 2+ letters in search above —"]
+                        st.selectbox(
+                            "Matching players",
+                            player_options,
+                            key="dr_board_form_player",
+                            disabled=not bool(matches),
+                        )
+                    submitted = st.form_submit_button(
+                        "Set player on pick",
+                        type="primary",
+                    )
+
+                if submitted:
+                    board_now = _session_draft_board_df()
+                    res = submit_board_pick_assignment(
+                        st.session_state,
+                        pick_label=str(st.session_state.get("dr_board_form_pick") or ""),
+                        player_match=str(st.session_state.get("dr_board_form_player") or ""),
+                        pick_row_by_label=pick_label_row_map(board_now),
+                        name_index=_assign_name_index,
+                        all_names=_assign_pool_names,
+                        search_text=str(st.session_state.get("dr_board_assign_search") or ""),
+                    )
+                    if res.get("ok"):
+                        st.success(res.get("message"))
+                        st.rerun()
+                    else:
+                        st.error(res.get("message") or res.get("error") or "Assignment failed.")
 
             edited_draft = _session_draft_board_df()
             pick_count = table_pick_count(edited_draft)
