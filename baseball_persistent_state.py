@@ -603,6 +603,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             dr = draft_room_restore_stats(ss)
             ss["restored_draft_room_pick_count"] = dr.get("pick_count")
             ss["restore_source"] = ss.get("_draft_room_restore_source") or ss.get("_suite_restore_pick_source")
+            ss["restore_reason"] = ss.get("_suite_restore_pick_reason") or ss.get("restore_winner_reason_detail")
             ss["local_has_draft_room_board"] = dr.get("has_draft_board")
             ss["session_pick_count"] = dr.get("pick_count")
             cloud_dr = draft_room_restore_stats(state)

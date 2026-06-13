@@ -737,11 +737,19 @@ def _record_startup_restore_diagnostics(
     diag = probe_cloud_restore_diagnostics(st, app_id) if probe_cloud_restore_diagnostics else {}
     cloud_players = _workspace_comparison_players(cloud_state) if cloud_state else []
     st.session_state["_suite_cloud_fetch_attempted"] = True
+    st.session_state["cloud_fetch_attempted"] = True
     st.session_state["_suite_cloud_fetch_success"] = bool(cloud_state) or bool(
         diag.get("cloud_has_full_session")
     )
-    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or "")[:32] or None
+    st.session_state["cloud_fetch_success"] = st.session_state["_suite_cloud_fetch_success"]
+    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or diag.get("cloud_fetch_user_id") or "")[:32] or None
+    st.session_state["cloud_fetch_user_id"] = st.session_state["_suite_cloud_fetch_user_id"]
+    st.session_state["cloud_fetch_app_id"] = diag.get("cloud_fetch_app_id") or diag.get("cloud_target_app_id")
     st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts or diag.get("cloud_updated_at")
+    st.session_state["cloud_fetch_updated_at"] = st.session_state["_suite_cloud_fetch_updated_at"]
+    st.session_state["cloud_fetch_pick_count"] = diag.get("cloud_fetch_pick_count")
+    st.session_state["cloud_row_count"] = diag.get("cloud_row_count")
+    st.session_state["cloud_row_pick_counts"] = diag.get("cloud_row_pick_counts")
     st.session_state["_suite_cloud_fetch_active_page"] = (
         cloud_state.get("active_page")
         if isinstance(cloud_state, dict)
@@ -782,6 +790,8 @@ def _record_startup_restore_diagnostics(
         st.session_state["draft_board_source_key"] = board.get("draft_board_source_key")
         st.session_state["session_has_draft_board"] = board.get("session_has_draft_board")
         st.session_state["session_pick_count"] = board.get("session_pick_count")
+        st.session_state["restore_source"] = picked_source
+        st.session_state["restore_reason"] = picked_reason
     except ImportError:
         pass
     st.session_state["restore_winner_reason_detail"] = picked_reason
@@ -1769,13 +1779,21 @@ def autosave_if_changed(
                 from draft_room_state import draft_room_restore_stats
 
                 local_picks = draft_room_restore_stats(state).get("pick_count", 0)
-                from suite_cloud_state import load_cloud_full_session
+                from suite_cloud_state import load_cloud_full_session, read_cloud_persistence_boundary
 
                 cloud_state, _ = load_cloud_full_session(app_id)
                 cloud_picks = draft_room_restore_stats(cloud_state or {}).get("pick_count", 0)
-                if cloud_picks > 0 and local_picks < cloud_picks:
+                boundary = read_cloud_persistence_boundary(app_id)
+                richest_cloud_picks = int(
+                    max(
+                        cloud_picks,
+                        int(boundary.get("cloud_fetch_pick_count") or 0),
+                        int(boundary.get("supabase_row_pick_count_after_write") or 0),
+                    )
+                )
+                if richest_cloud_picks > 0 and local_picks < richest_cloud_picks:
                     st.session_state["_suite_autosave_skipped_draft_room_drop"] = (
-                        f"cloud={cloud_picks} local={local_picks}"
+                        f"cloud={richest_cloud_picks} local={local_picks}"
                     )
                     return
             except ImportError:

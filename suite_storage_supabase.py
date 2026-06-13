@@ -30,11 +30,66 @@ _TABLE_RESUME = "suite_resume_items"
 _TABLE_SAVED = "suite_saved_items"
 _TABLE_SETTINGS = "suite_user_settings"
 _SAVED_ITEM_CONFLICT_COLS = "user_id,app,item_type,item_key"
+_STATE_CONFLICT_COLS = "user_id,app"
 _FULL_SESSION_KEY = "full_session"
+
+
+def _full_session_draft_pick_count(blob: Any) -> int:
+    if not isinstance(blob, dict):
+        return 0
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        return int(draft_room_restore_stats(blob).get("pick_count") or 0)
+    except Exception:
+        return 0
+
+
+def _merge_full_session_preserve_richer_draft(
+    prior: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """Never let an incoming full_session wipe a richer draft-room board."""
+    import copy
+
+    prior_picks = _full_session_draft_pick_count(prior)
+    incoming_picks = _full_session_draft_pick_count(incoming)
+    if incoming_picks >= prior_picks:
+        return copy.deepcopy(incoming)
+    merged = copy.deepcopy(incoming)
+    for key in ("draft_room_state", "draft_room_table"):
+        if key in prior:
+            merged[key] = copy.deepcopy(prior[key])
+    prior_pf = prior.get("page_filter_state")
+    incoming_pf = merged.get("page_filter_state")
+    if isinstance(prior_pf, dict):
+        prior_block = prior_pf.get("Draft Room Simulator")
+        if isinstance(prior_block, dict):
+            pf = incoming_pf if isinstance(incoming_pf, dict) else {}
+            block = pf.get("Draft Room Simulator")
+            if not isinstance(block, dict):
+                block = {}
+            block["draft_room_table"] = copy.deepcopy(
+                prior_block.get("draft_room_table") or prior.get("draft_room_state") or {}
+            )
+            for setting_key in (
+                "room_team_names",
+                "room_your_team",
+                "room_team_count",
+                "room_rounds",
+                "room_format",
+            ):
+                if setting_key in prior_block:
+                    block[setting_key] = copy.deepcopy(prior_block[setting_key])
+            pf["Draft Room Simulator"] = block
+            merged["page_filter_state"] = pf
+    return merged
 
 
 def _merge_state_metrics(app_key: str, incoming: dict[str, Any] | None) -> dict[str, Any]:
     """Shallow-merge metrics; preserve ``full_session`` when incoming omits it."""
+    import copy
+
     new_metrics = dict(incoming or {})
     try:
         existing = load_current_states().get(app_key) or {}
@@ -45,6 +100,14 @@ def _merge_state_metrics(app_key: str, incoming: dict[str, Any] | None) -> dict[
         merged.update(new_metrics)
         if _FULL_SESSION_KEY not in new_metrics and _FULL_SESSION_KEY in prior:
             merged[_FULL_SESSION_KEY] = prior[_FULL_SESSION_KEY]
+        elif _FULL_SESSION_KEY in new_metrics and _FULL_SESSION_KEY in prior:
+            prior_blob = prior.get(_FULL_SESSION_KEY)
+            incoming_blob = new_metrics.get(_FULL_SESSION_KEY)
+            if isinstance(prior_blob, dict) and isinstance(incoming_blob, dict):
+                merged[_FULL_SESSION_KEY] = _merge_full_session_preserve_richer_draft(
+                    prior_blob,
+                    incoming_blob,
+                )
         return merged
     except Exception:
         return new_metrics
@@ -205,22 +268,45 @@ def save_current_state(
     app_key = normalize_app_key(app)
     if app_key not in ACTIVE_APP_KEYS:
         return
+    merged_metrics = _merge_state_metrics(app_key, metrics)
     body: dict[str, Any] = {
         "app": app_key,
         "page": page or "",
         "summary": summary or "",
-        "metrics": _merge_state_metrics(app_key, metrics),
+        "metrics": merged_metrics,
         "updated_at": _now_iso(),
     }
     uid = _cloud_user_id()
     if uid:
         body["user_id"] = uid
-    _request(
-        "POST",
-        _TABLE_STATE,
-        json_body=body,
-        prefer="resolution=merge-duplicates,return=minimal",
-    )
+    patch_body = {
+        "page": body["page"],
+        "summary": body["summary"],
+        "metrics": merged_metrics,
+        "updated_at": body["updated_at"],
+    }
+    patch_params: dict[str, str] = {"app": f"eq.{app_key}"}
+    if uid:
+        patch_params["user_id"] = f"eq.{uid}"
+    try:
+        post_params = {"on_conflict": _STATE_CONFLICT_COLS} if uid else None
+        _request(
+            "POST",
+            _TABLE_STATE,
+            params=post_params,
+            json_body=body,
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+    except RuntimeError as exc:
+        if not uid or not _is_duplicate_key_error(exc):
+            raise
+        _request(
+            "PATCH",
+            _TABLE_STATE,
+            params=patch_params,
+            json_body=patch_body,
+            prefer="return=minimal",
+        )
 
 
 def upsert_resume_item(
@@ -330,11 +416,64 @@ def load_events(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
     return out
 
 
-def load_current_states() -> dict[str, dict[str, Any]]:
-    params: dict[str, str] = {"select": "app,page,summary,metrics,updated_at"}
+def _state_row_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
+    app = str(row.get("app") or "")
+    if app not in ACTIVE_APP_KEYS:
+        return None
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    full_session = metrics.get(_FULL_SESSION_KEY)
+    draft_picks = _full_session_draft_pick_count(full_session)
+    return {
+        "page": str(row.get("page") or ""),
+        "summary": str(row.get("summary") or ""),
+        "metrics": metrics,
+        "updated_at": str(row.get("updated_at") or "")[:19],
+        "_draft_pick_count": draft_picks,
+        "_has_full_session": isinstance(full_session, dict) and bool(full_session),
+    }
+
+
+def _pick_best_state_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        candidate = _state_row_candidate(row)
+        if candidate is None:
+            continue
+        if best is None:
+            best = candidate
+            continue
+        cand_picks = int(candidate.get("_draft_pick_count") or 0)
+        best_picks = int(best.get("_draft_pick_count") or 0)
+        cand_ts = str(candidate.get("updated_at") or "")
+        best_ts = str(best.get("updated_at") or "")
+        if cand_picks > best_picks:
+            best = candidate
+            continue
+        if cand_picks < best_picks:
+            continue
+        if cand_ts > best_ts:
+            best = candidate
+            continue
+        if cand_ts == best_ts and candidate.get("_has_full_session") and not best.get("_has_full_session"):
+            best = candidate
+    return best
+
+
+def load_current_state_rows(app: str | None = None) -> list[dict[str, Any]]:
+    """Return raw ``suite_app_current_state`` rows for diagnostics."""
+    params: dict[str, str] = {
+        "select": "app,page,summary,metrics,updated_at,user_id",
+        "order": "updated_at.desc",
+    }
     uid = _cloud_user_id()
     if uid:
         params["user_id"] = f"eq.{uid}"
+    if app:
+        params["app"] = f"eq.{normalize_app_key(app)}"
     rows = _request(
         "GET",
         _TABLE_STATE,
@@ -342,28 +481,82 @@ def load_current_states() -> dict[str, dict[str, Any]]:
         prefer="return=representation",
     )
     if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def load_cloud_row_diagnostics(app: str) -> dict[str, Any]:
+    """Read-back diagnostics for the persistence boundary (save + refresh)."""
+    app_key = normalize_app_key(app)
+    uid = _cloud_user_id() or ""
+    diag: dict[str, Any] = {
+        "cloud_target_user_id": uid[:32] if uid else "",
+        "cloud_target_app_id": app_key,
+        "cloud_fetch_user_id": uid[:32] if uid else "",
+        "cloud_fetch_app_id": app_key,
+        "cloud_fetch_attempted": bool(uid),
+        "cloud_fetch_success": False,
+        "cloud_fetch_updated_at": None,
+        "cloud_fetch_pick_count": 0,
+        "supabase_row_pick_count_after_write": 0,
+        "supabase_row_updated_at_after_write": None,
+        "cloud_row_count": 0,
+        "cloud_row_pick_counts": [],
+        "cloud_load_error": None,
+    }
+    if not uid:
+        diag["cloud_load_error"] = "local_account_no_cloud_user"
+        return diag
+    try:
+        rows = load_current_state_rows(app_key)
+        diag["cloud_row_count"] = len(rows)
+        pick_counts: list[int] = []
+        for row in rows:
+            metrics = row.get("metrics")
+            if not isinstance(metrics, dict):
+                metrics = {}
+            full_session = metrics.get(_FULL_SESSION_KEY)
+            picks = _full_session_draft_pick_count(full_session)
+            pick_counts.append(picks)
+        diag["cloud_row_pick_counts"] = pick_counts
+        best = _pick_best_state_row(rows)
+        if best:
+            diag["cloud_fetch_success"] = bool(best.get("_has_full_session"))
+            diag["cloud_fetch_updated_at"] = best.get("updated_at")
+            diag["supabase_row_updated_at_after_write"] = best.get("updated_at")
+            picks = int(best.get("_draft_pick_count") or 0)
+            diag["cloud_fetch_pick_count"] = picks
+            diag["supabase_row_pick_count_after_write"] = picks
+        elif rows:
+            diag["cloud_fetch_success"] = True
+            diag["cloud_fetch_updated_at"] = str(rows[0].get("updated_at") or "")[:19] or None
+            diag["supabase_row_updated_at_after_write"] = diag["cloud_fetch_updated_at"]
+    except Exception as exc:
+        diag["cloud_load_error"] = f"{type(exc).__name__}:{exc}"
+    return diag
+
+
+def load_current_states() -> dict[str, dict[str, Any]]:
+    rows = load_current_state_rows()
+    if not rows:
         return {}
-    out: dict[str, dict[str, Any]] = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if not isinstance(row, dict):
-            continue
         app = str(row.get("app") or "")
         if app not in ACTIVE_APP_KEYS:
             continue
-        metrics = row.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = {}
-        candidate = {
-            "page": str(row.get("page") or ""),
-            "summary": str(row.get("summary") or ""),
-            "metrics": metrics,
-            "updated_at": str(row.get("updated_at") or "")[:19],
+        grouped.setdefault(app, []).append(row)
+    out: dict[str, dict[str, Any]] = {}
+    for app, app_rows in grouped.items():
+        best = _pick_best_state_row(app_rows)
+        if best is None:
+            continue
+        out[app] = {
+            "page": best.get("page") or "",
+            "summary": best.get("summary") or "",
+            "metrics": best.get("metrics") or {},
+            "updated_at": best.get("updated_at"),
         }
-        prior = out.get(app)
-        if prior and prior.get("updated_at") and candidate.get("updated_at"):
-            if str(prior.get("updated_at")) >= str(candidate.get("updated_at")):
-                continue
-        out[app] = candidate
     return out
 
 

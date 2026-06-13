@@ -283,6 +283,14 @@ def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
     try:
         storage, diag["storage_module"] = _import_storage()
         app_key = storage.normalize_app_key(app_id)
+        diag["cloud_fetch_app_id"] = app_key
+        if hasattr(storage, "load_cloud_row_diagnostics"):
+            row_diag = storage.load_cloud_row_diagnostics(app_id)
+            diag.update(row_diag)
+            diag["cloud_row_found"] = bool(row_diag.get("cloud_row_count"))
+            diag["cloud_has_full_session"] = bool(row_diag.get("cloud_fetch_success"))
+            diag["cloud_updated_at"] = row_diag.get("cloud_fetch_updated_at")
+            return diag
         row = storage.load_current_states().get(app_key) or {}
         if isinstance(row, dict) and row:
             diag["cloud_row_found"] = True
@@ -291,6 +299,13 @@ def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
             if isinstance(metrics, dict):
                 blob = metrics.get(FULL_SESSION_KEY)
                 diag["cloud_has_full_session"] = isinstance(blob, dict) and bool(blob)
+                if isinstance(blob, dict):
+                    try:
+                        from draft_room_state import draft_room_restore_stats
+
+                        diag["cloud_fetch_pick_count"] = draft_room_restore_stats(blob).get("pick_count", 0)
+                    except ImportError:
+                        pass
     except Exception as exc:
         diag["cloud_load_error"] = str(exc)
 
@@ -321,6 +336,23 @@ def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
         return {}, str(row.get("updated_at") or "") or None
     except Exception:
         return {}, None
+
+
+def read_cloud_persistence_boundary(app_id: str) -> dict[str, Any]:
+    """Authoritative read-back for save/restore diagnostics."""
+    try:
+        storage, module = _import_storage()
+        if hasattr(storage, "load_cloud_row_diagnostics"):
+            diag = storage.load_cloud_row_diagnostics(app_id)
+            diag["storage_module"] = module
+            return diag
+    except Exception as exc:
+        return {
+            "cloud_fetch_attempted": True,
+            "cloud_fetch_success": False,
+            "cloud_load_error": f"{type(exc).__name__}:{exc}",
+        }
+    return {"cloud_fetch_attempted": False, "cloud_fetch_success": False}
 
 
 def save_cloud_full_session_with_result(

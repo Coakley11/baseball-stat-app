@@ -2436,8 +2436,51 @@ _BOARD_MANUAL_SAVE_FIELDS = (
     "cloud_blocked_reason",
     "direct_cloud_save_attempted",
     "direct_cloud_save_ok",
+    "cloud_target_user_id",
+    "cloud_target_app_id",
+    "supabase_row_pick_count_after_write",
+    "supabase_row_updated_at_after_write",
+    "cloud_row_count",
+    "cloud_row_pick_counts",
     "error",
 )
+
+
+def _attach_cloud_boundary_diagnostics(
+    trace: dict[str, Any],
+    *,
+    app_id: str = "baseball",
+) -> dict[str, Any]:
+    """Merge authoritative Supabase read-back into a save/restore trace."""
+    try:
+        from suite_cloud_state import read_cloud_persistence_boundary
+
+        boundary = read_cloud_persistence_boundary(app_id)
+        trace.update(
+            {
+                "cloud_target_user_id": boundary.get("cloud_target_user_id"),
+                "cloud_target_app_id": boundary.get("cloud_target_app_id"),
+                "cloud_fetch_user_id": boundary.get("cloud_fetch_user_id"),
+                "cloud_fetch_app_id": boundary.get("cloud_fetch_app_id"),
+                "cloud_fetch_attempted": boundary.get("cloud_fetch_attempted"),
+                "cloud_fetch_success": boundary.get("cloud_fetch_success"),
+                "cloud_fetch_updated_at": boundary.get("cloud_fetch_updated_at"),
+                "cloud_fetch_pick_count": boundary.get("cloud_fetch_pick_count"),
+                "supabase_row_pick_count_after_write": boundary.get(
+                    "supabase_row_pick_count_after_write"
+                ),
+                "supabase_row_updated_at_after_write": boundary.get(
+                    "supabase_row_updated_at_after_write"
+                ),
+                "cloud_row_count": boundary.get("cloud_row_count"),
+                "cloud_row_pick_counts": boundary.get("cloud_row_pick_counts"),
+            }
+        )
+        if boundary.get("cloud_load_error") and not trace.get("cloud_write_error"):
+            trace["cloud_readback_error"] = boundary.get("cloud_load_error")
+    except Exception as exc:
+        trace["cloud_readback_error"] = f"{type(exc).__name__}:{exc}"
+    return trace
 
 
 def _refresh_cloud_draft_room_stats(
@@ -2450,21 +2493,47 @@ def _refresh_cloud_draft_room_stats(
         "cloud_has_draft_room_board": False,
         "cloud_draft_room_pick_count": 0,
         "cloud_fetch_updated_at": cloud_ts,
+        "cloud_fetch_pick_count": 0,
+        "supabase_row_pick_count_after_write": 0,
     }
     try:
-        from suite_cloud_state import load_cloud_full_session
+        from suite_cloud_state import load_cloud_full_session, read_cloud_persistence_boundary
 
+        boundary = read_cloud_persistence_boundary("baseball")
+        stats.update(
+            {
+                "cloud_fetch_attempted": boundary.get("cloud_fetch_attempted"),
+                "cloud_fetch_success": boundary.get("cloud_fetch_success"),
+                "cloud_fetch_user_id": boundary.get("cloud_fetch_user_id"),
+                "cloud_fetch_app_id": boundary.get("cloud_fetch_app_id"),
+                "cloud_fetch_pick_count": int(boundary.get("cloud_fetch_pick_count") or 0),
+                "supabase_row_pick_count_after_write": int(
+                    boundary.get("supabase_row_pick_count_after_write") or 0
+                ),
+                "supabase_row_updated_at_after_write": boundary.get(
+                    "supabase_row_updated_at_after_write"
+                ),
+                "cloud_row_count": boundary.get("cloud_row_count"),
+                "cloud_row_pick_counts": boundary.get("cloud_row_pick_counts"),
+            }
+        )
         cloud_state, cloud_updated = load_cloud_full_session("baseball")
         if cloud_ts is None:
-            cloud_ts = cloud_updated
+            cloud_ts = cloud_updated or stats.get("cloud_fetch_updated_at")
         stats["cloud_fetch_updated_at"] = cloud_ts
         cloud_dr = draft_room_restore_stats(cloud_state)
         stats["cloud_has_draft_room_board"] = bool(cloud_dr.get("has_draft_board"))
         stats["cloud_draft_room_pick_count"] = int(cloud_dr.get("pick_count") or 0)
+        if int(stats.get("cloud_fetch_pick_count") or 0) == 0:
+            stats["cloud_fetch_pick_count"] = stats["cloud_draft_room_pick_count"]
+        if int(stats.get("supabase_row_pick_count_after_write") or 0) == 0:
+            stats["supabase_row_pick_count_after_write"] = stats["cloud_draft_room_pick_count"]
     except Exception as exc:
         stats["cloud_refresh_error"] = f"{type(exc).__name__}: {exc}"
     session["cloud_has_draft_room_board"] = stats["cloud_has_draft_room_board"]
     session["cloud_draft_room_pick_count"] = stats["cloud_draft_room_pick_count"]
+    session["cloud_fetch_pick_count"] = stats.get("cloud_fetch_pick_count")
+    session["supabase_row_pick_count_after_write"] = stats.get("supabase_row_pick_count_after_write")
     if stats.get("cloud_fetch_updated_at"):
         session["cloud_fetch_updated_at"] = stats["cloud_fetch_updated_at"]
         session["_suite_cloud_fetch_updated_at"] = stats["cloud_fetch_updated_at"]
@@ -2547,7 +2616,9 @@ def save_draft_board_direct_to_cloud(
         if ok:
             session["_suite_persist_last_save_cloud"] = True
             session["_suite_persist_last_save_reason"] = "manual_save_direct_cloud"
-            _refresh_cloud_draft_room_stats(session, cloud_ts=ts_after)
+            cloud_stats = _refresh_cloud_draft_room_stats(session, cloud_ts=ts_after)
+            trace.update(cloud_stats)
+            _attach_cloud_boundary_diagnostics(trace)
             if int(trace.get("cloud_pick_count_after") or 0) > 0:
                 clear_draft_room_local_edit(session)
     except Exception as exc:
@@ -2675,6 +2746,7 @@ def save_draft_board_now(
     trace["cloud_has_draft_room_board_after"] = cloud_stats.get("cloud_has_draft_room_board")
     trace["cloud_draft_room_pick_count_after"] = cloud_stats.get("cloud_draft_room_pick_count")
     trace["last_save_reason"] = session.get("_suite_persist_last_save_reason")
+    _attach_cloud_boundary_diagnostics(trace)
 
     session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
     session["_draft_room_last_save_trace"] = trace
@@ -2709,8 +2781,15 @@ def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> 
         "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
         "restored_draft_room_pick_count": session.get("restored_draft_room_pick_count"),
         "restore_source": session.get("restore_source"),
+        "restore_reason": session.get("restore_reason"),
         "local_has_draft_room_board": effective_picks > 0,
         "cloud_has_draft_room_board": session.get("cloud_has_draft_room_board"),
+        "cloud_fetch_attempted": session.get("cloud_fetch_attempted"),
+        "cloud_fetch_success": session.get("cloud_fetch_success"),
+        "cloud_fetch_user_id": session.get("cloud_fetch_user_id"),
+        "cloud_fetch_app_id": session.get("cloud_fetch_app_id"),
+        "cloud_fetch_pick_count": session.get("cloud_fetch_pick_count"),
+        "cloud_fetch_updated_at": session.get("cloud_fetch_updated_at"),
         "last_draft_room_save_trace": trace if isinstance(trace, dict) else None,
     }
     session["_draft_room_board_tab_diagnostics"] = out
@@ -2736,11 +2815,19 @@ def render_board_tab_diagnostics(st: Any) -> None:
             "cloud_payload_pick_count",
             "restored_draft_room_pick_count",
             "restore_source",
+            "restore_reason",
             "local_has_draft_room_board",
             "cloud_has_draft_room_board",
             "local_draft_room_pick_count",
             "cloud_draft_room_pick_count",
+            "cloud_fetch_attempted",
+            "cloud_fetch_success",
+            "cloud_fetch_user_id",
+            "cloud_fetch_app_id",
+            "cloud_fetch_pick_count",
             "cloud_fetch_updated_at",
+            "supabase_row_pick_count_after_write",
+            "supabase_row_updated_at_after_write",
             "_suite_autosave_block_kept_pick_loss",
             "_suite_autosave_skipped_draft_room_drop",
         ):
@@ -2772,6 +2859,13 @@ def render_board_tab_diagnostics(st: Any) -> None:
                 "cloud_draft_room_pick_count_after",
                 "direct_cloud_save_attempted",
                 "direct_cloud_save_ok",
+                "cloud_target_user_id",
+                "cloud_target_app_id",
+                "supabase_row_pick_count_after_write",
+                "supabase_row_updated_at_after_write",
+                "cloud_fetch_pick_count",
+                "cloud_row_count",
+                "cloud_row_pick_counts",
             ):
                 val = manual.get(extra_key)
                 if val is not None and val != "":
