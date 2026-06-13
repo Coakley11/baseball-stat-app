@@ -22,10 +22,12 @@ from draft_room_state import (
     commit_draft_room_table_if_changed,
     draft_board_diagnostics,
     draft_room_restore_stats,
+    detect_player_column,
     editor_widget_key,
     enrich_save_payload_with_draft_room,
     prepare_board_editor_for_render,
     prepare_draft_room_state,
+    resolve_active_board,
     save_draft_board_now,
     sanitize_state_dict_for_json,
     table_from_persist_dict,
@@ -193,14 +195,21 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_SEED_KEY]), 2)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_CACHE_KEY]), 2)
 
-    def test_prepare_board_editor_never_sets_widget_key(self) -> None:
-        session: dict = {}
-        table = _sample_table(picks=1)
-        initial, widget_key = prepare_board_editor_for_render(session, table)
-        self.assertEqual(widget_key, "draft_room_board_editor_0")
-        self.assertEqual(table_pick_count(initial), 1)
-        self.assertNotIn(widget_key, session)
-        self.assertIn(DRAFT_ROOM_EDITOR_SEED_KEY, session)
+    def test_resolve_active_board_prefers_widget_state(self) -> None:
+        st = MagicMock()
+        widget_key = "draft_room_board_editor_0"
+        empty = _sample_table(picks=0)
+        filled = _sample_table(picks=3)
+        st.session_state = {widget_key: filled}
+        session: dict = {DRAFT_ROOM_EDITOR_CACHE_KEY: empty}
+        active, source, count = resolve_active_board(session, widget_key, empty, st=st)
+        assert active is not None
+        self.assertEqual(count, 3)
+        self.assertEqual(source, f"widget:{widget_key}")
+
+    def test_detect_player_column_finds_player(self) -> None:
+        table = _sample_table(picks=2)
+        self.assertEqual(detect_player_column(table), "Player")
 
 
 if __name__ == "__main__":

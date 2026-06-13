@@ -124,40 +124,6 @@ def table_row_count(table: Any) -> int:
     return 0
 
 
-def table_picks_fingerprint(table: Any) -> str:
-    """Hash only filled pick rows — ignores empty grid structure changes."""
-    import hashlib
-
-    records: list[dict[str, Any]] = []
-    if is_runtime_table(table) and "Player" in table.columns:
-        picked = table[table["Player"].apply(_player_cell_filled)]
-        records = _json_safe(picked.to_dict(orient="records"))  # type: ignore[assignment]
-    elif is_persisted_table_blob(table):
-        for row in table.get("table_records") or []:
-            if isinstance(row, dict) and _player_cell_filled(row.get("Player")):
-                records.append(_json_safe(row))  # type: ignore[arg-type]
-    payload = json.dumps(records, sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-
-def table_pick_count(table: Any) -> int:
-    if is_runtime_table(table):
-        df = table
-        if df.empty or "Player" not in df.columns:
-            return 0
-        return int(df["Player"].apply(_player_cell_filled).sum())
-    if is_persisted_table_blob(table):
-        records = table.get("table_records") or []
-        if not isinstance(records, list):
-            return 0
-        return sum(
-            1
-            for row in records
-            if isinstance(row, dict) and _player_cell_filled(row.get("Player"))
-        )
-    return 0
-
-
 def _player_cell_filled(val: Any) -> bool:
     if val is None:
         return False
@@ -168,6 +134,229 @@ def _player_cell_filled(val: Any) -> bool:
         pass
     text = str(val).strip()
     return bool(text) and text.lower() not in {"none", "nan", "<na>"}
+
+
+_NON_PLAYER_COLUMNS = frozenset({"Round", "Pick", "Team", "round", "pick", "team"})
+
+
+def detect_player_column(table: Any) -> str | None:
+    """Find the column holding drafted player names (never Round/Pick/Team)."""
+    if not is_runtime_table(table) or table.empty:
+        return None
+    preferred = ("Player", "player", "fullName", "Player Name", "Selected Player", "Name")
+    for col in preferred:
+        if col in table.columns:
+            return col
+    for col in table.columns:
+        col_s = str(col)
+        if col_s in _NON_PLAYER_COLUMNS:
+            continue
+        lower = col_s.lower()
+        if "player" in lower or lower == "name":
+            return col_s
+    return None
+
+
+def normalize_board_table(table: Any) -> pd.DataFrame | None:
+    """Ensure standard Round/Pick/Team/Player columns for persistence."""
+    if not is_runtime_table(table):
+        return None
+    out = table.copy()
+    player_col = detect_player_column(out)
+    if player_col and player_col != "Player":
+        out["Player"] = out[player_col]
+    for col in ("Round", "Pick", "Team", "Player"):
+        if col not in out.columns:
+            out[col] = "" if col == "Player" else None
+    return out
+
+
+def column_non_empty_counts(table: Any) -> dict[str, int]:
+    if not is_runtime_table(table):
+        return {}
+    return {str(col): int(table[col].apply(_player_cell_filled).sum()) for col in table.columns}
+
+
+def table_pick_count(table: Any, *, player_col: str | None = None) -> int:
+    if is_runtime_table(table):
+        df = table
+        if df.empty:
+            return 0
+        col = player_col or detect_player_column(df)
+        if not col or col not in df.columns:
+            return 0
+        return int(df[col].apply(_player_cell_filled).sum())
+    if is_persisted_table_blob(table):
+        records = table.get("table_records") or []
+        if not isinstance(records, list):
+            return 0
+        col = player_col or "Player"
+        return sum(
+            1
+            for row in records
+            if isinstance(row, dict) and _player_cell_filled(row.get(col) or row.get("Player"))
+        )
+    return 0
+
+
+def _table_filled_rows_preview(table: Any, *, limit: int = 5) -> list[dict[str, Any]]:
+    if not is_runtime_table(table) or table.empty:
+        return []
+    player_col = detect_player_column(table) or "Player"
+    if player_col not in table.columns:
+        return []
+    picked = table[table[player_col].apply(_player_cell_filled)].head(limit)
+    return _json_safe(picked.to_dict(orient="records"))  # type: ignore[return-value]
+
+
+def _draft_related_session_keys(session: dict[str, Any]) -> list[str]:
+    terms = ("draft", "room", "board", "pick", "editor")
+    return sorted(str(k) for k in session.keys() if any(t in str(k).lower() for t in terms))
+
+
+def _source_pick_count(label: str, value: Any) -> dict[str, Any]:
+    if is_runtime_table(value):
+        return {
+            "source": label,
+            "type": "dataframe",
+            "rows": len(value),
+            "pick_count": table_pick_count(value),
+            "player_column": detect_player_column(value),
+            "columns": [str(c) for c in value.columns],
+            "non_empty_by_column": column_non_empty_counts(value),
+        }
+    if isinstance(value, dict):
+        return {"source": label, "type": "dict", "keys": sorted(str(k) for k in value.keys())[:20]}
+    return {"source": label, "type": type(value).__name__, "pick_count": 0}
+
+
+def resolve_active_board(
+    session: dict[str, Any],
+    widget_key: str,
+    editor_return: Any = None,
+    *,
+    st: Any | None = None,
+) -> tuple[pd.DataFrame | None, str, int]:
+    """
+    Pick the board source with the most filled picks.
+    Keyed data_editor stores edits in st.session_state[widget_key] — not always in return value.
+    """
+    candidates: list[tuple[str, Any]] = []
+    if st is not None:
+        ss = getattr(st, "session_state", None)
+        if ss is not None and widget_key in ss:
+            candidates.append((f"widget:{widget_key}", ss.get(widget_key)))
+    for key in _draft_related_session_keys(session):
+        if key.startswith(DRAFT_ROOM_EDITOR_KEY_PREFIX):
+            candidates.append((f"session:{key}", session.get(key)))
+    candidates.extend(
+        [
+            ("editor_return", editor_return),
+            (f"session:{DRAFT_ROOM_EDITOR_CACHE_KEY}", session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)),
+            (f"session:{DRAFT_ROOM_TABLE_KEY}", session.get(DRAFT_ROOM_TABLE_KEY)),
+            (f"session:{DRAFT_ROOM_EDITOR_SEED_KEY}", session.get(DRAFT_ROOM_EDITOR_SEED_KEY)),
+        ]
+    )
+    best_name = ""
+    best_table: pd.DataFrame | None = None
+    best_count = 0
+    for name, raw in candidates:
+        if not is_runtime_table(raw):
+            continue
+        normalized = normalize_board_table(raw)
+        if normalized is None:
+            continue
+        count = table_pick_count(normalized)
+        if count > best_count:
+            best_count = count
+            best_table = normalized
+            best_name = name
+    if best_table is None and is_runtime_table(editor_return):
+        best_table = normalize_board_table(editor_return)
+        best_name = "editor_return_fallback"
+        best_count = table_pick_count(best_table) if best_table is not None else 0
+    if best_table is not None:
+        session["_draft_room_active_board_source"] = best_name
+        session["_draft_room_active_board_pick_count"] = best_count
+    return best_table, best_name, best_count
+
+
+def build_board_debug_report(
+    session: dict[str, Any],
+    widget_key: str,
+    editor_return: Any = None,
+    *,
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """Deep Board-tab diagnostics to locate where picks actually live."""
+    active, source, pick_count = resolve_active_board(session, widget_key, editor_return, st=st)
+    sources: list[dict[str, Any]] = []
+    if st is not None:
+        ss = getattr(st, "session_state", None)
+        if ss is not None:
+            sources.append(_source_pick_count(f"widget:{widget_key}", ss.get(widget_key)))
+    for key in _draft_related_session_keys(session):
+        sources.append(_source_pick_count(f"session:{key}", session.get(key)))
+    sources.append(_source_pick_count("editor_return", editor_return))
+    report: dict[str, Any] = {
+        "widget_key": widget_key,
+        "editor_version": session.get(DRAFT_ROOM_EDITOR_VERSION_KEY),
+        "draft_related_session_keys": _draft_related_session_keys(session),
+        "active_board_source": source,
+        "active_board_pick_count": pick_count,
+        "active_player_column": detect_player_column(active) if is_runtime_table(active) else None,
+        "active_board_columns": [str(c) for c in active.columns] if is_runtime_table(active) else [],
+        "active_non_empty_by_column": column_non_empty_counts(active) if is_runtime_table(active) else {},
+        "active_first_filled_rows": _table_filled_rows_preview(active),
+        "source_pick_counts": sources,
+    }
+    if is_runtime_table(active):
+        report["data_editor_columns"] = [str(c) for c in active.columns]
+        report["first_5_non_empty_rows"] = _table_filled_rows_preview(active)
+    elif is_runtime_table(editor_return):
+        report["data_editor_columns"] = [str(c) for c in editor_return.columns]
+        report["first_5_non_empty_rows"] = _table_filled_rows_preview(editor_return)
+    session["_draft_room_board_debug_report"] = report
+    return report
+
+
+def render_board_debug_expander(st: Any, widget_key: str, editor_return: Any = None) -> None:
+    ss = st.session_state
+    report = build_board_debug_report(ss, widget_key, editor_return, st=st)
+    with st.expander("Debug Board State", expanded=False):
+        st.markdown("**Where picks live**")
+        st.text(f"active_board_source: {report.get('active_board_source')}")
+        st.text(f"active_board_pick_count: {report.get('active_board_pick_count')}")
+        st.text(f"active_player_column: {report.get('active_player_column')}")
+        st.text(f"data_editor_columns: {report.get('data_editor_columns')}")
+        st.text(f"draft_related_session_keys: {report.get('draft_related_session_keys')}")
+        st.markdown("**Non-empty cells by column (active board)**")
+        for col, cnt in (report.get("active_non_empty_by_column") or {}).items():
+            st.text(f"  {col}: {cnt}")
+        st.markdown("**First filled rows**")
+        for row in report.get("first_5_non_empty_rows") or []:
+            st.text(str(row))
+        st.markdown("**All candidate sources**")
+        for src in report.get("source_pick_counts") or []:
+            st.text(str(src))
+
+
+def table_picks_fingerprint(table: Any) -> str:
+    """Hash only filled pick rows — ignores empty grid structure changes."""
+    import hashlib
+
+    records: list[dict[str, Any]] = []
+    if is_runtime_table(table):
+        player_col = detect_player_column(table) or "Player"
+        if player_col in table.columns:
+            picked = table[table[player_col].apply(_player_cell_filled)]
+            records = _json_safe(picked.to_dict(orient="records"))  # type: ignore[assignment]
+    elif is_persisted_table_blob(table):
+        for row in table.get("table_records") or []:
+            if isinstance(row, dict) and _player_cell_filled(row.get("Player")):
+                records.append(_json_safe(row))  # type: ignore[arg-type]
+    payload = json.dumps(records, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def table_to_persist_dict(table: Any, *, settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -479,16 +668,18 @@ def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def read_board_for_save(session: dict[str, Any], board: Any = None) -> pd.DataFrame | None:
-    """Read board for manual save — prefer render return, then cache, then canonical table."""
-    if is_runtime_table(board):
-        return board.copy()
-    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
-    if is_runtime_table(cache):
-        return cache.copy()
-    table = session.get(DRAFT_ROOM_TABLE_KEY)
-    if is_runtime_table(table):
-        return table.copy()
+def read_board_for_save(
+    session: dict[str, Any],
+    board: Any = None,
+    *,
+    st: Any | None = None,
+    widget_key: str | None = None,
+) -> pd.DataFrame | None:
+    """Read board for manual save — prefer widget session state, then render return, then cache."""
+    wkey = widget_key or editor_widget_key(session)
+    active, _, _ = resolve_active_board(session, wkey, board, st=st)
+    if is_runtime_table(active):
+        return active.copy()
     return None
 
 
@@ -652,7 +843,13 @@ def unified_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def save_draft_board_now(st: Any, session: dict[str, Any], *, board: Any = None) -> dict[str, Any]:
+def save_draft_board_now(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    board: Any = None,
+    widget_key: str | None = None,
+) -> dict[str, Any]:
     """Explicit Board-tab save: editor → draft_room_state → disk + cloud."""
     trace: dict[str, Any] = {
         "path": "save_draft_board_now",
@@ -671,7 +868,8 @@ def save_draft_board_now(st: Any, session: dict[str, Any], *, board: Any = None)
         trace["cloud_timestamp_before_error"] = f"{type(exc).__name__}: {exc}"
     trace["cloud_timestamp_before"] = cloud_ts_before
 
-    board = read_board_for_save(session, board=board)
+    wkey = widget_key or editor_widget_key(session)
+    board = read_board_for_save(session, board, st=st, widget_key=wkey)
     if board is None:
         trace["error"] = "editor_state_missing"
         session["_draft_room_manual_save_result"] = trace
@@ -680,14 +878,14 @@ def save_draft_board_now(st: Any, session: dict[str, Any], *, board: Any = None)
 
     pick_count = table_pick_count(board)
     trace["saved_pick_count"] = pick_count
-    widget_key = editor_widget_key(session)
-    record_board_editor_diagnostics(session, board, editor_key=widget_key)
+    trace["active_board_source"] = session.get("_draft_room_active_board_source")
+    record_board_editor_diagnostics(session, board, editor_key=wkey)
     session[DRAFT_ROOM_TABLE_KEY] = board.copy()
     session[DRAFT_ROOM_EDITOR_CACHE_KEY] = board.copy()
     session["_draft_room_picks_fp"] = table_picks_fingerprint(board)
     session.pop("_draft_room_save_fp", None)
 
-    save_trace = commit_draft_room_table(st, session, board, reason="manual_save", editor_key=widget_key)
+    save_trace = commit_draft_room_table(st, session, board, reason="manual_save", editor_key=wkey)
     trace.update(save_trace)
     trace["saved_pick_count"] = pick_count
     trace["cloud_timestamp_before"] = cloud_ts_before
@@ -706,22 +904,27 @@ def save_draft_board_now(st: Any, session: dict[str, Any], *, board: Any = None)
     return trace
 
 
-def board_tab_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
     """Live Board-tab fields shown directly under the editor."""
-    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    widget_key = session.get("_draft_room_last_widget_key") or editor_widget_key(session)
+    editor_return = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    active, source, active_picks = resolve_active_board(session, widget_key, editor_return, st=st)
+    if is_runtime_table(active):
+        session[DRAFT_ROOM_EDITOR_CACHE_KEY] = active.copy()
+        session[DRAFT_ROOM_TABLE_KEY] = active.copy()
     editor_diag = session.get("_draft_room_editor_diagnostics")
-    widget_key = editor_widget_key(session)
-    if not isinstance(editor_diag, dict) and is_runtime_table(cache):
-        editor_diag = record_board_editor_diagnostics(session, cache, editor_key=widget_key)
+    if not isinstance(editor_diag, dict) and is_runtime_table(active):
+        editor_diag = record_board_editor_diagnostics(session, active, editor_key=widget_key)
     board = draft_board_diagnostics(session)
     trace = session.get("_draft_room_last_save_trace")
     out = {
         "data_editor_key": widget_key,
-        "editor_state_exists": is_runtime_table(cache),
+        "editor_state_exists": is_runtime_table(active),
         "editor_version": session.get(DRAFT_ROOM_EDITOR_VERSION_KEY),
-        "data_editor_returned_pick_count": table_pick_count(cache),
+        "active_board_source": source,
+        "data_editor_returned_pick_count": active_picks,
         "commit_input_pick_count": (
-            editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else table_pick_count(cache)
+            editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else active_picks
         ),
         "session_pick_count": board.get("session_pick_count"),
         "draft_room_pick_count": board.get("draft_room_pick_count"),
@@ -736,13 +939,14 @@ def board_tab_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
 def render_board_tab_diagnostics(st: Any) -> None:
     """Always-visible Board tab status panel (not dev-mode only)."""
     ss = st.session_state
-    diag = board_tab_diagnostics(ss)
+    diag = board_tab_diagnostics(ss, st=st)
     manual = ss.get("_draft_room_manual_save_result")
     with st.container(border=True):
         st.markdown("**Board save status**")
         for key in (
             "data_editor_key",
             "editor_state_exists",
+            "active_board_source",
             "data_editor_returned_pick_count",
             "commit_input_pick_count",
             "session_pick_count",

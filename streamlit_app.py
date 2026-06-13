@@ -15587,14 +15587,17 @@ if active_page == "Draft Room Simulator":
                 DRAFT_ROOM_EDITOR_CACHE_KEY,
                 prepare_board_editor_for_render,
                 record_board_editor_diagnostics,
+                render_board_debug_expander,
                 render_board_tab_diagnostics,
+                resolve_active_board,
                 save_draft_board_now,
             )
 
             initial_df, widget_key = prepare_board_editor_for_render(
                 st.session_state, st.session_state["draft_room_table"]
             )
-            edited_draft = st.data_editor(
+            st.session_state["_draft_room_last_widget_key"] = widget_key
+            editor_return = st.data_editor(
                 initial_df,
                 key=widget_key,
                 num_rows="fixed",
@@ -15604,6 +15607,13 @@ if active_page == "Draft Room Simulator":
                     "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
                 },
             )
+            edited_draft, _source, pick_count = resolve_active_board(
+                st.session_state, widget_key, editor_return, st=st
+            )
+            if edited_draft is None:
+                edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
+            else:
+                edited_draft = edited_draft.copy()
             st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
             st.session_state["draft_room_table"] = edited_draft.copy()
             record_board_editor_diagnostics(st.session_state, edited_draft, editor_key=widget_key)
@@ -15616,7 +15626,9 @@ if active_page == "Draft Room Simulator":
                     type="primary",
                     help="Write the current board from the editor to disk and cloud.",
                 ):
-                    result = save_draft_board_now(st, st.session_state, board=edited_draft)
+                    result = save_draft_board_now(
+                        st, st.session_state, board=edited_draft, widget_key=widget_key
+                    )
                     picks = int(result.get("saved_pick_count") or 0)
                     if result.get("saved") and result.get("cloud"):
                         st.success(
@@ -15631,6 +15643,7 @@ if active_page == "Draft Room Simulator":
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
 
             render_board_tab_diagnostics(st)
+            render_board_debug_expander(st, widget_key, editor_return)
         except Exception as exc:
             edited_draft = st.data_editor(
                 st.session_state["draft_room_table"],
