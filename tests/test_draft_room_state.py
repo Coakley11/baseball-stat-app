@@ -510,6 +510,50 @@ class TestPickRestoreDraftRoom(unittest.TestCase):
         self.assertIn("draft room", picked.reason.lower())
 
 
+class TestDraftRoomSyncGuards(unittest.TestCase):
+    def test_sync_does_not_clobber_blob_when_runtime_empty(self) -> None:
+        from draft_room_state import sync_draft_room_session_before_save
+
+        table = _sample_table(picks=3)
+        session: dict = {
+            "room_team_names": "Team 1\nTeam 2",
+            "room_rounds": 5,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        write_canonical_draft_room_state(session, table, reason="test")
+        sync_draft_room_session_before_save(session)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_STATE_KEY]), 3)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
+
+    def test_prepare_dirty_restores_from_blob_when_runtime_empty(self) -> None:
+        table = _sample_table(picks=3)
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_DIRTY_KEY: True,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+            "room_team_names": "Team 1\nTeam 2",
+            "room_rounds": 5,
+        }
+        write_canonical_draft_room_state(session, table, reason="test")
+        restored = prepare_draft_room_state(session)
+        self.assertEqual(table_pick_count(restored), 3)
+
+    def test_paste_fills_next_open_picks_after_existing(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            "room_team_names": "Team 1\nTeam 2",
+            "room_rounds": 5,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=5),
+        }
+        res = paste_players_to_board(session, "Aaron Judge\nJuan Soto\nShohei Ohtani")
+        self.assertTrue(res.get("ok"))
+        table = session[DRAFT_ROOM_TABLE_KEY]
+        filled = table[table["Player"].astype(str).str.strip() != ""]
+        self.assertEqual(len(filled), 8)
+        self.assertEqual(str(filled.iloc[5]["Player"]), "Aaron Judge")
+
+
+class TestDeleteActiveDraft(unittest.TestCase):
     def test_delete_active_draft_clears_board_and_live(self) -> None:
         session: dict = {
             DRAFT_ROOM_EDITOR_VERSION_KEY: 0,

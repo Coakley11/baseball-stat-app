@@ -99,10 +99,6 @@ PAGE_STATE_REGISTRY = {
     },
     "Draft Room Simulator": {
         "exact": [
-            "draft_room_table",
-            "draft_room_board_editor_seed",
-            "draft_room_board_editor_version",
-            "draft_room_board_editor_cache",
             "draft_room_roster_team_to_view", "draft_room_show_all_rosters",
             "room_your_team", "room_team_count", "room_rounds", "room_format", "room_window",
             "room_team_names", "fantasy_draft_projection_style",
@@ -167,6 +163,9 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "ml_full_generation_requested",
     "ml_tuning_apply_requested",
     "ml_predictions_df",
+    "draft_room_state",
+    "draft_room_state_dirty",
+    "draft_room_state_last_local_edit_ts",
 })
 
 

@@ -290,7 +290,8 @@ def _merge_cloud_draft_room_before_save(
         return state
 
     local = _draft_room_from_blob(state)
-    if local and table_pick_count(local) > 0:
+    local_picks = table_pick_count(local) if isinstance(local, dict) else 0
+    if local and local_picks > 0:
         return state
     if is_draft_room_locally_dirty(st.session_state):
         return state

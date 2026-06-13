@@ -10810,11 +10810,21 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     if not isinstance(transfer_batches, list):
         transfer_batches = []
 
+    try:
+        from draft_room_state import get_active_draft_mode, ACTIVE_DRAFT_MODE_LIVE
+
+        live_draft_active = get_active_draft_mode(st.session_state) == ACTIVE_DRAFT_MODE_LIVE
+    except Exception:
+        live_draft_active = False
+
     st.sidebar.divider()
     st.sidebar.markdown("### Watchlist & Draft Queue")
-    st.sidebar.caption("Quick reference that persists while you switch pages.")
+    st.sidebar.caption(
+        "Quick reference that persists while you switch pages. "
+        "Use **Draft** to add a player to the next open pick on the canonical board."
+    )
 
-    with st.sidebar.expander("Draft queue", expanded=bool(dq)):
+    with st.sidebar.expander("Draft queue", expanded=bool(dq) or live_draft_active):
         if not dq:
             st.caption("Empty — add players with **Queue player** in Player Actions.")
         else:
@@ -10849,12 +10859,17 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             _clear_workflow_list("draft_queue")
             st.rerun()
 
-    with st.sidebar.expander("Watchlist", expanded=bool(watch)):
+    with st.sidebar.expander("Watchlist", expanded=bool(watch) or live_draft_active):
         if not watch:
             st.caption("Empty — use **Add to Watchlist** from Player Actions.")
         else:
-            for pname in reversed(watch[-12:]):
-                st.caption(str(pname).strip()[:48] + ("…" if len(str(pname).strip()) > 48 else ""))
+            for idx, pname in enumerate(reversed(watch[-12:])):
+                label = str(pname).strip()
+                w_name, w_draft = st.columns([0.72, 0.28])
+                w_name.caption(label[:42] + ("…" if len(label) > 42 else ""))
+                if w_draft.button("Draft", key=f"sidebar_watch_draft_{idx}"):
+                    st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+                    st.rerun()
             if len(watch) > 12:
                 st.caption(f"+{len(watch) - 12} more")
         if st.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
@@ -10862,13 +10877,18 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             _clear_workflow_list("workflow_favorite_targets")
             st.rerun()
 
-    with st.sidebar.expander("Tracked players", expanded=False):
+    with st.sidebar.expander("Tracked players", expanded=live_draft_active and bool(rv)):
         if not rv and not pairs:
             st.caption("Updates when you select, send, compare, or analyze players.")
         if rv:
             st.caption("Recently viewed")
-            for pname in reversed(rv[-8:]):
-                st.caption("• " + str(pname).strip()[:46] + ("…" if len(str(pname).strip()) > 46 else ""))
+            for idx, pname in enumerate(reversed(rv[-8:])):
+                label = str(pname).strip()
+                t_name, t_draft = st.columns([0.72, 0.28])
+                t_name.caption("• " + label[:40] + ("…" if len(label) > 40 else ""))
+                if t_draft.button("Draft", key=f"sidebar_tracked_draft_{idx}"):
+                    st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+                    st.rerun()
         if pairs:
             st.caption("Recent comparisons")
             for pair in reversed(pairs[-5:]):
@@ -15734,37 +15754,40 @@ if active_page == "Draft Room Simulator":
 
         add_col, paste_col, reset_col = st.columns([2, 2, 1])
         with add_col:
+            add_query = st.text_input(
+                "Add drafted player",
+                key="draft_room_add_player_query",
+                placeholder="Type player name, e.g. Aaron Judge",
+                help="Start typing — matching players from the draft pool appear below.",
+            )
+            add_matches = (
+                search_draft_pool_names(add_query, _draft_pool_names, limit=20)
+                if search_draft_pool_names and len(str(add_query or "").strip()) >= 2
+                else []
+            )
+            add_pick = ""
+            if add_matches:
+                add_pick = st.selectbox(
+                    "Matching players",
+                    add_matches,
+                    key="draft_room_add_player_pick",
+                )
+            elif str(add_query or "").strip():
+                st.caption("No matches — try more letters or check spelling.")
             with st.form("draft_room_add_player_form", clear_on_submit=True):
-                add_query = st.text_input(
-                    "Add drafted player",
-                    key="draft_room_add_player_query",
-                    placeholder="Type first letters — e.g. FRAN for Francisco Lindor",
-                )
-                add_matches = (
-                    search_draft_pool_names(add_query, _draft_pool_names, limit=20)
-                    if search_draft_pool_names and len(str(add_query or "").strip()) >= 2
-                    else []
-                )
-                add_pick = ""
-                if add_matches:
-                    add_pick = st.selectbox(
-                        "Matching players",
-                        add_matches,
-                        key="draft_room_add_player_pick",
-                    )
-                elif str(add_query or "").strip():
-                    st.caption("No matches — try more letters or check spelling.")
+                st.caption("Select a match above, then click Add to next open pick.")
                 if st.form_submit_button("Add to next pick", type="primary"):
                     from draft_room_state import add_player_to_next_open_pick, persist_draft_board_to_storage
 
-                    canonical = add_pick
+                    _q = str(st.session_state.get("draft_room_add_player_query") or "").strip()
+                    canonical = str(st.session_state.get("draft_room_add_player_pick") or "").strip()
                     if not canonical and resolve_draft_player_name:
                         canonical, suggestions = resolve_draft_player_name(
-                            add_query, _draft_name_index, all_names=_draft_pool_names
+                            _q, _draft_name_index, all_names=_draft_pool_names
                         )
                         if not canonical and suggestions:
                             st.error(
-                                f"No exact match for '{add_query}'. Did you mean: {', '.join(suggestions[:3])}?"
+                                f"No exact match for '{_q}'. Did you mean: {', '.join(suggestions[:3])}?"
                             )
                     if canonical:
                         res = add_player_to_next_open_pick(st.session_state, canonical)
@@ -15776,10 +15799,13 @@ if active_page == "Draft Room Simulator":
                                 reason="simulator_add_player",
                             )
                             st.success(res.get("message"))
+                            st.rerun()
                         else:
                             st.error(res.get("message") or res.get("error"))
-                    elif not str(add_query or "").strip():
+                    elif not _q:
                         st.error("Type a player name and select a match.")
+                    else:
+                        st.error("Select a matching player from the list above.")
         with paste_col:
             with st.form("draft_room_paste_form", clear_on_submit=True):
                 paste_text = st.text_area(
@@ -15793,7 +15819,7 @@ if active_page == "Draft Room Simulator":
                 st.caption(
                     "Paste names you already drafted elsewhere (one per line). "
                     "The app matches each line to the real player pool, shows fixes for typos, "
-                    "then fills picks 1, 2, 3… in order."
+                    "then fills the next open picks in order (continues after existing picks)."
                 )
                 if st.form_submit_button("Fill board from paste"):
                     from draft_room_state import paste_players_to_board, persist_draft_board_to_storage
@@ -15809,6 +15835,10 @@ if active_page == "Draft Room Simulator":
                             for row in report["unmatched"]:
                                 sug = ", ".join(row.get("suggestions") or []) or "—"
                                 st.text(f"  • {row.get('input')} → suggestions: {sug}")
+                            st.caption(
+                                "Unmatched lines are skipped. Close typos (e.g. Aaron Judg → Aaron Judge) "
+                                "may auto-correct when there is one strong match; otherwise pick from suggestions."
+                            )
                         if report.get("duplicates"):
                             st.info(f"Skipped duplicate(s): {', '.join(report['duplicates'])}")
                         canonical_lines = report.get("canonical_names") or []
@@ -15911,8 +15941,17 @@ if active_page == "Draft Room Simulator":
                 edited_draft = editor_return if hasattr(editor_return, "copy") else initial_df
             else:
                 edited_draft = edited_draft.copy()
-            st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
-            st.session_state["draft_room_table"] = edited_draft.copy()
+            try:
+                from draft_room_state import _draft_room_from_blob
+
+                _blob = _draft_room_from_blob(st.session_state) or {}
+                _canonical_picks = table_pick_count(_blob)
+            except Exception:
+                _canonical_picks = table_pick_count(st.session_state.get("draft_room_table"))
+            _session_picks = table_pick_count(st.session_state.get("draft_room_table"))
+            if pick_count > 0 or max(_canonical_picks, _session_picks) == 0:
+                st.session_state[DRAFT_ROOM_EDITOR_CACHE_KEY] = edited_draft.copy()
+                st.session_state["draft_room_table"] = edited_draft.copy()
             try:
                 from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, ACTIVE_DRAFT_MODE_MANUAL, get_active_draft_mode, set_canonical_draft_meta
 

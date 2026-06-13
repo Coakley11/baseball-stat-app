@@ -827,6 +827,18 @@ def preserve_richer_session_board(
     """Never let empty editor resolve clobber a richer programmatic draft_room_table."""
     runtime = session.get(DRAFT_ROOM_TABLE_KEY)
     runtime_count = table_pick_count(runtime)
+    blob = _draft_room_from_blob(session)
+    blob_count = table_pick_count(blob) if isinstance(blob, dict) else 0
+    if blob_count > resolved_count and blob_count > runtime_count and isinstance(blob, dict) and blob.get("table_records") is not None:
+        restored = table_from_persist_dict(blob)
+        if restored is not None and table_pick_count(restored) > resolved_count:
+            out = restored.copy()
+            session[DRAFT_ROOM_TABLE_KEY] = out.copy()
+            session[DRAFT_ROOM_EDITOR_CACHE_KEY] = out.copy()
+            sync_editor_seed(session, out, force_reset=True)
+            session["_draft_room_active_board_source"] = f"{DRAFT_ROOM_STATE_KEY}:preserved_over_resolve"
+            session["_draft_room_active_board_pick_count"] = table_pick_count(out)
+            return out, table_pick_count(out), "preserved_canonical_blob"
     if is_runtime_table(runtime) and runtime_count > resolved_count:
         out = runtime.copy()
         session[DRAFT_ROOM_EDITOR_CACHE_KEY] = out.copy()
@@ -920,9 +932,16 @@ def find_widget_state_in_session(st: Any, widget_key: str) -> tuple[str, Any]:
     if widget_key in ss:
         return widget_key, ss.get(widget_key)
     prefix = f"{DRAFT_ROOM_EDITOR_KEY_PREFIX}_"
-    matches = sorted(str(k) for k in ss.keys() if str(k).startswith(prefix))
+    matches = [str(k) for k in ss.keys() if str(k).startswith(prefix)]
+
+    def _version_num(key: str) -> int:
+        try:
+            return int(str(key).replace(prefix, "") or "0")
+        except ValueError:
+            return 0
+
     if matches:
-        last_key = matches[-1]
+        last_key = max(matches, key=_version_num)
         return last_key, ss.get(last_key)
     return widget_key, None
 
@@ -1097,21 +1116,6 @@ def render_quick_draft_status(st: Any, session: dict[str, Any]) -> None:
                 st.text(f"{key}: (none)")
             else:
                 st.text(f"{key}: {val}")
-
-
-def find_widget_state_in_session(st: Any, widget_key: str) -> tuple[str, Any]:
-    """Return (actual_key, raw_value) from Streamlit session state."""
-    ss = getattr(st, "session_state", None)
-    if ss is None:
-        return widget_key, None
-    if widget_key in ss:
-        return widget_key, ss.get(widget_key)
-    prefix = f"{DRAFT_ROOM_EDITOR_KEY_PREFIX}_"
-    matches = sorted(str(k) for k in ss.keys() if str(k).startswith(prefix))
-    if matches:
-        last_key = matches[-1]
-        return last_key, ss.get(last_key)
-    return widget_key, None
 
 
 def inspect_widget_state_debug(st: Any, session: dict[str, Any], widget_key: str) -> dict[str, Any]:
@@ -1537,9 +1541,19 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
 
     if is_draft_room_locally_dirty(session):
         best = cache if cache_picks >= runtime_picks and is_runtime_table(cache) else runtime
+        if is_runtime_table(best) and table_pick_count(best) > 0:
+            write_canonical_draft_room_state(session, best, reason="dirty_runtime_preserve", local_edit=True)
+            session[DRAFT_ROOM_EDITOR_CACHE_KEY] = best.copy()
+            sync_editor_seed(session, best, force_reset=True)
+            return best
+        blob = _draft_room_from_blob(session)
+        blob_picks = table_pick_count(blob) if isinstance(blob, dict) else 0
+        if isinstance(blob, dict) and blob.get("table_records") is not None and blob_picks > 0:
+            restored = table_from_persist_dict(blob)
+            if restored is not None:
+                clear_draft_room_local_edit(session)
+                return apply_restored_board_to_session(session, restored, blob=blob, bump_widget=True)
         if is_runtime_table(best):
-            if table_pick_count(best) > 0:
-                write_canonical_draft_room_state(session, best, reason="dirty_runtime_preserve", local_edit=True)
             session[DRAFT_ROOM_EDITOR_CACHE_KEY] = best.copy()
             sync_editor_seed(session, best, force_reset=True)
             return best
@@ -1554,8 +1568,7 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
         return runtime
     if cache_picks > blob_picks and is_runtime_table(cache):
         write_canonical_draft_room_state(session, cache, reason="cache_wins", local_edit=False)
-        session[DRAFT_ROOM_TABLE_KEY] = cache.copy()
-        return cache
+        return apply_restored_board_to_session(session, cache, bump_widget=False)
 
     table = runtime
     if isinstance(blob, dict) and blob.get("table_records") is not None:
@@ -1587,13 +1600,47 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
     return ensure_runtime_draft_board(session)
 
 
+def _resolve_richest_draft_board(session: dict[str, Any]) -> tuple[pd.DataFrame, int, str]:
+    """Pick the board source with the most filled picks (never prefer empty over blob)."""
+    best_table: pd.DataFrame | None = None
+    best_count = -1
+    best_name = "missing"
+    for name, raw in (
+        ("runtime", session.get(DRAFT_ROOM_TABLE_KEY)),
+        ("cache", session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)),
+        ("seed", session.get(DRAFT_ROOM_EDITOR_SEED_KEY)),
+        ("blob", _draft_room_from_blob(session)),
+    ):
+        if is_runtime_table(raw):
+            table = normalize_board_table(raw)
+        elif isinstance(raw, dict) and raw.get("table_records") is not None:
+            table = table_from_persist_dict(raw)
+        else:
+            continue
+        if table is None:
+            continue
+        count = table_pick_count(table)
+        if count > best_count:
+            best_table = table
+            best_count = count
+            best_name = name
+    if best_table is None:
+        best_table = ensure_runtime_draft_board(session)
+        best_count = table_pick_count(best_table)
+        best_name = "fresh"
+    return best_table, best_count, best_name
+
+
 def sync_draft_room_session_before_save(session: dict[str, Any]) -> None:
-    table = ensure_runtime_draft_board(session)
+    table, pick_count, source = _resolve_richest_draft_board(session)
+    session[DRAFT_ROOM_TABLE_KEY] = table.copy()
+    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()
+    session["_draft_room_pre_save_sync_source"] = source
     write_canonical_draft_room_state(
         session,
         table,
         reason="pre_save_sync",
-        local_edit=is_draft_room_locally_dirty(session),
+        local_edit=is_draft_room_locally_dirty(session) and pick_count > 0,
     )
 
 
@@ -2019,6 +2066,7 @@ def render_board_tab_diagnostics(st: Any) -> None:
             st.text(f"last_draft_room_save_trace.reason: {trace.get('reason')}")
             st.text(f"last_draft_room_save_trace.saved: {trace.get('saved')}")
             st.text(f"last_draft_room_save_trace.saved_pick_count: {trace.get('saved_pick_count')}")
+            st.text(f"last_draft_room_save_trace.session_pick_count: {trace.get('session_pick_count')}")
             st.text(f"last_draft_room_save_trace.saved_disk: {trace.get('saved_disk')}")
             st.text(f"last_draft_room_save_trace.saved_cloud: {trace.get('saved_cloud')}")
             st.text(f"last_draft_room_save_trace.disk_payload_pick_count: {trace.get('disk_payload_pick_count')}")
@@ -2078,7 +2126,7 @@ def push_local_draft_room_to_cloud(st: Any, session: dict[str, Any]) -> dict[str
         from baseball_persistent_state import force_save_baseball_state
 
         sync_draft_room_session_before_save(session)
-        trace["saved"] = bool(force_save_baseball_state(st, reason=reason or "draft_room_pick"))
+        trace["saved"] = bool(force_save_baseball_state(st, reason="push_draft_room_to_cloud"))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
         trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))
