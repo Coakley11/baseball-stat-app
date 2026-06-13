@@ -10,16 +10,23 @@ import pandas as pd
 
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from draft_room_state import (
-    DRAFT_ROOM_EDITOR_KEY,
+    DRAFT_ROOM_EDITOR_CACHE_KEY,
+    DRAFT_ROOM_EDITOR_SEED_KEY,
+    DRAFT_ROOM_EDITOR_VERSION_KEY,
     DRAFT_ROOM_STATE_KEY,
     DRAFT_ROOM_TABLE_KEY,
     apply_cloud_draft_room_state_if_allowed,
+    apply_restored_board_to_session,
+    bump_editor_version,
     commit_draft_room_table,
     commit_draft_room_table_if_changed,
     draft_board_diagnostics,
     draft_room_restore_stats,
+    editor_widget_key,
     enrich_save_payload_with_draft_room,
+    prepare_board_editor_for_render,
     prepare_draft_room_state,
+    save_draft_board_now,
     sanitize_state_dict_for_json,
     table_from_persist_dict,
     table_pick_count,
@@ -161,25 +168,39 @@ class TestDraftRoomPersistence(unittest.TestCase):
 
     def test_save_draft_board_now_reads_editor(self) -> None:
         st = MagicMock()
+        table = _sample_table(picks=3)
         session: dict = {
             "active_page": "Draft Room Simulator",
-            DRAFT_ROOM_EDITOR_KEY: _sample_table(picks=3),
+            DRAFT_ROOM_EDITOR_CACHE_KEY: table,
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
         }
         with patch("baseball_persistent_state.force_save_baseball_state", return_value=True) as mock_force:
             with patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-01-01T00:00:00Z")):
-                from draft_room_state import save_draft_board_now
-
-                trace = save_draft_board_now(st, session)
+                trace = save_draft_board_now(st, session, board=table)
         mock_force.assert_called_once()
         self.assertEqual(trace.get("saved_pick_count"), 3)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
 
-    def test_ensure_board_editor_seeded_does_not_clobber_existing(self) -> None:
-        from draft_room_state import ensure_board_editor_seeded
+    def test_editor_widget_key_is_versioned(self) -> None:
+        session = {DRAFT_ROOM_EDITOR_VERSION_KEY: 2}
+        self.assertEqual(editor_widget_key(session), "draft_room_board_editor_2")
 
-        session = {DRAFT_ROOM_EDITOR_KEY: _sample_table(picks=2)}
-        ensure_board_editor_seeded(session, _sample_table(picks=0))
-        self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_KEY]), 2)
+    def test_apply_restored_board_bumps_version(self) -> None:
+        session: dict = {DRAFT_ROOM_EDITOR_VERSION_KEY: 0}
+        table = _sample_table(picks=2)
+        apply_restored_board_to_session(session, table)
+        self.assertEqual(session[DRAFT_ROOM_EDITOR_VERSION_KEY], 1)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_SEED_KEY]), 2)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_CACHE_KEY]), 2)
+
+    def test_prepare_board_editor_never_sets_widget_key(self) -> None:
+        session: dict = {}
+        table = _sample_table(picks=1)
+        initial, widget_key = prepare_board_editor_for_render(session, table)
+        self.assertEqual(widget_key, "draft_room_board_editor_0")
+        self.assertEqual(table_pick_count(initial), 1)
+        self.assertNotIn(widget_key, session)
+        self.assertIn(DRAFT_ROOM_EDITOR_SEED_KEY, session)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,12 @@ import pandas as pd
 
 DRAFT_ROOM_PAGE_BLOCK = "Draft Room Simulator"
 DRAFT_ROOM_TABLE_KEY = "draft_room_table"
-DRAFT_ROOM_EDITOR_KEY = "draft_room_board_editor"
+DRAFT_ROOM_EDITOR_KEY_PREFIX = "draft_room_board_editor"
+DRAFT_ROOM_EDITOR_SEED_KEY = "draft_room_board_editor_seed"
+DRAFT_ROOM_EDITOR_VERSION_KEY = "draft_room_board_editor_version"
+DRAFT_ROOM_EDITOR_CACHE_KEY = "draft_room_board_editor_cache"
+# Legacy name — do not assign to this key; widget key is versioned (Streamlit-owned).
+DRAFT_ROOM_EDITOR_KEY = DRAFT_ROOM_EDITOR_KEY_PREFIX
 DRAFT_ROOM_STATE_KEY = "draft_room_state"
 DRAFT_ROOM_DIRTY_KEY = "draft_room_state_dirty"
 DRAFT_ROOM_LOCAL_EDIT_TS_KEY = "draft_room_state_last_local_edit_ts"
@@ -45,6 +50,60 @@ def _json_safe(value: Any) -> Any:
         except Exception:
             pass
     return str(value)
+
+
+def editor_widget_key(session: dict[str, Any]) -> str:
+    """Versioned widget key — Streamlit-owned; never assign to this key in app code."""
+    version = int(session.get(DRAFT_ROOM_EDITOR_VERSION_KEY) or 0)
+    return f"{DRAFT_ROOM_EDITOR_KEY_PREFIX}_{version}"
+
+
+def bump_editor_version(session: dict[str, Any]) -> int:
+    version = int(session.get(DRAFT_ROOM_EDITOR_VERSION_KEY) or 0) + 1
+    session[DRAFT_ROOM_EDITOR_VERSION_KEY] = version
+    return version
+
+
+def sync_editor_seed(session: dict[str, Any], table: Any, *, force_reset: bool = False) -> None:
+    """Update seed dataframe used as data_editor initial value (safe to assign)."""
+    if not is_runtime_table(table):
+        return
+    seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
+    if force_reset or not is_runtime_table(seed):
+        session[DRAFT_ROOM_EDITOR_SEED_KEY] = table.copy()
+        return
+    if table_pick_count(table) > table_pick_count(seed):
+        session[DRAFT_ROOM_EDITOR_SEED_KEY] = table.copy()
+
+
+def apply_restored_board_to_session(
+    session: dict[str, Any],
+    table: pd.DataFrame,
+    *,
+    blob: dict[str, Any] | None = None,
+    bump_widget: bool = True,
+) -> pd.DataFrame:
+    """After cloud/disk restore: canonical table + seed + new widget version."""
+    session[DRAFT_ROOM_TABLE_KEY] = table
+    if isinstance(blob, dict):
+        session[DRAFT_ROOM_STATE_KEY] = blob
+    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()
+    sync_editor_seed(session, table, force_reset=True)
+    if bump_widget:
+        bump_editor_version(session)
+    return table
+
+
+def prepare_board_editor_for_render(session: dict[str, Any], canonical_table: Any) -> tuple[pd.DataFrame, str]:
+    """Return (initial_df, widget_key) for st.data_editor — never touches widget session key."""
+    if not is_runtime_table(canonical_table):
+        canonical_table = pd.DataFrame()
+    if DRAFT_ROOM_EDITOR_VERSION_KEY not in session:
+        session[DRAFT_ROOM_EDITOR_VERSION_KEY] = 0
+    sync_editor_seed(session, canonical_table)
+    seed = session.get(DRAFT_ROOM_EDITOR_SEED_KEY)
+    initial = seed.copy() if is_runtime_table(seed) else canonical_table.copy()
+    return initial, editor_widget_key(session)
 
 
 def is_runtime_table(table: Any) -> bool:
@@ -196,12 +255,12 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     source_key = ""
     active_draft_page = ""
     runtime_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
-    editor_picks = table_pick_count(session.get(DRAFT_ROOM_EDITOR_KEY))
-    session_pick_count = max(room_stats["pick_count"], runtime_picks, editor_picks)
+    cache_picks = table_pick_count(session.get(DRAFT_ROOM_EDITOR_CACHE_KEY))
+    session_pick_count = max(room_stats["pick_count"], runtime_picks, cache_picks)
     session_has_board = session_pick_count > 0
 
     if session_has_board:
-        source_key = DRAFT_ROOM_EDITOR_KEY if editor_picks >= runtime_picks else DRAFT_ROOM_TABLE_KEY
+        source_key = DRAFT_ROOM_EDITOR_CACHE_KEY if cache_picks >= runtime_picks else DRAFT_ROOM_TABLE_KEY
         active_draft_page = DRAFT_ROOM_PAGE_BLOCK
     elif live_stats["pick_count"] > 0 or live_stats["has_live_draft_state"]:
         source_key = LIVE_DRAFT_ROOM_KEY
@@ -281,41 +340,37 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame | None:
     """Hydrate runtime draft_room_table from canonical blob without clobbering in-memory picks."""
     runtime = session.get(DRAFT_ROOM_TABLE_KEY)
     runtime_picks = table_pick_count(runtime) if is_runtime_table(runtime) else 0
-    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
-    editor_picks = table_pick_count(editor) if is_runtime_table(editor) else 0
+    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    cache_picks = table_pick_count(cache) if is_runtime_table(cache) else 0
 
     if is_draft_room_locally_dirty(session):
-        best = editor if editor_picks >= runtime_picks and is_runtime_table(editor) else runtime
+        best = cache if cache_picks >= runtime_picks and is_runtime_table(cache) else runtime
         if is_runtime_table(best) and table_pick_count(best) > 0:
             write_canonical_draft_room_state(session, best, reason="dirty_runtime_preserve", local_edit=True)
-            if not is_runtime_table(editor) or editor_picks < runtime_picks:
-                session[DRAFT_ROOM_EDITOR_KEY] = best.copy()
+            session[DRAFT_ROOM_EDITOR_CACHE_KEY] = best.copy()
+            sync_editor_seed(session, best, force_reset=True)
             return best
 
     blob = _draft_room_from_blob(session)
     blob_picks = table_pick_count(blob) if isinstance(blob, dict) else 0
     if runtime_picks > blob_picks and is_runtime_table(runtime):
         write_canonical_draft_room_state(session, runtime, reason="runtime_wins", local_edit=False)
-        if editor_picks < runtime_picks or not is_runtime_table(editor):
-            session[DRAFT_ROOM_EDITOR_KEY] = runtime.copy()
+        session[DRAFT_ROOM_EDITOR_CACHE_KEY] = runtime.copy()
+        sync_editor_seed(session, runtime, force_reset=True)
         return runtime
-    if editor_picks > blob_picks and is_runtime_table(editor):
-        write_canonical_draft_room_state(session, editor, reason="editor_wins", local_edit=False)
-        session[DRAFT_ROOM_TABLE_KEY] = editor.copy()
-        return editor
+    if cache_picks > blob_picks and is_runtime_table(cache):
+        write_canonical_draft_room_state(session, cache, reason="cache_wins", local_edit=False)
+        session[DRAFT_ROOM_TABLE_KEY] = cache.copy()
+        return cache
 
     table = runtime
     if isinstance(blob, dict) and blob.get("table_records") is not None:
         restored = table_from_persist_dict(blob)
         if restored is not None:
-            session[DRAFT_ROOM_TABLE_KEY] = restored
-            session[DRAFT_ROOM_STATE_KEY] = blob
-            if DRAFT_ROOM_EDITOR_KEY not in session or table_pick_count(session.get(DRAFT_ROOM_EDITOR_KEY)) < table_pick_count(restored):
-                session[DRAFT_ROOM_EDITOR_KEY] = restored.copy()
             for key in DRAFT_ROOM_SETTINGS_KEYS:
                 if key in blob:
                     session[key] = blob[key]
-            return restored
+            return apply_restored_board_to_session(session, restored, blob=blob, bump_widget=True)
     if is_runtime_table(table):
         write_canonical_draft_room_state(session, table, reason="session_hydrate", local_edit=False)
         return table
@@ -331,7 +386,7 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame | None:
                     for key in DRAFT_ROOM_SETTINGS_KEYS:
                         if key in block:
                             session[key] = block[key]
-                    return restored
+                    return apply_restored_board_to_session(session, restored, bump_widget=True)
     return table if is_runtime_table(table) else None
 
 
@@ -424,21 +479,28 @@ def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def ensure_board_editor_seeded(session: dict[str, Any], canonical_table: Any) -> None:
-    """Seed keyed data_editor only when the widget key is absent (never overwrite before render)."""
-    if DRAFT_ROOM_EDITOR_KEY in session and is_runtime_table(session.get(DRAFT_ROOM_EDITOR_KEY)):
-        return
-    if is_runtime_table(canonical_table):
-        session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
+def read_board_for_save(session: dict[str, Any], board: Any = None) -> pd.DataFrame | None:
+    """Read board for manual save — prefer render return, then cache, then canonical table."""
+    if is_runtime_table(board):
+        return board.copy()
+    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    if is_runtime_table(cache):
+        return cache.copy()
+    table = session.get(DRAFT_ROOM_TABLE_KEY)
+    if is_runtime_table(table):
+        return table.copy()
+    return None
 
 
 def record_board_editor_diagnostics(
     session: dict[str, Any],
     edited_table: Any,
     *,
-    editor_key: str = DRAFT_ROOM_EDITOR_KEY,
+    editor_key: str | None = None,
 ) -> dict[str, Any]:
     """Capture data_editor vs session_state wiring for Developer Mode."""
+    if not editor_key:
+        editor_key = editor_widget_key(session)
     session_table = session.get(DRAFT_ROOM_TABLE_KEY)
     blob = _draft_room_from_blob(session) or {}
     diag = {
@@ -564,10 +626,10 @@ def apply_cloud_draft_room_state_if_allowed(session: dict[str, Any], state: dict
     restored = table_from_persist_dict(blob)
     if restored is None:
         return False
-    write_canonical_draft_room_state(session, restored, reason="cloud_restore", local_edit=False)
     for key in DRAFT_ROOM_SETTINGS_KEYS:
         if key in blob:
             session[key] = blob[key]
+    apply_restored_board_to_session(session, restored, blob=copy.deepcopy(blob), bump_widget=True)
     session["_draft_room_restore_source"] = "cloud_or_workspace"
     return True
 
@@ -590,18 +652,7 @@ def unified_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def read_board_from_editor(session: dict[str, Any]) -> pd.DataFrame | None:
-    """Read the live keyed editor state — authoritative source for manual save."""
-    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
-    if is_runtime_table(editor):
-        return editor.copy()
-    table = session.get(DRAFT_ROOM_TABLE_KEY)
-    if is_runtime_table(table):
-        return table.copy()
-    return None
-
-
-def save_draft_board_now(st: Any, session: dict[str, Any]) -> dict[str, Any]:
+def save_draft_board_now(st: Any, session: dict[str, Any], *, board: Any = None) -> dict[str, Any]:
     """Explicit Board-tab save: editor → draft_room_state → disk + cloud."""
     trace: dict[str, Any] = {
         "path": "save_draft_board_now",
@@ -620,7 +671,7 @@ def save_draft_board_now(st: Any, session: dict[str, Any]) -> dict[str, Any]:
         trace["cloud_timestamp_before_error"] = f"{type(exc).__name__}: {exc}"
     trace["cloud_timestamp_before"] = cloud_ts_before
 
-    board = read_board_from_editor(session)
+    board = read_board_for_save(session, board=board)
     if board is None:
         trace["error"] = "editor_state_missing"
         session["_draft_room_manual_save_result"] = trace
@@ -629,12 +680,14 @@ def save_draft_board_now(st: Any, session: dict[str, Any]) -> dict[str, Any]:
 
     pick_count = table_pick_count(board)
     trace["saved_pick_count"] = pick_count
-    record_board_editor_diagnostics(session, board)
+    widget_key = editor_widget_key(session)
+    record_board_editor_diagnostics(session, board, editor_key=widget_key)
     session[DRAFT_ROOM_TABLE_KEY] = board.copy()
+    session[DRAFT_ROOM_EDITOR_CACHE_KEY] = board.copy()
     session["_draft_room_picks_fp"] = table_picks_fingerprint(board)
     session.pop("_draft_room_save_fp", None)
 
-    save_trace = commit_draft_room_table(st, session, board, reason="manual_save")
+    save_trace = commit_draft_room_table(st, session, board, reason="manual_save", editor_key=widget_key)
     trace.update(save_trace)
     trace["saved_pick_count"] = pick_count
     trace["cloud_timestamp_before"] = cloud_ts_before
@@ -655,18 +708,20 @@ def save_draft_board_now(st: Any, session: dict[str, Any]) -> dict[str, Any]:
 
 def board_tab_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     """Live Board-tab fields shown directly under the editor."""
-    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
+    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
     editor_diag = session.get("_draft_room_editor_diagnostics")
-    if not isinstance(editor_diag, dict) and is_runtime_table(editor):
-        editor_diag = record_board_editor_diagnostics(session, editor)
+    widget_key = editor_widget_key(session)
+    if not isinstance(editor_diag, dict) and is_runtime_table(cache):
+        editor_diag = record_board_editor_diagnostics(session, cache, editor_key=widget_key)
     board = draft_board_diagnostics(session)
     trace = session.get("_draft_room_last_save_trace")
     out = {
-        "data_editor_key": DRAFT_ROOM_EDITOR_KEY,
-        "editor_state_exists": is_runtime_table(editor),
-        "data_editor_returned_pick_count": table_pick_count(editor),
+        "data_editor_key": widget_key,
+        "editor_state_exists": is_runtime_table(cache),
+        "editor_version": session.get(DRAFT_ROOM_EDITOR_VERSION_KEY),
+        "data_editor_returned_pick_count": table_pick_count(cache),
         "commit_input_pick_count": (
-            editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else table_pick_count(editor)
+            editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else table_pick_count(cache)
         ),
         "session_pick_count": board.get("session_pick_count"),
         "draft_room_pick_count": board.get("draft_room_pick_count"),
