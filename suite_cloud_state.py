@@ -431,19 +431,61 @@ def pick_restore_session(
             disk_ts,
         )
 
-    if cloud_first and cloud_state:
+    try:
+        from live_draft_state import live_draft_restore_stats
+
+        cloud_ld = live_draft_restore_stats(cloud_state)
+        disk_ld = live_draft_restore_stats(disk_state)
+        cloud_has_ld = cloud_ld["has_live_draft_state"]
+        disk_has_ld = disk_ld["has_live_draft_state"]
+    except ImportError:
+        cloud_has_ld = disk_has_ld = False
+
+    if disk_epoch > cloud_epoch:
         return RestorePickResult(
-            cloud_state,
-            "cloud",
-            "cloud-first workspace sync",
+            disk_state,
+            "disk",
+            f"disk newer than cloud ({disk_ts} > {cloud_ts})",
             cloud_ts,
             disk_ts,
         )
 
     if cloud_epoch > disk_epoch:
-        return RestorePickResult(cloud_state, "cloud", "cloud newer", cloud_ts, disk_ts)
-    if disk_epoch > cloud_epoch:
-        return RestorePickResult(disk_state, "disk", "disk newer", cloud_ts, disk_ts)
+        return RestorePickResult(
+            cloud_state,
+            "cloud",
+            f"cloud newer than disk ({cloud_ts} > {disk_ts})",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if disk_has_ld and not cloud_has_ld:
+        return RestorePickResult(
+            disk_state,
+            "disk",
+            "disk has live draft; cloud missing",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if cloud_has_ld and not disk_has_ld:
+        return RestorePickResult(
+            cloud_state,
+            "cloud",
+            "cloud has live draft; disk missing",
+            cloud_ts,
+            disk_ts,
+        )
+
+    if cloud_first and cloud_state:
+        return RestorePickResult(
+            cloud_state,
+            "cloud",
+            "cloud-first workspace sync (timestamps tied)",
+            cloud_ts,
+            disk_ts,
+        )
+
     if prefer_cloud_on_tie:
         return RestorePickResult(cloud_state, "cloud", "tie → cloud", cloud_ts, disk_ts)
     return RestorePickResult(disk_state, "disk", "tie → disk", cloud_ts, disk_ts)

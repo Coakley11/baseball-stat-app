@@ -642,6 +642,21 @@ def _record_startup_restore_diagnostics(
     st.session_state["_suite_disk_restore_after_cloud"] = picked_source == "disk" and bool(cloud_state)
     st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
     st.session_state["_suite_post_restore_comparison_players"] = _session_comparison_players(st) or None
+    try:
+        from live_draft_state import live_draft_restore_stats
+
+        cloud_ld = live_draft_restore_stats(cloud_state)
+        disk_ld = live_draft_restore_stats(disk_state)
+        st.session_state["cloud_has_live_draft_state"] = cloud_ld["has_live_draft_state"]
+        st.session_state["cloud_live_draft_pick_count"] = cloud_ld["pick_count"]
+        st.session_state["local_has_live_draft_state"] = disk_ld["has_live_draft_state"]
+        st.session_state["local_live_draft_pick_count"] = disk_ld["pick_count"]
+    except ImportError:
+        pass
+    st.session_state["restore_winner_reason_detail"] = picked_reason
+    st.session_state["already_synced_why"] = skip_reason if not applied else apply_reason
+    st.session_state["local_disk_updated_at"] = disk_ts
+    st.session_state["cloud_updated_at_at_restore"] = cloud_ts
 
 
 def sync_workspace_protocol(
@@ -730,6 +745,18 @@ def sync_workspace_protocol(
     cloud_epoch = parse_persist_timestamp(cloud_ts)
     disk_epoch = parse_persist_timestamp(disk_ts)
     cloud_newer_than_disk = bool(cloud_ts and cloud_epoch > disk_epoch)
+    disk_newer_than_cloud = bool(disk_ts and disk_epoch > cloud_epoch)
+
+    try:
+        from live_draft_state import live_draft_restore_stats
+
+        _cloud_ld = live_draft_restore_stats(cloud_state)
+        _disk_ld = live_draft_restore_stats(disk_state)
+        live_draft_disk_beats_stale_cloud = bool(
+            _disk_ld["has_live_draft_state"] and not _cloud_ld["has_live_draft_state"]
+        )
+    except ImportError:
+        live_draft_disk_beats_stale_cloud = False
 
     if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
         reason = "local unsaved edits — workspace sync skipped"
@@ -824,6 +851,10 @@ def sync_workspace_protocol(
         apply_reasons.append("cloud_newer_than_applied")
     if cloud_newer_than_disk:
         apply_reasons.append("cloud_newer_than_disk")
+    if disk_newer_than_cloud:
+        apply_reasons.append("disk_newer_than_cloud")
+    if live_draft_disk_beats_stale_cloud:
+        apply_reasons.append("live_draft_disk_beats_stale_cloud")
     page_mismatch_apply = bool(
         page_mismatch
         and (first_sync or cloud_newer_than_applied or cloud_newer_than_disk)
@@ -848,11 +879,18 @@ def sync_workspace_protocol(
             first_sync
             or cloud_newer_than_applied
             or cloud_newer_than_disk
+            or disk_newer_than_cloud
+            or live_draft_disk_beats_stale_cloud
             or page_mismatch_apply
             or comparison_mismatch_apply
         )
     )
     apply_reason = ", ".join(apply_reasons) if apply_reasons else "none"
+    st.session_state["already_synced_why"] = (
+        f"would_apply={should_apply}; triggers=[{apply_reason}]"
+        if not st.session_state.get(synced_key) or should_apply
+        else f"already_synced; triggers=[{apply_reason}] insufficient"
+    )
 
     if cloud_newer_than_disk and picked.source == "cloud":
         st.session_state.pop(synced_key, None)
@@ -908,6 +946,19 @@ def sync_workspace_protocol(
     elif picked.source == "disk":
         st.session_state[applied_key] = disk_ts or _utc_now_iso()
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
+        if app_id == "baseball":
+            try:
+                from live_draft_state import live_draft_restore_stats, push_local_draft_to_cloud
+
+                if live_draft_restore_stats(picked.state)["has_live_draft_state"]:
+                    st.session_state["_suite_push_local_draft_after_disk_restore"] = True
+                    push_local_draft_to_cloud(
+                        st,
+                        st.session_state,
+                        st.session_state.get("live_draft_room"),
+                    )
+            except Exception as exc:
+                st.session_state["_suite_push_local_draft_error"] = f"{type(exc).__name__}: {exc}"
 
     _record_workspace_sync_trace(
         st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,

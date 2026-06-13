@@ -889,7 +889,22 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "resume_insight_hydration_only": ss.get("_suite_resume_insight_hydration_only"),
         "workspace_sync_skipped_no_apply": ss.get("_suite_workspace_sync_skipped_no_apply"),
         "autosave_cloud_blocked_reason": ss.get("_suite_autosave_cloud_blocked_reason"),
+        "local_has_live_draft_state": ss.get("local_has_live_draft_state"),
+        "local_live_draft_pick_count": ss.get("local_live_draft_pick_count"),
+        "cloud_has_live_draft_state": ss.get("cloud_has_live_draft_state"),
+        "cloud_live_draft_pick_count": ss.get("cloud_live_draft_pick_count"),
+        "restore_winner_reason_detail": ss.get("restore_winner_reason_detail"),
+        "already_synced_why": ss.get("already_synced_why"),
+        "local_disk_updated_at": ss.get("local_disk_updated_at"),
+        "cloud_updated_at_at_restore": ss.get("cloud_updated_at_at_restore"),
     }
+    try:
+        from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+
+        startup_rows["deploy_build"] = SUITE_BUILD_LABEL
+        startup_rows["deploy_commit"] = GIT_COMMIT_SHORT
+    except ImportError:
+        pass
     try:
         from live_draft_state import live_draft_envelope_summary, live_draft_restore_diagnostics
 

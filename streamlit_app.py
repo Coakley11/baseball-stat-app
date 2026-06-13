@@ -16111,6 +16111,21 @@ if active_page == "Live Draft Room":
                     )
                 else:
                     st.error(f"Cloud save failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
+        if st.button(
+            "Push Local Draft to Cloud Now",
+            key="live_draft_push_local_cloud_btn",
+            help="Load live draft from local disk file (if newer) and push to Supabase.",
+        ):
+            from live_draft_state import push_local_draft_to_cloud
+
+            trace = push_local_draft_to_cloud(st, st.session_state, room)
+            if trace.get("last_live_draft_save_success"):
+                st.success(
+                    f"Local draft pushed · picks={trace.get('cloud_payload_pick_count')} · "
+                    f"ts={trace.get('cloud_updated_at_after')}"
+                )
+            else:
+                st.error(f"Push failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
     market_df_live = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 

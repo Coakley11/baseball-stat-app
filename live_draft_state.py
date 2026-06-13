@@ -259,6 +259,16 @@ def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
             return copy.deepcopy(ld)
     return None
 
+def live_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Summary stats for restore winner diagnostics."""
+    blob = _live_draft_from_blob(state or {})
+    board = (blob.get("draft_board") or []) if isinstance(blob, dict) else []
+    return {
+        "has_live_draft_state": bool(isinstance(blob, dict) and blob.get("draft_room_id")),
+        "pick_count": len(board) if isinstance(board, list) else 0,
+        "pool_count": len(blob.get("pool_records") or []) if isinstance(blob, dict) else 0,
+    }
+
 
 def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict[str, Any]) -> bool:
     if is_live_draft_locally_dirty(session):
@@ -598,6 +608,42 @@ def save_live_draft_direct_to_cloud(
     session["_live_draft_last_save_trace"] = trace
     session["last_live_draft_save_success"] = trace["last_live_draft_save_success"]
     session["last_live_draft_save_error"] = trace.get("error") or ""
+    return trace
+
+def push_local_draft_to_cloud(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Recovery: merge live draft from local disk, then push full_session to Supabase."""
+    trace: dict[str, Any] = {"path": "push_local_to_cloud", "merged_from_disk": False}
+    try:
+        from suite_user_persistence import _load_raw
+
+        disk_state, _, disk_ts = _load_raw("baseball")
+        disk_stats = live_draft_restore_stats(disk_state)
+        session_stats = live_draft_restore_stats(session)
+        trace["local_disk_updated_at"] = disk_ts
+        trace["local_disk_has_live_draft_state"] = disk_stats["has_live_draft_state"]
+        trace["local_disk_pick_count"] = disk_stats["pick_count"]
+        trace["session_has_live_draft_state"] = session_stats["has_live_draft_state"]
+        if (
+            not room
+            and not session_stats["has_live_draft_state"]
+            and disk_stats["has_live_draft_state"]
+            and isinstance(disk_state, dict)
+        ):
+            apply_cloud_live_draft_state_if_allowed(session, disk_state)
+            prepare_live_draft_state(session)
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            trace["merged_from_disk"] = True
+    except Exception as exc:
+        trace["disk_merge_error"] = f"{type(exc).__name__}: {exc}"
+
+    direct = save_live_draft_direct_to_cloud(st, session, room if isinstance(room, dict) else None)
+    trace.update(direct)
+    trace["path"] = "push_local_to_cloud"
+    session["_live_draft_push_local_trace"] = trace
     return trace
 
 

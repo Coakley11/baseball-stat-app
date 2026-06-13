@@ -274,6 +274,41 @@ class TestLiveDraftCloudSave(unittest.TestCase):
         self.assertEqual(room.get("current_pick_index"), 2)
 
 
+class TestPickRestoreLiveDraft(unittest.TestCase):
+    def test_disk_newer_wins_over_stale_cloud(self) -> None:
+        from suite_cloud_state import pick_restore_session
+
+        cloud = {"active_page": "Draft Room Simulator", "saved_at": "x"}
+        disk = {
+            "active_page": "Live Draft Room",
+            LIVE_DRAFT_STATE_KEY: room_to_persist_dict(_sample_room()),
+        }
+        picked = pick_restore_session(
+            cloud,
+            "2026-06-13T00:36:54",
+            disk,
+            "2026-06-13T01:18:47+00:00",
+            cloud_first=True,
+        )
+        self.assertEqual(picked.source, "disk")
+        self.assertIn("newer", picked.reason)
+
+    def test_disk_live_draft_beats_cloud_without_draft(self) -> None:
+        from suite_cloud_state import pick_restore_session
+
+        cloud = {"active_page": "Draft Room Simulator"}
+        disk = {LIVE_DRAFT_STATE_KEY: room_to_persist_dict(_sample_room())}
+        picked = pick_restore_session(
+            cloud,
+            "2026-06-13T00:36:54",
+            disk,
+            "2026-06-13T00:36:54",
+            cloud_first=True,
+        )
+        self.assertEqual(picked.source, "disk")
+        self.assertIn("live draft", picked.reason.lower())
+
+
 class TestLiveDraftDirectCloudSave(unittest.TestCase):
     def test_direct_cloud_save_trace_on_disabled(self) -> None:
         from live_draft_state import save_live_draft_direct_to_cloud
