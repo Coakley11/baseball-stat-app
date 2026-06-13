@@ -8,7 +8,7 @@ from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-06-13-ami-acceptance-harness-v18"
 
-GIT_COMMIT_SHORT = "3989247"
+GIT_COMMIT_SHORT = "0e1f8d3"
 
 GIT_BRANCH = "dev"
 
