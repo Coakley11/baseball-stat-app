@@ -10,10 +10,12 @@ import pandas as pd
 
 from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 from draft_room_state import (
+    DRAFT_ROOM_EDITOR_KEY,
     DRAFT_ROOM_STATE_KEY,
     DRAFT_ROOM_TABLE_KEY,
     apply_cloud_draft_room_state_if_allowed,
     commit_draft_room_table,
+    commit_draft_room_table_if_changed,
     draft_board_diagnostics,
     draft_room_restore_stats,
     enrich_save_payload_with_draft_room,
@@ -21,6 +23,7 @@ from draft_room_state import (
     sanitize_state_dict_for_json,
     table_from_persist_dict,
     table_pick_count,
+    table_picks_fingerprint,
     table_to_persist_dict,
     write_canonical_draft_room_state,
 )
@@ -131,6 +134,7 @@ class TestDraftRoomPersistence(unittest.TestCase):
             trace = commit_draft_room_table(st, session, table, reason="board_edit")
         mock_force.assert_called_once()
         self.assertEqual(trace.get("draft_board_source_key"), DRAFT_ROOM_TABLE_KEY)
+        self.assertEqual(trace.get("commit_input_pick_count"), 1)
 
 
 if __name__ == "__main__":

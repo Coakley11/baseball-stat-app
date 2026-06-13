@@ -11,6 +11,7 @@ import pandas as pd
 
 DRAFT_ROOM_PAGE_BLOCK = "Draft Room Simulator"
 DRAFT_ROOM_TABLE_KEY = "draft_room_table"
+DRAFT_ROOM_EDITOR_KEY = "draft_room_board_editor"
 DRAFT_ROOM_STATE_KEY = "draft_room_state"
 DRAFT_ROOM_DIRTY_KEY = "draft_room_state_dirty"
 DRAFT_ROOM_LOCAL_EDIT_TS_KEY = "draft_room_state_last_local_edit_ts"
@@ -54,6 +55,30 @@ def is_persisted_table_blob(data: Any) -> bool:
     return isinstance(data, dict) and (
         "table_records" in data or data.get("_persist_schema") == DRAFT_ROOM_PERSIST_SCHEMA
     )
+
+
+def table_row_count(table: Any) -> int:
+    if is_runtime_table(table):
+        return len(table)
+    if is_persisted_table_blob(table):
+        return len(table.get("table_records") or [])
+    return 0
+
+
+def table_picks_fingerprint(table: Any) -> str:
+    """Hash only filled pick rows — ignores empty grid structure changes."""
+    import hashlib
+
+    records: list[dict[str, Any]] = []
+    if is_runtime_table(table) and "Player" in table.columns:
+        picked = table[table["Player"].astype(str).str.strip().ne("")]
+        records = _json_safe(picked.to_dict(orient="records"))  # type: ignore[assignment]
+    elif is_persisted_table_blob(table):
+        for row in table.get("table_records") or []:
+            if isinstance(row, dict) and str(row.get("Player") or "").strip():
+                records.append(_json_safe(row))  # type: ignore[arg-type]
+    payload = json.dumps(records, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def table_pick_count(table: Any) -> int:
@@ -143,7 +168,7 @@ def draft_room_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
     if blob and not pick_count:
         pick_count = table_pick_count(blob)
     return {
-        "has_draft_board": bool(pick_count > 0 or (isinstance(blob, dict) and blob.get("table_records"))),
+        "has_draft_board": pick_count > 0,
         "pick_count": pick_count,
         "pool_count": len(blob.get("table_records") or []) if isinstance(blob, dict) else 0,
     }
@@ -158,17 +183,14 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     active_page = str(session.get("active_page") or "")
     source_key = ""
     active_draft_page = ""
-    session_pick_count = 0
-    session_has_board = False
+    runtime_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+    editor_picks = table_pick_count(session.get(DRAFT_ROOM_EDITOR_KEY))
+    session_pick_count = max(room_stats["pick_count"], runtime_picks, editor_picks)
+    session_has_board = session_pick_count > 0
 
-    if room_stats["pick_count"] > 0 or (
-        is_runtime_table(session.get(DRAFT_ROOM_TABLE_KEY))
-        and table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)) > 0
-    ):
-        source_key = DRAFT_ROOM_TABLE_KEY
+    if session_has_board:
+        source_key = DRAFT_ROOM_EDITOR_KEY if editor_picks >= runtime_picks else DRAFT_ROOM_TABLE_KEY
         active_draft_page = DRAFT_ROOM_PAGE_BLOCK
-        session_pick_count = max(room_stats["pick_count"], table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)))
-        session_has_board = session_pick_count > 0
     elif live_stats["pick_count"] > 0 or live_stats["has_live_draft_state"]:
         source_key = LIVE_DRAFT_ROOM_KEY
         active_draft_page = "Live Draft Room"
@@ -244,14 +266,40 @@ def write_canonical_draft_room_state(
 
 
 def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame | None:
-    """Hydrate runtime draft_room_table from canonical blob."""
+    """Hydrate runtime draft_room_table from canonical blob without clobbering in-memory picks."""
+    runtime = session.get(DRAFT_ROOM_TABLE_KEY)
+    runtime_picks = table_pick_count(runtime) if is_runtime_table(runtime) else 0
+    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
+    editor_picks = table_pick_count(editor) if is_runtime_table(editor) else 0
+
+    if is_draft_room_locally_dirty(session):
+        best = editor if editor_picks >= runtime_picks and is_runtime_table(editor) else runtime
+        if is_runtime_table(best) and table_pick_count(best) > 0:
+            write_canonical_draft_room_state(session, best, reason="dirty_runtime_preserve", local_edit=True)
+            if not is_runtime_table(editor) or editor_picks < runtime_picks:
+                session[DRAFT_ROOM_EDITOR_KEY] = best.copy()
+            return best
+
     blob = _draft_room_from_blob(session)
-    table = session.get(DRAFT_ROOM_TABLE_KEY)
+    blob_picks = table_pick_count(blob) if isinstance(blob, dict) else 0
+    if runtime_picks > blob_picks and is_runtime_table(runtime):
+        write_canonical_draft_room_state(session, runtime, reason="runtime_wins", local_edit=False)
+        if editor_picks < runtime_picks or not is_runtime_table(editor):
+            session[DRAFT_ROOM_EDITOR_KEY] = runtime.copy()
+        return runtime
+    if editor_picks > blob_picks and is_runtime_table(editor):
+        write_canonical_draft_room_state(session, editor, reason="editor_wins", local_edit=False)
+        session[DRAFT_ROOM_TABLE_KEY] = editor.copy()
+        return editor
+
+    table = runtime
     if isinstance(blob, dict) and blob.get("table_records") is not None:
         restored = table_from_persist_dict(blob)
         if restored is not None:
             session[DRAFT_ROOM_TABLE_KEY] = restored
             session[DRAFT_ROOM_STATE_KEY] = blob
+            if DRAFT_ROOM_EDITOR_KEY not in session or table_pick_count(session.get(DRAFT_ROOM_EDITOR_KEY)) < table_pick_count(restored):
+                session[DRAFT_ROOM_EDITOR_KEY] = restored.copy()
             for key in DRAFT_ROOM_SETTINGS_KEYS:
                 if key in blob:
                     session[key] = blob[key]
@@ -318,7 +366,7 @@ def enrich_save_payload_with_draft_room(
             if key in session:
                 block[key] = session[key]
     pick_count = int(safe_blob.get("pick_count") or table_pick_count(safe_blob))
-    diag["payload_has_draft_board"] = bool(pick_count > 0 or safe_blob.get("table_records"))
+    diag["payload_has_draft_board"] = pick_count > 0
     diag["cloud_payload_pick_count"] = pick_count
     session["cloud_payload_has_draft_board"] = diag["payload_has_draft_board"]
     session["cloud_payload_pick_count"] = pick_count
@@ -364,17 +412,127 @@ def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def commit_draft_room_table(st: Any, session: dict[str, Any], table: Any, *, reason: str = "board_edit") -> dict[str, Any]:
+    return out
+
+
+def ensure_board_editor_seeded(session: dict[str, Any], canonical_table: Any) -> None:
+    """Seed keyed data_editor state without clobbering in-progress edits."""
+    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
+    if not is_runtime_table(canonical_table):
+        return
+    if not is_runtime_table(editor):
+        session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
+        return
+    if is_draft_room_locally_dirty(session):
+        return
+    canon_picks = table_pick_count(canonical_table)
+    editor_picks = table_pick_count(editor)
+    if canon_picks > editor_picks:
+        session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
+        return
+    if editor_picks > 0:
+        return
+    if len(editor) != len(canonical_table):
+        session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
+
+
+def record_board_editor_diagnostics(
+    session: dict[str, Any],
+    edited_table: Any,
+    *,
+    editor_key: str = DRAFT_ROOM_EDITOR_KEY,
+) -> dict[str, Any]:
+    """Capture data_editor vs session_state wiring for Developer Mode."""
+    session_table = session.get(DRAFT_ROOM_TABLE_KEY)
+    blob = _draft_room_from_blob(session) or {}
+    diag = {
+        "data_editor_key": editor_key,
+        "data_editor_returned_rows": table_row_count(edited_table),
+        "data_editor_returned_pick_count": table_pick_count(edited_table),
+        "session_draft_room_table_rows": table_row_count(session_table),
+        "session_draft_room_table_pick_count": table_pick_count(session_table),
+        "commit_input_pick_count": table_pick_count(edited_table),
+        "persisted_pick_count": int(blob.get("pick_count") or table_pick_count(blob)),
+        "persisted_rows": table_row_count(blob),
+        "picks_fingerprint": table_picks_fingerprint(edited_table),
+    }
+    session["_draft_room_editor_diagnostics"] = diag
+    return diag
+
+
+def commit_draft_room_table_if_changed(
+    st: Any,
+    session: dict[str, Any],
+    table: Any,
+    *,
+    reason: str = "board_edit",
+    editor_key: str = DRAFT_ROOM_EDITOR_KEY,
+) -> dict[str, Any]:
+    """Force-save only when filled picks changed — avoids empty-grid autosaves."""
+    editor_diag = record_board_editor_diagnostics(session, table, editor_key=editor_key)
+    pick_count = table_pick_count(table)
+    picks_fp = table_picks_fingerprint(table)
+    prev_picks_fp = session.get("_draft_room_picks_fp")
+    prev_pick_count = session.get("_draft_room_last_committed_pick_count")
+
+    if (
+        reason == "board_edit"
+        and prev_picks_fp == picks_fp
+        and prev_pick_count == pick_count
+        and pick_count > 0
+    ):
+        trace = {
+            "reason": reason,
+            "skipped": "picks_unchanged",
+            "saved": False,
+            **editor_diag,
+            **draft_board_diagnostics(session),
+        }
+        session["_draft_room_last_save_trace"] = trace
+        return trace
+
+    if reason == "board_edit" and pick_count == 0 and prev_picks_fp == picks_fp:
+        trace = {
+            "reason": reason,
+            "skipped": "no_picks_yet",
+            "saved": False,
+            **editor_diag,
+            **draft_board_diagnostics(session),
+        }
+        session["_draft_room_last_save_trace"] = trace
+        return trace
+
+    session["_draft_room_picks_fp"] = picks_fp
+    trace = commit_draft_room_table(st, session, table, reason=reason, editor_key=editor_key)
+    session["_draft_room_last_committed_pick_count"] = pick_count
+    return trace
+
+
+def commit_draft_room_table(
+    st: Any,
+    session: dict[str, Any],
+    table: Any,
+    *,
+    reason: str = "board_edit",
+    editor_key: str = DRAFT_ROOM_EDITOR_KEY,
+) -> dict[str, Any]:
     """Canonical write + force-save after Draft Room Simulator board change."""
     trace: dict[str, Any] = {"reason": reason, "saved": False, "disk": False, "cloud": False, "error": ""}
     import hashlib
     import json
 
+    editor_diag = record_board_editor_diagnostics(session, table, editor_key=editor_key)
+    trace.update(editor_diag)
+
     write_canonical_draft_room_state(session, table, reason=reason, local_edit=True)
     blob = _draft_room_from_blob(session) or {}
+    trace["persisted_pick_count"] = int(blob.get("pick_count") or table_pick_count(blob))
+    trace["persisted_rows"] = table_row_count(blob)
     fp = hashlib.sha256(json.dumps(blob, sort_keys=True, default=str).encode()).hexdigest()[:16]
     if session.get("_draft_room_save_fp") == fp and reason == "board_edit":
-        trace["skipped"] = "unchanged"
+        trace["skipped"] = "blob_unchanged"
+        trace.update(draft_board_diagnostics(session))
+        session["_draft_room_last_save_trace"] = trace
         return trace
     session["_draft_room_save_fp"] = fp
     board_diag = draft_board_diagnostics(session)
@@ -446,6 +604,11 @@ def render_draft_board_diagnostics(st: Any) -> None:
         if isinstance(trace, dict):
             st.markdown("**Last Draft Room save**")
             for key, val in trace.items():
+                st.text(f"{key}: {val}")
+        editor_diag = ss.get("_draft_room_editor_diagnostics")
+        if isinstance(editor_diag, dict):
+            st.markdown("**Board editor wiring**")
+            for key, val in editor_diag.items():
                 st.text(f"{key}: {val}")
         st.text(f"local_has_draft_room_board: {draft_room_restore_stats(ss).get('has_draft_board')}")
         st.text(f"cloud_has_draft_room: {ss.get('cloud_has_draft_room_board')}")

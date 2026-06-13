@@ -15580,26 +15580,43 @@ if active_page == "Draft Room Simulator":
             "(including **Strategy** hints on scarcity, timing, and value vs ADP — hitter pool only here)."
         )
 
-        # Keep the saved draft table in the non-widget key "draft_room_table".
-        # Do not use a data_editor widget key here, because Streamlit can throw
-        # StreamlitValueAssignmentNotAllowedError when a keyed widget is also given
-        # a default value from session_state.
-        edited_draft = st.data_editor(
-            st.session_state["draft_room_table"],
-            num_rows="fixed",
-            use_container_width=True,
-            column_config={
-                "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
-                "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
-            }
-        )
-        st.session_state["draft_room_table"] = edited_draft.copy()
+        # Use a dedicated widget key (draft_room_board_editor) separate from draft_room_table.
+        # An unkeyed editor fed from session_state can reset on rerun when prepare/restore
+        # rewrites draft_room_table before the widget applies the user's edit.
         try:
-            from draft_room_state import commit_draft_room_table
+            from draft_room_state import (
+                DRAFT_ROOM_EDITOR_KEY,
+                commit_draft_room_table_if_changed,
+                ensure_board_editor_seeded,
+                table_pick_count,
+            )
 
-            commit_draft_room_table(st, st.session_state, edited_draft, reason="board_edit")
+            ensure_board_editor_seeded(st.session_state, st.session_state["draft_room_table"])
+            st.data_editor(
+                st.session_state[DRAFT_ROOM_EDITOR_KEY],
+                key=DRAFT_ROOM_EDITOR_KEY,
+                num_rows="fixed",
+                use_container_width=True,
+                column_config={
+                    "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
+                    "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
+                },
+            )
+            edited_draft = st.session_state[DRAFT_ROOM_EDITOR_KEY]
+            if hasattr(edited_draft, "copy"):
+                st.session_state["draft_room_table"] = edited_draft.copy()
+            commit_draft_room_table_if_changed(st, st.session_state, edited_draft, reason="board_edit")
         except Exception:
-            pass
+            edited_draft = st.data_editor(
+                st.session_state["draft_room_table"],
+                num_rows="fixed",
+                use_container_width=True,
+                column_config={
+                    "Team": st.column_config.SelectboxColumn("Team", options=room_team_names, required=True),
+                    "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
+                },
+            )
+            st.session_state["draft_room_table"] = edited_draft.copy()
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (

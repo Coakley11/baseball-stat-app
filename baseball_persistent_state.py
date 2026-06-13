@@ -994,6 +994,9 @@ def render_cross_device_sync_debug(st: Any) -> None:
             "cloud_payload_has_draft_board": ss.get("cloud_payload_has_draft_board"),
             "last_draft_room_save_trace": ss.get("_draft_room_last_save_trace"),
         }
+        editor_diag = ss.get("_draft_room_editor_diagnostics")
+        if isinstance(editor_diag, dict):
+            draft_board_rows.update(editor_diag)
     except ImportError:
         draft_board_rows = {}
     decision_rows = {
