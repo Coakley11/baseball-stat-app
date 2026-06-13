@@ -44,8 +44,11 @@ from draft_room_state import (
     get_all_drafted_player_names,
     open_pick_row_options,
     paste_players_to_board,
+    pick_label_row_map,
     record_board_assignment_diagnostics,
+    record_board_assign_submit_trace,
     reset_simulator_board_only,
+    submit_board_pick_assignment,
     prepare_board_editor_for_render,
     prepare_draft_room_state,
     preserve_richer_session_board,
@@ -672,6 +675,31 @@ class TestBoardPickAssignment(unittest.TestCase):
         dbg = session["_draft_room_widget_capture_debug"]
         self.assertEqual(dbg["capture_pick_count"], 2)
         self.assertEqual(dbg["capture_source"], "board_display")
+
+    def test_submit_board_pick_assignment_records_trace_and_writes_board(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+        }
+        table = session[DRAFT_ROOM_TABLE_KEY]
+        row_map = pick_label_row_map(table)
+        pick_label = next(iter(row_map.keys()))
+        res = submit_board_pick_assignment(
+            session,
+            pick_label=pick_label,
+            player_match="Aaron Judge",
+            pick_row_by_label=row_map,
+            search_text="Judge",
+        )
+        self.assertTrue(res.get("ok"))
+        trace = session["_draft_room_assign_submit_trace"]
+        self.assertTrue(trace.get("assignment_button_clicked"))
+        self.assertEqual(trace.get("selected_player_match"), "Aaron Judge")
+        self.assertEqual(trace.get("selected_player_official_name"), "Aaron Judge")
+        self.assertTrue(trace.get("assign_player_to_board_row_called"))
+        self.assertEqual(trace.get("before_pick_count"), 0)
+        self.assertEqual(trace.get("after_pick_count"), 1)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
 
 
 if __name__ == "__main__":

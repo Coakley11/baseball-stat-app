@@ -594,22 +594,150 @@ def open_pick_row_options(table: Any) -> list[tuple[int, str]]:
     return options
 
 
+def pick_label_row_map(table: Any) -> dict[str, int]:
+    """Map pick labels from open_pick_row_options to dataframe row indices."""
+    return {label: idx for idx, label in open_pick_row_options(table)}
+
+
+_BOARD_ASSIGN_SUBMIT_TRACE_KEY = "_draft_room_assign_submit_trace"
+
+_BOARD_ASSIGN_SUBMIT_FIELDS = (
+    "assignment_button_clicked",
+    "selected_pick",
+    "selected_player_search_text",
+    "selected_player_match",
+    "selected_player_official_name",
+    "assign_player_to_board_row_called",
+    "target_row_index",
+    "before_pick_count",
+    "after_pick_count",
+    "error",
+    "message",
+)
+
+
+def record_board_assign_submit_trace(
+    session: dict[str, Any],
+    trace: dict[str, Any],
+) -> None:
+    """Persist last assign-form submit attempt for Board tab diagnostics."""
+    stored = {k: trace.get(k) for k in _BOARD_ASSIGN_SUBMIT_FIELDS}
+    session[_BOARD_ASSIGN_SUBMIT_TRACE_KEY] = stored
+    pick_count = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+    if stored.get("assign_player_to_board_row_called"):
+        pick_count = int(stored.get("after_pick_count") or pick_count or 0)
+    session["_draft_room_widget_capture_debug"] = {
+        "capture_source": "board_assign_submit",
+        "capture_pick_count": pick_count,
+        "editor_return_pick_count": pick_count,
+        "widget_reconstructed_pick_count": pick_count,
+        "editor_return_type": "assignment_form",
+        "edited_rows": "n/a (form assignment, not data_editor)",
+        **stored,
+    }
+    session["_draft_room_active_board_source"] = "draft_room_table:board_assign_submit"
+    session["_draft_room_active_board_pick_count"] = pick_count
+
+
 def record_board_assignment_diagnostics(
     session: dict[str, Any],
     *,
     pick_count: int,
     source: str = "pick_assignment",
 ) -> None:
-    session["_draft_room_widget_capture_debug"] = {
-        "capture_source": source,
-        "capture_pick_count": pick_count,
-        "editor_return_pick_count": pick_count,
-        "widget_reconstructed_pick_count": pick_count,
-        "editor_return_type": "assignment_form",
-        "edited_rows": "n/a (form assignment, not data_editor)",
-    }
+    submit = session.get(_BOARD_ASSIGN_SUBMIT_TRACE_KEY)
+    if isinstance(submit, dict) and submit.get("assignment_button_clicked"):
+        merged = dict(submit)
+        merged["capture_pick_count"] = pick_count
+        merged["editor_return_pick_count"] = pick_count
+        merged["widget_reconstructed_pick_count"] = pick_count
+        session["_draft_room_widget_capture_debug"] = {
+            "capture_source": "board_assign_submit",
+            "capture_pick_count": pick_count,
+            "editor_return_pick_count": pick_count,
+            "widget_reconstructed_pick_count": pick_count,
+            "editor_return_type": "assignment_form",
+            "edited_rows": "n/a (form assignment, not data_editor)",
+            **merged,
+        }
+    else:
+        session["_draft_room_widget_capture_debug"] = {
+            "capture_source": source,
+            "capture_pick_count": pick_count,
+            "editor_return_pick_count": pick_count,
+            "widget_reconstructed_pick_count": pick_count,
+            "editor_return_type": "assignment_form",
+            "edited_rows": "n/a (form assignment, not data_editor)",
+        }
     session["_draft_room_active_board_source"] = f"draft_room_table:{source}"
     session["_draft_room_active_board_pick_count"] = pick_count
+
+
+def submit_board_pick_assignment(
+    session: dict[str, Any],
+    *,
+    pick_label: str,
+    player_match: str,
+    pick_row_by_label: dict[str, int],
+    name_index: dict[str, str] | None = None,
+    all_names: list[str] | None = None,
+    search_text: str = "",
+) -> dict[str, Any]:
+    """Handle Set player on pick — records submit trace and writes draft_room_table."""
+    trace: dict[str, Any] = {
+        "assignment_button_clicked": True,
+        "selected_pick": str(pick_label or ""),
+        "selected_player_search_text": str(search_text or ""),
+        "selected_player_match": str(player_match or "").strip(),
+        "selected_player_official_name": "",
+        "assign_player_to_board_row_called": False,
+        "target_row_index": None,
+        "before_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "after_pick_count": 0,
+        "error": "",
+        "message": "",
+    }
+    record_board_assign_submit_trace(session, trace)
+
+    match = trace["selected_player_match"]
+    if not match or match.startswith("—"):
+        trace["error"] = "no_player_match"
+        trace["message"] = "Search and select a player first."
+        record_board_assign_submit_trace(session, trace)
+        return {"ok": False, "trace": trace, **trace}
+
+    official = match
+    if name_index:
+        try:
+            from draft_player_names import resolve_draft_player_name
+
+            resolved, _ = resolve_draft_player_name(match, name_index, all_names=all_names)
+            if resolved:
+                official = resolved
+        except Exception:
+            pass
+    trace["selected_player_official_name"] = official
+
+    row_idx = pick_row_by_label.get(str(pick_label or "").strip())
+    if row_idx is None:
+        trace["error"] = "bad_pick"
+        trace["message"] = "Pick row not found."
+        record_board_assign_submit_trace(session, trace)
+        return {"ok": False, "trace": trace, **trace}
+
+    trace["target_row_index"] = int(row_idx)
+    trace["assign_player_to_board_row_called"] = True
+    record_board_assign_submit_trace(session, trace)
+
+    res = assign_player_to_board_row(session, int(row_idx), official)
+    trace["before_pick_count"] = int(res.get("before_pick_count") or trace["before_pick_count"])
+    trace["after_pick_count"] = int(res.get("after_pick_count") or 0)
+    trace["error"] = str(res.get("error") or "")
+    trace["message"] = str(res.get("message") or "")
+    record_board_assign_submit_trace(session, trace)
+    out = {"ok": bool(res.get("ok")), "trace": trace}
+    out.update(res)
+    return out
 
 
 def assign_player_to_board_row(
@@ -2361,6 +2489,25 @@ def render_board_tab_diagnostics(st: Any) -> None:
                 "edited_rows",
             ):
                 val = capture_dbg.get(key)
+                if val is not None and val != "":
+                    st.text(f"{key}: {val}")
+        submit_trace = ss.get("_draft_room_assign_submit_trace")
+        if isinstance(submit_trace, dict) and submit_trace.get("assignment_button_clicked"):
+            st.markdown("**Assignment submit (last click)**")
+            for key in (
+                "assignment_button_clicked",
+                "selected_pick",
+                "selected_player_search_text",
+                "selected_player_match",
+                "selected_player_official_name",
+                "assign_player_to_board_row_called",
+                "target_row_index",
+                "before_pick_count",
+                "after_pick_count",
+                "error",
+                "message",
+            ):
+                val = submit_trace.get(key)
                 if val is not None and val != "":
                     st.text(f"{key}: {val}")
 
