@@ -15714,12 +15714,19 @@ if active_page == "Draft Room Simulator":
         st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
 
     try:
-        from draft_room_state import draft_room_restore_stats, prepare_draft_room_state
+        from draft_room_state import (
+            draft_room_restore_stats,
+            effective_board_pick_count,
+            is_draft_room_locally_dirty,
+            prepare_draft_room_state,
+        )
 
         prepare_draft_room_state(st.session_state)
         _canonical_pick_count = draft_room_restore_stats(st.session_state).get("pick_count", 0)
     except Exception:
         _canonical_pick_count = 0
+        effective_board_pick_count = None  # type: ignore[assignment,misc]
+        is_draft_room_locally_dirty = None  # type: ignore[assignment,misc]
 
     current_table = _session_draft_board_df()
     has_real_picks = (
@@ -15727,7 +15734,23 @@ if active_page == "Draft Room Simulator":
         and "Player" in current_table.columns
         and current_table["Player"].astype(str).str.strip().ne("").any()
     )
-    if _canonical_pick_count == 0 and (not has_real_picks) and len(current_table) != total_picks:
+    _effective_picks = (
+        effective_board_pick_count(st.session_state)
+        if effective_board_pick_count is not None
+        else int(_canonical_pick_count or 0)
+    )
+    _locally_dirty = (
+        is_draft_room_locally_dirty(st.session_state)
+        if is_draft_room_locally_dirty is not None
+        else False
+    )
+    if (
+        _canonical_pick_count == 0
+        and _effective_picks == 0
+        and (not has_real_picks)
+        and (not _locally_dirty)
+        and len(current_table) != total_picks
+    ):
         pick_rows = []
         for pick in range(1, total_picks + 1):
             rnd = ((pick - 1) // int(room_team_count)) + 1
@@ -15868,17 +15891,17 @@ if active_page == "Draft Room Simulator":
                     )
 
                 if submitted:
-                    board_now = _session_draft_board_df()
                     res = submit_board_pick_assignment(
                         st.session_state,
                         pick_label=str(st.session_state.get("dr_board_form_pick") or ""),
                         player_match=str(st.session_state.get("dr_board_form_player") or ""),
-                        pick_row_by_label=pick_label_row_map(board_now),
+                        pick_row_by_label=pick_label_row_map(edited_draft),
                         name_index=_assign_name_index,
                         all_names=_assign_pool_names,
                         search_text=str(st.session_state.get("dr_board_assign_search") or ""),
                     )
                     if res.get("ok"):
+                        edited_draft = _session_draft_board_df()
                         st.success(res.get("message"))
                         st.rerun()
                     else:
