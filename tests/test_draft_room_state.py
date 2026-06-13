@@ -36,11 +36,13 @@ from draft_room_state import (
     draft_room_restore_stats,
     detect_player_column,
     delete_live_draft_only,
+    _draft_room_from_blob,
     editor_widget_key,
     effective_board_pick_count,
     enrich_save_payload_with_draft_room,
     effective_board_pick_count,
     get_canonical_draft_board,
+    get_canonical_draft_meta,
     delete_active_draft,
     is_board_editor_widget_key,
     get_all_drafted_player_names,
@@ -132,7 +134,7 @@ class TestDraftRoomPersistence(unittest.TestCase):
         write_canonical_draft_room_state(session, table, reason="test")
         diag = draft_board_diagnostics(session)
         self.assertEqual(diag["active_draft_page"], "Draft Room Simulator")
-        self.assertEqual(diag["draft_board_source_key"], DRAFT_ROOM_TABLE_KEY)
+        self.assertEqual(diag["draft_board_source_key"], DRAFT_ROOM_STATE_KEY)
         self.assertTrue(diag["session_has_draft_board"])
         self.assertEqual(diag["session_pick_count"], 3)
 
@@ -176,7 +178,7 @@ class TestDraftRoomPersistence(unittest.TestCase):
         with patch("baseball_persistent_state.force_save_baseball_state", mock_force):
             trace = commit_draft_room_table(st, session, table, reason="board_edit")
         mock_force.assert_called_once()
-        self.assertEqual(trace.get("draft_board_source_key"), DRAFT_ROOM_TABLE_KEY)
+        self.assertEqual(trace.get("draft_board_source_key"), DRAFT_ROOM_STATE_KEY)
         self.assertEqual(trace.get("commit_input_pick_count"), 1)
 
     def test_prepare_does_not_clobber_runtime_picks_with_empty_blob(self) -> None:
@@ -753,6 +755,42 @@ class TestBoardPickAssignment(unittest.TestCase):
         self.assertEqual(trace.get("before_pick_count"), 0)
         self.assertEqual(trace.get("after_pick_count"), 1)
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 1)
+
+    def test_assign_promotes_cache_to_draft_room_state(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+            DRAFT_ROOM_STATE_KEY: {
+                "_persist_schema": 1,
+                "table_records": [],
+                "table_columns": ["Round", "Pick", "Team", "Player"],
+                "pick_count": 0,
+            },
+        }
+        res = assign_player_to_board_row(session, 0, "Aaron Judge")
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_STATE_KEY]), 1)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_CACHE_KEY]), 1)
+        self.assertEqual(get_canonical_draft_meta(session).get("pick_count"), 1)
+        self.assertTrue(session.get("local_has_draft_room_board"))
+        stats = draft_room_restore_stats(session)
+        self.assertEqual(stats["pick_count"], 1)
+
+    def test_draft_room_restore_stats_prefers_cache_over_empty_blob(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_CACHE_KEY: _sample_table(picks=3),
+            DRAFT_ROOM_STATE_KEY: {
+                "_persist_schema": 1,
+                "table_records": [],
+                "table_columns": ["Round", "Pick", "Team", "Player"],
+                "pick_count": 0,
+            },
+        }
+        stats = draft_room_restore_stats(session)
+        self.assertEqual(stats["pick_count"], 3)
+        self.assertTrue(stats["has_draft_board"])
+        blob = _draft_room_from_blob(session)
+        self.assertEqual(table_pick_count(blob), 3)
 
 
 if __name__ == "__main__":

@@ -554,7 +554,9 @@ def get_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 
 
 def get_all_drafted_player_names(session: dict[str, Any]) -> list[str]:
-    return _drafted_players_from_table(get_canonical_draft_board(session))
+    """Names on the richest in-memory board — avoids prepare_draft_room_state clobber during assign."""
+    table, _, _ = _resolve_richest_draft_board(session)
+    return _drafted_players_from_table(table)
 
 
 def _next_open_row_index(table: pd.DataFrame) -> int | None:
@@ -733,6 +735,11 @@ def submit_board_pick_assignment(
     trace["after_pick_count"] = int(res.get("after_pick_count") or 0)
     trace["error"] = str(res.get("error") or "")
     trace["message"] = str(res.get("message") or "")
+    if res.get("ok"):
+        pick_count = int(res.get("after_pick_count") or 0)
+        trace["draft_room_state_pick_count"] = table_pick_count(session.get(DRAFT_ROOM_STATE_KEY))
+        trace["canonical_meta_pick_count"] = get_canonical_draft_meta(session).get("pick_count")
+        trace["local_has_draft_room_board"] = bool(session.get("local_has_draft_room_board"))
     record_board_assign_submit_trace(session, trace)
     out = {"ok": bool(res.get("ok")), "trace": trace}
     out.update(res)
@@ -1746,6 +1753,15 @@ def _draft_room_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(state, dict):
         return None
     meta = state.get(DRAFT_ROOM_STATE_KEY)
+    meta_picks = table_pick_count(meta) if isinstance(meta, dict) else 0
+    cache = state.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    cache_picks = table_pick_count(cache) if is_runtime_table(cache) else 0
+    runtime = state.get(DRAFT_ROOM_TABLE_KEY)
+    runtime_picks = table_pick_count(runtime) if is_runtime_table(runtime) else 0
+    if cache_picks > meta_picks and is_runtime_table(cache):
+        return table_to_persist_dict(cache, settings=_room_settings_from_session(state))
+    if runtime_picks > meta_picks and is_runtime_table(runtime):
+        return table_to_persist_dict(runtime, settings=_room_settings_from_session(state))
     if isinstance(meta, dict) and meta.get("_persist_schema") == DRAFT_ROOM_PERSIST_SCHEMA:
         return copy.deepcopy(meta)
     pf = state.get("page_filter_state")
@@ -1766,14 +1782,22 @@ def _draft_room_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def draft_room_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
-    blob = _draft_room_from_blob(state or {})
-    pick_count = int(blob.get("pick_count") or 0) if isinstance(blob, dict) else 0
-    if blob and not pick_count:
-        pick_count = table_pick_count(blob)
+    """Pick counts from canonical blob and in-memory board sources (richest wins)."""
+    session = state or {}
+    blob = _draft_room_from_blob(session)
+    blob_picks = table_pick_count(blob) if isinstance(blob, dict) else 0
+    runtime_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+    cache_picks = table_pick_count(session.get(DRAFT_ROOM_EDITOR_CACHE_KEY))
+    pick_count = max(blob_picks, runtime_picks, cache_picks, 0)
+    pool_count = len(blob.get("table_records") or []) if isinstance(blob, dict) else 0
+    if pool_count == 0:
+        table, _, _ = _resolve_richest_draft_board(session)
+        if table is not None:
+            pool_count = len(table)
     return {
         "has_draft_board": pick_count > 0,
         "pick_count": pick_count,
-        "pool_count": len(blob.get("table_records") or []) if isinstance(blob, dict) else 0,
+        "pool_count": pool_count,
     }
 
 
@@ -1788,7 +1812,8 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     active_draft_page = ""
     runtime_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
     cache_picks = table_pick_count(session.get(DRAFT_ROOM_EDITOR_CACHE_KEY))
-    session_pick_count = max(room_stats["pick_count"], runtime_picks, cache_picks)
+    blob_picks = table_pick_count(_draft_room_from_blob(session))
+    session_pick_count = max(room_stats["pick_count"], runtime_picks, cache_picks, blob_picks)
     session_has_board = session_pick_count > 0
 
     canonical_meta = get_canonical_draft_meta(session)
@@ -1800,7 +1825,12 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         session_pick_count = max(session_pick_count, live_stats["pick_count"])
         session_has_board = True
     elif session_has_board:
-        source_key = DRAFT_ROOM_EDITOR_CACHE_KEY if cache_picks >= runtime_picks else DRAFT_ROOM_TABLE_KEY
+        if blob_picks >= cache_picks and blob_picks >= runtime_picks and blob_picks > 0:
+            source_key = DRAFT_ROOM_STATE_KEY
+        elif cache_picks >= runtime_picks:
+            source_key = DRAFT_ROOM_EDITOR_CACHE_KEY
+        else:
+            source_key = DRAFT_ROOM_TABLE_KEY
         active_draft_page = DRAFT_ROOM_PAGE_BLOCK
     elif live_stats["pick_count"] > 0 or live_stats["has_live_draft_state"]:
         source_key = LIVE_DRAFT_ROOM_KEY
@@ -1818,7 +1848,7 @@ def draft_board_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "draft_board_source_key": source_key or None,
         "session_has_draft_board": session_has_board,
         "session_pick_count": session_pick_count,
-        "draft_room_pick_count": room_stats["pick_count"],
+        "draft_room_pick_count": session_pick_count,
         "live_draft_pick_count": live_stats["pick_count"],
         "page_filter_pages": pf_pages,
         "active_page": active_page or None,
@@ -1870,13 +1900,21 @@ def sync_board_to_session_keys(
     sync_editor_seed(session, normalized, force_reset=True)
     session["_draft_room_picks_fp"] = table_picks_fingerprint(normalized)
     session.pop("_draft_room_save_fp", None)
-    write_canonical_draft_room_state(session, normalized, reason=reason, local_edit=local_edit)
+    set_canonical_draft_meta(
+        session,
+        mode=ACTIVE_DRAFT_MODE_MANUAL,
+        source=reason,
+        pick_count=pick_count,
+    )
+    blob = write_canonical_draft_room_state(session, normalized, reason=reason, local_edit=local_edit)
     session["local_has_draft_room_board"] = pick_count > 0
     session["local_draft_room_pick_count"] = pick_count
     session["session_pick_count"] = pick_count
     session["_draft_room_active_board_pick_count"] = pick_count
-    if local_edit:
-        mark_draft_room_local_edit(session)
+    session["payload_has_draft_board"] = pick_count > 0
+    session["cloud_payload_pick_count"] = int(blob.get("pick_count") or pick_count)
+    session["_draft_room_canonical_sync_reason"] = reason
+    session["_draft_room_canonical_pick_count"] = pick_count
     return normalized
 
 
@@ -2771,6 +2809,9 @@ def render_board_tab_diagnostics(st: Any) -> None:
                 "target_row_index",
                 "before_pick_count",
                 "after_pick_count",
+                "draft_room_state_pick_count",
+                "canonical_meta_pick_count",
+                "local_has_draft_room_board",
                 "error",
                 "message",
             ):
