@@ -15580,15 +15580,17 @@ if active_page == "Draft Room Simulator":
             "(including **Strategy** hints on scarcity, timing, and value vs ADP — hitter pool only here)."
         )
 
-        # Use a dedicated widget key (draft_room_board_editor) separate from draft_room_table.
-        # An unkeyed editor fed from session_state can reset on rerun when prepare/restore
-        # rewrites draft_room_table before the widget applies the user's edit.
+        # Keyed editor: seed only when absent; never overwrite widget key before render.
+        edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
+        _draft_room_editor_error = ""
         try:
             from draft_room_state import (
                 DRAFT_ROOM_EDITOR_KEY,
-                commit_draft_room_table_if_changed,
                 ensure_board_editor_seeded,
-                table_pick_count,
+                read_board_from_editor,
+                record_board_editor_diagnostics,
+                render_board_tab_diagnostics,
+                save_draft_board_now,
             )
 
             ensure_board_editor_seeded(st.session_state, st.session_state["draft_room_table"])
@@ -15602,11 +15604,38 @@ if active_page == "Draft Room Simulator":
                     "Player": st.column_config.SelectboxColumn("Player", options=player_options_room),
                 },
             )
-            edited_draft = st.session_state[DRAFT_ROOM_EDITOR_KEY]
-            if hasattr(edited_draft, "copy"):
+            edited_draft = read_board_from_editor(st.session_state)
+            if edited_draft is None:
+                edited_draft = st.session_state.get("draft_room_table", pd.DataFrame())
+            else:
                 st.session_state["draft_room_table"] = edited_draft.copy()
-            commit_draft_room_table_if_changed(st, st.session_state, edited_draft, reason="board_edit")
-        except Exception:
+            record_board_editor_diagnostics(st.session_state, edited_draft)
+
+            save_col, _save_sp = st.columns([1, 3])
+            with save_col:
+                if st.button(
+                    "Save Draft Board Now",
+                    key="draft_room_manual_save_btn",
+                    type="primary",
+                    help="Write the current board from the editor to disk and cloud.",
+                ):
+                    result = save_draft_board_now(st, st.session_state)
+                    picks = int(result.get("saved_pick_count") or 0)
+                    if result.get("saved") and result.get("cloud"):
+                        st.success(
+                            f"Saved {picks} pick(s) to disk and cloud. "
+                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → {result.get('cloud_timestamp_after') or '—'}"
+                        )
+                    elif result.get("saved"):
+                        st.warning(
+                            f"Saved {picks} pick(s) to disk only. Cloud error: {result.get('error') or 'unknown'}"
+                        )
+                    else:
+                        st.error(f"Save failed: {result.get('error') or 'unknown'}")
+
+            render_board_tab_diagnostics(st)
+        except Exception as exc:
+            _draft_room_editor_error = f"{type(exc).__name__}: {exc}"
             edited_draft = st.data_editor(
                 st.session_state["draft_room_table"],
                 num_rows="fixed",
@@ -15617,6 +15646,7 @@ if active_page == "Draft Room Simulator":
                 },
             )
             st.session_state["draft_room_table"] = edited_draft.copy()
+            st.error(f"Draft board editor error: {_draft_room_editor_error}")
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (

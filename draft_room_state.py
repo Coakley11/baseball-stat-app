@@ -71,11 +71,11 @@ def table_picks_fingerprint(table: Any) -> str:
 
     records: list[dict[str, Any]] = []
     if is_runtime_table(table) and "Player" in table.columns:
-        picked = table[table["Player"].astype(str).str.strip().ne("")]
+        picked = table[table["Player"].apply(_player_cell_filled)]
         records = _json_safe(picked.to_dict(orient="records"))  # type: ignore[assignment]
     elif is_persisted_table_blob(table):
         for row in table.get("table_records") or []:
-            if isinstance(row, dict) and str(row.get("Player") or "").strip():
+            if isinstance(row, dict) and _player_cell_filled(row.get("Player")):
                 records.append(_json_safe(row))  # type: ignore[arg-type]
     payload = json.dumps(records, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -86,7 +86,7 @@ def table_pick_count(table: Any) -> int:
         df = table
         if df.empty or "Player" not in df.columns:
             return 0
-        return int(df["Player"].astype(str).str.strip().ne("").sum())
+        return int(df["Player"].apply(_player_cell_filled).sum())
     if is_persisted_table_blob(table):
         records = table.get("table_records") or []
         if not isinstance(records, list):
@@ -94,9 +94,21 @@ def table_pick_count(table: Any) -> int:
         return sum(
             1
             for row in records
-            if isinstance(row, dict) and str(row.get("Player") or "").strip()
+            if isinstance(row, dict) and _player_cell_filled(row.get("Player"))
         )
     return 0
+
+
+def _player_cell_filled(val: Any) -> bool:
+    if val is None:
+        return False
+    try:
+        if pd.isna(val):
+            return False
+    except (TypeError, ValueError):
+        pass
+    text = str(val).strip()
+    return bool(text) and text.lower() not in {"none", "nan", "<na>"}
 
 
 def table_to_persist_dict(table: Any, *, settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -412,27 +424,11 @@ def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-    return out
-
-
 def ensure_board_editor_seeded(session: dict[str, Any], canonical_table: Any) -> None:
-    """Seed keyed data_editor state without clobbering in-progress edits."""
-    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
-    if not is_runtime_table(canonical_table):
+    """Seed keyed data_editor only when the widget key is absent (never overwrite before render)."""
+    if DRAFT_ROOM_EDITOR_KEY in session and is_runtime_table(session.get(DRAFT_ROOM_EDITOR_KEY)):
         return
-    if not is_runtime_table(editor):
-        session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
-        return
-    if is_draft_room_locally_dirty(session):
-        return
-    canon_picks = table_pick_count(canonical_table)
-    editor_picks = table_pick_count(editor)
-    if canon_picks > editor_picks:
-        session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
-        return
-    if editor_picks > 0:
-        return
-    if len(editor) != len(canonical_table):
+    if is_runtime_table(canonical_table):
         session[DRAFT_ROOM_EDITOR_KEY] = canonical_table.copy()
 
 
@@ -491,16 +487,17 @@ def commit_draft_room_table_if_changed(
         session["_draft_room_last_save_trace"] = trace
         return trace
 
-    if reason == "board_edit" and pick_count == 0 and prev_picks_fp == picks_fp:
-        trace = {
-            "reason": reason,
-            "skipped": "no_picks_yet",
-            "saved": False,
-            **editor_diag,
-            **draft_board_diagnostics(session),
-        }
-        session["_draft_room_last_save_trace"] = trace
-        return trace
+    if reason == "board_edit" and pick_count == 0:
+        if prev_picks_fp is None or prev_picks_fp == picks_fp:
+            trace = {
+                "reason": reason,
+                "skipped": "no_picks_yet",
+                "saved": False,
+                **editor_diag,
+                **draft_board_diagnostics(session),
+            }
+            session["_draft_room_last_save_trace"] = trace
+            return trace
 
     session["_draft_room_picks_fp"] = picks_fp
     trace = commit_draft_room_table(st, session, table, reason=reason, editor_key=editor_key)
@@ -543,7 +540,9 @@ def commit_draft_room_table(
         trace["saved"] = bool(force_save_baseball_state(st, reason="draft_room_pick"))
         trace["disk"] = bool(session.get("_suite_persist_last_save_disk"))
         trace["cloud"] = bool(session.get("_suite_persist_last_save_cloud"))
+        trace["saved_pick_count"] = table_pick_count(table)
         trace["payload_has_draft_board"] = bool(session.get("payload_has_draft_board"))
+        trace["cloud_payload_pick_count"] = session.get("cloud_payload_pick_count")
         if session.get("_suite_persist_last_cloud_error"):
             trace["error"] = str(session.get("_suite_persist_last_cloud_error"))
         elif session.get("_suite_autosave_cloud_blocked_reason"):
@@ -589,6 +588,123 @@ def unified_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
         "local_has_live_draft_state": live.get("has_live_draft_state", False),
         "local_has_draft_room_board": room["has_draft_board"],
     }
+
+
+def read_board_from_editor(session: dict[str, Any]) -> pd.DataFrame | None:
+    """Read the live keyed editor state — authoritative source for manual save."""
+    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
+    if is_runtime_table(editor):
+        return editor.copy()
+    table = session.get(DRAFT_ROOM_TABLE_KEY)
+    if is_runtime_table(table):
+        return table.copy()
+    return None
+
+
+def save_draft_board_now(st: Any, session: dict[str, Any]) -> dict[str, Any]:
+    """Explicit Board-tab save: editor → draft_room_state → disk + cloud."""
+    trace: dict[str, Any] = {
+        "path": "save_draft_board_now",
+        "saved": False,
+        "disk": False,
+        "cloud": False,
+        "saved_pick_count": 0,
+        "error": "",
+    }
+    cloud_ts_before = None
+    try:
+        from suite_cloud_state import load_cloud_full_session
+
+        _, cloud_ts_before = load_cloud_full_session("baseball")
+    except Exception as exc:
+        trace["cloud_timestamp_before_error"] = f"{type(exc).__name__}: {exc}"
+    trace["cloud_timestamp_before"] = cloud_ts_before
+
+    board = read_board_from_editor(session)
+    if board is None:
+        trace["error"] = "editor_state_missing"
+        session["_draft_room_manual_save_result"] = trace
+        session["_draft_room_last_save_trace"] = trace
+        return trace
+
+    pick_count = table_pick_count(board)
+    trace["saved_pick_count"] = pick_count
+    record_board_editor_diagnostics(session, board)
+    session[DRAFT_ROOM_TABLE_KEY] = board.copy()
+    session["_draft_room_picks_fp"] = table_picks_fingerprint(board)
+    session.pop("_draft_room_save_fp", None)
+
+    save_trace = commit_draft_room_table(st, session, board, reason="manual_save")
+    trace.update(save_trace)
+    trace["saved_pick_count"] = pick_count
+    trace["cloud_timestamp_before"] = cloud_ts_before
+
+    cloud_ts_after = None
+    try:
+        from suite_cloud_state import load_cloud_full_session
+
+        _, cloud_ts_after = load_cloud_full_session("baseball")
+    except Exception as exc:
+        trace["cloud_timestamp_after_error"] = f"{type(exc).__name__}: {exc}"
+    trace["cloud_timestamp_after"] = cloud_ts_after
+
+    session["_draft_room_manual_save_result"] = trace
+    session["_draft_room_last_save_trace"] = trace
+    return trace
+
+
+def board_tab_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Live Board-tab fields shown directly under the editor."""
+    editor = session.get(DRAFT_ROOM_EDITOR_KEY)
+    editor_diag = session.get("_draft_room_editor_diagnostics")
+    if not isinstance(editor_diag, dict) and is_runtime_table(editor):
+        editor_diag = record_board_editor_diagnostics(session, editor)
+    board = draft_board_diagnostics(session)
+    trace = session.get("_draft_room_last_save_trace")
+    out = {
+        "data_editor_key": DRAFT_ROOM_EDITOR_KEY,
+        "editor_state_exists": is_runtime_table(editor),
+        "data_editor_returned_pick_count": table_pick_count(editor),
+        "commit_input_pick_count": (
+            editor_diag.get("commit_input_pick_count") if isinstance(editor_diag, dict) else table_pick_count(editor)
+        ),
+        "session_pick_count": board.get("session_pick_count"),
+        "draft_room_pick_count": board.get("draft_room_pick_count"),
+        "payload_has_draft_board": session.get("payload_has_draft_board"),
+        "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
+        "last_draft_room_save_trace": trace if isinstance(trace, dict) else None,
+    }
+    session["_draft_room_board_tab_diagnostics"] = out
+    return out
+
+
+def render_board_tab_diagnostics(st: Any) -> None:
+    """Always-visible Board tab status panel (not dev-mode only)."""
+    ss = st.session_state
+    diag = board_tab_diagnostics(ss)
+    manual = ss.get("_draft_room_manual_save_result")
+    with st.container(border=True):
+        st.markdown("**Board save status**")
+        for key in (
+            "data_editor_key",
+            "editor_state_exists",
+            "data_editor_returned_pick_count",
+            "commit_input_pick_count",
+            "session_pick_count",
+            "draft_room_pick_count",
+            "payload_has_draft_board",
+            "cloud_payload_pick_count",
+        ):
+            st.text(f"{key}: {diag.get(key)}")
+        trace = diag.get("last_draft_room_save_trace")
+        if isinstance(trace, dict):
+            st.text(f"last_draft_room_save_trace.reason: {trace.get('reason')}")
+            st.text(f"last_draft_room_save_trace.saved: {trace.get('saved')}")
+            st.text(f"last_draft_room_save_trace.saved_pick_count: {trace.get('saved_pick_count')}")
+            st.text(f"last_draft_room_save_trace.error: {trace.get('error') or ''}")
+        if isinstance(manual, dict) and manual.get("path") == "save_draft_board_now":
+            st.text(f"manual_save.cloud_timestamp_before: {manual.get('cloud_timestamp_before')}")
+            st.text(f"manual_save.cloud_timestamp_after: {manual.get('cloud_timestamp_after')}")
 
 
 def render_draft_board_diagnostics(st: Any) -> None:

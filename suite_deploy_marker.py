@@ -6,9 +6,9 @@ from __future__ import annotations
 
 
 
-SUITE_BUILD_LABEL = "2026-06-13-draft-room-editor-key-v2"
+SUITE_BUILD_LABEL = "2026-06-13-draft-room-manual-save-v3"
 
-GIT_COMMIT_SHORT = "1195c54"
+GIT_COMMIT_SHORT = "pending"
 
 GIT_BRANCH = "dev"
 

@@ -136,6 +136,51 @@ class TestDraftRoomPersistence(unittest.TestCase):
         self.assertEqual(trace.get("draft_board_source_key"), DRAFT_ROOM_TABLE_KEY)
         self.assertEqual(trace.get("commit_input_pick_count"), 1)
 
+    def test_prepare_does_not_clobber_runtime_picks_with_empty_blob(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=2),
+            DRAFT_ROOM_STATE_KEY: table_to_persist_dict(_sample_table(picks=0)),
+        }
+        restored = prepare_draft_room_state(session)
+        assert restored is not None
+        self.assertEqual(table_pick_count(restored), 2)
+
+    def test_commit_if_changed_skips_empty_board(self) -> None:
+        st = MagicMock()
+        session: dict = {"active_page": "Draft Room Simulator"}
+        table = _sample_table(picks=0)
+        with patch("baseball_persistent_state.force_save_baseball_state") as mock_force:
+            trace = commit_draft_room_table_if_changed(st, session, table, reason="board_edit")
+        mock_force.assert_not_called()
+        self.assertEqual(trace.get("skipped"), "no_picks_yet")
+
+    def test_picks_fingerprint_ignores_empty_rows(self) -> None:
+        empty = _sample_table(picks=0)
+        one = _sample_table(picks=1)
+        self.assertNotEqual(table_picks_fingerprint(empty), table_picks_fingerprint(one))
+
+    def test_save_draft_board_now_reads_editor(self) -> None:
+        st = MagicMock()
+        session: dict = {
+            "active_page": "Draft Room Simulator",
+            DRAFT_ROOM_EDITOR_KEY: _sample_table(picks=3),
+        }
+        with patch("baseball_persistent_state.force_save_baseball_state", return_value=True) as mock_force:
+            with patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-01-01T00:00:00Z")):
+                from draft_room_state import save_draft_board_now
+
+                trace = save_draft_board_now(st, session)
+        mock_force.assert_called_once()
+        self.assertEqual(trace.get("saved_pick_count"), 3)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
+
+    def test_ensure_board_editor_seeded_does_not_clobber_existing(self) -> None:
+        from draft_room_state import ensure_board_editor_seeded
+
+        session = {DRAFT_ROOM_EDITOR_KEY: _sample_table(picks=2)}
+        ensure_board_editor_seeded(session, _sample_table(picks=0))
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_EDITOR_KEY]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
