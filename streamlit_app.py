@@ -7258,6 +7258,83 @@ def read_imported_draft_file(uploaded_file):
     return read_uploaded_table_cached(uploaded_file.getvalue(), name)
 
 
+def _draft_room_pool_for_import_validation():
+    """Player pool for import name validation (matches Draft Room scoring pool)."""
+    market = load_fantasypros_market_data()
+    return build_unified_draft_player_pool(
+        yearly_df,
+        market,
+        draft_window=int(st.session_state.get("room_window", 3)),
+        fantasy_format=st.session_state.get("room_format", "5x5 Roto"),
+        projection_style=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
+        use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
+        ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+        ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+    )
+
+
+def _apply_validated_draft_to_room(validated_df, *, flash_prefix="Loaded"):
+    from draft_room_state import (
+        ACTIVE_DRAFT_MODE_MANUAL,
+        persist_draft_board_to_storage,
+        set_canonical_draft_meta,
+        table_pick_count,
+    )
+
+    st.session_state["draft_room_table"] = validated_df.copy()
+    _auto_remove_drafted_from_queue()
+    set_canonical_draft_meta(
+        st.session_state,
+        mode=ACTIVE_DRAFT_MODE_MANUAL,
+        source="validated_import",
+        pick_count=table_pick_count(validated_df),
+    )
+    persist_draft_board_to_storage(
+        st,
+        st.session_state,
+        validated_df,
+        reason="validated_import",
+    )
+    filled = int(validated_df["Player"].astype(str).str.strip().ne("").sum())
+    st.session_state["workflow_sidebar_flash"] = (
+        f"{flash_prefix} {filled} validated pick(s) into the Draft Room."
+    )
+    st.session_state.pop("_draft_import_review", None)
+    st.session_state.pop("_draft_import_file_id", None)
+    st.rerun()
+
+
+def _render_validated_draft_import(
+    imported_df,
+    pool_df,
+    *,
+    session_key: str = "_draft_import_review",
+    apply_label: str = "Apply validated import to draft board",
+    flash_prefix: str = "Loaded",
+):
+    from draft_import_validation import render_draft_import_validation_ui, validate_imported_draft_df
+
+    review = validate_imported_draft_df(imported_df, pool_df)
+    st.session_state[session_key] = review
+    render_draft_import_validation_ui(
+        st,
+        review=review,
+        pool_df=pool_df,
+        session_key=session_key,
+        apply_label=apply_label,
+        on_apply=lambda validated: _apply_validated_draft_to_room(
+            validated, flash_prefix=flash_prefix
+        ),
+    )
+    st.caption("Uploaded draft preview (raw import — not saved until validated):")
+    render_output_table(
+        clean_ui_columns(imported_df.head(50)),
+        key=f"{session_key}_preview",
+        file_name="uploaded_draft_preview.csv",
+        display_rows=50,
+    )
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def read_uploaded_table_cached(file_bytes, file_name=""):
     """Cache uploaded CSV/Excel parsing so widget reruns do not re-read the same file."""
@@ -15663,11 +15740,13 @@ if active_page == "Draft Room Simulator":
 
         st.subheader("Import existing draft")
         st.caption(
-            "CSV or Excel with Team/Owner and Player columns. Loads into the board below; model scores attach when you view the pick log or rosters."
+            "CSV or Excel with Team/Owner and Player columns. Every name is validated against "
+            "the player pool before the draft board is updated."
         )
         imported_draft_file = st.file_uploader(
             "Upload existing draft board CSV or Excel",
-            type=["csv", "xlsx", "xls"]
+            type=["csv", "xlsx", "xls"],
+            key="draft_room_import_uploader",
         )
         if imported_draft_file is not None:
             try:
@@ -15676,18 +15755,15 @@ if active_page == "Draft Room Simulator":
                 if imported_draft.empty:
                     st.warning("No usable Team/Player rows were found in the uploaded draft.")
                 else:
-                    if st.button("Load Uploaded Draft Into Draft Room"):
-                        st.session_state["draft_room_table"] = imported_draft.copy()
-                        _auto_remove_drafted_from_queue()
-                        st.session_state["workflow_sidebar_flash"] = f"Loaded {len(imported_draft)} drafted players into the Draft Room."
-                        st.rerun()
-                    st.caption("Uploaded draft preview:")
-                    render_output_table(
-                        clean_ui_columns(imported_draft.head(50)),
-                        key="uploaded_draft_preview",
-                        file_name="uploaded_draft_preview.csv",
-                        display_rows=50
-                    )
+                    file_sig = hashlib.md5(imported_draft_file.getvalue()).hexdigest()[:12]
+                    if st.session_state.get("_draft_import_file_id") != file_sig:
+                        st.session_state["_draft_import_file_id"] = file_sig
+                        st.session_state.pop("_draft_import_review", None)
+                    pool_for_import = _draft_room_pool_for_import_validation()
+                    if pool_for_import.empty:
+                        st.error("Player pool is empty — cannot validate import names.")
+                    else:
+                        _render_validated_draft_import(imported_draft, pool_for_import)
             except Exception as e:
                 st.error(f"Could not read uploaded draft file: {e}")
 
@@ -17043,11 +17119,20 @@ if active_page == "Fantasy Standings Tracker":
         try:
             draft_import_raw = read_imported_draft_file(draft_import_for_standings)
             draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
-            if st.button("Use Uploaded Draft Board For Standings"):
-                st.session_state["draft_room_table"] = draft_import_norm.copy()
-                _auto_remove_drafted_from_queue()
-                st.session_state["workflow_sidebar_flash"] = f"Loaded {len(draft_import_norm)} picks for standings/trade analysis."
-                st.rerun()
+            if draft_import_norm.empty:
+                st.warning("No usable Team/Player rows were found in the uploaded draft.")
+            else:
+                pool_for_import = _draft_room_pool_for_import_validation()
+                if pool_for_import.empty:
+                    st.error("Player pool is empty — cannot validate import names.")
+                else:
+                    _render_validated_draft_import(
+                        draft_import_norm,
+                        pool_for_import,
+                        session_key="_standings_draft_import_review",
+                        apply_label="Apply validated draft board for standings",
+                        flash_prefix="Loaded",
+                    )
         except Exception as e:
             st.error(f"Could not read draft board upload: {e}")
 
