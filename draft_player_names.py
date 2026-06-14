@@ -140,6 +140,42 @@ def _match_initial_last_name(text: str, all_names: list[str]) -> list[str]:
     return hits
 
 
+def _close_match_candidates(
+    text: str,
+    name_index: dict[str, str],
+    pool: list[str],
+    *,
+    fuzzy_cutoff: float = 0.72,
+) -> list[str]:
+    """Likely pool names for a non-exact import (no auto-pick)."""
+    key = _normalize_lookup_key(text)
+    hits: list[str] = []
+
+    initial_hits = _match_initial_last_name(text, pool)
+    if initial_hits:
+        hits.extend(initial_hits)
+
+    keys = [_normalize_lookup_key(n) for n in pool]
+    match_keys = difflib.get_close_matches(key, keys, n=8, cutoff=fuzzy_cutoff)
+    if not match_keys and len(key) >= 4:
+        match_keys = difflib.get_close_matches(key, keys, n=8, cutoff=max(0.65, fuzzy_cutoff - 0.08))
+    for mk in match_keys:
+        for name, nk in zip(pool, keys):
+            if nk == mk and name not in hits:
+                hits.append(name)
+
+    if not hits:
+        fragment = key.split()[-1] if key.split() else key
+        if len(fragment) >= 3:
+            hits.extend(search_draft_pool_names(fragment, pool, limit=5))
+
+    out: list[str] = []
+    for name in hits:
+        if name not in out:
+            out.append(name)
+    return out[:5]
+
+
 def classify_draft_player_import_name(
     raw: str,
     name_index: dict[str, str],
@@ -147,44 +183,31 @@ def classify_draft_player_import_name(
     all_names: list[str] | None = None,
     fuzzy_cutoff: float = 0.82,
 ) -> dict[str, Any]:
-    """Classify an imported name: exact, corrected, ambiguous, or unresolved."""
+    """Classify import row: exact, close, ambiguous, invalid, or empty."""
     text = str(raw or "").strip()
     if not text:
         return {"status": "empty", "canonical": None, "candidates": [], "input": text}
 
     pool = all_names or sorted(set(name_index.values()))
     key = _normalize_lookup_key(text)
+
     if key in name_index:
         canonical = name_index[key]
-        status = "exact" if canonical.lower() == text.lower() else "corrected"
-        return {"status": status, "canonical": canonical, "candidates": [], "input": text}
+        if canonical.lower() == text.lower() or _normalize_lookup_key(canonical) == key:
+            return {"status": "exact", "canonical": canonical, "candidates": [], "input": text}
 
     base_key = _normalize_lookup_key(text.split(" (")[0])
     if base_key in name_index:
         canonical = name_index[base_key]
-        status = "exact" if canonical.lower() == text.lower() else "corrected"
-        return {"status": status, "canonical": canonical, "candidates": [], "input": text}
+        if canonical.lower() == text.lower() or _normalize_lookup_key(canonical) == base_key:
+            return {"status": "exact", "canonical": canonical, "candidates": [], "input": text}
 
-    initial_hits = _match_initial_last_name(text, pool)
-    if len(initial_hits) == 1:
-        canonical = initial_hits[0]
-        status = "exact" if canonical.lower() == text.lower() else "corrected"
-        return {"status": status, "canonical": canonical, "candidates": [], "input": text}
-    if len(initial_hits) > 1:
-        return {"status": "ambiguous", "canonical": None, "candidates": initial_hits[:5], "input": text}
-
-    canonical, suggestions = resolve_draft_player_name(
-        text, name_index, all_names=pool, cutoff=fuzzy_cutoff
-    )
-    if canonical:
-        status = "exact" if canonical.lower() == text.lower() else "corrected"
-        return {"status": status, "canonical": canonical, "candidates": [], "input": text}
-    if suggestions:
-        return {"status": "ambiguous", "canonical": None, "candidates": suggestions[:5], "input": text}
-
-    fragment = key.split()[-1] if key.split() else key
-    fallback = search_draft_pool_names(fragment, pool, limit=5) if len(fragment) >= 3 else []
-    return {"status": "unresolved", "canonical": None, "candidates": fallback, "input": text}
+    candidates = _close_match_candidates(text, name_index, pool, fuzzy_cutoff=fuzzy_cutoff)
+    if len(candidates) == 1:
+        return {"status": "close", "canonical": None, "candidates": candidates, "input": text}
+    if len(candidates) > 1:
+        return {"status": "ambiguous", "canonical": None, "candidates": candidates, "input": text}
+    return {"status": "invalid", "canonical": None, "candidates": [], "input": text}
 
 
 def validate_draft_player_lines(

@@ -28,20 +28,26 @@ class TestDraftImportValidation(unittest.TestCase):
         )
         self.index = build_draft_player_name_index(self.pool)
 
-    def test_francsco_lindor_corrected(self) -> None:
+    def test_francsco_lindor_close_match(self) -> None:
         info = classify_draft_player_import_name("Francsco Lindor", self.index, all_names=self.pool["fullName"].tolist())
-        self.assertEqual(info["status"], "corrected")
-        self.assertEqual(info["canonical"], "Francisco Lindor")
-
-    def test_a_judge_corrected(self) -> None:
-        info = classify_draft_player_import_name("A Judge", self.index, all_names=self.pool["fullName"].tolist())
-        self.assertEqual(info["status"], "corrected")
-        self.assertEqual(info["canonical"], "Aaron Judge")
-
-    def test_retired_name_unresolved(self) -> None:
-        info = classify_draft_player_import_name("Babe Ruth", self.index, all_names=self.pool["fullName"].tolist())
-        self.assertEqual(info["status"], "unresolved")
+        self.assertEqual(info["status"], "close")
         self.assertIsNone(info["canonical"])
+        self.assertIn("Francisco Lindor", info["candidates"])
+
+    def test_a_judge_close_match(self) -> None:
+        info = classify_draft_player_import_name("A Judge", self.index, all_names=self.pool["fullName"].tolist())
+        self.assertEqual(info["status"], "close")
+        self.assertIn("Aaron Judge", info["candidates"])
+
+    def test_retired_name_invalid(self) -> None:
+        info = classify_draft_player_import_name("Mike Piazza", self.index, all_names=self.pool["fullName"].tolist())
+        self.assertEqual(info["status"], "invalid")
+        self.assertIsNone(info["canonical"])
+
+    def test_exact_match_auto_accept(self) -> None:
+        info = classify_draft_player_import_name("Aaron Judge", self.index, all_names=self.pool["fullName"].tolist())
+        self.assertEqual(info["status"], "exact")
+        self.assertEqual(info["canonical"], "Aaron Judge")
 
     def test_validate_import_summary(self) -> None:
         import_df = pd.DataFrame(
@@ -49,13 +55,13 @@ class TestDraftImportValidation(unittest.TestCase):
                 "Round": [1, 1, 1],
                 "Pick": [1, 2, 3],
                 "Team": ["A", "B", "C"],
-                "Player": ["Aaron Judge", "Francsco Lindor", "Babe Ruth"],
+                "Player": ["Aaron Judge", "Francsco Lindor", "Mike Piazza"],
             }
         )
         review = validate_imported_draft_df(import_df, self.pool)
         self.assertEqual(review["summary"]["exact"], 1)
-        self.assertEqual(review["summary"]["corrected"], 1)
-        self.assertEqual(review["summary"]["unresolved"], 1)
+        self.assertEqual(review["summary"]["close"], 1)
+        self.assertEqual(review["summary"]["invalid"], 1)
         self.assertFalse(import_review_ready(review))
 
     def test_build_validated_board_only_pool_names(self) -> None:
@@ -64,7 +70,7 @@ class TestDraftImportValidation(unittest.TestCase):
                 "Round": [1, 1],
                 "Pick": [1, 2],
                 "Team": ["A", "B"],
-                "Player": ["Aaron Judge", "Babe Ruth"],
+                "Player": ["Aaron Judge", "Mike Piazza"],
             }
         )
         review = validate_imported_draft_df(import_df, self.pool)
@@ -74,6 +80,20 @@ class TestDraftImportValidation(unittest.TestCase):
         players = out["Player"].astype(str).str.strip().tolist()
         self.assertEqual(players[0], "Aaron Judge")
         self.assertEqual(players[1], "")
+
+    def test_close_match_requires_user_resolution(self) -> None:
+        import_df = pd.DataFrame(
+            {
+                "Round": [1],
+                "Pick": [1],
+                "Team": ["A"],
+                "Player": ["Francsco Lindor"],
+            }
+        )
+        review = validate_imported_draft_df(import_df, self.pool)
+        self.assertFalse(import_review_ready(review))
+        review["rows"][0]["resolved_canonical"] = "Francisco Lindor"
+        self.assertTrue(import_review_ready(review))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Callable
 
 import pandas as pd
@@ -13,6 +12,8 @@ from draft_player_names import (
     draft_pool_display_names,
 )
 
+_REVIEW_STATUSES = frozenset({"close", "ambiguous", "invalid"})
+
 
 def validate_imported_draft_df(
     import_df: pd.DataFrame,
@@ -22,14 +23,14 @@ def validate_imported_draft_df(
     index = build_draft_player_name_index(pool_df)
     names = draft_pool_display_names(pool_df)
     rows: list[dict[str, Any]] = []
-    counts = {"exact": 0, "corrected": 0, "ambiguous": 0, "unresolved": 0, "empty": 0}
+    counts = {"exact": 0, "close": 0, "ambiguous": 0, "invalid": 0, "empty": 0}
 
     for idx, row in import_df.iterrows():
         raw_player = str(row.get("Player") or "").strip()
         info = classify_draft_player_import_name(raw_player, index, all_names=names)
-        status = str(info.get("status") or "unresolved")
+        status = str(info.get("status") or "invalid")
         counts[status] = counts.get(status, 0) + 1
-        resolved = info.get("canonical") if status in ("exact", "corrected") else None
+        resolved = info.get("canonical") if status == "exact" else None
         rows.append(
             {
                 "row_index": int(idx),
@@ -62,6 +63,8 @@ def import_review_ready(review: dict[str, Any]) -> bool:
             continue
         if str(row.get("resolved_canonical") or "").strip():
             continue
+        if row.get("status") == "exact":
+            continue
         return False
     return True
 
@@ -76,48 +79,16 @@ def build_validated_import_dataframe(review: dict[str, Any]) -> pd.DataFrame:
         i = int(row.get("row_index", -1))
         if i < 0 or i >= len(out):
             continue
-        if row.get("skip") or row.get("status") == "unresolved" and not row.get("resolved_canonical"):
+        if row.get("skip"):
             out.at[i, "Player"] = ""
             continue
         canonical = str(row.get("resolved_canonical") or row.get("canonical") or "").strip()
+        if not canonical:
+            out.at[i, "Player"] = ""
+            continue
         out.at[i, "Player"] = canonical
     out["Player"] = out["Player"].fillna("").astype(str).str.strip()
     return out
-
-
-def summarize_import_validation(review: dict[str, Any]) -> dict[str, int]:
-    """Human-facing summary counts after user resolutions."""
-    accepted = auto_corrected = needs_review = unresolved = skipped = 0
-    for row in review.get("rows") or []:
-        if row.get("status") == "empty":
-            continue
-        if row.get("skip"):
-            skipped += 1
-            continue
-        canonical = str(row.get("resolved_canonical") or "").strip()
-        if not canonical:
-            unresolved += 1
-            continue
-        if row.get("status") in ("ambiguous", "unresolved"):
-            needs_review += 1
-        if row.get("status") == "corrected" or (
-            row.get("status") in ("ambiguous", "unresolved")
-            and canonical != str(row.get("input") or "").strip()
-        ):
-            auto_corrected += 1
-        if row.get("status") == "exact" or (
-            canonical and canonical == str(row.get("input") or "").strip()
-        ):
-            accepted += 1
-        elif row.get("status") in ("exact", "corrected"):
-            accepted += 1
-    return {
-        "accepted": accepted,
-        "auto_corrected": auto_corrected,
-        "needs_review": needs_review,
-        "unresolved": unresolved,
-        "skipped": skipped,
-    }
 
 
 def render_draft_import_validation_ui(
@@ -137,38 +108,61 @@ def render_draft_import_validation_ui(
     summary = review.get("summary") or {}
     st.markdown("**Import validation summary**")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Exact matches", int(summary.get("exact") or 0))
-    m2.metric("Auto-corrected", int(summary.get("corrected") or 0))
-    m3.metric("Needs review", int(summary.get("ambiguous") or 0))
-    m4.metric("Unresolved", int(summary.get("unresolved") or 0))
+    m1.metric("Accepted players", int(summary.get("exact") or 0))
+    m2.metric("Close matches", int(summary.get("close") or 0))
+    m3.metric("Ambiguous matches", int(summary.get("ambiguous") or 0))
+    m4.metric("Not in pool", int(summary.get("invalid") or 0))
 
-    needs_ui = [r for r in review["rows"] if r.get("status") in ("ambiguous", "unresolved")]
+    if int(summary.get("exact") or 0):
+        accepted = [
+            f"**{r.get('input')}** → {r.get('resolved_canonical') or r.get('canonical')}"
+            for r in review["rows"]
+            if r.get("status") == "exact"
+        ]
+        if accepted:
+            with st.expander("Accepted players (exact match)", expanded=False):
+                for line in accepted[:20]:
+                    st.markdown(f"- {line}")
+
+    needs_ui = [r for r in review["rows"] if r.get("status") in _REVIEW_STATUSES]
     if needs_ui:
-        st.caption("Choose the correct pool name for ambiguous or unresolved rows, or skip a pick.")
+        st.caption("Confirm close matches, choose among ambiguous names, or replace players not in the pool.")
         for row in needs_ui:
             pick_label = row.get("pick")
             team = row.get("team") or "—"
             raw = row.get("input") or "—"
             key_base = f"draft_import_row_{row.get('row_index')}"
+            status = row.get("status")
             candidates = list(dict.fromkeys(row.get("candidates") or []))
-            if row.get("status") == "unresolved":
+
+            if status == "close":
+                st.markdown(f"**Pick {pick_label}** · {team} · close match for `{raw}` — choose the correct player:")
+            elif status == "ambiguous":
+                st.markdown(f"**Pick {pick_label}** · {team} · `{raw}` matches several players — choose one:")
+            else:
+                st.warning(
+                    f"**Pick {pick_label}** · {team} · `{raw}` is not in the current player pool. "
+                    "Select a replacement player or leave unresolved."
+                )
                 search_q = st.text_input(
-                    f"Search pool for pick **{pick_label}** (`{raw}`)",
+                    "Search pool for replacement",
                     key=f"{session_key}_{key_base}_search",
-                    placeholder="Type last name, e.g. Lindor or Judge",
+                    placeholder="Type player name",
                 )
                 if search_q:
                     from draft_player_names import search_draft_pool_names
 
                     candidates = search_draft_pool_names(search_q, pool_names, limit=15)
+
             options = ["— Select player —"] + candidates
             choice = st.selectbox(
-                f"Pick **{pick_label}** · {team} · imported `{raw}`",
+                f"Official player name (pick {pick_label})",
                 options,
                 key=f"{session_key}_{key_base}_choice",
+                label_visibility="collapsed",
             )
             skip = st.checkbox(
-                "Skip this pick (leave blank on board)",
+                "Leave unresolved (blank on board)",
                 key=f"{session_key}_{key_base}_skip",
             )
             if skip:
@@ -182,15 +176,11 @@ def render_draft_import_validation_ui(
     applied = False
     if st.button(apply_label, disabled=not ready, key=f"{session_key}_apply"):
         validated = build_validated_import_dataframe(review)
-        invalid_left = validated[
-            validated["Player"].astype(str).str.strip().ne("")
-        ].copy()
-        # Final guard: every non-empty player must be in pool
         index = build_draft_player_name_index(pool_df)
         pool_set = set(index.values())
         bad = [
             p
-            for p in invalid_left["Player"].astype(str).tolist()
+            for p in validated["Player"].astype(str).tolist()
             if str(p).strip() and str(p).strip() not in pool_set
         ]
         if bad:
@@ -202,5 +192,5 @@ def render_draft_import_validation_ui(
             st.session_state.pop(session_key, None)
 
     if not ready:
-        st.info("Resolve or skip every ambiguous/unresolved player before applying the import.")
+        st.info("Confirm every close/ambiguous match and resolve or skip every player not in the pool.")
     return applied

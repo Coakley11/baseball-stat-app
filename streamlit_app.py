@@ -10,6 +10,7 @@ import io
 import re
 import unicodedata
 import hashlib
+import html
 import time
 import uuid
 from collections import Counter
@@ -1786,11 +1787,11 @@ PAGE_GUIDES = {
         "when": "During draft prep or trade talks when you want one short list of names worth a closer look.",
         "outputs": "A sortable table (Valuation Score, Current Score, Trend Score, stats) plus best/worst callouts at the bottom.",
         "extra": [
-            "**Valuation Score (0–1):** Higher is better. 1.0 = top of your filtered list; 0.0 = bottom.",
-            "**Current Score:** How strong recent counting and rate stats are in the year window you chose.",
-            "**Trend Score:** Whether production is trending up or down (larger = more improvement).",
-            "**Reading the table:** Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
-            "**For fantasy:** Shortlist adds, draft targets, and trade candidates here, then confirm on Trend Value or Comparison.",
+            "<strong>Valuation Score (0–1):</strong> Higher is better. 1.0 = top of your filtered list; 0.0 = bottom.",
+            "<strong>Current Score:</strong> How strong recent counting and rate stats are in the year window you chose.",
+            "<strong>Trend Score:</strong> Whether production is trending up or down (larger = more improvement).",
+            "<strong>Reading the table:</strong> Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
+            "<strong>For fantasy:</strong> Shortlist adds, draft targets, and trade candidates here, then confirm on Trend Value or Comparison.",
         ],
     },
     "ML Predictions": {
@@ -1836,6 +1837,16 @@ PAGE_GUIDES = {
 }
 
 
+def _guide_html_line(text: str) -> str:
+    """Escape guide copy for HTML; allow trusted <strong>…</strong> from PAGE_GUIDES extras."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    if re.search(r"</?strong>", raw, flags=re.I):
+        return raw
+    return html.escape(raw)
+
+
 def render_page_guide(page_key):
     """Short plain-English intro for the active page (no formula changes)."""
     g = PAGE_GUIDES.get(page_key)
@@ -1849,15 +1860,23 @@ def render_page_guide(page_key):
             g.get("outputs", ""),
         )
         return
-    with st.container(border=True):
-        st.markdown("**Quick guide**")
-        st.markdown(f"- **What it does:** {g.get('purpose', '')}")
-        st.markdown(f"- **When to use it:** {g.get('when', '')}")
-        st.markdown(f"- **Main outputs:** {g.get('outputs', '')}")
-        for item in g.get("extra") or []:
-            text = str(item or "").strip()
-            if text:
-                st.markdown(f"- {text}")
+    extra_items = "".join(
+        f"<li>{_guide_html_line(x)}</li>" for x in (g.get("extra") or []) if str(x or "").strip()
+    )
+    st.markdown(
+        f"""
+        <div class="page-guide">
+            <div class="page-guide-title">Quick guide</div>
+            <ul>
+                <li><strong>What it does:</strong> {_guide_html_line(g.get("purpose", ""))}</li>
+                <li><strong>When to use it:</strong> {_guide_html_line(g.get("when", ""))}</li>
+                <li><strong>Main outputs:</strong> {_guide_html_line(g.get("outputs", ""))}</li>
+                {extra_items}
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
@@ -17119,20 +17138,13 @@ if active_page == "Fantasy Standings Tracker":
         try:
             draft_import_raw = read_imported_draft_file(draft_import_for_standings)
             draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
-            if draft_import_norm.empty:
-                st.warning("No usable Team/Player rows were found in the uploaded draft.")
-            else:
-                pool_for_import = _draft_room_pool_for_import_validation()
-                if pool_for_import.empty:
-                    st.error("Player pool is empty — cannot validate import names.")
-                else:
-                    _render_validated_draft_import(
-                        draft_import_norm,
-                        pool_for_import,
-                        session_key="_standings_draft_import_review",
-                        apply_label="Apply validated draft board for standings",
-                        flash_prefix="Loaded",
-                    )
+            if st.button("Use Uploaded Draft Board For Standings"):
+                st.session_state["draft_room_table"] = draft_import_norm.copy()
+                _auto_remove_drafted_from_queue()
+                st.session_state["workflow_sidebar_flash"] = (
+                    f"Loaded {len(draft_import_norm)} picks for standings/trade analysis."
+                )
+                st.rerun()
         except Exception as e:
             st.error(f"Could not read draft board upload: {e}")
 
