@@ -1962,20 +1962,28 @@ def clear_pending_insight(st: Any) -> None:
 
 
 def _insight_panel_title(insight: dict[str, Any]) -> str:
-    if _is_music_insight_app(str(insight.get("source_app") or ""), insight):
+    app = str(insight.get("source_app") or "").strip().lower()
+    if _is_music_insight_app(app, insight):
         return "Music Coach Insight"
+    if app == "baseball":
+        return "Baseball Insight"
     return "Applied Math Insight"
 
 
 def _insight_method_heading(insight: dict[str, Any]) -> str:
-    if _is_music_insight_app(str(insight.get("source_app") or ""), insight):
+    app = str(insight.get("source_app") or "").strip().lower()
+    if _is_music_insight_app(app, insight):
         return "Coach guidance"
+    if app == "baseball":
+        return "Analysis"
     return "Math used"
 
 
 def _insight_loaded_placeholder(app_key: str) -> str:
     if _is_music_insight_app(app_key):
         return "Music Coach insight loaded."
+    if str(app_key or "").strip().lower() == "baseball":
+        return "Baseball insight loaded."
     return "Applied Math insight loaded."
 
 
@@ -2012,7 +2020,11 @@ def render_applied_math_insight_panel(st: Any) -> bool:
             dismiss_label = (
                 "Dismiss coach insight"
                 if _is_music_insight_app(str(insight.get("source_app") or ""), insight)
-                else "Dismiss insight"
+                else (
+                    "Dismiss Baseball insight"
+                    if str(insight.get("source_app") or "").strip().lower() == "baseball"
+                    else "Dismiss insight"
+                )
             )
             if st.button(dismiss_label, key="ami_insight_dismiss", use_container_width=True):
                 dismiss_applied_math_insight(st)

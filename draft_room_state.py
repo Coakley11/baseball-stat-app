@@ -1071,6 +1071,91 @@ def get_active_draft_status(session: dict[str, Any]) -> dict[str, Any]:
     return status
 
 
+def round_one_draft_slot(team_names: list[str], your_team: str) -> int | None:
+    """Round-1 draft position (1-based) for ``your_team`` in the team list."""
+    team_s = str(your_team or "").strip()
+    if not team_s:
+        return None
+    for i, name in enumerate(team_names):
+        if str(name).strip() == team_s:
+            return i + 1
+    return None
+
+
+def next_board_pick_for_team(
+    table: Any,
+    team_name: str,
+    *,
+    min_pick: int = 1,
+) -> int | None:
+    """Next open overall pick number for ``team_name`` on a Draft Room board."""
+    if not isinstance(table, pd.DataFrame) or table.empty:
+        return None
+    if "Team" not in table.columns or "Pick" not in table.columns:
+        return None
+    team_s = str(team_name or "").strip()
+    if not team_s:
+        return None
+    candidates: list[int] = []
+    for _, row in table.iterrows():
+        if str(row.get("Team") or "").strip() != team_s:
+            continue
+        player = str(row.get("Player") or "").strip()
+        try:
+            pk = int(row.get("Pick"))
+        except (TypeError, ValueError):
+            continue
+        if pk >= int(min_pick) and not player:
+            candidates.append(pk)
+    return min(candidates) if candidates else None
+
+
+def draft_board_summary_for_team(
+    table: Any,
+    *,
+    your_team: str,
+    team_names: list[str] | None = None,
+    pick_adjustment: int = 0,
+    num_teams: int | None = None,
+) -> dict[str, Any]:
+    """Plain-language draft progress for Draft Assistant / status panels."""
+    names = [str(x).strip() for x in (team_names or []) if str(x).strip()]
+    teams = max(int(num_teams or 0), len(names), 1)
+    team_s = str(your_team or "").strip()
+
+    players_you: list[str] = []
+    players_league: list[str] = []
+    if isinstance(table, pd.DataFrame) and not table.empty and "Player" in table.columns:
+        for _, row in table.iterrows():
+            player = str(row.get("Player") or "").strip()
+            if not player:
+                continue
+            row_team = str(row.get("Team") or "").strip()
+            if team_s and row_team == team_s:
+                players_you.append(player)
+            else:
+                players_league.append(player)
+
+    players_you = list(dict.fromkeys(players_you))
+    players_league = list(dict.fromkeys(players_league))
+    total_picked = len(players_you) + len(players_league)
+    current_pick = max(1, total_picked + 1 + int(pick_adjustment or 0))
+    current_round = ((current_pick - 1) // teams) + 1 if teams else 1
+    draft_slot = round_one_draft_slot(names, team_s) if names else None
+    your_next_pick = next_board_pick_for_team(table, team_s, min_pick=current_pick)
+
+    return {
+        "your_team": team_s or None,
+        "players_you_drafted": len(players_you),
+        "players_league_drafted": len(players_league),
+        "current_pick": current_pick,
+        "current_round": current_round,
+        "draft_slot": draft_slot,
+        "your_next_pick": your_next_pick,
+        "num_teams": teams,
+    }
+
+
 def render_active_draft_banner(st: Any, session: dict[str, Any]) -> None:
     """Global banner when a draft is active — visible on every page."""
     status = get_active_draft_status(session)
@@ -1173,10 +1258,9 @@ def sync_live_draft_room_to_canonical_board(session: dict[str, Any], room: Any) 
 
 def render_canonical_draft_banner(st: Any, session: dict[str, Any]) -> None:
     mode = get_active_draft_mode(session)
-    meta = get_canonical_draft_meta(session)
     picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
-    label = "Live Draft Room (auto-sync)" if mode == ACTIVE_DRAFT_MODE_LIVE else "Draft Room Simulator (manual)"
-    st.info(f"**Canonical draft board:** {label} · **{picks}** pick(s) logged · source: `{meta.get('source', '—')}`")
+    label = "Live draft" if mode == ACTIVE_DRAFT_MODE_LIVE else "Practice draft"
+    st.info(f"**{label}** · **{picks}** pick(s) logged on your draft board.")
 
 
 def preserve_richer_session_board(

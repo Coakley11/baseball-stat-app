@@ -249,7 +249,9 @@ def source_question_card_title(
     if app == "music":
         return "Music Coach question from Music"
     label = _SOURCE_LABELS.get(app, app.replace("_", " ").title())
-    if app in {"baseball", "nba", "investment"}:
+    if app == "baseball":
+        return f"Baseball Insight question from {label}"
+    if app in {"nba", "investment"}:
         return f"Applied Math question from {label}"
     return f"Question from {label}"
 
@@ -836,10 +838,16 @@ def render_analyze_with_applied_math_sidebar(
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
     is_music = str(source_app or "").strip().lower() == "music"
+    is_baseball = str(source_app or "").strip().lower() == "baseball"
     if is_music:
         st.sidebar.markdown("### Ask the Music Coach")
         st.sidebar.caption(
             "Get help with practice, theory, navigation, backing tracks, karaoke, or this app."
+        )
+    elif is_baseball:
+        st.sidebar.markdown("### Get Baseball Insight")
+        st.sidebar.caption(
+            "Ask a fantasy baseball question about what you are viewing on this page."
         )
     else:
         st.sidebar.markdown("### Analyze with Applied Math")
@@ -854,7 +862,11 @@ def render_analyze_with_applied_math_sidebar(
         sent_msg = (
             "Question sent to Command Center. Open Command Center to continue with the Music Coach."
             if is_music
-            else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+            else (
+                "Question sent to Command Center. Open Command Center to continue with Baseball Insight."
+                if is_baseball
+                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+            )
         )
         st.sidebar.success(sent_msg)
 
@@ -909,12 +921,20 @@ def render_analyze_with_applied_math_sidebar(
             dup_msg = (
                 "That question was already sent recently. Open Command Center to continue with the Music Coach."
                 if is_music
-                else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                else (
+                    "That question was already sent recently. Open Command Center to continue with Baseball Insight."
+                    if is_baseball
+                    else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                )
             )
             ok_msg = (
                 "Question sent to Command Center. Open Command Center to continue with the Music Coach."
                 if is_music
-                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                else (
+                    "Question sent to Command Center. Open Command Center to continue with Baseball Insight."
+                    if is_baseball
+                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                )
             )
             if result.get("duplicate"):
                 st.sidebar.info(dup_msg)

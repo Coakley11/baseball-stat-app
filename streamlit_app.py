@@ -1786,11 +1786,11 @@ PAGE_GUIDES = {
         "when": "During draft prep or trade talks when you want one short list of names worth a closer look.",
         "outputs": "A sortable table (Valuation Score, Current Score, Trend Score, stats) plus best/worst callouts at the bottom.",
         "extra": [
-            "<strong>Valuation Score (0–1):</strong> Higher is better. 1.0 = top of your filtered list; 0.0 = bottom.",
-            "<strong>Current Score:</strong> How strong recent counting and rate stats are in the year window you chose.",
-            "<strong>Trend Score:</strong> Whether production is trending up or down (larger = more improvement).",
-            "<strong>Reading the table:</strong> Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
-            "<strong>For fantasy:</strong> Shortlist adds, draft targets, and trade candidates here, then confirm on Trend Value or Comparison.",
+            "**Valuation Score (0–1):** Higher is better. 1.0 = top of your filtered list; 0.0 = bottom.",
+            "**Current Score:** How strong recent counting and rate stats are in the year window you chose.",
+            "**Trend Score:** Whether production is trending up or down (larger = more improvement).",
+            "**Reading the table:** Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
+            "**For fantasy:** Shortlist adds, draft targets, and trade candidates here, then confirm on Trend Value or Comparison.",
         ],
     },
     "ML Predictions": {
@@ -1849,21 +1849,15 @@ def render_page_guide(page_key):
             g.get("outputs", ""),
         )
         return
-    extra_items = "".join(f"<li>{x}</li>" for x in (g.get("extra") or []))
-    st.markdown(
-        f"""
-        <div class="page-guide">
-            <div class="page-guide-title">Quick guide</div>
-            <ul>
-                <li><strong>What it does:</strong> {g.get("purpose", "")}</li>
-                <li><strong>When to use it:</strong> {g.get("when", "")}</li>
-                <li><strong>Main outputs:</strong> {g.get("outputs", "")}</li>
-                {extra_items}
-            </ul>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        st.markdown("**Quick guide**")
+        st.markdown(f"- **What it does:** {g.get('purpose', '')}")
+        st.markdown(f"- **When to use it:** {g.get('when', '')}")
+        st.markdown(f"- **Main outputs:** {g.get('outputs', '')}")
+        for item in g.get("extra") or []:
+            text = str(item or "").strip()
+            if text:
+                st.markdown(f"- {text}")
 
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
@@ -15006,29 +15000,31 @@ if active_page == "Draft Assistant Simulator":
         )
 
         with st.expander(
-            "Draft Room connection & pick number",
+            "Draft status",
             expanded=not pp.is_screenshot_mode(st),
         ):
             pp.instructional_caption(
                 st,
-                "Picks come from the canonical draft board (Draft Room Simulator / Live Draft Room). "
-                "Choose your fantasy team name so needs and availability match your roster.",
+                "Synced from your Draft Room board. Choose your team so recommendations match your roster.",
             )
 
-            from draft_room_state import get_canonical_draft_board
+            from draft_room_state import draft_board_summary_for_team, get_canonical_draft_board
 
             draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
+            board_has_players = (
+                not draft_room_table_for_assistant.empty
+                and "Player" in draft_room_table_for_assistant.columns
+            )
 
-            if draft_room_table_for_assistant.empty or "Player" not in draft_room_table_for_assistant.columns:
+            if not board_has_players:
                 st.warning("No Draft Room picks yet. Add picks in Draft Room Simulator, then return here.")
                 drafted_players = []
                 my_roster = []
                 assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
             else:
-                draft_room_table_for_assistant = draft_room_table_for_assistant[
-                    draft_room_table_for_assistant["Player"].astype(str).str.strip() != ""
-                ].copy()
-                assistant_team_names = sorted(draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist())
+                assistant_team_names = sorted(
+                    draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist()
+                )
                 if not assistant_team_names:
                     assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
 
@@ -15036,10 +15032,11 @@ if active_page == "Draft Assistant Simulator":
             default_team_index = assistant_team_names.index(default_team_name) if default_team_name in assistant_team_names else 0
 
             assistant_my_team_name = st.selectbox(
-                "Which Draft Room team is yours?",
+                "Your team",
                 assistant_team_names,
                 index=default_team_index,
-                key="draft_assistant_synced_team"
+                key="draft_assistant_synced_team",
+                help="Which fantasy team on the draft board is yours.",
             )
 
             _da_highlight = st.session_state.get("pending_draft_assistant_player")
@@ -15052,10 +15049,7 @@ if active_page == "Draft Assistant Simulator":
                     st.session_state.pop("pending_draft_assistant_player", None)
                     st.rerun()
 
-            if draft_room_table_for_assistant.empty:
-                my_roster = []
-                drafted_players = []
-            else:
+            if board_has_players:
                 my_roster = (
                     draft_room_table_for_assistant[
                         draft_room_table_for_assistant["Team"].astype(str) == str(assistant_my_team_name)
@@ -15066,39 +15060,49 @@ if active_page == "Draft Assistant Simulator":
                         draft_room_table_for_assistant["Team"].astype(str) != str(assistant_my_team_name)
                     ]["Player"].dropna().astype(str).tolist()
                 )
+            else:
+                my_roster = []
+                drafted_players = []
 
             my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
             drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
             drafted_or_owned_players = set(drafted_players).union(set(my_roster))
 
-            s1, s2, s3 = st.columns(3)
-            s1.metric("My roster", len(my_roster))
-            s2.metric("Other rosters", len(drafted_players))
-            s3.metric("League pick #", len(drafted_or_owned_players) + 1)
-
-            total_players_picked = len(drafted_or_owned_players)
-            auto_current_pick = total_players_picked + 1
-
-            pick_col1, pick_col2, pick_col3 = st.columns([1, 1, 2])
-            with pick_col1:
-                pick_adjustment = st.number_input(
-                    "Manual pick adjustment",
+            with st.expander("Adjust pick number (advanced)", expanded=False):
+                st.number_input(
+                    "Pick number correction",
                     min_value=-50,
                     max_value=50,
-                    value=0,
+                    value=int(st.session_state.get("draft_pick_adjustment") or 0),
                     step=1,
                     key="draft_pick_adjustment",
-                    help="Usually 0. Adjust only if the board and this page disagree on pick number."
+                    help="Leave at 0 unless the board and this page disagree on the current pick.",
                 )
-            current_pick = max(1, int(auto_current_pick + pick_adjustment))
-            with pick_col2:
-                st.metric("Pick # for model", current_pick)
-            with pick_col3:
-                st.caption(
-                    f"From Draft Room: {total_players_picked} drafted "
-                    f"({len(drafted_players)} others + {len(my_roster)} yours) + 1"
-                    + (f"; adjustment {pick_adjustment:+d}." if pick_adjustment else ".")
-                )
+
+            pick_adjustment = int(st.session_state.get("draft_pick_adjustment") or 0)
+            draft_summary = draft_board_summary_for_team(
+                draft_room_table_for_assistant if board_has_players else pd.DataFrame(),
+                your_team=assistant_my_team_name,
+                team_names=assistant_team_names,
+                pick_adjustment=pick_adjustment,
+                num_teams=int(st.session_state.get("room_team_count") or len(assistant_team_names) or 12),
+            )
+            current_pick = int(draft_summary["current_pick"])
+
+            row1_a, row1_b, row1_c = st.columns(3)
+            row1_a.metric("Current pick", current_pick)
+            row1_b.metric("Current round", draft_summary["current_round"])
+            slot_label = draft_summary["draft_slot"] if draft_summary["draft_slot"] is not None else "—"
+            row1_c.metric("Your draft slot", slot_label)
+
+            row2_a, row2_b, row2_c = st.columns(3)
+            row2_a.metric("Your picks", draft_summary["players_you_drafted"])
+            row2_b.metric("League picks", draft_summary["players_league_drafted"])
+            next_pick_label = draft_summary["your_next_pick"] if draft_summary["your_next_pick"] is not None else "—"
+            row2_c.metric("Your next pick", next_pick_label)
+
+            if pick_adjustment:
+                st.caption(f"Pick correction applied: {pick_adjustment:+d} (effective pick **{current_pick}**).")
 
         # Automatically infer position needs from your synced roster.
         roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
