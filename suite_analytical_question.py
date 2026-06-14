@@ -21,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-question-id-freshness-v1"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-blob-identity-v1"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -484,6 +484,42 @@ def _store_question_context_blob(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _blob_candidate_score(payload: dict[str, Any], updated_at: str) -> tuple[str, int]:
+    """Sort key: prefer newest store time, then richest pool."""
+    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    diag = payload.get("blob_diagnostics") if isinstance(payload.get("blob_diagnostics"), dict) else {}
+    avail = diag.get("available_players_count")
+    if avail is None:
+        avail = len(ctx.get("available_players") or snap.get("available_players") or [])
+    ts = str(updated_at or payload.get("saved_at") or payload.get("blob_store_updated_at") or "")
+    return (ts, int(avail or 0))
+
+
+def _select_best_blob_payload(candidates: list[tuple[str, str, dict[str, Any]]]) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    best_ts, best_app, best_payload = max(
+        candidates,
+        key=lambda item: _blob_candidate_score(item[2], item[0]),
+    )
+    out = copy.deepcopy(best_payload)
+    out["blob_store_updated_at"] = best_ts or out.get("saved_at")
+    out["blob_store_app"] = best_app
+    out["blob_load_source"] = "saved_items"
+    if len(candidates) > 1:
+        out["blob_load_candidates"] = [
+            {
+                "app": app,
+                "updated_at": ts,
+                "payload_hash": (payload or {}).get("payload_hash"),
+                "available_players_count": _blob_candidate_score(payload, ts)[1],
+            }
+            for ts, app, payload in candidates
+        ]
+    return out
+
+
 def load_analytical_question_context(question_id: str) -> dict[str, Any]:
     """Load full context blob by question_id from saved items or resume subtitle."""
     return load_analytical_question_payload(question_id).get("context") or {}
@@ -495,10 +531,11 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     if not qid:
         return {}
     resume_key = f"ai:question:{qid}"
-    search_apps = ["applied_intelligence", "baseball"]
+    search_apps = ["applied_intelligence", "baseball", "investment", "nba", "music"]
     try:
         from suite_account import load_saved_items
 
+        candidates: list[tuple[str, str, dict[str, Any]]] = []
         for app_name in search_apps:
             rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
             for row in rows:
@@ -506,10 +543,10 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
                     continue
                 payload = row.get("payload")
                 if isinstance(payload, dict):
-                    out = copy.deepcopy(payload)
-                    out["blob_store_updated_at"] = row.get("updated_at") or out.get("saved_at")
-                    out["blob_store_app"] = app_name
-                    return out
+                    candidates.append((str(row.get("updated_at") or ""), app_name, payload))
+        picked = _select_best_blob_payload(candidates)
+        if picked:
+            return picked
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
     try:
@@ -522,10 +559,43 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
                 continue
             ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
             if ctx:
-                return {"context": ctx, "question_id": qid}
+                return {
+                    "context": ctx,
+                    "question_id": qid,
+                    "blob_load_source": "resume_subtitle",
+                    "payload_hash": _context_payload_hash(ctx),
+                }
     except Exception:
         pass
     return {}
+
+
+def build_send_identity_diagnostics(session_state: dict[str, Any]) -> dict[str, Any]:
+    """Hard identity block for Baseball Dev Mode after AMI send."""
+    try:
+        from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+    except ImportError:
+        SUITE_BUILD_LABEL, GIT_COMMIT_SHORT = "unknown", "unknown"
+    last_send = session_state.get("_ami_last_send") if isinstance(session_state.get("_ami_last_send"), dict) else {}
+    send_diag = (
+        session_state.get("_ami_last_send_diagnostics")
+        if isinstance(session_state.get("_ami_last_send_diagnostics"), dict)
+        else {}
+    )
+    identity: dict[str, Any] = {
+        "deploy_build": SUITE_BUILD_LABEL,
+        "deploy_commit": GIT_COMMIT_SHORT,
+        "question_id": last_send.get("question_id") or send_diag.get("question_id"),
+        "blob_updated": last_send.get("blob_updated", send_diag.get("blob_updated")),
+        "blob_updated_at": last_send.get("blob_updated_at") or send_diag.get("blob_updated_at"),
+        "blob_payload_hash": last_send.get("blob_payload_hash") or send_diag.get("blob_payload_hash"),
+        "blob_payload_available_players_count_after_save": send_diag.get(
+            "blob_payload_available_players_count_after_save"
+        ),
+        "blob_payload_current_pick_after_save": send_diag.get("blob_payload_current_pick_after_save"),
+        "blob_store_apps": send_diag.get("blob_store_apps"),
+    }
+    return identity
 
 
 def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
@@ -1071,6 +1141,16 @@ def render_analyze_with_applied_math_sidebar(
 
     if developer_mode:
         st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
+        try:
+            from suite_analytical_question import build_send_identity_diagnostics
+
+            identity = build_send_identity_diagnostics(ss)
+            with st.sidebar.expander("AMI blob identity (last send)", expanded=True):
+                for key, val in identity.items():
+                    if val is not None and val != "" and val != []:
+                        st.text(f"{key}: {val}")
+        except Exception:
+            pass
         last_diag = ss.get("_ami_last_send_diagnostics")
         if isinstance(last_diag, dict) and last_diag:
             with st.sidebar.expander("AMI send pipeline (last send)", expanded=False):
