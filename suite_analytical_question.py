@@ -359,15 +359,26 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
         return
+    ctx = dict(payload.get("context") or {})
     blob = {
         "question": payload.get("question"),
         "question_id": qid,
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "quant_area": payload.get("quant_area"),
-        "context": dict(payload.get("context") or {}),
+        "context": ctx,
         "source_state": dict(payload.get("source_state") or {}),
     }
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    avail_n = len(ctx.get("available_players") or snap.get("available_players") or [])
+    if "draft" in str(payload.get("source_page") or "").lower() and avail_n == 0:
+        log.warning(
+            "AMI blob save for %s has zero available_players (pick=%s snap=%s diag=%s)",
+            qid,
+            ctx.get("current_pick"),
+            bool(snap),
+            ctx.get("send_pipeline_diagnostics"),
+        )
     try:
         from suite_account import remember_saved_item
 
@@ -765,15 +776,20 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
     _upsert_applied_intelligence_resume(payload, action_url=action_url)
-    if not duplicate:
-        _store_question_context_blob(payload)
+    _store_question_context_blob(payload)
     if session_state is not None:
+        ctx = dict(payload.get("context") or {})
+        send_diag = ctx.get("send_pipeline_diagnostics")
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
             "question": payload["question"],
             "source_app": payload["source_app"],
             "submitted_at": utc_now_iso(),
+            "duplicate": duplicate,
+            "blob_updated": True,
         }
+        if isinstance(send_diag, dict):
+            session_state["_ami_last_send_diagnostics"] = send_diag
     card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     return {
         **payload,
@@ -808,12 +824,17 @@ def build_submit_context(
         ctx = merge_analytical_context(ctx, extra)
     if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
         try:
-            from applied_math_context import attach_question_player_to_context, augment_ami_available_pool_at_send
+            from applied_math_context import (
+                attach_question_player_to_context,
+                augment_ami_available_pool_at_send,
+                finalize_draft_context_for_send,
+            )
 
             attach_question_player_to_context(ctx, str(question).strip(), session_state)
             low_page = str(source_page or "").lower()
             if "draft" in low_page:
                 augment_ami_available_pool_at_send(ctx, str(question).strip(), session_state)
+                finalize_draft_context_for_send(ctx, session_state)
         except Exception:
             log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
     return ctx
@@ -952,6 +973,11 @@ def render_analyze_with_applied_math_sidebar(
 
     if developer_mode:
         st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
+        last_diag = ss.get("_ami_last_send_diagnostics")
+        if isinstance(last_diag, dict) and last_diag:
+            with st.sidebar.expander("AMI send pipeline (last send)", expanded=False):
+                for key, val in last_diag.items():
+                    st.text(f"{key}: {val}")
     st.sidebar.divider()
 
 

@@ -197,6 +197,40 @@ class TestPositionRepresentativePool(unittest.TestCase):
         catchers = [r for r in ctx["available_players"] if r.get("Primary Position") == "C"]
         self.assertGreaterEqual(len(catchers), 1)
 
+    def test_finalize_promotes_session_projection_over_sparse_gather(self) -> None:
+        """Sidebar send can build sparse gather snapshot; finalize must restore cached pool."""
+        available_rows = [{"player": "Kyle Tucker", "Primary Position": "OF", "Market Rank": 8}]
+        session: dict = {
+            "live_draft_room": {"current_pick_index": 0, "config": {"num_teams": 12}},
+            "_ami_draft_projection": {
+                "current_pick": 8,
+                "draft_round": 1,
+                "available_players": available_rows,
+                "best_available": available_rows,
+                "player_pool_diagnostics": {"player_pool_source": "position_representative_v1"},
+            },
+            "_ami_draft_snapshot": {
+                "current_pick": 8,
+                "draft_round": 1,
+                "available_players": available_rows,
+            },
+        }
+        ctx = build_submit_context(
+            "baseball",
+            "Draft Assistant Simulator",
+            session,
+            context_extra_builder=lambda: build_baseball_applied_math_context(
+                "Draft Assistant Simulator", session
+            ),
+            question="Who is the best player available?",
+        )
+        diag = ctx.get("send_pipeline_diagnostics") or {}
+        self.assertEqual(diag.get("session_projection_available_count"), 1)
+        self.assertEqual(diag.get("ctx_draft_snapshot_available_count"), 1)
+        self.assertEqual(ctx.get("current_pick"), 8)
+        snap = ctx.get("draft_snapshot") or {}
+        self.assertEqual(len(snap.get("available_players") or []), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

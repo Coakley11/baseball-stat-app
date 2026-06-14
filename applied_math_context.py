@@ -164,6 +164,106 @@ def augment_ami_available_pool_at_send(
         ctx["question_player_row"] = row
 
 
+def build_draft_send_pipeline_diagnostics(
+    ctx: dict[str, Any],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Trace counts at Draft Assistant send time (pre-blob)."""
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    proj = ctx.get("draft_projection") if isinstance(ctx.get("draft_projection"), dict) else {}
+    cached_proj = session_state.get("_ami_draft_projection")
+    cached_snap = session_state.get("_ami_draft_snapshot")
+    pool_diag = ctx.get("player_pool_diagnostics") if isinstance(ctx.get("player_pool_diagnostics"), dict) else {}
+
+    def _count(val: Any) -> int:
+        return len(val) if isinstance(val, list) else 0
+
+    return {
+        "session_has_draft_projection": isinstance(cached_proj, dict),
+        "session_has_draft_snapshot": isinstance(cached_snap, dict),
+        "session_projection_available_count": _count(
+            cached_proj.get("available_players") if isinstance(cached_proj, dict) else None
+        ),
+        "session_snapshot_available_count": _count(
+            cached_snap.get("available_players") if isinstance(cached_snap, dict) else None
+        ),
+        "ctx_available_players_count": _count(ctx.get("available_players")),
+        "ctx_draft_snapshot_available_count": _count(snap.get("available_players")),
+        "ctx_draft_projection_available_count": _count(proj.get("available_players")),
+        "ctx_best_available_count": _count(ctx.get("best_available")),
+        "player_pool_source": pool_diag.get("player_pool_source"),
+        "current_pick": ctx.get("current_pick") or snap.get("current_pick"),
+        "draft_round": ctx.get("draft_round") or snap.get("draft_round"),
+    }
+
+
+def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> dict[str, Any]:
+    """Promote cached Draft Assistant pool/pick into send payload (sidebar runs before page cache)."""
+    cached_snap = session_state.get("_ami_draft_snapshot")
+    cached_proj = session_state.get("_ami_draft_projection")
+    snap = dict(ctx.get("draft_snapshot")) if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    proj = dict(cached_proj) if isinstance(cached_proj, dict) else {}
+
+    if isinstance(cached_snap, dict):
+        for key in (
+            "available_players",
+            "best_available_players",
+            "recommended_players",
+            "current_pick",
+            "draft_round",
+            "needed_positions",
+            "category_needs",
+            "player_pool_diagnostics",
+            "user_roster",
+            "drafted_players",
+            "my_next_pick",
+        ):
+            val = cached_snap.get(key)
+            if val is not None and val != "" and val != [] and not snap.get(key):
+                snap[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+
+    if proj:
+        ctx["draft_projection"] = {
+            **proj,
+            **(ctx.get("draft_projection") if isinstance(ctx.get("draft_projection"), dict) else {}),
+        }
+        if proj.get("available_players") and not ctx.get("available_players"):
+            ctx["available_players"] = proj["available_players"]
+        if proj.get("available_players") and not snap.get("available_players"):
+            snap["available_players"] = proj["available_players"]
+        if proj.get("best_available") and not ctx.get("best_available"):
+            ctx["best_available"] = proj["best_available"]
+        if proj.get("top_recommendations") and not ctx.get("recommended_players"):
+            ctx["recommended_players"] = proj["top_recommendations"]
+        if proj.get("player_pool_diagnostics"):
+            merged_diag = dict(proj["player_pool_diagnostics"])
+            merged_diag.update(ctx.get("player_pool_diagnostics") or {})
+            ctx["player_pool_diagnostics"] = merged_diag
+        pick = proj.get("current_pick")
+        if pick is not None:
+            ctx["current_pick"] = int(pick)
+            snap["current_pick"] = int(pick)
+        rnd = proj.get("draft_round")
+        if rnd is not None:
+            ctx["draft_round"] = int(rnd)
+            snap["draft_round"] = int(rnd)
+
+    if snap:
+        ctx["draft_snapshot"] = snap
+        if snap.get("best_available_players") and not ctx.get("best_available"):
+            ctx["best_available"] = snap["best_available_players"]
+        if snap.get("recommended_players") and not ctx.get("recommended_players"):
+            ctx["recommended_players"] = snap["recommended_players"]
+        if snap.get("current_pick") is not None and int(snap.get("current_pick") or 0) > 0:
+            ctx["current_pick"] = int(snap["current_pick"])
+        if snap.get("draft_round") is not None:
+            ctx["draft_round"] = snap["draft_round"]
+
+    diag = build_draft_send_pipeline_diagnostics(ctx, session_state)
+    ctx["send_pipeline_diagnostics"] = diag
+    return diag
+
+
 def _copy_widget_value(val: Any) -> Any:
     if val is None:
         return None
