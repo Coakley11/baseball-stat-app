@@ -282,6 +282,71 @@ class TestPositionRepresentativePool(unittest.TestCase):
             (ctx.get("player_pool_diagnostics") or {}).get("player_pool_source"),
             "position_representative_v1",
         )
+        self.assertEqual(diag.get("skip_reason"), "none")
+
+    def test_on_demand_cache_builds_from_editor_cache_board(self) -> None:
+        """Editor cache with picks must build AMI cache (not skip on app import name)."""
+        from unittest.mock import MagicMock, patch
+
+        import draft_ami_helpers as dah
+        from draft_room_state import DRAFT_ROOM_EDITOR_CACHE_KEY, DRAFT_ROOM_TABLE_KEY, table_pick_count
+
+        rows = []
+        for i in range(12):
+            rows.append(
+                {
+                    "Round": (i // 4) + 1,
+                    "Pick": i + 1,
+                    "Team": f"Team {(i % 4) + 1}",
+                    "Player": f"Player {i + 1}" if i < 7 else "",
+                }
+            )
+        board = pd.DataFrame(rows)
+        session: dict = {
+            "session_has_draft_board": True,
+            "session_pick_count": 7,
+            "draft_board_source_key": "draft_room_board_editor_cache",
+            DRAFT_ROOM_EDITOR_CACHE_KEY: board.copy(),
+            DRAFT_ROOM_TABLE_KEY: pd.DataFrame(columns=["Round", "Pick", "Team", "Player"]),
+            "room_your_team": "Team 1",
+            "room_team_count": 4,
+        }
+        pool_df = _sample_pool_df()
+        fake_app = MagicMock()
+        fake_app.load_fantasypros_market_data.return_value = pool_df
+        fake_app.yearly_df = pool_df
+        fake_app.build_unified_draft_player_pool.return_value = pool_df
+        fake_app.apply_draft_pick_scoring.side_effect = lambda available, *a, **k: (
+            available.assign(**{"Draft Fit Score": available["Expected Fantasy Value"]}),
+            [],
+            [],
+        )
+
+        with patch.object(dah, "_import_baseball_app", return_value=fake_app):
+            trace = dah.build_draft_assistant_ami_cache_from_board(
+                session,
+                page="Draft Room Simulator",
+            )
+
+        self.assertEqual(trace.get("cache_action"), "built_from_board")
+        self.assertEqual(trace.get("skip_reason"), "none")
+        self.assertEqual(trace.get("board_resolve_pick_count"), 7)
+        self.assertGreater(
+            len((session.get("_ami_draft_projection") or {}).get("available_players") or []),
+            0,
+        )
+        self.assertEqual(int((session.get("_ami_draft_projection") or {}).get("current_pick") or 0), 8)
+
+    def test_import_baseball_app_tries_streamlit_app_casing(self) -> None:
+        from unittest.mock import patch
+
+        import draft_ami_helpers as dah
+
+        sentinel = object()
+        with patch("importlib.import_module", side_effect=[ImportError("no lower"), sentinel]) as imp:
+            self.assertIs(dah._import_baseball_app(), sentinel)
+        self.assertEqual(imp.call_args_list[0].args[0], "streamlit_app")
+        self.assertEqual(imp.call_args_list[1].args[0], "Streamlit_app")
 
 
 if __name__ == "__main__":

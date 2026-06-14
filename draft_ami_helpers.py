@@ -32,6 +32,41 @@ _POSITION_QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
     "P": ("pitcher", "pitchers", "pitching"),
 }
 
+def _import_baseball_app():
+    """Load the Streamlit entry module (Linux deploy uses Streamlit_app.py)."""
+    import importlib
+
+    last_exc: Exception | None = None
+    for name in ("streamlit_app", "Streamlit_app"):
+        try:
+            return importlib.import_module(name)
+        except ImportError as exc:
+            last_exc = exc
+    raise ImportError(str(last_exc or "streamlit_app/Streamlit_app not found"))
+
+
+def _session_board_pick_count(session_state: dict[str, Any]) -> int:
+    """Filled picks on the richest in-memory board (editor cache, runtime, blob)."""
+    try:
+        from draft_room_state import _resolve_richest_draft_board
+
+        _, count, _ = _resolve_richest_draft_board(session_state)
+        if count > 0:
+            return int(count)
+    except ImportError:
+        pass
+    return int(session_state.get("session_pick_count") or 0)
+
+
+def _finalize_cache_build_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    action = str(trace.get("cache_action") or "skipped")
+    if action in ("built_from_board", "already_present"):
+        trace["skip_reason"] = "none"
+    else:
+        trace.setdefault("skip_reason", trace.get("reason") or "unknown")
+    return trace
+
+
 AMI_REC_COLUMNS = (
     "Primary Position",
     "Model Rank",
@@ -435,12 +470,11 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
         return out
 
     try:
-        from streamlit_app import (
-            live_draft_current_slot,
-            live_draft_next_pick_for_team,
-            live_draft_recommendations,
-            serialize_live_draft_room,
-        )
+        app = _import_baseball_app()
+        live_draft_current_slot = app.live_draft_current_slot
+        live_draft_next_pick_for_team = app.live_draft_next_pick_for_team
+        live_draft_recommendations = app.live_draft_recommendations
+        serialize_live_draft_room = app.serialize_live_draft_room
     except Exception:
         return out
 
@@ -585,11 +619,14 @@ def infer_draft_assistant_needs(
 
 
 def draft_ami_cache_has_pool(session_state: dict[str, Any]) -> bool:
+    def _pool_len(val: Any) -> int:
+        return len(val) if isinstance(val, list) else 0
+
     proj = session_state.get("_ami_draft_projection")
-    if isinstance(proj, dict) and proj.get("available_players"):
+    if isinstance(proj, dict) and _pool_len(proj.get("available_players")) > 0:
         return True
     snap = session_state.get("_ami_draft_snapshot")
-    return isinstance(snap, dict) and bool(snap.get("available_players"))
+    return isinstance(snap, dict) and _pool_len(snap.get("available_players")) > 0
 
 
 def build_draft_assistant_ami_cache_from_board(
@@ -604,28 +641,53 @@ def build_draft_assistant_ami_cache_from_board(
     }
     if draft_ami_cache_has_pool(session_state):
         trace["cache_action"] = "already_present"
-        return trace
+        return _finalize_cache_build_trace(trace)
 
     try:
         import pandas as pd
-        from draft_room_state import draft_board_summary_for_team, get_canonical_draft_board
+        from draft_room_state import (
+            _resolve_richest_draft_board,
+            draft_board_summary_for_team,
+            get_canonical_draft_board,
+            sync_draft_room_session_before_save,
+            table_pick_count,
+        )
     except ImportError as exc:
         trace["reason"] = f"draft_room_state: {exc}"
-        return trace
+        return _finalize_cache_build_trace(trace)
 
-    board = get_canonical_draft_board(session_state)
+    try:
+        sync_draft_room_session_before_save(session_state)
+    except Exception:
+        pass
+
+    board, pick_count, board_source = _resolve_richest_draft_board(session_state)
+    trace["board_resolve_source"] = board_source
+    trace["board_resolve_pick_count"] = pick_count
     trace["draft_board_source_key"] = session_state.get("draft_board_source_key")
     trace["session_has_draft_board"] = bool(session_state.get("session_has_draft_board"))
     trace["session_pick_count"] = session_state.get("session_pick_count")
 
+    if pick_count <= 0 and (
+        session_state.get("session_has_draft_board")
+        or int(session_state.get("session_pick_count") or 0) > 0
+    ):
+        board = get_canonical_draft_board(session_state)
+        pick_count = table_pick_count(board)
+        trace["board_fallback"] = "get_canonical_draft_board"
+        trace["board_resolve_pick_count"] = pick_count
+
     if board.empty or "Player" not in board.columns:
-        trace["reason"] = "empty_board"
-        return trace
+        if int(session_state.get("session_pick_count") or 0) > 0:
+            trace["reason"] = "empty_board_despite_session_pick_count"
+        else:
+            trace["reason"] = "empty_board"
+        return _finalize_cache_build_trace(trace)
 
     filled = board[board["Player"].astype(str).str.strip().ne("")]
     if filled.empty:
         trace["reason"] = "no_picks_on_board"
-        return trace
+        return _finalize_cache_build_trace(trace)
 
     team_names = sorted(board["Team"].dropna().astype(str).unique().tolist()) if "Team" in board.columns else []
     assistant_team = str(
@@ -666,10 +728,10 @@ def build_draft_assistant_ami_cache_from_board(
     drafted_or_owned = set(drafted_players).union(set(my_roster))
 
     try:
-        import streamlit_app as app
+        app = _import_baseball_app()
     except Exception as exc:
         trace["reason"] = f"streamlit_app: {exc}"
-        return trace
+        return _finalize_cache_build_trace(trace)
 
     market_df = app.load_fantasypros_market_data()
     if market_df.empty:
@@ -682,7 +744,7 @@ def build_draft_assistant_ami_cache_from_board(
             _, yearly_df, _ = app.load_data()
         except Exception as exc:
             trace["reason"] = f"load_data: {exc}"
-            return trace
+            return _finalize_cache_build_trace(trace)
 
     draft_window = int(session_state.get("draft_window") or 3)
     draft_format = str(
@@ -709,7 +771,7 @@ def build_draft_assistant_ami_cache_from_board(
     except Exception as exc:
         trace["reason"] = f"build_pool: {exc}"
         log.exception("build_draft_assistant_ami_cache_from_board pool build failed")
-        return trace
+        return _finalize_cache_build_trace(trace)
 
     roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
     needed_positions, category_needs = infer_draft_assistant_needs(
@@ -746,7 +808,7 @@ def build_draft_assistant_ami_cache_from_board(
     except Exception as exc:
         trace["reason"] = f"apply_scoring: {exc}"
         log.exception("build_draft_assistant_ami_cache_from_board scoring failed")
-        return trace
+        return _finalize_cache_build_trace(trace)
 
     median_scarcity_dropoff = None
     if position_summary_rows:
@@ -787,7 +849,7 @@ def build_draft_assistant_ami_cache_from_board(
     except Exception as exc:
         trace["reason"] = f"cache_write: {exc}"
         log.exception("build_draft_assistant_ami_cache_from_board cache write failed")
-        return trace
+        return _finalize_cache_build_trace(trace)
 
     pool_diag = session_state.get("_ami_draft_projection", {}).get("player_pool_diagnostics", {})
     trace.update(
@@ -802,7 +864,7 @@ def build_draft_assistant_ami_cache_from_board(
             "player_pool_source": pool_diag.get("player_pool_source") if isinstance(pool_diag, dict) else None,
         }
     )
-    return trace
+    return _finalize_cache_build_trace(trace)
 
 
 def draft_ami_guidance(page: str) -> str:

@@ -21,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-blob-identity-v1"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-cache-build-v1"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -594,6 +594,8 @@ def build_send_identity_diagnostics(session_state: dict[str, Any]) -> dict[str, 
         ),
         "blob_payload_current_pick_after_save": send_diag.get("blob_payload_current_pick_after_save"),
         "blob_store_apps": send_diag.get("blob_store_apps"),
+        "cache_build_action": send_diag.get("cache_build_action"),
+        "skip_reason": send_diag.get("skip_reason"),
     }
     return identity
 

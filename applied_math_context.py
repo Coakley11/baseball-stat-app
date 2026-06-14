@@ -201,6 +201,7 @@ def build_draft_send_pipeline_diagnostics(
         "session_pick_count": session_state.get("session_pick_count"),
         "draft_board_source_key": session_state.get("draft_board_source_key"),
         "cache_build_action": (session_state.get("_ami_draft_cache_build_trace") or {}).get("cache_action"),
+        "skip_reason": (session_state.get("_ami_draft_cache_build_trace") or {}).get("skip_reason"),
     }
 
 
@@ -211,23 +212,42 @@ def ensure_draft_assistant_ami_cache_at_send(
 ) -> dict[str, Any]:
     """Build AMI draft cache from board when page body has not populated session cache."""
     try:
-        from draft_ami_helpers import build_draft_assistant_ami_cache_from_board, draft_ami_cache_has_pool
+        from draft_ami_helpers import (
+            _finalize_cache_build_trace,
+            _session_board_pick_count,
+            build_draft_assistant_ami_cache_from_board,
+            draft_ami_cache_has_pool,
+        )
     except ImportError as exc:
-        trace = {"cache_action": "import_failed", "reason": str(exc)}
+        trace = {"cache_action": "import_failed", "reason": str(exc), "skip_reason": str(exc)}
+        session_state["_ami_draft_cache_build_trace"] = trace
+        return trace
+
+    low_page = str(source_page or "").lower()
+    if "draft" not in low_page:
+        trace = _finalize_cache_build_trace({"cache_action": "skipped", "reason": "not_draft_page"})
         session_state["_ami_draft_cache_build_trace"] = trace
         return trace
 
     if draft_ami_cache_has_pool(session_state):
-        trace = {"cache_action": "already_present"}
+        trace = _finalize_cache_build_trace({"cache_action": "already_present"})
         session_state["_ami_draft_cache_build_trace"] = trace
         return trace
 
-    page = "Draft Assistant Simulator" if "draft" in str(source_page or "").lower() else str(source_page or "")
-    trace = build_draft_assistant_ami_cache_from_board(session_state, page=page)
+    board_picks = _session_board_pick_count(session_state)
+    if board_picks <= 0 and not session_state.get("session_has_draft_board"):
+        trace = _finalize_cache_build_trace({"cache_action": "skipped", "reason": "no_board_picks"})
+        session_state["_ami_draft_cache_build_trace"] = trace
+        return trace
+
+    page = "Draft Assistant Simulator" if "draft" in low_page else str(source_page or "")
+    trace = _finalize_cache_build_trace(
+        build_draft_assistant_ami_cache_from_board(session_state, page=page)
+    )
     session_state["_ami_draft_cache_build_trace"] = trace
     if trace.get("cache_action") == "built_from_board":
         log.info("AMI draft cache built on demand: %s", trace)
-    elif trace.get("reason"):
+    elif trace.get("skip_reason") not in (None, "none"):
         log.warning("AMI draft cache on-demand build skipped: %s", trace)
     return trace
 
