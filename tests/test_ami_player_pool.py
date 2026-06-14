@@ -285,11 +285,11 @@ class TestPositionRepresentativePool(unittest.TestCase):
         self.assertEqual(diag.get("skip_reason"), "none")
 
     def test_on_demand_cache_builds_from_editor_cache_board(self) -> None:
-        """Editor cache with picks must build AMI cache (not skip on app import name)."""
-        from unittest.mock import MagicMock, patch
+        """Editor cache with picks must build AMI cache via pure builder (no Streamlit_app)."""
+        from unittest.mock import patch
 
         import draft_ami_helpers as dah
-        from draft_room_state import DRAFT_ROOM_EDITOR_CACHE_KEY, DRAFT_ROOM_TABLE_KEY, table_pick_count
+        from draft_room_state import DRAFT_ROOM_EDITOR_CACHE_KEY, DRAFT_ROOM_TABLE_KEY
 
         rows = []
         for i in range(12):
@@ -311,31 +311,55 @@ class TestPositionRepresentativePool(unittest.TestCase):
             "room_your_team": "Team 1",
             "room_team_count": 4,
         }
-        pool_df = _sample_pool_df()
-        fake_app = MagicMock()
-        fake_app.load_fantasypros_market_data.return_value = pool_df
-        fake_app.yearly_df = pool_df
-        fake_app.build_unified_draft_player_pool.return_value = pool_df
-        fake_app.apply_draft_pick_scoring.side_effect = lambda available, *a, **k: (
-            available.assign(**{"Draft Fit Score": available["Expected Fantasy Value"]}),
-            [],
-            [],
-        )
 
-        with patch.object(dah, "_import_baseball_app", return_value=fake_app):
-            trace = dah.build_draft_assistant_ami_cache_from_board(
-                session,
-                page="Draft Room Simulator",
-            )
+        cache_inputs = {
+            "current_pick": 8,
+            "recs_df": pd.DataFrame(),
+            "my_roster": [],
+            "drafted_total": 7,
+            "draft_format": "5x5 Roto",
+            "assistant_team": "Team 1",
+            "needed_positions": ["OF"],
+            "category_needs": ["HR"],
+            "drafted_players": [],
+            "best_available_df": pd.DataFrame(),
+            "available_df": pd.DataFrame(
+                {"fullName": ["Kyle Tucker"], "Expected Fantasy Value": [0.9], "Primary Position": ["OF"]}
+            ),
+            "position_scarcity": None,
+        }
+
+        def _fake_build(board_in, settings, **kwargs):
+            session["_fake_build_called"] = True
+            return {"ok": True, "trace": {"current_pick": 8}, "cache_inputs": cache_inputs}
+
+        def _fake_apply(session_state, inputs, *, page: str = "Draft Assistant Simulator"):
+            session_state["_ami_draft_projection"] = {
+                "current_pick": 8,
+                "available_players": [{"player": "Kyle Tucker"}] * 51,
+                "player_pool_diagnostics": {"player_pool_source": "position_representative_v1"},
+            }
+            session_state["_ami_draft_snapshot"] = {"current_pick": 8, "available_players": [{"player": "Kyle Tucker"}] * 51}
+            return {
+                "available_players_count": 51,
+                "player_pool_source": "position_representative_v1",
+                "current_pick": 8,
+            }
+
+        with patch(
+            "draft_ami_cache_builder.build_draft_assistant_ami_cache_from_board_state",
+            side_effect=_fake_build,
+        ), patch(
+            "draft_ami_cache_builder.apply_draft_assistant_cache_to_session",
+            side_effect=_fake_apply,
+        ):
+            trace = dah.build_draft_assistant_ami_cache_from_board(session, page="Draft Room Simulator")
 
         self.assertEqual(trace.get("cache_action"), "built_from_board")
         self.assertEqual(trace.get("skip_reason"), "none")
         self.assertEqual(trace.get("board_resolve_pick_count"), 7)
-        self.assertGreater(
-            len((session.get("_ami_draft_projection") or {}).get("available_players") or []),
-            0,
-        )
-        self.assertEqual(int((session.get("_ami_draft_projection") or {}).get("current_pick") or 0), 8)
+        self.assertEqual(trace.get("current_pick"), 8)
+        self.assertEqual(trace.get("available_players_count"), 51)
 
     def test_import_baseball_app_tries_streamlit_app_casing(self) -> None:
         from unittest.mock import patch

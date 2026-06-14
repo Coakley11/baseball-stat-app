@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-05-27-ami-cache-build-v1"
-GIT_COMMIT_SHORT = "48238c1"
+SUITE_BUILD_LABEL = "2026-05-27-ami-pure-cache-builder-v1"
+GIT_COMMIT_SHORT = "pending"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (

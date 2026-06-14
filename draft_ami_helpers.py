@@ -647,7 +647,6 @@ def build_draft_assistant_ami_cache_from_board(
         import pandas as pd
         from draft_room_state import (
             _resolve_richest_draft_board,
-            draft_board_summary_for_team,
             get_canonical_draft_board,
             sync_draft_room_session_before_save,
             table_pick_count,
@@ -689,179 +688,39 @@ def build_draft_assistant_ami_cache_from_board(
         trace["reason"] = "no_picks_on_board"
         return _finalize_cache_build_trace(trace)
 
-    team_names = sorted(board["Team"].dropna().astype(str).unique().tolist()) if "Team" in board.columns else []
-    assistant_team = str(
-        session_state.get("draft_assistant_synced_team")
-        or session_state.get("room_your_team")
-        or (team_names[0] if team_names else "")
-    ).strip()
-    pick_adjustment = int(session_state.get("draft_pick_adjustment") or 0)
-    num_teams = int(session_state.get("room_team_count") or len(team_names) or 12)
-    summary = draft_board_summary_for_team(
-        board,
-        your_team=assistant_team,
-        team_names=team_names,
-        pick_adjustment=pick_adjustment,
-        num_teams=num_teams,
-    )
-    current_pick = int(summary["current_pick"])
-
-    if assistant_team and "Team" in board.columns:
-        my_roster = (
-            board[board["Team"].astype(str) == str(assistant_team)]["Player"]
-            .dropna()
-            .astype(str)
-            .tolist()
-        )
-        drafted_players = (
-            board[board["Team"].astype(str) != str(assistant_team)]["Player"]
-            .dropna()
-            .astype(str)
-            .tolist()
-        )
-    else:
-        my_roster = []
-        drafted_players = filled["Player"].dropna().astype(str).tolist()
-
-    my_roster = sorted(list(dict.fromkeys(p for p in my_roster if str(p).strip())))
-    drafted_players = sorted(list(dict.fromkeys(p for p in drafted_players if str(p).strip())))
-    drafted_or_owned = set(drafted_players).union(set(my_roster))
-
     try:
-        app = _import_baseball_app()
-    except Exception as exc:
-        trace["reason"] = f"streamlit_app: {exc}"
+        from draft_ami_cache_builder import (
+            apply_draft_assistant_cache_to_session,
+            build_draft_assistant_ami_cache_from_board_state,
+        )
+    except ImportError as exc:
+        trace["reason"] = f"draft_ami_cache_builder: {exc}"
         return _finalize_cache_build_trace(trace)
 
-    market_df = app.load_fantasypros_market_data()
-    if market_df.empty:
-        trace["reason"] = "empty_market_df"
-        return trace
-
-    yearly_df = getattr(app, "yearly_df", None)
-    if yearly_df is None:
-        try:
-            _, yearly_df, _ = app.load_data()
-        except Exception as exc:
-            trace["reason"] = f"load_data: {exc}"
-            return _finalize_cache_build_trace(trace)
-
-    draft_window = int(session_state.get("draft_window") or 3)
-    draft_format = str(
-        session_state.get("draft_format")
-        or session_state.get("draft_lab_scoring_type")
-        or "5x5 Roto"
-    )
-    use_ml = bool(session_state.get("draft_use_ml_blend", True))
-    ml_weight = float(session_state.get("draft_ml_blend_weight") or 0.12)
-    ml_min_games = int(session_state.get("draft_ml_min_games_signal") or 50)
-    projection_style = str(session_state.get("fantasy_draft_projection_style") or "Balanced")
-
-    try:
-        draft_df = app.build_unified_draft_player_pool(
-            yearly_df,
-            market_df,
-            draft_window=draft_window,
-            fantasy_format=draft_format,
-            projection_style=projection_style,
-            use_ml_blend=use_ml,
-            ml_blend_weight=ml_weight,
-            ml_min_games_for_signal=ml_min_games,
-        )
-    except Exception as exc:
-        trace["reason"] = f"build_pool: {exc}"
-        log.exception("build_draft_assistant_ami_cache_from_board pool build failed")
+    built = build_draft_assistant_ami_cache_from_board_state(board, session_state)
+    if not built.get("ok"):
+        trace["reason"] = built.get("reason") or "build_failed"
+        trace.update(built.get("trace") or {})
         return _finalize_cache_build_trace(trace)
 
-    roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
-    needed_positions, category_needs = infer_draft_assistant_needs(
-        roster_df_auto,
-        draft_df,
-        draft_format=draft_format,
-    )
-    target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
-    current_position_counts = (
-        roster_df_auto["Primary Position"].value_counts().to_dict()
-        if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
-        else {}
-    )
-
-    available = draft_df[~draft_df["fullName"].isin(drafted_or_owned)].copy()
-    if available.empty:
-        trace["reason"] = "no_undrafted_players"
-        return trace
-
     try:
-        available, _gaps, position_summary_rows = app.apply_draft_pick_scoring(
-            available,
-            roster_df_auto,
-            fantasy_format=draft_format,
-            target_counts=target_position_counts,
-            current_pick=current_pick,
-            category_needs=category_needs,
-            needed_positions=needed_positions,
-            use_ml_blend=use_ml,
-            ml_blend_weight=ml_weight,
-            return_position_summary=True,
-            recommendation_mode="draft_fit",
-        )
-    except Exception as exc:
-        trace["reason"] = f"apply_scoring: {exc}"
-        log.exception("build_draft_assistant_ami_cache_from_board scoring failed")
-        return _finalize_cache_build_trace(trace)
-
-    median_scarcity_dropoff = None
-    if position_summary_rows:
-        try:
-            drop_vals = [
-                float(r.get("Scarcity Dropoff"))
-                for r in position_summary_rows
-                if r.get("Scarcity Dropoff") is not None
-            ]
-            if drop_vals:
-                median_scarcity_dropoff = float(pd.Series(drop_vals).median())
-        except Exception:
-            pass
-
-    top_n = int(session_state.get("draft_top_n") or 10)
-    recs = available.sort_values("Draft Fit Score", ascending=False).head(top_n)
-    avail_sorted = available.sort_values("Expected Fantasy Value", ascending=False)
-
-    try:
-        from applied_math_context import cache_draft_assistant_ami_context
-
-        cache_draft_assistant_ami_context(
+        apply_meta = apply_draft_assistant_cache_to_session(
             session_state,
+            built["cache_inputs"],
             page=page,
-            recs_df=recs,
-            current_pick=current_pick,
-            my_roster=my_roster,
-            drafted_total=len(drafted_or_owned),
-            draft_format=draft_format,
-            assistant_team=assistant_team,
-            needed_positions=needed_positions,
-            category_needs=category_needs,
-            drafted_players=sorted(drafted_or_owned),
-            best_available_df=avail_sorted.head(6),
-            available_df=avail_sorted,
-            position_scarcity=median_scarcity_dropoff,
         )
     except Exception as exc:
         trace["reason"] = f"cache_write: {exc}"
         log.exception("build_draft_assistant_ami_cache_from_board cache write failed")
         return _finalize_cache_build_trace(trace)
 
-    pool_diag = session_state.get("_ami_draft_projection", {}).get("player_pool_diagnostics", {})
+    trace.update(built.get("trace") or {})
     trace.update(
         {
             "cache_action": "built_from_board",
-            "current_pick": current_pick,
-            "draft_round": summary.get("current_round"),
-            "assistant_team": assistant_team,
-            "available_players_count": len(
-                (session_state.get("_ami_draft_projection") or {}).get("available_players") or []
-            ),
-            "player_pool_source": pool_diag.get("player_pool_source") if isinstance(pool_diag, dict) else None,
+            "available_players_count": apply_meta.get("available_players_count"),
+            "player_pool_source": apply_meta.get("player_pool_source"),
+            "current_pick": apply_meta.get("current_pick"),
         }
     )
     return _finalize_cache_build_trace(trace)
