@@ -21,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-on-demand-draft-cache-v1"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-question-id-freshness-v1"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -268,6 +268,59 @@ def _normalize_question(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
 
+def _draft_board_fingerprint_parts(ctx: dict[str, Any]) -> list[str]:
+    """Draft board state for question_id — avoids stale blob collisions across pick/pool changes."""
+    parts: list[str] = []
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    pick = ctx.get("current_pick")
+    if pick is None:
+        pick = snap.get("current_pick")
+    rnd = ctx.get("draft_round")
+    if rnd is None:
+        rnd = snap.get("draft_round")
+    if pick is not None:
+        parts.append(f"pick={int(pick)}")
+    if rnd is not None:
+        parts.append(f"round={int(rnd)}")
+    diag = ctx.get("send_pipeline_diagnostics") if isinstance(ctx.get("send_pipeline_diagnostics"), dict) else {}
+    board_picks = diag.get("session_pick_count")
+    if board_picks is not None:
+        parts.append(f"board_picks={int(board_picks)}")
+    pool_n = diag.get("session_projection_available_count")
+    if pool_n is None:
+        pool_n = diag.get("ctx_available_players_count")
+    if pool_n is not None:
+        parts.append(f"pool={int(pool_n)}")
+    return parts
+
+
+def _is_draft_context(ctx: dict[str, Any], source_page: str = "") -> bool:
+    if "draft" in str(source_page or "").lower():
+        return True
+    workflow = str(ctx.get("workflow") or "").lower()
+    return "draft" in workflow or bool(ctx.get("draft_snapshot"))
+
+
+def _context_payload_hash(ctx: dict[str, Any]) -> str:
+    text = json.dumps(ctx, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _blob_diagnostics_from_context(ctx: dict[str, Any]) -> dict[str, Any]:
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    avail = ctx.get("available_players") or snap.get("available_players") or []
+    best = ctx.get("best_available") or snap.get("best_available_players") or []
+    return {
+        "available_players_count": len(avail) if isinstance(avail, list) else 0,
+        "draft_snapshot_available_players_count": len(snap.get("available_players") or [])
+        if isinstance(snap.get("available_players"), list)
+        else 0,
+        "best_available_count": len(best) if isinstance(best, list) else 0,
+        "current_pick": ctx.get("current_pick") or snap.get("current_pick"),
+        "draft_round": ctx.get("draft_round") or snap.get("draft_round"),
+    }
+
+
 def _player_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip()
 
@@ -304,6 +357,8 @@ def question_dedupe_fingerprint(
             parts.append(",".join(sorted(str(v).lower() for v in val)))
         else:
             parts.append(str(val).lower())
+    if _is_draft_context(ctx, source_page):
+        parts.extend(_draft_board_fingerprint_parts(ctx))
     blob = "|".join(parts)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
@@ -354,12 +409,15 @@ def _parse_context_from_resume_subtitle(subtitle: str) -> dict[str, Any]:
         return {}
 
 
-def _store_question_context_blob(payload: dict[str, Any]) -> None:
+def _store_question_context_blob(payload: dict[str, Any]) -> dict[str, Any]:
     """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
-        return
+        return {"blob_updated": False, "reason": "missing_question_id"}
     ctx = dict(payload.get("context") or {})
+    saved_at = utc_now_iso()
+    payload_hash = _context_payload_hash(ctx)
+    blob_diag = _blob_diagnostics_from_context(ctx)
     blob = {
         "question": payload.get("question"),
         "question_id": qid,
@@ -368,30 +426,62 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
         "quant_area": payload.get("quant_area"),
         "context": ctx,
         "source_state": dict(payload.get("source_state") or {}),
+        "saved_at": saved_at,
+        "payload_hash": payload_hash,
+        "blob_diagnostics": blob_diag,
     }
-    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
-    avail_n = len(ctx.get("available_players") or snap.get("available_players") or [])
+    avail_n = blob_diag.get("available_players_count") or 0
     if "draft" in str(payload.get("source_page") or "").lower() and avail_n == 0:
         log.warning(
-            "AMI blob save for %s has zero available_players (pick=%s snap=%s diag=%s)",
+            "AMI blob save for %s has zero available_players (pick=%s hash=%s diag=%s)",
             qid,
-            ctx.get("current_pick"),
-            bool(snap),
+            blob_diag.get("current_pick"),
+            payload_hash,
             ctx.get("send_pipeline_diagnostics"),
         )
+    store_apps = ["applied_intelligence"]
+    src_app = str(payload.get("source_app") or "").strip().lower()
+    if src_app and src_app not in store_apps:
+        store_apps.append(src_app)
+    store_results: list[dict[str, Any]] = []
     try:
         from suite_account import remember_saved_item
 
-        remember_saved_item(
-            "applied_intelligence",
-            _CONTEXT_ITEM_TYPE,
-            qid,
-            title=str(payload.get("question") or "Applied Math question")[:200],
-            payload=blob,
-        )
-        return
+        for app_name in store_apps:
+            result = remember_saved_item(
+                app_name,
+                _CONTEXT_ITEM_TYPE,
+                qid,
+                title=str(payload.get("question") or "Applied Math question")[:200],
+                payload=blob,
+            )
+            store_results.append({"app": app_name, **(result if isinstance(result, dict) else {})})
     except Exception as exc:
         log.warning("remember_saved_item failed for analytical context: %s", exc)
+        return {
+            "blob_updated": False,
+            "question_id": qid,
+            "blob_updated_at": saved_at,
+            "blob_payload_hash": payload_hash,
+            "blob_store_error": str(exc),
+            "blob_payload_available_players_count_after_save": blob_diag.get("available_players_count"),
+            "blob_payload_current_pick_after_save": blob_diag.get("current_pick"),
+        }
+    return {
+        "blob_updated": True,
+        "question_id": qid,
+        "blob_updated_at": saved_at,
+        "blob_payload_hash": payload_hash,
+        "blob_payload_available_players_count_after_save": blob_diag.get("available_players_count"),
+        "blob_payload_draft_snapshot_available_players_count_after_save": blob_diag.get(
+            "draft_snapshot_available_players_count"
+        ),
+        "blob_payload_best_available_count_after_save": blob_diag.get("best_available_count"),
+        "blob_payload_current_pick_after_save": blob_diag.get("current_pick"),
+        "blob_payload_draft_round_after_save": blob_diag.get("draft_round"),
+        "blob_store_apps": store_apps,
+        "blob_store_results": store_results,
+    }
 
 
 def load_analytical_question_context(question_id: str) -> dict[str, Any]:
@@ -405,15 +495,21 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     if not qid:
         return {}
     resume_key = f"ai:question:{qid}"
+    search_apps = ["applied_intelligence", "baseball"]
     try:
         from suite_account import load_saved_items
 
-        rows = load_saved_items(app="applied_intelligence", item_type=_CONTEXT_ITEM_TYPE, limit=50)
-        for row in rows:
-            if str(row.get("item_key") or "") == qid:
+        for app_name in search_apps:
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
+            for row in rows:
+                if str(row.get("item_key") or "") != qid:
+                    continue
                 payload = row.get("payload")
                 if isinstance(payload, dict):
-                    return copy.deepcopy(payload)
+                    out = copy.deepcopy(payload)
+                    out["blob_store_updated_at"] = row.get("updated_at") or out.get("saved_at")
+                    out["blob_store_app"] = app_name
+                    return out
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
     try:
@@ -776,20 +872,20 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
     _upsert_applied_intelligence_resume(payload, action_url=action_url)
-    _store_question_context_blob(payload)
+    blob_meta = _store_question_context_blob(payload)
     if session_state is not None:
         ctx = dict(payload.get("context") or {})
-        send_diag = ctx.get("send_pipeline_diagnostics")
+        send_diag = dict(ctx.get("send_pipeline_diagnostics") or {})
+        send_diag.update(blob_meta)
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
             "question": payload["question"],
             "source_app": payload["source_app"],
             "submitted_at": utc_now_iso(),
             "duplicate": duplicate,
-            "blob_updated": True,
+            **blob_meta,
         }
-        if isinstance(send_diag, dict):
-            session_state["_ami_last_send_diagnostics"] = send_diag
+        session_state["_ami_last_send_diagnostics"] = send_diag
     card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     return {
         **payload,
