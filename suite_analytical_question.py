@@ -21,7 +21,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-blob-persistence-v1"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-on-demand-draft-cache-v1"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -827,12 +827,14 @@ def build_submit_context(
             from applied_math_context import (
                 attach_question_player_to_context,
                 augment_ami_available_pool_at_send,
+                ensure_draft_assistant_ami_cache_at_send,
                 finalize_draft_context_for_send,
             )
 
             attach_question_player_to_context(ctx, str(question).strip(), session_state)
             low_page = str(source_page or "").lower()
             if "draft" in low_page:
+                ensure_draft_assistant_ami_cache_at_send(session_state, source_page=source_page)
                 augment_ami_available_pool_at_send(ctx, str(question).strip(), session_state)
                 finalize_draft_context_for_send(ctx, session_state)
         except Exception:

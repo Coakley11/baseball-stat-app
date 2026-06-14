@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+POSITION_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
 
 AMI_POOL_TOP_OVERALL = 12
 AMI_POOL_TOP_PER_POSITION = 5
@@ -525,6 +530,279 @@ def merge_draft_workflow_into_snapshot(session: dict[str, Any], snapshot: dict[s
     if isinstance(tracked, list) and tracked:
         snapshot["tracked_players"] = [str(x).strip() for x in tracked[:20] if str(x).strip()]
     return snapshot
+
+
+def infer_draft_assistant_needs(
+    roster_df: Any,
+    draft_df: Any,
+    *,
+    draft_format: str = "5x5 Roto",
+) -> tuple[list[str], list[str]]:
+    """Auto-detect position and category needs (mirrors Draft Assistant defaults)."""
+    import pandas as pd
+
+    target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
+    roster_df_auto = roster_df if roster_df is not None else pd.DataFrame()
+    current_position_counts = (
+        roster_df_auto["Primary Position"].value_counts().to_dict()
+        if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
+        else {}
+    )
+    needed_positions: list[str] = []
+    for pos in POSITION_ORDER:
+        target = target_position_counts.get(pos, 1)
+        current = int(current_position_counts.get(pos, 0))
+        if target > 0 and current < target:
+            needed_positions.append(pos)
+    if not needed_positions:
+        needed_positions = ["OF", "DH"]
+
+    if draft_format == "5x5 Roto":
+        cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
+        default_cat_fallback = ["HR", "RBI"]
+    else:
+        cat_defs = {
+            "Power": "proj_HR",
+            "Run Production": "proj_RBI",
+            "Speed": "proj_SB",
+            "Walks/OPS": "proj_OPS",
+            "Volume": "AB",
+        }
+        default_cat_fallback = ["Power", "Run Production"]
+
+    category_needs: list[str] = []
+    if not roster_df_auto.empty and draft_df is not None and hasattr(draft_df, "columns"):
+        for label, col in cat_defs.items():
+            if col not in roster_df_auto.columns or col not in draft_df.columns:
+                continue
+            roster_val = pd.to_numeric(roster_df_auto[col], errors="coerce").mean()
+            pool_val = pd.to_numeric(draft_df[col], errors="coerce").mean()
+            if pd.notna(roster_val) and pd.notna(pool_val) and roster_val < pool_val:
+                category_needs.append(label)
+    if not category_needs:
+        category_needs = default_cat_fallback
+    return needed_positions, category_needs
+
+
+def draft_ami_cache_has_pool(session_state: dict[str, Any]) -> bool:
+    proj = session_state.get("_ami_draft_projection")
+    if isinstance(proj, dict) and proj.get("available_players"):
+        return True
+    snap = session_state.get("_ami_draft_snapshot")
+    return isinstance(snap, dict) and bool(snap.get("available_players"))
+
+
+def build_draft_assistant_ami_cache_from_board(
+    session_state: dict[str, Any],
+    *,
+    page: str = "Draft Assistant Simulator",
+) -> dict[str, Any]:
+    """Build Draft Assistant AMI cache on demand from the canonical draft board."""
+    trace: dict[str, Any] = {
+        "cache_action": "skipped",
+        "cache_source": "draft_board_on_demand",
+    }
+    if draft_ami_cache_has_pool(session_state):
+        trace["cache_action"] = "already_present"
+        return trace
+
+    try:
+        import pandas as pd
+        from draft_room_state import draft_board_summary_for_team, get_canonical_draft_board
+    except ImportError as exc:
+        trace["reason"] = f"draft_room_state: {exc}"
+        return trace
+
+    board = get_canonical_draft_board(session_state)
+    trace["draft_board_source_key"] = session_state.get("draft_board_source_key")
+    trace["session_has_draft_board"] = bool(session_state.get("session_has_draft_board"))
+    trace["session_pick_count"] = session_state.get("session_pick_count")
+
+    if board.empty or "Player" not in board.columns:
+        trace["reason"] = "empty_board"
+        return trace
+
+    filled = board[board["Player"].astype(str).str.strip().ne("")]
+    if filled.empty:
+        trace["reason"] = "no_picks_on_board"
+        return trace
+
+    team_names = sorted(board["Team"].dropna().astype(str).unique().tolist()) if "Team" in board.columns else []
+    assistant_team = str(
+        session_state.get("draft_assistant_synced_team")
+        or session_state.get("room_your_team")
+        or (team_names[0] if team_names else "")
+    ).strip()
+    pick_adjustment = int(session_state.get("draft_pick_adjustment") or 0)
+    num_teams = int(session_state.get("room_team_count") or len(team_names) or 12)
+    summary = draft_board_summary_for_team(
+        board,
+        your_team=assistant_team,
+        team_names=team_names,
+        pick_adjustment=pick_adjustment,
+        num_teams=num_teams,
+    )
+    current_pick = int(summary["current_pick"])
+
+    if assistant_team and "Team" in board.columns:
+        my_roster = (
+            board[board["Team"].astype(str) == str(assistant_team)]["Player"]
+            .dropna()
+            .astype(str)
+            .tolist()
+        )
+        drafted_players = (
+            board[board["Team"].astype(str) != str(assistant_team)]["Player"]
+            .dropna()
+            .astype(str)
+            .tolist()
+        )
+    else:
+        my_roster = []
+        drafted_players = filled["Player"].dropna().astype(str).tolist()
+
+    my_roster = sorted(list(dict.fromkeys(p for p in my_roster if str(p).strip())))
+    drafted_players = sorted(list(dict.fromkeys(p for p in drafted_players if str(p).strip())))
+    drafted_or_owned = set(drafted_players).union(set(my_roster))
+
+    try:
+        import streamlit_app as app
+    except Exception as exc:
+        trace["reason"] = f"streamlit_app: {exc}"
+        return trace
+
+    market_df = app.load_fantasypros_market_data()
+    if market_df.empty:
+        trace["reason"] = "empty_market_df"
+        return trace
+
+    yearly_df = getattr(app, "yearly_df", None)
+    if yearly_df is None:
+        try:
+            _, yearly_df, _ = app.load_data()
+        except Exception as exc:
+            trace["reason"] = f"load_data: {exc}"
+            return trace
+
+    draft_window = int(session_state.get("draft_window") or 3)
+    draft_format = str(
+        session_state.get("draft_format")
+        or session_state.get("draft_lab_scoring_type")
+        or "5x5 Roto"
+    )
+    use_ml = bool(session_state.get("draft_use_ml_blend", True))
+    ml_weight = float(session_state.get("draft_ml_blend_weight") or 0.12)
+    ml_min_games = int(session_state.get("draft_ml_min_games_signal") or 50)
+    projection_style = str(session_state.get("fantasy_draft_projection_style") or "Balanced")
+
+    try:
+        draft_df = app.build_unified_draft_player_pool(
+            yearly_df,
+            market_df,
+            draft_window=draft_window,
+            fantasy_format=draft_format,
+            projection_style=projection_style,
+            use_ml_blend=use_ml,
+            ml_blend_weight=ml_weight,
+            ml_min_games_for_signal=ml_min_games,
+        )
+    except Exception as exc:
+        trace["reason"] = f"build_pool: {exc}"
+        log.exception("build_draft_assistant_ami_cache_from_board pool build failed")
+        return trace
+
+    roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
+    needed_positions, category_needs = infer_draft_assistant_needs(
+        roster_df_auto,
+        draft_df,
+        draft_format=draft_format,
+    )
+    target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
+    current_position_counts = (
+        roster_df_auto["Primary Position"].value_counts().to_dict()
+        if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
+        else {}
+    )
+
+    available = draft_df[~draft_df["fullName"].isin(drafted_or_owned)].copy()
+    if available.empty:
+        trace["reason"] = "no_undrafted_players"
+        return trace
+
+    try:
+        available, _gaps, position_summary_rows = app.apply_draft_pick_scoring(
+            available,
+            roster_df_auto,
+            fantasy_format=draft_format,
+            target_counts=target_position_counts,
+            current_pick=current_pick,
+            category_needs=category_needs,
+            needed_positions=needed_positions,
+            use_ml_blend=use_ml,
+            ml_blend_weight=ml_weight,
+            return_position_summary=True,
+            recommendation_mode="draft_fit",
+        )
+    except Exception as exc:
+        trace["reason"] = f"apply_scoring: {exc}"
+        log.exception("build_draft_assistant_ami_cache_from_board scoring failed")
+        return trace
+
+    median_scarcity_dropoff = None
+    if position_summary_rows:
+        try:
+            drop_vals = [
+                float(r.get("Scarcity Dropoff"))
+                for r in position_summary_rows
+                if r.get("Scarcity Dropoff") is not None
+            ]
+            if drop_vals:
+                median_scarcity_dropoff = float(pd.Series(drop_vals).median())
+        except Exception:
+            pass
+
+    top_n = int(session_state.get("draft_top_n") or 10)
+    recs = available.sort_values("Draft Fit Score", ascending=False).head(top_n)
+    avail_sorted = available.sort_values("Expected Fantasy Value", ascending=False)
+
+    try:
+        from applied_math_context import cache_draft_assistant_ami_context
+
+        cache_draft_assistant_ami_context(
+            session_state,
+            page=page,
+            recs_df=recs,
+            current_pick=current_pick,
+            my_roster=my_roster,
+            drafted_total=len(drafted_or_owned),
+            draft_format=draft_format,
+            assistant_team=assistant_team,
+            needed_positions=needed_positions,
+            category_needs=category_needs,
+            drafted_players=sorted(drafted_or_owned),
+            best_available_df=avail_sorted.head(6),
+            available_df=avail_sorted,
+            position_scarcity=median_scarcity_dropoff,
+        )
+    except Exception as exc:
+        trace["reason"] = f"cache_write: {exc}"
+        log.exception("build_draft_assistant_ami_cache_from_board cache write failed")
+        return trace
+
+    pool_diag = session_state.get("_ami_draft_projection", {}).get("player_pool_diagnostics", {})
+    trace.update(
+        {
+            "cache_action": "built_from_board",
+            "current_pick": current_pick,
+            "draft_round": summary.get("current_round"),
+            "assistant_team": assistant_team,
+            "available_players_count": len(
+                (session_state.get("_ami_draft_projection") or {}).get("available_players") or []
+            ),
+            "player_pool_source": pool_diag.get("player_pool_source") if isinstance(pool_diag, dict) else None,
+        }
+    )
+    return trace
 
 
 def draft_ami_guidance(page: str) -> str:

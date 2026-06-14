@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 def _player_name(raw: Any) -> str:
@@ -194,7 +197,39 @@ def build_draft_send_pipeline_diagnostics(
         "player_pool_source": pool_diag.get("player_pool_source"),
         "current_pick": ctx.get("current_pick") or snap.get("current_pick"),
         "draft_round": ctx.get("draft_round") or snap.get("draft_round"),
+        "session_has_draft_board": session_state.get("session_has_draft_board"),
+        "session_pick_count": session_state.get("session_pick_count"),
+        "draft_board_source_key": session_state.get("draft_board_source_key"),
+        "cache_build_action": (session_state.get("_ami_draft_cache_build_trace") or {}).get("cache_action"),
     }
+
+
+def ensure_draft_assistant_ami_cache_at_send(
+    session_state: dict[str, Any],
+    *,
+    source_page: str = "Draft Assistant Simulator",
+) -> dict[str, Any]:
+    """Build AMI draft cache from board when page body has not populated session cache."""
+    try:
+        from draft_ami_helpers import build_draft_assistant_ami_cache_from_board, draft_ami_cache_has_pool
+    except ImportError as exc:
+        trace = {"cache_action": "import_failed", "reason": str(exc)}
+        session_state["_ami_draft_cache_build_trace"] = trace
+        return trace
+
+    if draft_ami_cache_has_pool(session_state):
+        trace = {"cache_action": "already_present"}
+        session_state["_ami_draft_cache_build_trace"] = trace
+        return trace
+
+    page = "Draft Assistant Simulator" if "draft" in str(source_page or "").lower() else str(source_page or "")
+    trace = build_draft_assistant_ami_cache_from_board(session_state, page=page)
+    session_state["_ami_draft_cache_build_trace"] = trace
+    if trace.get("cache_action") == "built_from_board":
+        log.info("AMI draft cache built on demand: %s", trace)
+    elif trace.get("reason"):
+        log.warning("AMI draft cache on-demand build skipped: %s", trace)
+    return trace
 
 
 def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> dict[str, Any]:
@@ -787,13 +822,13 @@ def cache_draft_assistant_ami_context(
     """Cache top recommendation + canonical draft snapshot for AMI send."""
     try:
         from draft_ami_helpers import (
-            AMI_POOL_FINAL_CAP,
             build_position_representative_available_pool,
             compact_recommendation_rows,
             draft_ami_guidance,
         )
         from draft_state import gather_draft_ami_snapshot
-    except Exception:
+    except Exception as exc:
+        log.exception("cache_draft_assistant_ami_context imports failed: %s", exc)
         return
 
     draft_proj: dict[str, Any] = {

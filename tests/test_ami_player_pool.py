@@ -231,6 +231,58 @@ class TestPositionRepresentativePool(unittest.TestCase):
         snap = ctx.get("draft_snapshot") or {}
         self.assertEqual(len(snap.get("available_players") or []), 1)
 
+    def test_on_demand_cache_runs_when_session_cache_missing(self) -> None:
+        """Draft Room send path must build AMI cache from board when page body never ran."""
+        from unittest.mock import patch
+
+        available_rows = [{"player": "Kyle Tucker", "Primary Position": "OF", "Market Rank": 8}]
+
+        def _fake_build(session: dict, *, page: str = "Draft Assistant Simulator") -> dict:
+            session["_ami_draft_projection"] = {
+                "current_pick": 8,
+                "draft_round": 1,
+                "available_players": available_rows,
+                "best_available": available_rows,
+                "player_pool_diagnostics": {"player_pool_source": "position_representative_v1"},
+            }
+            session["_ami_draft_snapshot"] = {
+                "current_pick": 8,
+                "draft_round": 1,
+                "available_players": available_rows,
+            }
+            session["_ami_undrafted_pool_lookup"] = {"kyle tucker": available_rows[0]}
+            return {"cache_action": "built_from_board", "current_pick": 8}
+
+        session: dict = {
+            "session_has_draft_board": True,
+            "session_pick_count": 7,
+            "draft_board_source_key": "draft_room_board_editor_cache",
+            "live_draft_room": {"current_pick_index": 0, "config": {"num_teams": 12}},
+            "room_your_team": "Daniel",
+        }
+        with patch(
+            "draft_ami_helpers.build_draft_assistant_ami_cache_from_board",
+            side_effect=_fake_build,
+        ):
+            ctx = build_submit_context(
+                "baseball",
+                "Draft Room Simulator",
+                session,
+                context_extra_builder=lambda: build_baseball_applied_math_context(
+                    "Draft Room Simulator", session
+                ),
+                question="Who is the best player available?",
+            )
+        diag = ctx.get("send_pipeline_diagnostics") or {}
+        self.assertEqual(diag.get("cache_build_action"), "built_from_board")
+        self.assertEqual(diag.get("session_projection_available_count"), 1)
+        self.assertEqual(diag.get("ctx_draft_snapshot_available_count"), 1)
+        self.assertEqual(ctx.get("current_pick"), 8)
+        self.assertEqual(
+            (ctx.get("player_pool_diagnostics") or {}).get("player_pool_source"),
+            "position_representative_v1",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

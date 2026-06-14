@@ -15497,8 +15497,12 @@ if active_page == "Draft Assistant Simulator":
                 available_df=available.sort_values("Expected Fantasy Value", ascending=False),
                 position_scarcity=median_scarcity_dropoff,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "cache_draft_assistant_ami_context failed on Draft Assistant render: %s", exc
+            )
         if developer_mode_enabled():
             _pool_diag = st.session_state.get("_ami_draft_projection", {}).get("player_pool_diagnostics")
             if isinstance(_pool_diag, dict) and _pool_diag:
