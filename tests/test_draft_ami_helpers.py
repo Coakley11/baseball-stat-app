@@ -6,7 +6,12 @@ import unittest
 
 import pandas as pd
 
-from draft_ami_helpers import compact_fantasy_market_rows, compact_recommendation_rows, draft_ami_guidance
+from draft_ami_helpers import (
+    compact_fantasy_market_rows,
+    compact_recommendation_rows,
+    detect_positions_from_question,
+    draft_ami_guidance,
+)
 
 
 class TestDraftAmiHelpers(unittest.TestCase):
@@ -45,6 +50,11 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertIn("my_next_pick", draft_ami_guidance("Live Draft Room"))
         self.assertIn("canonical", draft_ami_guidance("Draft Assistant Simulator").lower())
         self.assertIn("valuation", draft_ami_guidance("Valuation").lower())
+
+    def test_detect_positions_from_question_aliases(self) -> None:
+        self.assertEqual(detect_positions_from_question("next catcher drafted"), ["C"])
+        self.assertIn("SS", detect_positions_from_question("wait on shortstop"))
+        self.assertIn("RP", detect_positions_from_question("relief pitcher run"))
 
 
 if __name__ == "__main__":

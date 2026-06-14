@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-06-13-ami-hardening-pass"
-GIT_COMMIT_SHORT = "a2a0575"
+SUITE_BUILD_LABEL = "2026-06-14-position-representative-pool"
+GIT_COMMIT_SHORT = "55aa820"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (

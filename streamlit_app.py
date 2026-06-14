@@ -15494,11 +15494,17 @@ if active_page == "Draft Assistant Simulator":
                 category_needs=category_needs,
                 drafted_players=sorted(list(drafted_or_owned_players)),
                 best_available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(6),
-                available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(12),
+                available_df=available.sort_values("Expected Fantasy Value", ascending=False),
                 position_scarcity=median_scarcity_dropoff,
             )
         except Exception:
             pass
+        if developer_mode_enabled():
+            _pool_diag = st.session_state.get("_ami_draft_projection", {}).get("player_pool_diagnostics")
+            if isinstance(_pool_diag, dict) and _pool_diag:
+                with st.expander("AMI player pool diagnostics", expanded=False):
+                    for k, v in _pool_diag.items():
+                        st.text(f"{k}: {v}")
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
 

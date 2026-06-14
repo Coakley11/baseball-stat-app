@@ -16,6 +16,7 @@ _QUESTION_PLAYER_PATTERNS: tuple[str, ...] = (
     r"why is (.+?) the best",
     r"why is (.+?) a good",
     r"why is (.+?) worth",
+    r"why (.+?)(?:\?|\s*$)",
     r"should i draft (.+?)(?:\?|\s|$)",
     r"is (.+?) (?:worth|available|the best)",
     r"how risky is (.+?)(?:\?|\s|$)",
@@ -129,6 +130,37 @@ def attach_question_player_to_context(
         ctx.get("best_available"),
     )
     if row:
+        ctx["question_player_row"] = row
+
+
+def augment_ami_available_pool_at_send(
+    ctx: dict[str, Any],
+    question: str,
+    session_state: dict[str, Any],
+) -> None:
+    """Merge send-time question positions/players into available_players."""
+    lookup = session_state.get("_ami_undrafted_pool_lookup")
+    if not isinstance(lookup, dict) or not lookup:
+        return
+    try:
+        from draft_ami_helpers import augment_available_pool_for_question, detect_positions_from_question
+    except ImportError:
+        return
+
+    comp_a, comp_b = extract_comparison_players_from_question(question)
+    players = [n for n in (comp_a, comp_b, extract_player_from_question(question)) if _player_name(n)]
+    augment_available_pool_for_question(
+        ctx,
+        lookup=lookup,
+        requested_positions=detect_positions_from_question(question),
+        question_players=players,
+    )
+    row = _find_player_row_in_pools(
+        extract_player_from_question(question) or ctx.get("question_player") or "",
+        ctx.get("available_players"),
+        ctx.get("draft_snapshot", {}).get("available_players") if isinstance(ctx.get("draft_snapshot"), dict) else None,
+    )
+    if row and not ctx.get("question_player_row"):
         ctx["question_player_row"] = row
 
 
@@ -654,8 +686,12 @@ def cache_draft_assistant_ami_context(
 ) -> None:
     """Cache top recommendation + canonical draft snapshot for AMI send."""
     try:
-        import pandas as pd
-        from draft_ami_helpers import compact_recommendation_rows, draft_ami_guidance
+        from draft_ami_helpers import (
+            AMI_POOL_FINAL_CAP,
+            build_position_representative_available_pool,
+            compact_recommendation_rows,
+            draft_ami_guidance,
+        )
         from draft_state import gather_draft_ami_snapshot
     except Exception:
         return
@@ -689,9 +725,17 @@ def cache_draft_assistant_ami_context(
     if best_rows:
         draft_proj["best_available"] = best_rows
     avail_src = available_df if available_df is not None else best_available_df
-    avail_rows = compact_recommendation_rows(avail_src, limit=12)
+    avail_rows, pool_diag, pool_lookup = build_position_representative_available_pool(
+        avail_src,
+        needed_positions=needed_positions,
+        drafted_players=drafted_players,
+    )
     if avail_rows:
         draft_proj["available_players"] = avail_rows
+    if pool_diag:
+        draft_proj["player_pool_diagnostics"] = pool_diag
+    if pool_lookup:
+        session_state["_ami_undrafted_pool_lookup"] = pool_lookup
 
     team_count = int(session_state.get("room_team_count") or session_state.get("draft_teams") or 10)
     draft_round = max(1, (int(current_pick) - 1) // max(team_count, 1) + 1)
@@ -706,6 +750,8 @@ def cache_draft_assistant_ami_context(
         snap["best_available_players"] = best_rows
     if avail_rows:
         snap["available_players"] = avail_rows
+    if pool_diag:
+        snap["player_pool_diagnostics"] = pool_diag
     snap["current_pick"] = int(current_pick)
     snap["draft_round"] = draft_round
     if needed_positions:
@@ -728,6 +774,7 @@ def cache_draft_assistant_ami_context(
             "roster": list(my_roster)[:12],
             "draft_format": str(draft_format),
             "ami_guidance": draft_ami_guidance(page),
+            "player_pool_diagnostics": pool_diag,
         },
     )
 
@@ -1145,7 +1192,7 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
             ctx["player"] = _player_name(dq[0])
             ctx["players"] = [_player_name(x) for x in dq[:4]]
         try:
-            from draft_ami_helpers import draft_ami_guidance
+            from draft_ami_helpers import AMI_POOL_FINAL_CAP, draft_ami_guidance
             from draft_state import gather_draft_ami_snapshot
 
             snap = session_state.get("_ami_draft_snapshot")
@@ -1173,8 +1220,10 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                 if snap.get("available_players"):
                     ctx["available_players"] = [
                         r if isinstance(r, dict) else {"player": str(r)}
-                        for r in snap["available_players"][:24]
+                        for r in snap["available_players"][:AMI_POOL_FINAL_CAP]
                     ]
+                if snap.get("player_pool_diagnostics"):
+                    ctx["player_pool_diagnostics"] = dict(snap["player_pool_diagnostics"])
                 if snap.get("best_available_players"):
                     ctx["best_available"] = [
                         r if isinstance(r, dict) else {"player": str(r)}
@@ -1208,6 +1257,8 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                 ctx["position_scarcity"] = proj["position_scarcity"]
             if proj.get("available_players") and not ctx.get("available_players"):
                 ctx["available_players"] = proj["available_players"]
+            if proj.get("player_pool_diagnostics") and not ctx.get("player_pool_diagnostics"):
+                ctx["player_pool_diagnostics"] = proj["player_pool_diagnostics"]
         try:
             _attach_canonical_draft_fields(ctx, session_state)
         except Exception:
@@ -1225,6 +1276,9 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                 if snap.get("sleeper_candidates"):
                     ctx["sleeper_candidates"] = [
                         r.get("player") for r in snap["sleeper_candidates"][:8] if isinstance(r, dict)
+                    ]
+                    ctx["available_players"] = [
+                        dict(r) for r in snap["sleeper_candidates"][:12] if isinstance(r, dict)
                     ]
                 if snap.get("bust_risks"):
                     ctx["bust_risks"] = [

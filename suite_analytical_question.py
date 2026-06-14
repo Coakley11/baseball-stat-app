@@ -808,9 +808,12 @@ def build_submit_context(
         ctx = merge_analytical_context(ctx, extra)
     if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
         try:
-            from applied_math_context import attach_question_player_to_context
+            from applied_math_context import attach_question_player_to_context, augment_ami_available_pool_at_send
 
             attach_question_player_to_context(ctx, str(question).strip(), session_state)
+            low_page = str(source_page or "").lower()
+            if "draft" in low_page:
+                augment_ami_available_pool_at_send(ctx, str(question).strip(), session_state)
         except Exception:
             log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
     return ctx
