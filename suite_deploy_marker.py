@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-05-27-ami-question-id-freshness-v1"
-GIT_COMMIT_SHORT = "pending"
+GIT_COMMIT_SHORT = "6c9ea57"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (
@@ -16,4 +16,5 @@ DEPLOY_COMMITS_INCLUDED = (
     "14f4305",
     "d03d34c",
     "d0531a0",
+    "6c9ea57",
 )
