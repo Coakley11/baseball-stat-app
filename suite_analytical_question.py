@@ -788,6 +788,19 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _flush_pending_resume_upsert(session_state: dict[str, Any] | None) -> None:
+    """Run deferred Applied Intelligence resume upsert from a prior send (non-blocking path)."""
+    if not session_state:
+        return
+    pending = session_state.pop("_ami_pending_resume_upsert", None)
+    if not isinstance(pending, dict):
+        return
+    payload = pending.get("payload")
+    action_url = str(pending.get("action_url") or "")
+    if isinstance(payload, dict) and action_url:
+        _upsert_applied_intelligence_resume(payload, action_url=action_url, include_context_json=False)
+
+
 def _upsert_applied_intelligence_resume(
     payload: dict[str, Any],
     *,
@@ -1008,9 +1021,17 @@ def submit_analytical_question(
             timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
 
         if blob_meta.get("blob_updated"):
-            t_resume = time.perf_counter()
-            _upsert_applied_intelligence_resume(payload, action_url=action_url, include_context_json=False)
-            timing["resume_upsert_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
+            if session_state is not None:
+                session_state["_ami_pending_resume_upsert"] = {
+                    "payload": payload,
+                    "action_url": action_url,
+                }
+                timing["resume_upsert_ms"] = 0.0
+                timing["resume_upsert_deferred"] = True
+            else:
+                t_resume = time.perf_counter()
+                _upsert_applied_intelligence_resume(payload, action_url=action_url, include_context_json=False)
+                timing["resume_upsert_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
     timing["send_total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
     if timing:
         numeric = {k: v for k, v in timing.items() if isinstance(v, (int, float)) and k != "send_total_ms"}
@@ -1026,6 +1047,14 @@ def submit_analytical_question(
         build_timing = session_state.get("_ami_last_send_build_timing")
         if isinstance(build_timing, dict):
             send_diag.update(build_timing)
+        numeric = {
+            k: v
+            for k, v in send_diag.items()
+            if isinstance(v, (int, float)) and k not in ("send_total_ms",)
+        }
+        if numeric:
+            send_diag["slowest_step"] = max(numeric, key=lambda k: numeric[k])
+            send_diag["slowest_step_ms"] = numeric[send_diag["slowest_step"]]
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
             "question": payload["question"],
@@ -1099,10 +1128,14 @@ def build_submit_context(
 
             attach_question_player_to_context(ctx, str(question).strip(), session_state)
             if "draft" in low_page:
-                t_cache = time.perf_counter()
-                cache_trace = ensure_draft_assistant_ami_cache_at_send(session_state, source_page=source_page)
-                timing["cache_build_ms"] = round((time.perf_counter() - t_cache) * 1000, 1)
-                timing["cache_build_action"] = cache_trace.get("cache_action")
+                if draft_cached:
+                    timing["cache_build_ms"] = 0.0
+                    timing["cache_build_action"] = timing.get("cache_build_action") or "already_present"
+                else:
+                    t_cache = time.perf_counter()
+                    cache_trace = ensure_draft_assistant_ami_cache_at_send(session_state, source_page=source_page)
+                    timing["cache_build_ms"] = round((time.perf_counter() - t_cache) * 1000, 1)
+                    timing["cache_build_action"] = cache_trace.get("cache_action")
                 augment_ami_available_pool_at_send(ctx, str(question).strip(), session_state)
                 t_fin = time.perf_counter()
                 finalize_draft_context_for_send(ctx, session_state)
@@ -1129,6 +1162,7 @@ def render_analyze_with_applied_math_sidebar(
 ) -> None:
     """Always-visible sidebar block: question → Command Center → Applied Intelligence."""
     ss = session_state if session_state is not None else st.session_state
+    _flush_pending_resume_upsert(ss)
     page_suffix = _safe_widget_suffix(source_page)
     send_gen = int(ss.get(f"_ami_send_gen_{source_app}_{page_suffix}") or 0)
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
@@ -1203,11 +1237,23 @@ def render_analyze_with_applied_math_sidebar(
             build_timing["build_submit_context_total_ms"] = round((time.perf_counter() - t_send) * 1000, 1)
             ss["_ami_last_send_build_timing"] = build_timing
             submit_source_state: dict[str, Any] | None = None
-            if source_state_builder is not None:
+            skip_source_state = False
+            if is_baseball and "draft" in str(source_page or "").lower():
+                try:
+                    from draft_ami_helpers import draft_ami_cache_has_pool
+
+                    skip_source_state = draft_ami_cache_has_pool(ss)
+                except ImportError:
+                    skip_source_state = False
+            if source_state_builder is not None and not skip_source_state:
                 try:
                     submit_source_state = source_state_builder()
                 except Exception:
                     log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
+            elif skip_source_state:
+                build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
+                build_timing["source_state_builder_skipped"] = "draft_cache_present"
+                ss["_ami_last_send_build_timing"] = build_timing
             result = submit_analytical_question(
                 source_app=source_app,
                 source_page=source_page,

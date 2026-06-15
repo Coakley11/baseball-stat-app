@@ -234,6 +234,88 @@ def mark_start_live_draft_clicked(session: dict[str, Any]) -> None:
     )
 
 
+_SIM_CONVERT_SETTING_KEYS = (
+    ("sim_convert_live_draft_timer", "Timer per pick"),
+    ("sim_convert_live_draft_proj_window", "Projection window"),
+    ("sim_convert_live_draft_proj_style", "Rebalancing style"),
+    ("sim_convert_live_draft_auto_rule", "Auto-pick rule"),
+)
+
+
+def assess_required_live_settings(session: dict[str, Any]) -> tuple[bool, list[str], str]:
+    """Return (complete, missing_labels, disabled_reason) for simulator convert panel."""
+    missing: list[str] = []
+    for key, label in _SIM_CONVERT_SETTING_KEYS:
+        val = session.get(key)
+        if val is None or str(val).strip() == "":
+            missing.append(label)
+    if missing:
+        return False, missing, f"Missing: {', '.join(missing)}"
+    return True, [], ""
+
+
+def copy_sim_convert_settings_to_live(session: dict[str, Any]) -> None:
+    """Copy convert-panel widget values into canonical live_draft_* keys."""
+    mapping = {
+        "sim_convert_live_draft_timer": "live_draft_timer",
+        "sim_convert_live_draft_proj_window": "live_draft_proj_window",
+        "sim_convert_live_draft_proj_style": "live_draft_proj_style",
+        "sim_convert_live_draft_auto_rule": "live_draft_auto_rule",
+    }
+    for src, dst in mapping.items():
+        if src in session:
+            session[dst] = session[src]
+
+
+def on_open_simulator_convert_panel() -> None:
+    import streamlit as st
+
+    record_start_live_draft_diagnostics(st.session_state, convert_simulator_clicked=True)
+    st.session_state["_simulator_to_live_show_confirm"] = True
+
+
+def on_cancel_simulator_convert_panel() -> None:
+    import streamlit as st
+
+    st.session_state.pop("_simulator_to_live_show_confirm", None)
+
+
+def on_confirm_convert_simulator_to_live() -> None:
+    import streamlit as st
+
+    session = st.session_state
+    complete, missing, reason = assess_required_live_settings(session)
+    if not complete:
+        record_start_live_draft_diagnostics(
+            session,
+            confirm_convert_clicked=False,
+            required_live_settings_complete=False,
+            confirm_button_disabled_reason=reason,
+        )
+        return
+    copy_sim_convert_settings_to_live(session)
+    mark_start_live_draft_clicked(session)
+    record_start_live_draft_diagnostics(
+        session,
+        confirm_convert_clicked=True,
+        required_live_settings_complete=True,
+        confirm_button_disabled_reason="",
+        start_live_draft_mode="simulator",
+    )
+    session["_start_live_draft_mode"] = "simulator"
+    session["_start_live_draft_pending"] = True
+    session.pop("_simulator_to_live_show_confirm", None)
+
+
+def on_start_new_live_draft() -> None:
+    import streamlit as st
+
+    mark_start_live_draft_clicked(st.session_state)
+    st.session_state["_start_live_draft_mode"] = "new"
+    st.session_state["_start_live_draft_pending"] = True
+    st.session_state.pop("_simulator_to_live_show_confirm", None)
+
+
 def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     if not developer_mode:
         return
@@ -241,6 +323,9 @@ def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, devel
     keys = (
         "convert_simulator_clicked",
         "convert_confirmation_rendered",
+        "confirm_button_rendered",
+        "required_live_settings_complete",
+        "confirm_button_disabled_reason",
         "confirm_convert_clicked",
         "start_live_draft_clicked",
         "start_live_draft_attempted",

@@ -163,6 +163,16 @@ def _is_ephemeral_widget_key(key: str) -> bool:
         if k in ("ml_predictions_refresh_button",):
             return False
         return True
+    if k.startswith("live_draft_") and (
+        k.endswith("_start")
+        or k.endswith("_cancel")
+        or "_confirm_" in k
+        or "_convert_" in k
+        or k.endswith("_save_btn")
+        or k.endswith("_reset_btn")
+        or k.endswith("_analyze_btn")
+    ):
+        return True
     if k.startswith("plr_act_") or k.startswith("ctx_go_"):
         return True
     if "compare_selected_action_" in k or k.startswith("sig_a_action_") or k.startswith("sig_b_action_"):
@@ -191,6 +201,11 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "draft_room_import_uploaded_filename",
     "draft_room_import_last_processed_hash",
     "draft_room_import_pending_clear_token",
+    "_simulator_to_live_show_confirm",
+    "_start_live_draft_pending",
+    "_start_live_draft_mode",
+    "_live_draft_start_feedback",
+    "_start_live_draft_trace",
 })
 
 

@@ -77,3 +77,36 @@ def test_draft_room_import_uploader_not_snapshotted_or_restored():
     assert "draft_room_import_uploader" not in session
     assert session.get("draft_room_import_last_processed_hash") is None
     assert session.get("room_your_team") == "Daniel"
+
+
+def test_live_draft_confirm_button_not_snapshotted():
+    session = {
+        "page_filter_state": {},
+        "_page_state_last_active": "Live Draft Room",
+        "live_draft_timer": "90 seconds",
+        "live_draft_confirm_sim_start": True,
+        "_simulator_to_live_show_confirm": True,
+    }
+    pg.save_page_state(session, "Live Draft Room", session["page_filter_state"])
+    snap = session["page_filter_state"].get("Live Draft Room") or {}
+    assert "live_draft_confirm_sim_start" not in snap
+    assert "live_draft_confirm_sim_cancel" not in snap
+    assert snap.get("live_draft_timer") == "90 seconds"
+    session["live_draft_confirm_sim_start"] = False
+    session.pop("_simulator_to_live_show_confirm", None)
+    pg.restore_page_state(session, "Live Draft Room", session["page_filter_state"])
+    assert session.get("live_draft_confirm_sim_start") is not True
+    assert session.get("_simulator_to_live_show_confirm") is None
+
+
+def test_start_live_draft_pending_not_snapshotted():
+    session = {
+        "page_filter_state": {},
+        "_page_state_last_active": "Live Draft Room",
+        "_start_live_draft_pending": True,
+        "_start_live_draft_mode": "simulator",
+    }
+    pg.save_page_state(session, "Live Draft Room", session["page_filter_state"])
+    snap = session["page_filter_state"].get("Live Draft Room") or {}
+    assert "_start_live_draft_pending" not in snap
+    assert "_start_live_draft_mode" not in snap
