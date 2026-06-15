@@ -96,22 +96,79 @@ Legend: **Cloud** = persisted via suite cloud / activity API · **Local** = sess
 
 ---
 
-## Authoritative sources (v13)
+## Authoritative sources (v14)
 
 | Field | Source |
 |-------|--------|
 | `current_pick` | `draft_board_summary_for_team` (simulator) or live `slot` index + 1 |
 | `draft_round` | `summary.current_round` or `slot.Round` — refreshed on every send |
 | Roster positions | `_ami_player_position_lookup` (full pool) + `user_roster_detail` + `roster_position_index` |
+| Team review roster | `attach_draft_team_to_context` after finalize — board team column |
 
-## v13 execution status
+## v14 execution status
 
 | Check | Status |
 |-------|--------|
-| Position lookup persisted in cache builder | Done |
-| Metadata refresh uses global position lookup | Done |
-| `player_position_index` force-promoted on send | Done |
-| Timing "at Catcher now or a later round" | Fixed (v8) |
-| Team-specific draft review (`Team 2`) | Fixed (v8) |
-| Sidebar submit via `st.form` (question loss) | Fixed (v13) |
-| Instant insight E2E unit tests | 11 passing |
+| Team review runs after finalize (no roster clobber) | Done |
+| `refresh_draft_ami_metadata` pick/round only | Done |
+| Team diagnostics on send (`requested_team`, etc.) | Done |
+| Timing `at C for pick` player + position extraction | Done |
+| `baseball_ami_pages.py` Trends/Sleepers/Comparison send hooks | Started |
+
+---
+
+## Sync matrix (Phone ↔ Dell)
+
+| Feature | Phone→Dell | Dell→Phone | Status |
+|---------|------------|------------|--------|
+| **Draft Room Simulator** | | | |
+| Board picks | ✓ | ✓ | Fully synced (cloud workspace) |
+| Team rosters (board-derived) | ✓ | ✓ | Fully synced |
+| Draft queue | ✓ | ✓ | Fully synced |
+| Watchlist | ✓ | ✓ | Fully synced (when saved) |
+| Recommendations | — | — | Local-only (recomputed per device) |
+| AMI draft cache pool | — | — | Local-only (rebuilt at send) |
+| Pick / round metadata | ✓ | ✓ | Fully synced (board authority on send) |
+| Questions / insight cards | ✓ | ✓ | Fully synced (activity + blob) |
+| **Draft Assistant Simulator** | | | |
+| Draft state (board-linked) | ✓ | ✓ | Fully synced |
+| Recommendations | — | — | Local-only |
+| Insights / continue links | ✓ | ✓ | Fully synced |
+| **Live Draft Room** | | | |
+| Timer / on-clock | Partial | Partial | Partial (active session required) |
+| Current pick / round | ✓ | ✓ | Fully synced when live room active |
+| Draft board | ✓ | ✓ | Fully synced |
+| Settings / roster | ✓ | ✓ | Fully synced |
+| **Command Center** | | | |
+| Activities | ✓ | ✓ | Fully synced |
+| Continue items | ✓ | ✓ | Fully synced |
+| Saved questions | ✓ | ✓ | Fully synced |
+| Duplicate-send dedupe | — | — | Local-only window (by design) |
+| **Workspace restore** | | | |
+| Page restore | ✓ | ✓ | Fully synced |
+| Draft restore | ✓ | ✓ | Fully synced |
+| Active session restore | ✓ | ✓ | Fully synced |
+| AMI warm pool cache | — | — | Local-only (intentional) |
+| **Instant Baseball Insight** | | | |
+| Latest insight card | ✓ | ✓ | Fully synced (insight store v10) |
+| Dismissed insight IDs | ✓ | ✓ | Fully synced |
+| Instant solve (pre-cloud) | — | — | Local-only until activity writes |
+
+Legend: **✓** = cloud-backed · **Partial** = needs active live session · **—** = intentionally device-local
+
+---
+
+## Instant Baseball Insight E2E verification
+
+| # | Check | Result | Notes |
+|---|-------|--------|-------|
+| 1 | Insight card appears immediately on submit | **Pass** | `solve_instant_baseball_insight` + `stage_pending_insight` |
+| 2 | No "Please ask a question first" error | **Pass** | `st.form` submit preserves question (v13) |
+| 3 | Command Center activity created | **Pass** | `record_activity` on submit |
+| 4 | Continue item created | **Pass** | Resume upsert after blob save |
+| 5 | Open Full Analysis works | **Pass** | `build_applied_math_resume_url` |
+| 6 | Dismiss works | **Pass** | `_ami_dismissed_insight_ids` cloud-backed |
+| 7 | Refresh does not break insight state | **Pass** | Pending insight rehydrates from session/cloud |
+| 8 | Phone and Dell show same latest insight | **Partial** | Manual verify after cloud sync |
+
+Automated coverage: `tests/test_instant_insight_submit.py`, `tests/test_ami_player_pool.py`.

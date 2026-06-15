@@ -140,6 +140,13 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(index.get("cal raleigh"), "C")
         self.assertEqual(detail[0]["Primary Position"], "OF")
 
+    def test_resolve_board_team_name_fuzzy(self) -> None:
+        from draft_ami_helpers import resolve_board_team_name
+
+        names = ["Daniel", "Team 2", "Team 3"]
+        self.assertEqual(resolve_board_team_name(names, "Team 2"), "Team 2")
+        self.assertEqual(resolve_board_team_name(names, "team 2"), "Team 2")
+
 
 if __name__ == "__main__":
     unittest.main()

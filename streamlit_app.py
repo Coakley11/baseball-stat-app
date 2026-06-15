@@ -15549,6 +15549,16 @@ if active_page == "Draft Assistant Simulator":
             )
 
         recs["Strategy"] = recs.apply(_strategy_for_row, axis=1)
+        _ami_roster_detail: list[dict[str, str]] = []
+        _ami_roster_index: dict[str, str] = {}
+        if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns:
+            for _, _rrow in roster_df_auto.iterrows():
+                _rname = str(_rrow.get("fullName") or "").strip()
+                _rpos = str(_rrow.get("Primary Position") or "").strip()
+                if _rname:
+                    _ami_roster_detail.append({"player": _rname, "Primary Position": _rpos})
+                    if _rpos:
+                        _ami_roster_index[_rname.lower()] = _rpos
         try:
             from applied_math_context import cache_draft_assistant_ami_context
 
@@ -15557,7 +15567,10 @@ if active_page == "Draft Assistant Simulator":
                 page="Draft Assistant Simulator",
                 recs_df=recs,
                 current_pick=int(current_pick),
+                draft_round=int(draft_summary["current_round"]),
                 my_roster=my_roster,
+                user_roster_detail=_ami_roster_detail,
+                roster_position_index=_ami_roster_index,
                 drafted_total=len(drafted_or_owned_players),
                 draft_format=str(draft_format),
                 assistant_team=str(assistant_my_team_name),

@@ -179,6 +179,8 @@ def detect_positions_from_question(question: str) -> list[str]:
             if re.search(rf"\b{re.escape(alias)}\b", low):
                 found.append(pos)
                 break
+    if "C" not in found and re.search(r"\bat\s+c\b", low):
+        found.append("C")
     return found
 
 
@@ -711,6 +713,40 @@ def _roster_position_detail_for_names(
     return detail, index
 
 
+def resolve_board_team_name(team_names: list[str], target: str) -> str:
+    """Map a user label like Team 2 to the canonical board team column value."""
+    target = str(target or "").strip()
+    if not target:
+        return ""
+    names = [str(n).strip() for n in (team_names or []) if str(n).strip()]
+    if not names:
+        return target
+
+    for name in names:
+        if name == target:
+            return name
+    tl = target.lower()
+    for name in names:
+        if name.lower() == tl:
+            return name
+
+    m = re.match(r"team\s*(\d+|[a-z])", tl, flags=re.I)
+    if m:
+        token = m.group(1).lower()
+        for name in names:
+            compact = re.sub(r"\s+", "", name.lower())
+            if compact == f"team{token}":
+                return name
+            if name.lower().endswith(f" {token}") or name.lower().endswith(token):
+                return name
+
+    for name in names:
+        nl = name.lower()
+        if tl in nl or nl in tl:
+            return name
+    return target
+
+
 def roster_for_team_from_board(
     session_state: dict[str, Any],
     team_name: str,
@@ -725,7 +761,8 @@ def roster_for_team_from_board(
     if board.empty or "Player" not in board.columns or "Team" not in board.columns:
         return [], [], {}
 
-    team = str(team_name or "").strip()
+    team_names = sorted(board["Team"].dropna().astype(str).unique().tolist())
+    team = resolve_board_team_name(team_names, str(team_name or "").strip())
     if not team:
         return [], [], {}
 
@@ -783,12 +820,6 @@ def refresh_draft_ami_metadata_from_board(
             continue
         block["current_pick"] = current_pick
         block["draft_round"] = draft_round
-        if my_roster:
-            block["user_roster"] = my_roster[:16]
-        if roster_detail:
-            block["user_roster_detail"] = roster_detail[:24]
-        if roster_index:
-            block["roster_position_index"] = dict(roster_index)
 
     meta.update(
         {

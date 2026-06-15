@@ -9,7 +9,8 @@ Reusable pattern from Draft AMI: **context package → hydration → routing →
 | Stage | Baseball | AMI |
 |-------|----------|-----|
 | Page cache | `cache_*_ami_context(session, page=...)` | — |
-| Send merge | `finalize_*_context_for_send(ctx, session)` | — |
+| Send merge | `promote_page_ami_context_at_send` in `baseball_ami_pages.py` | — |
+| Draft send merge | `finalize_draft_context_for_send` → `attach_draft_team_to_context` | — |
 | Position/index maps | `build_player_position_index_from_session` | `_attach_player_position_index` |
 | Routing | — | `route_suite_question` → `problem_type_id` |
 | Solve | `solve_instant_baseball_insight` | `dispatch_solver` |
@@ -89,11 +90,12 @@ Reusable pattern from Draft AMI: **context package → hydration → routing →
 
 ## Implementation order (after Draft AMI stable)
 
-1. Sleepers — cache already exists; polish routing + instant insight
-2. Trends — `trend_summary` already routed; add page cache at send
-3. Historical — wire `historical_snapshot` send promotion
-4. Start/Sit — new lineup snapshot from Lineup Assistant
-5. Trades — new trade builder integration
+1. **Trends** — `finalize_trend_context_for_send` in `baseball_ami_pages.py` (wired at send)
+2. **Sleepers** — `finalize_sleepers_context_for_send` (wired at send)
+3. **Comparison** — `finalize_comparison_context_for_send` (wired at send)
+4. Historical — wire `historical_snapshot` send promotion
+5. Start/Sit — new lineup snapshot from Lineup Assistant
+6. Trades — hold (lower priority)
 
 ---
 

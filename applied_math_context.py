@@ -11,6 +11,20 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def _ensure_ami_import_path() -> bool:
+    """Add sibling Applied-mathematical-intelligence repo to import path when present."""
+    import sys
+    from pathlib import Path
+
+    ami = Path(__file__).resolve().parent.parent / "Applied-mathematical-intelligence"
+    if not ami.is_dir():
+        return False
+    path = str(ami)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    return True
+
+
 def _player_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip()
 
@@ -142,9 +156,11 @@ def attach_draft_team_to_context(
     session_state: dict[str, Any],
 ) -> None:
     """When question names a fantasy team, bind that team's roster for review/needs modes."""
+    if not _ensure_ami_import_path():
+        return
     try:
         from components.draft_market_question import extract_draft_team_query
-        from draft_ami_helpers import roster_for_team_from_board
+        from draft_ami_helpers import resolve_board_team_name, roster_for_team_from_board
     except ImportError:
         return
 
@@ -165,14 +181,29 @@ def attach_draft_team_to_context(
         pass
 
     target = extract_draft_team_query(question, my_team=my_team, team_names=team_names)
-    if not target:
+    requested_team = str(target or "").strip()
+    if not requested_team:
         return
 
-    names, detail, index = roster_for_team_from_board(session_state, target)
+    resolved_team = resolve_board_team_name(team_names, requested_team)
+    names, detail, index = roster_for_team_from_board(session_state, resolved_team or requested_team)
     if not names:
+        ctx["_draft_team_diagnostics"] = {
+            "requested_team": requested_team,
+            "resolved_team": resolved_team or requested_team,
+            "roster_owner_used": "",
+            "roster_player_count": 0,
+        }
         return
 
-    ctx["draft_review_team"] = target
+    owner = resolved_team or requested_team
+    ctx["_draft_team_diagnostics"] = {
+        "requested_team": requested_team,
+        "resolved_team": owner,
+        "roster_owner_used": owner,
+        "roster_player_count": len(names),
+    }
+    ctx["draft_review_team"] = owner
     ctx["roster"] = names
     ctx["user_roster"] = names
     snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
@@ -181,7 +212,7 @@ def attach_draft_team_to_context(
     snap["user_roster"] = names
     snap["user_roster_detail"] = detail
     snap["roster_position_index"] = index
-    snap["draft_review_team"] = target
+    snap["draft_review_team"] = owner
     ctx["draft_snapshot"] = snap
 def augment_ami_available_pool_at_send(
     ctx: dict[str, Any],
@@ -249,6 +280,14 @@ def build_draft_send_pipeline_diagnostics(
         "draft_board_source_key": session_state.get("draft_board_source_key"),
         "cache_build_action": (session_state.get("_ami_draft_cache_build_trace") or {}).get("cache_action"),
         "skip_reason": (session_state.get("_ami_draft_cache_build_trace") or {}).get("skip_reason"),
+        "requested_team": (ctx.get("_draft_team_diagnostics") or {}).get("requested_team"),
+        "resolved_team": (ctx.get("_draft_team_diagnostics") or {}).get("resolved_team"),
+        "roster_owner_used": (ctx.get("_draft_team_diagnostics") or {}).get("roster_owner_used")
+        or ctx.get("draft_review_team")
+        or snap.get("draft_review_team"),
+        "roster_player_count": (ctx.get("_draft_team_diagnostics") or {}).get("roster_player_count")
+        if (ctx.get("_draft_team_diagnostics") or {}).get("roster_player_count") is not None
+        else _count(ctx.get("roster") or snap.get("user_roster")),
     }
 
 

@@ -1168,7 +1168,6 @@ def build_submit_context(
             )
 
             attach_question_player_to_context(ctx, str(question).strip(), session_state)
-            attach_draft_team_to_context(ctx, str(question).strip(), session_state)
             if "draft" in low_page:
                 if draft_cached:
                     timing["cache_build_ms"] = 0.0
@@ -1182,6 +1181,21 @@ def build_submit_context(
                 t_fin = time.perf_counter()
                 finalize_draft_context_for_send(ctx, session_state)
                 timing["finalize_context_ms"] = round((time.perf_counter() - t_fin) * 1000, 1)
+            attach_draft_team_to_context(ctx, str(question).strip(), session_state)
+            if "draft" in low_page:
+                from applied_math_context import build_draft_send_pipeline_diagnostics
+
+                diag = build_draft_send_pipeline_diagnostics(ctx, session_state)
+                ctx["send_pipeline_diagnostics"] = diag
+            else:
+                try:
+                    from baseball_ami_pages import promote_page_ami_context_at_send
+
+                    promote_page_ami_context_at_send(
+                        ctx, session_state, source_page=source_page, question=str(question).strip()
+                    )
+                except ImportError:
+                    pass
         except Exception:
             log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
     session_state["_ami_last_send_build_timing"] = timing

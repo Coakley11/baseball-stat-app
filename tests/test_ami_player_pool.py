@@ -80,6 +80,9 @@ class TestPositionRepresentativePool(unittest.TestCase):
         positions = detect_positions_from_question("When does the OF position run start?")
         self.assertIn("OF", positions)
 
+    def test_detect_catcher_from_at_c_phrase(self) -> None:
+        self.assertIn("C", detect_positions_from_question("Should I draft William Contreras at C for pick 8?"))
+
     def test_jose_outside_top12_included_via_third_base_slice(self) -> None:
         df = _sample_pool_df()
         rows, _diag, lookup = build_position_representative_available_pool(df, needed_positions=["C"])
@@ -372,6 +375,69 @@ class TestPositionRepresentativePool(unittest.TestCase):
             self.assertIs(dah._import_baseball_app(), sentinel)
         self.assertEqual(imp.call_args_list[0].args[0], "streamlit_app")
         self.assertEqual(imp.call_args_list[1].args[0], "Streamlit_app")
+
+
+class TestDraftTeamReview(unittest.TestCase):
+    def test_attach_draft_team_after_finalize_uses_team_two_roster(self) -> None:
+        from unittest.mock import patch
+
+        from applied_math_context import (
+            attach_draft_team_to_context,
+            finalize_draft_context_for_send,
+        )
+        from draft_room_state import build_snake_board
+
+        teams = ["Team 1", "Team 2", "Team 3", "Team 4"]
+        board = build_snake_board(teams, rounds=2)
+        board = board.sort_values("Pick", kind="stable").reset_index(drop=True)
+        team2_players = ["Mookie Betts", "Bobby Witt Jr.", "Shea Langeliers"]
+        my_players = ["Aaron Judge", "Anthony Volpe", "Cal Raleigh"]
+        t2_idx = 0
+        for idx, row in board.iterrows():
+            team = str(row["Team"])
+            if team == "Team 2" and t2_idx < len(team2_players):
+                board.at[idx, "Player"] = team2_players[t2_idx]
+                t2_idx += 1
+            elif team == "Team 1" and my_players:
+                board.at[idx, "Player"] = my_players.pop(0)
+
+        session: dict = {
+            "room_your_team": "Team 1",
+            "draft_assistant_synced_team": "Team 1",
+            "draft_room_table": board.copy(),
+            "_ami_draft_snapshot": {
+                "user_roster": ["Aaron Judge", "Anthony Volpe", "Cal Raleigh"],
+                "user_roster_detail": [
+                    {"player": "Aaron Judge", "Primary Position": "OF"},
+                    {"player": "Anthony Volpe", "Primary Position": "SS"},
+                    {"player": "Cal Raleigh", "Primary Position": "C"},
+                ],
+                "available_players": [{"player": "William Contreras", "Primary Position": "C"}] * 25,
+                "current_pick": 8,
+                "draft_round": 4,
+            },
+        }
+        ctx: dict = {
+            "draft_snapshot": {
+                "user_roster": ["Aaron Judge", "Anthony Volpe", "Cal Raleigh"],
+                "current_pick": 8,
+                "draft_round": 4,
+            }
+        }
+        question = "How would you rate Team 2's picks so far?"
+        with patch("draft_room_state.get_canonical_draft_board", return_value=board):
+            finalize_draft_context_for_send(ctx, session)
+            attach_draft_team_to_context(ctx, question, session)
+
+        diag = ctx.get("_draft_team_diagnostics") or {}
+        self.assertEqual(diag.get("requested_team"), "Team 2")
+        self.assertEqual(diag.get("resolved_team"), "Team 2")
+        self.assertEqual(diag.get("roster_owner_used"), "Team 2")
+        self.assertGreaterEqual(diag.get("roster_player_count", 0), 1)
+        roster = ctx.get("roster") or []
+        self.assertIn("Mookie Betts", roster)
+        self.assertNotIn("Aaron Judge", roster)
+        self.assertEqual(ctx.get("draft_review_team"), "Team 2")
 
 
 class TestDraftAmiCacheWarmth(unittest.TestCase):
