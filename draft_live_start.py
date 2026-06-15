@@ -113,3 +113,68 @@ def clear_stale_live_draft_for_simulator_start(session: dict[str, Any]) -> None:
             clear_live_draft_state(session, reason="start_live_from_simulator")
     except Exception:
         session["live_draft_room"] = None
+
+
+def build_simulator_to_live_summary(session: dict[str, Any]) -> dict[str, Any]:
+    """Summary for Convert Simulator to Live Draft confirmation panel."""
+    board, pick_count, source, teams = resolve_simulator_board_for_live_start(session)
+    if pick_count <= 0:
+        pick_count = int(session.get("session_pick_count") or 0)
+    queue = session.get("draft_queue") or []
+    if not isinstance(queue, list):
+        queue = []
+    watch = session.get("draft_assistant_focus_players") or []
+    if not isinstance(watch, list):
+        watch = []
+    favorites = session.get("workflow_favorite_targets") or []
+    if not isinstance(favorites, list):
+        favorites = []
+    watch_names = list(dict.fromkeys([str(x).strip() for x in favorites + watch if str(x).strip()]))
+    tracked = session.get("workflow_recently_viewed") or []
+    if not isinstance(tracked, list):
+        tracked = []
+    current_pick = pick_count + 1 if pick_count > 0 else 1
+    try:
+        from draft_room_state import table_pick_count
+
+        if board is not None and pick_count > 0:
+            open_row = None
+            if hasattr(board, "columns") and "Player" in board.columns:
+                work = board.sort_values("Pick", kind="stable") if "Pick" in board.columns else board
+                for _, row in work.iterrows():
+                    player = str(row.get("Player") or "").strip()
+                    if not player:
+                        open_row = row
+                        break
+                if open_row is not None and "Pick" in open_row:
+                    current_pick = int(open_row.get("Pick") or current_pick)
+    except Exception:
+        pass
+    return {
+        "teams": teams,
+        "team_count": len(teams) if teams else int(session.get("room_team_count") or 0),
+        "pick_count": pick_count,
+        "current_pick": current_pick,
+        "board_source": source,
+        "queue_count": len([x for x in queue if str(x).strip()]),
+        "watchlist_count": len(watch_names),
+        "tracked_count": len([x for x in tracked if str(x).strip()]),
+        "your_team": str(session.get("room_your_team") or "").strip(),
+    }
+
+
+def format_simulator_to_live_success_message(summary: dict[str, Any], *, promoted: int, user_team: str) -> str:
+    teams = summary.get("teams") or []
+    team_preview = ", ".join(str(t) for t in teams[:6])
+    if len(teams) > 6:
+        team_preview += f" +{len(teams) - 6} more"
+    lines = [
+        f"Live draft created from simulator — **{promoted}** pick(s) imported.",
+        f"Current pick: **{summary.get('current_pick', '?')}**.",
+    ]
+    if team_preview:
+        lines.append(f"Teams: {team_preview}.")
+    if user_team:
+        lines.append(f"Your team: **{user_team}**.")
+    lines.append("Queue, watchlist, and tracked players are unchanged.")
+    return " ".join(lines)

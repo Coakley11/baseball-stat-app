@@ -253,6 +253,7 @@ def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, devel
         "current_pick_after_start",
         "promote_error",
         "pool_live_count",
+        "start_live_draft_mode",
     )
     with st.expander("Start Live Draft trace (Dev Mode)", expanded=True):
         for key in keys:

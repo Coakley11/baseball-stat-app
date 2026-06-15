@@ -139,8 +139,25 @@ PAGE_STATE_REGISTRY = {
 }
 
 
+_FILE_UPLOADER_WIDGET_KEYS = frozenset({
+    "draft_room_import_uploader",
+})
+
+
+def _is_file_uploader_widget_key(key: str) -> bool:
+    """file_uploader widget keys must never be restored into session_state."""
+    k = str(key)
+    if k in _FILE_UPLOADER_WIDGET_KEYS:
+        return True
+    if k.endswith("_uploader") or k.endswith("_file_uploader"):
+        return True
+    return False
+
+
 def _is_ephemeral_widget_key(key: str) -> bool:
-    """Button/action widget keys must not be snapshotted (causes StreamlitValueAssignmentNotAllowedError)."""
+    """Button/action/file_uploader widget keys must not be snapshotted."""
+    if _is_file_uploader_widget_key(key):
+        return True
     k = str(key)
     if k.endswith("_button") or k.endswith("_btn"):
         if k in ("ml_predictions_refresh_button",):
@@ -170,6 +187,10 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "draft_room_board_editor_cache",
     "draft_room_board_editor_seed",
     "draft_room_board_editor_version",
+    "draft_room_import_uploader",
+    "draft_room_import_uploaded_filename",
+    "draft_room_import_last_processed_hash",
+    "draft_room_import_pending_clear_token",
 })
 
 
@@ -227,7 +248,7 @@ def restore_page_state(session, page_name: str, store: dict):
     if not snapshot:
         return False
     for key, value in snapshot.items():
-        if _is_ephemeral_widget_key(key):
+        if _is_ephemeral_widget_key(key) or _is_file_uploader_widget_key(key):
             session.pop(key, None)
             continue
         try:

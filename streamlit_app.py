@@ -12221,9 +12221,9 @@ except Exception:
 
 render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
 
-# Drop snapshotted button widget keys (they must never be restored into session_state).
+# Drop snapshotted button/file_uploader widget keys (never restore into session_state).
 for _ephemeral_key in list(st.session_state.keys()):
-    if pg_state._is_ephemeral_widget_key(_ephemeral_key):
+    if pg_state._is_ephemeral_widget_key(_ephemeral_key) or pg_state._is_file_uploader_widget_key(_ephemeral_key):
         st.session_state.pop(_ephemeral_key, None)
 
 if not pp.is_screenshot_mode(st):
@@ -15810,14 +15810,17 @@ if active_page == "Draft Room Simulator":
         )
         if imported_draft_file is not None:
             try:
+                st.session_state["draft_room_import_uploaded_filename"] = str(
+                    getattr(imported_draft_file, "name", "") or ""
+                )
                 imported_raw = read_imported_draft_file(imported_draft_file)
                 imported_draft = normalize_imported_draft_columns(imported_raw)
                 if imported_draft.empty:
                     st.warning("No usable Team/Player rows were found in the uploaded draft.")
                 else:
                     file_sig = hashlib.md5(imported_draft_file.getvalue()).hexdigest()[:12]
-                    if st.session_state.get("_draft_import_file_id") != file_sig:
-                        st.session_state["_draft_import_file_id"] = file_sig
+                    if st.session_state.get("draft_room_import_last_processed_hash") != file_sig:
+                        st.session_state["draft_room_import_last_processed_hash"] = file_sig
                         st.session_state.pop("_draft_import_review", None)
                     pool_for_import = _draft_room_pool_for_import_validation()
                     if pool_for_import.empty:
@@ -16705,37 +16708,12 @@ if active_page == "Live Draft Room":
     market_df_live = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 
+    _live_start_feedback = st.session_state.pop("_live_draft_start_feedback", None)
+    if _live_start_feedback:
+        st.success(_live_start_feedback)
+
     st.session_state.setdefault("_start_live_draft_pending", False)
-    try:
-        from draft_room_state import is_live_draft_runtime_active
-
-        _live_runtime_active = is_live_draft_runtime_active(st.session_state)
-    except Exception:
-        _live_runtime_active = False
-
-    if not _live_runtime_active:
-        try:
-            from draft_actions import draft_action_context
-
-            _sim_start_ctx = draft_action_context(st.session_state)
-            _sim_pick = _sim_start_ctx.get("current_pick")
-            _sim_help = (
-                f"Promote simulator board (pick {_sim_pick}) and start the live clock."
-                if _sim_pick
-                else "Promote simulator picks and start the live draft clock."
-            )
-        except Exception:
-            _sim_help = "Promote simulator picks and start the live draft clock."
-        if st.button(
-            "Start Live Draft from Simulator",
-            type="primary",
-            key="live_draft_start_primary_btn",
-            help=_sim_help,
-        ):
-            from draft_ui import mark_start_live_draft_clicked
-
-            mark_start_live_draft_clicked(st.session_state)
-            st.session_state["_start_live_draft_pending"] = True
+    st.session_state.setdefault("_simulator_to_live_show_confirm", False)
 
     with st.expander("Draft Setup / Configuration", expanded=room is None or room.get("status") == "not_started"):
         st.subheader("League & Draft Settings")
@@ -16803,11 +16781,13 @@ if active_page == "Live Draft Room":
 
         b_start, b_reset = st.columns(2)
         with b_start:
-            if st.button("Start Live Draft", type="primary", key="live_draft_start_btn"):
+            if st.button("Start New Live Draft", type="primary", key="live_draft_start_btn"):
                 from draft_ui import mark_start_live_draft_clicked
 
                 mark_start_live_draft_clicked(st.session_state)
+                st.session_state["_start_live_draft_mode"] = "new"
                 st.session_state["_start_live_draft_pending"] = True
+                st.session_state.pop("_simulator_to_live_show_confirm", None)
         with b_reset:
             reset_live = st.button("Reset Draft Room", key="live_draft_reset_btn")
 
@@ -16820,10 +16800,72 @@ if active_page == "Live Draft Room":
                 pass
             _persist_live_draft_room(None, reason="reset_draft")
 
+        with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
+            st.caption(
+                "Converts your current Draft Room Simulator board into a Live Draft. "
+                "Existing picks, queue, watchlist, and tracked players will be carried forward. "
+                "Use this when you started in the simulator and want a formal live-draft clock — "
+                "not for starting a brand-new live draft from scratch."
+            )
+            if st.button(
+                "Convert Simulator to Live Draft…",
+                key="live_draft_convert_sim_btn",
+                help="Review simulator state and confirm before starting the live draft clock.",
+            ):
+                st.session_state["_simulator_to_live_show_confirm"] = True
+
+    if st.session_state.get("_simulator_to_live_show_confirm"):
+        from draft_live_start import build_simulator_to_live_summary
+
+        _sim_summary = build_simulator_to_live_summary(st.session_state)
+        st.markdown("#### Convert simulator board to live draft")
+        st.markdown(
+            "**What carries over automatically:** team names, number of teams, snake draft order, "
+            "existing picks, current pick number, draft queue, watchlist, and tracked players."
+        )
+        st.markdown(
+            "**Live-only settings** (choose in the setup form above before confirming): timer per pick, "
+            "projection style, projection window, auto-pick rule, and roster slot counts. "
+            "Simulator scoring format and team names are reused when present."
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Teams", _sim_summary.get("team_count") or 0)
+        c2.metric("Existing picks", _sim_summary.get("pick_count") or 0)
+        c3.metric("Current pick", _sim_summary.get("current_pick") or 1)
+        team_list = _sim_summary.get("teams") or []
+        if team_list:
+            st.markdown(f"**Teams:** {', '.join(str(t) for t in team_list[:12])}")
+        st.markdown(
+            f"**Queue:** {_sim_summary.get('queue_count', 0)} · "
+            f"**Watchlist:** {_sim_summary.get('watchlist_count', 0)} · "
+            f"**Tracked players:** {_sim_summary.get('tracked_count', 0)}"
+        )
+        if _sim_summary.get("your_team"):
+            st.markdown(f"**Your team:** {_sim_summary['your_team']}")
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            if st.button("Start Live Draft", type="primary", key="live_draft_confirm_sim_start"):
+                from draft_ui import mark_start_live_draft_clicked
+
+                mark_start_live_draft_clicked(st.session_state)
+                st.session_state["_start_live_draft_mode"] = "simulator"
+                st.session_state["_start_live_draft_pending"] = True
+                st.session_state.pop("_simulator_to_live_show_confirm", None)
+        with cancel_col:
+            if st.button("Cancel", key="live_draft_confirm_sim_cancel"):
+                st.session_state.pop("_simulator_to_live_show_confirm", None)
+
     if st.session_state.pop("_start_live_draft_pending", False):
-        from draft_live_start import clear_stale_live_draft_for_simulator_start, resolve_simulator_board_for_live_start
+        from draft_live_start import (
+            build_simulator_to_live_summary,
+            clear_stale_live_draft_for_simulator_start,
+            format_simulator_to_live_success_message,
+            resolve_simulator_board_for_live_start,
+        )
         from draft_ui import record_start_live_draft_diagnostics
 
+        _start_mode = str(st.session_state.pop("_start_live_draft_mode", "new") or "new")
+        _from_simulator = _start_mode == "simulator"
         clear_stale_live_draft_for_simulator_start(st.session_state)
         try:
             from draft_room_state import sync_draft_room_session_before_save
@@ -16835,6 +16877,7 @@ if active_page == "Live Draft Room":
             st.session_state,
             start_live_draft_clicked=True,
             start_live_draft_attempted=True,
+            start_live_draft_mode=_start_mode,
         )
         live_scoring = str(st.session_state.get("live_draft_scoring") or "Roto (5x5)")
         live_timer_label = str(
@@ -16877,9 +16920,12 @@ if active_page == "Live Draft Room":
             )
         record_start_live_draft_diagnostics(st.session_state, pool_live_count=len(pool_live))
         try:
-            sim_board, sim_pick_count, sim_board_source, sim_teams = resolve_simulator_board_for_live_start(
-                st.session_state
-            )
+            if _from_simulator:
+                sim_board, sim_pick_count, sim_board_source, sim_teams = resolve_simulator_board_for_live_start(
+                    st.session_state
+                )
+            else:
+                sim_board, sim_pick_count, sim_board_source, sim_teams = None, 0, "skipped_new_draft", []
         except Exception as exc:
             sim_board = None
             sim_teams = []
@@ -16939,7 +16985,7 @@ if active_page == "Live Draft Room":
             new_room = live_draft_init_room(config, pool_live)
             record_start_live_draft_diagnostics(st.session_state, live_room_created=True)
             promote: dict = {"ok": True, "applied": 0, "skipped": 0, "error": ""}
-            if sim_pick_count > 0 and sim_board is not None:
+            if _from_simulator and sim_pick_count > 0 and sim_board is not None:
                 promote = replay_simulator_board_on_live_room(new_room, sim_board)
             promote_ok = bool(promote.get("ok")) or int(promote.get("applied") or 0) > 0
             record_start_live_draft_diagnostics(
@@ -16955,7 +17001,7 @@ if active_page == "Live Draft Room":
                 )
             elif promote.get("applied"):
                 st.info(f"Promoted **{promote['applied']}** simulator pick(s) into the live draft.")
-            if not promote_ok and sim_pick_count > 0:
+            if not promote_ok and _from_simulator and sim_pick_count > 0:
                 err = promote.get("error") or "Could not promote simulator board into live draft."
                 record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=err)
                 st.error(err)
@@ -16965,7 +17011,7 @@ if active_page == "Live Draft Room":
                 st.session_state["room_your_team"] = user_team
                 try:
                     from draft_actions import draft_action_context
-                    from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta, table_pick_count
+                    from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta
 
                     set_canonical_draft_meta(
                         st.session_state,
@@ -16986,13 +17032,26 @@ if active_page == "Live Draft Room":
                         st.session_state,
                         start_live_draft_error=f"post_start_meta:{exc}",
                     )
-                st.success(f"Live draft started — Room ID **{new_room['draft_room_id']}**")
+                if _from_simulator:
+                    _sim_summary = build_simulator_to_live_summary(st.session_state)
+                    _promoted = int(promote.get("applied") or 0)
+                    st.session_state["_live_draft_start_feedback"] = format_simulator_to_live_success_message(
+                        _sim_summary,
+                        promoted=_promoted,
+                        user_team=user_team,
+                    )
+                else:
+                    st.session_state["_live_draft_start_feedback"] = (
+                        f"New live draft started — Room ID **{new_room['draft_room_id']}**. "
+                        "No simulator picks were imported."
+                    )
+                st.success(st.session_state["_live_draft_start_feedback"])
                 _persist_live_draft_room(new_room, reason="start_draft")
 
     room = st.session_state.get("live_draft_room")
 
     if room is None:
-        st.info("Configure your league above, then click **Start Live Draft**.")
+        st.info("Configure your league above, then click **Start New Live Draft** (or use **Advanced** to convert a simulator board).")
     else:
         _render_live_draft_styles()
         cfg = room.get("config", {})

@@ -55,3 +55,25 @@ def test_trend_position_filter_round_trip():
     pg.handle_sidebar_page_state(session, "Trend Value", _norm, None)
     assert session["trend_position_filter"] == "SS"
     assert session["trend_lag"] == 5
+
+
+def test_draft_room_import_uploader_not_snapshotted_or_restored():
+    session = {
+        "page_filter_state": {},
+        "_page_state_last_active": "Draft Room Simulator",
+        "room_your_team": "Daniel",
+        "draft_room_import_uploader": {"fake": "uploaded_bytes"},
+        "draft_room_import_last_processed_hash": "abc123",
+    }
+    pg.save_page_state(session, "Draft Room Simulator", session["page_filter_state"])
+    snap = session["page_filter_state"].get("Draft Room Simulator") or {}
+    assert "draft_room_import_uploader" not in snap
+    assert "draft_room_import_last_processed_hash" not in snap
+    assert snap.get("room_your_team") == "Daniel"
+    session.pop("draft_room_import_uploader", None)
+    session.pop("draft_room_import_last_processed_hash", None)
+    session["room_your_team"] = "Team 2"
+    pg.restore_page_state(session, "Draft Room Simulator", session["page_filter_state"])
+    assert "draft_room_import_uploader" not in session
+    assert session.get("draft_room_import_last_processed_hash") is None
+    assert session.get("room_your_team") == "Daniel"
