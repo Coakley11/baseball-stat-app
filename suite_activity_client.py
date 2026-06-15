@@ -175,17 +175,21 @@ def record_activity(
         "error": "",
     }
     if not str(action_url or "").strip():
-        try:
-            from suite_deep_links import build_resume_action_url
+        continue_url = str(metrics.get("continue_action_url") or "").strip()
+        if continue_url:
+            action_url = continue_url
+        else:
+            try:
+                from suite_deep_links import build_resume_action_url
 
-            action_url = build_resume_action_url(
-                app,
-                resume_key=resume_key,
-                page=page,
-                metrics=metrics,
-            )
-        except Exception:
-            pass
+                action_url = build_resume_action_url(
+                    app,
+                    resume_key=resume_key,
+                    page=page,
+                    metrics=metrics,
+                )
+            except Exception:
+                pass
     if _record_via_cloud(
         app,
         event,

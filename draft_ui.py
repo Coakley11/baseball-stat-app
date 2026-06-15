@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from draft_actions import can_draft_player, draft_action_context, draft_player
+from draft_actions import can_draft_player, draft_action_context, draft_button_diagnostics, draft_player
 
 
 def draft_disabled_hint(reason: str) -> str:
@@ -194,3 +194,21 @@ def render_live_draft_queue_panel(st: Any, session: dict[str, Any]) -> bool:
     if len(queue) > 20:
         st.caption(f"+{len(queue) - 20} more in queue")
     return rerun
+
+
+def render_active_draft_ownership_dev_panel(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    player_name: str = "",
+    developer_mode: bool = False,
+) -> None:
+    """Sidebar Dev Mode panel for active draft source and button gating."""
+    if not developer_mode:
+        return
+    diag = draft_button_diagnostics(session, player_name)
+    with st.sidebar.expander("Active draft ownership", expanded=True):
+        for key, val in diag.items():
+            if val is None or val == "":
+                continue
+            st.text(f"{key}: {val}")

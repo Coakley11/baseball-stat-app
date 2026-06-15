@@ -9464,6 +9464,50 @@ def live_draft_start(room):
     live_draft_reset_timer(room)
 
 
+def _find_live_pool_row(available, player_name: str):
+    if available is None or getattr(available, "empty", True):
+        return None
+    col = "fullName" if "fullName" in available.columns else "Player"
+    target = str(player_name or "").strip().lower()
+    for _, row in available.iterrows():
+        full = str(row.get(col) or "").strip()
+        if full.lower() == target or full == player_name:
+            return row
+    return None
+
+
+def replay_simulator_board_on_live_room(room, board_df) -> dict:
+    """Promote filled simulator board picks onto a fresh live draft room."""
+    trace = {"ok": True, "applied": 0, "skipped": 0, "error": ""}
+    if board_df is None or getattr(board_df, "empty", True) or "Player" not in board_df.columns:
+        return trace
+    work = board_df.copy()
+    if "Pick" in work.columns:
+        work = work.sort_values("Pick", kind="stable")
+    for _, row in work.iterrows():
+        player = str(row.get("Player") or "").strip()
+        if not player:
+            continue
+        slot = live_draft_current_slot(room)
+        if slot is None:
+            trace["error"] = "Live draft completed while replaying simulator picks."
+            trace["ok"] = False
+            break
+        available = live_draft_get_available(room)
+        match = _find_live_pool_row(available, player)
+        if match is None:
+            trace["ok"] = False
+            trace["error"] = f"Could not find {player} in the live draft pool."
+            break
+        ok, msg = live_draft_make_pick(room, match.to_dict(), verdict="Promoted from simulator")
+        if not ok:
+            trace["ok"] = False
+            trace["error"] = msg
+            break
+        trace["applied"] += 1
+    return trace
+
+
 def live_draft_make_pick(room, player_row, verdict="Manual pick"):
     slot = live_draft_current_slot(room)
     if slot is None:
@@ -10902,15 +10946,23 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
 
     try:
         from draft_actions import draft_action_context
-        from draft_ui import render_draft_button
+        from draft_ui import render_active_draft_ownership_dev_panel, render_draft_button
 
         draft_ctx = draft_action_context(st.session_state)
+        render_active_draft_ownership_dev_panel(
+            st,
+            st.session_state,
+            player_name=str(dq[0]).strip() if dq else "",
+            developer_mode=developer_mode_enabled(),
+        )
     except Exception:
         draft_ctx = {}
         render_draft_button = None
 
     st.sidebar.divider()
     st.sidebar.markdown("### Draft from lists")
+    if draft_ctx.get("active_draft_source"):
+        st.sidebar.caption(f"Active draft source: **{draft_ctx['active_draft_source']}**")
     if draft_ctx.get("is_your_pick") and draft_ctx.get("current_pick"):
         st.sidebar.caption(
             f"Draft buttons are active — **Pick {draft_ctx['current_pick']}** is yours."
@@ -16752,6 +16804,12 @@ if active_page == "Live Draft Room":
             reset_live = st.button("Reset Draft Room", key="live_draft_reset_btn")
 
         if reset_live:
+            try:
+                from draft_room_state import delete_live_draft_only
+
+                delete_live_draft_only(st.session_state)
+            except Exception:
+                pass
             _persist_live_draft_room(None, reason="reset_draft")
 
         if start_live:
@@ -16767,6 +16825,28 @@ if active_page == "Live Draft Room":
                     ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
                     ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
                 )
+            try:
+                from draft_room_state import (
+                    get_canonical_draft_board,
+                    simulator_teams_from_board,
+                    table_pick_count,
+                )
+
+                sim_board = get_canonical_draft_board(st.session_state)
+                sim_teams = simulator_teams_from_board(sim_board)
+                sim_pick_count = table_pick_count(sim_board)
+            except Exception:
+                sim_board = None
+                sim_teams = []
+                sim_pick_count = 0
+            if sim_teams:
+                team_names = sim_teams
+                live_num_teams = len(sim_teams)
+            your_team = str(st.session_state.get("room_your_team") or "").strip()
+            if your_team and your_team in team_names:
+                user_team = your_team
+            else:
+                user_team = str(team_names[0]).strip() or default_teams[0]
             total_picks = int(live_num_teams) * int(live_picks_per_team)
             if pool_live.empty:
                 st.error("Could not build a player pool. Check your data files and try again.")
@@ -16787,7 +16867,8 @@ if active_page == "Live Draft Room":
                     "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", False)),
                     "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
                     "teams": [str(t).strip() or default_teams[i] for i, t in enumerate(team_names)],
-                    "user_team": str(team_names[0]).strip() or default_teams[0],
+                    "user_team": user_team,
+                    "your_team": user_team,
                     "slots": {
                         "C": int(slot_c), "1B": int(slot_1b), "2B": int(slot_2b), "3B": int(slot_3b),
                         "SS": int(slot_ss), "OF": int(slot_of), "DH": int(slot_dh), "P": int(slot_p),
@@ -16795,9 +16876,19 @@ if active_page == "Live Draft Room":
                     },
                 }
                 new_room = live_draft_init_room(config, pool_live)
-                live_draft_start(new_room)
-                st.success(f"Live draft started — Room ID **{new_room['draft_room_id']}**")
-                _persist_live_draft_room(new_room, reason="start_draft")
+                promote_ok = True
+                if sim_pick_count > 0 and sim_board is not None:
+                    promote = replay_simulator_board_on_live_room(new_room, sim_board)
+                    promote_ok = bool(promote.get("ok"))
+                    if not promote_ok:
+                        st.error(promote.get("error") or "Could not promote simulator board into live draft.")
+                    elif promote.get("applied"):
+                        st.info(f"Promoted **{promote['applied']}** simulator pick(s) into the live draft.")
+                if promote_ok:
+                    live_draft_start(new_room)
+                    st.session_state["room_your_team"] = user_team
+                    st.success(f"Live draft started — Room ID **{new_room['draft_room_id']}**")
+                    _persist_live_draft_room(new_room, reason="start_draft")
 
     room = st.session_state.get("live_draft_room")
 
@@ -16819,7 +16910,10 @@ if active_page == "Live Draft Room":
                 key="live_draft_my_team",
             )
             cfg["user_team"] = user_team
+            cfg["your_team"] = user_team
             room["config"]["user_team"] = user_team
+            room["config"]["your_team"] = user_team
+            st.session_state["room_your_team"] = user_team
         st.caption(
             f"**{cfg.get('league_name', 'League')}** · Room `{room.get('draft_room_id', '')}` · "
             f"Your team: **{user_team}** · "

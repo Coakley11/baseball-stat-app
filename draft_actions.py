@@ -129,9 +129,9 @@ def _post_draft_side_effects(
 
     if st_obj is not None:
         try:
-            from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, get_active_draft_mode, persist_draft_board_to_storage
+            from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, resolve_active_draft_source, persist_draft_board_to_storage
 
-            if get_active_draft_mode(session) != ACTIVE_DRAFT_MODE_LIVE:
+            if resolve_active_draft_source(session) != ACTIVE_DRAFT_SOURCE_LIVE:
                 persist_draft_board_to_storage(
                     st_obj,
                     session,
@@ -159,31 +159,46 @@ def _post_draft_side_effects(
 
 def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
     """Resolved turn + board context for draft buttons and validation."""
+    try:
+        from draft_room_state import (
+            ACTIVE_DRAFT_MODE_LIVE,
+            ACTIVE_DRAFT_MODE_MANUAL,
+            ACTIVE_DRAFT_SOURCE_LIVE,
+            ACTIVE_DRAFT_SOURCE_SIMULATOR,
+            get_canonical_draft_board,
+            resolve_active_draft_source,
+            table_pick_count,
+        )
+    except ImportError:
+        ACTIVE_DRAFT_MODE_LIVE = "live_draft_room"
+        ACTIVE_DRAFT_MODE_MANUAL = "draft_room_simulator"
+        ACTIVE_DRAFT_SOURCE_LIVE = "live"
+        ACTIVE_DRAFT_SOURCE_SIMULATOR = "simulator"
+
+        def resolve_active_draft_source(_session: dict[str, Any]) -> str:
+            return ACTIVE_DRAFT_SOURCE_SIMULATOR
+
+        def get_canonical_draft_board(_session: dict[str, Any]) -> Any:
+            return _session.get("draft_room_table")
+
+        def table_pick_count(_table: Any) -> int:
+            return 0
+
+    source = resolve_active_draft_source(session)
     ctx: dict[str, Any] = {
-        "active_mode": "draft_room_simulator",
+        "active_draft_source": source,
+        "active_mode": ACTIVE_DRAFT_MODE_LIVE if source == ACTIVE_DRAFT_SOURCE_LIVE else ACTIVE_DRAFT_MODE_MANUAL,
         "your_team": "",
         "on_clock_team": "",
         "current_pick": None,
         "is_your_pick": False,
         "draft_complete": False,
         "board_full": False,
-        "live_draft_active": False,
+        "live_draft_active": source == ACTIVE_DRAFT_SOURCE_LIVE,
     }
-    try:
-        from draft_room_state import (
-            ACTIVE_DRAFT_MODE_LIVE,
-            get_active_draft_mode,
-            get_canonical_draft_board,
-            table_pick_count,
-        )
-    except ImportError:
-        return ctx
-
-    mode = get_active_draft_mode(session)
-    ctx["active_mode"] = mode
     live_room: dict[str, Any] | None = None
 
-    if mode == ACTIVE_DRAFT_MODE_LIVE:
+    if source == ACTIVE_DRAFT_SOURCE_LIVE:
         try:
             from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
 
@@ -191,7 +206,6 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused"):
                 live_room = room
-                ctx["live_draft_active"] = True
                 try:
                     app = _import_baseball_app()
                     slot_fn = app.live_draft_current_slot
@@ -214,15 +228,15 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
         except ImportError:
             pass
 
-    your_team = _your_team(session, live_room=live_room)
-    ctx["your_team"] = your_team
-
-    if live_room is not None:
+        your_team = _your_team(session, live_room=live_room)
+        ctx["your_team"] = your_team
         ctx["is_your_pick"] = bool(
             your_team and ctx.get("on_clock_team") and your_team == ctx["on_clock_team"]
         )
         return ctx
 
+    your_team = _your_team(session)
+    ctx["your_team"] = your_team
     board = get_canonical_draft_board(session)
     on_clock = _next_on_clock_pick_info(board)
     if on_clock is None:
@@ -236,6 +250,43 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
             your_team and ctx["on_clock_team"] and your_team == ctx["on_clock_team"]
         )
     return ctx
+
+
+def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> dict[str, Any]:
+    """Dev Mode: why draft buttons are enabled/disabled."""
+    ctx = draft_action_context(session)
+    allowed = False
+    reason = ""
+    name = str(player_name or "").strip()
+    if name:
+        allowed, reason = can_draft_player(session, name)
+    else:
+        if ctx.get("draft_complete"):
+            reason = "Draft is complete."
+        elif ctx.get("board_full") and not ctx.get("live_draft_active"):
+            reason = "Board is full."
+        elif not ctx.get("your_team"):
+            reason = "Set your team in Draft Room settings."
+        elif not ctx.get("is_your_pick"):
+            on_clock = ctx.get("on_clock_team") or "another team"
+            pick_n = ctx.get("current_pick")
+            reason = f"Not your pick (Pick {pick_n}: {on_clock})." if pick_n else f"Not your pick ({on_clock})."
+        else:
+            allowed = True
+            reason = ""
+    return {
+        "active_draft_source": ctx.get("active_draft_source"),
+        "active_draft_mode": ctx.get("active_mode"),
+        "your_team": ctx.get("your_team") or None,
+        "on_clock_team": ctx.get("on_clock_team") or None,
+        "current_pick": ctx.get("current_pick"),
+        "is_your_pick": ctx.get("is_your_pick"),
+        "draft_complete": ctx.get("draft_complete"),
+        "board_full": ctx.get("board_full"),
+        "live_draft_active": ctx.get("live_draft_active"),
+        "reason_if_disabled": None if allowed else (reason or "Cannot draft"),
+        "sample_player_allowed": allowed if name else None,
+    }
 
 
 def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, str]:
@@ -505,11 +556,12 @@ def draft_player(
 
     ctx = draft_action_context(session)
     try:
-        from draft_room_state import ACTIVE_DRAFT_MODE_LIVE
+        from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, resolve_active_draft_source
     except ImportError:
-        ACTIVE_DRAFT_MODE_LIVE = "live_draft_room"
+        resolve_active_draft_source = lambda _s: "simulator"  # noqa: E731
+        ACTIVE_DRAFT_SOURCE_LIVE = "live"
 
-    if ctx.get("active_mode") == ACTIVE_DRAFT_MODE_LIVE and ctx.get("live_draft_active"):
+    if resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE:
         result = _draft_live(session, name, source=src)
     else:
         result = _draft_simulator(session, name, source=src)

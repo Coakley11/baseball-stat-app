@@ -37,6 +37,41 @@ DRAFT_ROOM_SETTINGS_KEYS = (
 CANONICAL_DRAFT_META_KEY = "canonical_draft_meta"
 ACTIVE_DRAFT_MODE_LIVE = "live_draft_room"
 ACTIVE_DRAFT_MODE_MANUAL = "draft_room_simulator"
+ACTIVE_DRAFT_SOURCE_LIVE = "live"
+ACTIVE_DRAFT_SOURCE_SIMULATOR = "simulator"
+
+
+def is_live_draft_runtime_active(session: dict[str, Any]) -> bool:
+    """True only when a live draft is in progress or paused — not not_started/complete."""
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+
+        prepare_live_draft_state(session)
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        return isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused")
+    except Exception:
+        return False
+
+
+def resolve_active_draft_source(session: dict[str, Any]) -> str:
+    """Single ownership: live when runtime live draft is active, else simulator."""
+    return ACTIVE_DRAFT_SOURCE_LIVE if is_live_draft_runtime_active(session) else ACTIVE_DRAFT_SOURCE_SIMULATOR
+
+
+def simulator_teams_from_board(board: Any) -> list[str]:
+    """Fantasy team names in snake slot-1 order from a canonical board."""
+    df = coerce_board_table(board)
+    if df.empty or "Team" not in df.columns:
+        return []
+    work = df.sort_values("Pick", kind="stable") if "Pick" in df.columns else df
+    teams: list[str] = []
+    seen: set[str] = set()
+    for team in work["Team"].dropna().astype(str):
+        name = str(team).strip()
+        if name and name not in seen:
+            teams.append(name)
+            seen.add(name)
+    return teams
 
 
 def _utc_now_iso() -> str:
@@ -507,19 +542,18 @@ def get_canonical_draft_meta(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_active_draft_mode(session: dict[str, Any]) -> str:
+    """Runtime ownership wins over stale canonical meta."""
+    source = resolve_active_draft_source(session)
+    mode = ACTIVE_DRAFT_MODE_LIVE if source == ACTIVE_DRAFT_SOURCE_LIVE else ACTIVE_DRAFT_MODE_MANUAL
     meta = get_canonical_draft_meta(session)
-    mode = str(meta.get("active_mode") or "").strip()
-    if mode in (ACTIVE_DRAFT_MODE_LIVE, ACTIVE_DRAFT_MODE_MANUAL):
-        return mode
-    try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY
-
-        room = session.get(LIVE_DRAFT_ROOM_KEY)
-        if isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused"):
-            return ACTIVE_DRAFT_MODE_LIVE
-    except Exception:
-        pass
-    return ACTIVE_DRAFT_MODE_MANUAL
+    if meta.get("active_mode") != mode:
+        set_canonical_draft_meta(
+            session,
+            mode=mode,
+            source="runtime_ownership_sync",
+            pick_count=table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        )
+    return mode
 
 
 def set_canonical_draft_meta(session: dict[str, Any], *, mode: str, source: str, pick_count: int | None = None) -> None:

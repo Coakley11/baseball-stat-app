@@ -922,12 +922,15 @@ def submit_analytical_question(
     )
     action_url = build_applied_math_resume_url(payload)
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
+    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     if not duplicate:
         metrics = metrics_for_applied_math_resume(payload)
         metrics["source_app"] = normalize_source_app_id(
             str(payload.get("source_app") or ""),
             dict(payload.get("context") or {}),
         )
+        metrics["continue_action_url"] = action_url
+        metrics["target_app"] = "applied_intelligence"
         if metrics["source_app"] == "music":
             summary = f"Asked Music Coach: {payload['question'][:80]}"
         else:
@@ -941,6 +944,10 @@ def submit_analytical_question(
                 page=payload["source_page"],
                 metrics=metrics,
                 summary=summary,
+                resume_key=str(payload.get("resume_key") or ""),
+                resume_title=card_title,
+                resume_subtitle=card_subtitle,
+                action_url=action_url,
             )
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
@@ -959,7 +966,6 @@ def submit_analytical_question(
             **blob_meta,
         }
         session_state["_ami_last_send_diagnostics"] = send_diag
-    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     return {
         **payload,
         "action_url": action_url,

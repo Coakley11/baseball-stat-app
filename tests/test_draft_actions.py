@@ -32,8 +32,21 @@ class TestDraftActionContext(unittest.TestCase):
             "draft_room_board_editor_cache": board.copy(),
         }
         ctx = draft_action_context(session)
+        self.assertEqual(ctx["active_draft_source"], "simulator")
         self.assertEqual(ctx["on_clock_team"], "Team D")
         self.assertEqual(ctx["current_pick"], 5)
+        self.assertTrue(ctx["is_your_pick"])
+
+    def test_stale_live_meta_still_uses_simulator_when_live_not_running(self) -> None:
+        board = _four_team_board(filled_through_pick=4)
+        session = {
+            "room_your_team": "Team D",
+            "draft_room_table": board.copy(),
+            "canonical_draft_meta": {"active_mode": "live_draft_room"},
+            "live_draft_room": {"status": "not_started", "config": {"user_team": "Team A"}},
+        }
+        ctx = draft_action_context(session)
+        self.assertEqual(ctx["active_draft_source"], "simulator")
         self.assertTrue(ctx["is_your_pick"])
 
     def test_simulator_user_not_on_clock(self) -> None:

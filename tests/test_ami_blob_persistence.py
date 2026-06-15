@@ -9,6 +9,28 @@ from suite_analytical_question import submit_analytical_question
 
 
 class TestAmiBlobPersistence(unittest.TestCase):
+    @patch("suite_activity_client.record_activity")
+    @patch("suite_account.remember_saved_item")
+    def test_submit_passes_ami_continue_url_to_activity(self, remember_mock, record_mock) -> None:
+        session: dict = {}
+        with patch("suite_analytical_question._upsert_applied_intelligence_resume"):
+            result = submit_analytical_question(
+                source_app="baseball",
+                source_page="Draft Assistant Simulator",
+                question="Who should I draft next?",
+                context={"current_pick": 8, "available_players": [{"player": "A"}] * 51},
+                session_state=session,
+            )
+        self.assertIn("applied-mathematical-intelligence", str(result.get("action_url") or ""))
+        self.assertIn("suite_ai_question_id", str(result.get("action_url") or ""))
+        record_mock.assert_called_once()
+        kwargs = record_mock.call_args.kwargs
+        self.assertIn("suite_ai_question_id", str(kwargs.get("action_url") or ""))
+        self.assertIn("applied-mathematical-intelligence", str(kwargs.get("action_url") or ""))
+        metrics = kwargs.get("metrics") or {}
+        self.assertEqual(metrics.get("target_app"), "applied_intelligence")
+        self.assertIn("suite_ai_question_id", str(metrics.get("continue_action_url") or ""))
+
     @patch("suite_account.remember_saved_item")
     def test_duplicate_send_still_updates_blob(self, remember_mock) -> None:
         session: dict = {
