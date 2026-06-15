@@ -7,6 +7,7 @@ import unittest
 import pandas as pd
 
 from draft_ami_helpers import (
+    build_player_position_index_from_session,
     compact_fantasy_market_rows,
     compact_recommendation_rows,
     detect_positions_from_question,
@@ -55,6 +56,23 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(detect_positions_from_question("next catcher drafted"), ["C"])
         self.assertIn("SS", detect_positions_from_question("wait on shortstop"))
         self.assertIn("RP", detect_positions_from_question("relief pitcher run"))
+
+    def test_build_player_position_index_from_session(self) -> None:
+        session = {
+            "_ami_draft_snapshot": {
+                "draft_room_board": [
+                    {"player": "Cal Raleigh", "Primary Position": "C"},
+                ],
+                "available_players": [
+                    {"player": "William Contreras", "Primary Position": "C"},
+                    {"player": "Shea Langeliers", "Primary Position": "C"},
+                ],
+            },
+        }
+        index = build_player_position_index_from_session(session)
+        self.assertEqual(index.get("cal raleigh"), "C")
+        self.assertEqual(index.get("william contreras"), "C")
+        self.assertEqual(index.get("shea langeliers"), "C")
 
 
 if __name__ == "__main__":

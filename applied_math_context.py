@@ -327,6 +327,16 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
         pool_diag = dict(ctx.get("player_pool_diagnostics") or {})
         pool_diag["available_players_count"] = len(ctx["available_players"])
         ctx["player_pool_diagnostics"] = pool_diag
+    try:
+        from draft_ami_helpers import build_player_position_index_from_session
+
+        pos_index = build_player_position_index_from_session(session_state)
+        if pos_index:
+            ctx["player_position_index"] = pos_index
+            if isinstance(ctx.get("draft_snapshot"), dict):
+                ctx["draft_snapshot"]["player_position_index"] = pos_index
+    except ImportError:
+        pass
     return diag
 
 

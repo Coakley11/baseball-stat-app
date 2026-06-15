@@ -783,3 +783,68 @@ def draft_ami_guidance(page: str) -> str:
         "queue, top recommendations, roster/team needs, scarcity, and best available. "
         "Never give generic advice — use the structured context only."
     )
+
+
+def _index_row_position(row: Any) -> str:
+    if isinstance(row, dict):
+        for key in ("Primary Position", "position", "pos", "Position"):
+            val = row.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        return ""
+    for key in ("Primary Position", "position", "pos", "Position"):
+        if hasattr(row, "get"):
+            val = row.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+    return ""
+
+
+def build_player_position_index_from_session(session_state: dict[str, Any]) -> dict[str, str]:
+    """Name → position map for drafted and available players (AMI send + position counts)."""
+    index: dict[str, str] = {}
+
+    def _add(name: str, pos: str) -> None:
+        clean = str(name or "").split(" (")[0].strip()
+        pos_val = str(pos or "").strip()
+        if clean and pos_val:
+            index[clean.lower()] = pos_val
+
+    lookup = session_state.get("_ami_undrafted_pool_lookup")
+    if isinstance(lookup, dict):
+        for key, row in lookup.items():
+            if isinstance(row, dict):
+                pos = _index_row_position(row)
+                if pos:
+                    _add(str(key), pos)
+
+    snap = session_state.get("_ami_draft_snapshot")
+    if isinstance(snap, dict):
+        for pool_key in (
+            "draft_room_board",
+            "available_players",
+            "recommended_players",
+            "best_available_players",
+        ):
+            for row in snap.get(pool_key) or []:
+                if isinstance(row, dict):
+                    name = str(row.get("player") or row.get("Player") or "").strip()
+                    pos = _index_row_position(row)
+                    if name and pos:
+                        _add(name, pos)
+
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        board = get_canonical_draft_board(session_state)
+        if board is not None and hasattr(board, "iterrows") and "Player" in board.columns:
+            pos_col = "Primary Position" if "Primary Position" in board.columns else None
+            for _, row in board.iterrows():
+                name = str(row.get("Player") or "").strip()
+                pos = str(row.get(pos_col) or "").strip() if pos_col else ""
+                if name and pos:
+                    _add(name, pos)
+    except Exception:
+        pass
+
+    return index
