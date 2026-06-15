@@ -212,3 +212,40 @@ def render_active_draft_ownership_dev_panel(
             if val is None or val == "":
                 continue
             st.text(f"{key}: {val}")
+
+
+_START_LIVE_DRAFT_TRACE_KEY = "_start_live_draft_trace"
+
+
+def record_start_live_draft_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Merge Start Live Draft handler diagnostics for Dev Mode."""
+    trace = dict(session.get(_START_LIVE_DRAFT_TRACE_KEY) or {})
+    trace.update({k: v for k, v in fields.items() if v is not None})
+    session[_START_LIVE_DRAFT_TRACE_KEY] = trace
+    return trace
+
+
+def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
+    trace = dict(session.get(_START_LIVE_DRAFT_TRACE_KEY) or {})
+    keys = (
+        "start_live_draft_clicked",
+        "start_live_draft_attempted",
+        "start_live_draft_error",
+        "simulator_board_pick_count_before_start",
+        "live_room_created",
+        "replayed_pick_count",
+        "live_draft_status_after_start",
+        "live_user_team_after_start",
+        "active_draft_source_after_start",
+        "current_pick_after_start",
+        "promote_error",
+        "pool_live_count",
+    )
+    with st.expander("Start Live Draft trace (Dev Mode)", expanded=True):
+        for key in keys:
+            val = trace.get(key)
+            st.text(f"{key}: {val if val is not None and val != '' else '—'}")
+        if trace.get("start_live_draft_clicked") and not trace.get("live_room_created"):
+            st.warning("Start Live Draft was clicked but no live room was created — see start_live_draft_error / promote_error.")
