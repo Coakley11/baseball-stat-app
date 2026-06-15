@@ -27,6 +27,27 @@ def account_summary() -> dict[str, str]:
     }
 
 
+def _import_storage():
+    """Cloud-first on Streamlit deploys; optional local suite_storage for dev."""
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        if cloud_storage_enabled():
+            import suite_storage_supabase as storage
+
+            return storage
+    except ImportError:
+        pass
+    try:
+        import suite_storage as storage
+
+        return storage
+    except ImportError:
+        import suite_storage_supabase as storage
+
+        return storage
+
+
 def remember_saved_item(
     app: str,
     item_type: str,
@@ -36,11 +57,7 @@ def remember_saved_item(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a song, player, portfolio, simulation, etc. for this account."""
-    try:
-        import suite_storage as storage
-    except ImportError:
-        import suite_storage_supabase as storage
-
+    storage = _import_storage()
     result = storage.upsert_saved_item(
         app, item_type, item_key, title=title, payload=payload
     )
@@ -51,8 +68,7 @@ def remember_saved_item(
 
 def forget_saved_item(app: str, item_type: str, item_key: str) -> None:
     """Mark saved item invalid — removes it from active dashboard surfaces."""
-    import suite_storage as storage
-
+    storage = _import_storage()
     storage.invalidate_saved_item(app, item_type, item_key)
     storage.invalidate_resume_item(app, item_key)
 
@@ -63,21 +79,18 @@ def load_saved_items(
     item_type: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    import suite_storage as storage
-
+    storage = _import_storage()
     return storage.load_saved_items(app=app, item_type=item_type, limit=limit)
 
 
 def save_settings(app: str, settings: dict[str, Any]) -> None:
     """Per-app settings, or ``_global`` for suite-wide preferences."""
-    import suite_storage as storage
-
+    storage = _import_storage()
     storage.save_user_settings(app, settings)
 
 
 def load_settings(app: str = "_global") -> dict[str, Any]:
-    import suite_storage as storage
-
+    storage = _import_storage()
     return storage.load_user_settings(app)
 
 
@@ -88,8 +101,7 @@ def sync_local_state_to_cloud(app: str, state: dict[str, Any]) -> None:
     """
     if not state:
         return
-    import suite_storage as storage
-
+    storage = _import_storage()
     page = str(state.get("page") or "")
     summary = str(state.get("summary") or state.get("label") or "")
     metrics = {k: v for k, v in state.items() if k not in {"page", "summary", "label"}}

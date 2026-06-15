@@ -539,6 +539,7 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
         return {}
     resume_key = f"ai:question:{qid}"
     search_apps = ["applied_intelligence", "baseball", "investment", "nba", "music"]
+    load_error = ""
     try:
         from suite_account import load_saved_items
 
@@ -556,6 +557,7 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
             return picked
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
+        load_error = str(exc)
     try:
         from suite_storage_supabase import load_active_resume_items
 
@@ -574,7 +576,7 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
                 }
     except Exception:
         pass
-    return {"blob_load_error": "no_blob_context_for_question_id", "question_id": qid}
+    return {"blob_load_error": load_error or "no_blob_context_for_question_id", "question_id": qid}
 
 
 def build_send_identity_diagnostics(session_state: dict[str, Any]) -> dict[str, Any]:
