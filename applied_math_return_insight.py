@@ -398,6 +398,9 @@ def build_return_insight_payload(
         method = str(getattr(result, "math_idea", "") or getattr(result, "problem_type", "") or "").strip()
         model_name = str(getattr(result, "model_name", "") or "").strip()
         math_summary = str(getattr(result, "variables", "") or "").strip()[:400]
+        why_text = str(getattr(result, "why", "") or "").strip()
+        if why_text:
+            math_summary = why_text[:600]
         assumptions = list(getattr(result, "assumptions", []) or [])[:6]
         confidence_pct = getattr(result, "confidence_pct", None)
         computed = getattr(result, "computed", None)
@@ -2008,6 +2011,9 @@ def render_applied_math_insight_panel(st: Any) -> bool:
         if q:
             st.markdown(f"**Question:** *{q}*")
         st.markdown(f"**Conclusion:** {insight.get('conclusion')}")
+        summary = str(insight.get("math_summary") or "").strip()
+        if summary and summary.lower() not in str(insight.get("conclusion") or "").lower():
+            st.markdown(f"**Explanation:** {summary}")
         method = str(insight.get("method") or insight.get("model_name") or "").strip()
         if method:
             st.markdown(f"**{_insight_method_heading(insight)}:** {method}")

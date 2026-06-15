@@ -790,6 +790,22 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _flush_pending_blob_save(session_state: dict[str, Any] | None) -> None:
+    """Run deferred question-context blob save from a prior send."""
+    if not session_state:
+        return
+    pending = session_state.pop("_ami_pending_blob_save", None)
+    if not isinstance(pending, dict):
+        return
+    payload = pending.get("payload")
+    store_apps = pending.get("store_apps")
+    if isinstance(payload, dict):
+        _store_question_context_blob(
+            payload,
+            store_apps=store_apps if isinstance(store_apps, list) else None,
+        )
+
+
 def _flush_pending_resume_upsert(session_state: dict[str, Any] | None) -> None:
     """Run deferred Applied Intelligence resume upsert from a prior send (non-blocking path)."""
     if not session_state:
@@ -956,6 +972,7 @@ def submit_analytical_question(
     quant_area: str = "",
     source_state: dict[str, Any] | None = None,
     session_state: dict[str, Any] | None = None,
+    defer_blob_save: bool = False,
 ) -> dict[str, Any]:
     """Log event on source app and upsert Applied Intelligence resume item."""
     timing: dict[str, Any] = {}
@@ -1029,8 +1046,17 @@ def submit_analytical_question(
                 timing[key] = rec_trace[key]
 
         t_blob = time.perf_counter()
-        blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
-        timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
+        if defer_blob_save and session_state is not None:
+            session_state["_ami_pending_blob_save"] = {
+                "payload": payload,
+                "store_apps": ["applied_intelligence"],
+            }
+            blob_meta = {"blob_updated": False, "blob_save_deferred": True}
+            timing["blob_save_deferred"] = True
+            timing["blob_save_ms"] = 0.0
+        else:
+            blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
+            timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
         if isinstance(blob_meta.get("blob_save_ms_by_app"), dict):
             timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
 
@@ -1177,6 +1203,7 @@ def render_analyze_with_applied_math_sidebar(
     """Always-visible sidebar block: question → Command Center → Applied Intelligence."""
     ss = session_state if session_state is not None else st.session_state
     _flush_pending_resume_upsert(ss)
+    _flush_pending_blob_save(ss)
     page_suffix = _safe_widget_suffix(source_page)
     send_gen = int(ss.get(f"_ami_send_gen_{source_app}_{page_suffix}") or 0)
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
@@ -1208,7 +1235,7 @@ def render_analyze_with_applied_math_sidebar(
             "Question sent to Command Center. Open Command Center to continue with the Music Coach."
             if is_music
             else (
-                "Question sent to Command Center. Open Command Center to continue with Baseball Insight."
+                "Baseball Insight is ready on this page."
                 if is_baseball
                 else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
             )
@@ -1228,8 +1255,13 @@ def render_analyze_with_applied_math_sidebar(
         label_visibility="visible",
     )
 
+    submit_label = (
+        "Get Baseball Insight"
+        if is_baseball
+        else ("Ask the Music Coach" if is_music else "Send to Command Center")
+    )
     if st.sidebar.button(
-        "Send to Command Center",
+        submit_label,
         key=submit_key,
         use_container_width=True,
         type="primary",
@@ -1268,6 +1300,50 @@ def render_analyze_with_applied_math_sidebar(
                 build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
                 build_timing["source_state_builder_skipped"] = "draft_cache_present"
                 ss["_ami_last_send_build_timing"] = build_timing
+            elif skip_source_state:
+                build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
+                build_timing["source_state_builder_skipped"] = "draft_cache_present"
+                ss["_ami_last_send_build_timing"] = build_timing
+
+            instant_solved = False
+            if is_baseball:
+                t_inst = time.perf_counter()
+                try:
+                    from applied_math_return_insight import build_return_insight_payload, stage_pending_insight
+                    from draft_ami_instant_solver import solve_instant_baseball_insight
+
+                    pre_payload = build_question_payload(
+                        source_app=source_app,
+                        source_page=source_page,
+                        question=q,
+                        context=submit_ctx,
+                        context_summary=context_summary,
+                        source_state=submit_source_state,
+                    )
+                    action_url_pre = build_applied_math_resume_url(pre_payload)
+                    solved_pair = solve_instant_baseball_insight(q, submit_ctx)
+                    if solved_pair:
+                        route, solved = solved_pair
+                        insight = build_return_insight_payload(
+                            question=q,
+                            source_app=source_app,
+                            source_page=source_page,
+                            question_id=str(pre_payload.get("question_id") or ""),
+                            route=route,
+                            result=solved,
+                            full_analysis_url=action_url_pre,
+                            context=submit_ctx,
+                            resume_key=str(pre_payload.get("resume_key") or ""),
+                        )
+                        stage_pending_insight(ss, insight)
+                        instant_solved = True
+                except Exception:
+                    log.exception("instant Baseball Insight failed for %s (%s)", source_app, source_page)
+                build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
+                build_timing["instant_insight_ms"] = round((time.perf_counter() - t_inst) * 1000, 1)
+                build_timing["instant_insight_ok"] = instant_solved
+                ss["_ami_last_send_build_timing"] = build_timing
+
             result = submit_analytical_question(
                 source_app=source_app,
                 source_page=source_page,
@@ -1276,6 +1352,7 @@ def render_analyze_with_applied_math_sidebar(
                 context_summary=context_summary,
                 source_state=submit_source_state,
                 session_state=ss,
+                defer_blob_save=is_baseball and instant_solved,
             )
             ss["_last_analytical_question"] = result
             ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
@@ -1292,7 +1369,7 @@ def render_analyze_with_applied_math_sidebar(
                 "Question sent to Command Center. Open Command Center to continue with the Music Coach."
                 if is_music
                 else (
-                    "Question sent to Command Center. Open Command Center to continue with Baseball Insight."
+                    "Baseball Insight is ready on this page — use Open full analysis for the deep dive."
                     if is_baseball
                     else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
                 )
