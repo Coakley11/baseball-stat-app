@@ -306,7 +306,7 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
             ctx["current_pick"] = int(pick)
             snap["current_pick"] = int(pick)
         rnd = proj.get("draft_round")
-        if rnd is not None:
+        if rnd is not None and snap.get("draft_round") is None:
             ctx["draft_round"] = int(rnd)
             snap["draft_round"] = int(rnd)
 
@@ -914,7 +914,11 @@ def cache_draft_assistant_ami_context(
         session_state["_ami_undrafted_pool_lookup"] = pool_lookup
 
     team_count = int(session_state.get("room_team_count") or session_state.get("draft_teams") or 10)
-    draft_round = max(1, (int(current_pick) - 1) // max(team_count, 1) + 1)
+    existing_snap = session_state.get("_ami_draft_snapshot")
+    if isinstance(existing_snap, dict) and existing_snap.get("draft_round") is not None:
+        draft_round = int(existing_snap["draft_round"])
+    else:
+        draft_round = max(1, (int(current_pick) - 1) // max(team_count, 1) + 1)
     draft_proj["draft_round"] = draft_round
 
     session_state["_ami_draft_projection"] = draft_proj

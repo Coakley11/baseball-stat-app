@@ -494,19 +494,38 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
     if slot:
         idx = int(serialized.get("current_pick_index") or 0)
         num_teams = int(cfg.get("num_teams") or len(live_room.get("teams") or []) or 12)
-        out["current_pick"] = int(slot.get("Pick") or idx + 1)
-        out["draft_round"] = (idx // num_teams) + 1 if num_teams else None
+        overall_pick = idx + 1
+        round_from_slot = slot.get("Round")
+        out["current_pick"] = overall_pick
+        if round_from_slot is not None and str(round_from_slot).strip():
+            out["draft_round"] = int(round_from_slot)
+        elif num_teams:
+            out["draft_round"] = (idx // num_teams) + 1
+        out["pick_in_round"] = slot.get("Pick")
         on_clock = str(slot.get("Team") or "")
         out["on_clock_team"] = on_clock
         if user_team:
             out["your_team"] = user_team
             out["my_next_pick"] = live_draft_next_pick_for_team(live_room, user_team)
             roster = (live_room.get("rosters") or {}).get(user_team) or []
-            out["user_roster"] = [
-                str(p.get("fullName") or p.get("Player") or p)[:80]
-                for p in roster[:24]
-                if isinstance(p, dict)
-            ]
+            roster_detail: list[dict[str, str]] = []
+            roster_index: dict[str, str] = {}
+            for p in roster[:24]:
+                if not isinstance(p, dict):
+                    continue
+                name = str(p.get("fullName") or p.get("Player") or "").strip()
+                pos = str(
+                    p.get("Primary Position") or p.get("position") or p.get("pos") or ""
+                ).strip()
+                if name:
+                    roster_detail.append({"player": name, "Primary Position": pos})
+                    if pos:
+                        roster_index[name.lower()] = pos
+            out["user_roster"] = [str(r.get("player") or "")[:80] for r in roster_detail if r.get("player")]
+            if roster_detail:
+                out["user_roster_detail"] = roster_detail
+            if roster_index:
+                out["roster_position_index"] = roster_index
             if on_clock == user_team:
                 out["my_pick_now"] = True
 
@@ -820,6 +839,17 @@ def build_player_position_index_from_session(session_state: dict[str, Any]) -> d
 
     snap = session_state.get("_ami_draft_snapshot")
     if isinstance(snap, dict):
+        roster_index = snap.get("roster_position_index")
+        if isinstance(roster_index, dict):
+            for name, pos in roster_index.items():
+                if name and pos:
+                    _add(str(name), str(pos))
+        for row in snap.get("user_roster_detail") or []:
+            if isinstance(row, dict):
+                name = str(row.get("player") or row.get("Player") or "").strip()
+                pos = _index_row_position(row)
+                if name and pos:
+                    _add(name, pos)
         for pool_key in (
             "draft_room_board",
             "available_players",

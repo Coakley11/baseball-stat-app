@@ -74,6 +74,21 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(index.get("william contreras"), "C")
         self.assertEqual(index.get("shea langeliers"), "C")
 
+    def test_build_player_position_index_from_user_roster_detail(self) -> None:
+        session = {
+            "_ami_draft_snapshot": {
+                "user_roster_detail": [
+                    {"player": "Aaron Judge", "Primary Position": "OF"},
+                    {"player": "Anthony Volpe", "Primary Position": "SS"},
+                    {"player": "Cal Raleigh", "Primary Position": "C"},
+                ],
+            },
+        }
+        index = build_player_position_index_from_session(session)
+        self.assertEqual(index.get("aaron judge"), "OF")
+        self.assertEqual(index.get("anthony volpe"), "SS")
+        self.assertEqual(index.get("cal raleigh"), "C")
+
 
 if __name__ == "__main__":
     unittest.main()
