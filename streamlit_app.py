@@ -473,14 +473,6 @@ try:
         default_reset_baseball_session,
         force_save_baseball_state,
     )
-    from suite_user_persistence import render_reset_controls
-
-    render_reset_controls(
-        st,
-        "baseball",
-        on_reset=default_reset_baseball_session,
-        help_text="Clears saved page, filters, local disk, and cloud session. Lahman data is not deleted.",
-    )
 except Exception:
     pass
 
@@ -509,7 +501,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
+def render_global_app_chrome(active_page: str) -> None:
+    """Single app header + tutorial entry — hidden on focus pages with their own chrome."""
+    if active_page in {"Live Draft Room"}:
+        return
+    st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
@@ -517,8 +513,7 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
-
-app_tutorial.render_tutorial_header_bar()
+    app_tutorial.render_tutorial_header_bar()
 
 def fmt_int(x):
     x = pd.to_numeric(x, errors="coerce")
@@ -12085,6 +12080,18 @@ except Exception:
 
 pp.render_sidebar_toggle(st)
 
+try:
+    from suite_user_persistence import render_reset_controls
+
+    render_reset_controls(
+        st,
+        "baseball",
+        on_reset=default_reset_baseball_session,
+        help_text="Clears saved page, filters, and workspace for this app. Lahman data is not deleted.",
+    )
+except Exception:
+    pass
+
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
@@ -12099,6 +12106,7 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
+render_global_app_chrome(active_page)
 _record_sidebar_nav_trace(
     "after_sidebar_radio",
     rerun_source="sidebar_render",
@@ -12109,7 +12117,7 @@ try:
     from live_draft_state import has_active_live_draft
 
     if has_active_live_draft(st.session_state) and active_page != "Live Draft Room":
-        st.sidebar.info("Live draft in progress — picks are saved to cloud.")
+        st.sidebar.info("Live draft in progress — your picks are saved automatically.")
         if st.sidebar.button("Resume Live Draft", key="resume_live_draft_sidebar"):
             st.session_state["active_page"] = "Live Draft Room"
             st.session_state["main_sidebar_page"] = "Live Draft Room"
@@ -16632,9 +16640,8 @@ if active_page == "Draft Simulation Test Mode":
 if active_page == "Live Draft Room":
     render_section_header(
         "📡 Live Draft Room",
-        "Configure and run a live snake draft in this session — manual picks, timers, auto-pick rules, exports, and analysis handoff."
+        "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft."
     )
-    render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     from live_draft_state import prepare_live_draft_state, render_live_draft_save_diagnostics
 
@@ -16648,63 +16655,53 @@ if active_page == "Live Draft Room":
         )
         render_live_draft_save_diagnostics(st)
         render_start_live_draft_dev_panel(st, st.session_state, developer_mode=True)
-    st.markdown(
-        """
-        <div class="section-card">
-            <div class="section-title">Live Fantasy Draft</div>
-            <div class="small-note">
-                Draft board, picks, pool, and settings persist to disk and cloud — reopen after refresh or on another device.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     if "live_draft_room" not in st.session_state:
         st.session_state["live_draft_room"] = None
     room = st.session_state.get("live_draft_room")
     if room and isinstance(room, dict) and room.get("status") in ("in_progress", "paused"):
-        sc1, sc2 = st.columns(2)
-        with sc1:
-            if st.button("Save draft now", key="live_draft_manual_save_btn", help="Force-save via normal autosave path."):
-                from live_draft_state import commit_live_draft_room
+        if st.button("Save Draft", key="live_draft_manual_save_btn", help="Save your draft now."):
+            from live_draft_state import commit_live_draft_room
 
-                trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
-                if trace.get("last_live_draft_save_success"):
-                    st.success("Draft saved to disk and cloud.")
-                else:
-                    st.error(f"Save failed: {trace.get('last_live_draft_save_error') or trace.get('error') or 'unknown'}")
-        with sc2:
-            if st.button(
-                "Save Draft to Cloud Now",
-                key="live_draft_direct_cloud_btn",
-                help="Write live_draft_state directly to Supabase full_session (isolation test).",
-            ):
-                from live_draft_state import save_live_draft_direct_to_cloud
-
-                trace = save_live_draft_direct_to_cloud(st, st.session_state, room)
-                if trace.get("last_live_draft_save_success"):
-                    st.success(
-                        f"Cloud updated · picks={trace.get('cloud_payload_pick_count')} · "
-                        f"ts={trace.get('cloud_updated_at_after')}"
-                    )
-                else:
-                    st.error(f"Cloud save failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
-        if st.button(
-            "Push Local Draft to Cloud Now",
-            key="live_draft_push_local_cloud_btn",
-            help="Load live draft from local disk file (if newer) and push to Supabase.",
-        ):
-            from live_draft_state import push_local_draft_to_cloud
-
-            trace = push_local_draft_to_cloud(st, st.session_state, room)
+            trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
             if trace.get("last_live_draft_save_success"):
-                st.success(
-                    f"Local draft pushed · picks={trace.get('cloud_payload_pick_count')} · "
-                    f"ts={trace.get('cloud_updated_at_after')}"
-                )
+                st.success("Draft saved.")
             else:
-                st.error(f"Push failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
+                st.error(f"Save failed: {trace.get('last_live_draft_save_error') or trace.get('error') or 'unknown'}")
+        if developer_mode_enabled():
+            dev_col1, dev_col2 = st.columns(2)
+            with dev_col1:
+                if st.button(
+                    "Force cloud sync (Dev)",
+                    key="live_draft_direct_cloud_btn",
+                    help="Developer: write live_draft_state directly to Supabase.",
+                ):
+                    from live_draft_state import save_live_draft_direct_to_cloud
+
+                    trace = save_live_draft_direct_to_cloud(st, st.session_state, room)
+                    if trace.get("last_live_draft_save_success"):
+                        st.success(
+                            f"Sync OK · picks={trace.get('cloud_payload_pick_count')} · "
+                            f"ts={trace.get('cloud_updated_at_after')}"
+                        )
+                    else:
+                        st.error(f"Sync failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
+            with dev_col2:
+                if st.button(
+                    "Push local state (Dev)",
+                    key="live_draft_push_local_cloud_btn",
+                    help="Developer: load disk draft (if newer) and push to remote store.",
+                ):
+                    from live_draft_state import push_local_draft_to_cloud
+
+                    trace = push_local_draft_to_cloud(st, st.session_state, room)
+                    if trace.get("last_live_draft_save_success"):
+                        st.success(
+                            f"Pushed · picks={trace.get('cloud_payload_pick_count')} · "
+                            f"ts={trace.get('cloud_updated_at_after')}"
+                        )
+                    else:
+                        st.error(f"Push failed: {trace.get('error') or trace.get('cloud_write_error') or 'unknown'}")
     market_df_live = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 
@@ -16721,24 +16718,22 @@ if active_page == "Live Draft Room":
 
         record_start_live_draft_diagnostics(st.session_state, convert_confirmation_rendered=True)
         _sim_summary = build_simulator_to_live_summary(st.session_state)
+        _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
+        _live_proj_window_options = [3, 4, 5]
         with st.container(border=True):
             st.markdown("#### Convert simulator board to live draft")
-            st.markdown(
-                "**What carries over automatically:** team names, number of teams, snake draft order, "
-                "existing picks, current pick number, draft queue, watchlist, and tracked players."
-            )
-            st.markdown(
-                "**Live-only settings** (choose in the setup form below before confirming): timer per pick, "
-                "projection style, projection window, auto-pick rule, and roster slot counts. "
-                "Simulator scoring format and team names are reused when present."
+            st.markdown("**Step 1 — Simulator summary (imported automatically)**")
+            st.caption(
+                "Teams, snake draft order, existing picks, current pick, queue, watchlist, and tracked players "
+                "carry over from the Draft Room Simulator."
             )
             c1, c2, c3 = st.columns(3)
-            c1.metric("Teams", _sim_summary.get("team_count") or 0)
+            c1.metric("Team count", _sim_summary.get("team_count") or 0)
             c2.metric("Existing picks", _sim_summary.get("pick_count") or 0)
             c3.metric("Current pick", _sim_summary.get("current_pick") or 1)
             team_list = _sim_summary.get("teams") or []
             if team_list:
-                st.markdown(f"**Teams:** {', '.join(str(t) for t in team_list[:12])}")
+                st.markdown(f"**Team names:** {', '.join(str(t) for t in team_list[:12])}")
             st.markdown(
                 f"**Queue:** {_sim_summary.get('queue_count', 0)} · "
                 f"**Watchlist:** {_sim_summary.get('watchlist_count', 0)} · "
@@ -16746,6 +16741,39 @@ if active_page == "Live Draft Room":
             )
             if _sim_summary.get("your_team"):
                 st.markdown(f"**Your team:** {_sim_summary['your_team']}")
+
+            st.markdown("**Step 2 — Live draft settings (required before starting)**")
+            st.caption(
+                "Timer, projection window, and rebalancing style are live-draft-only — they are **not** imported "
+                "from the simulator."
+            )
+            ls1, ls2, ls3 = st.columns(3)
+            with ls1:
+                validate_state_option(
+                    "live_draft_timer",
+                    _live_timer_options,
+                    _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0],
+                )
+                st.selectbox("Timer per pick", _live_timer_options, key="live_draft_timer")
+            with ls2:
+                validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
+                st.selectbox("Projection window (years)", _live_proj_window_options, key="live_draft_proj_window")
+            with ls3:
+                validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+                st.selectbox(
+                    "Rebalancing style",
+                    list(PROJECTION_STYLE_OPTIONS),
+                    key="live_draft_proj_style",
+                    help="Conservative, Balanced, or Aggressive projection emphasis for live recommendations.",
+                )
+            validate_state_option(
+                "live_draft_auto_rule",
+                LIVE_DRAFT_AUTO_RULES,
+                LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0],
+            )
+            st.selectbox("Auto-pick rule (when timer expires)", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule")
+
+            st.markdown("**Not imported from simulator:** timer, projection window, rebalancing style, auto-pick rule.")
             confirm_col, cancel_col = st.columns(2)
             with confirm_col:
                 if st.button("Start Live Draft", type="primary", key="live_draft_confirm_sim_start"):
@@ -16760,7 +16788,8 @@ if active_page == "Live Draft Room":
                 if st.button("Cancel", key="live_draft_confirm_sim_cancel"):
                     st.session_state.pop("_simulator_to_live_show_confirm", None)
 
-    with st.expander("Draft Setup / Configuration", expanded=room is None or room.get("status") == "not_started"):
+    elif room is None or room.get("status") == "not_started":
+        with st.expander("Draft Setup / Configuration", expanded=True):
         st.subheader("League & Draft Settings")
         lc1, lc2, lc3 = st.columns(3)
         _live_team_options = [4, 8, 10, 12, 14]
@@ -16834,7 +16863,7 @@ if active_page == "Live Draft Room":
                 st.session_state["_start_live_draft_pending"] = True
                 st.session_state.pop("_simulator_to_live_show_confirm", None)
         with b_reset:
-            reset_live = st.button("Reset Draft Room", key="live_draft_reset_btn")
+            reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
 
         if reset_live:
             try:
@@ -16847,10 +16876,9 @@ if active_page == "Live Draft Room":
 
         with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
             st.caption(
-                "Converts your current Draft Room Simulator board into a Live Draft. "
-                "Existing picks, queue, watchlist, and tracked players will be carried forward. "
-                "Use this when you started in the simulator and want a formal live-draft clock — "
-                "not for starting a brand-new live draft from scratch."
+                "Advanced: converts your Draft Room Simulator board into a live draft with a clock. "
+                "Existing picks, queue, watchlist, and tracked players carry over. "
+                "You will choose timer and projection settings before the draft starts."
             )
             if st.button(
                 "Convert Simulator to Live Draft…",
@@ -17058,7 +17086,7 @@ if active_page == "Live Draft Room":
     room = st.session_state.get("live_draft_room")
 
     if room is None:
-        st.info("Configure your league above, then click **Start New Live Draft** (or use **Advanced** to convert a simulator board).")
+        st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
     else:
         _render_live_draft_styles()
         cfg = room.get("config", {})
