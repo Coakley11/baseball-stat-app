@@ -1160,6 +1160,7 @@ def build_submit_context(
     if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
         try:
             from applied_math_context import (
+                attach_draft_team_to_context,
                 attach_question_player_to_context,
                 augment_ami_available_pool_at_send,
                 ensure_draft_assistant_ami_cache_at_send,
@@ -1167,6 +1168,7 @@ def build_submit_context(
             )
 
             attach_question_player_to_context(ctx, str(question).strip(), session_state)
+            attach_draft_team_to_context(ctx, str(question).strip(), session_state)
             if "draft" in low_page:
                 if draft_cached:
                     timing["cache_build_ms"] = 0.0
@@ -1242,30 +1244,35 @@ def render_analyze_with_applied_math_sidebar(
         )
         st.sidebar.success(sent_msg)
 
-    question = st.sidebar.text_area(
-        "Question",
-        value=str(ss.get(question_key) or default_question or "").strip(),
-        placeholder=(
-            music_coach_question_placeholder(source_page)
-            if is_music
-            else "e.g. Is this trend meaningful statistically?"
-        ),
-        height=88,
-        key=question_key,
-        label_visibility="visible",
-    )
+    if question_key not in ss:
+        ss[question_key] = str(default_question or ss.get("_ami_last_typed_question") or "").strip()
 
-    submit_label = (
-        "Get Baseball Insight"
-        if is_baseball
-        else ("Ask the Music Coach" if is_music else "Send to Command Center")
-    )
-    if st.sidebar.button(
-        submit_label,
-        key=submit_key,
-        use_container_width=True,
-        type="primary",
-    ):
+    form_key = f"ami_form_{source_app}_{page_suffix}_{send_gen}"
+    with st.sidebar.form(key=form_key, clear_on_submit=False):
+        question = st.text_area(
+            "Question",
+            placeholder=(
+                music_coach_question_placeholder(source_page)
+                if is_music
+                else "e.g. Is this trend meaningful statistically?"
+            ),
+            height=88,
+            key=question_key,
+            label_visibility="visible",
+        )
+
+        submit_label = (
+            "Get Baseball Insight"
+            if is_baseball
+            else ("Ask the Music Coach" if is_music else "Send to Command Center")
+        )
+        submitted = st.form_submit_button(
+            submit_label,
+            use_container_width=True,
+            type="primary",
+        )
+
+    if submitted:
         q = str(ss.get(question_key) or question or "").strip()
         if not q:
             st.sidebar.warning("Enter a question first.")

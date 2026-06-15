@@ -200,6 +200,7 @@ def build_draft_assistant_ami_cache_from_board_state(
 
     roster_detail: list[dict[str, str]] = []
     roster_index: dict[str, str] = {}
+    player_position_lookup: dict[str, str] = {}
     if not roster_df_auto.empty:
         for _, row in roster_df_auto.iterrows():
             name = str(row.get("fullName") or row.get("Player") or "").strip()
@@ -208,6 +209,11 @@ def build_draft_assistant_ami_cache_from_board_state(
                 roster_detail.append({"player": name, "Primary Position": pos})
                 if pos:
                     roster_index[name.lower()] = pos
+    for _, row in draft_df.iterrows():
+        name = str(row.get("fullName") or row.get("Player") or "").strip()
+        pos = str(row.get("Primary Position") or row.get("position") or "").strip()
+        if name and pos:
+            player_position_lookup[name.lower()] = pos
 
     trace.update(
         {
@@ -227,6 +233,7 @@ def build_draft_assistant_ami_cache_from_board_state(
             "my_roster": ctx["my_roster"],
             "user_roster_detail": roster_detail,
             "roster_position_index": roster_index,
+            "player_position_lookup": player_position_lookup,
             "drafted_total": len(ctx["drafted_or_owned"]),
             "draft_format": draft_cfg["draft_format"],
             "assistant_team": ctx["assistant_team"],

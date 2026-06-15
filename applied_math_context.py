@@ -136,6 +136,53 @@ def attach_question_player_to_context(
         ctx["question_player_row"] = row
 
 
+def attach_draft_team_to_context(
+    ctx: dict[str, Any],
+    question: str,
+    session_state: dict[str, Any],
+) -> None:
+    """When question names a fantasy team, bind that team's roster for review/needs modes."""
+    try:
+        from components.draft_market_question import extract_draft_team_query
+        from draft_ami_helpers import roster_for_team_from_board
+    except ImportError:
+        return
+
+    my_team = str(
+        session_state.get("draft_assistant_synced_team")
+        or session_state.get("room_your_team")
+        or ctx.get("assistant_team")
+        or ""
+    ).strip()
+    team_names: list[str] = []
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        board = get_canonical_draft_board(session_state)
+        if board is not None and hasattr(board, "columns") and "Team" in board.columns:
+            team_names = sorted(board["Team"].dropna().astype(str).unique().tolist())
+    except Exception:
+        pass
+
+    target = extract_draft_team_query(question, my_team=my_team, team_names=team_names)
+    if not target:
+        return
+
+    names, detail, index = roster_for_team_from_board(session_state, target)
+    if not names:
+        return
+
+    ctx["draft_review_team"] = target
+    ctx["roster"] = names
+    ctx["user_roster"] = names
+    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+    if not isinstance(snap, dict):
+        snap = {}
+    snap["user_roster"] = names
+    snap["user_roster_detail"] = detail
+    snap["roster_position_index"] = index
+    snap["draft_review_team"] = target
+    ctx["draft_snapshot"] = snap
 def augment_ami_available_pool_at_send(
     ctx: dict[str, Any],
     question: str,
@@ -282,13 +329,20 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
             "category_needs",
             "player_pool_diagnostics",
             "user_roster",
-            "user_roster_detail",
-            "roster_position_index",
             "drafted_players",
             "my_next_pick",
         ):
             val = cached_snap.get(key)
             if val is not None and val != "" and val != [] and not snap.get(key):
+                snap[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+        for key in (
+            "user_roster_detail",
+            "roster_position_index",
+            "player_position_lookup",
+            "player_position_index",
+        ):
+            val = cached_snap.get(key)
+            if val:
                 snap[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
 
     def _pool_len(val: Any) -> int:
@@ -348,8 +402,16 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
         pos_index = build_player_position_index_from_session(session_state)
         if pos_index:
             ctx["player_position_index"] = pos_index
+            ctx["roster_position_index"] = {
+                **dict(ctx.get("roster_position_index") or {}),
+                **pos_index,
+            }
             if isinstance(ctx.get("draft_snapshot"), dict):
                 ctx["draft_snapshot"]["player_position_index"] = pos_index
+                ctx["draft_snapshot"]["roster_position_index"] = dict(
+                    ctx["draft_snapshot"].get("roster_position_index") or {}
+                )
+                ctx["draft_snapshot"]["roster_position_index"].update(pos_index)
     except ImportError:
         pass
     return diag
@@ -877,6 +939,7 @@ def cache_draft_assistant_ami_context(
     draft_round: int | None = None,
     user_roster_detail: list[dict[str, str]] | None = None,
     roster_position_index: dict[str, str] | None = None,
+    player_position_lookup: dict[str, str] | None = None,
 ) -> None:
     """Cache top recommendation + canonical draft snapshot for AMI send."""
     try:
@@ -961,6 +1024,9 @@ def cache_draft_assistant_ami_context(
         snap["user_roster_detail"] = list(user_roster_detail)[:24]
     if roster_position_index:
         snap["roster_position_index"] = dict(roster_position_index)
+    if player_position_lookup:
+        snap["player_position_lookup"] = dict(player_position_lookup)
+        session_state["_ami_player_position_lookup"] = dict(player_position_lookup)
     session_state["_ami_draft_snapshot"] = snap
     cache_page_context(
         session_state,

@@ -651,22 +651,45 @@ def _roster_position_detail_for_names(
     session_state: dict[str, Any],
     roster_names: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, str]]:
-    """Resolve roster name → position from pool lookup and cached AMI rows."""
+    """Resolve roster name → position from global lookup, pool, and cached AMI rows."""
     detail: list[dict[str, str]] = []
     index: dict[str, str] = {}
-    lookup = session_state.get("_ami_undrafted_pool_lookup")
+
+    global_lookup: dict[str, str] = {}
+    for src in (
+        session_state.get("_ami_player_position_lookup"),
+        (session_state.get("_ami_draft_snapshot") or {}).get("player_position_lookup"),
+        (session_state.get("_ami_draft_snapshot") or {}).get("roster_position_index"),
+    ):
+        if isinstance(src, dict):
+            global_lookup.update({str(k).lower(): str(v) for k, v in src.items() if k and v})
+
     snap = session_state.get("_ami_draft_snapshot")
+    existing_detail: dict[str, str] = {}
+    if isinstance(snap, dict):
+        for row in snap.get("user_roster_detail") or []:
+            if isinstance(row, dict):
+                name = str(row.get("player") or row.get("Player") or "").strip()
+                pos = _index_row_position(row)
+                if name and pos:
+                    existing_detail[name.lower()] = pos
+
     pool_rows: list[dict[str, Any]] = []
     if isinstance(snap, dict):
         for key in ("available_players", "recommended_players", "best_available_players"):
             for row in snap.get(key) or []:
                 if isinstance(row, dict):
                     pool_rows.append(row)
+    lookup = session_state.get("_ami_undrafted_pool_lookup")
     if isinstance(lookup, dict):
         pool_rows.extend(v for v in lookup.values() if isinstance(v, dict))
 
     def _pos_for_name(name: str) -> str:
         token = name.lower()
+        if token in global_lookup:
+            return global_lookup[token]
+        if token in existing_detail:
+            return existing_detail[token]
         for row in pool_rows:
             row_name = str(row.get("player") or row.get("Player") or row.get("fullName") or "").strip()
             if row_name.lower() == token:
@@ -686,6 +709,36 @@ def _roster_position_detail_for_names(
         if pos:
             index[clean.lower()] = pos
     return detail, index
+
+
+def roster_for_team_from_board(
+    session_state: dict[str, Any],
+    team_name: str,
+) -> tuple[list[str], list[dict[str, str]], dict[str, str]]:
+    """Return roster names, detail rows, and position index for a fantasy team on the board."""
+    try:
+        from draft_room_state import get_canonical_draft_board
+    except ImportError:
+        return [], [], {}
+
+    board = get_canonical_draft_board(session_state)
+    if board.empty or "Player" not in board.columns or "Team" not in board.columns:
+        return [], [], {}
+
+    team = str(team_name or "").strip()
+    if not team:
+        return [], [], {}
+
+    rows = board[board["Team"].astype(str).str.strip() == team]
+    if rows.empty:
+        rows = board[board["Team"].astype(str).str.strip().str.lower() == team.lower()]
+    names = [
+        str(p).strip()
+        for p in rows["Player"].dropna().astype(str).tolist()
+        if str(p).strip()
+    ]
+    detail, index = _roster_position_detail_for_names(session_state, names)
+    return names, detail, index
 
 
 def refresh_draft_ami_metadata_from_board(
@@ -937,6 +990,12 @@ def build_player_position_index_from_session(session_state: dict[str, Any]) -> d
                 pos = _index_row_position(row)
                 if pos:
                     _add(str(key), pos)
+
+    global_lookup = session_state.get("_ami_player_position_lookup")
+    if isinstance(global_lookup, dict):
+        for name, pos in global_lookup.items():
+            if name and pos:
+                _add(str(name), str(pos))
 
     snap = session_state.get("_ami_draft_snapshot")
     if isinstance(snap, dict):

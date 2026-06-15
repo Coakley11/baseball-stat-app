@@ -96,10 +96,22 @@ Legend: **Cloud** = persisted via suite cloud / activity API · **Local** = sess
 
 ---
 
-## Authoritative sources (v12)
+## Authoritative sources (v13)
 
 | Field | Source |
 |-------|--------|
 | `current_pick` | `draft_board_summary_for_team` (simulator) or live `slot` index + 1 |
-| `draft_round` | `summary.current_round` or `slot.Round` — never stale snap preserve |
-| Roster positions | `roster_position_index` from pool + `user_roster_detail` on cache/send |
+| `draft_round` | `summary.current_round` or `slot.Round` — refreshed on every send |
+| Roster positions | `_ami_player_position_lookup` (full pool) + `user_roster_detail` + `roster_position_index` |
+
+## v13 execution status
+
+| Check | Status |
+|-------|--------|
+| Position lookup persisted in cache builder | Done |
+| Metadata refresh uses global position lookup | Done |
+| `player_position_index` force-promoted on send | Done |
+| Timing "at Catcher now or a later round" | Fixed (v8) |
+| Team-specific draft review (`Team 2`) | Fixed (v8) |
+| Sidebar submit via `st.form` (question loss) | Fixed (v13) |
+| Instant insight E2E unit tests | 11 passing |

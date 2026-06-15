@@ -121,6 +121,25 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(meta.get("draft_round"), 4)
         self.assertEqual(session["_ami_draft_snapshot"]["draft_round"], 4)
 
+    def test_roster_position_detail_uses_global_lookup(self) -> None:
+        from draft_ami_helpers import _roster_position_detail_for_names
+
+        session = {
+            "_ami_player_position_lookup": {
+                "aaron judge": "OF",
+                "anthony volpe": "SS",
+                "cal raleigh": "C",
+            },
+        }
+        detail, index = _roster_position_detail_for_names(
+            session,
+            ["Aaron Judge", "Anthony Volpe", "Cal Raleigh"],
+        )
+        self.assertEqual(index.get("aaron judge"), "OF")
+        self.assertEqual(index.get("anthony volpe"), "SS")
+        self.assertEqual(index.get("cal raleigh"), "C")
+        self.assertEqual(detail[0]["Primary Position"], "OF")
+
 
 if __name__ == "__main__":
     unittest.main()
