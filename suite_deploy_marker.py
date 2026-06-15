@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-05-27-start-live-draft-v2"
-GIT_COMMIT_SHORT = "pending"
+GIT_COMMIT_SHORT = "f969db7"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (
