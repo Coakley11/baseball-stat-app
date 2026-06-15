@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-05-27-start-live-draft-v1"
-GIT_COMMIT_SHORT = "61b79a3"
+SUITE_BUILD_LABEL = "2026-05-27-start-live-draft-v2"
+GIT_COMMIT_SHORT = "pending"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (

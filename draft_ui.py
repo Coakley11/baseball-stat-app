@@ -225,6 +225,15 @@ def record_start_live_draft_diagnostics(session: dict[str, Any], **fields: Any) 
     return trace
 
 
+def mark_start_live_draft_clicked(session: dict[str, Any]) -> None:
+    record_start_live_draft_diagnostics(
+        session,
+        start_live_draft_clicked=True,
+        start_live_draft_attempted=True,
+        start_live_draft_error="",
+    )
+
+
 def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     if not developer_mode:
         return
@@ -234,8 +243,10 @@ def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, devel
         "start_live_draft_attempted",
         "start_live_draft_error",
         "simulator_board_pick_count_before_start",
+        "simulator_board_source",
         "live_room_created",
         "replayed_pick_count",
+        "promote_skipped_count",
         "live_draft_status_after_start",
         "live_user_team_after_start",
         "active_draft_source_after_start",
