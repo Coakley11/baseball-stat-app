@@ -348,15 +348,13 @@ def remove_player_from_draft_queue(
 
 
 def draft_player_from_queue(session: dict[str, Any], player_name: str) -> dict[str, Any]:
-    """Add player to canonical board at next open pick; remove from queue."""
-    from draft_room_state import add_player_to_next_open_pick
+    """Draft a queued player on the user's turn (unified draft_player path)."""
+    from draft_actions import draft_player
 
     name = str(player_name or "").strip()
-    result = add_player_to_next_open_pick(session, name)
+    result = draft_player(session, name, source="queue")
     if result.get("ok"):
-        remove_player_from_draft_queue(session, name, reason="drafted_from_queue")
         q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
-        result["queue_after"] = q
         result["message"] = f"Drafted {name} from queue. Next up: {q[0] if q else '—'}."
     return result
 
@@ -365,7 +363,9 @@ def draft_top_queue_player(session: dict[str, Any]) -> dict[str, Any]:
     q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     if not q:
         return {"ok": False, "error": "empty_queue", "message": "Draft queue is empty."}
-    return draft_player_from_queue(session, q[0])
+    from draft_actions import draft_player
+
+    return draft_player(session, q[0], source="queue")
 
 
 def draft_queue_player_at_index(session: dict[str, Any], index: int) -> dict[str, Any]:
@@ -376,7 +376,9 @@ def draft_queue_player_at_index(session: dict[str, Any], index: int) -> dict[str
         return {"ok": False, "error": "bad_index", "message": "Invalid queue index."}
     if idx < 0 or idx >= len(q):
         return {"ok": False, "error": "bad_index", "message": "Queue index out of range."}
-    return draft_player_from_queue(session, q[idx])
+    from draft_actions import draft_player
+
+    return draft_player(session, q[idx], source="queue")
 
 
 def add_player_to_watchlist(session: dict[str, Any], player_name: str) -> tuple[list[str], bool]:

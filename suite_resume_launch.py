@@ -63,7 +63,9 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
     resume = _qp_get(st, "suite_resume")
     page = _qp_get(st, "suite_page")
     ami_insight = _qp_get(st, "suite_ami_insight")
-    if not resume and not page and not ami_insight:
+    ai_qid = _qp_get(st, "suite_ai_question_id")
+    ai_question = _qp_get(st, "suite_ai_question")
+    if not resume and not page and not ami_insight and not ai_qid and not ai_question:
         return False
 
     key = str(app_key or "").strip()

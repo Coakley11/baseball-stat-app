@@ -195,6 +195,7 @@ class TestDraftState(unittest.TestCase):
             [{"Round": 1, "Pick": i + 1, "Team": f"Team {(i % 2) + 1}", "Player": ""} for i in range(8)]
         )
         session: dict = {
+            "room_your_team": "Team 1",
             DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
             DRAFT_ROOM_TABLE_KEY: empty_board,
             DRAFT_QUEUE_KEY: ["Aaron Judge", "Bobby Witt Jr.", "Julio Rodríguez"],

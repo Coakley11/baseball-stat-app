@@ -129,6 +129,26 @@ def _post_draft_side_effects(
 
     if st_obj is not None:
         try:
+            from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, get_active_draft_mode, persist_draft_board_to_storage
+
+            if get_active_draft_mode(session) != ACTIVE_DRAFT_MODE_LIVE:
+                persist_draft_board_to_storage(
+                    st_obj,
+                    session,
+                    session.get("draft_room_table"),
+                    reason=save_reason,
+                )
+        except Exception as exc:
+            log.warning("persist_draft_board_to_storage failed: %s", exc)
+        try:
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, commit_live_draft_room
+
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused"):
+                commit_live_draft_room(st_obj, session, room, reason=save_reason)
+        except Exception as exc:
+            log.warning("commit_live_draft_room failed: %s", exc)
+        try:
             from baseball_persistent_state import force_save_baseball_state
 
             trace["saved"] = bool(force_save_baseball_state(st_obj, reason=save_reason))

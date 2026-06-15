@@ -174,7 +174,7 @@ def _resolve_page(app: str, resume_key: str, page: str, metrics: dict[str, Any])
             return "skills"
         return "simulation"
     if app == "applied_intelligence":
-        return str(metrics.get("page") or "lessons")
+        return str(metrics.get("page") or page or "Solve a Problem")
     return ""
 
 

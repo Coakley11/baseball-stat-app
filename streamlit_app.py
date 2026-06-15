@@ -9808,17 +9808,15 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
     record_workflow_recent_player(display)
 
     if action == "Draft player to next pick":
-        from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, get_active_draft_mode
+        from draft_actions import can_draft_player, draft_player
 
-        if get_active_draft_mode(st.session_state) == ACTIVE_DRAFT_MODE_LIVE:
-            if user_draft_team and not is_users_draft_turn(user_draft_team):
-                return (
-                    "Not your pick on the board right now — use Add to Queue, or log picks via the board.",
-                    None,
-                )
-        if not teams and not _player_draft_action_available():
+        allowed, reason = can_draft_player(st.session_state, sp)
+        if not allowed:
+            return reason, None
+        if not _player_draft_action_available():
             return "Open Draft Room Simulator first to set up teams.", None
-        return add_player_to_next_draft_room_pick(sp, team_name), None
+        result = draft_player(st.session_state, sp, source="draft_room", st_obj=st)
+        return str(result.get("message") or result.get("error") or "Could not draft."), None
 
     if action == "Queue player":
         q = st.session_state.get("draft_queue", [])
@@ -10313,7 +10311,13 @@ def player_quick_actions_popover(
         )
         sfx = _qa_key_suffix(f"{key}|{pick}")
         on_my = player_on_fantasy_team(pick, team_for_draft) if team_for_draft else False
-        can_draft = _player_draft_action_available()
+        try:
+            from draft_actions import can_draft_player
+
+            draft_ok, _ = can_draft_player(st.session_state, pick)
+        except Exception:
+            draft_ok = False
+        can_draft = _player_draft_action_available() and draft_ok
 
         _render_player_action_button_row(
             pick,
@@ -10405,6 +10409,12 @@ def render_contextual_player_actions(
     ownership_known = bool(team_name) and bool(teams)
     on_my_team = player_on_fantasy_team(player_name, team_name) if ownership_known else False
     label_map = label_map or get_clean_player_label_map_yearly(source_df)
+    try:
+        from draft_actions import can_draft_player
+
+        draft_ok, _ = can_draft_player(st.session_state, player_name)
+    except Exception:
+        draft_ok = False
     act_id = _qa_key_suffix(f"{key_prefix}|{player_name}")
     with st.popover(f"Actions: {player_name}"):
         st.caption("Active/recent player" if active_recent else "Historical player")
@@ -10418,10 +10428,10 @@ def render_contextual_player_actions(
             show_comparison=True,
             show_trend=True,
             show_watchlist=True,
-            show_draft=active_available and is_users_draft_turn(team_name),
+            show_draft=active_available and draft_ok,
             show_trade=ownership_known and active_recent,
             on_my_team=on_my_team,
-            can_draft=active_available and is_users_draft_turn(team_name),
+            can_draft=active_available and draft_ok,
         )
 
         if not active_recent:
@@ -10523,15 +10533,19 @@ def clickable_player_draft_table(df, player_col="Player", team_name=None, key="c
             else:
                 st.caption(f"Drafting to: {team_name}")
 
-            if is_users_draft_turn(team_name):
-                if st.button(f"Draft {selected_player} To Next Pick", key=f"{key}_draft_button"):
-                    msg = add_player_to_next_draft_room_pick(selected_player, team_name)
-                    st.success(msg)
-            else:
-                st.info(
-                    "It is not your team's turn on the Draft Room board — **Draft to next pick** is disabled. "
-                    "Use Player Actions below to **Add to Watchlist**, **Add to Draft Queue**, **Send to Comparison**, **Send to Trend**, or **Simulate Draft Pick**."
-                )
+            from draft_ui import render_draft_button
+
+            if render_draft_button(
+                st,
+                st.session_state,
+                selected_player,
+                source="draft_room",
+                key_suffix=f"{key}_sel",
+                label=f"Draft {selected_player}",
+                button_type="primary",
+                flash_key="workflow_sidebar_flash",
+            ):
+                st.rerun()
         else:
             st.info("Open Draft Room Simulator first so the app knows the fantasy teams.")
     return selected_player
@@ -10545,76 +10559,36 @@ def get_draft_room_team_options():
 
 
 def add_player_to_next_draft_room_pick(player_name, team_name=None):
-    """Add player to next open pick on the canonical board (team optional)."""
-    from draft_room_state import add_player_to_next_open_pick, persist_draft_board_to_storage
+    """Draft player on the user's turn (legacy name — routes through draft_player)."""
+    from draft_actions import draft_player
 
-    result = add_player_to_next_open_pick(st.session_state, player_name)
-    if result.get("ok"):
-        _auto_remove_drafted_from_queue()
-        try:
-            persist_draft_board_to_storage(
-                st,
-                st.session_state,
-                st.session_state.get("draft_room_table"),
-                reason="simulator_add_player",
-            )
-        except Exception:
-            try:
-                from baseball_persistent_state import force_save_baseball_state
-
-                force_save_baseball_state(st, reason="draft_pick")
-            except Exception:
-                pass
+    result = draft_player(st.session_state, player_name, source="draft_room", st_obj=st)
     return str(result.get("message") or result.get("error") or "Could not add player.")
 
 
 def draft_top_queue_player():
-    """Draft #1 queue player onto the canonical board."""
-    from draft_state import draft_top_queue_player as _draft_top
-    from draft_room_state import persist_draft_board_to_storage
+    """Draft #1 queue player (legacy wrapper — routes through draft_player)."""
+    q = st.session_state.get("draft_queue") or []
+    if not q:
+        return "Draft queue is empty."
+    from draft_actions import draft_player
 
-    result = _draft_top(st.session_state)
-    if result.get("ok"):
-        try:
-            persist_draft_board_to_storage(
-                st,
-                st.session_state,
-                st.session_state.get("draft_room_table"),
-                reason="draft_queue_pick",
-            )
-        except Exception:
-            try:
-                from baseball_persistent_state import force_save_baseball_state
-
-                force_save_baseball_state(st, reason="draft_queue_pick")
-            except Exception:
-                pass
-        return str(result.get("message") or "Drafted from queue.")
+    result = draft_player(st.session_state, str(q[0]).strip(), source="queue", st_obj=st)
     return str(result.get("message") or result.get("error") or "Could not draft from queue.")
 
 
 def draft_queue_player_at_index(idx: int):
-    """Draft a specific queue player onto the canonical board."""
-    from draft_state import draft_queue_player_at_index as _draft_at
-    from draft_room_state import persist_draft_board_to_storage
+    """Draft a specific queue player (legacy wrapper — routes through draft_player)."""
+    q = st.session_state.get("draft_queue") or []
+    try:
+        index = int(idx)
+    except (TypeError, ValueError):
+        return "Invalid queue index."
+    if index < 0 or index >= len(q):
+        return "Queue index out of range."
+    from draft_actions import draft_player
 
-    result = _draft_at(st.session_state, idx)
-    if result.get("ok"):
-        try:
-            persist_draft_board_to_storage(
-                st,
-                st.session_state,
-                st.session_state.get("draft_room_table"),
-                reason="draft_queue_pick",
-            )
-        except Exception:
-            try:
-                from baseball_persistent_state import force_save_baseball_state
-
-                force_save_baseball_state(st, reason="draft_queue_pick")
-            except Exception:
-                pass
-        return str(result.get("message") or "Drafted from queue.")
+    result = draft_player(st.session_state, str(q[index]).strip(), source="queue", st_obj=st)
     return str(result.get("message") or result.get("error") or "Could not draft from queue.")
 
 
@@ -10927,18 +10901,31 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
         transfer_batches = []
 
     try:
-        from draft_room_state import get_active_draft_mode, ACTIVE_DRAFT_MODE_LIVE
+        from draft_actions import draft_action_context
+        from draft_ui import render_draft_button
 
-        live_draft_active = get_active_draft_mode(st.session_state) == ACTIVE_DRAFT_MODE_LIVE
+        draft_ctx = draft_action_context(st.session_state)
     except Exception:
-        live_draft_active = False
+        draft_ctx = {}
+        render_draft_button = None
 
     st.sidebar.divider()
     st.sidebar.markdown("### Draft from lists")
-    st.sidebar.caption(
-        "Scroll the sidebar — these buttons draft to the **next open pick** on the canonical board "
-        "(visible on every page)."
-    )
+    if draft_ctx.get("is_your_pick") and draft_ctx.get("current_pick"):
+        st.sidebar.caption(
+            f"Draft buttons are active — **Pick {draft_ctx['current_pick']}** is yours."
+        )
+    elif draft_ctx.get("on_clock_team"):
+        pick_n = draft_ctx.get("current_pick")
+        clock = draft_ctx["on_clock_team"]
+        if pick_n:
+            st.sidebar.caption(f"On the clock: Pick {pick_n} ({clock}). Draft buttons show **Not your pick** until your turn.")
+        else:
+            st.sidebar.caption(f"On the clock: {clock}. Draft buttons show **Not your pick** until your turn.")
+    else:
+        st.sidebar.caption(
+            "Draft from queue, watchlist, or tracked players when it is **your pick** on the board."
+        )
 
     st.sidebar.markdown("**Draft queue**")
     if not dq:
@@ -10946,21 +10933,31 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     else:
         top_name = str(dq[0]).strip()
         top_label = top_name[:36] + ("…" if len(top_name) > 36 else "")
-        if st.sidebar.button(
-            f"Draft top: {top_label}",
-            key="sidebar_draft_top_queue_player",
-            use_container_width=True,
-            type="primary",
+        if render_draft_button and render_draft_button(
+            st,
+            st.session_state,
+            top_name,
+            source="queue",
+            key_suffix="top",
+            use_sidebar=True,
+            label=f"Draft top: {top_label}",
+            button_type="primary",
         ):
-            st.session_state["workflow_sidebar_flash"] = draft_top_queue_player()
             st.rerun()
         for idx, pname in enumerate(dq[:12]):
             label = str(pname).strip()
             c_rank, c_name, c_draft = st.sidebar.columns([0.12, 0.58, 0.30])
             c_rank.caption(f"{idx + 1}.")
             c_name.caption(label[:36] + ("…" if len(label) > 36 else ""))
-            if c_draft.button("Draft", key=f"sidebar_queue_draft_{idx}", use_container_width=True):
-                st.session_state["workflow_sidebar_flash"] = draft_queue_player_at_index(idx)
+            if render_draft_button and render_draft_button(
+                st,
+                st.session_state,
+                label,
+                source="queue",
+                key_suffix=f"q_{idx}",
+                column=c_draft,
+                show_disabled_reason=idx == 0,
+            ):
                 st.rerun()
         if len(dq) > 12:
             st.sidebar.caption(f"+{len(dq) - 12} more in queue")
@@ -10976,8 +10973,14 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             label = str(pname).strip()
             w_name, w_draft = st.sidebar.columns([0.68, 0.32])
             w_name.caption(label[:38] + ("…" if len(label) > 38 else ""))
-            if w_draft.button("Draft", key=f"sidebar_watch_draft_{idx}", use_container_width=True):
-                st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+            if render_draft_button and render_draft_button(
+                st,
+                st.session_state,
+                label,
+                source="watchlist",
+                key_suffix=f"w_{idx}",
+                column=w_draft,
+            ):
                 st.rerun()
         if len(watch) > 12:
             st.sidebar.caption(f"+{len(watch) - 12} more")
@@ -10994,8 +10997,14 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             label = str(pname).strip()
             t_name, t_draft = st.sidebar.columns([0.68, 0.32])
             t_name.caption("• " + label[:36] + ("…" if len(label) > 36 else ""))
-            if t_draft.button("Draft", key=f"sidebar_tracked_draft_{idx}", use_container_width=True):
-                st.session_state["workflow_sidebar_flash"] = add_player_to_next_draft_room_pick(label)
+            if render_draft_button and render_draft_button(
+                st,
+                st.session_state,
+                label,
+                source="tracked",
+                key_suffix=f"t_{idx}",
+                column=t_draft,
+            ):
                 st.rerun()
     if pairs:
         st.sidebar.caption("Recent comparisons")
@@ -16862,6 +16871,24 @@ if active_page == "Live Draft Room":
 
         board_col, rec_col = st.columns([1.45, 1.0])
 
+        with board_col:
+            from draft_ui import render_live_draft_queue_panel
+
+            if render_live_draft_queue_panel(st, st.session_state):
+                st.rerun()
+            st.subheader("Draft Board")
+            board_df = live_draft_build_board_df(room)
+            if board_df.empty:
+                st.caption("No picks yet.")
+            else:
+                render_output_table(
+                    format_draft_lab_table(clean_ui_columns(board_df)),
+                    key="live_draft_board",
+                    file_name="live_draft_board.csv",
+                    display_rows=80,
+                    style_cols=["Fantasy Edge", "Expected Fantasy Value"],
+                )
+
         with rec_col:
             if slot is None:
                 st.success("Draft complete.")
@@ -16943,39 +16970,22 @@ if active_page == "Live Draft Room":
                         ["Expected Fantasy Value", "Model Rank"], ascending=[False, True]
                     )["fullName"].astype(str).tolist()
                     selected_player = st.selectbox("Available Player", player_options, key="live_draft_player_select")
-                    if st.button("Draft Player", type="primary", key="live_draft_manual_pick", disabled=room.get("status") == "paused"):
-                        roster_df = pd.DataFrame(room["rosters"].get(slot["Team"], []))
-                        pick_cfg = dict(cfg)
-                        pick_cfg["current_pick"] = int(slot.get("Pick", 1))
-                        scored_pick, gaps = _live_draft_score_available(
-                            available[available["fullName"].astype(str) == str(selected_player)],
-                            roster_df,
-                            "balanced recommendation",
-                            _live_draft_target_counts(cfg),
-                            config=pick_cfg,
-                        )
-                        row = scored_pick.iloc[0]
-                        verdict = _live_draft_pick_verdict(row, "manual pick", gaps)
-                        ok, msg = live_draft_make_pick(room, row.to_dict(), verdict=verdict)
-                        if ok:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                        _persist_live_draft_room(room, reason="manual_pick")
+                    from draft_ui import render_draft_button
 
-        with board_col:
-            st.subheader("Draft Board")
-            board_df = live_draft_build_board_df(room)
-            if board_df.empty:
-                st.caption("No picks yet.")
-            else:
-                render_output_table(
-                    format_draft_lab_table(clean_ui_columns(board_df)),
-                    key="live_draft_board",
-                    file_name="live_draft_board.csv",
-                    display_rows=80,
-                    style_cols=["Fantasy Edge", "Expected Fantasy Value"],
-                )
+                    paused = room.get("status") == "paused"
+                    if render_draft_button(
+                        st,
+                        st.session_state,
+                        selected_player,
+                        source="live_draft_room",
+                        key_suffix="live_manual",
+                        label="Draft Player",
+                        button_type="primary",
+                        extra_disabled=paused,
+                        extra_disabled_reason="Draft is paused — resume to pick.",
+                    ):
+                        st.rerun()
+
         if room.get("status") != "complete":
             render_contextual_page_nav(
                 "Live Draft Room",

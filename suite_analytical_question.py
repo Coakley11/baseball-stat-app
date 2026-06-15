@@ -743,6 +743,7 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "question": payload.get("question"),
         "question_id": payload.get("question_id"),
+        "page": "Solve a Problem",
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "context_summary": payload.get("context_summary"),
