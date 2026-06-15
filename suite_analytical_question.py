@@ -22,7 +22,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v1"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v2"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -410,7 +410,11 @@ def _parse_context_from_resume_subtitle(subtitle: str) -> dict[str, Any]:
         return {}
 
 
-def _store_question_context_blob(payload: dict[str, Any]) -> dict[str, Any]:
+def _store_question_context_blob(
+    payload: dict[str, Any],
+    *,
+    store_apps: list[str] | None = None,
+) -> dict[str, Any]:
     """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
@@ -440,10 +444,8 @@ def _store_question_context_blob(payload: dict[str, Any]) -> dict[str, Any]:
             payload_hash,
             ctx.get("send_pipeline_diagnostics"),
         )
-    store_apps = ["applied_intelligence"]
-    src_app = str(payload.get("source_app") or "").strip().lower()
-    if src_app and src_app not in store_apps:
-        store_apps.append(src_app)
+    if store_apps is None:
+        store_apps = ["applied_intelligence"]
     store_results: list[dict[str, Any]] = []
     blob_save_ms_by_app: dict[str, float] = {}
     try:
@@ -572,7 +574,7 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
                 }
     except Exception:
         pass
-    return {}
+    return {"blob_load_error": "no_blob_context_for_question_id", "question_id": qid}
 
 
 def build_send_identity_diagnostics(session_state: dict[str, Any]) -> dict[str, Any]:
@@ -752,14 +754,13 @@ def metrics_for_activity_record(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "question": payload.get("question"),
         "question_id": payload.get("question_id"),
+        "resume_key": payload.get("resume_key"),
         "page": "Solve a Problem",
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "context_summary": payload.get("context_summary"),
         "quant_area": payload.get("quant_area"),
         "dedupe_fingerprint": payload.get("question_id"),
-        "saved_item_type": _CONTEXT_ITEM_TYPE,
-        "saved_item_key": payload.get("question_id"),
         "cache_build_action": diag.get("cache_build_action"),
         "current_pick": ctx.get("current_pick"),
         "available_players_count": len(avail) if isinstance(avail, list) else None,
@@ -966,16 +967,10 @@ def submit_analytical_question(
     blob_meta: dict[str, Any] = {}
     if duplicate:
         t_blob = time.perf_counter()
-        blob_meta = _store_question_context_blob(payload)
+        blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
         timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
         timing["duplicate_send"] = True
     else:
-        t_blob = time.perf_counter()
-        blob_meta = _store_question_context_blob(payload)
-        timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
-        if isinstance(blob_meta.get("blob_save_ms_by_app"), dict):
-            timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
-
         metrics = metrics_for_activity_record(payload)
         metrics["source_app"] = normalize_source_app_id(
             str(payload.get("source_app") or ""),
@@ -1005,6 +1000,12 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
         timing["record_activity_ms"] = round((time.perf_counter() - t_rec) * 1000, 1)
+
+        t_blob = time.perf_counter()
+        blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
+        timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
+        if isinstance(blob_meta.get("blob_save_ms_by_app"), dict):
+            timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
 
         if blob_meta.get("blob_updated"):
             t_resume = time.perf_counter()

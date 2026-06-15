@@ -12221,9 +12221,9 @@ except Exception:
 
 render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
 
-# Drop snapshotted button/file_uploader widget keys (never restore into session_state).
+# Drop restored file_uploader widget keys only (restoring them crashes Streamlit).
 for _ephemeral_key in list(st.session_state.keys()):
-    if pg_state._is_ephemeral_widget_key(_ephemeral_key) or pg_state._is_file_uploader_widget_key(_ephemeral_key):
+    if pg_state._is_file_uploader_widget_key(_ephemeral_key):
         st.session_state.pop(_ephemeral_key, None)
 
 if not pp.is_screenshot_mode(st):
@@ -16715,6 +16715,51 @@ if active_page == "Live Draft Room":
     st.session_state.setdefault("_start_live_draft_pending", False)
     st.session_state.setdefault("_simulator_to_live_show_confirm", False)
 
+    if st.session_state.get("_simulator_to_live_show_confirm"):
+        from draft_live_start import build_simulator_to_live_summary
+        from draft_ui import record_start_live_draft_diagnostics
+
+        record_start_live_draft_diagnostics(st.session_state, convert_confirmation_rendered=True)
+        _sim_summary = build_simulator_to_live_summary(st.session_state)
+        with st.container(border=True):
+            st.markdown("#### Convert simulator board to live draft")
+            st.markdown(
+                "**What carries over automatically:** team names, number of teams, snake draft order, "
+                "existing picks, current pick number, draft queue, watchlist, and tracked players."
+            )
+            st.markdown(
+                "**Live-only settings** (choose in the setup form below before confirming): timer per pick, "
+                "projection style, projection window, auto-pick rule, and roster slot counts. "
+                "Simulator scoring format and team names are reused when present."
+            )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Teams", _sim_summary.get("team_count") or 0)
+            c2.metric("Existing picks", _sim_summary.get("pick_count") or 0)
+            c3.metric("Current pick", _sim_summary.get("current_pick") or 1)
+            team_list = _sim_summary.get("teams") or []
+            if team_list:
+                st.markdown(f"**Teams:** {', '.join(str(t) for t in team_list[:12])}")
+            st.markdown(
+                f"**Queue:** {_sim_summary.get('queue_count', 0)} · "
+                f"**Watchlist:** {_sim_summary.get('watchlist_count', 0)} · "
+                f"**Tracked players:** {_sim_summary.get('tracked_count', 0)}"
+            )
+            if _sim_summary.get("your_team"):
+                st.markdown(f"**Your team:** {_sim_summary['your_team']}")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("Start Live Draft", type="primary", key="live_draft_confirm_sim_start"):
+                    from draft_ui import mark_start_live_draft_clicked
+
+                    mark_start_live_draft_clicked(st.session_state)
+                    record_start_live_draft_diagnostics(st.session_state, confirm_convert_clicked=True)
+                    st.session_state["_start_live_draft_mode"] = "simulator"
+                    st.session_state["_start_live_draft_pending"] = True
+                    st.session_state.pop("_simulator_to_live_show_confirm", None)
+            with cancel_col:
+                if st.button("Cancel", key="live_draft_confirm_sim_cancel"):
+                    st.session_state.pop("_simulator_to_live_show_confirm", None)
+
     with st.expander("Draft Setup / Configuration", expanded=room is None or room.get("status") == "not_started"):
         st.subheader("League & Draft Settings")
         lc1, lc2, lc3 = st.columns(3)
@@ -16812,48 +16857,10 @@ if active_page == "Live Draft Room":
                 key="live_draft_convert_sim_btn",
                 help="Review simulator state and confirm before starting the live draft clock.",
             ):
+                from draft_ui import record_start_live_draft_diagnostics
+
+                record_start_live_draft_diagnostics(st.session_state, convert_simulator_clicked=True)
                 st.session_state["_simulator_to_live_show_confirm"] = True
-
-    if st.session_state.get("_simulator_to_live_show_confirm"):
-        from draft_live_start import build_simulator_to_live_summary
-
-        _sim_summary = build_simulator_to_live_summary(st.session_state)
-        st.markdown("#### Convert simulator board to live draft")
-        st.markdown(
-            "**What carries over automatically:** team names, number of teams, snake draft order, "
-            "existing picks, current pick number, draft queue, watchlist, and tracked players."
-        )
-        st.markdown(
-            "**Live-only settings** (choose in the setup form above before confirming): timer per pick, "
-            "projection style, projection window, auto-pick rule, and roster slot counts. "
-            "Simulator scoring format and team names are reused when present."
-        )
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Teams", _sim_summary.get("team_count") or 0)
-        c2.metric("Existing picks", _sim_summary.get("pick_count") or 0)
-        c3.metric("Current pick", _sim_summary.get("current_pick") or 1)
-        team_list = _sim_summary.get("teams") or []
-        if team_list:
-            st.markdown(f"**Teams:** {', '.join(str(t) for t in team_list[:12])}")
-        st.markdown(
-            f"**Queue:** {_sim_summary.get('queue_count', 0)} · "
-            f"**Watchlist:** {_sim_summary.get('watchlist_count', 0)} · "
-            f"**Tracked players:** {_sim_summary.get('tracked_count', 0)}"
-        )
-        if _sim_summary.get("your_team"):
-            st.markdown(f"**Your team:** {_sim_summary['your_team']}")
-        confirm_col, cancel_col = st.columns(2)
-        with confirm_col:
-            if st.button("Start Live Draft", type="primary", key="live_draft_confirm_sim_start"):
-                from draft_ui import mark_start_live_draft_clicked
-
-                mark_start_live_draft_clicked(st.session_state)
-                st.session_state["_start_live_draft_mode"] = "simulator"
-                st.session_state["_start_live_draft_pending"] = True
-                st.session_state.pop("_simulator_to_live_show_confirm", None)
-        with cancel_col:
-            if st.button("Cancel", key="live_draft_confirm_sim_cancel"):
-                st.session_state.pop("_simulator_to_live_show_confirm", None)
 
     if st.session_state.pop("_start_live_draft_pending", False):
         from draft_live_start import (

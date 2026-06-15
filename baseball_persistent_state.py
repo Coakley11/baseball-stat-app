@@ -767,6 +767,10 @@ def autosave_baseball_state(st: Any) -> None:
 
 
 def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
+    defer = str(st.session_state.pop("_suite_defer_baseball_save_reason", "") or "").strip()
+    if defer.startswith("ami_send"):
+        st.session_state["_suite_last_deferred_save_reason"] = defer
+        return False
     if reason:
         st.session_state["_suite_pending_save_reason"] = reason
     saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)

@@ -30,6 +30,34 @@ class TestAmiBlobPersistence(unittest.TestCase):
         metrics = kwargs.get("metrics") or {}
         self.assertEqual(metrics.get("target_app"), "applied_intelligence")
         self.assertIn("suite_ai_question_id", str(metrics.get("continue_action_url") or ""))
+        self.assertNotIn("saved_item_type", metrics)
+        self.assertTrue(str(metrics.get("resume_key") or "").startswith("ai:question:"))
+
+    @patch("suite_activity_client.record_activity")
+    @patch("suite_account.remember_saved_item")
+    def test_activity_recorded_before_blob_save(self, remember_mock, record_mock) -> None:
+        order: list[str] = []
+
+        def _record(*_args, **_kwargs):
+            order.append("activity")
+
+        def _blob(*_args, **_kwargs):
+            order.append("blob")
+            return {"ok": True}
+
+        record_mock.side_effect = _record
+        remember_mock.side_effect = _blob
+        with patch("suite_analytical_question._upsert_applied_intelligence_resume"):
+            submit_analytical_question(
+                source_app="baseball",
+                source_page="Draft Assistant Simulator",
+                question="Who should I draft next?",
+                context={"current_pick": 8, "available_players": [{"player": "A"}]},
+                session_state={},
+            )
+        self.assertEqual(order[:2], ["activity", "blob"])
+        remember_apps = [call.args[0] for call in remember_mock.call_args_list]
+        self.assertEqual(remember_apps, ["applied_intelligence"])
 
     @patch("suite_account.remember_saved_item")
     def test_duplicate_send_still_updates_blob(self, remember_mock) -> None:

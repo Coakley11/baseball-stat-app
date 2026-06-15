@@ -239,6 +239,9 @@ def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, devel
         return
     trace = dict(session.get(_START_LIVE_DRAFT_TRACE_KEY) or {})
     keys = (
+        "convert_simulator_clicked",
+        "convert_confirmation_rendered",
+        "confirm_convert_clicked",
         "start_live_draft_clicked",
         "start_live_draft_attempted",
         "start_live_draft_error",
