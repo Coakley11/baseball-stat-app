@@ -16,6 +16,7 @@ from draft_ami_helpers import (
     AMI_POOL_FINAL_CAP,
     build_position_representative_available_pool,
     detect_positions_from_question,
+    draft_ami_cache_has_pool,
 )
 from suite_analytical_question import build_submit_context
 
@@ -371,6 +372,26 @@ class TestPositionRepresentativePool(unittest.TestCase):
             self.assertIs(dah._import_baseball_app(), sentinel)
         self.assertEqual(imp.call_args_list[0].args[0], "streamlit_app")
         self.assertEqual(imp.call_args_list[1].args[0], "Streamlit_app")
+
+
+class TestDraftAmiCacheWarmth(unittest.TestCase):
+    def test_sparse_pool_not_treated_as_warm_cache(self) -> None:
+        session = {
+            "_ami_draft_projection": {
+                "available_players": [{"player": f"P{i}"} for i in range(6)],
+                "player_pool_diagnostics": {"player_pool_source": "best_available_slice"},
+            }
+        }
+        self.assertFalse(draft_ami_cache_has_pool(session))
+
+    def test_position_representative_pool_is_warm_cache(self) -> None:
+        session = {
+            "_ami_draft_projection": {
+                "available_players": [{"player": f"P{i}"} for i in range(51)],
+                "player_pool_diagnostics": {"player_pool_source": "position_representative_v1"},
+            }
+        }
+        self.assertTrue(draft_ami_cache_has_pool(session))
 
 
 if __name__ == "__main__":

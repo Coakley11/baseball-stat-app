@@ -967,6 +967,31 @@ def paste_players_to_board(session: dict[str, Any], text: str) -> dict[str, Any]
     return result
 
 
+def board_team_names_match(table: Any, expected_teams: list[str]) -> bool:
+    """True when board Team column matches the configured team name list."""
+    if table is None or getattr(table, "empty", True):
+        return not expected_teams
+    if "Team" not in getattr(table, "columns", []):
+        return False
+    board_teams = list(
+        dict.fromkeys(str(t).strip() for t in table["Team"].astype(str).tolist() if str(t).strip())
+    )
+    exp = [str(t).strip() for t in expected_teams if str(t).strip()]
+    return board_teams == exp[: len(board_teams)] and len(board_teams) == len(exp)
+
+
+def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
+    """Rebuild snake board from room_team_names / room_rounds (preserves no picks)."""
+    team_lines = str(session.get("room_team_names") or "")
+    teams = [x.strip() for x in team_lines.splitlines() if x.strip()]
+    if not teams:
+        teams = [str(session.get("room_your_team") or "Team 1"), "Team 2"]
+    rounds = int(session.get("room_rounds") or 20)
+    session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
+    table = build_snake_board(teams, rounds=rounds)
+    return apply_programmatic_board_update(session, table, reason="rebuild_board_teams")
+
+
 def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
     """Fresh snake board — Start New Draft."""
     team_lines = str(session.get("room_team_names") or "")
@@ -983,6 +1008,9 @@ def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 
 def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     """Option B: clear practice board only; Live Draft Room record stays if present."""
+    session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
+    session.pop("draft_room_board_editor_cache", None)
+    session.pop("draft_room_board_editor_seed", None)
     out = reset_canonical_draft_board(session)
     set_canonical_draft_meta(
         session,
@@ -1005,6 +1033,17 @@ def delete_live_draft_only(session: dict[str, Any]) -> dict[str, Any]:
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
         trace["cleared_live"] = True
+    pf = session.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get("Live Draft Room")
+        if isinstance(block, dict):
+            block.pop("live_draft_room", None)
+    try:
+        from draft_actions import _clear_ami_draft_cache
+
+        _clear_ami_draft_cache(session)
+    except Exception:
+        pass
     meta = get_canonical_draft_meta(session)
     if meta.get("active_mode") == ACTIVE_DRAFT_MODE_LIVE:
         set_canonical_draft_meta(
@@ -1192,6 +1231,13 @@ def draft_board_summary_for_team(
 
 def render_active_draft_banner(st: Any, session: dict[str, Any]) -> None:
     """Global banner when a draft is active — visible on every page."""
+    try:
+        from live_draft_state import has_active_live_draft
+
+        if has_active_live_draft(session):
+            return
+    except Exception:
+        pass
     status = get_active_draft_status(session)
     if not status.get("active"):
         return

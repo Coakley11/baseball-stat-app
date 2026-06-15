@@ -277,15 +277,22 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
             if val is not None and val != "" and val != [] and not snap.get(key):
                 snap[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
 
+    def _pool_len(val: Any) -> int:
+        return len(val) if isinstance(val, list) else 0
+
     if proj:
         ctx["draft_projection"] = {
             **proj,
             **(ctx.get("draft_projection") if isinstance(ctx.get("draft_projection"), dict) else {}),
         }
-        if proj.get("available_players") and not ctx.get("available_players"):
-            ctx["available_players"] = proj["available_players"]
-        if proj.get("available_players") and not snap.get("available_players"):
-            snap["available_players"] = proj["available_players"]
+        proj_avail = proj.get("available_players")
+        ctx_avail_len = _pool_len(ctx.get("available_players"))
+        proj_avail_len = _pool_len(proj_avail)
+        if isinstance(proj_avail, list) and proj_avail_len >= ctx_avail_len and proj_avail_len > 0:
+            ctx["available_players"] = copy.deepcopy(proj_avail)
+        snap_avail_len = _pool_len(snap.get("available_players"))
+        if isinstance(proj_avail, list) and proj_avail_len >= snap_avail_len and proj_avail_len > 0:
+            snap["available_players"] = copy.deepcopy(proj_avail)
         if proj.get("best_available") and not ctx.get("best_available"):
             ctx["best_available"] = proj["best_available"]
         if proj.get("top_recommendations") and not ctx.get("recommended_players"):
@@ -316,6 +323,10 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
 
     diag = build_draft_send_pipeline_diagnostics(ctx, session_state)
     ctx["send_pipeline_diagnostics"] = diag
+    if isinstance(ctx.get("available_players"), list) and ctx["available_players"]:
+        pool_diag = dict(ctx.get("player_pool_diagnostics") or {})
+        pool_diag["available_players_count"] = len(ctx["available_players"])
+        ctx["player_pool_diagnostics"] = pool_diag
     return diag
 
 

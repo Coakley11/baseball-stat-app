@@ -33,6 +33,26 @@ class TestAmiBlobPersistence(unittest.TestCase):
         self.assertNotIn("saved_item_type", metrics)
         self.assertTrue(str(metrics.get("resume_key") or "").startswith("ai:question:"))
 
+    def test_analytical_question_skips_save_current_state(self) -> None:
+        from suite_storage_supabase import record_activity as cloud_record_activity
+
+        with patch("suite_storage_supabase.append_event") as append_mock, patch(
+            "suite_storage_supabase.save_current_state"
+        ) as save_state_mock, patch("suite_storage_supabase.upsert_resume_item"):
+            cloud_record_activity(
+                "baseball",
+                "analytical_question",
+                page="Draft Assistant Simulator",
+                metrics={"question_id": "q1"},
+                summary="Asked Applied Math: test",
+                resume_key="ai:question:q1",
+                resume_title="Continue",
+                resume_subtitle="test",
+                action_url="http://example.com",
+            )
+        append_mock.assert_called_once()
+        save_state_mock.assert_not_called()
+
     @patch("suite_activity_client.record_activity")
     @patch("suite_account.remember_saved_item")
     def test_activity_recorded_before_blob_save(self, remember_mock, record_mock) -> None:

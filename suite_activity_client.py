@@ -57,6 +57,7 @@ def _record_via_cloud(
     resume_title: str = "",
     resume_subtitle: str = "",
     action_url: str = "",
+    timing_out: dict[str, Any] | None = None,
 ) -> bool:
     global _LAST_CLOUD_ERROR
     _LAST_CLOUD_ERROR = ""
@@ -80,6 +81,7 @@ def _record_via_cloud(
             resume_title=resume_title,
             resume_subtitle=resume_subtitle,
             action_url=action_url,
+            timing_out=timing_out,
         )
         return True
     except Exception as exc:
@@ -161,8 +163,12 @@ def record_activity(
     action_url: str = "",
     local_state: dict[str, Any] | None = None,
 ) -> None:
+    import time
+
     global _LAST_RECORD_TRACE
+    t_total = time.perf_counter()
     metrics = metrics or {}
+    sub_timing: dict[str, Any] = {}
     trace: dict[str, Any] = {
         "app": app,
         "event": event,
@@ -174,6 +180,7 @@ def record_activity(
         "write_path": "none",
         "error": "",
     }
+    t_prep = time.perf_counter()
     if not str(action_url or "").strip():
         continue_url = str(metrics.get("continue_action_url") or "").strip()
         if continue_url:
@@ -190,6 +197,8 @@ def record_activity(
                 )
             except Exception:
                 pass
+    sub_timing["payload_prepare_ms"] = round((time.perf_counter() - t_prep) * 1000, 1)
+    t_api = time.perf_counter()
     if _record_via_cloud(
         app,
         event,
@@ -200,7 +209,9 @@ def record_activity(
         resume_title=resume_title,
         resume_subtitle=resume_subtitle,
         action_url=action_url,
+        timing_out=sub_timing,
     ):
+        sub_timing.setdefault("activity_api_ms", round((time.perf_counter() - t_api) * 1000, 1))
         trace.update(
             {
                 "recorded": True,
@@ -209,6 +220,9 @@ def record_activity(
                 "error": "",
             }
         )
+        trace.update(sub_timing)
+        sub_timing["record_activity_total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
+        trace["record_activity_total_ms"] = sub_timing["record_activity_total_ms"]
         _LAST_RECORD_TRACE = trace
         if local_state is not None:
             save_local_app_state(app, local_state)

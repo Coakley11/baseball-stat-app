@@ -997,7 +997,7 @@ def submit_analytical_question(
             summary = f"Asked Applied Math: {payload['question'][:80]}"
         t_rec = time.perf_counter()
         try:
-            from suite_activity_client import record_activity
+            from suite_activity_client import last_record_trace, record_activity
 
             record_activity(
                 payload["source_app"],
@@ -1013,6 +1013,18 @@ def submit_analytical_question(
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
         timing["record_activity_ms"] = round((time.perf_counter() - t_rec) * 1000, 1)
+        rec_trace = last_record_trace()
+        for key in (
+            "payload_prepare_ms",
+            "activity_api_ms",
+            "append_event_ms",
+            "activity_storage_ms",
+            "saved_item_link_ms",
+            "command_center_index_ms",
+            "record_activity_total_ms",
+        ):
+            if key in rec_trace:
+                timing[key] = rec_trace[key]
 
         t_blob = time.perf_counter()
         blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
@@ -1323,6 +1335,13 @@ def render_analyze_with_applied_math_sidebar(
                     "blob_save_ms",
                     "blob_save_ms_by_app",
                     "record_activity_ms",
+                    "payload_prepare_ms",
+                    "activity_api_ms",
+                    "append_event_ms",
+                    "activity_storage_ms",
+                    "saved_item_link_ms",
+                    "command_center_index_ms",
+                    "record_activity_total_ms",
                     "resume_upsert_ms",
                 )
                 for key in timing_keys:

@@ -14,6 +14,7 @@ from live_draft_state import (
     LIVE_DRAFT_STATE_KEY,
     apply_cloud_live_draft_state_if_allowed,
     commit_live_draft_room,
+    has_active_live_draft,
     prepare_live_draft_state,
     room_from_persist_dict,
     room_to_persist_dict,
@@ -345,6 +346,16 @@ class TestLiveDraftDirectCloudSave(unittest.TestCase):
         self.assertTrue(trace["saved_cloud"])
         self.assertTrue(trace["cloud_payload_has_live_draft_state"])
         self.assertTrue(trace["cloud_timestamp_changed"])
+
+
+class TestHasActiveLiveDraft(unittest.TestCase):
+    def test_not_started_is_not_active(self) -> None:
+        session = {LIVE_DRAFT_STATE_KEY: {"draft_room_id": "r1", "status": "not_started"}}
+        self.assertFalse(has_active_live_draft(session))
+
+    def test_in_progress_is_active(self) -> None:
+        session = {LIVE_DRAFT_STATE_KEY: {"draft_room_id": "r1", "status": "in_progress"}}
+        self.assertTrue(has_active_live_draft(session))
 
 
 if __name__ == "__main__":

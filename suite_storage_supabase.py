@@ -817,6 +817,9 @@ def load_user_settings(app: str = "_global") -> dict[str, Any]:
     return {}
 
 
+_FAST_CC_EVENTS = frozenset({"analytical_question"})
+
+
 def record_activity(
     app: str,
     event: str,
@@ -828,11 +831,21 @@ def record_activity(
     resume_title: str = "",
     resume_subtitle: str = "",
     action_url: str = "",
+    timing_out: dict[str, Any] | None = None,
 ) -> None:
+    import time
+
+    event_key = str(event or "").strip()
+
+    t_evt = time.perf_counter()
     append_event(app, event, page=page, metrics=metrics)
+    if timing_out is not None:
+        timing_out["append_event_ms"] = round((time.perf_counter() - t_evt) * 1000, 1)
+
     # Applied-math insight events must not replace metrics.full_session (Test D portfolio).
-    if str(event or "").strip() == "applied_math_insight":
+    if event_key == "applied_math_insight":
         if resume_key and resume_title:
+            t_resume = time.perf_counter()
             upsert_resume_item(
                 app,
                 resume_key,
@@ -840,10 +853,34 @@ def record_activity(
                 subtitle=resume_subtitle,
                 action_url=action_url,
             )
+            if timing_out is not None:
+                timing_out["saved_item_link_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
+                timing_out["command_center_index_ms"] = timing_out["saved_item_link_ms"]
         return
+
+    # AMI question sends: resume card only — skip slow app-state merge/write.
+    if event_key in _FAST_CC_EVENTS:
+        if resume_key and resume_title:
+            t_resume = time.perf_counter()
+            upsert_resume_item(
+                app,
+                resume_key,
+                title=resume_title,
+                subtitle=resume_subtitle,
+                action_url=action_url,
+            )
+            if timing_out is not None:
+                timing_out["saved_item_link_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
+                timing_out["command_center_index_ms"] = timing_out["saved_item_link_ms"]
+        return
+
     if summary or page or metrics:
+        t_state = time.perf_counter()
         save_current_state(app, page=page, summary=summary, metrics=metrics)
+        if timing_out is not None:
+            timing_out["activity_storage_ms"] = round((time.perf_counter() - t_state) * 1000, 1)
     if resume_key and resume_title:
+        t_resume = time.perf_counter()
         upsert_resume_item(
             app,
             resume_key,
@@ -851,3 +888,6 @@ def record_activity(
             subtitle=resume_subtitle,
             action_url=action_url,
         )
+        if timing_out is not None:
+            timing_out["saved_item_link_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
+            timing_out["command_center_index_ms"] = timing_out["saved_item_link_ms"]

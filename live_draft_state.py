@@ -146,7 +146,7 @@ def has_active_live_draft(session: dict[str, Any]) -> bool:
     if not isinstance(blob, dict) or not blob.get("draft_room_id"):
         return False
     status = str(blob.get("status") or "").strip()
-    return status in ("in_progress", "paused", "not_started")
+    return status in ("in_progress", "paused")
 
 
 def is_live_draft_locally_dirty(session: dict[str, Any]) -> bool:
@@ -172,8 +172,10 @@ def _sync_page_filter_live_draft_block(session: dict[str, Any], *, blob: dict[st
         block = {}
         pf[LIVE_DRAFT_PAGE_BLOCK] = block
     src = blob if isinstance(blob, dict) else canonical_live_draft(session) or {}
-    if src:
+    if src and src.get("draft_room_id"):
         block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(src)
+    else:
+        block.pop(LIVE_DRAFT_ROOM_KEY, None)
     for key in LIVE_DRAFT_SETTINGS_KEYS:
         if key in session:
             block[key] = session[key]
@@ -333,6 +335,19 @@ def enrich_save_payload_with_live_draft(
     sync_live_draft_session_before_save(session)
     blob = canonical_live_draft(session)
     if not blob or not blob.get("draft_room_id"):
+        if is_live_draft_locally_dirty(session):
+            out = copy.deepcopy(state)
+            out.pop(LIVE_DRAFT_STATE_KEY, None)
+            out.pop(LIVE_DRAFT_ROOM_KEY, None)
+            pf = out.get("page_filter_state")
+            if isinstance(pf, dict):
+                block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
+                if isinstance(block, dict):
+                    block.pop(LIVE_DRAFT_ROOM_KEY, None)
+            ws = out.get("baseball_workspace_state")
+            if isinstance(ws, dict):
+                ws.pop("live_draft", None)
+            return out, diag
         existing = _live_draft_from_blob(state)
         if existing and existing.get("draft_room_id"):
             blob = existing

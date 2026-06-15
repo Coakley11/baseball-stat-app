@@ -618,15 +618,32 @@ def infer_draft_assistant_needs(
     return needed_positions, category_needs
 
 
+def _available_pool_count_and_source(block: dict[str, Any] | None) -> tuple[int, str]:
+    if not isinstance(block, dict):
+        return 0, ""
+    avail = block.get("available_players")
+    count = len(avail) if isinstance(avail, list) else 0
+    diag = block.get("player_pool_diagnostics")
+    source = str(diag.get("player_pool_source") or "") if isinstance(diag, dict) else ""
+    return count, source
+
+
 def draft_ami_cache_has_pool(session_state: dict[str, Any]) -> bool:
-    def _pool_len(val: Any) -> int:
-        return len(val) if isinstance(val, list) else 0
+    """True only for a full position-representative pool — not a best_available slice (~6)."""
+
+    def _is_warm_pool(block: dict[str, Any] | None) -> bool:
+        count, source = _available_pool_count_and_source(block)
+        if count < AMI_POOL_TOP_OVERALL:
+            return False
+        if source == AMI_POOL_SOURCE:
+            return True
+        return count >= 20
 
     proj = session_state.get("_ami_draft_projection")
-    if isinstance(proj, dict) and _pool_len(proj.get("available_players")) > 0:
+    if isinstance(proj, dict) and _is_warm_pool(proj):
         return True
     snap = session_state.get("_ami_draft_snapshot")
-    return isinstance(snap, dict) and _pool_len(snap.get("available_players")) > 0
+    return isinstance(snap, dict) and _is_warm_pool(snap)
 
 
 def build_draft_assistant_ami_cache_from_board(

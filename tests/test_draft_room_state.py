@@ -729,6 +729,30 @@ class TestDraftRoomSyncGuards(unittest.TestCase):
         self.assertTrue(trace.get("cleared_live"))
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 3)
         self.assertIsNone(session.get("live_draft_room"))
+        pf = session.get("page_filter_state", {}).get("Live Draft Room", {})
+        self.assertNotIn("live_draft_room", pf)
+
+
+class TestBoardTeamSync(unittest.TestCase):
+    def test_board_team_names_match(self) -> None:
+        import pandas as pd
+
+        from draft_room_state import board_team_names_match, rebuild_simulator_board_for_teams
+
+        table = pd.DataFrame(
+            [
+                {"Round": 1, "Pick": 1, "Team": "Team A", "Player": ""},
+                {"Round": 1, "Pick": 2, "Team": "Team B", "Player": ""},
+            ]
+        )
+        self.assertFalse(board_team_names_match(table, ["Daniel", "Team 2"]))
+        session = {
+            "room_team_names": "Daniel\nTeam 2",
+            "room_rounds": 1,
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+        }
+        out = rebuild_simulator_board_for_teams(session)
+        self.assertTrue(board_team_names_match(out, ["Daniel", "Team 2"]))
 
 
 class TestDeleteActiveDraft(unittest.TestCase):

@@ -489,6 +489,7 @@ st.markdown("""
 .title-text {color: white; font-size: 36px; font-weight: 800; margin: 0;}
 .subtitle-text {color: #dbe8f5; font-size: 16px; margin-top: 6px;}
 .section-card {background-color: #f7f9fc; padding: 16px; border-radius: 12px; border: 1px solid #d9e2ec; margin-bottom: 16px;}
+.section-card-draft {background-color: #f7f9fc; padding: 10px 14px; border-radius: 12px; border: 1px solid #d9e2ec; margin-top: 4px; margin-bottom: 10px;}
 .section-title {font-size: 24px; font-weight: 800; color: #12324a; margin-bottom: 6px;}
 .small-note {color: #4f6475; font-size: 14px;}
 .page-guide {background: linear-gradient(135deg, #eef4ff 0%, #f8fbff 100%); border-left: 4px solid #1f6feb; padding: 12px 16px; border-radius: 10px; margin: 0 0 16px 0; border: 1px solid #c8daf5;}
@@ -501,9 +502,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+DRAFT_FOCUS_PAGES = frozenset({
+    "Draft Room Simulator",
+    "Live Draft Room",
+    "Draft Assistant Simulator",
+    "Fantasy Draft Assistant",
+    "Draft Simulation Test Mode",
+})
+
+
 def render_global_app_chrome(active_page: str) -> None:
-    """Single app header + tutorial entry — hidden on focus pages with their own chrome."""
-    if active_page in {"Live Draft Room"}:
+    """Single app header + tutorial entry — compact on draft focus pages."""
+    if active_page in DRAFT_FOCUS_PAGES:
+        app_tutorial.render_tutorial_header_bar()
         return
     st.markdown("""
 <div class="title-box">
@@ -1741,10 +1752,11 @@ def make_valuation_summary(row):
         f"{fmt_rate_4(proj_ops)} OPS, {fmt_count_1(proj_hr)} HR, {fmt_count_1(proj_rbi)} RBI, {fmt_count_1(proj_sb)} SB."
     )
 
-def render_section_header(title, note):
+def render_section_header(title, note, *, compact: bool = False):
+    card_class = "section-card-draft" if compact else "section-card"
     note_html = "" if pp.is_screenshot_mode(st) else f'<div class="small-note">{note}</div>'
     st.markdown(f"""
-        <div class="section-card">
+        <div class="{card_class}">
             <div class="section-title">{title}</div>
             {note_html}
         </div>
@@ -11992,6 +12004,42 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
         pass
 
 
+_SIDEBAR_CHROME_RENDERED = False
+
+
+def _render_baseball_sidebar_chrome(st_obj) -> None:
+    """Render Command Center link + Saved session once per script run."""
+    global _SIDEBAR_CHROME_RENDERED
+    if _SIDEBAR_CHROME_RENDERED:
+        return
+    _SIDEBAR_CHROME_RENDERED = True
+    try:
+        from suite_command_center_link import render_command_center_sidebar_link
+
+        render_command_center_sidebar_link(st_obj)
+    except Exception:
+        pass
+    try:
+        from suite_user_persistence import render_reset_controls
+
+        render_reset_controls(
+            st_obj,
+            "baseball",
+            on_reset=default_reset_baseball_session,
+            help_text="Clears saved page, filters, and workspace for this app. Lahman data is not deleted.",
+        )
+    except Exception:
+        pass
+
+
+def _on_resume_live_draft_sidebar() -> None:
+    st.session_state["active_page"] = "Live Draft Room"
+    st.session_state[MAIN_SIDEBAR_PAGE_KEY] = "Live Draft Room"
+    st.session_state["_navigate_to_page"] = "Live Draft Room"
+    st.session_state["_suite_page_user_nav"] = True
+    st.session_state.pop("_suite_cloud_target_page", None)
+
+
 def _on_sidebar_page_change() -> None:
     """Manual sidebar navigation wins over cloud page restore in the same run."""
     pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
@@ -12071,26 +12119,9 @@ try:
 except Exception:
     pass
 
-try:
-    from suite_command_center_link import render_command_center_sidebar_link
-
-    render_command_center_sidebar_link(st)
-except Exception:
-    pass
+_render_baseball_sidebar_chrome(st)
 
 pp.render_sidebar_toggle(st)
-
-try:
-    from suite_user_persistence import render_reset_controls
-
-    render_reset_controls(
-        st,
-        "baseball",
-        on_reset=default_reset_baseball_session,
-        help_text="Clears saved page, filters, and workspace for this app. Lahman data is not deleted.",
-    )
-except Exception:
-    pass
 
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
@@ -12118,11 +12149,11 @@ try:
 
     if has_active_live_draft(st.session_state) and active_page != "Live Draft Room":
         st.sidebar.info("Live draft in progress — your picks are saved automatically.")
-        if st.sidebar.button("Resume Live Draft", key="resume_live_draft_sidebar"):
-            st.session_state["active_page"] = "Live Draft Room"
-            st.session_state["main_sidebar_page"] = "Live Draft Room"
-            st.session_state["_navigate_to_page"] = "Live Draft Room"
-            st.rerun()
+        st.sidebar.button(
+            "Resume Live Draft",
+            key="resume_live_draft_sidebar",
+            on_click=_on_resume_live_draft_sidebar,
+        )
 except Exception:
     pass
 
@@ -15051,7 +15082,8 @@ if active_page == "Draft Assistant Simulator":
     pdemo.render_draft_demo_button(st, active_page)
     render_section_header(
         "🧩 Draft Assistant Simulator",
-        "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board."
+        "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board.",
+        compact=True,
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -15741,7 +15773,8 @@ if active_page == "Draft Assistant Simulator":
 if active_page == "Draft Room Simulator":
     render_section_header(
         "🧾 Draft Room Simulator",
-        "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft."
+        "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft.",
+        compact=True,
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -15917,23 +15950,26 @@ if active_page == "Draft Room Simulator":
         if is_draft_room_locally_dirty is not None
         else False
     )
+    try:
+        from draft_room_state import board_team_names_match, rebuild_simulator_board_for_teams
+    except ImportError:
+        def board_team_names_match(_table, _teams):  # type: ignore[misc]
+            return True
+
+        def rebuild_simulator_board_for_teams(_session):  # type: ignore[misc]
+            return pd.DataFrame()
+
     if (
         _canonical_pick_count == 0
         and _effective_picks == 0
         and (not has_real_picks)
         and (not _locally_dirty)
-        and len(current_table) != total_picks
+        and (
+            len(current_table) != total_picks
+            or not board_team_names_match(current_table, room_team_names)
+        )
     ):
-        pick_rows = []
-        for pick in range(1, total_picks + 1):
-            rnd = ((pick - 1) // int(room_team_count)) + 1
-            within_round = (pick - 1) % int(room_team_count)
-            if rnd % 2 == 1:
-                team = room_team_names[within_round]
-            else:
-                team = room_team_names[::-1][within_round]
-            pick_rows.append({"Round": rnd, "Pick": pick, "Team": team, "Player": ""})
-        st.session_state["draft_room_table"] = pd.DataFrame(pick_rows)
+        rebuild_simulator_board_for_teams(st.session_state)
 
     with dr_tab_board:
         st.subheader("Live draft board")
@@ -15972,20 +16008,11 @@ if active_page == "Draft Room Simulator":
                 key="draft_room_delete_live_draft_btn",
                 help="Remove the Live Draft Room record only. Simulator board and queue stay.",
             ):
-                from draft_room_state import delete_live_draft_only, persist_draft_board_to_storage
+                from draft_room_state import delete_live_draft_only
+                from live_draft_state import commit_live_draft_room
 
                 delete_live_draft_only(st.session_state)
-                try:
-                    from baseball_persistent_state import force_save_baseball_state
-
-                    force_save_baseball_state(st, reason="live_draft_delete")
-                except Exception:
-                    persist_draft_board_to_storage(
-                        st,
-                        st.session_state,
-                        st.session_state.get("draft_room_table"),
-                        reason="live_draft_delete",
-                    )
+                commit_live_draft_room(st, st.session_state, None, reason="delete_live_draft_simulator")
                 st.success("Live Draft Room draft deleted. Simulator board unchanged.")
                 st.rerun()
 
@@ -16346,7 +16373,8 @@ if active_page == "Draft Room Simulator":
 if active_page == "Draft Simulation Test Mode":
     render_section_header(
         "🧪 Draft Simulation Test Mode",
-        "A portfolio-style fantasy draft lab: four teams, snake format, Draft Assistant-style decisions, post-draft analysis, exports, and trade ideas."
+        "A portfolio-style fantasy draft lab: four teams, snake format, Draft Assistant-style decisions, post-draft analysis, exports, and trade ideas.",
+        compact=True,
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -16640,7 +16668,8 @@ if active_page == "Draft Simulation Test Mode":
 if active_page == "Live Draft Room":
     render_section_header(
         "📡 Live Draft Room",
-        "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft."
+        "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
+        compact=True,
     )
     apply_pending_page_transfer(active_page)
     from draft_ui import on_open_simulator_convert_panel, on_start_new_live_draft
@@ -17085,13 +17114,13 @@ if active_page == "Live Draft Room":
                 reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
 
             if reset_live:
-                try:
-                    from draft_room_state import delete_live_draft_only
+                from draft_room_state import delete_live_draft_only
+                from live_draft_state import commit_live_draft_room
 
-                    delete_live_draft_only(st.session_state)
-                except Exception:
-                    pass
-                _persist_live_draft_room(None, reason="reset_draft")
+                delete_live_draft_only(st.session_state)
+                commit_live_draft_room(st, st.session_state, None, reason="reset_draft")
+                st.success("Live draft deleted.")
+                st.rerun()
 
             with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
                 st.caption(
@@ -17177,6 +17206,19 @@ if active_page == "Live Draft Room":
                 else:
                     st.warning(msg)
                 _persist_live_draft_room(room, reason="auto_pick")
+        if room.get("status") in ("in_progress", "paused", "not_started"):
+            if st.button(
+                "Delete Live Draft",
+                key="live_draft_abandon_btn",
+                help="Abandon this live draft and return ownership to the Draft Room Simulator.",
+            ):
+                from draft_room_state import delete_live_draft_only
+                from live_draft_state import commit_live_draft_room
+
+                delete_live_draft_only(st.session_state)
+                commit_live_draft_room(st, st.session_state, None, reason="abandon_live_draft")
+                st.success("Live draft deleted.")
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
