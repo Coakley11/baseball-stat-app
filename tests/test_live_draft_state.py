@@ -162,7 +162,10 @@ class TestLiveDraftCanonicalState(unittest.TestCase):
 
 class TestLiveDraftRecommendationsAfterRestore(unittest.TestCase):
     def test_available_players_after_restore(self) -> None:
-        from streamlit_app import live_draft_get_available
+        try:
+            from streamlit_app import live_draft_get_available
+        except ModuleNotFoundError:
+            from Streamlit_app import live_draft_get_available
 
         room = _sample_room()
         blob = room_to_persist_dict(room)
