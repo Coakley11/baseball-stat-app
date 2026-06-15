@@ -230,7 +230,12 @@ def ensure_draft_assistant_ami_cache_at_send(
         return trace
 
     if draft_ami_cache_has_pool(session_state):
-        trace = _finalize_cache_build_trace({"cache_action": "already_present"})
+        from draft_ami_helpers import refresh_draft_ami_metadata_from_board
+
+        refresh_meta = refresh_draft_ami_metadata_from_board(session_state, source_page=source_page)
+        trace = _finalize_cache_build_trace(
+            {"cache_action": "already_present", "metadata_refresh": refresh_meta}
+        )
         session_state["_ami_draft_cache_build_trace"] = trace
         return trace
 
@@ -254,6 +259,13 @@ def ensure_draft_assistant_ami_cache_at_send(
 
 def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> dict[str, Any]:
     """Promote cached Draft Assistant pool/pick into send payload (sidebar runs before page cache)."""
+    try:
+        from draft_ami_helpers import refresh_draft_ami_metadata_from_board
+
+        page = str(session_state.get("active_page") or ctx.get("page") or "")
+        refresh_draft_ami_metadata_from_board(session_state, source_page=page)
+    except Exception:
+        log.exception("refresh_draft_ami_metadata_from_board failed")
     cached_snap = session_state.get("_ami_draft_snapshot")
     cached_proj = session_state.get("_ami_draft_projection")
     snap = dict(ctx.get("draft_snapshot")) if isinstance(ctx.get("draft_snapshot"), dict) else {}
@@ -270,6 +282,8 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
             "category_needs",
             "player_pool_diagnostics",
             "user_roster",
+            "user_roster_detail",
+            "roster_position_index",
             "drafted_players",
             "my_next_pick",
         ):
@@ -319,7 +333,8 @@ def finalize_draft_context_for_send(ctx: dict[str, Any], session_state: dict[str
         if snap.get("current_pick") is not None and int(snap.get("current_pick") or 0) > 0:
             ctx["current_pick"] = int(snap["current_pick"])
         if snap.get("draft_round") is not None:
-            ctx["draft_round"] = snap["draft_round"]
+            ctx["draft_round"] = int(snap["draft_round"])
+            snap["draft_round"] = int(snap["draft_round"])
 
     diag = build_draft_send_pipeline_diagnostics(ctx, session_state)
     ctx["send_pipeline_diagnostics"] = diag
@@ -859,6 +874,9 @@ def cache_draft_assistant_ami_context(
     best_available_df: Any = None,
     available_df: Any = None,
     position_scarcity: Any = None,
+    draft_round: int | None = None,
+    user_roster_detail: list[dict[str, str]] | None = None,
+    roster_position_index: dict[str, str] | None = None,
 ) -> None:
     """Cache top recommendation + canonical draft snapshot for AMI send."""
     try:
@@ -913,13 +931,10 @@ def cache_draft_assistant_ami_context(
     if pool_lookup:
         session_state["_ami_undrafted_pool_lookup"] = pool_lookup
 
-    team_count = int(session_state.get("room_team_count") or session_state.get("draft_teams") or 10)
-    existing_snap = session_state.get("_ami_draft_snapshot")
-    if isinstance(existing_snap, dict) and existing_snap.get("draft_round") is not None:
-        draft_round = int(existing_snap["draft_round"])
-    else:
+    team_count = int(session_state.get("room_team_count") or session_state.get("draft_teams") or 12)
+    if draft_round is None:
         draft_round = max(1, (int(current_pick) - 1) // max(team_count, 1) + 1)
-    draft_proj["draft_round"] = draft_round
+    draft_proj["draft_round"] = int(draft_round)
 
     session_state["_ami_draft_projection"] = draft_proj
     snap = gather_draft_ami_snapshot(page, session_state)
@@ -942,6 +957,10 @@ def cache_draft_assistant_ami_context(
         snap["drafted_players"] = list(drafted_players)[:48]
     if my_roster:
         snap["user_roster"] = list(my_roster)[:16]
+    if user_roster_detail:
+        snap["user_roster_detail"] = list(user_roster_detail)[:24]
+    if roster_position_index:
+        snap["roster_position_index"] = dict(roster_position_index)
     session_state["_ami_draft_snapshot"] = snap
     cache_page_context(
         session_state,

@@ -647,6 +647,107 @@ def _available_pool_count_and_source(block: dict[str, Any] | None) -> tuple[int,
     return count, source
 
 
+def _roster_position_detail_for_names(
+    session_state: dict[str, Any],
+    roster_names: list[str],
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    """Resolve roster name → position from pool lookup and cached AMI rows."""
+    detail: list[dict[str, str]] = []
+    index: dict[str, str] = {}
+    lookup = session_state.get("_ami_undrafted_pool_lookup")
+    snap = session_state.get("_ami_draft_snapshot")
+    pool_rows: list[dict[str, Any]] = []
+    if isinstance(snap, dict):
+        for key in ("available_players", "recommended_players", "best_available_players"):
+            for row in snap.get(key) or []:
+                if isinstance(row, dict):
+                    pool_rows.append(row)
+    if isinstance(lookup, dict):
+        pool_rows.extend(v for v in lookup.values() if isinstance(v, dict))
+
+    def _pos_for_name(name: str) -> str:
+        token = name.lower()
+        for row in pool_rows:
+            row_name = str(row.get("player") or row.get("Player") or row.get("fullName") or "").strip()
+            if row_name.lower() == token:
+                pos = str(
+                    row.get("Primary Position") or row.get("position") or row.get("pos") or ""
+                ).strip()
+                if pos:
+                    return pos
+        return ""
+
+    for name in roster_names:
+        clean = str(name or "").split(" (")[0].strip()
+        if not clean:
+            continue
+        pos = _pos_for_name(clean)
+        detail.append({"player": clean, "Primary Position": pos})
+        if pos:
+            index[clean.lower()] = pos
+    return detail, index
+
+
+def refresh_draft_ami_metadata_from_board(
+    session_state: dict[str, Any],
+    *,
+    source_page: str = "",
+) -> dict[str, Any]:
+    """Refresh pick, round, and roster positions from canonical board (matches UI summary)."""
+    meta: dict[str, Any] = {"refreshed": False}
+    low_page = str(source_page or "").lower()
+    if "live draft" in low_page:
+        return meta
+    try:
+        from draft_ami_cache_builder import extract_board_draft_context
+        from draft_room_state import get_canonical_draft_board
+    except ImportError:
+        return meta
+
+    board = get_canonical_draft_board(session_state)
+    if board.empty or "Player" not in board.columns:
+        return meta
+
+    ctx = extract_board_draft_context(board, session_state)
+    current_pick = int(ctx["current_pick"])
+    draft_round = int(ctx.get("draft_round") or 1)
+    my_roster = list(ctx.get("my_roster") or [])
+
+    roster_detail, roster_index = _roster_position_detail_for_names(session_state, my_roster)
+    if not roster_index and "Primary Position" in board.columns and ctx.get("assistant_team"):
+        team = str(ctx["assistant_team"])
+        for _, row in board[board["Team"].astype(str) == team].iterrows():
+            name = str(row.get("Player") or "").strip()
+            pos = str(row.get("Primary Position") or "").strip()
+            if name:
+                roster_detail.append({"player": name, "Primary Position": pos})
+                if pos:
+                    roster_index[name.lower()] = pos
+
+    for block_key in ("_ami_draft_snapshot", "_ami_draft_projection"):
+        block = session_state.get(block_key)
+        if not isinstance(block, dict):
+            continue
+        block["current_pick"] = current_pick
+        block["draft_round"] = draft_round
+        if my_roster:
+            block["user_roster"] = my_roster[:16]
+        if roster_detail:
+            block["user_roster_detail"] = roster_detail[:24]
+        if roster_index:
+            block["roster_position_index"] = dict(roster_index)
+
+    meta.update(
+        {
+            "refreshed": True,
+            "current_pick": current_pick,
+            "draft_round": draft_round,
+            "roster_position_count": len(roster_index),
+        }
+    )
+    return meta
+
+
 def draft_ami_cache_has_pool(session_state: dict[str, Any]) -> bool:
     """True only for a full position-representative pool — not a best_available slice (~6)."""
 

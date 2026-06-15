@@ -50,6 +50,32 @@ class TestInstantInsightSubmit(unittest.TestCase):
         )
         self.assertIn("3B gap", insight.math_summary)
 
+    def test_build_return_insight_scrubs_fallback_for_draft_coach(self) -> None:
+        from types import SimpleNamespace
+
+        from applied_math_return_insight import build_return_insight_payload
+
+        result = SimpleNamespace(
+            short_answer="**Draft grade: B+** through pick 8.",
+            why="No exact solver matched, but we can still model the closest problem.",
+            math_idea="Probability reasonableness — compare quoted p to an implied edge band.",
+            variables="",
+            assumptions=[],
+            confidence_pct=82,
+            computed={"draft_mode": "draft_review"},
+            live_metrics={},
+        )
+        insight = build_return_insight_payload(
+            question="How would you rate my picks?",
+            source_app="baseball",
+            source_page="Draft Assistant Simulator",
+            result=result,
+            route=SimpleNamespace(problem_type="Draft review", model_rationale="fallback"),
+        )
+        self.assertNotIn("no exact solver", insight.math_summary.lower())
+        self.assertNotIn("probability reasonableness", (insight.method or "").lower())
+        self.assertEqual(insight.method, "Draft review")
+
 
 if __name__ == "__main__":
     unittest.main()

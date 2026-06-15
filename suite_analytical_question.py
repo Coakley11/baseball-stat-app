@@ -1266,10 +1266,11 @@ def render_analyze_with_applied_math_sidebar(
         use_container_width=True,
         type="primary",
     ):
-        q = str(question or "").strip()
+        q = str(ss.get(question_key) or question or "").strip()
         if not q:
             st.sidebar.warning("Enter a question first.")
         else:
+            ss["_ami_last_typed_question"] = q
             t_send = time.perf_counter()
             submit_ctx = build_submit_context(
                 source_app,
@@ -1511,7 +1512,7 @@ def build_context_from_session(
                 ctx["league_format"] = fmt
                 ctx["draft_format"] = fmt
             room = session_state.get("live_draft_room") or session_state.get("draft_room_state") or {}
-            if isinstance(room, dict):
+            if "live draft" in low_page and isinstance(room, dict):
                 idx = int(room.get("current_pick_index") or 0)
                 cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
                 num_teams = int(

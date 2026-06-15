@@ -198,6 +198,17 @@ def build_draft_assistant_ami_cache_from_board_state(
     recs = available.sort_values("Draft Fit Score", ascending=False).head(top_n)
     avail_sorted = available.sort_values("Expected Fantasy Value", ascending=False)
 
+    roster_detail: list[dict[str, str]] = []
+    roster_index: dict[str, str] = {}
+    if not roster_df_auto.empty:
+        for _, row in roster_df_auto.iterrows():
+            name = str(row.get("fullName") or row.get("Player") or "").strip()
+            pos = str(row.get("Primary Position") or row.get("position") or "").strip()
+            if name:
+                roster_detail.append({"player": name, "Primary Position": pos})
+                if pos:
+                    roster_index[name.lower()] = pos
+
     trace.update(
         {
             "current_pick": ctx["current_pick"],
@@ -212,7 +223,10 @@ def build_draft_assistant_ami_cache_from_board_state(
         "cache_inputs": {
             "recs_df": recs,
             "current_pick": ctx["current_pick"],
+            "draft_round": int(ctx.get("draft_round") or 1),
             "my_roster": ctx["my_roster"],
+            "user_roster_detail": roster_detail,
+            "roster_position_index": roster_index,
             "drafted_total": len(ctx["drafted_or_owned"]),
             "draft_format": draft_cfg["draft_format"],
             "assistant_team": ctx["assistant_team"],

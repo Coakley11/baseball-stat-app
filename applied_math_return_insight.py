@@ -360,6 +360,34 @@ def _insight_id(question_id: str, conclusion: str) -> str:
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
+def _is_draft_coach_insight(result: Any | None) -> bool:
+    if result is None:
+        return False
+    computed = getattr(result, "computed", None)
+    if not isinstance(computed, dict):
+        return False
+    mode = str(computed.get("draft_mode") or "").strip()
+    return mode in {
+        "draft_timing_decision",
+        "draft_review",
+        "roster_needs",
+        "player_why",
+        "draft_player_compare",
+        "position_best_available",
+    }
+
+
+def _scrub_fallback_solver_text(text: str, *, result: Any | None = None) -> str:
+    """Drop generic interpreter fallback when a draft coach mode already matched."""
+    cleaned = str(text or "").strip()
+    if not cleaned or not _is_draft_coach_insight(result):
+        return cleaned
+    low = cleaned.lower()
+    if "no exact solver matched" in low or "probability reasonableness" in low:
+        return ""
+    return cleaned
+
+
 def build_return_insight_payload(
     *,
     question: str,
@@ -395,12 +423,16 @@ def build_return_insight_payload(
 
     if result is not None:
         conclusion = str(getattr(result, "short_answer", "") or getattr(result, "conclusion", "") or "").strip()
-        method = str(getattr(result, "math_idea", "") or getattr(result, "problem_type", "") or "").strip()
+        method = _scrub_fallback_solver_text(
+            str(getattr(result, "math_idea", "") or getattr(result, "problem_type", "") or "").strip(),
+            result=result,
+        )
         model_name = str(getattr(result, "model_name", "") or "").strip()
         math_summary = str(getattr(result, "variables", "") or "").strip()[:400]
-        why_text = str(getattr(result, "why", "") or "").strip()
+        why_text = _scrub_fallback_solver_text(str(getattr(result, "why", "") or "").strip(), result=result)
         if why_text:
             math_summary = why_text[:600]
+        math_summary = _scrub_fallback_solver_text(math_summary, result=result)
         assumptions = list(getattr(result, "assumptions", []) or [])[:6]
         confidence_pct = getattr(result, "confidence_pct", None)
         computed = getattr(result, "computed", None)
@@ -414,7 +446,14 @@ def build_return_insight_payload(
         if not model_name:
             model_name = str(getattr(route, "model_name", "") or getattr(route, "problem_type", "") or "").strip()
         if not method:
-            method = str(getattr(route, "model_rationale", "") or method).strip()
+            method = _scrub_fallback_solver_text(
+                str(getattr(route, "model_rationale", "") or "").strip(),
+                result=result,
+            )
+        if _is_draft_coach_insight(result):
+            route_type = str(getattr(route, "problem_type", "") or "").strip()
+            if route_type and "draft" in route_type.lower():
+                method = route_type
 
     iid = _insight_id(qid, conclusion or q)
     return AppliedMathInsight(

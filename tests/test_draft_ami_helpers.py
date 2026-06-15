@@ -89,6 +89,38 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(index.get("anthony volpe"), "SS")
         self.assertEqual(index.get("cal raleigh"), "C")
 
+    def test_refresh_draft_ami_metadata_updates_round(self) -> None:
+        from unittest.mock import patch
+
+        from draft_ami_helpers import refresh_draft_ami_metadata_from_board
+
+        board = pd.DataFrame(
+            {
+                "Round": [1, 1, 1, 1, 1, 1, 1],
+                "Pick": [1, 2, 3, 4, 5, 6, 7],
+                "Team": ["A", "B", "A", "B", "A", "B", "A"],
+                "Player": ["P1", "P2", "P3", "P4", "P5", "P6", "P7"],
+            }
+        )
+        session = {
+            "room_team_count": 2,
+            "room_your_team": "A",
+            "draft_assistant_synced_team": "A",
+            "_ami_draft_snapshot": {
+                "current_pick": 1,
+                "draft_round": 1,
+                "available_players": [{"player": "x"}] * 25,
+            },
+            "_ami_draft_projection": {"available_players": [{"player": "x"}] * 25},
+            "session_has_draft_board": True,
+        }
+        with patch("draft_room_state.get_canonical_draft_board", return_value=board):
+            meta = refresh_draft_ami_metadata_from_board(session, source_page="Draft Room Simulator")
+        self.assertTrue(meta.get("refreshed"))
+        self.assertEqual(meta.get("current_pick"), 8)
+        self.assertEqual(meta.get("draft_round"), 4)
+        self.assertEqual(session["_ami_draft_snapshot"]["draft_round"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()
