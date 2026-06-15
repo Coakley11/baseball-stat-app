@@ -36,7 +36,8 @@ class TestAmiBlobPersistence(unittest.TestCase):
     def test_analytical_question_skips_save_current_state(self) -> None:
         from suite_storage_supabase import record_activity as cloud_record_activity
 
-        with patch("suite_storage_supabase.append_event") as append_mock, patch(
+        timing: dict = {}
+        with patch("suite_storage_supabase._defer_append_event") as defer_mock, patch(
             "suite_storage_supabase.save_current_state"
         ) as save_state_mock, patch("suite_storage_supabase.upsert_resume_item"):
             cloud_record_activity(
@@ -49,9 +50,11 @@ class TestAmiBlobPersistence(unittest.TestCase):
                 resume_title="Continue",
                 resume_subtitle="test",
                 action_url="http://example.com",
+                timing_out=timing,
             )
-        append_mock.assert_called_once()
+        self.assertTrue(timing.get("append_event_deferred"))
         save_state_mock.assert_not_called()
+        defer_mock.assert_called_once()
 
     @patch("suite_activity_client.record_activity")
     @patch("suite_account.remember_saved_item")

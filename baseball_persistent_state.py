@@ -39,6 +39,7 @@ _INSIGHT_KEYS = (
     "_ami_pending_insight",
     "_ami_return_context",
     "_ami_dismissed_insight_ids",
+    "_ami_dismissed_insight_at",
 )
 
 _WORKSPACE_KEYS = (
@@ -402,6 +403,33 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         if preserve_insight and key in _INSIGHT_KEYS:
             continue
         val = state[key]
+        if key == "_ami_pending_insight" and isinstance(val, dict):
+            iid = str(val.get("insight_id") or "").strip()
+            session_dismissed = ss.get("_ami_dismissed_insight_ids")
+            blob_dismissed = state.get("_ami_dismissed_insight_ids")
+            dismissed_raw = session_dismissed if session_dismissed is not None else blob_dismissed
+            if not isinstance(dismissed_raw, (list, tuple, set)):
+                dismissed_raw = []
+            dismissed_ids = {str(x).strip() for x in dismissed_raw if str(x).strip()}
+            if iid and iid in dismissed_ids:
+                continue
+        if key == "_ami_dismissed_insight_ids":
+            existing = ss.get("_ami_dismissed_insight_ids")
+            blob_ids = val if isinstance(val, (list, tuple, set)) else []
+            merged = {str(x).strip() for x in blob_ids if str(x).strip()}
+            if isinstance(existing, (list, tuple, set)):
+                merged.update(str(x).strip() for x in existing if str(x).strip())
+            ss[key] = sorted(merged)
+            continue
+        if key == "_ami_dismissed_insight_at":
+            existing = dict(ss.get("_ami_dismissed_insight_at") or {})
+            if not isinstance(existing, dict):
+                existing = {}
+            blob_at = val if isinstance(val, dict) else {}
+            merged_at = dict(blob_at)
+            merged_at.update(existing)
+            ss[key] = merged_at
+            continue
         if key == "page_filter_state" and isinstance(val, dict):
             continue
         try:

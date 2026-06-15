@@ -1941,7 +1941,6 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
         app_key or (pending.get("source_app") if isinstance(pending, dict) else "") or st.session_state.get("_suite_persist_app_id") or "baseball"
     )
     dismissed_at = datetime.now(timezone.utc).isoformat()
-    clear_pending_insight(st)
     if iid:
         dismissed = _get_dismissed_insight_ids(st)
         dismissed.add(iid)
@@ -1951,8 +1950,18 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
             meta = {}
         meta[iid] = dismissed_at
         st.session_state[SESSION_DISMISSED_AT_KEY] = meta
+    clear_pending_insight(st)
+    st.session_state.pop("_ami_hydrated_insight_id", None)
+    st.session_state.pop("_ami_insight_active_id", None)
+    if iid:
         persist_insight_dismissal_to_cloud(source_app, iid, dismissed_at=dismissed_at)
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="insight_dismiss")
+    except Exception:
+        pass
 
 
 def clear_pending_insight(st: Any) -> None:
@@ -2026,8 +2035,9 @@ def render_applied_math_insight_panel(st: Any) -> bool:
                     else "Dismiss insight"
                 )
             )
-            if st.button(dismiss_label, key="ami_insight_dismiss", use_container_width=True):
-                dismiss_applied_math_insight(st)
+            dismiss_key = f"ami_insight_dismiss_{str(insight.get('insight_id') or 'pending')[:12]}"
+            if st.button(dismiss_label, key=dismiss_key, use_container_width=True):
+                dismiss_applied_math_insight(st, app_key=str(insight.get("source_app") or ""))
                 st.rerun()
     return True
 

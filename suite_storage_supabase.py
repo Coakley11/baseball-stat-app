@@ -820,6 +820,25 @@ def load_user_settings(app: str = "_global") -> dict[str, Any]:
 _FAST_CC_EVENTS = frozenset({"analytical_question"})
 
 
+def _defer_append_event(
+    app: str,
+    event: str,
+    *,
+    page: str = "",
+    metrics: dict[str, Any] | None = None,
+) -> None:
+    """Fire-and-forget activity event so Command Center resume card is not blocked."""
+    import threading
+
+    def _run() -> None:
+        try:
+            append_event(app, event, page=page, metrics=metrics)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def record_activity(
     app: str,
     event: str,
@@ -837,13 +856,8 @@ def record_activity(
 
     event_key = str(event or "").strip()
 
-    t_evt = time.perf_counter()
-    append_event(app, event, page=page, metrics=metrics)
-    if timing_out is not None:
-        timing_out["append_event_ms"] = round((time.perf_counter() - t_evt) * 1000, 1)
-
-    # Applied-math insight events must not replace metrics.full_session (Test D portfolio).
-    if event_key == "applied_math_insight":
+    # AMI question sends: resume card first; defer non-critical event logging.
+    if event_key in _FAST_CC_EVENTS:
         if resume_key and resume_title:
             t_resume = time.perf_counter()
             upsert_resume_item(
@@ -856,10 +870,19 @@ def record_activity(
             if timing_out is not None:
                 timing_out["saved_item_link_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
                 timing_out["command_center_index_ms"] = timing_out["saved_item_link_ms"]
+        _defer_append_event(app, event, page=page, metrics=metrics)
+        if timing_out is not None:
+            timing_out["append_event_ms"] = 0.0
+            timing_out["append_event_deferred"] = True
         return
 
-    # AMI question sends: resume card only — skip slow app-state merge/write.
-    if event_key in _FAST_CC_EVENTS:
+    t_evt = time.perf_counter()
+    append_event(app, event, page=page, metrics=metrics)
+    if timing_out is not None:
+        timing_out["append_event_ms"] = round((time.perf_counter() - t_evt) * 1000, 1)
+
+    # Applied-math insight events must not replace metrics.full_session (Test D portfolio).
+    if event_key == "applied_math_insight":
         if resume_key and resume_title:
             t_resume = time.perf_counter()
             upsert_resume_item(
