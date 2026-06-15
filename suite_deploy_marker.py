@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 SUITE_BUILD_LABEL = "2026-05-27-instant-insight-v15"
-GIT_COMMIT_SHORT = "98ed3c7"
+GIT_COMMIT_SHORT = "82c6e77"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (
