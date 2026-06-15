@@ -16790,105 +16790,105 @@ if active_page == "Live Draft Room":
 
     elif room is None or room.get("status") == "not_started":
         with st.expander("Draft Setup / Configuration", expanded=True):
-        st.subheader("League & Draft Settings")
-        lc1, lc2, lc3 = st.columns(3)
-        _live_team_options = [4, 8, 10, 12, 14]
-        _live_scoring_options = ["Roto (5x5)", "Points League"]
-        _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
-        _live_proj_window_options = [3, 4, 5]
-        with lc1:
-            validate_text_state("live_draft_league_name", "My Fantasy League")
-            live_league_name = st.text_input(
-                "League Name",
-                key="live_draft_league_name",
-            )
-            validate_state_option("live_draft_team_count", _live_team_options, 4)
-            live_num_teams = st.selectbox("Number of Teams", _live_team_options, key="live_draft_team_count")
-            validate_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
-            live_picks_per_team = st.number_input(
-                "Picks per Team",
-                min_value=1,
-                max_value=30,
-                step=1,
-                key="live_draft_picks_per_team",
-            )
-        with lc2:
-            validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
-            live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type")
-            validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
-            live_scoring = st.selectbox("Scoring Type", _live_scoring_options, key="live_draft_scoring")
-            validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
-            live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer")
-        with lc3:
-            validate_state_option("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
-            live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule")
-            validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-            live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style")
-            validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
-            live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window")
-
-        st.subheader("Roster Settings")
-        rs1, rs2, rs3, rs4 = st.columns(4)
-        with rs1:
-            slot_c = st.number_input("C", min_value=0, max_value=3, value=1, step=1, key="live_slot_c")
-            slot_1b = st.number_input("1B", min_value=0, max_value=3, value=1, step=1, key="live_slot_1b")
-        with rs2:
-            slot_2b = st.number_input("2B", min_value=0, max_value=3, value=1, step=1, key="live_slot_2b")
-            slot_3b = st.number_input("3B", min_value=0, max_value=3, value=1, step=1, key="live_slot_3b")
-        with rs3:
-            slot_ss = st.number_input("SS", min_value=0, max_value=3, value=1, step=1, key="live_slot_ss")
-            slot_of = st.number_input("OF", min_value=0, max_value=5, value=3, step=1, key="live_slot_of")
-        with rs4:
-            slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, value=1, step=1, key="live_slot_dh")
-            slot_p = st.number_input("P", min_value=0, max_value=10, value=0, step=1, key="live_slot_p")
-            slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, value=5, step=1, key="live_slot_bench")
-
-        st.caption("Rename teams (optional)")
-        default_teams = _live_draft_default_teams(live_num_teams)
-        team_cols = st.columns(min(int(live_num_teams), 4))
-        team_names = []
-        for i in range(int(live_num_teams)):
-            with team_cols[i % len(team_cols)]:
-                team_names.append(
-                    st.text_input(f"Team {i + 1}", value=default_teams[i], key=f"live_draft_team_name_{i}")
+            st.subheader("League & Draft Settings")
+            lc1, lc2, lc3 = st.columns(3)
+            _live_team_options = [4, 8, 10, 12, 14]
+            _live_scoring_options = ["Roto (5x5)", "Points League"]
+            _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
+            _live_proj_window_options = [3, 4, 5]
+            with lc1:
+                validate_text_state("live_draft_league_name", "My Fantasy League")
+                live_league_name = st.text_input(
+                    "League Name",
+                    key="live_draft_league_name",
                 )
+                validate_state_option("live_draft_team_count", _live_team_options, 4)
+                live_num_teams = st.selectbox("Number of Teams", _live_team_options, key="live_draft_team_count")
+                validate_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
+                live_picks_per_team = st.number_input(
+                    "Picks per Team",
+                    min_value=1,
+                    max_value=30,
+                    step=1,
+                    key="live_draft_picks_per_team",
+                )
+            with lc2:
+                validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
+                live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type")
+                validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
+                live_scoring = st.selectbox("Scoring Type", _live_scoring_options, key="live_draft_scoring")
+                validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
+                live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer")
+            with lc3:
+                validate_state_option("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
+                live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule")
+                validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+                live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style")
+                validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
+                live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window")
 
-        b_start, b_reset = st.columns(2)
-        with b_start:
-            if st.button("Start New Live Draft", type="primary", key="live_draft_start_btn"):
-                from draft_ui import mark_start_live_draft_clicked
+            st.subheader("Roster Settings")
+            rs1, rs2, rs3, rs4 = st.columns(4)
+            with rs1:
+                slot_c = st.number_input("C", min_value=0, max_value=3, value=1, step=1, key="live_slot_c")
+                slot_1b = st.number_input("1B", min_value=0, max_value=3, value=1, step=1, key="live_slot_1b")
+            with rs2:
+                slot_2b = st.number_input("2B", min_value=0, max_value=3, value=1, step=1, key="live_slot_2b")
+                slot_3b = st.number_input("3B", min_value=0, max_value=3, value=1, step=1, key="live_slot_3b")
+            with rs3:
+                slot_ss = st.number_input("SS", min_value=0, max_value=3, value=1, step=1, key="live_slot_ss")
+                slot_of = st.number_input("OF", min_value=0, max_value=5, value=3, step=1, key="live_slot_of")
+            with rs4:
+                slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, value=1, step=1, key="live_slot_dh")
+                slot_p = st.number_input("P", min_value=0, max_value=10, value=0, step=1, key="live_slot_p")
+                slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, value=5, step=1, key="live_slot_bench")
 
-                mark_start_live_draft_clicked(st.session_state)
-                st.session_state["_start_live_draft_mode"] = "new"
-                st.session_state["_start_live_draft_pending"] = True
-                st.session_state.pop("_simulator_to_live_show_confirm", None)
-        with b_reset:
-            reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
+            st.caption("Rename teams (optional)")
+            default_teams = _live_draft_default_teams(live_num_teams)
+            team_cols = st.columns(min(int(live_num_teams), 4))
+            team_names = []
+            for i in range(int(live_num_teams)):
+                with team_cols[i % len(team_cols)]:
+                    team_names.append(
+                        st.text_input(f"Team {i + 1}", value=default_teams[i], key=f"live_draft_team_name_{i}")
+                    )
 
-        if reset_live:
-            try:
-                from draft_room_state import delete_live_draft_only
+            b_start, b_reset = st.columns(2)
+            with b_start:
+                if st.button("Start New Live Draft", type="primary", key="live_draft_start_btn"):
+                    from draft_ui import mark_start_live_draft_clicked
 
-                delete_live_draft_only(st.session_state)
-            except Exception:
-                pass
-            _persist_live_draft_room(None, reason="reset_draft")
+                    mark_start_live_draft_clicked(st.session_state)
+                    st.session_state["_start_live_draft_mode"] = "new"
+                    st.session_state["_start_live_draft_pending"] = True
+                    st.session_state.pop("_simulator_to_live_show_confirm", None)
+            with b_reset:
+                reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
 
-        with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
-            st.caption(
-                "Advanced: converts your Draft Room Simulator board into a live draft with a clock. "
-                "Existing picks, queue, watchlist, and tracked players carry over. "
-                "You will choose timer and projection settings before the draft starts."
-            )
-            if st.button(
-                "Convert Simulator to Live Draft…",
-                key="live_draft_convert_sim_btn",
-                help="Review simulator state and confirm before starting the live draft clock.",
-            ):
-                from draft_ui import record_start_live_draft_diagnostics
+            if reset_live:
+                try:
+                    from draft_room_state import delete_live_draft_only
 
-                record_start_live_draft_diagnostics(st.session_state, convert_simulator_clicked=True)
-                st.session_state["_simulator_to_live_show_confirm"] = True
+                    delete_live_draft_only(st.session_state)
+                except Exception:
+                    pass
+                _persist_live_draft_room(None, reason="reset_draft")
+
+            with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
+                st.caption(
+                    "Advanced: converts your Draft Room Simulator board into a live draft with a clock. "
+                    "Existing picks, queue, watchlist, and tracked players carry over. "
+                    "You will choose timer and projection settings before the draft starts."
+                )
+                if st.button(
+                    "Convert Simulator to Live Draft…",
+                    key="live_draft_convert_sim_btn",
+                    help="Review simulator state and confirm before starting the live draft clock.",
+                ):
+                    from draft_ui import record_start_live_draft_diagnostics
+
+                    record_start_live_draft_diagnostics(st.session_state, convert_simulator_clicked=True)
+                    st.session_state["_simulator_to_live_show_confirm"] = True
 
     if st.session_state.pop("_start_live_draft_pending", False):
         from draft_live_start import (
