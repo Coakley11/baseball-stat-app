@@ -713,13 +713,43 @@ def _roster_position_detail_for_names(
     return detail, index
 
 
-def resolve_board_team_name(team_names: list[str], target: str) -> str:
+def team_names_in_draft_order(board: Any) -> list[str]:
+    """Return fantasy team names in round-1 pick order (Team 1 = pick 1, etc.)."""
+    import pandas as pd
+
+    if board is None or not hasattr(board, "empty") or board.empty or "Team" not in board.columns:
+        return []
+    df = board
+    if "Round" in df.columns and "Pick" in df.columns:
+        try:
+            r1 = df[pd.to_numeric(df["Round"], errors="coerce") == 1].sort_values("Pick", kind="stable")
+        except Exception:
+            r1 = df.iloc[0:0]
+        order: list[str] = []
+        seen: set[str] = set()
+        for raw in r1["Team"].dropna().astype(str):
+            name = raw.strip()
+            if name and name not in seen:
+                order.append(name)
+                seen.add(name)
+        if order:
+            return order
+    return sorted(df["Team"].dropna().astype(str).unique().tolist())
+
+
+def resolve_board_team_name(
+    team_names: list[str],
+    target: str,
+    *,
+    draft_order: list[str] | None = None,
+) -> str:
     """Map a user label like Team 2 to the canonical board team column value."""
     target = str(target or "").strip()
     if not target:
         return ""
     names = [str(n).strip() for n in (team_names or []) if str(n).strip()]
-    if not names:
+    order = [str(n).strip() for n in (draft_order or []) if str(n).strip()] or names
+    if not names and not order:
         return target
 
     for name in names:
@@ -733,6 +763,10 @@ def resolve_board_team_name(team_names: list[str], target: str) -> str:
     m = re.match(r"team\s*(\d+|[a-z])", tl, flags=re.I)
     if m:
         token = m.group(1).lower()
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(order):
+                return order[idx]
         for name in names:
             compact = re.sub(r"\s+", "", name.lower())
             if compact == f"team{token}":
@@ -762,7 +796,12 @@ def roster_for_team_from_board(
         return [], [], {}
 
     team_names = sorted(board["Team"].dropna().astype(str).unique().tolist())
-    team = resolve_board_team_name(team_names, str(team_name or "").strip())
+    draft_order = team_names_in_draft_order(board)
+    team = resolve_board_team_name(
+        team_names,
+        str(team_name or "").strip(),
+        draft_order=draft_order,
+    )
     if not team:
         return [], [], {}
 

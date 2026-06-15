@@ -160,7 +160,7 @@ def attach_draft_team_to_context(
         return
     try:
         from components.draft_market_question import extract_draft_team_query
-        from draft_ami_helpers import resolve_board_team_name, roster_for_team_from_board
+        from draft_ami_helpers import resolve_board_team_name, roster_for_team_from_board, team_names_in_draft_order
     except ImportError:
         return
 
@@ -171,21 +171,28 @@ def attach_draft_team_to_context(
         or ""
     ).strip()
     team_names: list[str] = []
+    draft_order: list[str] = []
     try:
+        from draft_ami_helpers import team_names_in_draft_order
         from draft_room_state import get_canonical_draft_board
 
         board = get_canonical_draft_board(session_state)
         if board is not None and hasattr(board, "columns") and "Team" in board.columns:
             team_names = sorted(board["Team"].dropna().astype(str).unique().tolist())
+            draft_order = team_names_in_draft_order(board)
     except Exception:
         pass
 
-    target = extract_draft_team_query(question, my_team=my_team, team_names=team_names)
+    target = extract_draft_team_query(question, my_team=my_team, team_names=team_names or draft_order)
     requested_team = str(target or "").strip()
     if not requested_team:
         return
 
-    resolved_team = resolve_board_team_name(team_names, requested_team)
+    resolved_team = resolve_board_team_name(
+        team_names,
+        requested_team,
+        draft_order=draft_order,
+    )
     names, detail, index = roster_for_team_from_board(session_state, resolved_team or requested_team)
     if not names:
         ctx["_draft_team_diagnostics"] = {

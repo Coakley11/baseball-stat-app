@@ -1191,9 +1191,13 @@ def build_submit_context(
                 try:
                     from baseball_ami_pages import promote_page_ami_context_at_send
 
-                    promote_page_ami_context_at_send(
+                    page_diag = promote_page_ami_context_at_send(
                         ctx, session_state, source_page=source_page, question=str(question).strip()
                     )
+                    if page_diag:
+                        ctx.setdefault("send_pipeline_diagnostics", {})
+                        if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
+                            ctx["send_pipeline_diagnostics"].update(page_diag)
                 except ImportError:
                     pass
         except Exception:
@@ -1358,6 +1362,24 @@ def render_analyze_with_applied_math_sidebar(
                             resume_key=str(pre_payload.get("resume_key") or ""),
                         )
                         stage_pending_insight(ss, insight)
+                        try:
+                            from applied_math_return_insight import (
+                                SESSION_PERSIST_INSIGHT_DIRTY,
+                                store_applied_math_insight,
+                            )
+
+                            insight_data = (
+                                insight.to_dict() if hasattr(insight, "to_dict") else dict(insight)
+                            )
+                            store_applied_math_insight(
+                                insight_data,
+                                return_context=submit_ctx,
+                                source_state=submit_source_state,
+                                st=ss,
+                            )
+                            ss[SESSION_PERSIST_INSIGHT_DIRTY] = True
+                        except Exception:
+                            log.exception("instant insight cloud persist failed")
                         instant_solved = True
                 except Exception:
                     log.exception("instant Baseball Insight failed for %s (%s)", source_app, source_page)

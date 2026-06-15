@@ -14703,7 +14703,6 @@ if active_page == "Fantasy Sleepers & Busts":
                 "Age Range",
                 min_value=18,
                 max_value=_age_hi,
-                value=st.session_state["fantasy_market_age_range"],
                 key="fantasy_market_age_range",
             )
         st.caption("FantasyPros/ADP matching is optional. Players without market ranks stay in the pool but may not appear on the edge chart.")

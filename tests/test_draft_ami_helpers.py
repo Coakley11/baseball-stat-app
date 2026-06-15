@@ -140,12 +140,25 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(index.get("cal raleigh"), "C")
         self.assertEqual(detail[0]["Primary Position"], "OF")
 
-    def test_resolve_board_team_name_fuzzy(self) -> None:
+    def test_resolve_board_team_name_by_draft_order_index(self) -> None:
         from draft_ami_helpers import resolve_board_team_name
 
-        names = ["Daniel", "Team 2", "Team 3"]
-        self.assertEqual(resolve_board_team_name(names, "Team 2"), "Team 2")
-        self.assertEqual(resolve_board_team_name(names, "team 2"), "Team 2")
+        order = ["Daniel", "Mike", "Chris", "Alex"]
+        self.assertEqual(resolve_board_team_name(order, "Team 2", draft_order=order), "Mike")
+        self.assertEqual(resolve_board_team_name(order, "team 1", draft_order=order), "Daniel")
+
+    def test_team_names_in_draft_order_from_round_one(self) -> None:
+        from draft_ami_helpers import team_names_in_draft_order
+
+        board = pd.DataFrame(
+            {
+                "Round": [1, 1, 1, 1, 2, 2],
+                "Pick": [1, 2, 3, 4, 5, 6],
+                "Team": ["Daniel", "Mike", "Chris", "Alex", "Alex", "Daniel"],
+                "Player": ["P1", "P2", "P3", "P4", "P5", "P6"],
+            }
+        )
+        self.assertEqual(team_names_in_draft_order(board), ["Daniel", "Mike", "Chris", "Alex"])
 
 
 if __name__ == "__main__":

@@ -387,7 +387,7 @@ class TestDraftTeamReview(unittest.TestCase):
         )
         from draft_room_state import build_snake_board
 
-        teams = ["Team 1", "Team 2", "Team 3", "Team 4"]
+        teams = ["Daniel", "Mike", "Chris", "Alex"]
         board = build_snake_board(teams, rounds=2)
         board = board.sort_values("Pick", kind="stable").reset_index(drop=True)
         team2_players = ["Mookie Betts", "Bobby Witt Jr.", "Shea Langeliers"]
@@ -395,15 +395,15 @@ class TestDraftTeamReview(unittest.TestCase):
         t2_idx = 0
         for idx, row in board.iterrows():
             team = str(row["Team"])
-            if team == "Team 2" and t2_idx < len(team2_players):
+            if team == "Mike" and t2_idx < len(team2_players):
                 board.at[idx, "Player"] = team2_players[t2_idx]
                 t2_idx += 1
-            elif team == "Team 1" and my_players:
+            elif team == "Daniel" and my_players:
                 board.at[idx, "Player"] = my_players.pop(0)
 
         session: dict = {
-            "room_your_team": "Team 1",
-            "draft_assistant_synced_team": "Team 1",
+            "room_your_team": "Daniel",
+            "draft_assistant_synced_team": "Daniel",
             "draft_room_table": board.copy(),
             "_ami_draft_snapshot": {
                 "user_roster": ["Aaron Judge", "Anthony Volpe", "Cal Raleigh"],
@@ -431,13 +431,13 @@ class TestDraftTeamReview(unittest.TestCase):
 
         diag = ctx.get("_draft_team_diagnostics") or {}
         self.assertEqual(diag.get("requested_team"), "Team 2")
-        self.assertEqual(diag.get("resolved_team"), "Team 2")
-        self.assertEqual(diag.get("roster_owner_used"), "Team 2")
+        self.assertEqual(diag.get("resolved_team"), "Mike")
+        self.assertEqual(diag.get("roster_owner_used"), "Mike")
         self.assertGreaterEqual(diag.get("roster_player_count", 0), 1)
         roster = ctx.get("roster") or []
         self.assertIn("Mookie Betts", roster)
         self.assertNotIn("Aaron Judge", roster)
-        self.assertEqual(ctx.get("draft_review_team"), "Team 2")
+        self.assertEqual(ctx.get("draft_review_team"), "Mike")
 
 
 class TestDraftAmiCacheWarmth(unittest.TestCase):

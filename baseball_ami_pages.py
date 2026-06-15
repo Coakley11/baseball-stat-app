@@ -9,6 +9,7 @@ TREND_QUESTION_CATEGORIES: dict[str, tuple[str, ...]] = {
     "trend_standout": ("what trend stands out", "trend stands out", "notable trend"),
     "sustainability": ("is this sustainable", "sustainable", "regression or breakout", "mean reversion"),
     "buy_sell": ("buy low", "sell high", "buy or sell"),
+    "projection": ("expected stat", "expected statistics", "projected", "2026", "next season"),
 }
 
 SLEEPER_QUESTION_CATEGORIES: dict[str, tuple[str, ...]] = {
@@ -30,13 +31,32 @@ def _page_key(source_page: str) -> str:
     return str(source_page or "").strip().lower()
 
 
+def _player_name(raw: Any) -> str:
+    return str(raw or "").split(" (")[0].strip()
+
+
 def finalize_trend_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
     """Promote trend intel into send payload for Trends / Trend Value."""
+    try:
+        from applied_math_context import extract_player_from_question
+    except ImportError:
+        extract_player_from_question = None  # type: ignore[assignment]
+
     summary = session_state.get("_ami_trend_summary")
     if isinstance(summary, dict) and summary:
         ctx["trend_summary"] = {**dict(ctx.get("trend_summary") or {}), **copy.deepcopy(summary)}
         if summary.get("player"):
             ctx.setdefault("player", summary["player"])
+
+    pl = session_state.get("single_trend_dashboard_player")
+    if pl:
+        ctx.setdefault("player", _player_name(pl))
+
+    stats = session_state.get("single_trend_dashboard_stats") or session_state.get("trend_plot_stat")
+    if stats:
+        metric_list = [str(s) for s in stats[:6]] if isinstance(stats, list) else [str(stats)]
+        ctx.setdefault("metrics", metric_list)
+
     snap = session_state.get("_ami_trend_snapshot")
     if isinstance(snap, dict) and snap:
         ctx["trend_snapshot"] = copy.deepcopy(snap)
@@ -44,15 +64,40 @@ def finalize_trend_context_for_send(ctx: dict[str, Any], session_state: dict[str
             ctx.setdefault("player", snap["player"])
         if snap.get("metrics"):
             ctx.setdefault("metrics", snap["metrics"])
+
     lag = session_state.get("trend_lag")
     if lag is not None and not ctx.get("trend_window"):
         ctx["trend_window"] = f"{lag} seasons"
+
+    if not ctx.get("trend_summary") and ctx.get("player"):
+        stat = (ctx.get("metrics") or ["stat"])[0]
+        ctx["trend_summary"] = {
+            "player": ctx["player"],
+            "stat": str(stat),
+            "window": ctx.get("trend_window") or "",
+        }
+
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
+
+
+def build_trend_send_diagnostics(ctx: dict[str, Any], *, source_page: str) -> dict[str, Any]:
+    trend = ctx.get("trend_summary") if isinstance(ctx.get("trend_summary"), dict) else {}
+    metrics = ctx.get("metrics") if isinstance(ctx.get("metrics"), list) else []
+    return {
+        "source_page": source_page,
+        "trend_context_present": bool(trend),
+        "trend_player_count": 1 if ctx.get("player") else 0,
+        "trend_metric_count": len(metrics),
+        "trend_mode_selected": "baseball_trend_significance" if trend or ctx.get("player") else "",
+        "routing_reason": "trend_page_send_promotion",
+    }
 
 
 def finalize_sleepers_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
     """Promote sleepers cache into send payload."""
     try:
-        from applied_math_context import gather_sleepers_ami_snapshot
+        from applied_math_context import extract_player_from_question, gather_sleepers_ami_snapshot
     except ImportError:
         return
 
@@ -66,6 +111,9 @@ def finalize_sleepers_context_for_send(ctx: dict[str, Any], session_state: dict[
             ctx["sleeper_candidates"] = copy.deepcopy(snap["sleeper_candidates"])
         if snap.get("roster_needs"):
             ctx.setdefault("needed_positions", snap["roster_needs"])
+
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
 
 
 def finalize_comparison_context_for_send(
@@ -113,12 +161,16 @@ def promote_page_ami_context_at_send(
     *,
     source_page: str,
     question: str = "",
-) -> None:
+) -> dict[str, Any]:
     """Dispatch page-specific AMI context promotion at send time."""
     low = _page_key(source_page)
+    diag: dict[str, Any] = {}
     if "trend" in low:
         finalize_trend_context_for_send(ctx, session_state)
+        diag = build_trend_send_diagnostics(ctx, source_page=source_page)
+        ctx["trend_send_diagnostics"] = diag
     elif "sleeper" in low:
         finalize_sleepers_context_for_send(ctx, session_state)
     elif "comparison" in low:
         finalize_comparison_context_for_send(ctx, session_state, question=question)
+    return diag
