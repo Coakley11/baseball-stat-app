@@ -603,12 +603,16 @@ def finalize_comparison_context_for_send(
     ctx["problem_type_hint"] = intent
     ctx["intent"] = "comparison_analysis"
     ctx["comparison_mode"] = intent
-    try:
-        from draft_ami_helpers import draft_ami_guidance
+    # Only apply generic comparison guidance when a specific guidance (e.g. the
+    # age/season historical-window guidance built above) hasn't already been set —
+    # otherwise the constraint-aware guidance gets clobbered by a draft template.
+    if not ctx.get("ami_guidance"):
+        try:
+            from draft_ami_helpers import draft_ami_guidance
 
-        ctx["ami_guidance"] = draft_ami_guidance("Comparison Tool")
-    except ImportError:
-        pass
+            ctx["ami_guidance"] = draft_ami_guidance("Comparison Tool")
+        except ImportError:
+            pass
 
 
 def finalize_valuation_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
