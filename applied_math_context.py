@@ -1276,6 +1276,11 @@ def cache_draft_assistant_ami_context(
     user_roster_detail: list[dict[str, str]] | None = None,
     roster_position_index: dict[str, str] | None = None,
     player_position_lookup: dict[str, str] | None = None,
+    roster_means: dict[str, float] | None = None,
+    pool_means: dict[str, float] | None = None,
+    position_summary_rows: list[dict[str, Any]] | None = None,
+    draft_slot: int | None = None,
+    my_next_pick: int | None = None,
 ) -> None:
     """Cache top recommendation + canonical draft snapshot for AMI send."""
     try:
@@ -1308,6 +1313,45 @@ def cache_draft_assistant_ami_context(
             draft_proj["position_scarcity"] = float(position_scarcity)
         except (TypeError, ValueError):
             draft_proj["position_scarcity"] = position_scarcity
+    if draft_slot is not None:
+        draft_proj["draft_slot"] = int(draft_slot)
+    if my_next_pick is not None:
+        draft_proj["my_next_pick"] = int(my_next_pick)
+
+    # Category strength diagnostics — roster vs pool means so AMI knows exactly
+    # where the user is weak, not just the category labels.
+    if isinstance(roster_means, dict) and isinstance(pool_means, dict):
+        cat_diag: list[dict[str, Any]] = []
+        for col in sorted(set(roster_means) | set(pool_means)):
+            r_val = roster_means.get(col)
+            p_val = pool_means.get(col)
+            if r_val is None and p_val is None:
+                continue
+            entry: dict[str, Any] = {"stat": col.replace("proj_", "")}
+            if r_val is not None:
+                entry["roster_mean"] = round(float(r_val), 3) if _is_num(r_val) else r_val
+            if p_val is not None:
+                entry["pool_mean"] = round(float(p_val), 3) if _is_num(p_val) else p_val
+            if r_val is not None and p_val is not None and _is_num(r_val) and _is_num(p_val) and float(p_val) != 0:
+                gap_pct = (float(r_val) - float(p_val)) / abs(float(p_val))
+                entry["gap_vs_pool_pct"] = round(gap_pct * 100, 1)
+                entry["status"] = "weak" if gap_pct < -0.10 else ("strong" if gap_pct > 0.10 else "average")
+            cat_diag.append(entry)
+        if cat_diag:
+            draft_proj["category_diagnostics"] = cat_diag
+
+    # Per-position scarcity table — each position's available count, top player, dropoff
+    if isinstance(position_summary_rows, list) and position_summary_rows:
+        pos_snap: list[dict[str, Any]] = []
+        for _prow in position_summary_rows[:20]:
+            _pe: dict[str, Any] = {}
+            for _pk in ("Position", "Available Players", "Top Available", "Scarcity Dropoff", "Replacement Value"):
+                if _pk in _prow and _prow[_pk] is not None:
+                    _pe[_pk] = _prow[_pk]
+            if _pe.get("Position"):
+                pos_snap.append(_pe)
+        if pos_snap:
+            draft_proj["position_scarcity_table"] = pos_snap
 
     top_rows = compact_recommendation_rows(recs_df, limit=6)
     if top_rows:
@@ -1348,10 +1392,18 @@ def cache_draft_assistant_ami_context(
         snap["player_pool_diagnostics"] = pool_diag
     snap["current_pick"] = int(current_pick)
     snap["draft_round"] = draft_round
+    if draft_slot is not None:
+        snap["draft_slot"] = int(draft_slot)
+    if my_next_pick is not None:
+        snap["my_next_pick"] = int(my_next_pick)
     if needed_positions:
         snap["needed_positions"] = list(needed_positions)[:8]
     if category_needs:
         snap["category_needs"] = list(category_needs)[:8]
+    if draft_proj.get("category_diagnostics"):
+        snap["category_diagnostics"] = draft_proj["category_diagnostics"]
+    if draft_proj.get("position_scarcity_table"):
+        snap["position_scarcity_table"] = draft_proj["position_scarcity_table"]
     if drafted_players:
         snap["drafted_players"] = list(drafted_players)[:48]
     if my_roster:
@@ -1540,7 +1592,7 @@ def record_trend_intel(
     year_start: int | None = None,
     year_end: int | None = None,
 ) -> None:
-    """Cache slope/R² from Advanced Trend Intelligence for AMI sidebar."""
+    """Cache full Advanced Trend Intelligence row for AMI sidebar."""
     summary: dict[str, Any] = {"stat": stat, "player": _player_name(player)}
     if year_start is not None and year_end is not None:
         summary["window"] = f"{year_start}–{year_end}"
@@ -1549,7 +1601,15 @@ def record_trend_intel(
         r2 = intel_row.get("R²") or intel_row.get("R2") or intel_row.get("r2")
         direction = intel_row.get("Trend Direction") or intel_row.get("direction")
         net = intel_row.get("Net Change") or intel_row.get("delta")
-        latest = intel_row.get("Latest") or intel_row.get("latest")
+        latest = intel_row.get("Latest") or intel_row.get("latest") or intel_row.get("Latest Value")
+        # Extended intel fields — previously dropped
+        recent_slope = intel_row.get("Recent Slope")
+        volatility = intel_row.get("Volatility")
+        consistency = intel_row.get("Consistency Rating")
+        fantasy_signal = intel_row.get("Fantasy Signal")
+        first_val = intel_row.get("First Value") or intel_row.get("First")
+        years_used = intel_row.get("Years Used")
+
         if slope is not None:
             summary["slope"] = round(float(slope), 3) if _is_num(slope) else slope
         if r2 is not None:
@@ -1560,6 +1620,19 @@ def record_trend_intel(
             summary["delta"] = net
         if latest is not None:
             summary["latest"] = latest
+        if recent_slope is not None:
+            summary["recent_slope"] = round(float(recent_slope), 3) if _is_num(recent_slope) else recent_slope
+        if volatility is not None:
+            summary["volatility"] = str(volatility)
+        if consistency is not None:
+            summary["consistency"] = str(consistency)
+        if fantasy_signal is not None:
+            summary["fantasy_signal"] = str(fantasy_signal)
+        if first_val is not None:
+            summary["first_value"] = first_val
+        if years_used is not None:
+            summary["years_used"] = int(years_used) if _is_num(years_used) else years_used
+
         parts = []
         if direction:
             parts.append(str(direction).lower())
@@ -1567,6 +1640,13 @@ def record_trend_intel(
             parts.append(f"slope {slope}/yr")
         if r2 is not None:
             parts.append(f"R² {r2}")
+        if recent_slope is not None and slope is not None and _is_num(recent_slope) and _is_num(slope):
+            accel = float(recent_slope) - float(slope)
+            parts.append(f"recent slope {'accelerating' if accel > 0 else 'decelerating'} ({float(recent_slope):+.3f}/yr)")
+        if consistency:
+            parts.append(f"consistency: {consistency}")
+        if fantasy_signal:
+            parts.append(f"signal: {fantasy_signal}")
         if parts:
             summary["summary"] = "; ".join(parts)
     session_state["_ami_trend_summary"] = summary
@@ -1580,6 +1660,76 @@ def record_trend_intel(
     except ImportError:
         pass
     cache_page_context(session_state, "Trend Value", {"trend_summary": summary, "player": summary.get("player"), "metrics": [stat]})
+
+
+def cache_trend_player_context(
+    session_state: dict[str, Any],
+    *,
+    player_row: Any = None,
+    filter_params: dict[str, Any] | None = None,
+    top_breakouts: list[str] | None = None,
+    top_declines: list[str] | None = None,
+) -> None:
+    """Cache the selected player's full trend row (projections + all deltas) as _ami_trend_snapshot.
+
+    Called from the Trend Value page after selected_player_summary is computed.
+    This populates the dead code path in finalize_trend_context_for_send.
+    """
+    snap: dict[str, Any] = {}
+    try:
+        import pandas as pd  # noqa: PLC0415
+
+        if player_row is not None:
+            # Accept either a DataFrame or a dict
+            row_dict: dict[str, Any] = {}
+            if hasattr(player_row, "empty") and getattr(player_row, "empty", True):
+                row_dict = {}
+            elif hasattr(player_row, "iloc"):
+                row_dict = player_row.iloc[0].to_dict()
+            elif hasattr(player_row, "to_dict"):
+                row_dict = player_row.to_dict()
+            elif isinstance(player_row, dict):
+                row_dict = player_row
+
+            if row_dict:
+                for key in ("fullName", "Position", "bats", "Age"):
+                    val = row_dict.get(key)
+                    if val is not None:
+                        snap["player" if key == "fullName" else key.lower()] = val
+
+                # All trend slope deltas
+                deltas: dict[str, Any] = {}
+                for col, val in row_dict.items():
+                    if col.endswith("_trend") and val is not None and pd.notna(val):
+                        stat_name = col[:-6]  # strip "_trend"
+                        deltas[stat_name] = round(float(val), 3) if _is_num(val) else val
+                if deltas:
+                    snap["stat_deltas"] = deltas
+
+                # Next-year projections
+                projs = {k[5:]: round(float(v), 3) if _is_num(v) else v for k, v in row_dict.items()
+                         if k.startswith("proj_") and v is not None and pd.notna(v)}
+                if projs:
+                    snap["projections"] = projs
+
+                # Latest season baselines
+                latests = {k[7:]: round(float(v), 3) if _is_num(v) else v for k, v in row_dict.items()
+                           if k.startswith("latest_") and v is not None and pd.notna(v)}
+                if latests:
+                    snap["latest_season"] = latests
+
+    except Exception:
+        pass
+
+    if isinstance(filter_params, dict):
+        snap["filter_context"] = {k: v for k, v in filter_params.items() if v is not None}
+    if top_breakouts:
+        snap["top_breakout_players"] = list(top_breakouts[:8])
+    if top_declines:
+        snap["top_decline_players"] = list(top_declines[:8])
+
+    if snap:
+        session_state["_ami_trend_snapshot"] = snap
 
 
 def cache_valuation_ami_context(
@@ -1853,6 +2003,12 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                     ctx["canonical_draft_board"] = snap["draft_room_board"][:12]
                 if snap.get("scoring_settings"):
                     ctx["scoring_settings"] = snap["scoring_settings"]
+                if snap.get("category_diagnostics"):
+                    ctx["category_diagnostics"] = snap["category_diagnostics"]
+                if snap.get("position_scarcity_table"):
+                    ctx["position_scarcity_table"] = snap["position_scarcity_table"]
+                if snap.get("draft_slot"):
+                    ctx["draft_slot"] = snap["draft_slot"]
                 ctx["ami_guidance"] = draft_ami_guidance(p)
         except ImportError:
             pass
@@ -1865,6 +2021,14 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
                 ctx["available_players"] = proj["available_players"]
             if proj.get("player_pool_diagnostics") and not ctx.get("player_pool_diagnostics"):
                 ctx["player_pool_diagnostics"] = proj["player_pool_diagnostics"]
+            if proj.get("category_diagnostics") and not ctx.get("category_diagnostics"):
+                ctx["category_diagnostics"] = proj["category_diagnostics"]
+            if proj.get("position_scarcity_table") and not ctx.get("position_scarcity_table"):
+                ctx["position_scarcity_table"] = proj["position_scarcity_table"]
+            if proj.get("draft_slot") and not ctx.get("draft_slot"):
+                ctx["draft_slot"] = proj["draft_slot"]
+            if proj.get("my_next_pick") and not ctx.get("my_next_pick"):
+                ctx["my_next_pick"] = proj["my_next_pick"]
         try:
             _attach_canonical_draft_fields(ctx, session_state)
         except Exception:

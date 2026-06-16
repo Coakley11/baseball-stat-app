@@ -442,15 +442,31 @@ def compact_fantasy_market_rows(df_or_rows: Any, *, limit: int = 12) -> list[dic
                 "Model Rank",
                 "Fantasy Edge",
                 "Expected Fantasy Value",
+                # Core projections
                 "Projected HR",
                 "Projected RBI",
                 "Projected SB",
+                "Projected OPS",
+                "Projected BA",
+                "Projected R",
+                # ADP / market consensus context
+                "ADP",
+                "ADP Rank",
+                "FantasyPros Rank",
+                "Expert Avg Rank",
+                # Risk / disagreement — how much experts agree on this player
+                "Risk / Disagreement",
+                "Expert Std Dev",
+                # Current-season production rank for upside/risk framing
+                "Current Rank",
+                "Current Production Score",
+                # Plain-language reason
                 "Reason",
             ):
                 if col in row.index and pd.notna(row.get(col)):
                     val = row.get(col)
                     if col == "Reason" and val:
-                        entry["reason"] = str(val)[:240]
+                        entry["reason"] = str(val)[:300]
                     else:
                         entry[col] = val
             rows.append(entry)

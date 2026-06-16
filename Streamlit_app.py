@@ -13504,18 +13504,61 @@ if active_page == "Comparison Tool":
                 from applied_math_context import cache_page_context
 
                 cmp_ctx: dict = {"comparison_stats": [str(stat_choice_compare)]}
+
+                # Full trend intel — include all advanced fields, not just slopes
+                _INTEL_COLS = (
+                    "Slope", "Recent Slope", "R-squared", "Net Change", "Trend Direction",
+                    "Volatility", "Consistency Rating", "Fantasy Signal",
+                    "First Value", "Latest Value", "Years Used",
+                )
                 diffs = []
                 for _, row in compare_intel.iterrows():
                     name = str(row.get("Player") or row.get("player") or "").strip()
                     if not name:
                         continue
                     entry = {"player": name.split(" (")[0]}
-                    for col in ("Slope", "Recent Slope", "R-squared", "Net Change", "Trend Direction"):
+                    for col in _INTEL_COLS:
                         if col in row.index and pd.notna(row.get(col)):
                             entry[col] = row.get(col)
                     diffs.append(entry)
                 if diffs:
                     cmp_ctx["comparison_differences"] = diffs[:4]
+                    cmp_ctx["trend_commentary"] = make_advanced_trend_commentary(compare_intel, stat_choice_compare)
+
+                # Career totals side-by-side — gives AMI the aggregate stat picture
+                if not career_compare.empty:
+                    career_rows = []
+                    for _, crow in career_compare.iterrows():
+                        pname = str(crow.get("fullName") or "")
+                        if not pname:
+                            continue
+                        crow_entry: dict = {"player": pname}
+                        for _c in ("R", "AB", "H", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS"):
+                            if _c in crow.index and pd.notna(crow.get(_c)):
+                                _v = crow.get(_c)
+                                crow_entry[_c] = round(float(_v), 3) if pd.api.types.is_number(_v) else _v
+                        career_rows.append(crow_entry)
+                    if career_rows:
+                        cmp_ctx["career_totals"] = career_rows
+
+                # Projections side-by-side from comparison_projection_lookup
+                if not comparison_projection_lookup.empty:
+                    proj_rows = []
+                    _proj_cols = [c for c in comparison_projection_lookup.columns if c.startswith("proj_")]
+                    for _, prow in comparison_projection_lookup.iterrows():
+                        pname = str(prow.get("fullName") or prow.get("playerID") or "")
+                        if not pname or not _proj_cols:
+                            continue
+                        pentry: dict = {"player": pname}
+                        for pc in _proj_cols:
+                            if pd.notna(prow.get(pc)):
+                                _pv = prow[pc]
+                                pentry[pc.replace("proj_", "")] = round(float(_pv), 3) if pd.api.types.is_number(_pv) else _pv
+                        if len(pentry) > 1:
+                            proj_rows.append(pentry)
+                    if proj_rows:
+                        cmp_ctx["projections"] = proj_rows
+
                 st.session_state["_ami_comparison_context"] = cmp_ctx
                 cache_page_context(st.session_state, "Comparison Tool", cmp_ctx)
             except Exception:
@@ -13822,6 +13865,33 @@ if active_page == "Comparison Tool":
                         display_rows=50,
                         style_cols=["Difference", "Test Statistic"]
                     )
+                    # Promote stat-by-stat significance results into AMI context so
+                    # the solver can cite which player leads each category.
+                    try:
+                        from applied_math_context import cache_page_context as _cpc_sig
+
+                        _sig_summary = []
+                        for _, _sr in sig_df.iterrows():
+                            _sstat = str(_sr.get("Stat") or "")
+                            _winner = str(_sr.get("Winner") or "")
+                            _sig_result = str(_sr.get("Significance Result") or "")
+                            _interp = str(_sr.get("Interpretation") or "")
+                            if _sstat:
+                                _sig_summary.append({
+                                    "stat": _sstat,
+                                    "winner": _winner,
+                                    "significance": _sig_result,
+                                    "interpretation": _interp[:200],
+                                })
+                        _existing_cmp = st.session_state.get("_ami_comparison_context") or {}
+                        _existing_cmp["significance_tests"] = _sig_summary
+                        _existing_cmp["significance_overall"] = next(
+                            (r for r in _sig_summary if r.get("stat") == "OVERALL"), {}
+                        )
+                        st.session_state["_ami_comparison_context"] = _existing_cmp
+                        _cpc_sig(st.session_state, "Comparison Tool", _existing_cmp)
+                    except Exception:
+                        pass
     render_contextual_page_nav(
         "Comparison Tool",
         "after_analysis",
@@ -14211,7 +14281,7 @@ if active_page == "Trend Value":
         if not selected_player_summary.empty:
             st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
             try:
-                from applied_math_context import record_trend_intel
+                from applied_math_context import cache_trend_player_context, record_trend_intel
 
                 stat_choice_single = str(st.session_state.get("trend_plot_stat") or "OPS")
                 single_intel = build_advanced_trend_intelligence(
@@ -14226,6 +14296,23 @@ if active_page == "Trend Value":
                         year_start=int(recent_years_trend[0]) if recent_years_trend else None,
                         year_end=int(recent_years_trend[-1]) if recent_years_trend else None,
                     )
+                # Populate _ami_trend_snapshot with projections, all stat deltas,
+                # filter context, and breakout/decline leaders.
+                _bp_names = list(top_breakouts_full["fullName"].head(8)) if not top_breakouts_full.empty else []
+                _dc_names = list(biggest_declines_full["fullName"].head(8)) if not biggest_declines_full.empty else []
+                cache_trend_player_context(
+                    st.session_state,
+                    player_row=selected_player_summary,
+                    filter_params={
+                        "trend_lag": st.session_state.get("trend_lag"),
+                        "trend_position_filter": st.session_state.get("trend_position_filter"),
+                        "trend_min_g": st.session_state.get("trend_min_g"),
+                        "trend_sort_col": st.session_state.get("trend_sort_col"),
+                        "year_range": f"{recent_years_trend[0]}–{recent_years_trend[-1]}" if recent_years_trend else None,
+                    },
+                    top_breakouts=_bp_names,
+                    top_declines=_dc_names,
+                )
             except Exception:
                 pass
 
@@ -15085,10 +15172,31 @@ if active_page == "Fantasy Sleepers & Busts":
         )
         if selected_market_row is not None:
             edge_val = pd.to_numeric(selected_market_row.get("Fantasy Edge", np.nan), errors="coerce")
+            _selected_insight_text = make_market_selected_insight(selected_market_row)
             if pd.notna(edge_val) and edge_val < 0:
-                st.warning(make_market_selected_insight(selected_market_row))
+                st.warning(_selected_insight_text)
             else:
-                st.success(make_market_selected_insight(selected_market_row))
+                st.success(_selected_insight_text)
+            # Push selected player + full insight into the AMI snapshot so
+            # the solver sees who the user is focused on and why.
+            try:
+                _snap = st.session_state.get("_ami_sleepers_snapshot") or {}
+                _snap["selected_player"] = str(selected_market_row.get("fullName") or "")
+                _snap["selected_player_insight"] = _selected_insight_text[:400]
+                _snap_row_keys = (
+                    "Fantasy Edge", "Market Rank", "Model Rank",
+                    "Expected Fantasy Value", "Projected HR", "Projected RBI",
+                    "Projected SB", "Projected OPS", "ADP", "Expert Std Dev",
+                    "Risk / Disagreement", "Current Rank", "Reason",
+                )
+                _snap["selected_player_row"] = {
+                    k: v for k, v in selected_market_row.items()
+                    if k in _snap_row_keys and v is not None
+                    and (isinstance(v, str) or pd.notna(v))
+                }
+                st.session_state["_ami_sleepers_snapshot"] = _snap
+            except Exception:
+                pass
 
         try:
             from baseball_activity import log_sleeper_research
@@ -15628,6 +15736,11 @@ if active_page == "Draft Assistant Simulator":
                 best_available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(6),
                 available_df=available.sort_values("Expected Fantasy Value", ascending=False),
                 position_scarcity=median_scarcity_dropoff,
+                roster_means=roster_means,
+                pool_means=pool_means,
+                position_summary_rows=list(position_summary_rows) if position_summary_rows is not None else None,
+                draft_slot=int(draft_summary.get("your_draft_slot", 0)) or None,
+                my_next_pick=int(draft_summary.get("your_next_pick", 0)) or None,
             )
         except Exception as exc:
             import logging
