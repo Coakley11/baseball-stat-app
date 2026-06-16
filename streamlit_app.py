@@ -12264,6 +12264,7 @@ except Exception:
     pass
 
 render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
+st.session_state.pop("_ami_submit_render_insight_this_run", None)
 
 # Drop restored file_uploader widget keys only (restoring them crashes Streamlit).
 for _ephemeral_key in list(st.session_state.keys()):
@@ -14701,7 +14702,9 @@ if active_page == "Fantasy Sleepers & Busts":
             ])
             pos_options_fantasy = standard_fantasy_positions + existing_fantasy_positions
             _sleepers_canon = (st.session_state.get("fantasy_state") or {}).get("sleepers", {}).get("filters") or {}
-            _default_positions = _sleepers_canon.get("fantasy_market_positions") or pos_options_fantasy
+            _default_positions = _sleepers_canon.get("fantasy_market_positions")
+            if _default_positions is None:
+                _default_positions = []
             ensure_multiselect_state("fantasy_market_positions", pos_options_fantasy, _default_positions)
             st.multiselect(
                 "Primary Position",

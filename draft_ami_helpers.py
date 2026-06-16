@@ -700,7 +700,7 @@ def _roster_position_detail_for_names(
                 ).strip()
                 if pos:
                     return pos
-        return ""
+        return _position_for_name_from_yearly_data(name)
 
     for name in roster_names:
         clean = str(name or "").split(" (")[0].strip()
@@ -711,6 +711,73 @@ def _roster_position_detail_for_names(
         if pos:
             index[clean.lower()] = pos
     return detail, index
+
+
+_YEARLY_NAME_POSITION_MAP: dict[str, str] | None = None
+
+
+def _yearly_name_position_map() -> dict[str, str]:
+    global _YEARLY_NAME_POSITION_MAP
+    if _YEARLY_NAME_POSITION_MAP is not None:
+        return _YEARLY_NAME_POSITION_MAP
+    out: dict[str, str] = {}
+    try:
+        from draft_pool_engine import load_yearly_stat_data
+    except ImportError:
+        _YEARLY_NAME_POSITION_MAP = out
+        return out
+    try:
+        yearly_df = load_yearly_stat_data()
+    except Exception:
+        _YEARLY_NAME_POSITION_MAP = out
+        return out
+    if yearly_df is None or getattr(yearly_df, "empty", True) or "fullName" not in yearly_df.columns:
+        _YEARLY_NAME_POSITION_MAP = out
+        return out
+    pos_col = "Primary Position" if "Primary Position" in yearly_df.columns else None
+    if not pos_col:
+        _YEARLY_NAME_POSITION_MAP = out
+        return out
+    for _, row in yearly_df.iterrows():
+        name = str(row.get("fullName") or "").strip().lower()
+        pos = str(row.get(pos_col) or "").strip()
+        if name and pos:
+            out.setdefault(name, pos)
+    _YEARLY_NAME_POSITION_MAP = out
+    return out
+
+
+def _position_for_name_from_yearly_data(name: str) -> str:
+    """Last-resort position lookup from yearly stat table (board rows often lack Primary Position)."""
+    clean = str(name or "").split(" (")[0].strip()
+    if not clean:
+        return ""
+    return _yearly_name_position_map().get(clean.lower(), "")
+
+
+def _board_player_position_lookup(session_state: dict[str, Any]) -> dict[str, str]:
+    """Player name → position from canonical draft board rows."""
+    out: dict[str, str] = {}
+    try:
+        from draft_room_state import get_canonical_draft_board
+    except ImportError:
+        return out
+    board = get_canonical_draft_board(session_state)
+    if board is None or getattr(board, "empty", True) or "Player" not in board.columns:
+        return out
+    pos_col = "Primary Position" if "Primary Position" in board.columns else None
+    for _, row in board.iterrows():
+        name = str(row.get("Player") or "").strip()
+        if not name:
+            continue
+        pos = ""
+        if pos_col:
+            pos = str(row.get(pos_col) or "").strip()
+        if not pos:
+            pos = _position_for_name_from_yearly_data(name)
+        if pos:
+            out[name.lower()] = pos
+    return out
 
 
 def extract_draft_team_from_question(
@@ -860,13 +927,8 @@ def roster_for_team_from_board(
         if str(p).strip()
     ]
     detail, index = _roster_position_detail_for_names(session_state, names)
-    if "Primary Position" in board.columns:
-        board_pos: dict[str, str] = {}
-        for _, row in rows.iterrows():
-            name = str(row.get("Player") or "").strip()
-            pos = str(row.get("Primary Position") or row.get("position") or row.get("pos") or "").strip()
-            if name and pos:
-                board_pos[name.lower()] = pos
+    board_pos = _board_player_position_lookup(session_state)
+    if board_pos:
         enriched_detail: list[dict[str, str]] = []
         enriched_index: dict[str, str] = dict(index)
         seen: set[str] = set()
@@ -888,6 +950,20 @@ def roster_for_team_from_board(
             if pos:
                 enriched_index[token] = pos
         detail, index = enriched_detail, enriched_index
+    if names and not all(index.get(str(n).lower()) for n in names):
+        for name in names:
+            token = str(name).lower()
+            if index.get(token):
+                continue
+            pos = _position_for_name_from_yearly_data(name)
+            if pos:
+                index[token] = pos
+                for row in detail:
+                    if str(row.get("player") or "").strip().lower() == token:
+                        row["Primary Position"] = pos
+                        break
+                else:
+                    detail.append({"player": name, "Primary Position": pos})
     return names, detail, index
 
 

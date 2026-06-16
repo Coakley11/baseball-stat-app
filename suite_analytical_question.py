@@ -1501,6 +1501,8 @@ def render_analyze_with_applied_math_sidebar(
                         stage_pending_insight(ss, insight)
                         insight_card_created = True
                         ss["_ami_force_insight_render"] = True
+                        ss["_ami_submit_render_insight_this_run"] = True
+                        ss["_ami_insight_return_preserve"] = True
                         try:
                             from applied_math_return_insight import (
                                 SESSION_PERSIST_INSIGHT_DIRTY,
@@ -1546,6 +1548,8 @@ def render_analyze_with_applied_math_sidebar(
                             stage_pending_insight(ss, insight)
                             insight_card_created = True
                             ss["_ami_force_insight_render"] = True
+                            ss["_ami_submit_render_insight_this_run"] = True
+                            ss["_ami_insight_return_preserve"] = True
                         except Exception:
                             pass
                     build_timing = dict(ss.get("_ami_last_send_build_timing") or {})

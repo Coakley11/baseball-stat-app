@@ -1699,6 +1699,18 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
     """
     key = _normalize_app_key(app_key)
     reconcile_stale_page_navigation(st, key)
+    if st.session_state.get("_ami_force_insight_render") or st.session_state.get(
+        "_ami_submit_render_insight_this_run"
+    ):
+        pending = _pending_insight_valid(st)
+        if pending:
+            st.session_state["_ami_insight_return_preserve"] = True
+            st.session_state.pop("_ami_force_insight_render", None)
+            st.session_state["_ami_insight_hydrate_attempted"] = True
+            st.session_state["_ami_insight_hydrate_success"] = True
+            st.session_state["_ami_insight_hydrate_source"] = "submit_staged"
+            _record_insight_return_diagnostics(st, phase="hydrate_submit_staged", insight=pending)
+            return True
     sync_dismissed_insights_from_cloud(st, key)
     st.session_state["_ami_insight_hydrate_attempted"] = True
     url_iid = insight_return_query_id(st)

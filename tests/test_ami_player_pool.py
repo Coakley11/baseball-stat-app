@@ -458,6 +458,8 @@ class TestDraftTeamReview(unittest.TestCase):
         detail = (ctx.get("draft_snapshot") or {}).get("user_roster_detail") or []
         by_name = {row["player"]: row.get("Primary Position") for row in detail}
         self.assertEqual(by_name.get("Mookie Betts"), "OF")
+        self.assertEqual(ctx.get("user_roster_detail"), detail)
+        self.assertIn("mookie betts", (ctx.get("roster_position_index") or {}))
 
 
 class TestDraftAmiCacheWarmth(unittest.TestCase):

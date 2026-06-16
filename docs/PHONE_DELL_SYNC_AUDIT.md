@@ -48,10 +48,27 @@ Legend: **Cloud** = persisted via suite cloud / activity API · **Local** = sess
 
 | Item | Sync | Notes |
 |------|------|-------|
-| Latest insight (`_ami_pending_insight`) | Cloud | Insight store v10 + URL deep link |
-| Dismissed insight IDs | Cloud | `_ami_dismissed_insight_ids` |
+| Latest insight (`_ami_pending_insight`) | Partial | Insight store v10 + URL deep link; **newly created** instant cards need same-run render + cloud save (v19) |
+| Dismissed insight IDs | Cloud | `_ami_dismissed_insight_ids` + dismissal saved items |
 | Continue / full-analysis links | Cloud | Resume key + question_id in activity |
-| Instant solve result | **Local** | Staged immediately; cloud via activity + blob on send |
+| Instant solve result | Partial | Staged immediately on submit (v19 preserve flag); cloud via activity + blob on send |
+
+---
+
+## v19 retest focus (Phone ↔ Dell)
+
+| Target | Status | Notes |
+|--------|--------|-------|
+| Newly created insights | **Partial** | Activity + blob sync; instant card is same-run local until cloud hydrate |
+| Dismissed insights | Cloud | `persist_insight_dismissal_to_cloud` |
+| Watchlists / queue | Cloud | `draft_state` workspace block |
+| Sleepers filters | Partial | `fantasy_state.sleepers.filters` in cloud; position multiselect was resetting (v19 fix) |
+| Comparison state | Cloud | `comparison_state.players` canonical |
+| Trend state | Cloud | `trend_state` canonical |
+| Page restore | Cloud | `page_filter_state` per page |
+| Workspace restore | Cloud | `baseball_workspace_state` envelope on save |
+| AMI draft cache | **Local** | `_ami_draft_snapshot` rebuilt per device |
+| Team roster positions | Partial | Resolved from yearly pool at send (v19); not stored on board rows |
 
 ---
 

@@ -87,6 +87,22 @@ class TestFantasyState(unittest.TestCase):
         self.assertEqual(session["fantasy_market_positions"], ["OF"])
         self.assertEqual(session["fantasy_market_age_range"], (25, 35))
 
+    def test_prepare_sleepers_does_not_sync_full_canonical_over_widget(self) -> None:
+        session = {
+            "fantasy_state": {
+                "sleepers": {
+                    "filters": {
+                        "fantasy_market_positions": ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"],
+                    }
+                }
+            },
+        }
+        prepare_fantasy_sleepers_page(session)
+        self.assertNotIn("fantasy_market_positions", session)
+        session["fantasy_market_positions"] = ["SS", "OF"]
+        prepare_fantasy_sleepers_page(session)
+        self.assertEqual(session["fantasy_market_positions"], ["SS", "OF"])
+
     def test_b_cross_device_cloud_restore(self) -> None:
         session: dict = {"active_page": "Comparison Tool"}
         cloud = {

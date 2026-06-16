@@ -479,7 +479,7 @@ def prepare_fantasy_section_page(session: dict[str, Any], section: str) -> dict[
             section,
             filters=filt,
             reason="canonical_preserve",
-            sync_widget_keys=True,
+            sync_widget_keys=False,
         )
     if canonical and has_widgets:
         filt = {**canonical, **widget}

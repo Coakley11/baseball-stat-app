@@ -125,6 +125,29 @@ class TestInstantInsightSubmit(unittest.TestCase):
         self.assertTrue(session.get(SESSION_PENDING_KEY))
         self.assertEqual(session[SESSION_PENDING_KEY]["insight_id"], "ins-1")
 
+    def test_hydrate_skips_cloud_when_submit_staged(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from applied_math_return_insight import SESSION_PENDING_KEY, hydrate_applied_math_insight_for_session
+
+        st = SimpleNamespace()
+        st.session_state = {
+            SESSION_PENDING_KEY: {
+                "insight_id": "ins-submit",
+                "question": "Test?",
+                "conclusion": "Yes.",
+                "source_page": "Fantasy Sleepers & Busts",
+            },
+            "_ami_submit_render_insight_this_run": True,
+        }
+        with patch(
+            "applied_math_return_insight.load_latest_applied_math_insight_for_app",
+            return_value={"insight_id": "cloud-old", "conclusion": "Old"},
+        ):
+            self.assertTrue(hydrate_applied_math_insight_for_session(st, "baseball"))
+        self.assertEqual(st.session_state[SESSION_PENDING_KEY]["insight_id"], "ins-submit")
+
 
 if __name__ == "__main__":
     unittest.main()

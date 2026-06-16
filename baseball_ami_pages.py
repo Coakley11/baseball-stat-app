@@ -136,6 +136,8 @@ def finalize_sleepers_context_for_send(
         ctx["player"] = target
         ctx["players"] = [target]
         ctx["routing_hint"] = "sleeper_take"
+        ctx["problem_type_hint"] = "sleeper_take"
+        ctx["intent"] = "sleeper_analysis"
         row = _find_sleeper_row_for_name(ctx.get("sleeper_candidates"), target)
         if row:
             ctx["question_player_row"] = row

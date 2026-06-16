@@ -169,6 +169,8 @@ def attach_question_player_to_context(
         if is_sleepers:
             ctx["sleeper_focus"] = row
             ctx["routing_hint"] = "sleeper_take"
+            ctx["problem_type_hint"] = "sleeper_take"
+            ctx["intent"] = "sleeper_analysis"
 
 
 def attach_draft_team_to_context(
@@ -216,12 +218,19 @@ def attach_draft_team_to_context(
     )
     names, detail, index = roster_for_team_from_board(session_state, resolved_team or requested_team)
     owner = resolved_team or requested_team
+    resolved_positions = {
+        str(row.get("player") or ""): str(row.get("Primary Position") or "")
+        for row in detail
+        if isinstance(row, dict) and row.get("player")
+    }
     ctx["_draft_team_diagnostics"] = {
         "requested_team": requested_team,
         "resolved_team": owner,
         "roster_owner_used": owner if names else "",
         "roster_player_count": len(names),
         "roster_players_used": names[:16],
+        "roster_positions_resolved": resolved_positions,
+        "roster_position_index_count": len(index),
     }
     if not names:
         ctx["draft_review_team"] = owner
@@ -230,6 +239,9 @@ def attach_draft_team_to_context(
     ctx["draft_review_team"] = owner
     ctx["roster"] = names
     ctx["user_roster"] = names
+    ctx["user_roster_detail"] = detail
+    ctx["roster_position_index"] = index
+    ctx["team_roster_detail"] = detail
     snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
     if not isinstance(snap, dict):
         snap = {}
@@ -237,7 +249,23 @@ def attach_draft_team_to_context(
     snap["user_roster_detail"] = detail
     snap["roster_position_index"] = index
     snap["draft_review_team"] = owner
+    snap["team_roster_detail"] = detail
     ctx["draft_snapshot"] = snap
+    if index:
+        merged_index = {**dict(ctx.get("player_position_index") or {}), **index}
+        ctx["player_position_index"] = merged_index
+        snap["player_position_index"] = merged_index
+    cached_snap = session_state.get("_ami_draft_snapshot")
+    if isinstance(cached_snap, dict):
+        cached_snap["user_roster_detail"] = detail
+        cached_snap["roster_position_index"] = index
+        cached_snap["draft_review_team"] = owner
+        cached_snap["team_roster_detail"] = detail
+        if index:
+            cached_snap["player_position_index"] = {
+                **dict(cached_snap.get("player_position_index") or {}),
+                **index,
+            }
 def augment_ami_available_pool_at_send(
     ctx: dict[str, Any],
     question: str,
