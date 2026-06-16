@@ -287,21 +287,40 @@ def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict
 
 
 def restore_live_draft_page_filters(session: dict[str, Any], store: dict[str, Any]) -> bool:
+    """Restore Live Draft Room settings and (when available) the active draft room state.
+
+    Settings are always restored from the snapshot — they do NOT require an active draft
+    blob to be present.  The room hydration (pick history, pool, etc.) is gated on a valid
+    persisted blob as before.
+    """
     if is_live_draft_locally_dirty(session):
         return False
     snapshot = store.get(LIVE_DRAFT_PAGE_BLOCK) if isinstance(store, dict) else None
     if not isinstance(snapshot, dict):
         return False
-    blob = snapshot.get(LIVE_DRAFT_ROOM_KEY)
-    if not is_persisted_room_blob(blob):
-        return False
-    restored = room_from_persist_dict(blob)
-    if not restored:
-        return False
-    write_canonical_live_draft_state(session, restored, reason="page_filter_restore", local_edit=False)
+
+    # Always restore league/draft settings and slot sizes from the snapshot.
+    # This is the fix for the refresh-revert bug: settings were saved to the snapshot
+    # by _live_draft_setting_changed but only restored when an active draft blob existed.
+    settings_restored = False
     for key in LIVE_DRAFT_SETTINGS_KEYS:
         if key in snapshot:
             session[key] = snapshot[key]
+            settings_restored = True
+    # Also restore roster slot and team name keys
+    for key, val in snapshot.items():
+        if key.startswith("live_slot_") or key.startswith("live_draft_team_name_"):
+            session[key] = val
+            settings_restored = True
+
+    # Room hydration is separate — only run when a full active draft blob is present.
+    blob = snapshot.get(LIVE_DRAFT_ROOM_KEY)
+    if not is_persisted_room_blob(blob):
+        return settings_restored
+    restored = room_from_persist_dict(blob)
+    if not restored:
+        return settings_restored
+    write_canonical_live_draft_state(session, restored, reason="page_filter_restore", local_edit=False)
     return True
 
 

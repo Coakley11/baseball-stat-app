@@ -559,11 +559,24 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                     from fantasy_state import restore_fantasy_page_filters
 
                     restore_fantasy_page_filters(ss, ss["page_filter_state"], active)
+                elif active == "Live Draft Room":
+                    from live_draft_state import restore_live_draft_page_filters
+
+                    restore_live_draft_page_filters(ss, ss["page_filter_state"])
                 else:
                     pg_state.restore_page_state(ss, active, ss["page_filter_state"])
             except ImportError:
                 pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         ss["_page_state_last_active"] = active
+        # After any page navigation or fresh load, push the canonical team/format into all
+        # per-page alias keys.  This ensures that a team/format change made on one page
+        # propagates to every page rather than being overwritten by a stale snapshot.
+        try:
+            from global_fantasy_settings_state import mirror_canonical_to_all_aliases
+
+            mirror_canonical_to_all_aliases(ss)
+        except ImportError:
+            pass
         try:
             from comparison_state import record_comparison_field_write
 

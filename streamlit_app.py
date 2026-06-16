@@ -12579,7 +12579,6 @@ if active_page == "Historical Explorer":
     flush_historical_filter_edits(st.session_state, st, reason="historical_page_save")
     if developer_mode_enabled():
         render_historical_state_debug(st, st.session_state)
-    save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
     hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
@@ -12587,6 +12586,9 @@ if active_page == "Historical Explorer":
         hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
     )
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
+    # Save AFTER scatter/RF render so that chart configuration keys (hist_scatter_*,
+    # hist_rf_*) are present in session_state and captured in the page snapshot.
+    save_page_state(active_page)
 
 
 def career_filter_changed():
@@ -12811,7 +12813,6 @@ if active_page == "Career Totals":
     if developer_mode_enabled():
         render_career_totals_sync_trace(st, st.session_state)
         render_career_totals_state_debug(st, st.session_state)
-    save_page_state(active_page)
     render_page_filters_debug(active_page)
     st.divider()
     career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
@@ -12819,6 +12820,9 @@ if active_page == "Career Totals":
         career_plot_df, key_prefix="career", row_context="filtered career rows"
     )
     render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
+    # Save AFTER scatter/RF render so that chart configuration keys (career_scatter_*,
+    # career_rf_*) are present in session_state and captured in the page snapshot.
+    save_page_state(active_page)
 
 def leaderboards_filter_changed():
     try:
@@ -12842,6 +12846,16 @@ def fantasy_filter_changed():
         section = section_for_page(st.session_state.get("active_page", ""))
         if section:
             mark_fantasy_filter_pending_sync(st.session_state, section)
+    except Exception:
+        pass
+    # Propagate any alias format change to the canonical key so all pages see it.
+    try:
+        from global_fantasy_settings_state import FORMAT_ALIASES, on_alias_format_changed
+
+        for alias_key in FORMAT_ALIASES:
+            if alias_key in st.session_state:
+                on_alias_format_changed(st.session_state, alias_key)
+                break
     except Exception:
         pass
 
@@ -13284,11 +13298,18 @@ if active_page == "Comparison Tool":
     if comparison_teams:
         default_compare_team = comparison_action_team if comparison_action_team in comparison_teams else comparison_teams[0]
         ensure_select_in_options("comparison_user_team", comparison_teams, default_compare_team)
+        def _comparison_team_changed():
+            try:
+                from global_fantasy_settings_state import on_alias_team_changed
+                on_alias_team_changed(st.session_state, "comparison_user_team")
+            except Exception:
+                pass
         comparison_action_team = st.selectbox(
             "Which fantasy team are you?",
             comparison_teams,
             key="comparison_user_team",
             help="Used to decide whether Draft Player is available and whether trade actions are Trade Away or Try to Acquire.",
+            on_change=_comparison_team_changed,
         )
         st.session_state["room_your_team"] = comparison_action_team
     else:
@@ -14685,10 +14706,17 @@ if active_page == "Fantasy Sleepers & Busts":
             if sleeper_team_options:
                 sleeper_default_team = st.session_state.get("room_your_team", sleeper_team_options[0])
                 ensure_select_in_options("sleeper_sync_team", sleeper_team_options, sleeper_default_team)
+                def _sleeper_team_changed():
+                    try:
+                        from global_fantasy_settings_state import on_alias_team_changed
+                        on_alias_team_changed(st.session_state, "sleeper_sync_team")
+                    except Exception:
+                        pass
                 sleeper_team_name = st.selectbox(
                     "My Draft Room Team",
                     sleeper_team_options,
                     key="sleeper_sync_team",
+                    on_change=_sleeper_team_changed,
                 )
                 sleeper_synced_roster = draft_room_for_sleepers[
                     draft_room_for_sleepers["Team"].astype(str) == str(sleeper_team_name)
@@ -15280,7 +15308,14 @@ if active_page == "Draft Assistant Simulator":
             draft_window = st.selectbox("Projection Window", _draft_window_options, key="draft_window")
         with d2:
             validate_state_option("draft_format", _draft_format_options, "5x5 Roto")
-            draft_format = st.selectbox("League Format", _draft_format_options, key="draft_format")
+            def _draft_format_changed():
+                try:
+                    from global_fantasy_settings_state import on_alias_format_changed
+                    on_alias_format_changed(st.session_state, "draft_format")
+                except Exception:
+                    pass
+            draft_format = st.selectbox("League Format", _draft_format_options, key="draft_format",
+                                        on_change=_draft_format_changed)
         with d3:
             init_state_once("draft_top_n", 10)
             draft_top_n = st.slider(
@@ -15369,12 +15404,19 @@ if active_page == "Draft Assistant Simulator":
             default_team_name = st.session_state.get("room_your_team", assistant_team_names[0])
             default_team_index = assistant_team_names.index(default_team_name) if default_team_name in assistant_team_names else 0
 
+            def _draft_assistant_team_changed():
+                try:
+                    from global_fantasy_settings_state import on_alias_team_changed
+                    on_alias_team_changed(st.session_state, "draft_assistant_synced_team")
+                except Exception:
+                    pass
             assistant_my_team_name = st.selectbox(
                 "Your team",
                 assistant_team_names,
                 index=default_team_index,
                 key="draft_assistant_synced_team",
                 help="Which fantasy team on the draft board is yours.",
+                on_change=_draft_assistant_team_changed,
             )
 
             _da_highlight = st.session_state.get("pending_draft_assistant_player")
@@ -15994,9 +16036,10 @@ if active_page == "Draft Room Simulator":
                 prepare_global_fantasy_settings(st.session_state)
             except Exception:
                 pass
-            # Persist the new value to page_filter_state immediately so that
-            # the next rerun's restore sees the updated settings before clearing.
+            # Persist to page_filter_state AND force cloud save so that a browser
+            # refresh restores the user's settings rather than reverting to defaults.
             save_page_state("Draft Room Simulator")
+            force_save_baseball_state(st, reason="draft_room_settings_changed")
 
         _room_format_options = ["5x5 Roto", "Points League"]
         _room_window_options = [3, 4, 5]
@@ -17261,9 +17304,10 @@ if active_page == "Live Draft Room":
             _live_proj_window_options = [3, 4, 5]
 
             def _live_draft_setting_changed():
-                # Persist the new value to page_filter_state immediately so that
-                # the next rerun's restore sees the updated value before clearing.
+                # Persist to page_filter_state AND force cloud save so that a browser
+                # refresh restores the user's settings rather than reverting to defaults.
                 save_page_state("Live Draft Room")
+                force_save_baseball_state(st, reason="live_draft_setting_changed")
 
             with lc1:
                 validate_text_state("live_draft_league_name", "My Fantasy League")
@@ -17693,11 +17737,18 @@ if active_page == "Fantasy Standings Tracker":
 
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
+    def _standings_format_changed():
+        try:
+            from global_fantasy_settings_state import on_alias_format_changed
+            on_alias_format_changed(st.session_state, "standings_scoring_format")
+        except Exception:
+            pass
+        fantasy_filter_changed()
     scoring_format_tracker = st.selectbox(
         "Scoring Format",
         _standings_format_options,
         key="standings_scoring_format",
-        on_change=fantasy_filter_changed,
+        on_change=_standings_format_changed,
     )
 
     # Do not use a session_state key on file_uploader here.

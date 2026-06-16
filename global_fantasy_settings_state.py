@@ -72,16 +72,25 @@ def _mirror_globals_to_aliases(session: dict[str, Any]) -> None:
             session[alias] = canonical_val
 
 
-def prepare_global_fantasy_settings(session: dict[str, Any]) -> None:
+def prepare_global_fantasy_settings(
+    session: dict[str, Any],
+    *,
+    force_mirror: bool = False,
+) -> None:
     """Call before widgets on any baseball page that uses team or format.
 
     Propagates the canonical team/format into all alias keys so that a change
     made on one page is visible on every other page without explicit contextual
     transfers.
 
-    Does NOT overwrite an alias that is already locally set to a different value
-    via its own widget — only seeds it if it's absent or matches the previous
-    canonical propagation.
+    When ``force_mirror=True`` (called after page navigation / restore), the
+    canonical value always wins over any stale per-page snapshot value.  This is
+    the correct behavior on navigation because the snapshot was saved before the
+    canonical was updated.
+
+    When ``force_mirror=False`` (called during a same-page rerun), the alias is
+    only overwritten if it still matches the previously-propagated value — i.e.
+    the user has not edited that alias locally on its own page.
     """
     team = session.get(GLOBAL_TEAM_KEY)
     fmt = session.get(GLOBAL_FORMAT_KEY)
@@ -94,22 +103,48 @@ def prepare_global_fantasy_settings(session: dict[str, Any]) -> None:
         if alias not in session:
             session[alias] = canonical_val
         elif session[alias] != canonical_val:
-            # Only override if the alias was last written by canonical propagation
-            # (tracked via _global_settings_last_propagated). If the user explicitly
-            # changed the alias on its own page, respect that choice.
-            last = session.get("_global_settings_last_propagated") or {}
-            if isinstance(last, dict) and last.get(alias) == session[alias]:
+            if force_mirror:
+                # After page navigation: canonical wins; stale snapshot overwritten.
                 session[alias] = canonical_val
+            else:
+                # Same-page rerun: only override if the alias was last written by us.
+                last = session.get("_global_settings_last_propagated") or {}
+                if isinstance(last, dict) and last.get(alias) == session[alias]:
+                    session[alias] = canonical_val
     # Record what we propagated so we can detect vs user-local edits next time.
     propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
     session["_global_settings_last_propagated"] = propagated
 
 
+def mirror_canonical_to_all_aliases(session: dict[str, Any]) -> None:
+    """Unconditionally push canonical team/format into every alias.
+
+    Use this after page navigation / restore so that all alias keys reflect the
+    current canonical values, regardless of what the old page snapshot had.
+    Equivalent to ``prepare_global_fantasy_settings(session, force_mirror=True)``.
+    """
+    prepare_global_fantasy_settings(session, force_mirror=True)
+
+
+def on_alias_team_changed(session: dict[str, Any], alias_key: str) -> None:
+    """on_change for any alias team selectbox — promote to canonical and mirror everywhere."""
+    new_team = session.get(alias_key) or session.get(GLOBAL_TEAM_KEY)
+    if new_team is not None:
+        write_canonical_global_fantasy_settings(session, team=str(new_team).strip())
+
+
+def on_alias_format_changed(session: dict[str, Any], alias_key: str) -> None:
+    """on_change for any alias format selectbox — promote to canonical and mirror everywhere."""
+    new_fmt = session.get(alias_key) or session.get(GLOBAL_FORMAT_KEY)
+    if new_fmt is not None:
+        write_canonical_global_fantasy_settings(session, format_=str(new_fmt).strip())
+
+
 def on_global_team_changed(session: dict[str, Any]) -> None:
-    """on_change callback for any team selectbox — write canonical + mirror."""
+    """on_change callback for canonical team selectbox — write canonical + mirror."""
     write_canonical_global_fantasy_settings(session, team=session.get(GLOBAL_TEAM_KEY))
 
 
 def on_global_format_changed(session: dict[str, Any]) -> None:
-    """on_change callback for any format selectbox — write canonical + mirror."""
+    """on_change callback for canonical format selectbox — write canonical + mirror."""
     write_canonical_global_fantasy_settings(session, format_=session.get(GLOBAL_FORMAT_KEY))
