@@ -14820,12 +14820,20 @@ if active_page == "Fantasy Sleepers & Busts":
                 fantasy_plot_df[_col] = np.nan
         fantasy_plot_df = format_fantasy_table(fantasy_plot_df)
 
+        def _sleepers_chart_changed():
+            try:
+                from fantasy_state import mark_sleepers_filter_local_edit
+                mark_sleepers_filter_local_edit(st.session_state)
+            except Exception:
+                pass
+
         with st.expander("Chart display options", expanded=False):
             fantasy_color_col = st.selectbox(
                 "Color by",
                 ["None", "Primary Position", "Bats", "Team", "League"],
                 index=1,
                 key="fantasy_market_scatter_color",
+                on_change=_sleepers_chart_changed,
             )
             fantasy_size_options = [c for c in ["Fantasy Edge", "Curve Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
             fantasy_size_col = st.selectbox(
@@ -14833,6 +14841,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 fantasy_size_options,
                 index=0,
                 key="fantasy_market_scatter_size",
+                on_change=_sleepers_chart_changed,
             )
             fantasy_view_mode = st.radio(
                 "Scatterplot View",
@@ -14840,6 +14849,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 horizontal=True,
                 key="fantasy_edge_scatter_view_mode",
                 help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every player/outlier.",
+                on_change=_sleepers_chart_changed,
             )
             fantasy_trendline_type = st.selectbox(
                 "Market Edge Trendline Type",
@@ -14847,6 +14857,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 index=5,
                 key="fantasy_market_edge_trendline_type",
                 help="Auto Best Fit picks the curve with the highest R² for market rank vs model rank.",
+                on_change=_sleepers_chart_changed,
             )
         fantasy_color_col = st.session_state.get("fantasy_market_scatter_color", "Primary Position")
         fantasy_size_col = st.session_state.get("fantasy_market_scatter_size", "Fantasy Edge")
@@ -15047,11 +15058,19 @@ if active_page == "Fantasy Sleepers & Busts":
 
         st.subheader("Fantasy Market Insight Summary")
         market_insight_pool = pd.concat([sleepers, busts], ignore_index=True).drop_duplicates("fullName")
+        def _sleepers_player_selection_changed():
+            try:
+                from fantasy_state import mark_sleepers_filter_local_edit
+                mark_sleepers_filter_local_edit(st.session_state)
+            except Exception:
+                pass
+
         selected_market_row = _select_insight_row(
             market_insight_pool,
             key="fantasy_market_selected_player",
             label="Choose a sleeper or bust-risk player",
             default_name=top_sleeper.get("fullName"),
+            on_change=_sleepers_player_selection_changed,
         )
         if selected_market_row is not None:
             edge_val = pd.to_numeric(selected_market_row.get("Fantasy Edge", np.nan), errors="coerce")
@@ -15825,6 +15844,18 @@ if active_page == "Draft Room Simulator":
                 key="fantasy_draft_projection_style",
                 help="Conservative / Balanced / Aggressive — affects model scores on picks, not Lahman history.",
             )
+        def _draft_room_settings_changed():
+            try:
+                from draft_room_state import mark_draft_room_local_edit
+                mark_draft_room_local_edit(st.session_state)
+            except Exception:
+                pass
+            try:
+                from global_fantasy_settings_state import prepare_global_fantasy_settings
+                prepare_global_fantasy_settings(st.session_state)
+            except Exception:
+                pass
+
         _room_format_options = ["5x5 Roto", "Points League"]
         _room_window_options = [3, 4, 5]
         dr1, dr2, dr3, dr4 = st.columns(4)
@@ -15837,6 +15868,7 @@ if active_page == "Draft Room Simulator":
                 value=int(st.session_state["room_team_count"]),
                 step=1,
                 key="room_team_count",
+                on_change=_draft_room_settings_changed,
             )
         with dr2:
             ensure_number_state("room_rounds", 20, min_value=1, max_value=40)
@@ -15847,13 +15879,20 @@ if active_page == "Draft Room Simulator":
                 value=int(st.session_state["room_rounds"]),
                 step=1,
                 key="room_rounds",
+                on_change=_draft_room_settings_changed,
             )
         with dr3:
             ensure_select_in_options("room_format", _room_format_options, "5x5 Roto")
-            room_format = st.selectbox("Scoring Format", _room_format_options, key="room_format")
+            room_format = st.selectbox(
+                "Scoring Format", _room_format_options, key="room_format",
+                on_change=_draft_room_settings_changed,
+            )
         with dr4:
             ensure_select_in_options("room_window", _room_window_options, 3)
-            room_window = st.selectbox("Projection Window", _room_window_options, key="room_window")
+            room_window = st.selectbox(
+                "Projection Window", _room_window_options, key="room_window",
+                on_change=_draft_room_settings_changed,
+            )
 
         default_names = ["Daniel"] + [f"Team {i}" for i in range(2, int(room_team_count) + 1)]
         team_name_text = st.text_area(
@@ -15868,7 +15907,10 @@ if active_page == "Draft Room Simulator":
         room_team_names = room_team_names[:int(room_team_count)]
 
         ensure_select_in_options("room_your_team", room_team_names, room_team_names[0] if room_team_names else "")
-        your_team = st.selectbox("Your Team", room_team_names, key="room_your_team")
+        your_team = st.selectbox(
+            "Your Team", room_team_names, key="room_your_team",
+            on_change=_draft_room_settings_changed,
+        )
 
         st.subheader("Import existing draft")
         st.caption(
@@ -17072,7 +17114,6 @@ if active_page == "Live Draft Room":
         with st.expander("Draft Setup / Configuration", expanded=True):
             st.subheader("League & Draft Settings")
             lc1, lc2, lc3 = st.columns(3)
-            _live_team_options = [4, 8, 10, 12, 14]
             _live_scoring_options = ["Roto (5x5)", "Points League"]
             _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
             _live_proj_window_options = [3, 4, 5]
@@ -17082,8 +17123,14 @@ if active_page == "Live Draft Room":
                     "League Name",
                     key="live_draft_league_name",
                 )
-                validate_state_option("live_draft_team_count", _live_team_options, 4)
-                live_num_teams = st.selectbox("Number of Teams", _live_team_options, key="live_draft_team_count")
+                ensure_number_state("live_draft_team_count", 10, min_value=2, max_value=20)
+                live_num_teams = st.number_input(
+                    "Number of Teams",
+                    min_value=2,
+                    max_value=20,
+                    step=1,
+                    key="live_draft_team_count",
+                )
                 validate_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
                 live_picks_per_team = st.number_input(
                     "Picks per Team",

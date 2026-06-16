@@ -395,11 +395,21 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     else:
         ss.setdefault("page_filter_state", {})
 
+    # Settings widgets (room_*) are part of _GLOBAL_KEYS but are also owned by the
+    # draft-room blob. When the user edits settings, draft_room_state_dirty is set
+    # (via mark_draft_room_local_edit on_change) and we must not let the cloud blob
+    # overwrite their live edits on the very next rerun.
+    _DRAFT_ROOM_SETTINGS_GLOBALS = frozenset(
+        {"room_format", "room_team_count", "room_rounds", "room_your_team", "room_window"}
+    )
+
     preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
             continue
         if skip_draft_room and key in (DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_STATE_KEY):
+            continue
+        if skip_draft_room and key in _DRAFT_ROOM_SETTINGS_GLOBALS:
             continue
         if preserve_insight and key in _INSIGHT_KEYS:
             continue
@@ -706,12 +716,18 @@ def apply_baseball_session_defaults(st: Any) -> None:
 
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
-    return sync_workspace_protocol(
+    result = sync_workspace_protocol(
         st,
         APP_ID,
         apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
         cloud_first=True,
     )
+    try:
+        from global_fantasy_settings_state import prepare_global_fantasy_settings
+        prepare_global_fantasy_settings(st.session_state)
+    except Exception:
+        pass
+    return result
 
 
 def restore_baseball_disk_state_once(st: Any) -> bool:

@@ -1743,9 +1743,14 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
             ctx["trend_window"] = f"{lag} seasons"
         ami = session_state.get("_ami_trend_summary")
         if isinstance(ami, dict) and ami:
-            ctx["trend_summary"] = ami
-            if ami.get("draft_status"):
-                ctx["draft_status"] = ami["draft_status"]
+            # Guard: only use cached summary when its player matches the current selection.
+            # A stale cache from a previous player would pollute the send payload.
+            ami_player = _player_name(ami.get("player") or "").lower()
+            current_player = _player_name(ctx.get("player") or "").lower()
+            if not ami_player or not current_player or ami_player == current_player:
+                ctx["trend_summary"] = ami
+                if ami.get("draft_status"):
+                    ctx["draft_status"] = ami["draft_status"]
         try:
             from baseball_ami_frame import player_draft_status
             from draft_ami_helpers import draft_ami_guidance
