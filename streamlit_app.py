@@ -12590,7 +12590,10 @@ if active_page == "Historical Explorer":
     render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
     # Save AFTER scatter/RF render so that chart configuration keys (hist_scatter_*,
     # hist_rf_*) are present in session_state and captured in the page snapshot.
+    # force_save uses reason="historical_edit" which is in the autosave bypass list,
+    # ensuring settings persist even when the post-restore cooldown block is active.
     save_page_state(active_page)
+    force_save_baseball_state(st, reason="historical_edit")
 
 
 def career_filter_changed():
@@ -12824,7 +12827,9 @@ if active_page == "Career Totals":
     render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
     # Save AFTER scatter/RF render so that chart configuration keys (career_scatter_*,
     # career_rf_*) are present in session_state and captured in the page snapshot.
+    # force_save uses reason="career_edit" which is in the autosave bypass list.
     save_page_state(active_page)
+    force_save_baseball_state(st, reason="career_edit")
 
 def leaderboards_filter_changed():
     try:
@@ -16019,14 +16024,6 @@ if active_page == "Draft Room Simulator":
     dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup & import"])
 
     with dr_tab_setup:
-        with st.expander("Projection style (advanced)", expanded=False):
-            ensure_select_in_options("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-            st.selectbox(
-                "Projection style",
-                list(PROJECTION_STYLE_OPTIONS),
-                key="fantasy_draft_projection_style",
-                help="Conservative / Balanced / Aggressive — affects model scores on picks, not Lahman history.",
-            )
         def _draft_room_settings_changed():
             try:
                 from draft_room_state import mark_draft_room_local_edit
@@ -16042,6 +16039,16 @@ if active_page == "Draft Room Simulator":
             # refresh restores the user's settings rather than reverting to defaults.
             save_page_state("Draft Room Simulator")
             force_save_baseball_state(st, reason="draft_room_settings_changed")
+
+        with st.expander("Projection style (advanced)", expanded=False):
+            ensure_select_in_options("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+            st.selectbox(
+                "Projection style",
+                list(PROJECTION_STYLE_OPTIONS),
+                key="fantasy_draft_projection_style",
+                help="Conservative / Balanced / Aggressive — affects model scores on picks, not Lahman history.",
+                on_change=_draft_room_settings_changed,
+            )
 
         _room_format_options = ["5x5 Roto", "Points League"]
         _room_window_options = [3, 4, 5]
@@ -16086,7 +16093,8 @@ if active_page == "Draft Room Simulator":
             "Team Names, one per line",
             value="\n".join(default_names),
             key="room_team_names",
-            help="Put each fantasy team on its own line. The draft table will use these names."
+            help="Put each fantasy team on its own line. The draft table will use these names.",
+            on_change=_draft_room_settings_changed,
         )
         room_team_names = [x.strip() for x in team_name_text.splitlines() if x.strip()]
         if len(room_team_names) < int(room_team_count):
@@ -16657,14 +16665,22 @@ if active_page == "Draft Simulation Test Mode":
     _lab_format_options = ["5x5 Roto", "Points League"]
     lc1, lc2, lc3, lc4 = st.columns(4)
     with lc1:
+        def _draft_sim_setting_changed():
+            save_page_state("Draft Simulation Test Mode")
+            force_save_baseball_state(st, reason="draft_sim_settings_changed")
+
         validate_state_option("draft_lab_window", _lab_window_options, 3)
-        lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window")
+        lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
+                                  on_change=_draft_sim_setting_changed)
     with lc2:
         validate_state_option("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
-        lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type")
+        lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type",
+                                  on_change=_draft_sim_setting_changed)
     with lc3:
         validate_state_option("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-        lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="draft_lab_projection_style")
+        lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS),
+                                            key="draft_lab_projection_style",
+                                            on_change=_draft_sim_setting_changed)
     with lc4:
         validate_number_state("draft_lab_picks_per_team", 15, min_value=5, max_value=25)
         lab_picks_per_team = st.number_input(
@@ -16673,6 +16689,7 @@ if active_page == "Draft Simulation Test Mode":
             max_value=25,
             step=1,
             key="draft_lab_picks_per_team",
+            on_change=_draft_sim_setting_changed,
         )
 
     with st.expander("How the Draft Model Works", expanded=False):

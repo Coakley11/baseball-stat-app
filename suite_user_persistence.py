@@ -1628,6 +1628,14 @@ def force_autosave(
             "insight_hydrate",
             "applied_math_send",
             "music_coach_send",
+            # Settings-change saves must bypass the post-restore cooldown block.
+            # The block was designed to protect draft pick data — it must not silently
+            # discard settings changes made while a draft board is in session.
+            "draft_room_settings_changed",
+            "live_draft_setting_changed",
+            "draft_sim_settings_changed",
+            "historical_chart_save",
+            "career_chart_save",
         )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
