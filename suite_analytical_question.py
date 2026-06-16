@@ -22,7 +22,7 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v2"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v3"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
@@ -997,6 +997,8 @@ def submit_analytical_question(
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
     card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     blob_meta: dict[str, Any] = {}
+    activity_created = False
+    continue_item_created = False
     if duplicate:
         t_blob = time.perf_counter()
         blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
@@ -1029,6 +1031,7 @@ def submit_analytical_question(
                 resume_subtitle=card_subtitle,
                 action_url=action_url,
             )
+            activity_created = True
         except Exception as exc:
             log.warning("record_activity failed for analytical_question: %s", exc)
         timing["record_activity_ms"] = round((time.perf_counter() - t_rec) * 1000, 1)
@@ -1054,23 +1057,31 @@ def submit_analytical_question(
             blob_meta = {"blob_updated": False, "blob_save_deferred": True}
             timing["blob_save_deferred"] = True
             timing["blob_save_ms"] = 0.0
+            session_state["_ami_pending_resume_upsert"] = {
+                "payload": payload,
+                "action_url": action_url,
+            }
+            continue_item_created = True
+            timing["resume_upsert_ms"] = 0.0
         else:
             blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
             timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
         if isinstance(blob_meta.get("blob_save_ms_by_app"), dict):
             timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
 
-        if blob_meta.get("blob_updated"):
+        elif blob_meta.get("blob_updated"):
             if session_state is not None:
                 session_state["_ami_pending_resume_upsert"] = {
                     "payload": payload,
                     "action_url": action_url,
                 }
+                continue_item_created = True
                 timing["resume_upsert_ms"] = 0.0
                 timing["resume_upsert_deferred"] = True
             else:
                 t_resume = time.perf_counter()
                 _upsert_applied_intelligence_resume(payload, action_url=action_url, include_context_json=False)
+                continue_item_created = True
                 timing["resume_upsert_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
     timing["send_total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
     if timing:
@@ -1103,6 +1114,31 @@ def submit_analytical_question(
             "duplicate": duplicate,
             **blob_meta,
         }
+        submit_diag = {
+            "source_page": payload.get("source_page"),
+            "question_id": payload.get("question_id"),
+            "activity_created": activity_created,
+            "continue_item_created": continue_item_created,
+            "duplicate_detected": duplicate,
+            "insight_card_created": bool(session_state.get("_ami_last_instant_insight_ok")),
+            "command_center_write_status": "skipped_duplicate" if duplicate else ("ok" if activity_created else "failed"),
+        }
+        ctx_diag = dict(payload.get("context") or {})
+        if ctx_diag.get("trend_send_diagnostics"):
+            submit_diag.update(dict(ctx_diag["trend_send_diagnostics"]))
+        team_diag = ctx_diag.get("_draft_team_diagnostics")
+        if isinstance(team_diag, dict):
+            submit_diag.update(team_diag)
+        if ctx_diag.get("send_pipeline_diagnostics"):
+            submit_diag.update(
+                {
+                    k: v
+                    for k, v in dict(ctx_diag["send_pipeline_diagnostics"]).items()
+                    if k.startswith(("requested_team", "resolved_team", "roster_", "trend_", "source_page", "routing_"))
+                }
+            )
+        session_state["_ami_last_submit_diagnostics"] = submit_diag
+        send_diag.update(submit_diag)
         session_state["_ami_last_send_diagnostics"] = send_diag
     return {
         **payload,
@@ -1128,6 +1164,7 @@ def build_submit_context(
     timing: dict[str, Any] = {}
     t0 = time.perf_counter()
     ctx, _ = build_context_from_session(source_app, source_page, session_state)
+    ctx["source_page"] = str(source_page or "").strip()
     timing["build_context_from_session_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     low_page = str(source_page or "").lower()
@@ -1387,6 +1424,7 @@ def render_analyze_with_applied_math_sidebar(
                 build_timing["instant_insight_ms"] = round((time.perf_counter() - t_inst) * 1000, 1)
                 build_timing["instant_insight_ok"] = instant_solved
                 ss["_ami_last_send_build_timing"] = build_timing
+            ss["_ami_last_instant_insight_ok"] = instant_solved
 
             result = submit_analytical_question(
                 source_app=source_app,
@@ -1398,6 +1436,9 @@ def render_analyze_with_applied_math_sidebar(
                 session_state=ss,
                 defer_blob_save=is_baseball and instant_solved,
             )
+            if is_baseball and instant_solved:
+                _flush_pending_blob_save(ss)
+                _flush_pending_resume_upsert(ss)
             ss["_last_analytical_question"] = result
             ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
             dup_msg = (
@@ -1422,6 +1463,11 @@ def render_analyze_with_applied_math_sidebar(
                 st.sidebar.info(dup_msg)
             else:
                 st.sidebar.success(ok_msg)
+                if is_baseball and instant_solved:
+                    try:
+                        st.rerun()
+                    except Exception:
+                        pass
                 if on_after_send is not None:
                     try:
                         on_after_send()
@@ -1440,6 +1486,12 @@ def render_analyze_with_applied_math_sidebar(
                         st.text(f"{key}: {val}")
         except Exception:
             pass
+        submit_diag = ss.get("_ami_last_submit_diagnostics")
+        if isinstance(submit_diag, dict) and submit_diag:
+            with st.sidebar.expander("AMI submit diagnostics (last send)", expanded=True):
+                for key, val in submit_diag.items():
+                    if val is not None and val != "" and val != []:
+                        st.text(f"{key}: {val}")
         last_diag = ss.get("_ami_last_send_diagnostics")
         if isinstance(last_diag, dict) and last_diag:
             with st.sidebar.expander("AMI send pipeline (last send)", expanded=False):
@@ -1591,6 +1643,8 @@ def build_context_from_session(
                 ctx["players"] = [ctx["player_a"], ctx["player_b"]]
                 summary = f"{ctx['player_a']} vs {ctx['player_b']}"
         elif source_page == "Trend Value":
+            ctx.pop("player_a", None)
+            ctx.pop("player_b", None)
             multi = session_state.get("trend_players_multi") or []
             multi_names = [_player_name(x) for x in multi if x][:6]
             plot_stat = str(session_state.get("trend_plot_stat") or "").strip()
@@ -1604,7 +1658,7 @@ def build_context_from_session(
                     if s_str and s_str not in metrics:
                         metrics.append(s_str)
             if len(multi_names) >= 2:
-                ctx["workflow"] = "Player trend comparison"
+                ctx["workflow"] = "Multi-player trend analysis"
                 ctx["players"] = multi_names
                 if metrics:
                     ctx["metrics"] = metrics[:6]

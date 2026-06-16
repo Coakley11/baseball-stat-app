@@ -345,6 +345,39 @@ class AppliedMathInsight:
         return asdict(self)
 
 
+_PIPELINE_DIAG_KEYS = (
+    "source_page",
+    "requested_team",
+    "resolved_team",
+    "roster_owner_used",
+    "roster_player_count",
+    "roster_players_used",
+    "trend_context_present",
+    "trend_player",
+    "trend_metric_count",
+    "trend_summary_present",
+    "trend_mode_selected",
+    "routing_reason",
+    "player_a_present",
+    "player_b_present",
+    "activity_created",
+    "continue_item_created",
+    "insight_card_created",
+    "command_center_write_status",
+)
+
+
+def _merge_pipeline_diagnostics(key_numbers: dict[str, Any], context: dict[str, Any] | None) -> None:
+    if not isinstance(context, dict):
+        return
+    for src in ("send_pipeline_diagnostics", "trend_send_diagnostics", "_draft_team_diagnostics"):
+        block = context.get(src)
+        if isinstance(block, dict):
+            for key, val in block.items():
+                if key in _PIPELINE_DIAG_KEYS and val is not None and val != "" and val != []:
+                    key_numbers[key] = val
+
+
 def _confidence_word(pct: int | None) -> str:
     if pct is None:
         return "medium"
@@ -441,6 +474,8 @@ def build_return_insight_payload(
             key_numbers.update({k: v for k, v in computed.items() if v is not None})
         if isinstance(live, dict):
             key_numbers.update({f"live_{k}": v for k, v in list(live.items())[:6]})
+
+    _merge_pipeline_diagnostics(key_numbers, context if isinstance(context, dict) else None)
 
     if route is not None:
         if not model_name:
@@ -2065,6 +2100,15 @@ def render_applied_math_insight_panel(st: Any) -> bool:
         if conf:
             extra = f" ({insight.get('confidence_pct')}%)" if insight.get("confidence_pct") else ""
             st.caption(f"Confidence: **{conf}**{extra}")
+        diag = {
+            k: (insight.get("key_numbers") or {}).get(k)
+            for k in _PIPELINE_DIAG_KEYS
+            if (insight.get("key_numbers") or {}).get(k) is not None
+        }
+        if diag:
+            with st.expander("Pipeline diagnostics", expanded=False):
+                for key, val in diag.items():
+                    st.text(f"{key}: {val}")
         url = str(insight.get("full_analysis_url") or "").strip()
         c1, c2 = st.columns(2)
         with c1:

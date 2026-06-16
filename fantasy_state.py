@@ -343,13 +343,23 @@ def gather_fantasy_section(session: dict[str, Any], section: str) -> dict[str, A
     return {}
 
 
+def _filter_values_differ(key: str, canonical_val: Any, widget_val: Any) -> bool:
+    if canonical_val == widget_val:
+        return False
+    if key in ("fantasy_market_positions", "sleeper_focus_needed_positions") and isinstance(canonical_val, list) and isinstance(widget_val, list):
+        return set(canonical_val) != set(widget_val)
+    if key == "fantasy_market_age_range" and isinstance(canonical_val, (list, tuple)) and isinstance(widget_val, (list, tuple)):
+        return tuple(canonical_val[:2]) != tuple(widget_val[:2])
+    return True
+
+
 def _section_widget_drift(session: dict[str, Any], section: str) -> bool:
     widget = _extract_section_from_session(session, section)
     canonical = canonical_fantasy_section(session, section) or {}
     if not widget:
         return False
     for key, val in widget.items():
-        if canonical.get(key) != val:
+        if _filter_values_differ(key, canonical.get(key), val):
             return True
     return False
 

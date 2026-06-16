@@ -84,13 +84,22 @@ def finalize_trend_context_for_send(ctx: dict[str, Any], session_state: dict[str
 def build_trend_send_diagnostics(ctx: dict[str, Any], *, source_page: str) -> dict[str, Any]:
     trend = ctx.get("trend_summary") if isinstance(ctx.get("trend_summary"), dict) else {}
     metrics = ctx.get("metrics") if isinstance(ctx.get("metrics"), list) else []
+    player = str(
+        ctx.get("player")
+        or ctx.get("question_player")
+        or trend.get("player")
+        or ((ctx.get("players") or [""])[0] if isinstance(ctx.get("players"), list) else "")
+    ).strip()
     return {
         "source_page": source_page,
         "trend_context_present": bool(trend),
-        "trend_player_count": 1 if ctx.get("player") else 0,
+        "trend_player": player,
         "trend_metric_count": len(metrics),
-        "trend_mode_selected": "baseball_trend_significance" if trend or ctx.get("player") else "",
+        "trend_summary_present": bool(trend),
+        "trend_mode_selected": "baseball_trend_significance" if trend or player else "",
         "routing_reason": "trend_page_send_promotion",
+        "player_a_present": bool(str(ctx.get("player_a") or "").strip()),
+        "player_b_present": bool(str(ctx.get("player_b") or "").strip()),
     }
 
 

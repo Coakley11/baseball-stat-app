@@ -14409,6 +14409,7 @@ if active_page == "Trend Value":
 if active_page == "Fantasy Sleepers & Busts":
     from fantasy_state import (
         flush_fantasy_section_edits,
+        mark_fantasy_local_edit,
         prepare_fantasy_sleepers_filters,
         prepare_fantasy_sleepers_page,
         render_fantasy_state_debug,
@@ -14694,7 +14695,12 @@ if active_page == "Fantasy Sleepers & Busts":
             ])
             pos_options_fantasy = standard_fantasy_positions + existing_fantasy_positions
             ensure_multiselect_state("fantasy_market_positions", pos_options_fantasy, pos_options_fantasy)
-            st.multiselect("Primary Position", pos_options_fantasy, key="fantasy_market_positions")
+            st.multiselect(
+                "Primary Position",
+                pos_options_fantasy,
+                key="fantasy_market_positions",
+                on_change=lambda: mark_fantasy_local_edit(st.session_state),
+            )
         with pa2:
             max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
             _age_hi = max(45, max_age_fantasy)
@@ -14704,6 +14710,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 min_value=18,
                 max_value=_age_hi,
                 key="fantasy_market_age_range",
+                on_change=lambda: mark_fantasy_local_edit(st.session_state),
             )
         st.caption("FantasyPros/ADP matching is optional. Players without market ranks stay in the pool but may not appear on the edge chart.")
     fantasy_positions = st.session_state.get("fantasy_market_positions", [])

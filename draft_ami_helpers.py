@@ -713,6 +713,52 @@ def _roster_position_detail_for_names(
     return detail, index
 
 
+def extract_draft_team_from_question(
+    question: str,
+    *,
+    my_team: str = "",
+    team_names: list[str] | None = None,
+) -> str:
+    """Resolve which fantasy team the user wants reviewed (empty = default/my team)."""
+    q = str(question or "").strip()
+    low = q.lower()
+    names = [str(n).strip() for n in (team_names or []) if str(n).strip()]
+    if not low:
+        return my_team
+
+    if re.search(r"\bmy (?:team|roster|picks|draft)\b", low) and not re.search(r"\bteam\s+\d", low):
+        return my_team
+
+    m = re.search(r"\bteam\s+(\d+|[a-z])\b", low)
+    if m:
+        token = m.group(1)
+        label = f"team {token}".lower()
+        for name in names:
+            if name.lower() == label or name.lower().endswith(f" {token.lower()}"):
+                return name
+        if token.isdigit():
+            return f"Team {token}"
+        return f"Team {token.upper()}"
+
+    m = re.search(
+        r"(?:rate|review|grade|how (?:would|do) you rate)\s+(.+?)(?:'s|’s)\s+(?:picks|draft|roster|team)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        owner = m.group(1).strip()
+        for name in names:
+            if owner.lower() in name.lower():
+                return name
+        return owner
+
+    for name in names:
+        if name.lower() in low and any(w in low for w in ("picks", "draft", "roster", "team")):
+            return name
+
+    return ""
+
+
 def team_names_in_draft_order(board: Any) -> list[str]:
     """Return fantasy team names in round-1 pick order (Team 1 = pick 1, etc.)."""
     import pandas as pd

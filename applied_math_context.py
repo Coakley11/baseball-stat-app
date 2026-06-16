@@ -96,8 +96,12 @@ def attach_question_player_to_context(
     session_state: dict[str, Any],
 ) -> None:
     """At AMI send: bind question-named player(s) to context."""
+    low_page = str(ctx.get("source_page") or ctx.get("page") or "").lower()
+    if "trend" in low_page:
+        ctx.pop("player_a", None)
+        ctx.pop("player_b", None)
     comp_a, comp_b = extract_comparison_players_from_question(question)
-    if comp_a and comp_b:
+    if comp_a and comp_b and "trend" not in low_page:
         ctx["player_a"] = comp_a
         ctx["player_b"] = comp_b
         ctx["players"] = [comp_a, comp_b]
@@ -156,11 +160,14 @@ def attach_draft_team_to_context(
     session_state: dict[str, Any],
 ) -> None:
     """When question names a fantasy team, bind that team's roster for review/needs modes."""
-    if not _ensure_ami_import_path():
-        return
     try:
-        from components.draft_market_question import extract_draft_team_query
-        from draft_ami_helpers import resolve_board_team_name, roster_for_team_from_board, team_names_in_draft_order
+        from draft_ami_helpers import (
+            extract_draft_team_from_question,
+            resolve_board_team_name,
+            roster_for_team_from_board,
+            team_names_in_draft_order,
+        )
+        from draft_room_state import get_canonical_draft_board
     except ImportError:
         return
 
@@ -173,9 +180,6 @@ def attach_draft_team_to_context(
     team_names: list[str] = []
     draft_order: list[str] = []
     try:
-        from draft_ami_helpers import team_names_in_draft_order
-        from draft_room_state import get_canonical_draft_board
-
         board = get_canonical_draft_board(session_state)
         if board is not None and hasattr(board, "columns") and "Team" in board.columns:
             team_names = sorted(board["Team"].dropna().astype(str).unique().tolist())
@@ -183,7 +187,7 @@ def attach_draft_team_to_context(
     except Exception:
         pass
 
-    target = extract_draft_team_query(question, my_team=my_team, team_names=team_names or draft_order)
+    target = extract_draft_team_from_question(question, my_team=my_team, team_names=team_names or draft_order)
     requested_team = str(target or "").strip()
     if not requested_team:
         return
@@ -194,22 +198,18 @@ def attach_draft_team_to_context(
         draft_order=draft_order,
     )
     names, detail, index = roster_for_team_from_board(session_state, resolved_team or requested_team)
-    if not names:
-        ctx["_draft_team_diagnostics"] = {
-            "requested_team": requested_team,
-            "resolved_team": resolved_team or requested_team,
-            "roster_owner_used": "",
-            "roster_player_count": 0,
-        }
-        return
-
     owner = resolved_team or requested_team
     ctx["_draft_team_diagnostics"] = {
         "requested_team": requested_team,
         "resolved_team": owner,
-        "roster_owner_used": owner,
+        "roster_owner_used": owner if names else "",
         "roster_player_count": len(names),
+        "roster_players_used": names[:16],
     }
+    if not names:
+        ctx["draft_review_team"] = owner
+        return
+
     ctx["draft_review_team"] = owner
     ctx["roster"] = names
     ctx["user_roster"] = names
@@ -295,6 +295,8 @@ def build_draft_send_pipeline_diagnostics(
         "roster_player_count": (ctx.get("_draft_team_diagnostics") or {}).get("roster_player_count")
         if (ctx.get("_draft_team_diagnostics") or {}).get("roster_player_count") is not None
         else _count(ctx.get("roster") or snap.get("user_roster")),
+        "roster_players_used": (ctx.get("_draft_team_diagnostics") or {}).get("roster_players_used")
+        or (ctx.get("roster") or snap.get("user_roster") or [])[:16],
     }
 
 
