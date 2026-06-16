@@ -88,5 +88,43 @@ class TestBaseballPersistence(unittest.TestCase):
         self.assertTrue(ss.get("_suite_cloud_workspace_applied"))
 
 
+class TestSettingsCloudSaveNotBlocked(unittest.TestCase):
+    """Settings-change saves must reach the cloud even when workspace sync was skipped.
+
+    Regression for: draft settings + league format reverted on refresh because
+    their save reasons were missing from _FORCE_SAVE_CLOUD_REASONS, so the cloud
+    write was blocked ("workspace_sync_not_applied") while only local disk saved.
+    Historical/career chart saves (historical_edit/career_edit) were in the set,
+    which is why charts persisted but draft settings/format did not.
+    """
+
+    SETTINGS_REASONS = (
+        "draft_room_settings_changed",
+        "live_draft_setting_changed",
+        "draft_sim_settings_changed",
+        "draft_assistant_settings_changed",
+        "global_settings_changed",
+        "historical_chart_save",
+        "career_chart_save",
+    )
+
+    def test_settings_reasons_in_force_save_cloud_reasons(self) -> None:
+        from suite_user_persistence import _FORCE_SAVE_CLOUD_REASONS
+
+        for reason in self.SETTINGS_REASONS:
+            self.assertIn(reason, _FORCE_SAVE_CLOUD_REASONS, msg=reason)
+
+    def test_settings_reasons_not_cloud_blocked_when_sync_skipped(self) -> None:
+        from suite_user_persistence import _cloud_autosave_blocked_reason
+
+        for reason in self.SETTINGS_REASONS:
+            st = MagicMock()
+            st.session_state = {"_suite_workspace_sync_skipped_no_apply": True}
+            blocked = _cloud_autosave_blocked_reason(
+                st, "baseball", {"active_page": "Draft Room Simulator"}, save_reason=reason
+            )
+            self.assertIsNone(blocked, msg=f"{reason} should not be cloud-blocked")
+
+
 if __name__ == "__main__":
     unittest.main()

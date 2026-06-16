@@ -37,6 +37,33 @@ FORMAT_ALIASES: dict[str, str] = {
 
 _ALL_ALIASES: dict[str, str] = {**TEAM_ALIASES, **FORMAT_ALIASES}
 
+# Dev trace ring buffer key — records each lifecycle step for canonical format/team.
+_FORMAT_TRACE_KEY = "_global_format_trace"
+_FORMAT_TRACE_MAX = 40
+
+
+def record_global_settings_trace(session: dict[str, Any], step: str) -> None:
+    """Append a snapshot of canonical + alias format/team values for debugging.
+
+    Inspect ``st.session_state['_global_format_trace']`` in Dev Mode to see the
+    full lifecycle: before render, after on_change, snapshot, restore, final.
+    """
+    try:
+        entry = {
+            "step": step,
+            "canonical_format": session.get(GLOBAL_FORMAT_KEY),
+            "canonical_team": session.get(GLOBAL_TEAM_KEY),
+            "format_aliases": {a: session.get(a) for a in FORMAT_ALIASES},
+            "team_aliases": {a: session.get(a) for a in TEAM_ALIASES},
+        }
+        trace = session.get(_FORMAT_TRACE_KEY)
+        if not isinstance(trace, list):
+            trace = []
+        trace.append(entry)
+        session[_FORMAT_TRACE_KEY] = trace[-_FORMAT_TRACE_MAX:]
+    except Exception:
+        pass
+
 
 def _canonical_value(session: dict[str, Any], canonical_key: str) -> Any:
     return session.get(canonical_key)
@@ -55,6 +82,7 @@ def write_canonical_global_fantasy_settings(
     if format_ is not None:
         session[GLOBAL_FORMAT_KEY] = str(format_).strip()
     _mirror_globals_to_aliases(session)
+    record_global_settings_trace(session, f"write_canonical:{reason or 'unspecified'}")
     try:
         from draft_room_state import mark_draft_room_local_edit
         mark_draft_room_local_edit(session)
@@ -114,6 +142,9 @@ def prepare_global_fantasy_settings(
     # Record what we propagated so we can detect vs user-local edits next time.
     propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
     session["_global_settings_last_propagated"] = propagated
+    record_global_settings_trace(
+        session, f"prepare_global{'(force)' if force_mirror else ''}"
+    )
 
 
 def mirror_canonical_to_all_aliases(session: dict[str, Any]) -> None:

@@ -11365,6 +11365,29 @@ def render_page_filters_debug(page_name: str):
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         else:
             st.caption("No filter keys stored yet for this page.")
+    render_global_settings_trace()
+
+
+def render_global_settings_trace():
+    """Dev-mode: lifecycle trace of canonical league format / team vs page aliases."""
+    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
+        return
+    trace = st.session_state.get("_global_format_trace")
+    with st.expander("Debug: canonical format/team trace", expanded=False):
+        st.caption(
+            "canonical `room_format` / `room_your_team` and page aliases at each "
+            "lifecycle step (write / prepare / restore). Newest last."
+        )
+        st.write(
+            {
+                "canonical_format": st.session_state.get("room_format"),
+                "canonical_team": st.session_state.get("room_your_team"),
+            }
+        )
+        if isinstance(trace, list) and trace:
+            st.json(trace[-12:])
+        else:
+            st.caption("No canonical format/team writes recorded this session yet.")
 
 
 def render_page_state_debug(page_name: str):
@@ -13311,6 +13334,7 @@ if active_page == "Comparison Tool":
                 on_alias_team_changed(st.session_state, "comparison_user_team")
             except Exception:
                 pass
+            force_save_baseball_state(st, reason="global_settings_changed")
         comparison_action_team = st.selectbox(
             "Which fantasy team are you?",
             comparison_teams,
@@ -14592,7 +14616,15 @@ if active_page == "Fantasy Sleepers & Busts":
         fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
     with c2:
         validate_state_option("fantasy_market_format", _fantasy_format_options, "5x5 Roto")
-        fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format", on_change=fantasy_filter_changed)
+        def _fantasy_market_format_changed():
+            try:
+                from global_fantasy_settings_state import on_alias_format_changed
+                on_alias_format_changed(st.session_state, "fantasy_market_format")
+            except Exception:
+                pass
+            fantasy_filter_changed()
+            force_save_baseball_state(st, reason="global_settings_changed")
+        fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format", on_change=_fantasy_market_format_changed)
     with c3:
         validate_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
         fantasy_min_g = st.number_input(
@@ -14719,6 +14751,7 @@ if active_page == "Fantasy Sleepers & Busts":
                         on_alias_team_changed(st.session_state, "sleeper_sync_team")
                     except Exception:
                         pass
+                    force_save_baseball_state(st, reason="global_settings_changed")
                 sleeper_team_name = st.selectbox(
                     "My Draft Room Team",
                     sleeper_team_options,
@@ -15309,10 +15342,18 @@ if active_page == "Draft Assistant Simulator":
             render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_assistant")
         _draft_window_options = [3, 4, 5]
         _draft_format_options = ["5x5 Roto", "Points League"]
+
+        def _draft_assistant_settings_changed():
+            # Persist Draft Assistant Simulator settings on change so a refresh /
+            # navigation away-and-back restores them rather than reverting to defaults.
+            save_page_state("Draft Assistant Simulator")
+            force_save_baseball_state(st, reason="draft_assistant_settings_changed")
+
         d1, d2, d3 = st.columns(3)
         with d1:
             validate_state_option("draft_window", _draft_window_options, 3)
-            draft_window = st.selectbox("Projection Window", _draft_window_options, key="draft_window")
+            draft_window = st.selectbox("Projection Window", _draft_window_options, key="draft_window",
+                                        on_change=_draft_assistant_settings_changed)
         with d2:
             validate_state_option("draft_format", _draft_format_options, "5x5 Roto")
             def _draft_format_changed():
@@ -15321,6 +15362,8 @@ if active_page == "Draft Assistant Simulator":
                     on_alias_format_changed(st.session_state, "draft_format")
                 except Exception:
                     pass
+                save_page_state("Draft Assistant Simulator")
+                force_save_baseball_state(st, reason="global_settings_changed")
             draft_format = st.selectbox("League Format", _draft_format_options, key="draft_format",
                                         on_change=_draft_format_changed)
         with d3:
@@ -15330,6 +15373,7 @@ if active_page == "Draft Assistant Simulator":
                 min_value=5,
                 max_value=30,
                 key="draft_top_n",
+                on_change=_draft_assistant_settings_changed,
             )
 
         with st.expander("Advanced scoring settings", expanded=pp.expander_default(st)):
@@ -15339,6 +15383,7 @@ if active_page == "Draft Assistant Simulator":
                 list(PROJECTION_STYLE_OPTIONS),
                 key="fantasy_draft_projection_style",
                 help="Conservative / Balanced / Aggressive — changes projection blend only, not raw Lahman stats.",
+                on_change=_draft_assistant_settings_changed,
             )
             mlb1, mlb2, mlb3 = st.columns(3)
             with mlb1:
@@ -15417,6 +15462,8 @@ if active_page == "Draft Assistant Simulator":
                     on_alias_team_changed(st.session_state, "draft_assistant_synced_team")
                 except Exception:
                     pass
+                save_page_state("Draft Assistant Simulator")
+                force_save_baseball_state(st, reason="global_settings_changed")
             assistant_my_team_name = st.selectbox(
                 "Your team",
                 assistant_team_names,
@@ -16059,7 +16106,6 @@ if active_page == "Draft Room Simulator":
                 "Number of Teams",
                 min_value=2,
                 max_value=16,
-                value=int(st.session_state["room_team_count"]),
                 step=1,
                 key="room_team_count",
                 on_change=_draft_room_settings_changed,
@@ -17763,6 +17809,7 @@ if active_page == "Fantasy Standings Tracker":
         except Exception:
             pass
         fantasy_filter_changed()
+        force_save_baseball_state(st, reason="global_settings_changed")
     scoring_format_tracker = st.selectbox(
         "Scoring Format",
         _standings_format_options,

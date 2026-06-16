@@ -274,6 +274,18 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "music_coach_send",
     "song_edit",
     "practice_edit",
+    # Settings-change saves must reach the cloud even when the startup workspace
+    # sync was skipped this run. Without these, the change saves to local disk
+    # only and the stale cloud blob wins on the next cloud-first restore — which
+    # is exactly why draft settings and league format reverted on refresh while
+    # historical/career chart saves (historical_edit/career_edit) persisted.
+    "draft_room_settings_changed",
+    "live_draft_setting_changed",
+    "draft_sim_settings_changed",
+    "draft_assistant_settings_changed",
+    "global_settings_changed",
+    "historical_chart_save",
+    "career_chart_save",
 })
 
 _DRAFT_BOARD_CLOUD_SAVE_REASONS = frozenset({
@@ -1634,6 +1646,8 @@ def force_autosave(
             "draft_room_settings_changed",
             "live_draft_setting_changed",
             "draft_sim_settings_changed",
+            "draft_assistant_settings_changed",
+            "global_settings_changed",
             "historical_chart_save",
             "career_chart_save",
         )
