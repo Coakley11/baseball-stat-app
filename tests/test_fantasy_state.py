@@ -68,6 +68,25 @@ class TestFantasyState(unittest.TestCase):
         self.assertEqual(session["fantasy_market_top_n"], 20)
         self.assertEqual(session["fantasy_market_selected_player"], "Juan Soto")
 
+    def test_sleepers_position_filter_survives_prepare_when_widget_differs(self) -> None:
+        session = {
+            "fantasy_state": {
+                "sleepers": {
+                    "filters": {
+                        "fantasy_market_window": 4,
+                        "fantasy_market_positions": ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"],
+                        "fantasy_market_age_range": (18, 45),
+                    }
+                }
+            },
+            "fantasy_market_positions": ["OF"],
+            "fantasy_market_age_range": (25, 35),
+        }
+        prepare_fantasy_sleepers_page(session)
+        prepare_fantasy_sleepers_filters(session)
+        self.assertEqual(session["fantasy_market_positions"], ["OF"])
+        self.assertEqual(session["fantasy_market_age_range"], (25, 35))
+
     def test_b_cross_device_cloud_restore(self) -> None:
         session: dict = {"active_page": "Comparison Tool"}
         cloud = {

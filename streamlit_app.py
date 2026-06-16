@@ -14700,7 +14700,9 @@ if active_page == "Fantasy Sleepers & Busts":
                 if p.strip() and p not in standard_fantasy_positions and p not in ["PH", "PR"]
             ])
             pos_options_fantasy = standard_fantasy_positions + existing_fantasy_positions
-            ensure_multiselect_state("fantasy_market_positions", pos_options_fantasy, pos_options_fantasy)
+            _sleepers_canon = (st.session_state.get("fantasy_state") or {}).get("sleepers", {}).get("filters") or {}
+            _default_positions = _sleepers_canon.get("fantasy_market_positions") or pos_options_fantasy
+            ensure_multiselect_state("fantasy_market_positions", pos_options_fantasy, _default_positions)
             st.multiselect(
                 "Primary Position",
                 pos_options_fantasy,
@@ -14710,7 +14712,8 @@ if active_page == "Fantasy Sleepers & Busts":
         with pa2:
             max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
             _age_hi = max(45, max_age_fantasy)
-            ensure_slider_range("fantasy_market_age_range", 18, _age_hi, (18, _age_hi))
+            _default_age = _sleepers_canon.get("fantasy_market_age_range") or (18, _age_hi)
+            ensure_slider_range("fantasy_market_age_range", 18, _age_hi, _default_age)
             st.slider(
                 "Age Range",
                 min_value=18,

@@ -860,6 +860,34 @@ def roster_for_team_from_board(
         if str(p).strip()
     ]
     detail, index = _roster_position_detail_for_names(session_state, names)
+    if "Primary Position" in board.columns:
+        board_pos: dict[str, str] = {}
+        for _, row in rows.iterrows():
+            name = str(row.get("Player") or "").strip()
+            pos = str(row.get("Primary Position") or row.get("position") or row.get("pos") or "").strip()
+            if name and pos:
+                board_pos[name.lower()] = pos
+        enriched_detail: list[dict[str, str]] = []
+        enriched_index: dict[str, str] = dict(index)
+        seen: set[str] = set()
+        for entry in detail:
+            clean = str(entry.get("player") or "").strip()
+            if not clean:
+                continue
+            pos = str(entry.get("Primary Position") or "").strip() or board_pos.get(clean.lower(), "")
+            enriched_detail.append({"player": clean, "Primary Position": pos})
+            if pos:
+                enriched_index[clean.lower()] = pos
+            seen.add(clean.lower())
+        for name in names:
+            token = name.lower()
+            if token in seen:
+                continue
+            pos = board_pos.get(token, "")
+            enriched_detail.append({"player": name, "Primary Position": pos})
+            if pos:
+                enriched_index[token] = pos
+        detail, index = enriched_detail, enriched_index
     return names, detail, index
 
 

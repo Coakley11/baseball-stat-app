@@ -103,7 +103,12 @@ def build_trend_send_diagnostics(ctx: dict[str, Any], *, source_page: str) -> di
     }
 
 
-def finalize_sleepers_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+def finalize_sleepers_context_for_send(
+    ctx: dict[str, Any],
+    session_state: dict[str, Any],
+    *,
+    question: str = "",
+) -> None:
     """Promote sleepers cache into send payload."""
     try:
         from applied_math_context import extract_player_from_question, gather_sleepers_ami_snapshot
@@ -123,6 +128,33 @@ def finalize_sleepers_context_for_send(ctx: dict[str, Any], session_state: dict[
 
     ctx.pop("player_a", None)
     ctx.pop("player_b", None)
+
+    q = str(question or ctx.get("question") or "").strip()
+    target = extract_player_from_question(q) or str(ctx.get("question_player") or "").strip()
+    if target:
+        ctx["question_player"] = target
+        ctx["player"] = target
+        ctx["players"] = [target]
+        ctx["routing_hint"] = "sleeper_take"
+        row = _find_sleeper_row_for_name(ctx.get("sleeper_candidates"), target)
+        if row:
+            ctx["question_player_row"] = row
+            ctx["sleeper_focus"] = row
+        elif ctx.get("question_player_row"):
+            ctx["sleeper_focus"] = ctx["question_player_row"]
+
+
+def _find_sleeper_row_for_name(candidates: Any, name: str) -> dict[str, Any] | None:
+    target = str(name or "").strip().lower()
+    if not target or not isinstance(candidates, list):
+        return None
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        row_name = str(item.get("player") or item.get("Player") or item.get("fullName") or "").strip()
+        if row_name.lower() == target:
+            return item
+    return None
 
 
 def finalize_comparison_context_for_send(
@@ -179,7 +211,7 @@ def promote_page_ami_context_at_send(
         diag = build_trend_send_diagnostics(ctx, source_page=source_page)
         ctx["trend_send_diagnostics"] = diag
     elif "sleeper" in low:
-        finalize_sleepers_context_for_send(ctx, session_state)
+        finalize_sleepers_context_for_send(ctx, session_state, question=question)
     elif "comparison" in low:
         finalize_comparison_context_for_send(ctx, session_state, question=question)
     return diag

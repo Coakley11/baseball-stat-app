@@ -17,6 +17,7 @@ from draft_ami_helpers import (
     build_position_representative_available_pool,
     detect_positions_from_question,
     draft_ami_cache_has_pool,
+    roster_for_team_from_board,
 )
 from suite_analytical_question import build_submit_context
 
@@ -120,6 +121,12 @@ class TestPositionRepresentativePool(unittest.TestCase):
         names = {r["player"] for r in ctx.get("available_players") or []}
         self.assertIn("Jose Ramirez", names)
         self.assertEqual(extract_player_from_question("Why Jose Ramirez?"), "Jose Ramirez")
+        self.assertEqual(
+            extract_player_from_question(
+                "Do you think I should draft Nathan Lukes as an outfielder in this draft?"
+            ),
+            "Nathan Lukes",
+        )
         self.assertIsNotNone(ctx.get("question_player_row"))
 
     def test_send_path_includes_catchers_for_next_catcher_question(self) -> None:
@@ -401,6 +408,16 @@ class TestDraftTeamReview(unittest.TestCase):
             elif team == "Daniel" and my_players:
                 board.at[idx, "Player"] = my_players.pop(0)
 
+        board["Primary Position"] = ""
+        for idx, row in board.iterrows():
+            player = str(row.get("Player") or "")
+            if player == "Mookie Betts":
+                board.at[idx, "Primary Position"] = "OF"
+            elif player == "Bobby Witt Jr.":
+                board.at[idx, "Primary Position"] = "SS"
+            elif player == "Shea Langeliers":
+                board.at[idx, "Primary Position"] = "C"
+
         session: dict = {
             "room_your_team": "Daniel",
             "draft_assistant_synced_team": "Daniel",
@@ -438,6 +455,9 @@ class TestDraftTeamReview(unittest.TestCase):
         self.assertIn("Mookie Betts", roster)
         self.assertNotIn("Aaron Judge", roster)
         self.assertEqual(ctx.get("draft_review_team"), "Mike")
+        detail = (ctx.get("draft_snapshot") or {}).get("user_roster_detail") or []
+        by_name = {row["player"]: row.get("Primary Position") for row in detail}
+        self.assertEqual(by_name.get("Mookie Betts"), "OF")
 
 
 class TestDraftAmiCacheWarmth(unittest.TestCase):

@@ -11,6 +11,17 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+
+def _resolve_session_state(st: Any) -> dict[str, Any]:
+    """Accept Streamlit module or a plain session_state dict (submit pipeline uses dict)."""
+    if isinstance(st, dict):
+        return st
+    bucket = getattr(st, "session_state", None)
+    if isinstance(bucket, dict):
+        return bucket
+    raise TypeError("Expected Streamlit st or session_state dict")
+
+
 INSIGHT_ITEM_TYPE = "applied_math_insight"
 INSIGHT_DISMISSAL_ITEM_TYPE = "applied_math_insight_dismissal"
 AMI_INSIGHT_STORE_VERSION = "insight-store-v10"
@@ -1965,10 +1976,11 @@ def commit_ami_return_page_restore(st: Any, app_key: str) -> bool:
 def stage_pending_insight(st: Any, insight: AppliedMathInsight | dict[str, Any], *, return_context: dict[str, Any] | None = None) -> None:
     """Write insight into Streamlit session for AMI return button."""
     data = insight.to_dict() if isinstance(insight, AppliedMathInsight) else dict(insight)
-    st.session_state[SESSION_PENDING_KEY] = data
-    st.session_state[SESSION_RETURN_PAGE_KEY] = data.get("source_page") or ""
+    ss = _resolve_session_state(st)
+    ss[SESSION_PENDING_KEY] = data
+    ss[SESSION_RETURN_PAGE_KEY] = data.get("source_page") or ""
     if return_context:
-        st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(return_context)
+        ss[SESSION_RETURN_CONTEXT_KEY] = dict(return_context)
 
 
 def apply_ami_insight_from_query(st: Any, app_key: str, *, force: bool = False) -> bool:

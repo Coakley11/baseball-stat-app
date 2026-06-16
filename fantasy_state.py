@@ -203,6 +203,7 @@ def mark_fantasy_local_edit(session: dict[str, Any]) -> None:
 def mark_sleepers_filter_local_edit(session: dict[str, Any]) -> None:
     """Persist sleeper filter widget values to canonical state on user change."""
     mark_fantasy_local_edit(session)
+    mark_fantasy_filter_pending_sync(session, "sleepers")
     filt = _extract_section_from_session(session, "sleepers")
     if filt:
         write_canonical_fantasy_section(
@@ -450,10 +451,15 @@ def write_canonical_fantasy_section(
     return block
 
 
+def _section_has_widget_keys(session: dict[str, Any], section: str) -> bool:
+    return any(k in session for k in SECTION_KEYS.get(section, ()))
+
+
 def prepare_fantasy_section_page(session: dict[str, Any], section: str) -> dict[str, Any]:
     widget = _extract_section_from_session(session, section)
     canonical = canonical_fantasy_section(session, section) or {}
     drift = _section_widget_drift(session, section) or bool(session.get(_pending_key(section)))
+    has_widgets = _section_has_widget_keys(session, section)
     if is_fantasy_locally_dirty(session) or drift:
         filt = {**canonical, **widget}
         return write_canonical_fantasy_section(
@@ -466,14 +472,23 @@ def prepare_fantasy_section_page(session: dict[str, Any], section: str) -> dict[
         )
     if widget and canonical:
         return _section_block(_ensure_meta(session), section)
-    if canonical:
+    if canonical and not has_widgets:
         filt = {**canonical, **widget}
         return write_canonical_fantasy_section(
             session,
             section,
             filters=filt,
             reason="canonical_preserve",
-            sync_widget_keys=not bool(widget),
+            sync_widget_keys=True,
+        )
+    if canonical and has_widgets:
+        filt = {**canonical, **widget}
+        return write_canonical_fantasy_section(
+            session,
+            section,
+            filters=filt,
+            reason="widget_keys_present",
+            sync_widget_keys=False,
         )
     filt = gather_fantasy_section(session, section)
     return write_canonical_fantasy_section(
@@ -485,7 +500,7 @@ def prepare_fantasy_section_page(session: dict[str, Any], section: str) -> dict[
 
 
 def prepare_fantasy_section_filters(session: dict[str, Any], section: str) -> None:
-    if is_fantasy_locally_dirty(session):
+    if is_fantasy_locally_dirty(session) or _section_widget_drift(session, section):
         return
     meta = _ensure_meta(session)
     block = _section_block(meta, section)
@@ -615,6 +630,7 @@ def apply_cloud_fantasy_state_if_allowed(session: dict[str, Any], state: dict[st
             selected_player=sp,
             reason="cloud_restore",
             local_edit=False,
+            sync_widget_keys=not _section_has_widget_keys(session, section),
         )
         applied = True
     if applied:

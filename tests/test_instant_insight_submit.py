@@ -109,6 +109,22 @@ class TestInstantInsightSubmit(unittest.TestCase):
         self.assertNotIn("probability reasonableness", (insight.method or "").lower())
         self.assertEqual(insight.method, "Draft review")
 
+    def test_stage_pending_insight_accepts_session_dict(self) -> None:
+        from applied_math_return_insight import SESSION_PENDING_KEY, stage_pending_insight
+
+        session: dict = {}
+        stage_pending_insight(
+            session,
+            {
+                "insight_id": "ins-1",
+                "question": "Test?",
+                "source_page": "Fantasy Sleepers & Busts",
+                "conclusion": "Yes.",
+            },
+        )
+        self.assertTrue(session.get(SESSION_PENDING_KEY))
+        self.assertEqual(session[SESSION_PENDING_KEY]["insight_id"], "ins-1")
+
 
 if __name__ == "__main__":
     unittest.main()

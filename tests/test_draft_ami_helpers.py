@@ -12,6 +12,7 @@ from draft_ami_helpers import (
     compact_recommendation_rows,
     detect_positions_from_question,
     draft_ami_guidance,
+    roster_for_team_from_board,
 )
 
 
@@ -88,6 +89,27 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(index.get("aaron judge"), "OF")
         self.assertEqual(index.get("anthony volpe"), "SS")
         self.assertEqual(index.get("cal raleigh"), "C")
+
+    def test_roster_for_team_from_board_uses_primary_position_column(self) -> None:
+        from unittest.mock import patch
+
+        board = pd.DataFrame(
+            {
+                "Round": [1, 1, 1, 1],
+                "Pick": [1, 2, 3, 4],
+                "Team": ["Mike", "Mike", "Mike", "Mike"],
+                "Player": ["Francisco Lindor", "Juan Soto", "Pete Alonso", "Julio Rodriguez"],
+                "Primary Position": ["SS", "OF", "1B", "OF"],
+            }
+        )
+        session: dict = {}
+        with patch("draft_room_state.get_canonical_draft_board", return_value=board):
+            names, detail, index = roster_for_team_from_board(session, "Mike")
+        self.assertIn("Francisco Lindor", names)
+        by_name = {row["player"]: row["Primary Position"] for row in detail}
+        self.assertEqual(by_name["Francisco Lindor"], "SS")
+        self.assertEqual(by_name["Pete Alonso"], "1B")
+        self.assertEqual(index.get("juan soto"), "OF")
 
     def test_refresh_draft_ami_metadata_updates_round(self) -> None:
         from unittest.mock import patch

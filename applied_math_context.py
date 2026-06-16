@@ -34,9 +34,11 @@ _QUESTION_PLAYER_PATTERNS: tuple[str, ...] = (
     r"why is (.+?) a good",
     r"why is (.+?) worth",
     r"why (.+?)(?:\?|\s*$)",
-    r"should i draft (.+?)(?:\?|\s|$)",
-    r"is (.+?) (?:worth|available|the best)",
+    r"(?:do you think i should|should i|would you recommend i|would i) draft (.+?)(?: as an? | as a | for | in | at |\?|$)",
+    r"draft (.+?)(?: as an? | as a | for | in this |\?|$)",
+    r"is (.+?) (?:worth|available|the best|a good sleeper|a sleeper)",
     r"how risky is (.+?)(?:\?|\s|$)",
+    r"(?:take|target|pick) (.+?)(?: as | for | in |\?|$)",
 )
 
 
@@ -97,35 +99,39 @@ def attach_question_player_to_context(
 ) -> None:
     """At AMI send: bind question-named player(s) to context."""
     low_page = str(ctx.get("source_page") or ctx.get("page") or "").lower()
+    is_sleepers = "sleeper" in low_page
     if "trend" in low_page:
         ctx.pop("player_a", None)
         ctx.pop("player_b", None)
-    comp_a, comp_b = extract_comparison_players_from_question(question)
-    if comp_a and comp_b and "trend" not in low_page:
-        ctx["player_a"] = comp_a
-        ctx["player_b"] = comp_b
-        ctx["players"] = [comp_a, comp_b]
-        snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
-        for label, name in (("player_a_row", comp_a), ("player_b_row", comp_b)):
-            row = _find_player_row_in_pools(
-                name,
-                snap.get("recommended_players"),
-                snap.get("available_players"),
-                snap.get("best_available_players"),
-                ctx.get("available_players"),
-                ctx.get("recommended_players"),
-                ctx.get("best_available"),
-                snap.get("draft_room_board"),
-            )
-            if row:
-                ctx[label] = row
-        return
+    if not is_sleepers:
+        comp_a, comp_b = extract_comparison_players_from_question(question)
+        if comp_a and comp_b and "trend" not in low_page:
+            ctx["player_a"] = comp_a
+            ctx["player_b"] = comp_b
+            ctx["players"] = [comp_a, comp_b]
+            snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+            for label, name in (("player_a_row", comp_a), ("player_b_row", comp_b)):
+                row = _find_player_row_in_pools(
+                    name,
+                    snap.get("recommended_players"),
+                    snap.get("available_players"),
+                    snap.get("best_available_players"),
+                    ctx.get("available_players"),
+                    ctx.get("recommended_players"),
+                    ctx.get("best_available"),
+                    snap.get("draft_room_board"),
+                )
+                if row:
+                    ctx[label] = row
+            return
 
     name = extract_player_from_question(question)
     if not name:
         return
     ctx["question_player"] = name
     ctx["player"] = name
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
     existing = ctx.get("players") if isinstance(ctx.get("players"), list) else []
     ctx["players"] = [name] + [p for p in existing if _player_name(p).lower() != name.lower()][:3]
     try:
@@ -150,8 +156,19 @@ def attach_question_player_to_context(
         ctx.get("recommended_players"),
         ctx.get("best_available"),
     )
+    if not row and is_sleepers:
+        sleepers_snap = session_state.get("_ami_sleepers_snapshot")
+        if isinstance(sleepers_snap, dict):
+            row = _find_player_row_in_pools(
+                name,
+                sleepers_snap.get("sleeper_candidates"),
+                ctx.get("sleeper_candidates"),
+            )
     if row:
         ctx["question_player_row"] = row
+        if is_sleepers:
+            ctx["sleeper_focus"] = row
+            ctx["routing_hint"] = "sleeper_take"
 
 
 def attach_draft_team_to_context(
