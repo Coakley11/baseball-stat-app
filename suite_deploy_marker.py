@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-05-27-instant-insight-v21"
-GIT_COMMIT_SHORT = "eea0eca"
+SUITE_BUILD_LABEL = "2026-05-27-baseball-sync-ami-platform-v1"
+GIT_COMMIT_SHORT = "7e96fbb"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (
+    "7e96fbb",
+    "bee738e",
+    "eea0eca",
     "9ddb738",
     "a2a0575",
     "04d9a8a",
