@@ -11366,6 +11366,90 @@ def render_page_filters_debug(page_name: str):
         else:
             st.caption("No filter keys stored yet for this page.")
     render_global_settings_trace()
+    render_settings_persistence_trace(page_name)
+
+
+def render_settings_persistence_trace(page_name: str):
+    """Dev-mode: per-setting persistence trace for the draft/settings pages that revert.
+
+    Shows, for each tracked setting on this page, the value in every storage tier
+    (session / canonical / page snapshot / cloud blob / disk blob) plus the recorded
+    SAVE and RESTORE lifecycle events — so we can see exactly where a value drops.
+    """
+    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
+        return
+    try:
+        import settings_persistence_trace as spt
+    except ImportError:
+        return
+    page = normalize_page_key(page_name)
+    if not spt.tracked_specs_for_page(page):
+        return
+
+    with st.expander("Debug: settings persistence trace (where does it revert?)", expanded=False):
+        st.caption(
+            "Per setting: value in session vs canonical vs page snapshot vs the durable "
+            "cloud/disk blob. If after refresh `session`/`page_snapshot` show defaults but "
+            "`cloud_snapshot` is correct → RESTORE drops it. If `cloud_snapshot` is "
+            "default/old right after a save → SAVE never persisted it."
+        )
+        cloud_state: dict = {}
+        disk_state: dict = {}
+        if st.button("Load durable cloud + disk blobs", key=f"_spt_load_{page}"):
+            try:
+                from suite_cloud_state import load_cloud_full_session
+
+                cloud_state, _ = load_cloud_full_session("baseball")
+            except Exception as exc:
+                st.caption(f"cloud load failed: {exc}")
+            try:
+                from suite_user_persistence import load_user_state
+
+                disk_state, _ = load_user_state("baseball")
+            except Exception as exc:
+                st.caption(f"disk load failed: {exc}")
+            st.session_state["_spt_cloud_cache"] = cloud_state
+            st.session_state["_spt_disk_cache"] = disk_state
+        cloud_state = st.session_state.get("_spt_cloud_cache") or cloud_state
+        disk_state = st.session_state.get("_spt_disk_cache") or disk_state
+
+        # Startup / sync status — did the durable cloud blob actually get applied on
+        # this load? If apply was skipped, restored values never reach the widgets and
+        # they fall back to seeded defaults (the offline build/apply cycle proves the
+        # durable cycle itself is correct, so a skip here is the prime suspect).
+        st.caption("**Startup / sync status this load:**")
+        st.write({
+            "workspace_sync_skipped_no_apply": st.session_state.get("_suite_workspace_sync_skipped_no_apply"),
+            "cloud_workspace_applied": st.session_state.get("_suite_cloud_workspace_applied"),
+            "page_overwrite_source": st.session_state.get("_suite_page_overwrite_source"),
+            "last_save_reason": st.session_state.get("_suite_persist_last_save_reason"),
+            "last_save_cloud": st.session_state.get("_suite_persist_last_save_cloud"),
+            "last_cloud_error": st.session_state.get("_suite_persist_last_cloud_error"),
+            "autosave_blocked_after_restore": st.session_state.get("_suite_autosave_blocked_after_restore"),
+            "autosave_block_reason": st.session_state.get("_suite_autosave_block_reason"),
+            "draft_room_locally_dirty_flag": st.session_state.get("draft_room_state_dirty"),
+        })
+
+        rows = spt.build_comparison_rows(
+            st.session_state, page, cloud_state=cloud_state, disk_state=disk_state
+        )
+        if rows:
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        else:
+            st.caption("No tracked settings for this page.")
+
+        save_trace = [e for e in spt.get_save_trace(st.session_state) if e.get("active_page") == page]
+        if save_trace:
+            st.caption("**SAVE events** (newest last) — reason / cloud allowed / what was written:")
+            st.json(save_trace[-6:])
+        restore_trace = [e for e in spt.get_restore_trace(st.session_state) if e.get("page") == page]
+        if restore_trace:
+            st.caption("**RESTORE events** (newest last) — blob value vs final session value:")
+            st.json(restore_trace[-6:])
+        onchange = spt.get_onchange_trace(st.session_state)
+        if onchange:
+            st.caption("**on_change events** (newest last):")
+            st.json(onchange[-8:])
 
 
 def render_global_settings_trace():
@@ -11464,6 +11548,23 @@ def save_page_state(page_name: str):
     """Persist the current page's widget keys into ``page_filter_state``."""
     store = st.session_state.setdefault("page_filter_state", {})
     pg_state.save_page_state(st.session_state, normalize_page_key(page_name), store)
+
+
+def _record_settings_onchange(page_name: str, handler: str, reason: str):
+    """Dev trace: log that a settings on_change fired and what it triggered."""
+    try:
+        from settings_persistence_trace import record_onchange
+
+        record_onchange(
+            st.session_state,
+            page_name,
+            handler=handler,
+            save_page_state=True,
+            force_save=True,
+            reason=reason,
+        )
+    except Exception:
+        pass
 
 
 def restore_page_state(page_name: str) -> bool:
@@ -15348,6 +15449,7 @@ if active_page == "Draft Assistant Simulator":
             # navigation away-and-back restores them rather than reverting to defaults.
             save_page_state("Draft Assistant Simulator")
             force_save_baseball_state(st, reason="draft_assistant_settings_changed")
+            _record_settings_onchange("Draft Assistant Simulator", "_draft_assistant_settings_changed", "draft_assistant_settings_changed")
 
         d1, d2, d3 = st.columns(3)
         with d1:
@@ -16086,6 +16188,7 @@ if active_page == "Draft Room Simulator":
             # refresh restores the user's settings rather than reverting to defaults.
             save_page_state("Draft Room Simulator")
             force_save_baseball_state(st, reason="draft_room_settings_changed")
+            _record_settings_onchange("Draft Room Simulator", "_draft_room_settings_changed", "draft_room_settings_changed")
 
         with st.expander("Projection style (advanced)", expanded=False):
             ensure_select_in_options("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
@@ -16714,6 +16817,7 @@ if active_page == "Draft Simulation Test Mode":
         def _draft_sim_setting_changed():
             save_page_state("Draft Simulation Test Mode")
             force_save_baseball_state(st, reason="draft_sim_settings_changed")
+            _record_settings_onchange("Draft Simulation Test Mode", "_draft_sim_setting_changed", "draft_sim_settings_changed")
 
         validate_state_option("draft_lab_window", _lab_window_options, 3)
         lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
@@ -17373,6 +17477,7 @@ if active_page == "Live Draft Room":
                 # refresh restores the user's settings rather than reverting to defaults.
                 save_page_state("Live Draft Room")
                 force_save_baseball_state(st, reason="live_draft_setting_changed")
+                _record_settings_onchange("Live Draft Room", "_live_draft_setting_changed", "live_draft_setting_changed")
 
             with lc1:
                 validate_text_state("live_draft_league_name", "My Fantasy League")

@@ -1728,6 +1728,20 @@ def force_autosave(
             )
             if cloud_err:
                 st.session_state["_suite_persist_last_cloud_error"] = cloud_err
+        if app_id == "baseball":
+            try:
+                from settings_persistence_trace import record_save_event
+
+                record_save_event(
+                    st.session_state,
+                    reason=reason,
+                    state=state,
+                    saved_disk=saved_disk,
+                    saved_cloud=saved_cloud,
+                    cloud_block=cloud_block,
+                )
+            except Exception:
+                pass
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp

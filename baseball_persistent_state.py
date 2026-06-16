@@ -578,6 +578,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         except ImportError:
             pass
         try:
+            from settings_persistence_trace import record_restore_event
+
+            record_restore_event(ss, cloud_state=state, page=active)
+        except Exception:
+            pass
+        try:
             from comparison_state import record_comparison_field_write
 
             record_comparison_field_write(ss, "active_page", "workspace_restore", new=active)
