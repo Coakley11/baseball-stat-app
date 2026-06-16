@@ -12896,19 +12896,30 @@ if active_page == "Leaderboards":
         )
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
-    default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
+    _default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
+    # Seed any missing weight keys from defaults before widgets render so that
+    # Streamlit doesn't fall back to value= defaults and stomp user edits.
+    for _ws in weight_stats:
+        st.session_state.setdefault(f"leaders_w_{_ws}", _default_weights.get(_ws, 0.0))
     weight_values = {}
     with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
         weight_cols = st.columns(4)
         for i, stat in enumerate(weight_stats):
             with weight_cols[i % 4]:
-                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}", on_change=leaderboards_filter_changed)
+                weight_values[stat] = st.number_input(
+                    f"Weight for {stat}",
+                    min_value=0.0,
+                    max_value=10.0,
+                    step=0.5,
+                    key=f"leaders_w_{stat}",
+                    on_change=leaderboards_filter_changed,
+                )
 
     filtered_leaders = yearly_df[(yearly_df["yearID"] >= range_leaders[0]) & (yearly_df["yearID"] <= range_leaders[1])].copy()
     leaderboard = filtered_leaders.groupby(["fullName", "bats"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
     leaderboard = add_rate_stats(leaderboard)
-    leaderboard = apply_stat_min_filters(leaderboard, "leaders")
+    leaderboard = apply_stat_min_filters(leaderboard, "leaders", on_change=leaderboards_filter_changed)
     leaderboard = safe_round_rate_stats(leaderboard)
 
     leaderboard["score"] = 0.0
@@ -17647,6 +17658,9 @@ if active_page == "Fantasy Standings Tracker":
 
             st.session_state["fantasy_current_roster_stats"] = roster_stats
             st.session_state["fantasy_current_standings"] = standings
+            from datetime import datetime, timezone as _tz
+            st.session_state["_fantasy_standings_stats_loaded_at"] = datetime.now(_tz.utc).isoformat()
+            st.session_state["_fantasy_standings_stats_source"] = stats_source
             _standings_team_ctx = st.session_state.get("room_your_team")
             _standings_needs_ctx = (
                 summarize_team_category_needs(standings, _standings_team_ctx)
@@ -17744,10 +17758,46 @@ if active_page == "Fantasy Lineup Assistant":
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
 
     if roster_stats.empty:
-        st.warning(
-            "No current roster stats found yet. First go to Fantasy Standings Tracker, load stats from MLB API or upload a CSV, "
-            "and make sure Draft Room has your roster entered."
-        )
+        _stats_loaded_at = st.session_state.get("_fantasy_standings_stats_loaded_at")
+        _stats_source = st.session_state.get("_fantasy_standings_stats_source", "")
+        _draft_pick_count = len(st.session_state.get("draft_room_table") or [])
+        if _stats_loaded_at:
+            st.warning(
+                f"Roster stats were loaded this session at {_stats_loaded_at[:19]} UTC "
+                f"(source: {_stats_source or 'unknown'}) but the result was empty. "
+                "Check that Draft Room has your roster entered and that the stats source returned data."
+            )
+        else:
+            _draft_hint = (
+                f" Draft Room has **{_draft_pick_count} picks** — stats are ready to load."
+                if _draft_pick_count > 0
+                else " Draft Room is also empty — add your roster there first."
+            )
+            st.warning(
+                "**Roster stats not loaded yet this session.**\n\n"
+                "To use the Lineup Assistant:\n"
+                "1. Go to **Fantasy Standings Tracker** and load stats (MLB API or CSV upload).\n"
+                "2. Return here — team rosters and scores will appear automatically.\n\n"
+                + _draft_hint
+            )
+        if developer_mode_enabled():
+            with st.expander("Lineup diagnostic (dev mode)", expanded=True):
+                st.json({
+                    "fantasy_current_roster_stats_empty": True,
+                    "stats_loaded_at": _stats_loaded_at,
+                    "stats_source": _stats_source,
+                    "draft_room_pick_count": _draft_pick_count,
+                    "room_your_team": st.session_state.get("room_your_team"),
+                    "lineup_team": st.session_state.get("lineup_team"),
+                    "lineup_format": st.session_state.get("lineup_format"),
+                    "fantasy_state_lineup_filters": (
+                        (st.session_state.get("fantasy_state") or {})
+                        .get("lineup", {})
+                        .get("filters")
+                        if isinstance(st.session_state.get("fantasy_state"), dict)
+                        else None
+                    ),
+                })
     else:
         lineup_teams = sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
         default_lineup_team = st.session_state.get("room_your_team", lineup_teams[0] if lineup_teams else "")
@@ -17765,6 +17815,22 @@ if active_page == "Fantasy Lineup Assistant":
                 key="lineup_format",
                 on_change=fantasy_filter_changed,
             )
+        if developer_mode_enabled():
+            with st.sidebar.expander("Lineup data trace", expanded=False):
+                _lu_diag = {
+                    "roster_rows": len(roster_stats),
+                    "stats_loaded_at": st.session_state.get("_fantasy_standings_stats_loaded_at"),
+                    "stats_source": st.session_state.get("_fantasy_standings_stats_source"),
+                    "lineup_team": lineup_team,
+                    "lineup_team_in_options": lineup_team in lineup_teams,
+                    "all_teams": lineup_teams,
+                    "lineup_format": st.session_state.get("lineup_format"),
+                    "room_your_team": st.session_state.get("room_your_team"),
+                    "draft_room_pick_count": len(st.session_state.get("draft_room_table") or []),
+                    "cloud_restore_source": st.session_state.get("_fantasy_restore_source"),
+                }
+                for _k, _v in _lu_diag.items():
+                    st.text(f"{_k}: {_v}")
         with l3:
             ensure_widget_state("lineup_bench_rows", 12)
             bench_rows_to_show = st.slider(

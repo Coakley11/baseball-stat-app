@@ -244,8 +244,10 @@ def prepare_leaderboards_page(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_leaderboards_filters(session: dict[str, Any]) -> None:
-    if is_leaderboards_locally_dirty(session):
-        return
+    # Do NOT short-circuit when dirty: we still need to seed any missing widget keys
+    # from canonical (e.g. after _clear_page_widget_keys on workspace restore).
+    # The loop below already skips keys that already exist in session, so dirty edits
+    # are never overwritten here.
     meta = session.get("leaderboards_state")
     filters: dict[str, Any] = {}
     if isinstance(meta, dict) and isinstance(meta.get("filters"), dict):
