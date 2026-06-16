@@ -266,6 +266,40 @@ def attach_draft_team_to_context(
                 **dict(cached_snap.get("player_position_index") or {}),
                 **index,
             }
+    try:
+        from draft_ami_helpers import build_roster_display_lines, infer_needed_positions_from_roster_detail
+
+        lines = build_roster_display_lines(names, detail, index)
+        needs, category_needs = infer_needed_positions_from_roster_detail(detail)
+        ctx["roster_display_lines"] = lines
+        ctx["filled_roster_display"] = lines
+        ctx["user_roster_with_positions"] = [
+            {"player": str(r.get("player") or "").strip(), "Primary Position": str(r.get("Primary Position") or "").strip()}
+            for r in detail
+            if isinstance(r, dict) and r.get("player")
+        ]
+        if needs:
+            ctx["needed_positions"] = needs
+        if category_needs:
+            ctx["category_needs"] = category_needs
+        snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+        snap["roster_display_lines"] = lines
+        snap["filled_roster_display"] = lines
+        snap["user_roster_with_positions"] = ctx["user_roster_with_positions"]
+        if needs:
+            snap["needed_positions"] = needs
+        if category_needs:
+            snap["category_needs"] = category_needs
+        ctx["draft_snapshot"] = snap
+        if isinstance(cached_snap, dict):
+            cached_snap["roster_display_lines"] = lines
+            cached_snap["filled_roster_display"] = lines
+            if needs:
+                cached_snap["needed_positions"] = needs
+    except ImportError:
+        pass
+
+
 def augment_ami_available_pool_at_send(
     ctx: dict[str, Any],
     question: str,

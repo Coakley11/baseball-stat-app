@@ -460,6 +460,10 @@ class TestDraftTeamReview(unittest.TestCase):
         self.assertEqual(by_name.get("Mookie Betts"), "OF")
         self.assertEqual(ctx.get("user_roster_detail"), detail)
         self.assertIn("mookie betts", (ctx.get("roster_position_index") or {}))
+        lines = ctx.get("roster_display_lines") or []
+        self.assertTrue(any("OF:" in line for line in lines))
+        diag = ctx.get("_draft_team_diagnostics") or {}
+        self.assertGreaterEqual(diag.get("roster_position_index_count", 0), 1)
 
 
 class TestDraftAmiCacheWarmth(unittest.TestCase):

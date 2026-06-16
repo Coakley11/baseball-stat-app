@@ -125,6 +125,23 @@ class TestInstantInsightSubmit(unittest.TestCase):
         self.assertTrue(session.get(SESSION_PENDING_KEY))
         self.assertEqual(session[SESSION_PENDING_KEY]["insight_id"], "ins-1")
 
+    def test_stage_pending_insight_accepts_mutable_mapping(self) -> None:
+        from collections import UserDict
+
+        from applied_math_return_insight import SESSION_PENDING_KEY, stage_pending_insight
+
+        session = UserDict()
+        stage_pending_insight(
+            session,
+            {
+                "insight_id": "ins-map",
+                "question": "Test?",
+                "source_page": "Fantasy Sleepers & Busts",
+                "conclusion": "Yes.",
+            },
+        )
+        self.assertEqual(session[SESSION_PENDING_KEY]["insight_id"], "ins-map")
+
     def test_hydrate_skips_cloud_when_submit_staged(self) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch

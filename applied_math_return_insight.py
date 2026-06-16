@@ -7,19 +7,19 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from collections.abc import MutableMapping
 
 log = logging.getLogger(__name__)
 
 
-def _resolve_session_state(st: Any) -> dict[str, Any]:
-    """Accept Streamlit module or a plain session_state dict (submit pipeline uses dict)."""
-    if isinstance(st, dict):
+def _resolve_session_state(st: Any) -> Any:
+    """Accept Streamlit module, SessionState, or a plain session_state dict."""
+    if isinstance(st, MutableMapping):
         return st
     bucket = getattr(st, "session_state", None)
-    if isinstance(bucket, dict):
+    if isinstance(bucket, MutableMapping):
         return bucket
-    raise TypeError("Expected Streamlit st or session_state dict")
+    raise TypeError("Expected Streamlit st, SessionState, or session_state mapping")
 
 
 INSIGHT_ITEM_TYPE = "applied_math_insight"
@@ -1678,12 +1678,13 @@ def load_latest_applied_math_insight_for_app(
 
 
 def _pending_insight_valid(st: Any) -> dict[str, Any]:
-    pending = st.session_state.get(SESSION_PENDING_KEY)
+    ss = _resolve_session_state(st)
+    pending = ss.get(SESSION_PENDING_KEY)
     if not isinstance(pending, dict):
         return {}
     iid = str(pending.get("insight_id") or "").strip()
     if iid and _insight_is_dismissed(st, iid):
-        st.session_state.pop(SESSION_PENDING_KEY, None)
+        ss.pop(SESSION_PENDING_KEY, None)
         return {}
     if pending.get("conclusion") or pending.get("question"):
         return pending
@@ -2225,13 +2226,20 @@ def render_suite_applied_math_insight_for_page(
     st.session_state["_ami_insight_scope_decision"] = scope
     _record_insight_return_diagnostics(st, phase="render_check", insight=insight)
     if not scope.get("should_render_insight_on_page"):
-        st.session_state["_ami_insight_render_skipped_reason"] = (
-            scope.get("render_skip_reason")
-            or f"page mismatch (current={source_page!r}, insight={insight.get('source_page')!r})"
+        force_render = bool(
+            _resolve_session_state(st).get("_ami_force_insight_render")
+            or _resolve_session_state(st).get("_ami_submit_render_insight_this_run")
         )
-        st.session_state["_ami_insight_render_success"] = False
-        st.session_state["_ami_insight_card_rendered"] = False
-        return False
+        if force_render and insight.get("conclusion"):
+            scope = {**scope, "should_render_insight_on_page": True, "render_skip_reason": None}
+        else:
+            st.session_state["_ami_insight_render_skipped_reason"] = (
+                scope.get("render_skip_reason")
+                or f"page mismatch (current={source_page!r}, insight={insight.get('source_page')!r})"
+            )
+            st.session_state["_ami_insight_render_success"] = False
+            st.session_state["_ami_insight_card_rendered"] = False
+            return False
     ok = render_applied_math_insight_panel(st)
     st.session_state["_ami_insight_render_success"] = ok
     st.session_state["_ami_insight_card_rendered"] = ok

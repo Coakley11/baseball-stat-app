@@ -1469,6 +1469,7 @@ def render_analyze_with_applied_math_sidebar(
                         from applied_math_return_insight import (
                             build_return_insight_payload,
                             build_submit_fallback_insight,
+                            render_suite_applied_math_insight_for_page,
                             stage_pending_insight,
                         )
 
@@ -1498,11 +1499,24 @@ def render_analyze_with_applied_math_sidebar(
                                 reason=str(avail.get("reason") or "solver_unavailable"),
                             )
                             instant_solve_reason = str(avail.get("reason") or "solver_unavailable")
-                        stage_pending_insight(ss, insight)
+                        stage_pending_insight(ss, insight, return_context=submit_ctx)
                         insight_card_created = True
                         ss["_ami_force_insight_render"] = True
                         ss["_ami_submit_render_insight_this_run"] = True
                         ss["_ami_insight_return_preserve"] = True
+                        try:
+                            render_suite_applied_math_insight_for_page(
+                                st,
+                                source_app=source_app,
+                                source_page=source_page,
+                            )
+                            ss["_ami_insight_rendered_inline_after_submit"] = True
+                        except Exception:
+                            log.exception(
+                                "inline Baseball Insight render failed for %s (%s)",
+                                source_app,
+                                source_page,
+                            )
                         try:
                             from applied_math_return_insight import (
                                 SESSION_PERSIST_INSIGHT_DIRTY,
@@ -1533,6 +1547,7 @@ def render_analyze_with_applied_math_sidebar(
                         try:
                             from applied_math_return_insight import (
                                 build_submit_fallback_insight,
+                                render_suite_applied_math_insight_for_page,
                                 stage_pending_insight,
                             )
 
@@ -1545,11 +1560,24 @@ def render_analyze_with_applied_math_sidebar(
                                 resume_key=str(pre_payload.get("resume_key") or ""),
                                 reason=str(exc),
                             )
-                            stage_pending_insight(ss, insight)
+                            stage_pending_insight(ss, insight, return_context=submit_ctx)
                             insight_card_created = True
                             ss["_ami_force_insight_render"] = True
                             ss["_ami_submit_render_insight_this_run"] = True
                             ss["_ami_insight_return_preserve"] = True
+                            try:
+                                render_suite_applied_math_insight_for_page(
+                                    st,
+                                    source_app=source_app,
+                                    source_page=source_page,
+                                )
+                                ss["_ami_insight_rendered_inline_after_submit"] = True
+                            except Exception:
+                                log.exception(
+                                    "inline Baseball Insight render failed for %s (%s)",
+                                    source_app,
+                                    source_page,
+                                )
                         except Exception:
                             pass
                     build_timing = dict(ss.get("_ami_last_send_build_timing") or {})

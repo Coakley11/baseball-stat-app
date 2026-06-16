@@ -639,6 +639,50 @@ def infer_draft_assistant_needs(
     return needed_positions, category_needs
 
 
+def infer_needed_positions_from_roster_detail(
+    detail: list[dict[str, str]],
+    *,
+    draft_format: str = "5x5 Roto",
+) -> tuple[list[str], list[str]]:
+    """Position/category needs from roster detail rows (team review send path)."""
+    import pandas as pd
+
+    rows = [
+        {
+            "player": str(r.get("player") or r.get("Player") or "").strip(),
+            "Primary Position": str(r.get("Primary Position") or r.get("position") or "").strip(),
+        }
+        for r in detail
+        if isinstance(r, dict) and str(r.get("player") or r.get("Player") or "").strip()
+    ]
+    roster_df = pd.DataFrame(rows)
+    return infer_draft_assistant_needs(roster_df, pd.DataFrame(), draft_format=draft_format)
+
+
+def build_roster_display_lines(
+    names: list[str],
+    detail: list[dict[str, str]],
+    index: dict[str, str],
+) -> list[str]:
+    """Human-readable roster lines for AMI solvers (e.g. 'SS: Francisco Lindor')."""
+    lines: list[str] = []
+    detail_by_name = {
+        str(r.get("player") or r.get("Player") or "").strip().lower(): str(
+            r.get("Primary Position") or r.get("position") or ""
+        ).strip()
+        for r in detail
+        if isinstance(r, dict)
+    }
+    for name in names:
+        clean = str(name or "").strip()
+        if not clean:
+            continue
+        token = clean.lower()
+        pos = detail_by_name.get(token) or str(index.get(token) or "").strip()
+        lines.append(f"{pos or '?'}: {clean}")
+    return lines
+
+
 def _available_pool_count_and_source(block: dict[str, Any] | None) -> tuple[int, str]:
     if not isinstance(block, dict):
         return 0, ""
