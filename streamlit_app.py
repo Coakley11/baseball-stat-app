@@ -12263,8 +12263,10 @@ try:
 except Exception:
     pass
 
-render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
-st.session_state.pop("_ami_submit_render_insight_this_run", None)
+# Skip the global insight render when the submit handler already rendered inline
+# (avoids showing the same insight card twice on the same rerun).
+if not st.session_state.pop("_ami_submit_render_insight_this_run", None):
+    render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
 
 # Drop restored file_uploader widget keys only (restoring them crashes Streamlit).
 for _ephemeral_key in list(st.session_state.keys()):

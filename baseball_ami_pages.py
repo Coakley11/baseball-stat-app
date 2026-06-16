@@ -118,11 +118,25 @@ def finalize_trend_context_for_send(
         ctx["problem_type_hint"] = "trend_player_comparison"
         ctx["intent"] = "trend_comparison_analysis"
         ctx["trend_comparison_mode"] = True
+        # Override any stale chart player with the comparison subject so the solver
+        # doesn't anchor on a previously-viewed player (e.g. A.J. Burnett on chart).
+        ctx["player"] = ctx["player_a"]
+        ctx["players"] = [ctx["player_a"], ctx["player_b"]]
         # Enrich trend snapshot with both player names for the solver
         trend_snap = ctx.get("trend_snapshot") if isinstance(ctx.get("trend_snapshot"), dict) else {}
         trend_snap["comparison_player_a"] = ctx["player_a"]
         trend_snap["comparison_player_b"] = ctx["player_b"]
         ctx["trend_snapshot"] = trend_snap
+        # Give the solver explicit guidance so it routes to cross-player trend comparison
+        # even if it does not read routing_hint directly.
+        pa = ctx["player_a"]
+        pb = ctx["player_b"]
+        ctx["ami_guidance"] = (
+            f"Compare {pa}'s statistical trend trajectory against {pb}'s. "
+            f"Use rolling trend data, recent performance, and trend-based projections for both. "
+            f"Determine which player has the better trend outlook and is the better pick "
+            f"based on that trending data. Do not anchor on a different player."
+        )
     else:
         # Pure trend significance question — clear stale comparison players
         ctx.pop("player_a", None)
@@ -545,14 +559,37 @@ def finalize_comparison_context_for_send(
     if age_range:
         ctx["comparison_age_range"] = age_range
         ctx["comparison_constraint_note"] = f"Compare players at ages {age_range} only"
+        ctx["historical_comparison"] = True
+        ctx["filters_applied"] = f"Age window: {age_range}"
         # Upgrade intent to historical if age constraint present and not already flagged
         if intent in ("comparison_head_to_head", "comparison_general"):
             intent = "comparison_historical_age"
+        # Give the solver explicit guidance; routing_hint alone may not be read.
+        pa = str(ctx.get("player_a") or ctx.get("player") or "Player A").strip()
+        pb = str(ctx.get("player_b") or "Player B").strip()
+        ctx["ami_guidance"] = (
+            f"Use historical season-by-season data to compare {pa} and {pb} "
+            f"ONLY during the age window {age_range}. "
+            f"Filter all statistics to seasons where each player was in that age range. "
+            f"Do not use present-day or career totals — restrict entirely to the specified ages. "
+            f"Explain who performed better across key categories during those ages."
+        )
     if season_range and not age_range:
         ctx["comparison_season_range"] = season_range
         ctx.setdefault("comparison_constraint_note", f"Compare players during seasons {season_range} only")
+        ctx["historical_comparison"] = True
+        ctx.setdefault("filters_applied", f"Season range: {season_range}")
         if intent in ("comparison_head_to_head", "comparison_general"):
             intent = "comparison_historical_season"
+        pa = str(ctx.get("player_a") or ctx.get("player") or "Player A").strip()
+        pb = str(ctx.get("player_b") or "Player B").strip()
+        ctx.setdefault("ami_guidance", (
+            f"Use historical season-by-season data to compare {pa} and {pb} "
+            f"ONLY during seasons {season_range}. "
+            f"Filter all statistics to that season range. "
+            f"Do not use present-day stats — restrict entirely to the specified seasons. "
+            f"Explain who performed better across key categories during those seasons."
+        ))
 
     # Also promote widget-level year/age range if the page has filters active
     compare_age = session_state.get("compare_age_range") or session_state.get("comparison_age_range")

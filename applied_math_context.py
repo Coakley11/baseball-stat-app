@@ -615,6 +615,22 @@ def attach_draft_team_to_context(
             ctx["problem_type_hint"] = "roster_needs"
             ctx["intent"] = "roster_weakness_analysis"
             ctx["draft_mode_hint"] = "roster_needs"
+            # Clear any stale single-player context so the solver does not anchor on a
+            # previously-viewed player (e.g. Ichiro Suzuki from the last pick analysis).
+            # Roster weakness analysis is about the full roster, not any individual player.
+            ctx.pop("player", None)
+            ctx.pop("player_a", None)
+            ctx.pop("player_b", None)
+            # Give the solver explicit guidance so it routes to roster gap analysis
+            # even if it does not read routing_hint directly.
+            team = str(ctx.get("draft_review_team") or ctx.get("user_team") or "your team")
+            ctx["ami_guidance"] = (
+                f"Analyze {team}'s current draft roster for statistical category weaknesses "
+                f"and positional gaps. Use category_diagnostics and position_scarcity_table "
+                f"from the context. Identify the weakest scoring category, the thinnest position, "
+                f"and recommend specific draft priorities to address those gaps. "
+                f"Do not analyze or price a specific player."
+            )
             # Promote category_diagnostics from snapshot to top-level context
             for snap_key in ("draft_snapshot", "draft_projection"):
                 snap_obj = ctx.get(snap_key) if isinstance(ctx.get(snap_key), dict) else {}
