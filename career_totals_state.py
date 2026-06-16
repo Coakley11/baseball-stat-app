@@ -601,6 +601,7 @@ def flush_career_filter_edits(session: dict[str, Any], st_obj: Any = None, *, re
         local_edit=True,
         sync_widget_keys=False,
     )
+    record_career_sync_trace(session, "phone_after_edit", flush_reason=reason)
     if st_obj is not None:
         try:
             from baseball_persistent_state import force_save_baseball_state
