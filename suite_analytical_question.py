@@ -22,12 +22,99 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v3"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v4"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
 ANALYTICAL_QUESTION_BUTTON_LABEL = "Continue in Applied Mathematics →"
 _SEND_COOLDOWN_SECONDS = 120
+
+_SUBMIT_PIPELINE_KEYS = (
+    "submit_received",
+    "question_text",
+    "question_id",
+    "instant_solve_started",
+    "instant_solve_finished",
+    "instant_solve_reason",
+    "ami_repo_found",
+    "insight_card_created",
+    "activity_created",
+    "continue_item_created",
+    "command_center_write_status",
+    "cloud_persist_status",
+    "blob_save_deferred",
+    "duplicate_detected",
+    "last_exception",
+)
+
+
+def _update_submit_pipeline_diag(
+    session_state: dict[str, Any] | None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Merge step-by-step Baseball Insight submit diagnostics for Dev Mode."""
+    if session_state is None:
+        return dict(fields)
+    diag = dict(session_state.get("_ami_submit_pipeline") or {})
+    diag.update({k: v for k, v in fields.items() if v is not None or k == "last_exception"})
+    diag["updated_at"] = utc_now_iso()
+    session_state["_ami_submit_pipeline"] = diag
+    return diag
+
+
+def _record_submit_activity(
+    payload: dict[str, Any],
+    *,
+    action_url: str,
+    timing: dict[str, Any],
+) -> tuple[bool, str]:
+    """Write Command Center activity; returns (created, status)."""
+    metrics = metrics_for_activity_record(payload)
+    app_norm = normalize_source_app_id(
+        str(payload.get("source_app") or ""),
+        dict(payload.get("context") or {}),
+    )
+    metrics["source_app"] = app_norm
+    metrics["continue_action_url"] = action_url
+    metrics["target_app"] = "applied_intelligence"
+    if app_norm == "music":
+        summary = f"Asked Music Coach: {payload['question'][:80]}"
+    else:
+        summary = f"Asked Applied Math: {payload['question'][:80]}"
+    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
+    try:
+        from suite_activity_client import last_record_trace, record_activity
+
+        record_activity(
+            payload["source_app"],
+            "analytical_question",
+            page=payload["source_page"],
+            metrics=metrics,
+            summary=summary,
+            resume_key=str(payload.get("resume_key") or ""),
+            resume_title=card_title,
+            resume_subtitle=card_subtitle,
+            action_url=action_url,
+        )
+        rec_trace = last_record_trace()
+        for key in (
+            "payload_prepare_ms",
+            "activity_api_ms",
+            "append_event_ms",
+            "activity_storage_ms",
+            "saved_item_link_ms",
+            "command_center_index_ms",
+            "record_activity_total_ms",
+        ):
+            if key in rec_trace:
+                timing[key] = rec_trace[key]
+        if rec_trace.get("recorded"):
+            return True, "ok"
+        return False, str(rec_trace.get("error") or rec_trace.get("write_path") or "not_recorded")
+    except Exception as exc:
+        log.warning("record_activity failed for analytical_question: %s", exc)
+        return False, str(exc)
+
 
 _SOURCE_AREA: dict[str, str] = {
     "baseball": "sports",
@@ -999,54 +1086,25 @@ def submit_analytical_question(
     blob_meta: dict[str, Any] = {}
     activity_created = False
     continue_item_created = False
-    if duplicate:
+    cc_status = "pending"
+    app_norm = normalize_source_app_id(
+        str(payload.get("source_app") or ""),
+        dict(payload.get("context") or {}),
+    )
+    refresh_activity = app_norm == "baseball"
+
+    if duplicate and not refresh_activity:
         t_blob = time.perf_counter()
         blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
         timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
         timing["duplicate_send"] = True
+        cc_status = "skipped_duplicate"
     else:
-        metrics = metrics_for_activity_record(payload)
-        metrics["source_app"] = normalize_source_app_id(
-            str(payload.get("source_app") or ""),
-            dict(payload.get("context") or {}),
-        )
-        metrics["continue_action_url"] = action_url
-        metrics["target_app"] = "applied_intelligence"
-        if metrics["source_app"] == "music":
-            summary = f"Asked Music Coach: {payload['question'][:80]}"
-        else:
-            summary = f"Asked Applied Math: {payload['question'][:80]}"
+        if duplicate:
+            timing["duplicate_send"] = True
         t_rec = time.perf_counter()
-        try:
-            from suite_activity_client import last_record_trace, record_activity
-
-            record_activity(
-                payload["source_app"],
-                "analytical_question",
-                page=payload["source_page"],
-                metrics=metrics,
-                summary=summary,
-                resume_key=str(payload.get("resume_key") or ""),
-                resume_title=card_title,
-                resume_subtitle=card_subtitle,
-                action_url=action_url,
-            )
-            activity_created = True
-        except Exception as exc:
-            log.warning("record_activity failed for analytical_question: %s", exc)
+        activity_created, cc_status = _record_submit_activity(payload, action_url=action_url, timing=timing)
         timing["record_activity_ms"] = round((time.perf_counter() - t_rec) * 1000, 1)
-        rec_trace = last_record_trace()
-        for key in (
-            "payload_prepare_ms",
-            "activity_api_ms",
-            "append_event_ms",
-            "activity_storage_ms",
-            "saved_item_link_ms",
-            "command_center_index_ms",
-            "record_activity_total_ms",
-        ):
-            if key in rec_trace:
-                timing[key] = rec_trace[key]
 
         t_blob = time.perf_counter()
         if defer_blob_save and session_state is not None:
@@ -1069,7 +1127,7 @@ def submit_analytical_question(
         if isinstance(blob_meta.get("blob_save_ms_by_app"), dict):
             timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
 
-        elif blob_meta.get("blob_updated"):
+        if blob_meta.get("blob_updated"):
             if session_state is not None:
                 session_state["_ami_pending_resume_upsert"] = {
                     "payload": payload,
@@ -1121,7 +1179,9 @@ def submit_analytical_question(
             "continue_item_created": continue_item_created,
             "duplicate_detected": duplicate,
             "insight_card_created": bool(session_state.get("_ami_last_instant_insight_ok")),
-            "command_center_write_status": "skipped_duplicate" if duplicate else ("ok" if activity_created else "failed"),
+            "command_center_write_status": cc_status if cc_status != "pending" else (
+                "skipped_duplicate" if duplicate else ("ok" if activity_created else "failed")
+            ),
         }
         ctx_diag = dict(payload.get("context") or {})
         if ctx_diag.get("trend_send_diagnostics"):
@@ -1139,6 +1199,15 @@ def submit_analytical_question(
             )
         session_state["_ami_last_submit_diagnostics"] = submit_diag
         send_diag.update(submit_diag)
+        pipeline = dict(session_state.get("_ami_submit_pipeline") or {})
+        pipeline.update(
+            {
+                k: submit_diag.get(k)
+                for k in _SUBMIT_PIPELINE_KEYS
+                if k in submit_diag
+            }
+        )
+        session_state["_ami_submit_pipeline"] = pipeline
         session_state["_ami_last_send_diagnostics"] = send_diag
     return {
         **payload,
@@ -1329,76 +1398,109 @@ def render_analyze_with_applied_math_sidebar(
 
     if submitted:
         q = str(ss.get(question_key) or question or "").strip()
+        pipeline: dict[str, Any] = {"submit_received": True, "question_text": q, "last_exception": None}
+        _update_submit_pipeline_diag(ss, **pipeline)
         if not q:
             st.sidebar.warning("Enter a question first.")
         else:
             ss["_ami_last_typed_question"] = q
-            t_send = time.perf_counter()
-            submit_ctx = build_submit_context(
-                source_app,
-                source_page,
-                ss,
-                context_extra_builder=context_extra_builder,
-                context_extra=context,
-                question=q,
-            )
-            build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-            build_timing["build_submit_context_total_ms"] = round((time.perf_counter() - t_send) * 1000, 1)
-            ss["_ami_last_send_build_timing"] = build_timing
-            submit_source_state: dict[str, Any] | None = None
-            skip_source_state = False
-            if is_baseball and "draft" in str(source_page or "").lower():
-                try:
-                    from draft_ami_helpers import draft_ami_cache_has_pool
-
-                    skip_source_state = draft_ami_cache_has_pool(ss)
-                except ImportError:
-                    skip_source_state = False
-            if source_state_builder is not None and not skip_source_state:
-                try:
-                    submit_source_state = source_state_builder()
-                except Exception:
-                    log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
-            elif skip_source_state:
+            insight_card_created = False
+            cloud_persist_status = "not_attempted"
+            instant_solve_reason = ""
+            try:
+                t_send = time.perf_counter()
+                submit_ctx = build_submit_context(
+                    source_app,
+                    source_page,
+                    ss,
+                    context_extra_builder=context_extra_builder,
+                    context_extra=context,
+                    question=q,
+                )
                 build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-                build_timing["source_state_builder_skipped"] = "draft_cache_present"
+                build_timing["build_submit_context_total_ms"] = round((time.perf_counter() - t_send) * 1000, 1)
                 ss["_ami_last_send_build_timing"] = build_timing
-            elif skip_source_state:
-                build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-                build_timing["source_state_builder_skipped"] = "draft_cache_present"
-                ss["_ami_last_send_build_timing"] = build_timing
+                submit_source_state: dict[str, Any] | None = None
+                skip_source_state = False
+                if is_baseball and "draft" in str(source_page or "").lower():
+                    try:
+                        from draft_ami_helpers import draft_ami_cache_has_pool
 
-            instant_solved = False
-            if is_baseball:
-                t_inst = time.perf_counter()
-                try:
-                    from applied_math_return_insight import build_return_insight_payload, stage_pending_insight
-                    from draft_ami_instant_solver import solve_instant_baseball_insight
+                        skip_source_state = draft_ami_cache_has_pool(ss)
+                    except ImportError:
+                        skip_source_state = False
+                if source_state_builder is not None and not skip_source_state:
+                    try:
+                        submit_source_state = source_state_builder()
+                    except Exception as exc:
+                        log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
+                        pipeline["last_exception"] = f"source_state: {exc}"
+                elif skip_source_state:
+                    build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
+                    build_timing["source_state_builder_skipped"] = "draft_cache_present"
+                    ss["_ami_last_send_build_timing"] = build_timing
 
-                    pre_payload = build_question_payload(
-                        source_app=source_app,
-                        source_page=source_page,
-                        question=q,
-                        context=submit_ctx,
-                        context_summary=context_summary,
-                        source_state=submit_source_state,
+                pre_payload = build_question_payload(
+                    source_app=source_app,
+                    source_page=source_page,
+                    question=q,
+                    context=submit_ctx,
+                    context_summary=context_summary,
+                    source_state=submit_source_state,
+                )
+                action_url_pre = build_applied_math_resume_url(pre_payload)
+                _update_submit_pipeline_diag(
+                    ss,
+                    question_id=str(pre_payload.get("question_id") or ""),
+                )
+
+                instant_solved = False
+                if is_baseball:
+                    from draft_ami_instant_solver import ami_solver_availability, solve_instant_baseball_insight
+
+                    avail = ami_solver_availability()
+                    _update_submit_pipeline_diag(
+                        ss,
+                        instant_solve_started=True,
+                        ami_repo_found=bool(avail.get("repo_found")),
                     )
-                    action_url_pre = build_applied_math_resume_url(pre_payload)
-                    solved_pair = solve_instant_baseball_insight(q, submit_ctx)
-                    if solved_pair:
-                        route, solved = solved_pair
-                        insight = build_return_insight_payload(
-                            question=q,
-                            source_app=source_app,
-                            source_page=source_page,
-                            question_id=str(pre_payload.get("question_id") or ""),
-                            route=route,
-                            result=solved,
-                            full_analysis_url=action_url_pre,
-                            context=submit_ctx,
-                            resume_key=str(pre_payload.get("resume_key") or ""),
+                    t_inst = time.perf_counter()
+                    try:
+                        from applied_math_return_insight import (
+                            build_return_insight_payload,
+                            build_submit_fallback_insight,
+                            stage_pending_insight,
                         )
+
+                        solved_pair = solve_instant_baseball_insight(q, submit_ctx)
+                        if solved_pair:
+                            route, solved = solved_pair
+                            insight = build_return_insight_payload(
+                                question=q,
+                                source_app=source_app,
+                                source_page=source_page,
+                                question_id=str(pre_payload.get("question_id") or ""),
+                                route=route,
+                                result=solved,
+                                full_analysis_url=action_url_pre,
+                                context=submit_ctx,
+                                resume_key=str(pre_payload.get("resume_key") or ""),
+                            )
+                            instant_solve_reason = "solver_ok"
+                        else:
+                            insight = build_submit_fallback_insight(
+                                question=q,
+                                source_app=source_app,
+                                source_page=source_page,
+                                question_id=str(pre_payload.get("question_id") or ""),
+                                full_analysis_url=action_url_pre,
+                                resume_key=str(pre_payload.get("resume_key") or ""),
+                                reason=str(avail.get("reason") or "solver_unavailable"),
+                            )
+                            instant_solve_reason = str(avail.get("reason") or "solver_unavailable")
                         stage_pending_insight(ss, insight)
+                        insight_card_created = True
+                        ss["_ami_force_insight_render"] = True
                         try:
                             from applied_math_return_insight import (
                                 SESSION_PERSIST_INSIGHT_DIRTY,
@@ -1415,64 +1517,107 @@ def render_analyze_with_applied_math_sidebar(
                                 st=ss,
                             )
                             ss[SESSION_PERSIST_INSIGHT_DIRTY] = True
-                        except Exception:
+                            cloud_persist_status = "ok"
+                            instant_solved = bool(solved_pair)
+                        except Exception as exc:
                             log.exception("instant insight cloud persist failed")
-                        instant_solved = True
-                except Exception:
-                    log.exception("instant Baseball Insight failed for %s (%s)", source_app, source_page)
-                build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-                build_timing["instant_insight_ms"] = round((time.perf_counter() - t_inst) * 1000, 1)
-                build_timing["instant_insight_ok"] = instant_solved
-                ss["_ami_last_send_build_timing"] = build_timing
-            ss["_ami_last_instant_insight_ok"] = instant_solved
+                            cloud_persist_status = f"failed: {exc}"
+                            pipeline["last_exception"] = str(exc)
+                            instant_solved = bool(solved_pair)
+                    except Exception as exc:
+                        log.exception("instant Baseball Insight failed for %s (%s)", source_app, source_page)
+                        pipeline["last_exception"] = str(exc)
+                        instant_solve_reason = f"exception: {exc}"
+                        try:
+                            from applied_math_return_insight import (
+                                build_submit_fallback_insight,
+                                stage_pending_insight,
+                            )
 
-            result = submit_analytical_question(
-                source_app=source_app,
-                source_page=source_page,
-                question=q,
-                context=submit_ctx,
-                context_summary=context_summary,
-                source_state=submit_source_state,
-                session_state=ss,
-                defer_blob_save=is_baseball and instant_solved,
-            )
-            if is_baseball and instant_solved:
-                _flush_pending_blob_save(ss)
-                _flush_pending_resume_upsert(ss)
-            ss["_last_analytical_question"] = result
-            ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
-            dup_msg = (
-                "That question was already sent recently. Open Command Center to continue with the Music Coach."
-                if is_music
-                else (
-                    "That question was already sent recently. Open Command Center to continue with Baseball Insight."
-                    if is_baseball
-                    else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                            insight = build_submit_fallback_insight(
+                                question=q,
+                                source_app=source_app,
+                                source_page=source_page,
+                                question_id=str(pre_payload.get("question_id") or ""),
+                                full_analysis_url=action_url_pre,
+                                resume_key=str(pre_payload.get("resume_key") or ""),
+                                reason=str(exc),
+                            )
+                            stage_pending_insight(ss, insight)
+                            insight_card_created = True
+                            ss["_ami_force_insight_render"] = True
+                        except Exception:
+                            pass
+                    build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
+                    build_timing["instant_insight_ms"] = round((time.perf_counter() - t_inst) * 1000, 1)
+                    build_timing["instant_insight_ok"] = instant_solved
+                    ss["_ami_last_send_build_timing"] = build_timing
+                    _update_submit_pipeline_diag(
+                        ss,
+                        instant_solve_finished=True,
+                        instant_solve_reason=instant_solve_reason,
+                        insight_card_created=insight_card_created,
+                        cloud_persist_status=cloud_persist_status,
+                    )
+                ss["_ami_last_instant_insight_ok"] = insight_card_created
+
+                result = submit_analytical_question(
+                    source_app=source_app,
+                    source_page=source_page,
+                    question=q,
+                    context=submit_ctx,
+                    context_summary=context_summary,
+                    source_state=submit_source_state,
+                    session_state=ss,
+                    defer_blob_save=is_baseball and bool(ss.get("_ami_last_instant_insight_ok")),
                 )
-            )
-            ok_msg = (
-                "Question sent to Command Center. Open Command Center to continue with the Music Coach."
-                if is_music
-                else (
-                    "Baseball Insight is ready on this page — use Open full analysis for the deep dive."
-                    if is_baseball
-                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                if is_baseball:
+                    _flush_pending_blob_save(ss)
+                    _flush_pending_resume_upsert(ss)
+                ss["_last_analytical_question"] = result
+                ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
+                submit_diag = dict(ss.get("_ami_last_submit_diagnostics") or {})
+                _update_submit_pipeline_diag(
+                    ss,
+                    activity_created=submit_diag.get("activity_created"),
+                    continue_item_created=submit_diag.get("continue_item_created"),
+                    command_center_write_status=submit_diag.get("command_center_write_status"),
+                    duplicate_detected=result.get("duplicate"),
+                    insight_card_created=insight_card_created,
+                    cloud_persist_status=cloud_persist_status,
                 )
-            )
-            if result.get("duplicate"):
-                st.sidebar.info(dup_msg)
-            else:
-                st.sidebar.success(ok_msg)
-                if is_baseball and instant_solved:
-                    try:
-                        st.rerun()
-                    except Exception:
-                        pass
+                dup_msg = (
+                    "That question was already sent recently. Open Command Center to continue with the Music Coach."
+                    if is_music
+                    else (
+                        "That question was already sent recently. Open Command Center to continue with Baseball Insight."
+                        if is_baseball
+                        else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                    )
+                )
+                ok_msg = (
+                    "Question sent to Command Center. Open Command Center to continue with the Music Coach."
+                    if is_music
+                    else (
+                        "Baseball Insight is ready on this page — use Open full analysis for the deep dive."
+                        if is_baseball
+                        else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                    )
+                )
+                if result.get("duplicate"):
+                    st.sidebar.info(dup_msg)
+                else:
+                    st.sidebar.success(ok_msg)
                 if on_after_send is not None:
                     try:
                         on_after_send()
-                    except Exception:
+                    except Exception as exc:
                         log.exception("on_after_send hook failed for %s (%s)", source_app, source_page)
+                        _update_submit_pipeline_diag(ss, last_exception=str(exc))
+            except Exception as exc:
+                log.exception("AMI submit pipeline failed for %s (%s)", source_app, source_page)
+                _update_submit_pipeline_diag(ss, last_exception=str(exc))
+                st.sidebar.error(f"Submit failed: {exc}")
 
     if developer_mode:
         st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
@@ -1487,8 +1632,20 @@ def render_analyze_with_applied_math_sidebar(
         except Exception:
             pass
         submit_diag = ss.get("_ami_last_submit_diagnostics")
+        pipeline_diag = ss.get("_ami_submit_pipeline")
+        if isinstance(pipeline_diag, dict) and pipeline_diag:
+            with st.sidebar.expander("Baseball Insight submit pipeline", expanded=True):
+                for key in _SUBMIT_PIPELINE_KEYS:
+                    val = pipeline_diag.get(key)
+                    if val is not None and val != "" and val != []:
+                        st.text(f"{key}: {val}")
+                for key, val in pipeline_diag.items():
+                    if key in _SUBMIT_PIPELINE_KEYS or key in ("updated_at",):
+                        continue
+                    if val is not None and val != "" and val != []:
+                        st.text(f"{key}: {val}")
         if isinstance(submit_diag, dict) and submit_diag:
-            with st.sidebar.expander("AMI submit diagnostics (last send)", expanded=True):
+            with st.sidebar.expander("AMI submit diagnostics (last send)", expanded=False):
                 for key, val in submit_diag.items():
                     if val is not None and val != "" and val != []:
                         st.text(f"{key}: {val}")

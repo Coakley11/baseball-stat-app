@@ -200,6 +200,21 @@ def mark_fantasy_local_edit(session: dict[str, Any]) -> None:
     session[FANTASY_LOCAL_EDIT_TS_KEY] = _utc_now_iso()
 
 
+def mark_sleepers_filter_local_edit(session: dict[str, Any]) -> None:
+    """Persist sleeper filter widget values to canonical state on user change."""
+    mark_fantasy_local_edit(session)
+    filt = _extract_section_from_session(session, "sleepers")
+    if filt:
+        write_canonical_fantasy_section(
+            session,
+            "sleepers",
+            filters=filt,
+            reason="filter_widget_change",
+            local_edit=True,
+            sync_widget_keys=False,
+        )
+
+
 def clear_fantasy_local_edit(session: dict[str, Any]) -> None:
     session.pop(FANTASY_DIRTY_KEY, None)
     session.pop(FANTASY_LOCAL_EDIT_TS_KEY, None)
@@ -449,6 +464,8 @@ def prepare_fantasy_section_page(session: dict[str, Any], section: str) -> dict[
             local_edit=True,
             sync_widget_keys=False,
         )
+    if widget and canonical:
+        return _section_block(_ensure_meta(session), section)
     if canonical:
         filt = {**canonical, **widget}
         return write_canonical_fantasy_section(

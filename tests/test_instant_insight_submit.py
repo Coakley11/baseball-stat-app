@@ -50,6 +50,39 @@ class TestInstantInsightSubmit(unittest.TestCase):
         )
         self.assertIn("3B gap", insight.math_summary)
 
+    def test_build_submit_fallback_insight(self) -> None:
+        from applied_math_return_insight import build_submit_fallback_insight
+
+        insight = build_submit_fallback_insight(
+            question="Would Nathan Lukes make a good pick?",
+            source_app="baseball",
+            source_page="Fantasy Sleepers & Busts",
+            question_id="abc123",
+            full_analysis_url="https://example.com/resume",
+            reason="ami_repo_not_found",
+        )
+        self.assertIn("full analysis", insight.conclusion.lower())
+        self.assertTrue(insight.full_analysis_url)
+
+    @patch("suite_analytical_question._recent_duplicate_send", return_value=True)
+    @patch("suite_analytical_question._store_question_context_blob")
+    @patch("suite_activity_client.record_activity")
+    def test_baseball_duplicate_still_records_activity(
+        self, record_mock, blob_mock, dup_mock
+    ) -> None:
+        from suite_analytical_question import submit_analytical_question
+
+        session: dict = {}
+        blob_mock.return_value = {"blob_updated": True}
+        submit_analytical_question(
+            source_app="baseball",
+            source_page="Fantasy Sleepers & Busts",
+            question="Would Nathan Lukes make a good pick?",
+            context={},
+            session_state=session,
+        )
+        record_mock.assert_called_once()
+
     def test_build_return_insight_scrubs_fallback_for_draft_coach(self) -> None:
         from types import SimpleNamespace
 

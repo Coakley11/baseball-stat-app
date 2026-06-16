@@ -143,7 +143,7 @@ Legend: **Cloud** = persisted via suite cloud / activity API · **Local** = sess
 | Activities | ✓ | ✓ | Fully synced |
 | Continue items | ✓ | ✓ | Fully synced |
 | Saved questions | ✓ | ✓ | Fully synced |
-| Duplicate-send dedupe | — | — | Local-only window (by design) |
+| Duplicate-send dedupe | Partial | Partial | Baseball refreshes activity (v17); other apps skip within window |
 | **Workspace restore** | | | |
 | Page restore | ✓ | ✓ | Fully synced |
 | Draft restore | ✓ | ✓ | Fully synced |
@@ -152,23 +152,44 @@ Legend: **Cloud** = persisted via suite cloud / activity API · **Local** = sess
 | **Instant Baseball Insight** | | | |
 | Latest insight card | ✓ | ✓ | Fully synced (insight store v10) |
 | Dismissed insight IDs | ✓ | ✓ | Fully synced |
-| Instant solve (pre-cloud) | — | — | Local-only until activity writes |
-
-Legend: **✓** = cloud-backed · **Partial** = needs active live session · **—** = intentionally device-local
+| Instant solve (pre-cloud) | — | — | Local-only when AMI repo bundled; fallback card always staged (v17) |
 
 ---
 
-## Instant Baseball Insight E2E verification
+## v17 pipeline fixes (instant-insight-v17)
 
-| # | Check | Result | Notes |
-|---|-------|--------|-------|
-| 1 | Insight card appears immediately on submit | **Pass** | `solve_instant_baseball_insight` + `stage_pending_insight` |
-| 2 | No "Please ask a question first" error | **Pass** | `st.form` submit preserves question (v13) |
-| 3 | Command Center activity created | **Pass** | `record_activity` on submit |
-| 4 | Continue item created | **Pass** | Resume upsert after blob save |
-| 5 | Open Full Analysis works | **Pass** | `build_applied_math_resume_url` |
-| 6 | Dismiss works | **Pass** | `_ami_dismissed_insight_ids` cloud-backed |
-| 7 | Refresh does not break insight state | **Pass** | Pending insight rehydrates from session/cloud |
-| 8 | Phone and Dell show same latest insight | **Partial** | Manual verify after cloud sync |
+| Issue | Root cause | Fix |
+|-------|------------|-----|
+| Insight card missing after submit | `st.rerun()` aborted script before main-body insight render; no fallback when AMI repo absent on Cloud | Removed rerun; always stage fallback or solver insight; render runs same run after sidebar |
+| Command Center empty | Broken `elif blob_updated` resume upsert; duplicate path skipped activity | Fixed resume upsert block; baseball always records activity even on duplicate |
+| No diagnostics | Partial submit tracing | `_ami_submit_pipeline` with full step keys in Dev Mode |
+| Header missing on draft pages | `render_global_app_chrome` early-return on draft focus pages | Compact banner on all pages |
+| Sleepers filters revert | Canonical overwrite on prepare | `mark_sleepers_filter_local_edit`; skip canonical sync when widget matches |
 
-Automated coverage: `tests/test_instant_insight_submit.py`, `tests/test_ami_player_pool.py`.
+### Submit pipeline diagnostics (Dev Mode → “Baseball Insight submit pipeline”)
+
+`submit_received`, `question_text`, `question_id`, `instant_solve_started`, `instant_solve_finished`, `instant_solve_reason`, `ami_repo_found`, `insight_card_created`, `activity_created`, `continue_item_created`, `command_center_write_status`, `cloud_persist_status`, `duplicate_detected`, `last_exception`
+
+---
+
+## Trend Value / Sleepers / Comparison (AMI context)
+
+| Page | Send hook | Cloud context blob | Instant solve | Priority |
+|------|-----------|-------------------|---------------|----------|
+| Trend Value | `finalize_trend_context_for_send` | Yes | Needs AMI repo or full-analysis link | High |
+| Sleepers | `finalize_sleepers_context_for_send` | Yes | Same | High |
+| Comparison | `finalize_comparison_context_for_send` | Yes | Same | High |
+
+**Production note:** Streamlit Cloud baseball deploy must bundle AMI (`AMI_REPO_PATH`) or users get fallback insight + full Applied Intelligence analysis link.
+
+---
+
+## Instant Baseball Insight E2E verification (v17 target)
+
+| # | Check | v16 | v17 target |
+|---|-------|-----|------------|
+| 1 | Insight card appears immediately on submit | Fail (no AMI + rerun) | Pass (fallback card, no rerun) |
+| 2 | Command Center activity created | Fail (resume elif bug) | Pass |
+| 3 | Continue item created | Fail | Pass (flush + fixed upsert) |
+| 4 | Open Full Analysis works | — | Pass |
+| 5 | Phone ↔ Dell same insight | Partial | Re-verify after v17 |

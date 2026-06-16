@@ -512,11 +512,16 @@ DRAFT_FOCUS_PAGES = frozenset({
 
 
 def render_global_app_chrome(active_page: str) -> None:
-    """Single app header + tutorial entry — compact on draft focus pages."""
-    if active_page in DRAFT_FOCUS_PAGES:
-        app_tutorial.render_tutorial_header_bar()
-        return
-    st.markdown("""
+    """Single app header + tutorial entry — always show explorer banner."""
+    compact = active_page in DRAFT_FOCUS_PAGES
+    if compact:
+        st.markdown("""
+<div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
+    <div class="title-text" style="font-size:28px;">⚾ Daniel Cohen Baseball Explorer</div>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
@@ -14410,6 +14415,7 @@ if active_page == "Fantasy Sleepers & Busts":
     from fantasy_state import (
         flush_fantasy_section_edits,
         mark_fantasy_local_edit,
+        mark_sleepers_filter_local_edit,
         prepare_fantasy_sleepers_filters,
         prepare_fantasy_sleepers_page,
         render_fantasy_state_debug,
@@ -14699,7 +14705,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 "Primary Position",
                 pos_options_fantasy,
                 key="fantasy_market_positions",
-                on_change=lambda: mark_fantasy_local_edit(st.session_state),
+                on_change=lambda: mark_sleepers_filter_local_edit(st.session_state),
             )
         with pa2:
             max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
@@ -14710,7 +14716,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 min_value=18,
                 max_value=_age_hi,
                 key="fantasy_market_age_range",
-                on_change=lambda: mark_fantasy_local_edit(st.session_state),
+                on_change=lambda: mark_sleepers_filter_local_edit(st.session_state),
             )
         st.caption("FantasyPros/ADP matching is optional. Players without market ranks stay in the pool but may not appear on the edge chart.")
     fantasy_positions = st.session_state.get("fantasy_market_positions", [])

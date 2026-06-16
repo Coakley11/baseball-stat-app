@@ -511,6 +511,58 @@ def build_return_insight_payload(
     )
 
 
+def build_submit_fallback_insight(
+    *,
+    question: str,
+    source_app: str,
+    source_page: str = "",
+    question_id: str = "",
+    full_analysis_url: str = "",
+    resume_key: str = "",
+    reason: str = "",
+) -> AppliedMathInsight:
+    """Stage an immediate insight card when local solver is unavailable."""
+    q = str(question or "").strip()
+    app = str(source_app or "").strip().lower()
+    page = str(source_page or "").strip()
+    qid = str(question_id or "").strip()
+    why = (
+        "Local solver is unavailable on this server — your question was saved and "
+        "the full Applied Math analysis opens via **Open full analysis**."
+    )
+    if reason and reason not in ("ok", "solver_ok", "solver_unavailable", "ami_repo_not_found"):
+        why += f" ({reason})"
+    elif reason == "ami_repo_not_found":
+        why = (
+            "Instant solver is not bundled on this deploy — your question was sent to "
+            "Command Center. Use **Open full analysis** for the complete answer."
+        )
+    conclusion = (
+        "Question received — open **full analysis** for your Applied Math answer."
+        if app == "baseball"
+        else "Question received — open full analysis for details."
+    )
+    iid = _insight_id(qid or hashlib.sha256(q.encode()).hexdigest()[:12], conclusion)
+    return AppliedMathInsight(
+        insight_id=iid,
+        question_id=qid,
+        question=q,
+        source_app=app,
+        source_page=page,
+        conclusion=conclusion,
+        method="Baseball Insight",
+        model_name="Applied Math (full analysis)",
+        math_summary=why,
+        assumptions=[],
+        confidence="medium",
+        confidence_pct=None,
+        key_numbers={"routing_reason": reason or "fallback_insight"},
+        full_analysis_url=str(full_analysis_url or "").strip(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        resume_key=str(resume_key or "").strip(),
+    )
+
+
 def build_applied_math_full_analysis_url(payload: dict[str, Any], *, base_url: str = "") -> str:
     """Deep link back into Applied Intelligence for the same question."""
     try:
