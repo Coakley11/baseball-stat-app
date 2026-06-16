@@ -12822,9 +12822,15 @@ if active_page == "Career Totals":
 
 def leaderboards_filter_changed():
     try:
-        from leaderboards_state import mark_leaderboards_filter_pending_sync
+        from leaderboards_state import mark_leaderboards_filter_pending_sync, mark_leaderboards_local_edit
 
+        mark_leaderboards_local_edit(st.session_state)
         mark_leaderboards_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+    save_page_state("Leaderboards")
+    try:
+        force_save_baseball_state(st, reason="leaderboards_filter")
     except Exception:
         pass
 
@@ -12896,19 +12902,30 @@ if active_page == "Leaderboards":
         )
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
-    default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
+    _default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
+    # Seed any missing weight keys from defaults before widgets render so that
+    # Streamlit doesn't fall back to value= defaults and stomp user edits.
+    for _ws in weight_stats:
+        st.session_state.setdefault(f"leaders_w_{_ws}", _default_weights.get(_ws, 0.0))
     weight_values = {}
     with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
         weight_cols = st.columns(4)
         for i, stat in enumerate(weight_stats):
             with weight_cols[i % 4]:
-                weight_values[stat] = st.number_input(f"Weight for {stat}", min_value=0.0, max_value=10.0, value=default_weights.get(stat, 0.0), step=0.5, key=f"leaders_w_{stat}", on_change=leaderboards_filter_changed)
+                weight_values[stat] = st.number_input(
+                    f"Weight for {stat}",
+                    min_value=0.0,
+                    max_value=10.0,
+                    step=0.5,
+                    key=f"leaders_w_{stat}",
+                    on_change=leaderboards_filter_changed,
+                )
 
     filtered_leaders = yearly_df[(yearly_df["yearID"] >= range_leaders[0]) & (yearly_df["yearID"] <= range_leaders[1])].copy()
     leaderboard = filtered_leaders.groupby(["fullName", "bats"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
     leaderboard = add_rate_stats(leaderboard)
-    leaderboard = apply_stat_min_filters(leaderboard, "leaders")
+    leaderboard = apply_stat_min_filters(leaderboard, "leaders", on_change=leaderboards_filter_changed)
     leaderboard = safe_round_rate_stats(leaderboard)
 
     leaderboard["score"] = 0.0
@@ -13493,18 +13510,61 @@ if active_page == "Comparison Tool":
                 from applied_math_context import cache_page_context
 
                 cmp_ctx: dict = {"comparison_stats": [str(stat_choice_compare)]}
+
+                # Full trend intel — include all advanced fields, not just slopes
+                _INTEL_COLS = (
+                    "Slope", "Recent Slope", "R-squared", "Net Change", "Trend Direction",
+                    "Volatility", "Consistency Rating", "Fantasy Signal",
+                    "First Value", "Latest Value", "Years Used",
+                )
                 diffs = []
                 for _, row in compare_intel.iterrows():
                     name = str(row.get("Player") or row.get("player") or "").strip()
                     if not name:
                         continue
                     entry = {"player": name.split(" (")[0]}
-                    for col in ("Slope", "Recent Slope", "R-squared", "Net Change", "Trend Direction"):
+                    for col in _INTEL_COLS:
                         if col in row.index and pd.notna(row.get(col)):
                             entry[col] = row.get(col)
                     diffs.append(entry)
                 if diffs:
                     cmp_ctx["comparison_differences"] = diffs[:4]
+                    cmp_ctx["trend_commentary"] = make_advanced_trend_commentary(compare_intel, stat_choice_compare)
+
+                # Career totals side-by-side — gives AMI the aggregate stat picture
+                if not career_compare.empty:
+                    career_rows = []
+                    for _, crow in career_compare.iterrows():
+                        pname = str(crow.get("fullName") or "")
+                        if not pname:
+                            continue
+                        crow_entry: dict = {"player": pname}
+                        for _c in ("R", "AB", "H", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS"):
+                            if _c in crow.index and pd.notna(crow.get(_c)):
+                                _v = crow.get(_c)
+                                crow_entry[_c] = round(float(_v), 3) if pd.api.types.is_number(_v) else _v
+                        career_rows.append(crow_entry)
+                    if career_rows:
+                        cmp_ctx["career_totals"] = career_rows
+
+                # Projections side-by-side from comparison_projection_lookup
+                if not comparison_projection_lookup.empty:
+                    proj_rows = []
+                    _proj_cols = [c for c in comparison_projection_lookup.columns if c.startswith("proj_")]
+                    for _, prow in comparison_projection_lookup.iterrows():
+                        pname = str(prow.get("fullName") or prow.get("playerID") or "")
+                        if not pname or not _proj_cols:
+                            continue
+                        pentry: dict = {"player": pname}
+                        for pc in _proj_cols:
+                            if pd.notna(prow.get(pc)):
+                                _pv = prow[pc]
+                                pentry[pc.replace("proj_", "")] = round(float(_pv), 3) if pd.api.types.is_number(_pv) else _pv
+                        if len(pentry) > 1:
+                            proj_rows.append(pentry)
+                    if proj_rows:
+                        cmp_ctx["projections"] = proj_rows
+
                 st.session_state["_ami_comparison_context"] = cmp_ctx
                 cache_page_context(st.session_state, "Comparison Tool", cmp_ctx)
             except Exception:
@@ -13811,6 +13871,33 @@ if active_page == "Comparison Tool":
                         display_rows=50,
                         style_cols=["Difference", "Test Statistic"]
                     )
+                    # Promote stat-by-stat significance results into AMI context so
+                    # the solver can cite which player leads each category.
+                    try:
+                        from applied_math_context import cache_page_context as _cpc_sig
+
+                        _sig_summary = []
+                        for _, _sr in sig_df.iterrows():
+                            _sstat = str(_sr.get("Stat") or "")
+                            _winner = str(_sr.get("Winner") or "")
+                            _sig_result = str(_sr.get("Significance Result") or "")
+                            _interp = str(_sr.get("Interpretation") or "")
+                            if _sstat:
+                                _sig_summary.append({
+                                    "stat": _sstat,
+                                    "winner": _winner,
+                                    "significance": _sig_result,
+                                    "interpretation": _interp[:200],
+                                })
+                        _existing_cmp = st.session_state.get("_ami_comparison_context") or {}
+                        _existing_cmp["significance_tests"] = _sig_summary
+                        _existing_cmp["significance_overall"] = next(
+                            (r for r in _sig_summary if r.get("stat") == "OVERALL"), {}
+                        )
+                        st.session_state["_ami_comparison_context"] = _existing_cmp
+                        _cpc_sig(st.session_state, "Comparison Tool", _existing_cmp)
+                    except Exception:
+                        pass
     render_contextual_page_nav(
         "Comparison Tool",
         "after_analysis",
@@ -14054,11 +14141,18 @@ if active_page == "Trend Value":
 
     st.subheader("Insight Summary")
     trend_insight_pool = pd.concat([top_breakouts_full, biggest_declines_full], ignore_index=True)
+
+    def _trend_insight_player_changed():
+        # Persist the new selection to page_filter_state immediately so that the
+        # next rerun's apply_baseball_disk_state restore sees the updated value.
+        save_page_state("Trend Value")
+
     trend_selected = _select_insight_row(
         trend_insight_pool,
         key="trend_breakout_decline_selected_player",
         label="Choose a breakout or decline player",
         default_name=top_breakouts_full.iloc[0]["fullName"] if not top_breakouts_full.empty else None,
+        on_change=_trend_insight_player_changed,
     )
     if trend_selected is not None:
         if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
@@ -14200,7 +14294,7 @@ if active_page == "Trend Value":
         if not selected_player_summary.empty:
             st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
             try:
-                from applied_math_context import record_trend_intel
+                from applied_math_context import cache_trend_player_context, record_trend_intel
 
                 stat_choice_single = str(st.session_state.get("trend_plot_stat") or "OPS")
                 single_intel = build_advanced_trend_intelligence(
@@ -14215,6 +14309,23 @@ if active_page == "Trend Value":
                         year_start=int(recent_years_trend[0]) if recent_years_trend else None,
                         year_end=int(recent_years_trend[-1]) if recent_years_trend else None,
                     )
+                # Populate _ami_trend_snapshot with projections, all stat deltas,
+                # filter context, and breakout/decline leaders.
+                _bp_names = list(top_breakouts_full["fullName"].head(8)) if not top_breakouts_full.empty else []
+                _dc_names = list(biggest_declines_full["fullName"].head(8)) if not biggest_declines_full.empty else []
+                cache_trend_player_context(
+                    st.session_state,
+                    player_row=selected_player_summary,
+                    filter_params={
+                        "trend_lag": st.session_state.get("trend_lag"),
+                        "trend_position_filter": st.session_state.get("trend_position_filter"),
+                        "trend_min_g": st.session_state.get("trend_min_g"),
+                        "trend_sort_col": st.session_state.get("trend_sort_col"),
+                        "year_range": f"{recent_years_trend[0]}–{recent_years_trend[-1]}" if recent_years_trend else None,
+                    },
+                    top_breakouts=_bp_names,
+                    top_declines=_dc_names,
+                )
             except Exception:
                 pass
 
@@ -14820,12 +14931,20 @@ if active_page == "Fantasy Sleepers & Busts":
                 fantasy_plot_df[_col] = np.nan
         fantasy_plot_df = format_fantasy_table(fantasy_plot_df)
 
+        def _sleepers_chart_changed():
+            try:
+                from fantasy_state import mark_sleepers_filter_local_edit
+                mark_sleepers_filter_local_edit(st.session_state)
+            except Exception:
+                pass
+
         with st.expander("Chart display options", expanded=False):
             fantasy_color_col = st.selectbox(
                 "Color by",
                 ["None", "Primary Position", "Bats", "Team", "League"],
                 index=1,
                 key="fantasy_market_scatter_color",
+                on_change=_sleepers_chart_changed,
             )
             fantasy_size_options = [c for c in ["Fantasy Edge", "Curve Edge", "Expected Fantasy Value", "Expert Std Dev", "None"] if c == "None" or c in fantasy_plot_df.columns]
             fantasy_size_col = st.selectbox(
@@ -14833,6 +14952,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 fantasy_size_options,
                 index=0,
                 key="fantasy_market_scatter_size",
+                on_change=_sleepers_chart_changed,
             )
             fantasy_view_mode = st.radio(
                 "Scatterplot View",
@@ -14840,6 +14960,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 horizontal=True,
                 key="fantasy_edge_scatter_view_mode",
                 help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every player/outlier.",
+                on_change=_sleepers_chart_changed,
             )
             fantasy_trendline_type = st.selectbox(
                 "Market Edge Trendline Type",
@@ -14847,6 +14968,7 @@ if active_page == "Fantasy Sleepers & Busts":
                 index=5,
                 key="fantasy_market_edge_trendline_type",
                 help="Auto Best Fit picks the curve with the highest R² for market rank vs model rank.",
+                on_change=_sleepers_chart_changed,
             )
         fantasy_color_col = st.session_state.get("fantasy_market_scatter_color", "Primary Position")
         fantasy_size_col = st.session_state.get("fantasy_market_scatter_size", "Fantasy Edge")
@@ -15047,18 +15169,49 @@ if active_page == "Fantasy Sleepers & Busts":
 
         st.subheader("Fantasy Market Insight Summary")
         market_insight_pool = pd.concat([sleepers, busts], ignore_index=True).drop_duplicates("fullName")
+        def _sleepers_player_selection_changed():
+            try:
+                from fantasy_state import mark_sleepers_filter_local_edit
+                mark_sleepers_filter_local_edit(st.session_state)
+            except Exception:
+                pass
+            # Persist the new selection to page_filter_state immediately.
+            save_page_state("Fantasy Sleepers & Busts")
+
         selected_market_row = _select_insight_row(
             market_insight_pool,
             key="fantasy_market_selected_player",
             label="Choose a sleeper or bust-risk player",
             default_name=top_sleeper.get("fullName"),
+            on_change=_sleepers_player_selection_changed,
         )
         if selected_market_row is not None:
             edge_val = pd.to_numeric(selected_market_row.get("Fantasy Edge", np.nan), errors="coerce")
+            _selected_insight_text = make_market_selected_insight(selected_market_row)
             if pd.notna(edge_val) and edge_val < 0:
-                st.warning(make_market_selected_insight(selected_market_row))
+                st.warning(_selected_insight_text)
             else:
-                st.success(make_market_selected_insight(selected_market_row))
+                st.success(_selected_insight_text)
+            # Push selected player + full insight into the AMI snapshot so
+            # the solver sees who the user is focused on and why.
+            try:
+                _snap = st.session_state.get("_ami_sleepers_snapshot") or {}
+                _snap["selected_player"] = str(selected_market_row.get("fullName") or "")
+                _snap["selected_player_insight"] = _selected_insight_text[:400]
+                _snap_row_keys = (
+                    "Fantasy Edge", "Market Rank", "Model Rank",
+                    "Expected Fantasy Value", "Projected HR", "Projected RBI",
+                    "Projected SB", "Projected OPS", "ADP", "Expert Std Dev",
+                    "Risk / Disagreement", "Current Rank", "Reason",
+                )
+                _snap["selected_player_row"] = {
+                    k: v for k, v in selected_market_row.items()
+                    if k in _snap_row_keys and v is not None
+                    and (isinstance(v, str) or pd.notna(v))
+                }
+                st.session_state["_ami_sleepers_snapshot"] = _snap
+            except Exception:
+                pass
 
         try:
             from baseball_activity import log_sleeper_research
@@ -15598,6 +15751,11 @@ if active_page == "Draft Assistant Simulator":
                 best_available_df=available.sort_values("Expected Fantasy Value", ascending=False).head(6),
                 available_df=available.sort_values("Expected Fantasy Value", ascending=False),
                 position_scarcity=median_scarcity_dropoff,
+                roster_means=roster_means,
+                pool_means=pool_means,
+                position_summary_rows=list(position_summary_rows) if position_summary_rows is not None else None,
+                draft_slot=int(draft_summary.get("your_draft_slot", 0)) or None,
+                my_next_pick=int(draft_summary.get("your_next_pick", 0)) or None,
             )
         except Exception as exc:
             import logging
@@ -15825,6 +15983,21 @@ if active_page == "Draft Room Simulator":
                 key="fantasy_draft_projection_style",
                 help="Conservative / Balanced / Aggressive — affects model scores on picks, not Lahman history.",
             )
+        def _draft_room_settings_changed():
+            try:
+                from draft_room_state import mark_draft_room_local_edit
+                mark_draft_room_local_edit(st.session_state)
+            except Exception:
+                pass
+            try:
+                from global_fantasy_settings_state import prepare_global_fantasy_settings
+                prepare_global_fantasy_settings(st.session_state)
+            except Exception:
+                pass
+            # Persist the new value to page_filter_state immediately so that
+            # the next rerun's restore sees the updated settings before clearing.
+            save_page_state("Draft Room Simulator")
+
         _room_format_options = ["5x5 Roto", "Points League"]
         _room_window_options = [3, 4, 5]
         dr1, dr2, dr3, dr4 = st.columns(4)
@@ -15837,6 +16010,7 @@ if active_page == "Draft Room Simulator":
                 value=int(st.session_state["room_team_count"]),
                 step=1,
                 key="room_team_count",
+                on_change=_draft_room_settings_changed,
             )
         with dr2:
             ensure_number_state("room_rounds", 20, min_value=1, max_value=40)
@@ -15847,13 +16021,20 @@ if active_page == "Draft Room Simulator":
                 value=int(st.session_state["room_rounds"]),
                 step=1,
                 key="room_rounds",
+                on_change=_draft_room_settings_changed,
             )
         with dr3:
             ensure_select_in_options("room_format", _room_format_options, "5x5 Roto")
-            room_format = st.selectbox("Scoring Format", _room_format_options, key="room_format")
+            room_format = st.selectbox(
+                "Scoring Format", _room_format_options, key="room_format",
+                on_change=_draft_room_settings_changed,
+            )
         with dr4:
             ensure_select_in_options("room_window", _room_window_options, 3)
-            room_window = st.selectbox("Projection Window", _room_window_options, key="room_window")
+            room_window = st.selectbox(
+                "Projection Window", _room_window_options, key="room_window",
+                on_change=_draft_room_settings_changed,
+            )
 
         default_names = ["Daniel"] + [f"Team {i}" for i in range(2, int(room_team_count) + 1)]
         team_name_text = st.text_area(
@@ -15868,7 +16049,10 @@ if active_page == "Draft Room Simulator":
         room_team_names = room_team_names[:int(room_team_count)]
 
         ensure_select_in_options("room_your_team", room_team_names, room_team_names[0] if room_team_names else "")
-        your_team = st.selectbox("Your Team", room_team_names, key="room_your_team")
+        your_team = st.selectbox(
+            "Your Team", room_team_names, key="room_your_team",
+            on_change=_draft_room_settings_changed,
+        )
 
         st.subheader("Import existing draft")
         st.caption(
@@ -17072,18 +17256,31 @@ if active_page == "Live Draft Room":
         with st.expander("Draft Setup / Configuration", expanded=True):
             st.subheader("League & Draft Settings")
             lc1, lc2, lc3 = st.columns(3)
-            _live_team_options = [4, 8, 10, 12, 14]
             _live_scoring_options = ["Roto (5x5)", "Points League"]
             _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
             _live_proj_window_options = [3, 4, 5]
+
+            def _live_draft_setting_changed():
+                # Persist the new value to page_filter_state immediately so that
+                # the next rerun's restore sees the updated value before clearing.
+                save_page_state("Live Draft Room")
+
             with lc1:
                 validate_text_state("live_draft_league_name", "My Fantasy League")
                 live_league_name = st.text_input(
                     "League Name",
                     key="live_draft_league_name",
+                    on_change=_live_draft_setting_changed,
                 )
-                validate_state_option("live_draft_team_count", _live_team_options, 4)
-                live_num_teams = st.selectbox("Number of Teams", _live_team_options, key="live_draft_team_count")
+                ensure_number_state("live_draft_team_count", 10, min_value=2, max_value=20)
+                live_num_teams = st.number_input(
+                    "Number of Teams",
+                    min_value=2,
+                    max_value=20,
+                    step=1,
+                    key="live_draft_team_count",
+                    on_change=_live_draft_setting_changed,
+                )
                 validate_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
                 live_picks_per_team = st.number_input(
                     "Picks per Team",
@@ -17091,37 +17288,44 @@ if active_page == "Live Draft Room":
                     max_value=30,
                     step=1,
                     key="live_draft_picks_per_team",
+                    on_change=_live_draft_setting_changed,
                 )
             with lc2:
                 validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
-                live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type")
+                live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type", on_change=_live_draft_setting_changed)
                 validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
-                live_scoring = st.selectbox("Scoring Type", _live_scoring_options, key="live_draft_scoring")
+                live_scoring = st.selectbox("Scoring Type", _live_scoring_options, key="live_draft_scoring", on_change=_live_draft_setting_changed)
                 validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
-                live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer")
+                live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer", on_change=_live_draft_setting_changed)
             with lc3:
                 validate_state_option("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
-                live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule")
+                live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule", on_change=_live_draft_setting_changed)
                 validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-                live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style")
+                live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style", on_change=_live_draft_setting_changed)
                 validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
-                live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window")
+                live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window", on_change=_live_draft_setting_changed)
 
             st.subheader("Roster Settings")
+            for _slot_key, _slot_default in [
+                ("live_slot_c", 1), ("live_slot_1b", 1), ("live_slot_2b", 1), ("live_slot_3b", 1),
+                ("live_slot_ss", 1), ("live_slot_of", 3), ("live_slot_dh", 1), ("live_slot_p", 0),
+                ("live_slot_bench", 5),
+            ]:
+                validate_number_state(_slot_key, _slot_default, min_value=0)
             rs1, rs2, rs3, rs4 = st.columns(4)
             with rs1:
-                slot_c = st.number_input("C", min_value=0, max_value=3, value=1, step=1, key="live_slot_c")
-                slot_1b = st.number_input("1B", min_value=0, max_value=3, value=1, step=1, key="live_slot_1b")
+                slot_c = st.number_input("C", min_value=0, max_value=3, step=1, key="live_slot_c", on_change=_live_draft_setting_changed)
+                slot_1b = st.number_input("1B", min_value=0, max_value=3, step=1, key="live_slot_1b", on_change=_live_draft_setting_changed)
             with rs2:
-                slot_2b = st.number_input("2B", min_value=0, max_value=3, value=1, step=1, key="live_slot_2b")
-                slot_3b = st.number_input("3B", min_value=0, max_value=3, value=1, step=1, key="live_slot_3b")
+                slot_2b = st.number_input("2B", min_value=0, max_value=3, step=1, key="live_slot_2b", on_change=_live_draft_setting_changed)
+                slot_3b = st.number_input("3B", min_value=0, max_value=3, step=1, key="live_slot_3b", on_change=_live_draft_setting_changed)
             with rs3:
-                slot_ss = st.number_input("SS", min_value=0, max_value=3, value=1, step=1, key="live_slot_ss")
-                slot_of = st.number_input("OF", min_value=0, max_value=5, value=3, step=1, key="live_slot_of")
+                slot_ss = st.number_input("SS", min_value=0, max_value=3, step=1, key="live_slot_ss", on_change=_live_draft_setting_changed)
+                slot_of = st.number_input("OF", min_value=0, max_value=5, step=1, key="live_slot_of", on_change=_live_draft_setting_changed)
             with rs4:
-                slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, value=1, step=1, key="live_slot_dh")
-                slot_p = st.number_input("P", min_value=0, max_value=10, value=0, step=1, key="live_slot_p")
-                slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, value=5, step=1, key="live_slot_bench")
+                slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, step=1, key="live_slot_dh", on_change=_live_draft_setting_changed)
+                slot_p = st.number_input("P", min_value=0, max_value=10, step=1, key="live_slot_p", on_change=_live_draft_setting_changed)
+                slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, step=1, key="live_slot_bench", on_change=_live_draft_setting_changed)
 
             st.caption("Rename teams (optional)")
             default_teams = _live_draft_default_teams(live_num_teams)
@@ -17600,6 +17804,9 @@ if active_page == "Fantasy Standings Tracker":
 
             st.session_state["fantasy_current_roster_stats"] = roster_stats
             st.session_state["fantasy_current_standings"] = standings
+            from datetime import datetime, timezone as _tz
+            st.session_state["_fantasy_standings_stats_loaded_at"] = datetime.now(_tz.utc).isoformat()
+            st.session_state["_fantasy_standings_stats_source"] = stats_source
             _standings_team_ctx = st.session_state.get("room_your_team")
             _standings_needs_ctx = (
                 summarize_team_category_needs(standings, _standings_team_ctx)
@@ -17697,10 +17904,46 @@ if active_page == "Fantasy Lineup Assistant":
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
 
     if roster_stats.empty:
-        st.warning(
-            "No current roster stats found yet. First go to Fantasy Standings Tracker, load stats from MLB API or upload a CSV, "
-            "and make sure Draft Room has your roster entered."
-        )
+        _stats_loaded_at = st.session_state.get("_fantasy_standings_stats_loaded_at")
+        _stats_source = st.session_state.get("_fantasy_standings_stats_source", "")
+        _draft_pick_count = len(st.session_state.get("draft_room_table") or [])
+        if _stats_loaded_at:
+            st.warning(
+                f"Roster stats were loaded this session at {_stats_loaded_at[:19]} UTC "
+                f"(source: {_stats_source or 'unknown'}) but the result was empty. "
+                "Check that Draft Room has your roster entered and that the stats source returned data."
+            )
+        else:
+            _draft_hint = (
+                f" Draft Room has **{_draft_pick_count} picks** — stats are ready to load."
+                if _draft_pick_count > 0
+                else " Draft Room is also empty — add your roster there first."
+            )
+            st.warning(
+                "**Roster stats not loaded yet this session.**\n\n"
+                "To use the Lineup Assistant:\n"
+                "1. Go to **Fantasy Standings Tracker** and load stats (MLB API or CSV upload).\n"
+                "2. Return here — team rosters and scores will appear automatically.\n\n"
+                + _draft_hint
+            )
+        if developer_mode_enabled():
+            with st.expander("Lineup diagnostic (dev mode)", expanded=True):
+                st.json({
+                    "fantasy_current_roster_stats_empty": True,
+                    "stats_loaded_at": _stats_loaded_at,
+                    "stats_source": _stats_source,
+                    "draft_room_pick_count": _draft_pick_count,
+                    "room_your_team": st.session_state.get("room_your_team"),
+                    "lineup_team": st.session_state.get("lineup_team"),
+                    "lineup_format": st.session_state.get("lineup_format"),
+                    "fantasy_state_lineup_filters": (
+                        (st.session_state.get("fantasy_state") or {})
+                        .get("lineup", {})
+                        .get("filters")
+                        if isinstance(st.session_state.get("fantasy_state"), dict)
+                        else None
+                    ),
+                })
     else:
         lineup_teams = sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
         default_lineup_team = st.session_state.get("room_your_team", lineup_teams[0] if lineup_teams else "")
@@ -17718,6 +17961,22 @@ if active_page == "Fantasy Lineup Assistant":
                 key="lineup_format",
                 on_change=fantasy_filter_changed,
             )
+        if developer_mode_enabled():
+            with st.sidebar.expander("Lineup data trace", expanded=False):
+                _lu_diag = {
+                    "roster_rows": len(roster_stats),
+                    "stats_loaded_at": st.session_state.get("_fantasy_standings_stats_loaded_at"),
+                    "stats_source": st.session_state.get("_fantasy_standings_stats_source"),
+                    "lineup_team": lineup_team,
+                    "lineup_team_in_options": lineup_team in lineup_teams,
+                    "all_teams": lineup_teams,
+                    "lineup_format": st.session_state.get("lineup_format"),
+                    "room_your_team": st.session_state.get("room_your_team"),
+                    "draft_room_pick_count": len(st.session_state.get("draft_room_table") or []),
+                    "cloud_restore_source": st.session_state.get("_fantasy_restore_source"),
+                }
+                for _k, _v in _lu_diag.items():
+                    st.text(f"{_k}: {_v}")
         with l3:
             ensure_widget_state("lineup_bench_rows", 12)
             bench_rows_to_show = st.slider(

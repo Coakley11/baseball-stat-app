@@ -477,84 +477,92 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         active = session_page_after_blob
     ss["_suite_page_overwrite_source"] = overwrite_source
     if active:
-        _clear_page_widget_keys(ss, active)
+        # Only clear widget keys and restore from snapshot when navigating to a
+        # different page (or on fresh-session startup where pre_restore_session_page
+        # is empty).  When the user is already on `active` and merely interacted
+        # with a widget, we must NOT clear their new input: the snapshot still has
+        # the previous-rerun values and would overwrite whatever the user just typed.
+        page_actually_changed = active != pre_restore_session_page
+        if page_actually_changed:
+            _clear_page_widget_keys(ss, active)
         ss["active_page"] = active
         ss["main_sidebar_page"] = active
         ss["_navigate_to_page"] = active
         ss["_suite_last_persisted_page"] = active
         ss.pop("_suite_cloud_target_page", None)
-        try:
-            from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
-
-            clear_comparison_local_edit(ss)
+        if page_actually_changed:
             try:
-                from career_totals_state import clear_career_local_edit
+                from comparison_state import clear_comparison_local_edit, restore_comparison_page_filters
 
-                clear_career_local_edit(ss)
+                clear_comparison_local_edit(ss)
+                try:
+                    from career_totals_state import clear_career_local_edit
+
+                    clear_career_local_edit(ss)
+                except ImportError:
+                    pass
+                try:
+                    from draft_state import clear_draft_local_edit
+
+                    clear_draft_local_edit(ss)
+                except ImportError:
+                    pass
+                try:
+                    from historical_state import clear_historical_local_edit
+
+                    clear_historical_local_edit(ss)
+                except ImportError:
+                    pass
+                try:
+                    from valuation_state import clear_valuation_local_edit
+
+                    clear_valuation_local_edit(ss)
+                except ImportError:
+                    pass
+                try:
+                    from projections_state import clear_projections_local_edit
+
+                    clear_projections_local_edit(ss)
+                except ImportError:
+                    pass
+                try:
+                    from leaderboards_state import clear_leaderboards_local_edit
+
+                    clear_leaderboards_local_edit(ss)
+                except ImportError:
+                    pass
+                try:
+                    from fantasy_state import clear_fantasy_local_edit
+
+                    clear_fantasy_local_edit(ss)
+                except ImportError:
+                    pass
+                if active == "Comparison Tool":
+                    restore_comparison_page_filters(ss, ss["page_filter_state"])
+                elif active == "Trend Value":
+                    from trend_state import restore_trend_page_filters
+
+                    restore_trend_page_filters(ss, ss["page_filter_state"])
+                elif active == "Valuation":
+                    from valuation_state import restore_valuation_page_filters
+
+                    restore_valuation_page_filters(ss, ss["page_filter_state"])
+                elif active == "ML Predictions":
+                    from projections_state import restore_projections_page_filters
+
+                    restore_projections_page_filters(ss, ss["page_filter_state"])
+                elif active == "Leaderboards":
+                    from leaderboards_state import restore_leaderboards_page_filters
+
+                    restore_leaderboards_page_filters(ss, ss["page_filter_state"])
+                elif active in ("Fantasy Sleepers & Busts", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"):
+                    from fantasy_state import restore_fantasy_page_filters
+
+                    restore_fantasy_page_filters(ss, ss["page_filter_state"], active)
+                else:
+                    pg_state.restore_page_state(ss, active, ss["page_filter_state"])
             except ImportError:
-                pass
-            try:
-                from draft_state import clear_draft_local_edit
-
-                clear_draft_local_edit(ss)
-            except ImportError:
-                pass
-            try:
-                from historical_state import clear_historical_local_edit
-
-                clear_historical_local_edit(ss)
-            except ImportError:
-                pass
-            try:
-                from valuation_state import clear_valuation_local_edit
-
-                clear_valuation_local_edit(ss)
-            except ImportError:
-                pass
-            try:
-                from projections_state import clear_projections_local_edit
-
-                clear_projections_local_edit(ss)
-            except ImportError:
-                pass
-            try:
-                from leaderboards_state import clear_leaderboards_local_edit
-
-                clear_leaderboards_local_edit(ss)
-            except ImportError:
-                pass
-            try:
-                from fantasy_state import clear_fantasy_local_edit
-
-                clear_fantasy_local_edit(ss)
-            except ImportError:
-                pass
-            if active == "Comparison Tool":
-                restore_comparison_page_filters(ss, ss["page_filter_state"])
-            elif active == "Trend Value":
-                from trend_state import restore_trend_page_filters
-
-                restore_trend_page_filters(ss, ss["page_filter_state"])
-            elif active == "Valuation":
-                from valuation_state import restore_valuation_page_filters
-
-                restore_valuation_page_filters(ss, ss["page_filter_state"])
-            elif active == "ML Predictions":
-                from projections_state import restore_projections_page_filters
-
-                restore_projections_page_filters(ss, ss["page_filter_state"])
-            elif active == "Leaderboards":
-                from leaderboards_state import restore_leaderboards_page_filters
-
-                restore_leaderboards_page_filters(ss, ss["page_filter_state"])
-            elif active in ("Fantasy Sleepers & Busts", "Fantasy Standings Tracker", "Fantasy Lineup Assistant"):
-                from fantasy_state import restore_fantasy_page_filters
-
-                restore_fantasy_page_filters(ss, ss["page_filter_state"], active)
-            else:
                 pg_state.restore_page_state(ss, active, ss["page_filter_state"])
-        except ImportError:
-            pg_state.restore_page_state(ss, active, ss["page_filter_state"])
         ss["_page_state_last_active"] = active
         try:
             from comparison_state import record_comparison_field_write

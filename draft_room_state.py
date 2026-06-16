@@ -2164,9 +2164,13 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
             saved_meta = blob.get("canonical_draft_meta")
             if isinstance(saved_meta, dict):
                 session[CANONICAL_DRAFT_META_KEY] = copy.deepcopy(saved_meta)
-            for key in DRAFT_ROOM_SETTINGS_KEYS:
-                if key in blob:
-                    session[key] = blob[key]
+            # Only restore settings from blob when NOT locally dirty.
+            # When dirty, the user just edited a setting widget — restoring from
+            # blob would overwrite that edit on the very next rerun.
+            if not is_draft_room_locally_dirty(session):
+                for key in DRAFT_ROOM_SETTINGS_KEYS:
+                    if key in blob:
+                        session[key] = blob[key]
         return sync_board_to_session_keys(
             session,
             richest,
