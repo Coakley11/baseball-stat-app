@@ -1304,6 +1304,11 @@ def build_submit_context(
                         ctx.setdefault("send_pipeline_diagnostics", {})
                         if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
                             ctx["send_pipeline_diagnostics"].update(page_diag)
+                    sleepers_diag = ctx.get("sleepers_send_diagnostics")
+                    if isinstance(sleepers_diag, dict):
+                        ctx.setdefault("send_pipeline_diagnostics", {})
+                        if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
+                            ctx["send_pipeline_diagnostics"].update(sleepers_diag)
                 except ImportError:
                     pass
         except Exception:

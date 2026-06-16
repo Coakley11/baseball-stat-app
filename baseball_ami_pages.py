@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 TREND_QUESTION_CATEGORIES: dict[str, tuple[str, ...]] = {
@@ -103,6 +104,94 @@ def build_trend_send_diagnostics(ctx: dict[str, Any], *, source_page: str) -> di
     }
 
 
+_BUST_SECTION_PHRASES = (
+    "market bust",
+    "bust risk",
+    "bust risks",
+    "busts that",
+    "busts in",
+    "any bust",
+    "draft any bust",
+    "risky but draftable",
+    "should i draft any bust",
+    "consider drafting any bust",
+    "players in market bust",
+)
+
+_STALE_SLEEPER_PLAYER_KEYS = (
+    "sleeper_focus",
+    "question_player",
+    "question_player_row",
+    "player",
+    "players",
+    "routing_hint",
+    "problem_type_hint",
+    "intent",
+    "bust_focus",
+)
+
+
+def detect_sleepers_send_intent(question: str) -> str:
+    """Classify sleepers-page AMI send intent from question text."""
+    q = str(question or "").strip()
+    low = q.lower()
+    if not low:
+        return "sleepers_general"
+    try:
+        from applied_math_context import extract_player_from_question
+
+        named_player = extract_player_from_question(q)
+    except ImportError:
+        named_player = ""
+    if named_player and "bust" in low and re.search(r"\b(?:draft|consider|take|pick|should|target)\b", low):
+        return "bust_take"
+    if any(phrase in low for phrase in _BUST_SECTION_PHRASES):
+        return "bust_risk_review"
+    if "bust" in low and re.search(r"\b(?:draft|consider|take|pick|should|target)\b", low):
+        return "bust_risk_review"
+    if named_player or "sleeper" in low:
+        return "sleeper_take"
+    return "sleepers_general"
+
+
+def _clear_stale_sleepers_player_context(ctx: dict[str, Any], question: str) -> None:
+    """Drop prior-question sleeper bindings unless the question names the same player."""
+    try:
+        from applied_math_context import extract_player_from_question
+    except ImportError:
+        extract_player_from_question = None  # type: ignore[assignment]
+
+    target = extract_player_from_question(question) if extract_player_from_question else ""
+    target_token = str(target or "").strip().lower()
+    stale_focus = ctx.get("sleeper_focus")
+    if isinstance(stale_focus, dict) and target_token:
+        row_name = str(stale_focus.get("player") or stale_focus.get("Player") or "").strip().lower()
+        if row_name and row_name == target_token:
+            return
+    for key in _STALE_SLEEPER_PLAYER_KEYS:
+        ctx.pop(key, None)
+
+
+def _find_market_row_for_name(candidates: Any, name: str) -> dict[str, Any] | None:
+    return _find_sleeper_row_for_name(candidates, name)
+
+
+def build_sleepers_send_diagnostics(ctx: dict[str, Any], *, question: str = "") -> dict[str, Any]:
+    intent = detect_sleepers_send_intent(question)
+    bust_rows = ctx.get("bust_risks") or ctx.get("bust_risk_candidates") or []
+    sleeper_rows = ctx.get("sleeper_candidates") or []
+    return {
+        "sleepers_send_intent": intent,
+        "market_section": str(ctx.get("market_section") or ""),
+        "routing_hint": str(ctx.get("routing_hint") or ""),
+        "sleeper_focus_present": bool(ctx.get("sleeper_focus")),
+        "bust_focus_present": bool(ctx.get("bust_focus")),
+        "sleeper_candidate_count": len(sleeper_rows) if isinstance(sleeper_rows, list) else 0,
+        "bust_risk_count": len(bust_rows) if isinstance(bust_rows, list) else 0,
+        "question_player_present": bool(str(ctx.get("question_player") or "").strip()),
+    }
+
+
 def finalize_sleepers_context_for_send(
     ctx: dict[str, Any],
     session_state: dict[str, Any],
@@ -115,35 +204,63 @@ def finalize_sleepers_context_for_send(
     except ImportError:
         return
 
+    q = str(question or ctx.get("question") or "").strip()
+    intent = detect_sleepers_send_intent(q)
+    _clear_stale_sleepers_player_context(ctx, q)
+
     snap = gather_sleepers_ami_snapshot(session_state)
     cached = session_state.get("_ami_sleepers_snapshot")
-    if isinstance(cached, dict) and cached.get("sleeper_candidates"):
+    if isinstance(cached, dict) and (cached.get("sleeper_candidates") or cached.get("bust_risks")):
         snap = {**snap, **copy.deepcopy(cached)}
     if snap:
         ctx["sleepers_snapshot"] = snap
         if snap.get("sleeper_candidates"):
             ctx["sleeper_candidates"] = copy.deepcopy(snap["sleeper_candidates"])
+        if snap.get("bust_risks"):
+            bust_rows = copy.deepcopy(snap["bust_risks"])
+            ctx["bust_risks"] = bust_rows
+            ctx["bust_risk_candidates"] = bust_rows
         if snap.get("roster_needs"):
             ctx.setdefault("needed_positions", snap["roster_needs"])
 
     ctx.pop("player_a", None)
     ctx.pop("player_b", None)
 
-    q = str(question or ctx.get("question") or "").strip()
+    if intent in ("bust_risk_review", "bust_take"):
+        for key in _STALE_SLEEPER_PLAYER_KEYS:
+            ctx.pop(key, None)
+        ctx["routing_hint"] = "bust_risk_review" if intent == "bust_risk_review" else "bust_take"
+        ctx["problem_type_hint"] = "bust_risk_take" if intent == "bust_take" else "bust_risk_scan"
+        ctx["intent"] = "bust_risk_analysis"
+        ctx["market_section"] = "Market Bust Risks"
+        if intent == "bust_take":
+            target = extract_player_from_question(q)
+            if target:
+                ctx["question_player"] = target
+                ctx["player"] = target
+                ctx["players"] = [target]
+                row = _find_market_row_for_name(ctx.get("bust_risk_candidates"), target)
+                if row:
+                    ctx["question_player_row"] = row
+                    ctx["bust_focus"] = row
+        return
+
     target = extract_player_from_question(q) or str(ctx.get("question_player") or "").strip()
-    if target:
-        ctx["question_player"] = target
-        ctx["player"] = target
-        ctx["players"] = [target]
-        ctx["routing_hint"] = "sleeper_take"
-        ctx["problem_type_hint"] = "sleeper_take"
-        ctx["intent"] = "sleeper_analysis"
-        row = _find_sleeper_row_for_name(ctx.get("sleeper_candidates"), target)
-        if row:
-            ctx["question_player_row"] = row
-            ctx["sleeper_focus"] = row
-        elif ctx.get("question_player_row"):
-            ctx["sleeper_focus"] = ctx["question_player_row"]
+    if not target:
+        return
+
+    ctx["question_player"] = target
+    ctx["player"] = target
+    ctx["players"] = [target]
+    ctx["routing_hint"] = "sleeper_take"
+    ctx["problem_type_hint"] = "sleeper_take"
+    ctx["intent"] = "sleeper_analysis"
+    row = _find_sleeper_row_for_name(ctx.get("sleeper_candidates"), target)
+    if row:
+        ctx["question_player_row"] = row
+        ctx["sleeper_focus"] = row
+    elif ctx.get("question_player_row"):
+        ctx["sleeper_focus"] = ctx["question_player_row"]
 
 
 def _find_sleeper_row_for_name(candidates: Any, name: str) -> dict[str, Any] | None:
@@ -214,6 +331,8 @@ def promote_page_ami_context_at_send(
         ctx["trend_send_diagnostics"] = diag
     elif "sleeper" in low:
         finalize_sleepers_context_for_send(ctx, session_state, question=question)
+        diag = build_sleepers_send_diagnostics(ctx, question=question)
+        ctx["sleepers_send_diagnostics"] = diag
     elif "comparison" in low:
         finalize_comparison_context_for_send(ctx, session_state, question=question)
     return diag

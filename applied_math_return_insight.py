@@ -2153,7 +2153,10 @@ def _insight_loaded_placeholder(app_key: str) -> str:
 def render_applied_math_insight_panel(st: Any) -> bool:
     """Display-only insight card on source app pages. Returns True if rendered."""
     insight = _pending_insight_valid(st)
-    if not insight or not insight.get("conclusion"):
+    answer = str(
+        insight.get("direct_answer") or insight.get("conclusion") or ""
+    ).strip() if insight else ""
+    if not insight or not answer:
         return False
 
     with st.container(border=True):
@@ -2161,10 +2164,10 @@ def render_applied_math_insight_panel(st: Any) -> bool:
         q = str(insight.get("question") or "").strip()
         if q:
             st.markdown(f"**Question:** *{q}*")
-        st.markdown(f"**Conclusion:** {insight.get('conclusion')}")
+        st.markdown(f"**Answer:** {answer}")
         summary = str(insight.get("math_summary") or "").strip()
-        if summary and summary.lower() not in str(insight.get("conclusion") or "").lower():
-            st.markdown(f"**Explanation:** {summary}")
+        if summary and summary.lower() not in answer.lower():
+            st.markdown(f"**Summary:** {summary}")
         method = str(insight.get("method") or insight.get("model_name") or "").strip()
         if method:
             st.markdown(f"**{_insight_method_heading(insight)}:** {method}")
@@ -2173,10 +2176,10 @@ def render_applied_math_insight_panel(st: Any) -> bool:
             st.markdown("**Assumptions:**")
             for a in assumptions[:4]:
                 st.markdown(f"- {a}")
-        conf = insight.get("confidence")
-        if conf:
-            extra = f" ({insight.get('confidence_pct')}%)" if insight.get("confidence_pct") else ""
-            st.caption(f"Confidence: **{conf}**{extra}")
+        conf = str(insight.get("confidence") or "medium").strip()
+        status = str(insight.get("status") or conf).strip()
+        extra = f" ({insight.get('confidence_pct')}%)" if insight.get("confidence_pct") else ""
+        st.caption(f"Status: **{status}** · Confidence: **{conf}**{extra}")
         diag = {
             k: (insight.get("key_numbers") or {}).get(k)
             for k in _PIPELINE_DIAG_KEYS
@@ -2190,7 +2193,7 @@ def render_applied_math_insight_panel(st: Any) -> bool:
         c1, c2 = st.columns(2)
         with c1:
             if url:
-                st.link_button("Open full analysis →", url, use_container_width=True)
+                st.link_button("Open Full Analysis →", url, use_container_width=True)
         with c2:
             dismiss_label = (
                 "Dismiss coach insight"

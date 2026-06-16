@@ -100,6 +100,14 @@ def attach_question_player_to_context(
     """At AMI send: bind question-named player(s) to context."""
     low_page = str(ctx.get("source_page") or ctx.get("page") or "").lower()
     is_sleepers = "sleeper" in low_page
+    if is_sleepers:
+        try:
+            from baseball_ami_pages import detect_sleepers_send_intent
+
+            if detect_sleepers_send_intent(question) in ("bust_risk_review", "bust_take"):
+                return
+        except ImportError:
+            pass
     if "trend" in low_page:
         ctx.pop("player_a", None)
         ctx.pop("player_b", None)
@@ -273,6 +281,30 @@ def attach_draft_team_to_context(
         needs, category_needs = infer_needed_positions_from_roster_detail(detail)
         ctx["roster_display_lines"] = lines
         ctx["filled_roster_display"] = lines
+        ctx["filled_roster_display_lines"] = lines
+        ctx["_filled_roster_display_lines"] = lines
+        ctx["roster_lines"] = lines
+        ctx["team_roster_lines"] = lines
+        roster_by_position: dict[str, list[str]] = {}
+        for row in detail:
+            if not isinstance(row, dict):
+                continue
+            player_name = str(row.get("player") or "").strip()
+            pos = str(row.get("Primary Position") or "").strip() or "?"
+            if player_name:
+                roster_by_position.setdefault(pos, []).append(player_name)
+        ctx["roster_by_position"] = roster_by_position
+        ctx["_roster_by_position"] = roster_by_position
+        ctx["team_roster_with_positions"] = [
+            {
+                "player": str(r.get("player") or "").strip(),
+                "name": str(r.get("player") or "").strip(),
+                "Primary Position": str(r.get("Primary Position") or "").strip(),
+                "position": str(r.get("Primary Position") or "").strip(),
+            }
+            for r in detail
+            if isinstance(r, dict) and r.get("player")
+        ]
         ctx["user_roster_with_positions"] = [
             {"player": str(r.get("player") or "").strip(), "Primary Position": str(r.get("Primary Position") or "").strip()}
             for r in detail
@@ -285,6 +317,9 @@ def attach_draft_team_to_context(
         snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
         snap["roster_display_lines"] = lines
         snap["filled_roster_display"] = lines
+        snap["filled_roster_display_lines"] = lines
+        snap["roster_by_position"] = roster_by_position
+        snap["team_roster_with_positions"] = ctx["team_roster_with_positions"]
         snap["user_roster_with_positions"] = ctx["user_roster_with_positions"]
         if needs:
             snap["needed_positions"] = needs
@@ -294,8 +329,16 @@ def attach_draft_team_to_context(
         if isinstance(cached_snap, dict):
             cached_snap["roster_display_lines"] = lines
             cached_snap["filled_roster_display"] = lines
+            cached_snap["filled_roster_display_lines"] = lines
+            cached_snap["roster_by_position"] = roster_by_position
+            cached_snap["team_roster_with_positions"] = ctx["team_roster_with_positions"]
             if needs:
                 cached_snap["needed_positions"] = needs
+        diag = ctx.get("_draft_team_diagnostics")
+        if isinstance(diag, dict):
+            diag["roster_display_lines"] = lines
+            diag["filled_roster_display"] = lines
+            diag["roster_by_position"] = roster_by_position
     except ImportError:
         pass
 

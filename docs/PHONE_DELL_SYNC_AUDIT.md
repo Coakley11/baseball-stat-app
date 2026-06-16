@@ -201,12 +201,62 @@ Legend: **Cloud** = persisted via suite cloud / activity API · **Local** = sess
 
 ---
 
-## Instant Baseball Insight E2E verification (v17 target)
+## Full sync matrix (v21 audit)
 
-| # | Check | v16 | v17 target |
-|---|-------|-----|------------|
-| 1 | Insight card appears immediately on submit | Fail (no AMI + rerun) | Pass (fallback card, no rerun) |
-| 2 | Command Center activity created | Fail (resume elif bug) | Pass |
-| 3 | Continue item created | Fail | Pass (flush + fixed upsert) |
-| 4 | Open Full Analysis works | — | Pass |
-| 5 | Phone ↔ Dell same insight | Partial | Re-verify after v17 |
+| Feature | Dell → Phone | Phone → Dell | Cloud-backed? | Status | Fix needed |
+|---------|--------------|--------------|---------------|--------|------------|
+| **Draft settings** | | | | | |
+| Draft format (Roto/H2H/etc.) | ✓ | ✓ | Yes — `draft_state.room_format`, workspace envelope | **Synced** | None if workspace save runs |
+| Scoring format | ✓ | ✓ | Yes — `room_format` / fantasy filters | **Synced** | Verify live-draft vs simulator keys match |
+| Team count | ✓ | ✓ | Yes — `room_team_count` | **Synced** | None |
+| Current pick / round | ✓ | ✓ | Yes — canonical board + `draft_board_summary` | **Partial** | Simulator refreshes on send; live draft needs active session |
+| Selected team | ✓ | ✓ | Yes — `room_your_team`, `draft_assistant_synced_team` | **Synced** | None |
+| **Draft board & queue** | | | | | |
+| Draft board picks | ✓ | ✓ | Yes — `draft_room_state` canonical blob | **Synced** | None |
+| Draft queue | ✓ | ✓ | Yes — `draft_queue` in workspace | **Synced** | None |
+| Watchlist / focus players | ✓ | ✓ | Yes — `draft_assistant_focus_players` | **Synced** | Save after edit |
+| Recommendations | — | — | No — recomputed per device | **Local** | Expected; match if board+settings match |
+| **Sleepers / tracked** | | | | | |
+| Sleepers filters (position, age) | ✓ | ✓ | Yes — `fantasy_sleepers_filters` / `page_filter_state` | **Synced** (v19) | Re-verify after filter edits |
+| Sleeper/bust ranked tables | — | — | No — rebuilt from market data | **Local** | AMI cache `_ami_sleepers_snapshot` rebuilt per device |
+| **Trades / roster** | | | | | |
+| Trades (accepted/rejected) | ✓ | ✓ | Yes — trade analyzer state in workspace | **Partial** | Audit trade blob keys on both devices |
+| Roster changes / picks | ✓ | ✓ | Yes — board rows | **Synced** | None |
+| Player selections / comparison | ✓ | ✓ | Yes — `comparison_state` | **Synced** | None |
+| Player notes | ? | ? | Unknown | **Gap** | Audit if notes persist to cloud |
+| **Page state** | | | | | |
+| Current page | ✓ | ✓ | Yes — `active_page` in workspace | **Synced** | None |
+| Active player / comparison | ✓ | ✓ | Yes — comparison + trend blocks | **Synced** | None |
+| Selected filters / tabs | ✓ | ✓ | Yes — `page_filter_state` per page | **Partial** | Local-dirty guard can block restore |
+| Trend page settings | ✓ | ✓ | Yes — `trend_state` | **Synced** | None |
+| Valuation / historical / career selections | ✓ | ✓ | Yes — workspace envelope filters | **Synced** | Spot-check each page |
+| **Insights** | | | | | |
+| Latest insight card | ✓ | ✓ | Yes — insight store + activity | **Synced** (v20) | Instant card is same-run local until cloud hydrate |
+| Dismissed insights | ✓ | ✓ | Yes — `_ami_dismissed_insight_ids` | **Synced** | None |
+| Open Full Analysis links | ✓ | ✓ | Yes — resume key + question_id | **Synced** | None |
+| Command Center continue items | ✓ | ✓ | Yes — activity API | **Synced** (v17+) | None |
+| **AMI caches (intentional local)** | | | | | |
+| `_ami_draft_snapshot` pool | — | — | No | **Local** | Refreshed from board at send |
+| `_ami_sleepers_snapshot` | — | — | No | **Local** | Rebuilt when Sleepers page renders |
+| Undrafted pool lookup | — | — | No | **Local** | Built from yearly data |
+
+### v21 sync audit next steps
+
+1. Manual pass: change **Roto Draft** on Dell → Phone cold open → confirm format matches.
+2. Manual pass: queue reorder on Phone → Dell refresh → confirm order.
+3. Manual pass: comparison players on Dell → Phone → same A/B slots.
+4. Code pass: trade analyzer + player notes cloud keys (mark **Gap** → **Synced** or document local-only).
+5. Continue insight bidirectional tests after each deploy.
+
+---
+
+## v21 baseball-side changes (instant-insight-v21)
+
+| Issue | Fix |
+|-------|-----|
+| Market Bust Risks reused Nathan Lukes context | `detect_sleepers_send_intent` + bust routing in `finalize_sleepers_context_for_send`; clear stale `sleeper_focus` on section-level bust questions |
+| Team 2 positions show `?` in AMI output | Added `filled_roster_display_lines`, `roster_by_position`, `team_roster_with_positions` + diagnostics; **AMI repo** must read these fields if still showing `?` |
+| Instant card labels | Question / **Answer** / **Summary** / Status·Confidence / Open Full Analysis / Dismiss |
+
+**Retest after deploy:** Market Bust Risks question, Team 2 roster review (check Dev Mode `roster_display_lines` in diagnostics), Nathan Lukes sleeper (routing only — solver polish is AMI-side).
+
