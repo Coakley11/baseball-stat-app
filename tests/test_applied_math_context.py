@@ -169,7 +169,11 @@ class TestBaseballAppliedMathContext(unittest.TestCase):
         self.assertIn("draft_snapshot", ctx)
         self.assertEqual(ctx.get("current_pick"), 18)
         self.assertIn("ami_guidance", ctx)
-        self.assertIn("Corbin Carroll", ctx.get("recommended_players", []))
+        rec_names = [
+            (r.get("player") if isinstance(r, dict) else str(r))
+            for r in ctx.get("recommended_players", [])
+        ]
+        self.assertIn("Corbin Carroll", rec_names)
         self.assertEqual(len(ctx.get("roster", [])), 2)
 
     def test_cache_draft_assistant_ami_context_populates_projection(self) -> None:

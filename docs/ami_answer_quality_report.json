@@ -1,82 +1,148 @@
 {
-  "generated_at": "2026-06-13T23:10:52.869143+00:00",
+  "generated_at": "2026-06-16T13:12:50.960342+00:00",
+  "north_star": "Routing pass with a useless answer is still a failure.",
   "criteria": [
-    "factual_grounding",
-    "answers_question",
+    "understands_question",
     "uses_page_context",
     "uses_draft_context",
-    "provides_recommendation",
+    "uses_player_pool",
+    "real_players_and_data",
     "explains_why",
     "compares_alternatives",
-    "avoids_invented_facts",
+    "avoids_filler",
     "player_trustworthy"
   ],
+  "pipeline_stages": [
+    "A: Baseball sends context",
+    "B: AMI classifies question (route)",
+    "C: AMI selects reasoning mode (draft_mode)",
+    "D: Meaningful baseball analysis in answer",
+    "E: Clear explanation",
+    "F: Fantasy-player trust"
+  ],
   "summary": {
-    "total": 14,
-    "passed": 14,
-    "failed": 0,
-    "player_trustworthy": 14,
-    "ready_for_manual_acceptance": true
+    "total": 32,
+    "passed": 27,
+    "failed": 5,
+    "player_trustworthy": 27,
+    "routing_only_failures": 5,
+    "ready_for_manual_acceptance": false,
+    "by_family": {
+      "Draft Market": {
+        "total": 5,
+        "trustworthy": 5,
+        "routing_only_fail": 0
+      },
+      "Player Evaluation": {
+        "total": 3,
+        "trustworthy": 2,
+        "routing_only_fail": 1
+      },
+      "Draft Assistant": {
+        "total": 6,
+        "trustworthy": 5,
+        "routing_only_fail": 1
+      },
+      "Sleepers": {
+        "total": 3,
+        "trustworthy": 2,
+        "routing_only_fail": 1
+      },
+      "Trend": {
+        "total": 5,
+        "trustworthy": 4,
+        "routing_only_fail": 1
+      },
+      "Historical Explorer": {
+        "total": 3,
+        "trustworthy": 3,
+        "routing_only_fail": 0
+      },
+      "Comparison": {
+        "total": 5,
+        "trustworthy": 4,
+        "routing_only_fail": 1
+      },
+      "Valuation": {
+        "total": 2,
+        "trustworthy": 2,
+        "routing_only_fail": 0
+      }
+    }
   },
   "results": [
     {
       "case_id": "next_catcher",
       "category": "Next catcher",
       "question": "Who is likely to be the next catcher picked in this draft?",
+      "family": "Draft Market",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "Names pool players or cites pool stats"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -88,66 +154,89 @@
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "draft_market_prediction",
-      "short_answer": "**Cal Raleigh** is already off the board. The next **Catcher** most likely selected is **William Contreras** — highest-ranked remaining **Catcher** on your saved board.\n\nAt pick **7** (round **2**), remaining **Catcher**"
+      "short_answer": "**Cal Raleigh** is already off the board. The next **Catcher** most likely selected is **William Contreras** — highest-ranked remaining **Catcher** on your saved board.",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "draft_market_prediction",
+        "D_answer_chars": 2730,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "position_run",
       "category": "Position run",
       "question": "Is a catcher run coming?",
+      "family": "Draft Market",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -159,66 +248,89 @@
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "draft_market_prediction",
-      "short_answer": "A **Catcher run** is plausible — **William Contreras** is the top remaining name and **3** **Catcher** options remain in your board context.\n\n**Cal Raleigh** is already off the board. Managers often cluster scarce positi"
+      "short_answer": "A **Catcher run** is plausible — **William Contreras** is the top remaining name and **3** **Catcher** options remain in your board context.",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "draft_market_prediction",
+        "D_answer_chars": 2373,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "make_it_back",
       "category": "Make it back to me",
       "question": "Will William Contreras make it back to me?",
+      "family": "Draft Market",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -229,67 +341,90 @@
         "Cites measurable evidence"
       ],
       "route_id": "baseball_draft_decision",
-      "draft_mode": "draft_market_prediction",
-      "short_answer": "**William Contreras** is likely to be drafted before your next pick based on Market Rank order among remaining **Catcher** options at pick **5** (round **2**).\n\nDraft-flow read: **Cal Raleigh** is already off the board. "
+      "draft_mode": "draft_timing_decision",
+      "short_answer": "**1** **Catcher** already drafted: Cal Raleigh. **Draft William Contreras now** at pick **5** (round **2**) — he leads the remaining **Catcher** tier. Survival read: roughly **60–75%** he is still there if you wait one r",
+      "pipeline": {
+        "A_context_keys": 27,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "draft_timing_decision",
+        "D_answer_chars": 4360,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "wait_on_player",
       "category": "Wait on player",
       "question": "How long can I wait on catcher?",
+      "family": "Draft Market",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -300,138 +435,188 @@
         "Cites measurable evidence"
       ],
       "route_id": "baseball_draft_decision",
-      "draft_mode": "draft_market_prediction",
-      "short_answer": "You can likely wait **1–2 rounds** on **Catcher** if **William Contreras** is the only elite name left, but scarcity index **2.8** raises reach risk.\n\n**Cal Raleigh** is already off the board. Next **Catcher** candidates"
+      "draft_mode": "draft_timing_decision",
+      "short_answer": "**1** **Catcher** already drafted: Cal Raleigh. **You can wait one round** on **Cal Raleigh** at pick **7** (round **2**). Survival read: roughly **60–75%** he is still there if you wait one round. **waiting is viable** ",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "draft_timing_decision",
+        "D_answer_chars": 4618,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "olson_vs_schwarber",
       "category": "Olson vs Schwarber",
       "question": "Which player would be better to draft, Matt Olson or Kyle Schwarber?",
-      "passed": true,
-      "player_trustworthy": true,
+      "family": "Player Evaluation",
+      "passed": false,
+      "player_trustworthy": false,
+      "routing_only_pass": true,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": false,
+          "note": "May recommend drafted player juan soto without noting unavailable; May recommend drafted player elly de la cruz without noting unavailable"
         },
         {
           "id": "answers_question",
-          "label": "Does it answer the actual question?",
-          "passed": true,
-          "note": "Addresses question themes"
+          "label": "Does the answer match what was asked?",
+          "passed": false,
+          "note": "Missing themes: ['better', 'draft']"
         },
         {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
-          "passed": true,
-          "note": "Believable and useful"
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": false,
+          "note": "Would not pass knowledgeable-player sniff test"
         }
       ],
-      "failures": [],
+      "failures": [
+        "May recommend drafted player juan soto without noting unavailable",
+        "May recommend drafted player elly de la cruz without noting unavailable",
+        "Does not address question themes: ['better', 'draft']",
+        "Unrelated player in recommendation: juan soto"
+      ],
       "strengths": [
-        "Passes fantasy-player trust bar",
         "Cites measurable evidence"
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "draft_player_compare",
-      "short_answer": "**Kyle Schwarber** is the better draft pick over **Matt Olson** at pick **8** (round **1**) based on board value and roster fit (Market Rank 18 vs 30, Fantasy Edge 22 vs 12).\n\nDraft compare at pick **8** (round **1**) fo"
+      "short_answer": "**Kyle Schwarber** is the stronger overall value at pick **8** (round **1**). While **Matt Olson** is the best remaining **First Base**, **Kyle Schwarber** ranks substantially higher overall and fills a premium **OF** sl",
+      "pipeline": {
+        "A_context_keys": 32,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "draft_player_compare",
+        "D_answer_chars": 3144,
+        "E_has_evidence": true,
+        "F_player_trustworthy": false
+      }
     },
     {
       "case_id": "jose_ramirez",
       "category": "Jose Ramirez",
       "question": "Why is Jose Ramirez the best player to draft for me right now?",
+      "family": "Player Evaluation",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -443,137 +628,184 @@
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "player_why",
-      "short_answer": "**Jose Ramirez** is a good player, but **Cal Raleigh** is the better fit on your current board because **C/SS · HR + SB** and recommendation priority favor **Cal Raleigh**.\n\n**Jose Ramirez** (3B) on your board: available"
+      "short_answer": "**Jose Ramirez** is a good player, but **Cal Raleigh** is the better overall fit on your current board because **C/SS · HR + SB** and recommendation priority favor **Cal Raleigh**.",
+      "pipeline": {
+        "A_context_keys": 31,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "player_why",
+        "D_answer_chars": 3724,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "team_needs",
       "category": "Team needs",
       "question": "What does my roster need?",
-      "passed": true,
-      "player_trustworthy": true,
+      "family": "Draft Assistant",
+      "passed": false,
+      "player_trustworthy": false,
+      "routing_only_pass": true,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
-          "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
           "passed": true,
-          "note": "Clear take/lean"
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": false,
+          "note": "No actionable recommendation"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
         },
         {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
-          "passed": true,
-          "note": "Believable and useful"
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": false,
+          "note": "Would not pass knowledgeable-player sniff test"
         }
       ],
-      "failures": [],
+      "failures": [
+        "No clear recommendation for a decision question"
+      ],
       "strengths": [
-        "Passes fantasy-player trust bar",
         "Cites measurable evidence"
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "roster_needs",
-      "short_answer": "**Roster diagnosis:** your **2**-player roster (Juan Soto, Elly De La Cruz) needs **C, SS** and category help in **HR, SB**.\n\nYour saved board shows gaps at **C, SS** with category pressure on **HR, SB**. Next priority: "
+      "short_answer": "**Positions already filled:**\n- **?**: Juan Soto\n- **?**: Elly De La Cruz\n\n**Still needed (priority order):**\n1. **C** — catcher tiers thin quickly after the top names leave the board\n2. **SS** — shortstop is a high-scar",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "roster_needs",
+        "D_answer_chars": 3895,
+        "E_has_evidence": true,
+        "F_player_trustworthy": false
+      }
     },
     {
       "case_id": "hitter_vs_pitcher",
       "category": "Hitter vs pitcher",
       "question": "Should I take a hitter or pitcher?",
+      "family": "Draft Assistant",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -585,66 +817,89 @@
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "hitter_pitcher",
-      "short_answer": "At pick **6** (round **1**), weigh **hitter** vs **pitcher** by **C/SS · SB + HR** and whether your league rewards pitching scarcity now — lean **Cal Raleigh** if hitters close bigger category gaps.\n\nRoster construction:"
+      "short_answer": "At pick **6** (round **1**), weigh **hitter** vs **pitcher** by **C/SS · SB + HR** and whether your league rewards pitching scarcity now — lean **Cal Raleigh** if hitters close bigger category gaps.",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "hitter_pitcher",
+        "D_answer_chars": 3383,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "best_values",
       "category": "Best values available",
       "question": "Who are the best values left?",
+      "family": "Draft Assistant",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
           "passed": true,
           "note": "Draft board/pick evidence in answer"
         },
         {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -656,66 +911,89 @@
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "best_values",
-      "short_answer": "Best values left at pick **6** (round **1**): **Kyle Schwarber** — OF — Fantasy Edge 12 — Market Rank 18; **Matt Olson** — 1B — Fantasy Edge 22 — Market Rank 30; **Eugenio Suarez** — 3B — Fantasy Edge 43 — Market Rank 59"
+      "short_answer": "Best values left at pick **6** (round **1**): **Kyle Schwarber** — OF — Fantasy Edge 12 — Market Rank 18; **Matt Olson** — 1B — Fantasy Edge 22 — Market Rank 30; **Eugenio Suarez** — 3B — Fantasy Edge 43 — Market Rank 59",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "best_values",
+        "D_answer_chars": 3431,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "sleepers",
       "category": "Sleepers",
       "question": "Should I take this sleeper?",
+      "family": "Sleepers",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
           "passed": true,
           "note": "N/A"
         },
         {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -727,66 +1005,89 @@
       ],
       "route_id": "baseball_draft_decision",
       "draft_mode": "sleeper",
-      "short_answer": "**Take Junior Caminero** as a probability-weighted upside pick when draft cost is low enough that hitting the ceiling pays for several misses (5 players already drafted — **Junior Caminero** not among them).\n\nSleeper **J"
+      "short_answer": "**Take Junior Caminero** as a probability-weighted upside pick when draft cost is low enough that hitting the ceiling pays for several misses (5 players already drafted — **Junior Caminero** not among them).",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "sleeper",
+        "D_answer_chars": 2755,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "trend_interpretation",
       "category": "Trend interpretation",
       "question": "This player has a good trend. Is he likely to do well next season in doubles?",
+      "family": "Trend",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
           "passed": true,
           "note": "N/A"
         },
         {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -798,66 +1099,89 @@
       ],
       "route_id": "baseball_trend_significance",
       "draft_mode": "",
-      "short_answer": "Yes — the Up 2B trend looks meaningful at your thresholds."
+      "short_answer": "**Junior Caminero** is likely to **improve next season** — 2B trend is **Up** (slope **1.8**/year, R² **0.55**) above your thresholds.",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_trend_significance",
+        "C_draft_mode": "baseball_trend_significance",
+        "D_answer_chars": 505,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "historical_filters",
       "category": "Historical filter interpretation",
       "question": "Why does Barry Bonds keep showing up with these filters?",
+      "family": "Historical Explorer",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
           "passed": true,
           "note": "N/A"
         },
         {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -869,66 +1193,89 @@
       ],
       "route_id": "baseball_historical_comparison",
       "draft_mode": "",
-      "short_answer": "Snapshot on **HR**"
+      "short_answer": "**Barry Bonds** keeps appearing because your **filters** (**Years 2000–2007; sort HR**) and **HR** sort favor his peak seasons (**Barry Bonds** (HR=73)).",
+      "pipeline": {
+        "A_context_keys": 11,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_historical_comparison",
+        "C_draft_mode": "baseball_historical_comparison",
+        "D_answer_chars": 955,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "comparison_power",
       "category": "Comparison (power)",
       "question": "Which player is more valuable for power?",
+      "family": "Comparison",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
           "passed": true,
           "note": "N/A"
         },
         {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -940,66 +1287,89 @@
       ],
       "route_id": "baseball_player_comparison",
       "draft_mode": "",
-      "short_answer": "**Juan Soto** leads **Aaron Judge** under current weights (score **1.49** vs **0.51**)."
+      "short_answer": "**Juan Soto** leads **Aaron Judge** under current weights (score **1.49** vs **0.51**).",
+      "pipeline": {
+        "A_context_keys": 18,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_player_comparison",
+        "C_draft_mode": "baseball_player_comparison",
+        "D_answer_chars": 267,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
     },
     {
       "case_id": "comparison_why",
       "category": "Comparison (why better)",
       "question": "Why is Juan Soto better than Aaron Judge?",
+      "family": "Comparison",
       "passed": true,
       "player_trustworthy": true,
+      "routing_only_pass": false,
       "dimensions": [
         {
-          "id": "factual_grounding",
-          "label": "Is the answer factually grounded?",
-          "passed": true,
-          "note": "Pick/round and availability align with context"
-        },
-        {
-          "id": "answers_question",
-          "label": "Does it answer the actual question?",
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
           "passed": true,
           "note": "Addresses question themes"
         },
         {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
           "id": "uses_page_context",
-          "label": "Does it use the page context?",
+          "label": "Did it use the correct page context?",
           "passed": true,
           "note": "Context present and answer cites page evidence"
         },
         {
           "id": "uses_draft_context",
-          "label": "Does it use draft context when relevant?",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
           "passed": true,
           "note": "N/A"
         },
         {
           "id": "provides_recommendation",
-          "label": "Does it provide a recommendation?",
+          "label": "Does it provide a actionable recommendation?",
           "passed": true,
           "note": "Clear take/lean"
         },
         {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
           "id": "explains_why",
-          "label": "Does it explain why?",
+          "label": "Did it explain why?",
           "passed": true,
           "note": "Evidence-based reasoning present"
         },
         {
           "id": "compares_alternatives",
-          "label": "Does it compare alternatives?",
+          "label": "Did it compare alternatives when appropriate?",
           "passed": true,
           "note": "Alternatives or tradeoffs mentioned"
         },
         {
-          "id": "avoids_invented_facts",
-          "label": "Does it avoid invented facts?",
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
           "passed": true,
           "note": "No invented pick/filler detected"
         },
         {
           "id": "player_trustworthy",
-          "label": "Would a fantasy player trust this answer?",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
           "passed": true,
           "note": "Believable and useful"
         }
@@ -1011,7 +1381,1712 @@
       ],
       "route_id": "baseball_player_comparison",
       "draft_mode": "",
-      "short_answer": "**Juan Soto** leads **Aaron Judge** under current weights (score **1.49** vs **0.51**)."
+      "short_answer": "**Juan Soto** leads **Aaron Judge** under current weights (score **1.49** vs **0.51**).",
+      "pipeline": {
+        "A_context_keys": 18,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_player_comparison",
+        "C_draft_mode": "baseball_player_comparison",
+        "D_answer_chars": 267,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "prioritize_steals",
+      "category": "Prioritize steals",
+      "question": "Should I prioritize steals right now?",
+      "family": "Draft Assistant",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "Draft board/pick evidence in answer"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "Names pool players or cites pool stats"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "category",
+      "short_answer": "Given your **2**-player roster (**Juan Soto** (already drafted), **Elly De La Cruz** (already drafted)), prioritize the player who closes your weakest category in **5x5 Roto** — often **Cal Raleigh** over raw rank.",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "category",
+        "D_answer_chars": 3507,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "roster_weakness",
+      "category": "Roster weakness",
+      "question": "What is my biggest roster weakness?",
+      "family": "Draft Assistant",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "Draft board/pick evidence in answer"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "roster_weakness",
+      "short_answer": "Your biggest **roster weakness** is **C** depth with a **HR** category gap on your **2**-player roster (**Juan Soto** (already drafted), **Elly De La Cruz** (already drafted)) at pick **6** (round **1**). **Target Cal Ra",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "roster_weakness",
+        "D_answer_chars": 3538,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "draft_next",
+      "category": "Draft next pick",
+      "question": "Who should I draft next?",
+      "family": "Draft Assistant",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "Draft board/pick evidence in answer"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "Names pool players or cites pool stats"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "next_pick",
+      "short_answer": "Given your **2**-player roster (**Juan Soto** (already drafted), **Elly De La Cruz** (already drafted)) at pick **6** (round **1**), lean **Cal Raleigh** over **Bobby Witt Jr.** for the next selection — both are availabl",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "next_pick",
+        "D_answer_chars": 3754,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "closer_run",
+      "category": "Closer run",
+      "question": "Is a closer run coming?",
+      "family": "Draft Market",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "Draft board/pick evidence in answer"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "draft_market_prediction",
+      "short_answer": "A **Closer run** is plausible — **William Contreras** is the top remaining name and **3** **Closer** options remain in your board context.",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "draft_market_prediction",
+        "D_answer_chars": 2352,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "hitter_roster_fit",
+      "category": "Hitter roster fit",
+      "question": "Which hitter fits my roster better?",
+      "family": "Player Evaluation",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "Draft board/pick evidence in answer"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "Names pool players or cites pool stats"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "hitter_fit",
+      "short_answer": "**Lean Cal Raleigh** — the **better hitter fit** for your roster over **Bobby Witt Jr.** at pick **6** (round **1**) because he closes **C/SS · HR + SB** (SS vs C; Fantasy Edge -3 vs 7).",
+      "pipeline": {
+        "A_context_keys": 28,
+        "A_has_draft_snapshot": true,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "hitter_fit",
+        "D_answer_chars": 3422,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "sleeper_risk",
+      "category": "Sleeper risk",
+      "question": "Is this sleeper worth the risk?",
+      "family": "Sleepers",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "Names pool players or cites pool stats"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "sleeper_risk",
+      "short_answer": "**Junior Caminero** is worth the risk only if draft cost stays low — see Fantasy Edge vs market on your sleeper board.",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "sleeper_risk",
+        "D_answer_chars": 2956,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "trend_noise",
+      "category": "Trend noise",
+      "question": "Is this trend meaningful or just noise?",
+      "family": "Trend",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_trend_significance",
+      "draft_mode": "",
+      "short_answer": "For **Junior Caminero**, the trend is **Up**, but only meaningful if R² is high enough — currently **0.22** vs your **0.35** floor (likely **noise**).",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_trend_significance",
+        "C_draft_mode": "baseball_trend_significance",
+        "D_answer_chars": 485,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "trend_improve",
+      "category": "Trend improve",
+      "question": "Is this player likely to improve next season?",
+      "family": "Trend",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_trend_significance",
+      "draft_mode": "",
+      "short_answer": "**Junior Caminero** is likely to **improve next season** — 2B trend is **Up** (slope **1.8**/year, R² **0.55**) above your thresholds.",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_trend_significance",
+        "C_draft_mode": "baseball_trend_significance",
+        "D_answer_chars": 505,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "valuation_why",
+      "category": "Valuation why",
+      "question": "Why is this player rated so highly?",
+      "family": "Valuation",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_valuation",
+      "draft_mode": "",
+      "short_answer": "**Junior Caminero** is **rated highly** (Valuation Score **0.84**) because **Perf_Score 72.0** reflects recent production and **Trend_Score 14.0** captures momentum — not just a single headline number.",
+      "pipeline": {
+        "A_context_keys": 14,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_valuation",
+        "C_draft_mode": "baseball_valuation",
+        "D_answer_chars": 1218,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "valuation_justified",
+      "category": "Valuation justified",
+      "question": "Is this valuation justified?",
+      "family": "Valuation",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_valuation",
+      "draft_mode": "",
+      "short_answer": "**Junior Caminero** looks **overvalued** at Valuation Score **0.84** — market may be ahead of recent production/trend.",
+      "pipeline": {
+        "A_context_keys": 14,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_valuation",
+        "C_draft_mode": "baseball_valuation",
+        "D_answer_chars": 902,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "historical_filters_cause",
+      "category": "Historical filters",
+      "question": "What filters are causing this outcome?",
+      "family": "Historical Explorer",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_historical_comparison",
+      "draft_mode": "",
+      "short_answer": "These **filters** (**Years 2000–2007; sort HR**, sorted by **HR**) surface extreme counting-stat seasons — ****Barry Bonds**** leads because HR totals rank highest in the filtered set.",
+      "pipeline": {
+        "A_context_keys": 11,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_historical_comparison",
+        "C_draft_mode": "baseball_historical_comparison",
+        "D_answer_chars": 1017,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "historical_comparison",
+      "category": "Historical comparison",
+      "question": "What does this historical comparison actually show?",
+      "family": "Historical Explorer",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_historical_comparison",
+      "draft_mode": "",
+      "short_answer": "This **historical comparison** shows top **HR** seasons under **Years 2000–2007; sort HR**: **Barry Bonds** (HR=73), **Alex Rodriguez** (HR=54), **Sammy Sosa** (HR=49). It ranks who dominated **HR** in that window — not ",
+      "pipeline": {
+        "A_context_keys": 11,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_historical_comparison",
+        "C_draft_mode": "baseball_historical_comparison",
+        "D_answer_chars": 1135,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "comparison_draft_pick_qs",
+      "category": "Comparison — draft-pick question",
+      "question": "Is Juan Soto vs Aaron Judge the better draft pick right now?",
+      "family": "Comparison",
+      "passed": false,
+      "player_trustworthy": false,
+      "routing_only_pass": true,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": false,
+          "note": "Missing: ['draft', 'pick', 'better']"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": false,
+          "note": "Missing themes: ['draft', 'pick', 'better']"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": false,
+          "note": "Would not pass knowledgeable-player sniff test"
+        }
+      ],
+      "failures": [
+        "Does not address question themes: ['draft', 'pick', 'better']"
+      ],
+      "strengths": [
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_player_comparison",
+      "draft_mode": "",
+      "short_answer": "**Juan Soto** leads **Aaron Judge** under current weights (score **1.49** vs **0.51**).",
+      "pipeline": {
+        "A_context_keys": 18,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_player_comparison",
+        "C_draft_mode": "baseball_player_comparison",
+        "D_answer_chars": 267,
+        "E_has_evidence": true,
+        "F_player_trustworthy": false
+      }
+    },
+    {
+      "case_id": "comparison_long_term",
+      "category": "Comparison — long-term value",
+      "question": "Who has better long-term fantasy value, Mookie Betts or Ronald Acuna?",
+      "family": "Comparison",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_player_comparison",
+      "draft_mode": "",
+      "short_answer": "**Who has better long-term fantasy value, Mookie Betts** leads **Ronald Acuna** under current weights (score **1.27** vs **0.73**).",
+      "pipeline": {
+        "A_context_keys": 18,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_player_comparison",
+        "C_draft_mode": "baseball_player_comparison",
+        "D_answer_chars": 483,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "comparison_ros",
+      "category": "Comparison — rest-of-season",
+      "question": "Who is the better rest-of-season value: Kyle Tucker or Corbin Carroll?",
+      "family": "Comparison",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_player_comparison",
+      "draft_mode": "",
+      "short_answer": "**the better rest-of-season value: Kyle Tucker** leads **Corbin Carroll** under current weights (score **1.29** vs **0.71**).",
+      "pipeline": {
+        "A_context_keys": 18,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_player_comparison",
+        "C_draft_mode": "baseball_player_comparison",
+        "D_answer_chars": 445,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "trend_named_player",
+      "category": "Trend — named player trajectory",
+      "question": "Is Junior Caminero's trend sustainable or will he regress?",
+      "family": "Trend",
+      "passed": false,
+      "player_trustworthy": false,
+      "routing_only_pass": true,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": false,
+          "note": "Missing: ['sustain', 'regress']"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": false,
+          "note": "Missing themes: ['sustain', 'regress']"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": false,
+          "note": "Would not pass knowledgeable-player sniff test"
+        }
+      ],
+      "failures": [
+        "Does not address question themes: ['sustain', 'regress']"
+      ],
+      "strengths": [
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_trend_significance",
+      "draft_mode": "",
+      "short_answer": "Yes — **Junior Caminero**'s Up 2B trend looks meaningful at your thresholds.",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_trend_significance",
+        "C_draft_mode": "baseball_trend_significance",
+        "D_answer_chars": 416,
+        "E_has_evidence": true,
+        "F_player_trustworthy": false
+      }
+    },
+    {
+      "case_id": "trend_doubles_specific",
+      "category": "Trend — specific stat focus",
+      "question": "What does this doubles trend actually mean for next season?",
+      "family": "Trend",
+      "passed": true,
+      "player_trustworthy": true,
+      "routing_only_pass": false,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": true,
+          "note": "Addresses question themes"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": true,
+          "note": "On-topic"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": true,
+          "note": "Evidence-backed"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": true,
+          "note": "Believable and useful"
+        }
+      ],
+      "failures": [],
+      "strengths": [
+        "Passes fantasy-player trust bar",
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_trend_significance",
+      "draft_mode": "",
+      "short_answer": "**Junior Caminero** is likely to **improve next season** — 2B trend is **Up** (slope **1.8**/year, R² **0.55**) above your thresholds.",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_trend_significance",
+        "C_draft_mode": "baseball_trend_significance",
+        "D_answer_chars": 505,
+        "E_has_evidence": true,
+        "F_player_trustworthy": true
+      }
+    },
+    {
+      "case_id": "bust_risk_section",
+      "category": "Bust risk — section review",
+      "question": "Are there any players in Market Bust Risks that I should consider drafting?",
+      "family": "Sleepers",
+      "passed": false,
+      "player_trustworthy": false,
+      "routing_only_pass": true,
+      "dimensions": [
+        {
+          "id": "understands_question",
+          "label": "Did it understand the actual question?",
+          "passed": false,
+          "note": "Missing: ['bust', 'risk', 'consider']"
+        },
+        {
+          "id": "answers_question",
+          "label": "Does the answer match what was asked?",
+          "passed": false,
+          "note": "Missing themes: ['bust', 'risk', 'consider']"
+        },
+        {
+          "id": "uses_page_context",
+          "label": "Did it use the correct page context?",
+          "passed": true,
+          "note": "Context present and answer cites page evidence"
+        },
+        {
+          "id": "uses_draft_context",
+          "label": "Did it use draft board and roster when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "uses_player_pool",
+          "label": "Did it use the available player pool when relevant?",
+          "passed": true,
+          "note": "N/A"
+        },
+        {
+          "id": "provides_recommendation",
+          "label": "Does it provide a actionable recommendation?",
+          "passed": true,
+          "note": "Clear take/lean"
+        },
+        {
+          "id": "real_players_and_data",
+          "label": "Did it mention real players and real data?",
+          "passed": false,
+          "note": "Missing required name: bust"
+        },
+        {
+          "id": "explains_why",
+          "label": "Did it explain why?",
+          "passed": true,
+          "note": "Evidence-based reasoning present"
+        },
+        {
+          "id": "compares_alternatives",
+          "label": "Did it compare alternatives when appropriate?",
+          "passed": true,
+          "note": "Alternatives or tradeoffs mentioned"
+        },
+        {
+          "id": "avoids_filler",
+          "label": "Did it avoid generic filler and invented facts?",
+          "passed": true,
+          "note": "No invented pick/filler detected"
+        },
+        {
+          "id": "player_trustworthy",
+          "label": "Would a knowledgeable fantasy baseball player trust this answer?",
+          "passed": false,
+          "note": "Would not pass knowledgeable-player sniff test"
+        }
+      ],
+      "failures": [
+        "Does not address question themes: ['bust', 'risk', 'consider']",
+        "Missing required name: bust"
+      ],
+      "strengths": [
+        "Cites measurable evidence"
+      ],
+      "route_id": "baseball_draft_decision",
+      "draft_mode": "value_edge",
+      "short_answer": "**Fair price** for **Junior Caminero** at pick and round not in saved board context (ADP **95**).",
+      "pipeline": {
+        "A_context_keys": 15,
+        "A_has_draft_snapshot": false,
+        "B_route_id": "baseball_draft_decision",
+        "C_draft_mode": "value_edge",
+        "D_answer_chars": 2623,
+        "E_has_evidence": true,
+        "F_player_trustworthy": false
+      }
     }
   ]
 }

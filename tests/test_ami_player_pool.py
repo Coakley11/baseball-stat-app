@@ -127,6 +127,31 @@ class TestPositionRepresentativePool(unittest.TestCase):
             ),
             "Nathan Lukes",
         )
+        self.assertEqual(
+            extract_player_from_question("Would Nathan Lukes make a good pick?"),
+            "Nathan Lukes",
+        )
+        # B1 regression: phrasings that previously leaked trailing fragments or returned ""
+        self.assertEqual(
+            extract_player_from_question("Is Nathan Lukes a good pick?"),
+            "Nathan Lukes",
+        )
+        self.assertEqual(
+            extract_player_from_question("Should I pick Nathan Lukes in this draft?"),
+            "Nathan Lukes",
+        )
+        self.assertEqual(
+            extract_player_from_question("Should I take Nathan Lukes with this pick?"),
+            "Nathan Lukes",
+        )
+        self.assertEqual(
+            extract_player_from_question("Should I draft Nathan Lukes in round 5?"),
+            "Nathan Lukes",
+        )
+        self.assertEqual(
+            extract_player_from_question("Should I target Nathan Lukes despite the bust risk?"),
+            "Nathan Lukes",
+        )
         self.assertIsNotNone(ctx.get("question_player_row"))
 
     def test_send_path_includes_catchers_for_next_catcher_question(self) -> None:

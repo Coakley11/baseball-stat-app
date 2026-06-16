@@ -80,6 +80,26 @@ class TestFinalizeSleepersContext(unittest.TestCase):
         self.assertEqual(diag.get("bust_risk_count"), 1)
         self.assertFalse(diag.get("sleeper_focus_present"))
 
+    def test_bust_routing_on_draft_page(self) -> None:
+        from suite_analytical_question import build_submit_context
+
+        session = {
+            "_ami_sleepers_snapshot": {
+                "bust_risks": [{"player": "Eric Wagaman", "adp": 180}],
+            },
+            "_ami_draft_snapshot": {"current_pick": 8, "draft_round": 4},
+        }
+        ctx = build_submit_context(
+            "baseball",
+            "Draft Assistant Simulator",
+            session,
+            question="Are there any players in Market Bust Risks that I should consider drafting?",
+        )
+        self.assertEqual(ctx.get("routing_hint"), "bust_risk_review")
+        self.assertEqual(ctx.get("intent"), "bust_risk_analysis")
+        self.assertNotIn("sleeper_focus", ctx)
+        self.assertGreaterEqual(len(ctx.get("bust_risks") or []), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

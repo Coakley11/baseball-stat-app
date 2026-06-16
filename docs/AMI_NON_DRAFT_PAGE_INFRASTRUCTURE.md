@@ -4,6 +4,24 @@ Reusable pattern from Draft AMI: **context package → hydration → routing →
 
 ---
 
+## Current status (2026-06-16)
+
+Send-side promotion is dispatched by `promote_page_ami_context_at_send` in `baseball_ami_pages.py`.
+
+| Page | Send hook | Routing detector | Diagnostics | Send-side status |
+|------|-----------|------------------|-------------|------------------|
+| Comparison | `finalize_comparison_context_for_send` | `detect_comparison_send_intent` | `build_comparison_send_diagnostics` | **Done** — player parser hardened 2026-06-16 (strips trailing question fragments); regression tests in `tests/test_comparison_ami_send.py` |
+| Trend Value | `finalize_trend_context_for_send` | (trend modes) | `build_trend_send_diagnostics` | **Done** — promotes `trend_summary`/`player`/`metrics`/`trend_snapshot`/`trend_window`; clears `player_a/b` to avoid compare-mode leak |
+| Sleepers / Busts | `finalize_sleepers_context_for_send` | `detect_sleepers_send_intent` | `build_sleepers_send_diagnostics` | **Done (send)** — bust vs sleeper routing + stale-context clearing; quality polish is AMI-side (see backlog B2) |
+| Valuation | `finalize_valuation_context_for_send` | `valuation_analysis` | `build_valuation_send_diagnostics` | **Done 2026-06-16** — promotes `valuation_snapshot`, selected player, draft status, top players; tested in `tests/test_valhist_career_ami_send.py` |
+| Historical Explorer | `finalize_historical_context_for_send` | `historical_analysis` | `build_historical_send_diagnostics` | **Done 2026-06-16** — promotes `historical_snapshot`, year range, sort stat, top players; tested |
+| Career Explorer | `finalize_career_context_for_send` | `career_analysis` | `build_career_send_diagnostics` | **Done 2026-06-16** — promotes filters, year range, sort stat, team, snapshot; tested |
+
+**Priority order (after sync audit):** 1) Comparison · 2) Trend Value · 3) Sleepers/Busts quality
+· 4) Valuation / Historical / Career send hooks. Open AMI quality issues: `docs/AMI_BACKLOG.md`.
+
+---
+
 ## Shared pipeline (all pages)
 
 | Stage | Baseball | AMI |
@@ -88,14 +106,19 @@ Reusable pattern from Draft AMI: **context package → hydration → routing →
 
 ---
 
-## Implementation order (after Draft AMI stable)
+## 3. Comparison Tool
 
-1. **Trends** — `finalize_trend_context_for_send` in `baseball_ami_pages.py` (wired at send)
-2. **Sleepers** — `finalize_sleepers_context_for_send` (wired at send)
-3. **Comparison** — `finalize_comparison_context_for_send` (wired at send)
-4. Historical — wire `historical_snapshot` send promotion
-5. Start/Sit — new lineup snapshot from Lineup Assistant
-6. Trades — hold (lower priority)
+**Example questions:** Who is the better draft pick? Better long-term value? Better rest-of-season outlook?
+
+| Item | Status |
+|------|--------|
+| Context package | `player_a`, `player_b`, `comparison_chart`, `comparison_differences`, `metrics` |
+| Required data | Sig Player A/B, compare stat, advanced trend intel rows |
+| Hydration | `comparison_state` + `_ami_comparison_context` |
+| Routing | `detect_comparison_send_intent` → `comparison_draft_pick`, `comparison_head_to_head`, `comparison_long_term`, `comparison_ros` |
+| Cache key | `_ami_comparison_context` (page render) |
+| Send hook | `finalize_comparison_context_for_send` + `build_comparison_send_diagnostics` |
+| Diagnostics | `comparison_send_diagnostics` merged into `send_pipeline_diagnostics` |
 
 ---
 

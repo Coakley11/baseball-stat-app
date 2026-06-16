@@ -148,6 +148,9 @@ def pool_player_names(ctx: dict[str, Any], *, limit: int = 12) -> list[str]:
         ctx.get("best_available"),
         snap.get("recommended_players"),
         ctx.get("recommended_players"),
+        snap.get("sleeper_candidates"),
+        ctx.get("sleeper_candidates"),
+        (ctx.get("sleepers_snapshot") or {}).get("sleeper_candidates") if isinstance(ctx.get("sleepers_snapshot"), dict) else None,
     ):
         if not isinstance(pool, list):
             continue
@@ -233,7 +236,17 @@ def check_not_recommending_drafted(ctx: dict[str, Any], text: str) -> list[str]:
         if not name:
             continue
         # "already drafted" / "off the board" is fine
-        if name in direct and not any(p in direct for p in ("already drafted", "off the board", "not available", "already off")):
+        if name in direct and not any(
+            p in direct
+            for p in (
+                "already drafted",
+                "off the board",
+                "not available",
+                "already off",
+                "already on your roster",
+                "already on your team",
+            )
+        ):
             if any(w in direct for w in ("lean", "take", "draft", "recommend", "pick")):
                 failures.append(f"May recommend drafted player {name} without noting unavailable")
     return failures

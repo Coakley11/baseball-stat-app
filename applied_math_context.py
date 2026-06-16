@@ -29,16 +29,86 @@ def _player_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip()
 
 
+_INVALID_PLAYER_CAPTURES = frozenset({
+    "pick", "draft", "this pick", "a good", "good pick", "top pick", "best pick",
+    "this player", "this sleeper", "he", "him", "her", "they", "player",
+})
+
+# Trailing fragments that appear after a player name in single-player questions.
+# Longest first so the most-specific phrase is stripped before shorter overlapping ones.
+_PLAYER_CAPTURE_TRAILING_FRAGMENTS: tuple[str, ...] = tuple(
+    sorted(
+        (
+            "as an outfielder in this draft",
+            "as an outfielder",
+            "in this draft",
+            "for this draft",
+            "with this pick",
+            "with my pick",
+            "despite the bust risk",
+            "despite bust risk",
+            "despite the risk",
+            "as a late round pick",
+            "as a late-round pick",
+            "in the late rounds",
+            "in late rounds",
+            "in round",
+            "at pick",
+            "for my roster",
+            "for my team",
+            "for me",
+            "right now",
+            "this season",
+            "next season",
+            "this year",
+            "next year",
+            "long-term",
+            "long term",
+            "as a keeper",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
+# Trailing number-suffix patterns (e.g. "in round 4", "at pick 12") handled by regex.
+_PLAYER_CAPTURE_TRAILING_NUMBERED = re.compile(
+    r"\s+(?:in round|at pick|at slot|in the \d+\w* round|with the \d+\w* pick)\s*\d*\s*$",
+    re.I,
+)
+
+
+def _clean_question_player_capture(name: str) -> str:
+    cleaned = str(name or "").strip().strip("?.,!").strip()
+    if len(cleaned) < 3:
+        return ""
+    low = cleaned.lower()
+    # Strip trailing numbered positional fragments first (e.g. "in round 4")
+    cleaned = _PLAYER_CAPTURE_TRAILING_NUMBERED.sub("", cleaned).strip()
+    low = cleaned.lower()
+    # Strip known trailing phrase fragments
+    for frag in _PLAYER_CAPTURE_TRAILING_FRAGMENTS:
+        if low.endswith(frag):
+            cleaned = cleaned[: len(cleaned) - len(frag)].strip().strip("?.,!").strip()
+            low = cleaned.lower()
+    if not cleaned or len(cleaned) < 3:
+        return ""
+    if low in _INVALID_PLAYER_CAPTURES:
+        return ""
+    return cleaned
+
+
 _QUESTION_PLAYER_PATTERNS: tuple[str, ...] = (
     r"why is (.+?) the best",
     r"why is (.+?) a good",
     r"why is (.+?) worth",
     r"why (.+?)(?:\?|\s*$)",
-    r"(?:do you think i should|should i|would you recommend i|would i) draft (.+?)(?: as an? | as a | for | in | at |\?|$)",
-    r"draft (.+?)(?: as an? | as a | for | in this |\?|$)",
-    r"is (.+?) (?:worth|available|the best|a good sleeper|a sleeper)",
+    r"would (.+?) make a good (?:pick|draft|choice|target|option)",
+    r"(?:do you think i should|should i|would you recommend i|would i) (?:draft|pick|target|select|take) (.+?)(?: as an? | as a | for | in | at | with | despite |\?|$)",
+    r"(?:draft|target|select) (.+?)(?: as an? | as a | for | in this | in | at |\?|$)",
+    r"is (.+?) (?:worth|available|the best|a good sleeper|a good pick|a safe pick|a risky pick|a bust risk|a sleeper|a keeper)",
     r"how risky is (.+?)(?:\?|\s|$)",
-    r"(?:take|target|pick) (.+?)(?: as | for | in |\?|$)",
+    r"(?:take|target|pick) (.+?)(?: as | for | in | with | despite |\?|$)",
 )
 
 
@@ -50,8 +120,8 @@ def extract_player_from_question(question: str) -> str:
         m = re.search(pat, low, flags=re.I)
         if not m:
             continue
-        name = q[m.start(1) : m.end(1)].strip().strip("?").strip()
-        if len(name) >= 3 and name.lower() not in ("this player", "this pick", "he", "him", "this sleeper"):
+        name = _clean_question_player_capture(q[m.start(1) : m.end(1)])
+        if name:
             return name
     return ""
 
@@ -73,20 +143,116 @@ def _find_player_row_in_pools(name: str, *pools: Any) -> dict[str, Any] | None:
     return None
 
 
+_COMPARISON_CAPTURE_PREFIXES = (
+    "is ",
+    "who is ",
+    "who's ",
+    "which is ",
+    "should i draft ",
+    "should i pick ",
+    "would you draft ",
+    "do you prefer ",
+    "i prefer ",
+    "between ",
+    "the better draft pick ",
+    "the better pick ",
+)
+
+# Trailing question fragments that follow the second player in comparison
+# questions ("... Aaron Judge the better draft pick?"). Longest first so the
+# most specific phrase is removed before shorter overlapping ones.
+_COMPARISON_CAPTURE_SUFFIXES = tuple(
+    sorted(
+        (
+            "the better long-term value",
+            "the better long term value",
+            "the better rest-of-season value",
+            "the better rest of season value",
+            "the better fantasy player",
+            "the better fantasy option",
+            "the better keeper value",
+            "the better draft pick",
+            "the better long-term option",
+            "the better long term option",
+            "the better rest-of-season",
+            "the better rest of season",
+            "for the rest of the season",
+            "for the rest of season",
+            "the better value",
+            "the better option",
+            "the better choice",
+            "the better player",
+            "the better keeper",
+            "the better pick",
+            "the safer pick",
+            "the higher upside",
+            "the better buy",
+            "the better sell",
+            "rest-of-season",
+            "rest of season",
+            "for my roster",
+            "for my team",
+            "this season",
+            "this year",
+            "next season",
+            "next year",
+            "right now",
+            "long-term",
+            "long term",
+            "to draft",
+            "to pick",
+            "to target",
+            "better",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
+_COMPARISON_TRAILING_CONNECTORS = (" the", " a", " an", " for", " in", " to", " and", " or", " as")
+
+
+def _clean_comparison_player_capture(name: str) -> str:
+    cleaned = str(name or "").strip().strip("?.,!").strip()
+    changed = True
+    while changed and cleaned:
+        changed = False
+        low = cleaned.lower()
+        for prefix in _COMPARISON_CAPTURE_PREFIXES:
+            if low.startswith(prefix):
+                cleaned = cleaned[len(prefix) :].strip()
+                changed = True
+                low = cleaned.lower()
+        for suffix in _COMPARISON_CAPTURE_SUFFIXES:
+            if low.endswith(suffix):
+                cleaned = cleaned[: len(cleaned) - len(suffix)].strip().strip("?.,!").strip()
+                changed = True
+                low = cleaned.lower()
+                break
+        for connector in _COMPARISON_TRAILING_CONNECTORS:
+            if low.endswith(connector):
+                cleaned = cleaned[: len(cleaned) - len(connector)].strip()
+                changed = True
+                low = cleaned.lower()
+    return cleaned.strip("?.,!").strip()
+
+
 def extract_comparison_players_from_question(question: str) -> tuple[str, str]:
     """Extract two players from X vs Y / X or Y draft compare questions."""
     try:
         from components.draft_market_question import extract_draft_compare_players
 
-        return extract_draft_compare_players(question)
+        a, b = extract_draft_compare_players(question)
+        if a and b:
+            return _clean_comparison_player_capture(a), _clean_comparison_player_capture(b)
     except ImportError:
         pass
     q = str(question or "").strip()
     m = re.search(r"(.+?)\s+(?:vs\.?|versus|or)\s+(.+?)(?:\?|\s*$)", q, flags=re.I)
     if not m:
         return "", ""
-    a = q[m.start(1) : m.end(1)].strip().strip("?,").strip()
-    b = q[m.start(2) : m.end(2)].strip().strip("?,").strip()
+    a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+    b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
     if len(a) >= 3 and len(b) >= 3:
         return a, b
     return "", ""

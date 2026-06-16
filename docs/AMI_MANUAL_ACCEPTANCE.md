@@ -1,197 +1,239 @@
-# AMI Manual Acceptance — Real Solver Path
+# AMI Manual Acceptance — Real User Validation
 
-**Date:** 2026-06-13  
-**Build:** `2026-06-13-ami-acceptance-harness-v18` · commit `0e1f8d3` · branch `dev`  
-**Automated stub harness:** 8/8 PASS (context send path only)  
-**Real solver run:** **7/7 PASS** (includes Jose Ramirez player-why question after send-path fix)  
-**Machine-readable:** `docs/ami_manual_acceptance_report.json`  
-**Runner:** `python ami_manual_acceptance.py`
+**Last updated:** 2026-06-13  
+**Build:** `2026-06-13-ami-hardening-pass` · commit `a2a0575` · branch `dev`  
+**Audit gate:** 26/26 trustworthy · 0 routing-only failures (`docs/AMI_ANSWER_QUALITY_BAR.md`)  
+**This doc:** deployed manual acceptance — audit is necessary, not sufficient
 
 ---
 
-## 1. Reboot Streamlit and confirm v18
+## North star
 
-Local repo is on v18 (`suite_deploy_marker.py`). Streamlit Cloud must be rebooted to pick it up.
+> **Would a knowledgeable fantasy baseball player trust this answer?**
+
+The question is no longer "Did the audit pass?" Harnesses and audits are the safety net. Deployed answers on real saved draft boards are the product.
+
+### Session 1 (Tier 1) — real deployed answers are the source of truth
+
+**Do not build new AMI features, audits, harnesses, or Draft Room functionality in this phase.**
+
+Session 1 success is **not**: audit passes · routing passes · context exists · template structure exists.
+
+Session 1 success **is**: a fantasy baseball player would actually use the answer to make a draft decision.
+
+For every Tier 1 answer, ask:
+
+1. Did it understand my draft?
+2. Did it understand my roster?
+3. Did it understand the actual players involved?
+4. Did it use the available player pool?
+5. Did it help me make a decision?
+
+**Yes to all → PASS.** Any no → **FAIL.**
+
+The ultimate test: Does Baseball Insight behave like a fantasy analyst looking at **my** draft board — not a generic fantasy baseball article?
+
+| Priority | Rule |
+|----------|------|
+| Draft awareness | > answer polish |
+| Actionable advice | > template structure |
+| Correct context | > fancy wording |
+
+Ugly but decision-helpful = **PASS**. Intelligent-sounding but board-agnostic = **FAIL**.
+
+### Long-term trust bar (Tier 2+)
+
+- answers the actual question
+- uses the correct page context
+- cites real players and data; explains why; compares alternatives when appropriate
+- avoids generic filler and invented facts
+- sounds like a fantasy analyst, not a template
+
+**Do not expand harness coverage in this phase.** Validate deployed behavior with real boards and real questions.
+
+---
+
+## 1. Deploy setup (once per session)
 
 | App | Dev URL | Confirm |
 |-----|---------|---------|
-| Baseball | https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app | Footer or Draft Room manual save panel: `deploy_build: 2026-06-13-ami-acceptance-harness-v18 · 0e1f8d3 · dev` |
+| Baseball | https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app | `deploy_build: 2026-06-13-ami-hardening-pass · a2a0575 · dev` |
 | Command Center | https://daniel-ai-command-center-ion4vh2cvo7bgdnkuktrb3.streamlit.app | Resume item appears after Send |
 | Applied Intelligence | https://applied-mathematical-intelligence-8l8bqrzpp6fghaj7xuig53.streamlit.app | Developer Mode → `hydrate_source: question_id_blob` |
 
 **Steps**
 
 1. Streamlit Cloud → `coakley11/baseball-stat-app` → branch `dev` → **Reboot app**.
-2. Hard refresh Baseball → open **Draft Assistant Simulator** or **Live Draft Room** → check `deploy_build` caption.
-3. Enable **Developer Mode** in Baseball sidebar (if available) and in Applied Intelligence sidebar.
-4. After Send → resume in Applied Intelligence → expand **Context received (Developer Mode)** and confirm `draft_snapshot`, `draft_queue`, `recommended_players`, `needed_positions`.
+2. Hard refresh Baseball → **Draft Room Simulator** → assign picks → **Save draft board** → confirm Supabase readback.
+3. Enable **Developer Mode** in Baseball and Applied Intelligence sidebars.
+4. Do **not** proceed to Tier 2 until all Tier 1 questions pass.
 
 ---
 
-## 2. Manual test procedure (deployed app)
+## 2. Test tiers
 
-Use your **saved draft board** (not the harness scenario). Assign picks → Save → confirm Supabase readback before AMI sends.
+Run one tier at a time. Do not test every family in a single session.
 
-For each question below:
+### Tier 1 — must pass before anything else
 
-1. Open the page listed.
-2. Sidebar → **Analyze with Applied Math** → enter question → **Send to Command Center**.
-3. Open Command Center → **Continue** on the resume card → Applied Intelligence opens.
-4. Run analysis (or wait for first-pass).
-5. Copy the full answer into `docs/ami_manual_responses_<date>.md` (user-maintained).
-6. In Applied Intelligence Developer Mode, screenshot or copy **Fields received** + **Hydrate source**.
+These four questions test draft board context, roster needs, player binding, and draft-market reasoning. **If Tier 1 fails, stop. Do not move to Historical, Trend, or other families.**
 
-### Six acceptance questions
+| # | Page | Question | What it tests |
+|---|------|----------|---------------|
+| 1 | Draft Assistant Simulator | Who should I draft next? | Board, queue, recs, pick slot |
+| 2 | Draft Assistant Simulator | What is my biggest roster weakness? | Position/category needs diagnosis |
+| 3 | Draft Assistant Simulator | Why Jose Ramirez? | Question-player binding, roster fit |
+| 4 | Draft Assistant Simulator | Who is likely to be the next catcher drafted? | Draft-market timing, position scarcity |
+
+### Tier 2 — after Tier 1 passes
 
 | # | Page | Question |
 |---|------|----------|
-| 1 | Draft Assistant Simulator | Who should I draft next? |
-| 2 | Draft Assistant Simulator | What does my roster need? |
-| 3 | Fantasy Sleepers & Busts | Should I take this sleeper? |
-| 4 | Draft Assistant Simulator | Who are the best values left? |
-| 5 | Draft Assistant Simulator | How risky is this pick? |
-| 6 | Draft Assistant Simulator | What changes if I prioritize power, speed, pitching, safety, or upside? |
+| 5 | Draft Assistant Simulator | Matt Olson vs Kyle Schwarber |
+| 6 | Draft Assistant Simulator | Who are the best values available? |
+| 7 | Draft Assistant Simulator | Should I prioritize steals right now? |
+| 8 | Fantasy Sleepers & Busts | Is this sleeper worth the risk? |
 
-### Pass criteria
+### Tier 3 — after Tier 2 passes
 
-Answer must cite **your** saved state:
-
-- Draft board / drafted exclusions (not generic top-100 lists)
-- Queue, watchlist, tracked players
-- Position/category needs and scarcity
-- Recommendations and available alternatives
-
-And follow the six-level analyst structure:
-
-1. Direct recommendation  
-2. Why (roster fit)  
-3. Scarcity  
-4. Risk / upside  
-5. Alternatives  
-6. What-if  
+| # | Page | Question |
+|---|------|----------|
+| 9 | Trend Value | Is this trend meaningful or noise? |
+| 10 | Valuation | Why is this player rated highly? |
+| 11 | Comparison Tool | Why is Player A ahead of Player B? |
+| 12 | Historical Explorer | Why does Barry Bonds keep appearing? |
 
 ---
 
-## 3. Real solver results (harness context → `solve_suite_question`)
+## 3. Procedure (each question)
 
-This uses the **same context builder** as Baseball send time (`build_baseball_applied_math_context` + harness scenario), then the **real** Applied Intelligence solver (`applied_math_solvers.solve_baseball_draft`). Not the rule-based stub.
-
-### Summary
-
-| # | Question | Result | Verdict |
-|---|----------|--------|---------|
-| 1 | Who should I draft next? | **PASS** | Cites Cal Raleigh vs Bobby Witt Jr., pick 6, 2-player roster, 6/6 analyst levels |
-| 2 | What does my roster need? | **FAIL** | Routed to draft solver but answered as ADP value-edge (“Wait for Cal Raleigh… ADP 2”) — does **not** diagnose C/SS + HR/SB needs |
-| 3 | Should I take this sleeper? | **FAIL** | Generic “this sleeper”; does not name Junior Caminero; sleepers page context lacks `draft_snapshot` at send |
-| 4 | Who are the best values left? | **FAIL** | ADP single-player “Wait” answer; does not rank available value pool |
-| 5 | How risky is this pick? | **PASS** | Risk framing + Cal Raleigh at pick 6 |
-| 6 | What-if priorities | **PASS** | Category-priority framing + what-if lines |
-
-**Overall: rich context is received by the solver, but question-mode routing and solver field usage are incomplete.**
-
-### Q1 — Who should I draft next? (PASS)
-
-```
-Given your 2-player roster at pick 6 (round 2), lean Cal Raleigh over Bobby Witt Jr. for the next selection.
-```
-
-- Context keys received: `draft_snapshot`, `draft_queue`, `watchlist`, `tracked_players`, `recommended_players`, `needed_positions`, `category_needs`, `ami_answer_template`, `ami_guidance`
-- `ami_answer_template` is in payload but **not read** by solver
-- Missing from answer: explicit scarcity index (2.4), queue order, tracked names (Vlad/Yordan), drafted-board citations (Aaron Judge, etc.)
-
-### Q2 — What does my roster need? (FAIL)
-
-```
-Wait for Cal Raleigh at pick 6 (round 2) (ADP 2).
-```
-
-- `_draft_question_mode()` has no `roster_needs` branch → falls through to `value_edge`
-- ADP parsed incorrectly from projection text (shows ADP 2)
-- Payload **has** `needed_positions: [C, SS]` and `category_needs: [HR, SB]` but solver does not surface them
-
-### Q3 — Should I take this sleeper? (FAIL)
-
-```
-Treat this sleeper as a probability-weighted upside pick…
-```
-
-- Sleepers context has `sleeper_candidates` but no `draft_snapshot` / `sleepers` list in solver bundle
-- `_draft_context_bundle()` reads `ctx.sleepers` or `snap.sleepers` — not populated from `sleeper_candidates`
-- Player name not resolved → generic answer
-
-### Q4–Q6
-
-- **Best values:** structurally passes keyword check but substantively wrong (same ADP edge as Q2)
-- **Risk:** uses `risk` mode — acceptable
-- **What-if:** uses `category` mode — acceptable
+1. Open the page listed (with your **saved draft board**, not the harness scenario).
+2. Sidebar → **Analyze with Applied Math** → enter question → **Send to Command Center**.
+3. Command Center → **Continue** → Applied Intelligence runs analysis.
+4. Read the answer as a fantasy player would — trust, not checklist keywords.
+5. Record in `docs/ami_manual_responses_<date>.md` (see §6 template).
+6. In Applied Intelligence Developer Mode, copy **Hydrate source** + key fields.
 
 ---
 
-## 4. Deployed failure: “Why is Jose Ramirez the best…?” (2026-06-13)
+## 4. Failure diagnosis — diagnose before fixing
 
-**Symptom:** Local 6/6 passed, but deployed answer was generic / irrelevant to saved draft.
+**If a question fails draft awareness, do not immediately change code.**
 
-**Root causes (send + solver):**
+Walk through stages A–F in order. Identify the **first broken stage**, then assign **exactly one bucket**. Only then implement a fix.
 
-| # | Issue | Effect |
-|---|--------|--------|
-| 1 | `ctx["player"]` set from **draft queue[0]**, not question text | AMI solved for wrong player |
-| 2 | No `player_why` solver mode | Question fell through to ADP/value-edge or generic draft copy |
-| 3 | Question-named player not in top-12 `available_players` cache | Solver had board but not Jose row/metrics unless in question binding |
+| Stage | Question | Where to look |
+|-------|----------|---------------|
+| **A** | Context sent? | Baseball send payload: `draft_snapshot`, `draft_queue`, `needed_positions`, `question_player` |
+| **B** | Classification correct? | Applied Intelligence: `problem_type_id` |
+| **C** | Route/mode correct? | Applied Intelligence: `draft_mode` or solver branch |
+| **D** | Enough data available? | Developer Mode fields present but unused in answer |
+| **E** | Reasoning correct? | Context and mode correct, but conclusion contradicts board/roster |
+| **F** | Explanation useful? | Reasoning OK, but answer generic or not decision-helpful |
 
-**Fixes applied:**
+### Failure classification — exactly one bucket
 
-- **Baseball send:** `attach_question_player_to_context()` at submit → sets `question_player`, `player`, `draft_status`, `question_player_row`
-- **AMI solver:** `player_why` mode evaluates named player vs board, availability, alternatives
-- **Harness:** 7th manual test — “Why is Jose Ramirez the best player to draft for me right now?”
+| Bucket | When to use | Fix locus |
+|--------|-------------|-----------|
+| **Send/Hydration** | Stage A — missing/wrong board, queue, player binding | `applied_math_context.py`, `suite_analytical_question.py`, page caches |
+| **Classification/Routing** | Stage B or C — wrong `problem_type_id` or `draft_mode` | `applied_math_problem_router.py`, `_draft_question_mode()` |
+| **Solver/Reasoning** | Stage D or E — context present, wrong conclusion or ignored fields | `applied_math_solvers.py` |
+| **Explanation/Quality** | Stage F — reasoning OK, answer untrustworthy or generic | Solver output formatting, coach sections, evidence citation |
 
-**Expected deployed answer pattern:**
-
-> **Jose Ramirez** is a good player, but **Cal Raleigh** is the better fit on your current board because C/SS + HR/SB needs…
-
-(or “strong pick” if Jose is top recommendation; or “not available — already drafted” if on board)
-
----
-
-## 5. Root cause history (prior solver gaps — fixed in 56da4b0)
-
-**Do not add Baseball AMI send features until deploy manual passes.**
-
-| Issue | Where | Fix direction |
-|-------|-------|---------------|
-| `ami_answer_template` ignored | `applied_math_solvers.py` | Map template levels → `coach_sections` |
-| No `roster_needs` / `best_values` modes | `_draft_question_mode()` | Added |
-| Sleeper name not hydrated | `_draft_context_bundle()` | `sleeper_candidates` mapping |
-| ADP parse bug | `_parse_draft_projection()` | Dict-aware parsing |
-
-**Diagnostics:** Applied Intelligence Developer Mode → `hydrate_source=question_id_blob`, confirm `question_player`, `draft_snapshot`, `draft_status`.
+Do not patch symptoms. Fix the bucket that owns the first broken stage.
 
 ---
 
-## 6. Re-run commands
+## 5. Session 1 — Tier 1 bar (actionable draft decisions)
+
+**Ultimate test:** Can AMI act like a fantasy analyst looking at **my** draft instead of a generic article?
+
+**PASS if:** Would help me make a draft decision right now — understands my draft, uses roster/board, uses actual players, actionable reasoning.
+
+**FAIL if:** Generic advice, any-team answer, unrelated players, ignores roster/pool, doesn't help me decide.
+
+Do not require perfect analyst prose. Ugly but decision-helpful = PASS. Polished but board-agnostic = FAIL.
+
+### Per-question judgment
+
+| # | Question | Pass if it helps me decide by showing… | Fail if… |
+|---|----------|---------------------------------------|----------|
+| 1 | Who should I draft next? | Who I drafted; who's available; queue/recs; a recommendation that fits my roster | Generic rankings, wrong pool, no decision I can act on |
+| 2 | What is my biggest roster weakness? | A real weakness on *my* roster with explanation I can draft around | ADP wait copy, no roster mention, advice I'd ignore |
+| 3 | Why Jose Ramirez? | Jose named; fit for *my* team; alternatives I could take instead | Wrong player, generic star copy, no decision framing |
+| 4 | Who is likely to be the next catcher drafted? | Real catchers; timing/scarcity on *my* board I can use | Wrong position, unrelated names, no draft-market insight |
+
+**Session 1 result:** PASS = all four help me decide from my board · FAIL = any do not · PARTIAL = note which helped vs which did not
+
+### When an answer fails (no draft awareness)
+
+Capture before any code change:
+
+- Exact question
+- Full answer
+- Developer Mode fields: `hydrate_source`, `problem_type_id`, `draft_mode`, `question_player`, `draft_snapshot` present/missing
+- First broken stage (A–F)
+- Failure bucket: Send/Hydration · Classification/Routing · Solver/Reasoning · Explanation/Quality
+
+Then diagnose root cause. Do not patch symptoms.
+
+---
+
+## 6. Response log template
+
+Create `docs/ami_manual_responses_<date>.md` and append one block per question:
+
+```markdown
+## Tier 1 · Q1 — Who should I draft next?
+
+**Result:** PASS | FAIL  
+**Trust verdict:** Would a knowledgeable drafter believe this? YES | NO
+
+**Full answer:**
+(paste)
+
+**Developer Mode:**
+- hydrate_source:
+- problem_type_id:
+- draft_mode:
+- draft_snapshot present: Y/N
+- draft_queue present: Y/N
+- needed_positions:
+- question_player: (if applicable)
+
+**Diagnosis (if FAIL):**
+- First broken stage (A–F):
+- Classification bucket:
+- What a good answer should have said:
+```
+
+---
+
+## 7. Regression gate (local, not acceptance)
+
+Run before/after fixes — not as substitute for deployed manual validation:
 
 ```bash
-# Context + stub harness (Baseball repo)
-python ami_acceptance_harness.py
-python -m pytest tests/test_ami_acceptance.py -v
-
-# Real solver manual acceptance (Baseball repo, needs sibling AMI repo)
+python ami_answer_quality_audit.py
 python ami_manual_acceptance.py
+python -m pytest tests/test_ami_answer_quality.py -v
 ```
 
 ---
 
-## 6. Deployed manual checklist (user)
+## 8. Historical notes (harness-era failures)
 
-After reboot, run the six questions from **your** saved board and compare to this report.
+These informed fixes; deployed Tier 1 re-validates them on real boards:
 
-- [ ] `deploy_build` shows v18  
-- [ ] Developer Mode shows `question_id_blob` hydration  
-- [ ] Q1 cites your queue/recs, not generic rankings  
-- [ ] Q2 states your position/category gaps  
-- [ ] Q3 names the selected sleeper + drafted exclusions  
-- [ ] Q4 ranks multiple available values  
-- [ ] Q5 discusses risk for your target pick  
-- [ ] Q6 gives distinct what-if branches for power/speed/pitching/safety/upside  
+| Issue | Symptom | Fix direction |
+|-------|---------|---------------|
+| Roster needs → value_edge | "Wait for Cal Raleigh… ADP 2" instead of C/SS + HR/SB gaps | `roster_weakness` mode |
+| Sleeper generic | "This sleeper" with no name | `sleeper_candidates` + player binding |
+| Jose Ramirez generic | Wrong `player` from queue[0] | `attach_question_player_to_context()` |
+| Best values single-player | ADP wait, no pool ranking | `best_values` mode |
 
-**If deploy answers match the failures above → tune AMI solver (not Baseball send path).**
+Expected Jose Ramirez pattern on deployed board:
+
+> **Jose Ramirez** is a good player, but **[your top rec]** is the better fit because [your needs]…
+
+(or "strong pick" if Jose is top recommendation; or "already drafted" if on board)

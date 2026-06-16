@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-13T23:10:49.707400+00:00",
+  "generated_at": "2026-06-14T01:05:07.576996+00:00",
   "build_label": "2026-06-13-ami-hardening-pass",
   "commit": "a2a0575",
   "method": "question_family_hardening_pass",
@@ -36,7 +36,7 @@
       "draft_mode": "next_pick",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz) at pick **6** (round **1**), lean **Cal Raleigh** over **Bobby Witt Jr.** for the next selection.\n\nThis fits **C/SS · HR + SB** in **5x5 Rot",
+      "short_answer": "Given your **2**-player roster (**Juan Soto** (already on your roster), **Elly De La Cruz** (already on your roster)) at pick **6** (round **1**), lean **Cal Raleigh** over **Bobby Witt Jr.** for the ",
       "notes": [
         "analyst_levels=6"
       ]
@@ -58,7 +58,7 @@
       "draft_mode": "roster_needs",
       "missing_context": [],
       "failures": [],
-      "short_answer": "**Roster diagnosis:** your **2**-player roster (Juan Soto, Elly De La Cruz) needs **C, SS** and category help in **HR, SB**.\n\nYour saved board shows gaps at **C, SS** with category pressure on **HR, S",
+      "short_answer": "**Roster diagnosis:** your **2**-player roster (**Juan Soto** (already on your roster), **Elly De La Cruz** (already on your roster)) needs **C, SS** and category help in **HR, SB**.\n\nYour saved board",
       "notes": [
         "analyst_levels=6"
       ]
@@ -80,7 +80,7 @@
       "draft_mode": "category",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz), prioritize the player who closes your weakest category in **5x5 Roto** — often **Cal Raleigh** over raw rank.\n\nCategory-balance optimizatio",
+      "short_answer": "Given your **2**-player roster (**Juan Soto** (already on your roster), **Elly De La Cruz** (already on your roster)), prioritize the player who closes your weakest category in **5x5 Roto** — often **",
       "notes": [
         "analyst_levels=6"
       ]
@@ -234,7 +234,7 @@
       "draft_mode": "next_pick",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Given your **2**-player roster (Juan Soto, Elly De La Cruz) at pick **5** (round **2**), lean **Cal Raleigh** for the next selection.\n\nThis fits **C · HR + SB** in **5x5 Roto** — not just raw rank. Qu",
+      "short_answer": "Given your **2**-player roster (**Juan Soto** (already on your roster), **Elly De La Cruz** (already on your roster)) at pick **5** (round **2**), lean **Cal Raleigh** for the next selection (off the ",
       "notes": [
         "analyst_levels=6"
       ]
@@ -300,9 +300,9 @@
       "draft_mode": "",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Yes — the Up 2B trend looks meaningful at your thresholds.",
+      "short_answer": "**Junior Caminero** is likely to **improve next season** — 2B trend is **Up** (slope **2.1**/year, R² **0.55**) above your thresholds.",
       "notes": [
-        "analyst_levels=3"
+        "analyst_levels=2"
       ]
     },
     {
@@ -388,7 +388,7 @@
       "draft_mode": "",
       "missing_context": [],
       "failures": [],
-      "short_answer": "Snapshot on **HR**",
+      "short_answer": "**Barry Bonds** keeps appearing because your **filters** (**Years 2000–2007; sort HR**) and **HR** sort favor his peak seasons (**Barry Bonds** (HR=73)).",
       "notes": [
         "analyst_levels=1"
       ]

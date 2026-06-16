@@ -192,6 +192,65 @@ def build_sleepers_send_diagnostics(ctx: dict[str, Any], *, question: str = "") 
     }
 
 
+def _promote_sleepers_snapshot_fields(ctx: dict[str, Any], snap: dict[str, Any]) -> None:
+    if not snap:
+        return
+    ctx["sleepers_snapshot"] = snap
+    if snap.get("sleeper_candidates"):
+        ctx["sleeper_candidates"] = copy.deepcopy(snap["sleeper_candidates"])
+    if snap.get("bust_risks"):
+        bust_rows = copy.deepcopy(snap["bust_risks"])
+        ctx["bust_risks"] = bust_rows
+        ctx["bust_risk_candidates"] = bust_rows
+    if snap.get("roster_needs"):
+        ctx.setdefault("needed_positions", snap["roster_needs"])
+
+
+def apply_market_bust_context_at_send(
+    ctx: dict[str, Any],
+    session_state: dict[str, Any],
+    *,
+    question: str = "",
+    intent: str = "",
+) -> None:
+    """Promote bust-risk context and routing for any page (prevents draft-value fallback)."""
+    try:
+        from applied_math_context import extract_player_from_question, gather_sleepers_ami_snapshot
+    except ImportError:
+        return
+
+    q = str(question or ctx.get("question") or "").strip()
+    bust_intent = intent or detect_sleepers_send_intent(q)
+    if bust_intent not in ("bust_risk_review", "bust_take"):
+        return
+
+    snap = gather_sleepers_ami_snapshot(session_state)
+    cached = session_state.get("_ami_sleepers_snapshot")
+    if isinstance(cached, dict) and (cached.get("sleeper_candidates") or cached.get("bust_risks")):
+        snap = {**snap, **copy.deepcopy(cached)}
+    _promote_sleepers_snapshot_fields(ctx, snap)
+
+    for key in _STALE_SLEEPER_PLAYER_KEYS:
+        ctx.pop(key, None)
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
+    ctx["routing_hint"] = "bust_risk_review" if bust_intent == "bust_risk_review" else "bust_take"
+    ctx["problem_type_hint"] = "bust_risk_take" if bust_intent == "bust_take" else "bust_risk_scan"
+    ctx["intent"] = "bust_risk_analysis"
+    ctx["market_section"] = "Market Bust Risks"
+    ctx["source_mode"] = "market_bust_review"
+    if bust_intent == "bust_take":
+        target = extract_player_from_question(q)
+        if target:
+            ctx["question_player"] = target
+            ctx["player"] = target
+            ctx["players"] = [target]
+            row = _find_market_row_for_name(ctx.get("bust_risk_candidates"), target)
+            if row:
+                ctx["question_player_row"] = row
+                ctx["bust_focus"] = row
+
+
 def finalize_sleepers_context_for_send(
     ctx: dict[str, Any],
     session_state: dict[str, Any],
@@ -213,36 +272,13 @@ def finalize_sleepers_context_for_send(
     if isinstance(cached, dict) and (cached.get("sleeper_candidates") or cached.get("bust_risks")):
         snap = {**snap, **copy.deepcopy(cached)}
     if snap:
-        ctx["sleepers_snapshot"] = snap
-        if snap.get("sleeper_candidates"):
-            ctx["sleeper_candidates"] = copy.deepcopy(snap["sleeper_candidates"])
-        if snap.get("bust_risks"):
-            bust_rows = copy.deepcopy(snap["bust_risks"])
-            ctx["bust_risks"] = bust_rows
-            ctx["bust_risk_candidates"] = bust_rows
-        if snap.get("roster_needs"):
-            ctx.setdefault("needed_positions", snap["roster_needs"])
+        _promote_sleepers_snapshot_fields(ctx, snap)
 
     ctx.pop("player_a", None)
     ctx.pop("player_b", None)
 
     if intent in ("bust_risk_review", "bust_take"):
-        for key in _STALE_SLEEPER_PLAYER_KEYS:
-            ctx.pop(key, None)
-        ctx["routing_hint"] = "bust_risk_review" if intent == "bust_risk_review" else "bust_take"
-        ctx["problem_type_hint"] = "bust_risk_take" if intent == "bust_take" else "bust_risk_scan"
-        ctx["intent"] = "bust_risk_analysis"
-        ctx["market_section"] = "Market Bust Risks"
-        if intent == "bust_take":
-            target = extract_player_from_question(q)
-            if target:
-                ctx["question_player"] = target
-                ctx["player"] = target
-                ctx["players"] = [target]
-                row = _find_market_row_for_name(ctx.get("bust_risk_candidates"), target)
-                if row:
-                    ctx["question_player_row"] = row
-                    ctx["bust_focus"] = row
+        apply_market_bust_context_at_send(ctx, session_state, question=q, intent=intent)
         return
 
     target = extract_player_from_question(q) or str(ctx.get("question_player") or "").strip()
@@ -274,6 +310,46 @@ def _find_sleeper_row_for_name(candidates: Any, name: str) -> dict[str, Any] | N
         if row_name.lower() == target:
             return item
     return None
+
+
+def detect_comparison_send_intent(question: str) -> str:
+    """Classify Comparison Tool AMI send intent from question text."""
+    q = str(question or "").strip().lower()
+    if not q:
+        return "comparison_general"
+    try:
+        from applied_math_context import extract_comparison_players_from_question
+
+        comp_a, comp_b = extract_comparison_players_from_question(question)
+    except ImportError:
+        comp_a, comp_b = "", ""
+    if comp_a and comp_b:
+        if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["draft_pick"]):
+            return "comparison_draft_pick"
+        if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["long_term_value"]):
+            return "comparison_long_term"
+        if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["rest_of_season"]):
+            return "comparison_ros"
+        return "comparison_head_to_head"
+    if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["draft_pick"]):
+        return "comparison_draft_pick"
+    if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["long_term_value"]):
+        return "comparison_long_term"
+    if any(p in q for p in ("better", "who should i", "which player")):
+        return "comparison_head_to_head"
+    return "comparison_general"
+
+
+def build_comparison_send_diagnostics(ctx: dict[str, Any], *, question: str = "") -> dict[str, Any]:
+    intent = detect_comparison_send_intent(question)
+    return {
+        "comparison_send_intent": intent,
+        "routing_hint": str(ctx.get("routing_hint") or ""),
+        "player_a_present": bool(str(ctx.get("player_a") or "").strip()),
+        "player_b_present": bool(str(ctx.get("player_b") or "").strip()),
+        "comparison_stat": str((ctx.get("metrics") or [""])[0] if ctx.get("metrics") else ""),
+        "comparison_differences_count": len(ctx.get("comparison_differences") or []),
+    }
 
 
 def finalize_comparison_context_for_send(
@@ -314,6 +390,164 @@ def finalize_comparison_context_for_send(
     if stat:
         ctx.setdefault("metrics", [str(stat)])
 
+    cmp_meta = session_state.get("comparison_state")
+    if isinstance(cmp_meta, dict):
+        if cmp_meta.get("player_a") and not ctx.get("player_a"):
+            ctx["player_a"] = str(cmp_meta["player_a"]).strip()
+        if cmp_meta.get("player_b") and not ctx.get("player_b"):
+            ctx["player_b"] = str(cmp_meta["player_b"]).strip()
+        chart = cmp_meta.get("chart")
+        if isinstance(chart, dict) and chart:
+            ctx["comparison_chart"] = copy.deepcopy(chart)
+        if cmp_meta.get("players") and not ctx.get("players"):
+            ctx["players"] = [str(p).strip() for p in cmp_meta["players"][:3] if p]
+
+    extra = ctx.get("_ami_comparison_context") if isinstance(ctx.get("_ami_comparison_context"), dict) else {}
+    if not extra:
+        extra = session_state.get("_ami_comparison_context")
+    if isinstance(extra, dict):
+        if extra.get("comparison_differences"):
+            ctx["comparison_differences"] = copy.deepcopy(extra["comparison_differences"])
+        if extra.get("comparison_stats") and not ctx.get("metrics"):
+            ctx["metrics"] = [str(s) for s in extra["comparison_stats"][:4]]
+
+    q = str(question or ctx.get("question") or "").strip()
+    intent = detect_comparison_send_intent(q)
+    if ctx.get("player_a") and ctx.get("player_b"):
+        ctx["players"] = [ctx["player_a"], ctx["player_b"]]
+    ctx["routing_hint"] = intent
+    ctx["problem_type_hint"] = intent
+    ctx["intent"] = "comparison_analysis"
+    ctx["comparison_mode"] = intent
+    try:
+        from draft_ami_helpers import draft_ami_guidance
+
+        ctx["ami_guidance"] = draft_ami_guidance("Comparison Tool")
+    except ImportError:
+        pass
+
+
+def finalize_valuation_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+    """Promote Valuation page snapshot into send payload."""
+    snap = session_state.get("_ami_valuation_snapshot")
+    if isinstance(snap, dict) and snap:
+        ctx.setdefault("valuation_snapshot", copy.deepcopy(snap))
+        if snap.get("selected_player"):
+            ctx.setdefault("player", _player_name(snap["selected_player"]))
+        if snap.get("top_valuation_players") and not ctx.get("players"):
+            ctx["players"] = [
+                r.get("player") for r in snap["top_valuation_players"][:6] if isinstance(r, dict)
+            ]
+        if snap.get("draft_status"):
+            ctx.setdefault("draft_status", snap["draft_status"])
+
+    sel = session_state.get("valuation_selected_player")
+    if sel:
+        ctx.setdefault("player", _player_name(sel))
+
+    ctx["routing_hint"] = "valuation_analysis"
+    ctx["intent"] = "valuation_analysis"
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
+    try:
+        from draft_ami_helpers import draft_ami_guidance
+
+        ctx["ami_guidance"] = draft_ami_guidance("Valuation")
+    except ImportError:
+        pass
+
+
+def build_valuation_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
+    snap = ctx.get("valuation_snapshot") if isinstance(ctx.get("valuation_snapshot"), dict) else {}
+    return {
+        "valuation_snapshot_present": bool(snap),
+        "player": str(ctx.get("player") or ""),
+        "top_players_count": len(snap.get("top_valuation_players") or []),
+        "routing_hint": str(ctx.get("routing_hint") or ""),
+        "draft_status_present": bool(ctx.get("draft_status")),
+    }
+
+
+def finalize_historical_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+    """Promote Historical Explorer snapshot + active filters into send payload."""
+    snap = session_state.get("_ami_historical_snapshot")
+    if isinstance(snap, dict) and snap:
+        ctx.setdefault("historical_snapshot", copy.deepcopy(snap))
+        if snap.get("top_players") and not ctx.get("players"):
+            ctx["players"] = snap["top_players"][:5]
+        if snap.get("sort_stat") and not ctx.get("metrics"):
+            ctx["metrics"] = [str(snap["sort_stat"])]
+        if snap.get("year_range"):
+            ctx.setdefault("filters_applied", f"Years {snap['year_range']}")
+            ctx.setdefault("year_range", snap["year_range"])
+
+    sel = session_state.get("historical_selected_player") or session_state.get("hist_selected_player")
+    if sel:
+        ctx.setdefault("player", _player_name(sel))
+
+    yr = session_state.get("historical_year_range_filter")
+    if isinstance(yr, (list, tuple)) and len(yr) >= 2:
+        ctx.setdefault("year_range", f"{yr[0]}-{yr[1]}")
+        ctx.setdefault("filters_applied", f"Years {yr[0]}–{yr[1]}")
+    sort_stat = session_state.get("historical_sort_stat_filter")
+    if sort_stat:
+        ctx.setdefault("metrics", [str(sort_stat)])
+
+    ctx["routing_hint"] = "historical_analysis"
+    ctx["intent"] = "historical_analysis"
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
+
+
+def build_historical_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
+    snap = ctx.get("historical_snapshot") if isinstance(ctx.get("historical_snapshot"), dict) else {}
+    return {
+        "historical_snapshot_present": bool(snap),
+        "top_rows_count": len(snap.get("top_rows") or []),
+        "year_range": str(ctx.get("year_range") or ""),
+        "player": str(ctx.get("player") or ""),
+        "metrics": ctx.get("metrics") or [],
+        "routing_hint": str(ctx.get("routing_hint") or ""),
+    }
+
+
+def finalize_career_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+    """Promote Career Explorer filters and top rows into send payload."""
+    snap = session_state.get("_ami_career_snapshot") or session_state.get("_ami_career_totals_snapshot")
+    if isinstance(snap, dict) and snap:
+        ctx.setdefault("career_snapshot", copy.deepcopy(snap))
+        if snap.get("top_players") and not ctx.get("players"):
+            ctx["players"] = snap["top_players"][:5]
+        if snap.get("sort_stat") and not ctx.get("metrics"):
+            ctx["metrics"] = [str(snap["sort_stat"])]
+
+    yr = session_state.get("career_year_range_filter")
+    if isinstance(yr, (list, tuple)) and len(yr) >= 2:
+        ctx.setdefault("year_range", f"{yr[0]}-{yr[1]}")
+        ctx.setdefault("filters_applied", f"Years {yr[0]}–{yr[1]}")
+    sort_stat = session_state.get("career_sort_stat_filter")
+    if sort_stat:
+        ctx.setdefault("metrics", [str(sort_stat)])
+    team = session_state.get("career_team_filter")
+    if team:
+        ctx.setdefault("team_filter", str(team))
+
+    ctx["routing_hint"] = "career_analysis"
+    ctx["intent"] = "career_analysis"
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
+
+
+def build_career_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
+    snap = ctx.get("career_snapshot") if isinstance(ctx.get("career_snapshot"), dict) else {}
+    return {
+        "career_snapshot_present": bool(snap),
+        "year_range": str(ctx.get("year_range") or ""),
+        "metrics": ctx.get("metrics") or [],
+        "routing_hint": str(ctx.get("routing_hint") or ""),
+        "team_filter": str(ctx.get("team_filter") or ""),
+    }
+
 
 def promote_page_ami_context_at_send(
     ctx: dict[str, Any],
@@ -329,10 +563,24 @@ def promote_page_ami_context_at_send(
         finalize_trend_context_for_send(ctx, session_state)
         diag = build_trend_send_diagnostics(ctx, source_page=source_page)
         ctx["trend_send_diagnostics"] = diag
-    elif "sleeper" in low:
+    elif "sleeper" in low or "bust" in low:
         finalize_sleepers_context_for_send(ctx, session_state, question=question)
         diag = build_sleepers_send_diagnostics(ctx, question=question)
         ctx["sleepers_send_diagnostics"] = diag
     elif "comparison" in low:
         finalize_comparison_context_for_send(ctx, session_state, question=question)
+        diag = build_comparison_send_diagnostics(ctx, question=question)
+        ctx["comparison_send_diagnostics"] = diag
+    elif "valuation" in low:
+        finalize_valuation_context_for_send(ctx, session_state)
+        diag = build_valuation_send_diagnostics(ctx)
+        ctx["valuation_send_diagnostics"] = diag
+    elif "historical" in low:
+        finalize_historical_context_for_send(ctx, session_state)
+        diag = build_historical_send_diagnostics(ctx)
+        ctx["historical_send_diagnostics"] = diag
+    elif "career" in low:
+        finalize_career_context_for_send(ctx, session_state)
+        diag = build_career_send_diagnostics(ctx)
+        ctx["career_send_diagnostics"] = diag
     return diag

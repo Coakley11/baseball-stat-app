@@ -1309,8 +1309,26 @@ def build_submit_context(
                         ctx.setdefault("send_pipeline_diagnostics", {})
                         if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
                             ctx["send_pipeline_diagnostics"].update(sleepers_diag)
+                    comparison_diag = ctx.get("comparison_send_diagnostics")
+                    if isinstance(comparison_diag, dict):
+                        ctx.setdefault("send_pipeline_diagnostics", {})
+                        if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
+                            ctx["send_pipeline_diagnostics"].update(comparison_diag)
                 except ImportError:
                     pass
+            try:
+                from baseball_ami_pages import apply_market_bust_context_at_send, detect_sleepers_send_intent
+
+                bust_intent = detect_sleepers_send_intent(str(question).strip())
+                if bust_intent in ("bust_risk_review", "bust_take"):
+                    apply_market_bust_context_at_send(
+                        ctx,
+                        session_state,
+                        question=str(question).strip(),
+                        intent=bust_intent,
+                    )
+            except ImportError:
+                pass
         except Exception:
             log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
     session_state["_ami_last_send_build_timing"] = timing
