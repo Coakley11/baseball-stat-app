@@ -1331,6 +1331,52 @@ def build_submit_context(
                 pass
         except Exception:
             log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
+
+    # Build dev trace — stored in session_state for display in developer mode and audit tooling.
+    # This records the full routing decision pipeline so intent/entity/workflow issues are visible.
+    if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
+        try:
+            _trace: dict[str, Any] = {
+                "raw_question": str(question or "").strip(),
+                "source_page": str(source_page or "").strip(),
+                "extracted_player_a": str(ctx.get("player_a") or ""),
+                "extracted_player_b": str(ctx.get("player_b") or ""),
+                "extracted_single_player": str(ctx.get("question_player") or ctx.get("player") or ""),
+                "detected_intent": str(ctx.get("intent") or ""),
+                "routing_hint": str(ctx.get("routing_hint") or ""),
+                "problem_type_hint": str(ctx.get("problem_type_hint") or ""),
+                "comparison_mode": str(ctx.get("comparison_mode") or ""),
+                "draft_mode_hint": str(ctx.get("draft_mode_hint") or ""),
+                "comparison_age_range": str(ctx.get("comparison_age_range") or ""),
+                "comparison_season_range": str(ctx.get("comparison_season_range") or ""),
+                "comparison_constraint_note": str(ctx.get("comparison_constraint_note") or ""),
+                "trend_comparison_mode": bool(ctx.get("trend_comparison_mode")),
+                "category_diagnostics_present": bool(ctx.get("category_diagnostics")),
+                "position_scarcity_table_present": bool(ctx.get("position_scarcity_table")),
+                "sleeper_focus_present": bool(ctx.get("sleeper_focus")),
+                "sleeper_focus_a_present": bool(ctx.get("sleeper_focus_a")),
+                "sleeper_focus_b_present": bool(ctx.get("sleeper_focus_b")),
+                "roster_present": bool(ctx.get("roster") or ctx.get("user_roster")),
+                "draft_review_team": str(ctx.get("draft_review_team") or ""),
+                "attached_context_keys": sorted(
+                    k for k, v in ctx.items()
+                    if v and k not in ("ami_question", "question") and not k.startswith("_")
+                ),
+                "send_pipeline_diagnostics": ctx.get("send_pipeline_diagnostics"),
+                "timing_ms": timing,
+            }
+            session_state["_ami_last_request_trace"] = _trace
+            log.debug(
+                "AMI request trace — page=%s intent=%s routing=%s player_a=%r player_b=%r",
+                _trace["source_page"],
+                _trace["detected_intent"],
+                _trace["routing_hint"],
+                _trace["extracted_player_a"],
+                _trace["extracted_player_b"],
+            )
+        except Exception:
+            log.debug("AMI trace build failed", exc_info=True)
+
     session_state["_ami_last_send_build_timing"] = timing
     return ctx
 

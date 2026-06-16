@@ -145,7 +145,10 @@ def _find_player_row_in_pools(name: str, *pools: Any) -> dict[str, Any] | None:
 
 _COMPARISON_CAPTURE_PREFIXES = (
     "is ",
+    "was ",
+    "were ",
     "who is ",
+    "who was ",
     "who's ",
     "which is ",
     "should i draft ",
@@ -238,7 +241,7 @@ def _clean_comparison_player_capture(name: str) -> str:
 
 
 def extract_comparison_players_from_question(question: str) -> tuple[str, str]:
-    """Extract two players from X vs Y / X or Y draft compare questions."""
+    """Extract two players from X vs Y / X better than Y / X or Y draft compare questions."""
     try:
         from components.draft_market_question import extract_draft_compare_players
 
@@ -248,14 +251,84 @@ def extract_comparison_players_from_question(question: str) -> tuple[str, str]:
     except ImportError:
         pass
     q = str(question or "").strip()
-    m = re.search(r"(.+?)\s+(?:vs\.?|versus|or)\s+(.+?)(?:\?|\s*$)", q, flags=re.I)
-    if not m:
-        return "", ""
-    a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
-    b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
-    if len(a) >= 3 and len(b) >= 3:
-        return a, b
+    # Standard "vs / versus / or" connector
+    m = re.search(r"(.+?)\s+(?:vs\.?|versus)\s+(.+?)(?:\?|\s*$)", q, flags=re.I)
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3:
+            return a, b
+    # "X a better <thing> than Y [modifier]" — e.g. "Is Misner a better pick than Stone Garrett"
+    m = re.search(
+        r"(.+?)\s+(?:a\s+)?better\s+\w+\s+than\s+(.+?)"
+        r"(?:\s+even\b|\s+despite\b|\s+although\b|\s+since\b|\s+between\b|\s+from\b|\?|$)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3:
+            return a, b
+    # "Was X a better player than Y" — historical comparison form
+    m = re.search(
+        r"(?:was|is|were)\s+(.+?)\s+(?:a\s+)?better\s+(?:player|hitter|pitcher|option|pick|choice)?\s*than\s+(.+?)"
+        r"(?:\s+between\b|\s+from\b|\s+at\s+age|\?|$)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3:
+            return a, b
+    # "X or Y" (only when both look like player names — min 3 chars, no generic words)
+    _GENERIC_TOKENS = {"he", "she", "it", "they", "this", "that", "the", "a", "an"}
+    m = re.search(r"(.+?)\s+or\s+(.+?)(?:\?|\s*$)", q, flags=re.I)
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3 and a.lower() not in _GENERIC_TOKENS and b.lower() not in _GENERIC_TOKENS:
+            return a, b
     return "", ""
+
+
+_AGE_RANGE_PATTERNS = (
+    re.compile(r"\bages?\s+(\d+)\s*(?:to|-|–|through|and)\s*(\d+)\b", re.I),
+    re.compile(r"\bbetween\s+(?:the\s+)?ages?\s+of\s+(\d+)\s*(?:to|-|–|through|and)\s*(\d+)\b", re.I),
+    re.compile(r"\bfrom\s+age\s+(\d+)\s+(?:to|-|–|through)\s*(\d+)\b", re.I),
+    re.compile(r"\b(\d+)\s*[-–]\s*(\d+)\s+year[s]?\s*old\b", re.I),
+)
+
+_SEASON_RANGE_PATTERNS = (
+    re.compile(r"\b((?:19|20)\d{2})\s*(?:to|-|–|through|and)\s*((?:19|20)\d{2})\b", re.I),
+    re.compile(r"\bfrom\s+((?:19|20)\d{2})\s+(?:to|through)\s+((?:19|20)\d{2})\b", re.I),
+    re.compile(r"\bbetween\s+((?:19|20)\d{2})\s+and\s+((?:19|20)\d{2})\b", re.I),
+)
+
+
+def extract_age_constraint_from_question(question: str) -> str:
+    """Return an age range string like '22-30' if the question specifies one."""
+    q = str(question or "").strip()
+    for pat in _AGE_RANGE_PATTERNS:
+        m = pat.search(q)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            if 15 <= lo <= 45 and 15 <= hi <= 50 and lo < hi:
+                return f"{lo}-{hi}"
+    return ""
+
+
+def extract_season_constraint_from_question(question: str) -> str:
+    """Return a season range like '2010-2020' if the question specifies one."""
+    q = str(question or "").strip()
+    for pat in _SEASON_RANGE_PATTERNS:
+        m = pat.search(q)
+        if m:
+            start, end = int(m.group(1)), int(m.group(2))
+            if 1850 <= start <= 2100 and 1850 <= end <= 2100 and start <= end:
+                return f"{start}-{end}"
+    return ""
 
 
 def attach_question_player_to_context(
@@ -266,6 +339,7 @@ def attach_question_player_to_context(
     """At AMI send: bind question-named player(s) to context."""
     low_page = str(ctx.get("source_page") or ctx.get("page") or "").lower()
     is_sleepers = "sleeper" in low_page
+    is_trend = "trend" in low_page
     if is_sleepers:
         try:
             from baseball_ami_pages import detect_sleepers_send_intent
@@ -274,33 +348,56 @@ def attach_question_player_to_context(
                 return
         except ImportError:
             pass
-    if "trend" in low_page:
+    # For trend pages: clear any stale player_a/b; they will be re-set below if comparison detected.
+    if is_trend:
         ctx.pop("player_a", None)
         ctx.pop("player_b", None)
-    if not is_sleepers:
-        comp_a, comp_b = extract_comparison_players_from_question(question)
-        if comp_a and comp_b and "trend" not in low_page:
+    comp_a, comp_b = extract_comparison_players_from_question(question)
+    if comp_a and comp_b:
+        # On sleepers page: only treat as comparison if question has sleeper/comparison language;
+        # finalize_sleepers_context_for_send will handle the full sleeper-comparison routing.
+        if is_sleepers:
             ctx["player_a"] = comp_a
             ctx["player_b"] = comp_b
             ctx["players"] = [comp_a, comp_b]
-            snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+            # Look up both players in sleeper candidates
+            sleepers_snap = session_state.get("_ami_sleepers_snapshot") or {}
             for label, name in (("player_a_row", comp_a), ("player_b_row", comp_b)):
                 row = _find_player_row_in_pools(
                     name,
-                    snap.get("recommended_players"),
-                    snap.get("available_players"),
-                    snap.get("best_available_players"),
-                    ctx.get("available_players"),
-                    ctx.get("recommended_players"),
-                    ctx.get("best_available"),
-                    snap.get("draft_room_board"),
+                    sleepers_snap.get("sleeper_candidates"),
+                    ctx.get("sleeper_candidates"),
                 )
                 if row:
                     ctx[label] = row
+            # finalize_sleepers_context_for_send will set routing hints
             return
+        ctx["player_a"] = comp_a
+        ctx["player_b"] = comp_b
+        ctx["players"] = [comp_a, comp_b]
+        snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
+        for label, name in (("player_a_row", comp_a), ("player_b_row", comp_b)):
+            row = _find_player_row_in_pools(
+                name,
+                snap.get("recommended_players"),
+                snap.get("available_players"),
+                snap.get("best_available_players"),
+                ctx.get("available_players"),
+                ctx.get("recommended_players"),
+                ctx.get("best_available"),
+                snap.get("draft_room_board"),
+            )
+            if row:
+                ctx[label] = row
+        # finalize_trend_context_for_send / finalize_sleepers_context_for_send will set routing hint.
+        # Always return early when two players found — don't let single-player extraction clear them.
+        return
 
     name = extract_player_from_question(question)
     if not name:
+        return
+    # Single-player path: if we already set comparison players above, don't overwrite.
+    if ctx.get("player_a") and ctx.get("player_b"):
         return
     ctx["question_player"] = name
     ctx["player"] = name
@@ -505,6 +602,38 @@ def attach_draft_team_to_context(
             diag["roster_display_lines"] = lines
             diag["filled_roster_display"] = lines
             diag["roster_by_position"] = roster_by_position
+    except ImportError:
+        pass
+
+    # If the question is about roster weaknesses/gaps, override routing hint to roster_needs
+    # and promote category_diagnostics to the top level so the AMI solver can read it directly.
+    try:
+        from draft_ami_helpers import is_roster_weakness_question
+
+        if is_roster_weakness_question(question):
+            ctx["routing_hint"] = "roster_needs"
+            ctx["problem_type_hint"] = "roster_needs"
+            ctx["intent"] = "roster_weakness_analysis"
+            ctx["draft_mode_hint"] = "roster_needs"
+            # Promote category_diagnostics from snapshot to top-level context
+            for snap_key in ("draft_snapshot", "draft_projection"):
+                snap_obj = ctx.get(snap_key) if isinstance(ctx.get(snap_key), dict) else {}
+                cat_diag = snap_obj.get("category_diagnostics")
+                if cat_diag and not ctx.get("category_diagnostics"):
+                    ctx["category_diagnostics"] = cat_diag
+            # Also try the cached AMI snapshot directly
+            cached_snap = session_state.get("_ami_draft_snapshot") or {}
+            if isinstance(cached_snap, dict) and cached_snap.get("category_diagnostics") and not ctx.get("category_diagnostics"):
+                ctx["category_diagnostics"] = cached_snap["category_diagnostics"]
+            cached_proj = session_state.get("_ami_draft_projection") or {}
+            if isinstance(cached_proj, dict) and cached_proj.get("category_diagnostics") and not ctx.get("category_diagnostics"):
+                ctx["category_diagnostics"] = cached_proj["category_diagnostics"]
+            # Also surface position_scarcity_table
+            for snap_key in ("draft_snapshot", "draft_projection"):
+                snap_obj = ctx.get(snap_key) if isinstance(ctx.get(snap_key), dict) else {}
+                pos_scarcity = snap_obj.get("position_scarcity_table")
+                if pos_scarcity and not ctx.get("position_scarcity_table"):
+                    ctx["position_scarcity_table"] = pos_scarcity
     except ImportError:
         pass
 

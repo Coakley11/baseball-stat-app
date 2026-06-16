@@ -36,7 +36,33 @@ def _player_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip()
 
 
-def finalize_trend_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+def detect_trend_send_intent(question: str) -> str:
+    """Classify trend-page AMI send intent from question text."""
+    q = str(question or "").strip()
+    if not q:
+        return "trend_significance"
+    low = q.lower()
+    try:
+        from applied_math_context import extract_comparison_players_from_question
+
+        comp_a, comp_b = extract_comparison_players_from_question(q)
+        if comp_a and comp_b:
+            return "trend_player_comparison"
+    except ImportError:
+        pass
+    if any(p in low for p in ("better pick", "better option", "better target", "better fantasy")):
+        return "trend_player_comparison"
+    if any(p in low for p in ("sustainable", "buy low", "sell high", "projection", "buy or sell")):
+        return "trend_sustainability"
+    return "trend_significance"
+
+
+def finalize_trend_context_for_send(
+    ctx: dict[str, Any],
+    session_state: dict[str, Any],
+    *,
+    question: str = "",
+) -> None:
     """Promote trend intel into send payload for Trends / Trend Value."""
     try:
         from applied_math_context import extract_player_from_question
@@ -78,8 +104,32 @@ def finalize_trend_context_for_send(ctx: dict[str, Any], session_state: dict[str
             "window": ctx.get("trend_window") or "",
         }
 
-    ctx.pop("player_a", None)
-    ctx.pop("player_b", None)
+    # Detect comparison intent from the question.  If two players were already extracted into
+    # player_a/player_b (by attach_question_player_to_context), preserve them and set a
+    # comparison-aware routing hint so AMI knows this is a cross-player trend question.
+    q = str(question or ctx.get("question") or "").strip()
+    intent = detect_trend_send_intent(q)
+    has_player_a = bool(str(ctx.get("player_a") or "").strip())
+    has_player_b = bool(str(ctx.get("player_b") or "").strip())
+
+    if intent == "trend_player_comparison" and has_player_a and has_player_b:
+        # Keep player_a/b; routing hint signals cross-player trend comparison.
+        ctx["routing_hint"] = "trend_player_comparison"
+        ctx["problem_type_hint"] = "trend_player_comparison"
+        ctx["intent"] = "trend_comparison_analysis"
+        ctx["trend_comparison_mode"] = True
+        # Enrich trend snapshot with both player names for the solver
+        trend_snap = ctx.get("trend_snapshot") if isinstance(ctx.get("trend_snapshot"), dict) else {}
+        trend_snap["comparison_player_a"] = ctx["player_a"]
+        trend_snap["comparison_player_b"] = ctx["player_b"]
+        ctx["trend_snapshot"] = trend_snap
+    else:
+        # Pure trend significance question — clear stale comparison players
+        ctx.pop("player_a", None)
+        ctx.pop("player_b", None)
+        ctx["routing_hint"] = "trend_significance"
+        ctx["problem_type_hint"] = "trend_significance"
+        ctx["intent"] = "trend_analysis"
 
 
 def build_trend_send_diagnostics(ctx: dict[str, Any], *, source_page: str) -> dict[str, Any]:
@@ -91,16 +141,19 @@ def build_trend_send_diagnostics(ctx: dict[str, Any], *, source_page: str) -> di
         or trend.get("player")
         or ((ctx.get("players") or [""])[0] if isinstance(ctx.get("players"), list) else "")
     ).strip()
+    routing_hint = str(ctx.get("routing_hint") or "")
     return {
         "source_page": source_page,
         "trend_context_present": bool(trend),
         "trend_player": player,
         "trend_metric_count": len(metrics),
         "trend_summary_present": bool(trend),
-        "trend_mode_selected": "baseball_trend_significance" if trend or player else "",
+        "trend_mode_selected": routing_hint or ("baseball_trend_significance" if trend or player else ""),
+        "routing_hint": routing_hint,
         "routing_reason": "trend_page_send_promotion",
         "player_a_present": bool(str(ctx.get("player_a") or "").strip()),
         "player_b_present": bool(str(ctx.get("player_b") or "").strip()),
+        "trend_comparison_mode": bool(ctx.get("trend_comparison_mode")),
     }
 
 
@@ -259,11 +312,16 @@ def finalize_sleepers_context_for_send(
 ) -> None:
     """Promote sleepers cache into send payload."""
     try:
-        from applied_math_context import extract_player_from_question, gather_sleepers_ami_snapshot
+        from applied_math_context import (
+            extract_comparison_players_from_question,
+            extract_player_from_question,
+            gather_sleepers_ami_snapshot,
+        )
     except ImportError:
         return
 
     q = str(question or ctx.get("question") or "").strip()
+    low_q = q.lower()
     intent = detect_sleepers_send_intent(q)
     _clear_stale_sleepers_player_context(ctx, q)
 
@@ -274,12 +332,52 @@ def finalize_sleepers_context_for_send(
     if snap:
         _promote_sleepers_snapshot_fields(ctx, snap)
 
-    ctx.pop("player_a", None)
-    ctx.pop("player_b", None)
-
     if intent in ("bust_risk_review", "bust_take"):
+        # Bust context path: clear comparison players, apply bust routing
+        ctx.pop("player_a", None)
+        ctx.pop("player_b", None)
         apply_market_bust_context_at_send(ctx, session_state, question=q, intent=intent)
         return
+
+    # Two-player comparison on sleepers page: validate sleeper recommendation using snapshot data.
+    # This handles "Is X really better than Y since X is a curve adjusted sleeper?" style questions.
+    comp_a = str(ctx.get("player_a") or "").strip()
+    comp_b = str(ctx.get("player_b") or "").strip()
+    if not (comp_a and comp_b):
+        # Try extracting comparison from question text directly
+        comp_a, comp_b = extract_comparison_players_from_question(q)
+    sleeper_comparison = bool(
+        comp_a
+        and comp_b
+        and any(kw in low_q for kw in ("sleeper", "better", "really", "actually", "curve", "adp", "rank"))
+    )
+    if sleeper_comparison:
+        ctx["player_a"] = comp_a
+        ctx["player_b"] = comp_b
+        ctx["players"] = [comp_a, comp_b]
+        ctx["routing_hint"] = "sleeper_comparison"
+        ctx["problem_type_hint"] = "sleeper_comparison"
+        ctx["intent"] = "sleeper_comparison_analysis"
+        ctx["market_section"] = "Fantasy Sleepers & Busts"
+        # Look up both players in the sleeper candidates and attach their rows
+        for label, player_name, focus_key in (
+            ("player_a_row", comp_a, "sleeper_focus_a"),
+            ("player_b_row", comp_b, "sleeper_focus_b"),
+        ):
+            row = _find_sleeper_row_for_name(ctx.get("sleeper_candidates"), player_name)
+            if not row and isinstance(cached, dict):
+                row = _find_sleeper_row_for_name(cached.get("sleeper_candidates"), player_name)
+            if row:
+                ctx[label] = row
+                ctx[focus_key] = row
+        # Also attach the first named player as primary sleeper_focus for backward compat
+        if ctx.get("player_a_row"):
+            ctx["sleeper_focus"] = ctx["player_a_row"]
+        return
+
+    # Single-player sleeper path
+    ctx.pop("player_a", None)
+    ctx.pop("player_b", None)
 
     target = extract_player_from_question(q) or str(ctx.get("question_player") or "").strip()
     if not target:
@@ -318,12 +416,27 @@ def detect_comparison_send_intent(question: str) -> str:
     if not q:
         return "comparison_general"
     try:
-        from applied_math_context import extract_comparison_players_from_question
+        from applied_math_context import (
+            extract_age_constraint_from_question,
+            extract_comparison_players_from_question,
+            extract_season_constraint_from_question,
+        )
 
         comp_a, comp_b = extract_comparison_players_from_question(question)
+        has_age = bool(extract_age_constraint_from_question(question))
+        has_season = bool(extract_season_constraint_from_question(question))
     except ImportError:
         comp_a, comp_b = "", ""
+        has_age = has_season = False
+
     if comp_a and comp_b:
+        # Historical constraints override other intent signals
+        if has_age:
+            return "comparison_historical_age"
+        if has_season:
+            return "comparison_historical_season"
+        if any(p in q for p in ("was ", "were ", "historically", "career", "all-time", "at their peak")):
+            return "comparison_historical"
         if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["draft_pick"]):
             return "comparison_draft_pick"
         if any(p in q for p in COMPARISON_QUESTION_CATEGORIES["long_term_value"]):
@@ -415,6 +528,40 @@ def finalize_comparison_context_for_send(
     intent = detect_comparison_send_intent(q)
     if ctx.get("player_a") and ctx.get("player_b"):
         ctx["players"] = [ctx["player_a"], ctx["player_b"]]
+
+    # Extract age and season constraints from the question (e.g. "between the ages of 22-30").
+    # These are carried in the solver context so the AMI can restrict its analysis window.
+    try:
+        from applied_math_context import (
+            extract_age_constraint_from_question,
+            extract_season_constraint_from_question,
+        )
+
+        age_range = extract_age_constraint_from_question(q)
+        season_range = extract_season_constraint_from_question(q)
+    except ImportError:
+        age_range, season_range = "", ""
+
+    if age_range:
+        ctx["comparison_age_range"] = age_range
+        ctx["comparison_constraint_note"] = f"Compare players at ages {age_range} only"
+        # Upgrade intent to historical if age constraint present and not already flagged
+        if intent in ("comparison_head_to_head", "comparison_general"):
+            intent = "comparison_historical_age"
+    if season_range and not age_range:
+        ctx["comparison_season_range"] = season_range
+        ctx.setdefault("comparison_constraint_note", f"Compare players during seasons {season_range} only")
+        if intent in ("comparison_head_to_head", "comparison_general"):
+            intent = "comparison_historical_season"
+
+    # Also promote widget-level year/age range if the page has filters active
+    compare_age = session_state.get("compare_age_range") or session_state.get("comparison_age_range")
+    if compare_age and not age_range:
+        ctx.setdefault("comparison_age_range", str(compare_age))
+    compare_year = session_state.get("compare_year_range") or session_state.get("comparison_year_range")
+    if compare_year and not season_range:
+        ctx.setdefault("comparison_season_range", str(compare_year))
+
     ctx["routing_hint"] = intent
     ctx["problem_type_hint"] = intent
     ctx["intent"] = "comparison_analysis"
@@ -560,7 +707,7 @@ def promote_page_ami_context_at_send(
     low = _page_key(source_page)
     diag: dict[str, Any] = {}
     if "trend" in low:
-        finalize_trend_context_for_send(ctx, session_state)
+        finalize_trend_context_for_send(ctx, session_state, question=question)
         diag = build_trend_send_diagnostics(ctx, source_page=source_page)
         ctx["trend_send_diagnostics"] = diag
     elif "sleeper" in low or "bust" in low:

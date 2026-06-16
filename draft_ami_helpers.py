@@ -840,6 +840,22 @@ def _board_player_position_lookup(session_state: dict[str, Any]) -> dict[str, st
     return out
 
 
+_ROSTER_WEAKNESS_PHRASES = re.compile(
+    r"\b(?:weakness|weakest|biggest\s+(?:gap|hole|need|deficiency)|"
+    r"position\s+(?:gap|hole|need|weakness)|"
+    r"stat(?:istical)?\s+(?:weakness|gap|deficiency)|"
+    r"roster\s+(?:gap|hole|need|deficiency|weakness)|"
+    r"category\s+(?:gap|weakness|deficiency)|"
+    r"where\s+(?:am|is|are|do)\s+(?:i|we|they)\s+(?:weak|lacking|behind|short|struggling))\b",
+    re.I,
+)
+
+
+def is_roster_weakness_question(question: str) -> bool:
+    """Return True when the question asks about a team's statistical or positional weakness."""
+    return bool(_ROSTER_WEAKNESS_PHRASES.search(str(question or "")))
+
+
 def extract_draft_team_from_question(
     question: str,
     *,
@@ -868,7 +884,7 @@ def extract_draft_team_from_question(
         return f"Team {token.upper()}"
 
     m = re.search(
-        r"(?:rate|review|grade|how (?:would|do) you rate)\s+(.+?)(?:'s|’s)\s+(?:picks|draft|roster|team)",
+        r"(?:rate|review|grade|how (?:would|do) you rate)\s+(.+?)(?:'s|\u2019s)\s+(?:picks|draft|roster|team)",
         q,
         flags=re.I,
     )
@@ -879,13 +895,32 @@ def extract_draft_team_from_question(
                 return name
         return owner
 
+    # Possessive form for weakness/diagnostic questions: "Daniel's biggest weakness in this draft"
+    # Also handles "What is Daniel's biggest statistical and position weakness"
+    m = re.search(
+        r"(?:what\s+is\s+|what'?s\s+|show\s+me\s+)?(.+?)(?:'s|\u2019s)\s+"
+        r"(?:biggest|main|primary|worst|most\s+significant|top)?\s*"
+        r"(?:weakness|gap|hole|need|picks|roster|draft|statistical|position|team)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        owner = m.group(1).strip()
+        # Strip leading question words that were not caught by prefix group
+        owner = re.sub(r"^(?:what\s+is|what'?s|show\s+me|tell\s+me|find)\s+", "", owner, flags=re.I).strip()
+        if len(owner) >= 2:
+            for name in names:
+                if owner.lower() in name.lower() or name.lower() in owner.lower():
+                    return name
+            # If no board team match but the question has draft/weakness context, return as-is
+            if any(w in low for w in ("draft", "roster", "weakness", "picks", "team")):
+                return owner
+
     for name in names:
         if name.lower() in low and any(w in low for w in ("picks", "draft", "roster", "team")):
             return name
 
     return ""
-
-
 def team_names_in_draft_order(board: Any) -> list[str]:
     """Return fantasy team names in round-1 pick order (Team 1 = pick 1, etc.)."""
     import pandas as pd
