@@ -13,6 +13,7 @@ except ImportError:
 
 CAREER_DIRTY_KEY = "career_state_dirty"
 CAREER_LOCAL_EDIT_TS_KEY = "career_state_last_local_edit_ts"
+CAREER_PENDING_SYNC_KEY = "_career_filters_pending_sync"
 
 CAREER_FILTER_KEYS = (
     "career_year_range_filter",
@@ -715,3 +716,25 @@ def render_career_totals_state_debug(st: Any, session: dict[str, Any]) -> None:
         for k, v in rows.items():
             if v is not None and v != "" and v is not False and v != {}:
                 st.text(f"{k}: {v}")
+
+
+def render_career_totals_sync_trace(st: Any, session: dict[str, Any]) -> None:
+    """Dev-mode sidebar trace of Career Totals cloud sync events."""
+    trace = session.get(CAREER_SYNC_TRACE_KEY)
+    log = session.get(CAREER_SYNC_TRACE_LOG_KEY)
+    with st.sidebar.expander("Career Totals sync trace", expanded=False):
+        if isinstance(trace, dict):
+            st.text("— latest event —")
+            for k, v in trace.items():
+                if v is not None and v != "" and v is not False and v != {}:
+                    st.text(f"{k}: {v}")
+        else:
+            st.text("no sync trace yet")
+        if isinstance(log, list) and log:
+            st.text(f"— trace log ({len(log)} events) —")
+            for entry in reversed(log[-10:]):
+                phase = entry.get("phase", "?")
+                at = entry.get("at", "")
+                dirty = entry.get("dirty_flag", False)
+                pending = entry.get("pending_edit_flag", False)
+                st.text(f"{at[:19]} [{phase}] dirty={dirty} pending={pending}")
