@@ -12263,17 +12263,38 @@ try:
     prepare_baseball_workspace(st)
 except Exception:
     pass
-try:
-    from live_draft_state import prepare_live_draft_state
+_active_page_for_prep = str(st.session_state.get("active_page") or "")
+_DRAFT_BOARD_PAGES = frozenset({
+    "Draft Room Simulator",
+    "Draft Assistant Simulator",
+    "Draft Simulation Test Mode",
+    "Fantasy Sleepers & Busts",
+    "Live Draft Room",
+})
+_needs_live_prep = _active_page_for_prep == "Live Draft Room"
+if not _needs_live_prep:
+    _ld_room = st.session_state.get("live_draft_room")
+    if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in ("in_progress", "paused"):
+        _needs_live_prep = True
+if _needs_live_prep:
+    try:
+        from live_draft_state import prepare_live_draft_state
 
-    prepare_live_draft_state(st.session_state)
-except Exception:
-    pass
-try:
-    from draft_room_state import prepare_draft_room_state
+        prepare_live_draft_state(st.session_state)
+    except Exception:
+        pass
+if _active_page_for_prep in _DRAFT_BOARD_PAGES:
+    try:
+        from draft_room_state import prepare_draft_room_state
 
-    prepare_draft_room_state(st.session_state)
-except Exception:
+        prepare_draft_room_state(st.session_state)
+    except Exception:
+        pass
+try:
+    from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
+
+    sync_active_fantasy_team_to_canonical(st.session_state)
+except ImportError:
     pass
 _record_sidebar_nav_trace("after_prepare_workspace")
 try:
@@ -12336,7 +12357,6 @@ _prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
 _user_nav = bool(st.session_state.get("_suite_page_user_nav"))
 _page_changed = active_page != _prev_persisted_page
 if _page_changed or _user_nav:
-    st.session_state["_suite_workspace_refresh_needed"] = True
     st.session_state["_global_settings_force_mirror"] = True
     _did_save = False
     if _user_nav or _page_changed:
@@ -13475,27 +13495,20 @@ if active_page == "Comparison Tool":
         on_change=compare_top_changed,
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
-    comparison_action_team = st.session_state.get("room_your_team")
-    comparison_teams = get_draft_room_team_options()
-    if comparison_teams:
-        default_compare_team = comparison_action_team if comparison_action_team in comparison_teams else comparison_teams[0]
-        ensure_select_in_options("comparison_user_team", comparison_teams, default_compare_team)
-        def _comparison_team_changed():
-            try:
-                from global_fantasy_settings_state import on_alias_team_changed
-                on_alias_team_changed(st.session_state, "comparison_user_team")
-            except Exception:
-                pass
-            force_save_baseball_state(st, reason="global_settings_changed")
-        comparison_action_team = st.selectbox(
-            "Which fantasy team are you?",
-            comparison_teams,
-            key="comparison_user_team",
-            help="Used to decide whether Draft Player is available and whether trade actions are Trade Away or Try to Acquire.",
-            on_change=_comparison_team_changed,
+    try:
+        from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+
+        comparison_action_team = get_active_fantasy_team(st.session_state)
+        st.caption(
+            f"**Your team:** {active_fantasy_team_label(st.session_state)}. "
+            "Change it in Draft Room Simulator or Live Draft Room."
         )
-        st.session_state["room_your_team"] = comparison_action_team
-    else:
+    except ImportError:
+        comparison_action_team = st.session_state.get("room_your_team")
+    comparison_teams = get_draft_room_team_options()
+    if comparison_teams and comparison_action_team not in comparison_teams:
+        st.caption(f"Note: **{comparison_action_team or '—'}** is not on the Draft Room board yet.")
+    elif not comparison_teams:
         st.caption("Draft/trade actions require a Draft Room table with fantasy teams.")
 
     _comparison_recent_years = list(range(max(year_min, year_max - 2), year_max + 1))
@@ -14181,15 +14194,16 @@ if active_page == "Trend Value":
         if trend_sync_enabled:
             trend_drafted_names = _drafted_player_names_canonical()
             if trend_drafted_names:
-                trend_team_options = get_draft_room_team_options()
-                if trend_team_options:
-                    default_trend_team = st.session_state.get("room_your_team", trend_team_options[0])
-                    ensure_select_in_options("trend_sync_team_for_draft", trend_team_options, default_trend_team)
-                    trend_sync_team = st.selectbox(
-                        "My Draft Room Team",
-                        trend_team_options,
-                        key="trend_sync_team_for_draft",
+                try:
+                    from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+
+                    trend_sync_team = get_active_fantasy_team(st.session_state)
+                    st.caption(
+                        f"**Your team:** {active_fantasy_team_label(st.session_state)}. "
+                        "Change it in Draft Room Simulator or Live Draft Room."
                     )
+                except ImportError:
+                    trend_sync_team = st.session_state.get("room_your_team")
                 st.caption(f"Removed {len(set(trend_drafted_names))} already drafted player(s) from Trend page views.")
             else:
                 st.caption("No Draft Room picks found yet.")
@@ -14902,21 +14916,22 @@ if active_page == "Fantasy Sleepers & Busts":
             ].copy()
             sleeper_team_options = sorted(draft_room_for_sleepers["Team"].dropna().astype(str).unique().tolist())
             if sleeper_team_options:
-                sleeper_default_team = st.session_state.get("room_your_team", sleeper_team_options[0])
-                ensure_select_in_options("sleeper_sync_team", sleeper_team_options, sleeper_default_team)
-                def _sleeper_team_changed():
-                    try:
-                        from global_fantasy_settings_state import on_alias_team_changed
-                        on_alias_team_changed(st.session_state, "sleeper_sync_team")
-                    except Exception:
-                        pass
-                    force_save_baseball_state(st, reason="global_settings_changed")
-                sleeper_team_name = st.selectbox(
-                    "My Draft Room Team",
-                    sleeper_team_options,
-                    key="sleeper_sync_team",
-                    on_change=_sleeper_team_changed,
-                )
+                try:
+                    from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+
+                    sleeper_team_name = get_active_fantasy_team(st.session_state) or sleeper_team_options[0]
+                    st.caption(
+                        f"**Your team:** {active_fantasy_team_label(st.session_state)}. "
+                        "Change it in Draft Room Simulator or Live Draft Room."
+                    )
+                except ImportError:
+                    sleeper_team_name = st.session_state.get("room_your_team", sleeper_team_options[0])
+                if sleeper_team_name not in sleeper_team_options:
+                    st.warning(
+                        f"Active team **{sleeper_team_name}** is not on the Draft Room board. "
+                        "Update team names in Draft Room Simulator."
+                    )
+                    sleeper_team_name = sleeper_team_options[0]
                 sleeper_synced_roster = draft_room_for_sleepers[
                     draft_room_for_sleepers["Team"].astype(str) == str(sleeper_team_name)
                 ]["Player"].dropna().astype(str).tolist()
@@ -15574,16 +15589,7 @@ if active_page == "Draft Assistant Simulator":
                     key="draft_ml_min_games_signal",
                 )
 
-        draft_df = build_unified_draft_player_pool(
-            yearly_df,
-            market_df,
-            draft_window=draft_window,
-            fantasy_format=draft_format,
-            projection_style=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
-            use_ml_blend=use_ml_in_draft,
-            ml_blend_weight=ml_blend_weight,
-            ml_min_games_for_signal=ml_min_games_for_signal,
-        )
+        draft_df = get_cached_unified_projection_pool_live()
 
         with st.expander(
             "Draft status",
@@ -15591,10 +15597,15 @@ if active_page == "Draft Assistant Simulator":
         ):
             pp.instructional_caption(
                 st,
-                "Synced from your Draft Room board. Choose your team so recommendations match your roster.",
+                "Synced from your Draft Room board. Your active fantasy team is set in Draft Room Simulator or Live Draft Room.",
             )
 
             from draft_room_state import draft_board_summary_for_team, get_canonical_draft_board
+            try:
+                from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+            except ImportError:
+                get_active_fantasy_team = lambda s: str(s.get("room_your_team") or "")  # type: ignore[assignment,misc]
+                active_fantasy_team_label = lambda s: str(s.get("room_your_team") or "—")  # type: ignore[assignment,misc]
 
             draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
             board_has_players = (
@@ -15614,24 +15625,15 @@ if active_page == "Draft Assistant Simulator":
                 if not assistant_team_names:
                     assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
 
-            default_team_name = st.session_state.get("room_your_team", assistant_team_names[0])
-            default_team_index = assistant_team_names.index(default_team_name) if default_team_name in assistant_team_names else 0
-
-            def _draft_assistant_team_changed():
-                try:
-                    from global_fantasy_settings_state import on_alias_team_changed
-                    on_alias_team_changed(st.session_state, "draft_assistant_synced_team")
-                except Exception:
-                    pass
-                save_page_state("Draft Assistant Simulator")
-                force_save_baseball_state(st, reason="global_settings_changed")
-            assistant_my_team_name = st.selectbox(
-                "Your team",
-                assistant_team_names,
-                index=default_team_index,
-                key="draft_assistant_synced_team",
-                help="Which fantasy team on the draft board is yours.",
-                on_change=_draft_assistant_team_changed,
+            default_team_name = get_active_fantasy_team(st.session_state) or (
+                assistant_team_names[0] if assistant_team_names else "My Team"
+            )
+            if default_team_name not in assistant_team_names and assistant_team_names:
+                default_team_name = assistant_team_names[0]
+            assistant_my_team_name = default_team_name
+            st.caption(
+                f"**Your team:** {active_fantasy_team_label(st.session_state)}. "
+                "Change it in Draft Room Simulator or Live Draft Room."
             )
 
             _da_highlight = st.session_state.get("pending_draft_assistant_player")
@@ -16318,10 +16320,23 @@ if active_page == "Draft Room Simulator":
         room_team_names = room_team_names[:int(room_team_count)]
 
         ensure_select_in_options("room_your_team", room_team_names, room_team_names[0] if room_team_names else "")
-        your_team = st.selectbox(
-            "Your Team", room_team_names, key="room_your_team",
-            on_change=_draft_room_settings_changed,
-        )
+        try:
+            from global_fantasy_settings_state import active_fantasy_team_source, active_fantasy_team_label
+
+            _live_owns_team = active_fantasy_team_source(st.session_state) == "live_draft"
+        except ImportError:
+            _live_owns_team = False
+        if _live_owns_team:
+            st.caption(
+                f"**Your team:** {active_fantasy_team_label(st.session_state)}. "
+                "Live Draft is active — change your team on the Live Draft Room page."
+            )
+            your_team = st.session_state.get("room_your_team", room_team_names[0] if room_team_names else "")
+        else:
+            your_team = st.selectbox(
+                "Your Team", room_team_names, key="room_your_team",
+                on_change=_draft_room_settings_changed,
+            )
 
         st.subheader("Import existing draft")
         st.caption(
@@ -16367,15 +16382,14 @@ if active_page == "Draft Room Simulator":
     room_team_names = room_team_names[:room_team_count]
     your_team = st.session_state.get("room_your_team", room_team_names[0] if room_team_names else "Team 1")
 
-    room_df = build_unified_draft_player_pool(
-        yearly_df,
-        market_df,
-        draft_window=int(room_window),
-        fantasy_format=room_format,
-        projection_style=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
-        use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
-        ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
-        ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+    room_df = get_cached_unified_projection_pool(
+        int(st.session_state.get("_lahman_max_year", year_max)),
+        int(room_window),
+        str(room_format),
+        str(st.session_state.get("fantasy_draft_projection_style", "Balanced")),
+        bool(st.session_state.get("draft_use_ml_blend", False)),
+        float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+        int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
     )
 
     _room_pick_no = 1
@@ -18814,16 +18828,16 @@ if active_page == "Valuation":
         if value_sync_enabled:
             value_drafted_names = _drafted_player_names_canonical()
             if value_drafted_names:
-                value_team_options = get_draft_room_team_options()
-                if value_team_options:
-                    default_value_team = st.session_state.get("room_your_team", value_team_options[0])
-                    ensure_select_in_options("value_sync_team_for_draft", value_team_options, default_value_team)
-                    value_sync_team = st.selectbox(
-                        "My Draft Room Team",
-                        value_team_options,
-                        key="value_sync_team_for_draft",
-                        on_change=valuation_filter_changed,
+                try:
+                    from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+
+                    value_sync_team = get_active_fantasy_team(st.session_state)
+                    st.caption(
+                        f"**Your team:** {active_fantasy_team_label(st.session_state)}. "
+                        "Change it in Draft Room Simulator or Live Draft Room."
                     )
+                except ImportError:
+                    value_sync_team = st.session_state.get("room_your_team")
                 st.caption(f"Removed {len(set(value_drafted_names))} already drafted player(s) from this page.")
             else:
                 st.caption("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")

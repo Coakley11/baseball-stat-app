@@ -66,6 +66,61 @@ def global_settings_snapshot_excluded_keys() -> frozenset[str]:
     return _GLOBAL_SNAPSHOT_EXCLUDED
 
 
+def active_fantasy_team_source(session: dict[str, Any]) -> str:
+    """Which subsystem owns the active fantasy team: live draft or draft room."""
+    try:
+        from live_draft_state import has_active_live_draft
+
+        if has_active_live_draft(session):
+            return "live_draft"
+    except ImportError:
+        pass
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        status = str(room.get("status") or "").strip()
+        if status in ("in_progress", "paused"):
+            return "live_draft"
+    return "draft_room"
+
+
+def get_active_fantasy_team(session: dict[str, Any]) -> str:
+    """Single active fantasy team for the whole app."""
+    if active_fantasy_team_source(session) == "live_draft":
+        room = session.get("live_draft_room")
+        if isinstance(room, dict):
+            cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+            for key in ("user_team", "your_team"):
+                val = cfg.get(key)
+                if val:
+                    return str(val).strip()
+            teams = room.get("teams")
+            if isinstance(teams, list) and teams:
+                return str(teams[0]).strip()
+    return str(session.get(GLOBAL_TEAM_KEY) or "").strip()
+
+
+def sync_active_fantasy_team_to_canonical(session: dict[str, Any]) -> str:
+    """Push the active source-of-truth team into ``room_your_team`` and aliases."""
+    team = get_active_fantasy_team(session)
+    if team:
+        session[GLOBAL_TEAM_KEY] = team
+        _mirror_globals_to_aliases(session)
+        _sync_live_draft_room_team(session)
+        propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
+        session["_global_settings_last_propagated"] = propagated
+    session["_active_fantasy_team_source"] = active_fantasy_team_source(session)
+    return team
+
+
+def active_fantasy_team_label(session: dict[str, Any]) -> str:
+    """Human-readable label for dev UI / captions."""
+    team = get_active_fantasy_team(session) or "—"
+    src = active_fantasy_team_source(session)
+    if src == "live_draft":
+        return f"{team} (Live Draft)"
+    return f"{team} (Draft Room)"
+
+
 # Dev trace ring buffer key — records each lifecycle step for canonical format/team.
 _FORMAT_TRACE_KEY = "_global_format_trace"
 _FORMAT_TRACE_MAX = 40
@@ -259,10 +314,12 @@ def _sync_live_draft_room_team(session: dict[str, Any]) -> None:
 
 
 def on_alias_team_changed(session: dict[str, Any], alias_key: str) -> None:
-    """on_change for any alias team selectbox — promote to canonical and mirror everywhere."""
+    """Deprecated — team is owned by Draft Room or Live Draft only."""
+    if active_fantasy_team_source(session) == "live_draft":
+        return
     new_team = session.get(alias_key) or session.get(GLOBAL_TEAM_KEY)
     if new_team is not None:
-        write_canonical_global_fantasy_settings(session, team=str(new_team).strip())
+        write_canonical_global_fantasy_settings(session, team=str(new_team).strip(), reason=f"alias:{alias_key}")
 
 
 def on_alias_format_changed(session: dict[str, Any], alias_key: str) -> None:

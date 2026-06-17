@@ -68,6 +68,38 @@ class TestTeamPropagation(unittest.TestCase):
         self.assertEqual(session["draft_assistant_synced_team"], "Daniel")
         self.assertEqual(session["sleeper_sync_team"], "Daniel")
 
+    def test_active_team_from_draft_room_when_no_live_draft(self) -> None:
+        from global_fantasy_settings_state import active_fantasy_team_source, get_active_fantasy_team
+
+        session = {"room_your_team": "Daniel"}
+        self.assertEqual(active_fantasy_team_source(session), "draft_room")
+        self.assertEqual(get_active_fantasy_team(session), "Daniel")
+
+    def test_active_team_from_live_draft_when_in_progress(self) -> None:
+        from global_fantasy_settings_state import active_fantasy_team_source, get_active_fantasy_team
+
+        session = {
+            "room_your_team": "Daniel",
+            "live_draft_room": {
+                "status": "in_progress",
+                "draft_room_id": "test",
+                "config": {"user_team": "Team A"},
+                "teams": ["Team A", "Team B"],
+            },
+        }
+        self.assertEqual(active_fantasy_team_source(session), "live_draft")
+        self.assertEqual(get_active_fantasy_team(session), "Team A")
+
+
+class TestExtractPlayerFromQuestion(unittest.TestCase):
+    def test_wagaman_team_fit_question(self) -> None:
+        from applied_math_context import extract_player_from_question
+
+        q = "Would Eric Wagaman help my team if I draft him?"
+        self.assertEqual(extract_player_from_question(q), "Eric Wagaman")
+
+
+class TestTeamPropagationPageRestore(unittest.TestCase):
     def test_page_restore_does_not_overwrite_canonical_team(self) -> None:
         import page_state as pg
 

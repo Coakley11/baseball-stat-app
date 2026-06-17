@@ -103,10 +103,12 @@ _QUESTION_PLAYER_PATTERNS: tuple[str, ...] = (
     r"why is (.+?) a good",
     r"why is (.+?) worth",
     r"why (.+?)(?:\?|\s*$)",
-    r"would (.+?) make a good (?:pick|draft|choice|target|option)",
+    r"would (.+?) help (?:my team|my roster|the team|us)",
+    r"would (.+?) be (?:a )?good (?:fit|add|pick|draft|choice)(?: for my team)?",
+    r"would (.+?) make a good (?:pick|draft|choice|target|option|fit|add)",
     r"(?:do you think i should|should i|would you recommend i|would i) (?:draft|pick|target|select|take) (.+?)(?: as an? | as a | for | in | at | with | despite |\?|$)",
     r"(?:draft|target|select) (.+?)(?: as an? | as a | for | in this | in | at |\?|$)",
-    r"is (.+?) (?:worth|available|the best|a good sleeper|a good pick|a safe pick|a risky pick|a bust risk|a sleeper|a keeper)",
+    r"is (.+?) (?:worth|available|the best|a good sleeper|a good pick|a safe pick|a risky pick|a bust risk|a sleeper|a keeper|a good fit|a good add)",
     r"how risky is (.+?)(?:\?|\s|$)",
     r"(?:take|target|pick) (.+?)(?: as | for | in | with | despite |\?|$)",
 )
@@ -2294,8 +2296,7 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
     elif "draft" in low:
         dq = session_state.get("draft_queue") or []
         if isinstance(dq, list) and dq:
-            ctx["player"] = _player_name(dq[0])
-            ctx["players"] = [_player_name(x) for x in dq[:4]]
+            ctx["draft_queue"] = [_player_name(x) for x in dq[:8]]
         try:
             from draft_ami_helpers import AMI_POOL_FINAL_CAP, draft_ami_guidance
             from draft_state import gather_draft_ami_snapshot
