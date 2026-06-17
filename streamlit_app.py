@@ -6487,24 +6487,32 @@ def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custo
         return "Matchup Dependent"
 
     def make_lineup_reason(row):
-        name = row.get("Player", row.get("fullName", "This player"))
         action = row.get("Start/Sit Recommendation", "Watch")
         reasons = []
+        conf = pd.to_numeric(row.get("Lineup Confidence", np.nan), errors="coerce")
+        if pd.notna(conf) and conf >= 0.72:
+            reasons.append("Highest overall lineup score among your options")
+        elif pd.notna(conf) and conf >= 0.55:
+            reasons.append("Strong lineup score vs bench alternatives")
         if pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce") >= 0.70:
-            reasons.append("hot recent production")
+            reasons.append("Positive current production trend")
         if pd.to_numeric(row.get("Consistency Score", np.nan), errors="coerce") >= 0.70:
-            reasons.append("steady playing time and rates")
-        if pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce") >= 0.70:
-            reasons.append("boom/bust week-to-week profile")
-        if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.800:
-            reasons.append(f"strong OPS ({fmt_rate_3(row.get('OPS'))})")
+            reasons.append("Steady playing time and rate support")
         if "HR" in row and pd.to_numeric(row.get("HR"), errors="coerce") >= 10:
-            reasons.append(f"solid power ({fmt_int(row.get('HR'))} HR)")
+            reasons.append(f"Elite HR contribution ({fmt_int(row.get('HR'))} HR)")
+        if "RBI" in row and pd.to_numeric(row.get("RBI"), errors="coerce") >= 30:
+            reasons.append(f"Strong RBI contribution ({fmt_int(row.get('RBI'))} RBI)")
         if "SB" in row and pd.to_numeric(row.get("SB"), errors="coerce") >= 8:
-            reasons.append(f"useful speed ({fmt_int(row.get('SB'))} SB)")
+            reasons.append(f"Useful speed ({fmt_int(row.get('SB'))} SB)")
+        if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.800:
+            reasons.append(f"Strong OPS ({fmt_rate_3(row.get('OPS'))})")
+        if "BA" in row and pd.to_numeric(row.get("BA"), errors="coerce") >= 0.270:
+            reasons.append(f"Solid batting average ({fmt_rate_3(row.get('BA'))})")
+        if pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce") >= 0.70:
+            reasons.append("Higher boom/bust profile — matchup-dependent")
         if not reasons:
-            reasons.append("average current-season profile")
-        return f"**{action}** — {name}: " + "; ".join(reasons[:3]) + "."
+            reasons.append("Best available fit for this roster slot")
+        return " · ".join(reasons[:5])
 
     df["Start/Sit Recommendation"] = df.apply(classify_action, axis=1)
     df["Lineup Reason"] = df.apply(make_lineup_reason, axis=1)
@@ -6657,7 +6665,18 @@ def _player_eligible_for_slot(pos_tokens, slot):
     if slot in ("C", "1B", "2B", "3B", "SS"):
         if pos_tokens == ["DH"] or (len(pos_tokens) == 1 and pos_tokens[0] == "DH"):
             return False
-        return slot in pos_tokens
+        if slot in pos_tokens:
+            return True
+        # Corner / middle infield flexibility when eligibility lists multiple IF spots.
+        if slot == "1B" and "3B" in pos_tokens:
+            return True
+        if slot == "3B" and "1B" in pos_tokens:
+            return True
+        if slot == "2B" and "SS" in pos_tokens:
+            return True
+        if slot == "SS" and "2B" in pos_tokens:
+            return True
+        return False
     return False
 
 
@@ -6674,6 +6693,67 @@ def _parse_custom_lineup_slots(text):
             continue
         cleaned.append(s)
     return cleaned if cleaned else None
+
+
+def enrich_lineup_roster_positions(roster_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach merged position eligibility tokens for lineup slot assignment."""
+    if roster_df is None or roster_df.empty:
+        return roster_df
+    out = roster_df.copy()
+    tokens_list = []
+    for _, row in out.iterrows():
+        toks: list[str] = []
+        for col in ("Primary Position", "Position", "Eligibility", "Positions"):
+            if col in row.index and row.get(col) not in (None, "", np.nan):
+                toks.extend(_split_primary_positions(row.get(col)))
+        if isinstance(row.get("_position_tokens"), list):
+            toks = list(dict.fromkeys(toks + list(row.get("_position_tokens"))))
+        if not toks:
+            toks = ["DH"]
+        tokens_list.append(list(dict.fromkeys(toks)))
+    out["_pos_tokens"] = tokens_list
+    return out
+
+
+def _top_category_contributors(df, cat: str, n: int = 3) -> list[str]:
+    """Top player names driving a counting category on this roster subset."""
+    if df is None or df.empty or cat not in df.columns or "Player" not in df.columns:
+        return []
+    sub = df[["Player", cat]].copy()
+    sub[cat] = pd.to_numeric(sub[cat], errors="coerce").fillna(0)
+    sub = sub[sub[cat] > 0].sort_values(cat, ascending=False).head(n)
+    return [f"**{r.Player}** ({fmt_int(r[cat])} {cat})" for _, r in sub.iterrows()]
+
+
+def _weak_category_explanation(df, cat: str, rate_col: str = "BA") -> str:
+    """Explain a weak category with roster context."""
+    if df is None or df.empty:
+        return ""
+    if cat in ("AVG", "OBP"):
+        src = "OBP" if cat == "OBP" and "OBP" in df.columns else "BA"
+        if src not in df.columns:
+            return f"Limited {cat} support on this roster."
+        vals = pd.to_numeric(df[src], errors="coerce")
+        low = df.loc[vals.nsmallest(2).index, "Player"].astype(str).tolist() if "Player" in df.columns else []
+        if low:
+            return f"Soft {cat} — power-heavy bats like {', '.join(low[:2])} pull the rate down."
+        return f"Soft {cat} relative to counting categories."
+    if cat not in df.columns:
+        return ""
+    totals = pd.to_numeric(df[cat], errors="coerce").fillna(0)
+    if cat == "SB" and totals.sum() < 20:
+        names = df.loc[totals.nlargest(3).index, "Player"].astype(str).tolist() if "Player" in df.columns else []
+        if names:
+            return f"Light on steals — top speed is {', '.join(names[:2])} ({fmt_int(totals.max())} SB max)."
+        return "Roster lacks high-volume base stealers."
+    if cat == "HR" and totals.sum() > 0:
+        top = _top_category_contributors(df, "HR", 3)
+        if top:
+            return f"Power comes from {', '.join(top)}."
+    contributors = _top_category_contributors(df, cat, 2)
+    if contributors:
+        return f"Top {cat}: {', '.join(contributors)}."
+    return ""
 
 
 def _slot_gap_trade_rows(missing_slots):
@@ -6745,9 +6825,14 @@ def build_position_aware_lineup(scored_df, *, slots=None, pos_col="Primary Posit
         return out_empty
 
     df = scored_df.sort_values("Lineup Confidence", ascending=False, na_position="last").copy()
-    if pos_col not in df.columns:
-        df[pos_col] = ""
-    df["_pos_tokens"] = df[pos_col].apply(_split_primary_positions)
+    if "_pos_tokens" in df.columns:
+        df["_pos_tokens"] = df["_pos_tokens"].apply(
+            lambda x: x if isinstance(x, list) and x else _split_primary_positions("")
+        )
+    elif pos_col in df.columns:
+        df["_pos_tokens"] = df[pos_col].apply(_split_primary_positions)
+    else:
+        df["_pos_tokens"] = [[] for _ in range(len(df))]
 
     assigned_idx = set()
     lineup_rows = []
@@ -6861,6 +6946,8 @@ def lineup_diagnosis_report(
         "archetype": "",
         "strongest": [],
         "weakest": [],
+        "strongest_detail": "",
+        "weakest_detail": "",
         "balance_label": "",
         "position_note": "",
         "dragger_note": "",
@@ -6970,8 +7057,35 @@ def lineup_diagnosis_report(
     out["weakest"] = ranked.tail(2)["Category"].tolist()
     out["hitting_table"] = hit_tbl
 
-    weakest_cat = ranked.iloc[-1]["Category"] if len(ranked) else None
     strongest_cat = ranked.iloc[0]["Category"] if len(ranked) else None
+    weakest_cat = ranked.iloc[-1]["Category"] if len(ranked) else None
+
+    if strongest_cat:
+        if strongest_cat in ("AVG", "OBP"):
+            out["strongest_detail"] = _weak_category_explanation(st_df, strongest_cat, rate_col=rate_col)
+        else:
+            top = _top_category_contributors(st_df, strongest_cat if strongest_cat != "AVG" else "HR", 4)
+            if strongest_cat == "HR" and top:
+                out["strongest_detail"] = f"Strong **{strongest_cat}** — driven by {', '.join(top)}."
+            elif top:
+                out["strongest_detail"] = f"Strong **{strongest_cat}** — top contributors: {', '.join(top)}."
+    if weakest_cat:
+        rate_src_early = "OBP" if rate_col == "OBP" else "BA"
+        out["weakest_detail"] = _weak_category_explanation(
+            tm_df if weakest_cat == "SB" else st_df,
+            weakest_cat,
+            rate_col=rate_col,
+        )
+        if not out["weakest_detail"] and weakest_cat in st_df.columns:
+            sort_col = weakest_cat if weakest_cat not in ("AVG", "OBP") else rate_src_early
+            if sort_col in st_df.columns:
+                low = _top_category_contributors(
+                    st_df.sort_values(sort_col, ascending=True),
+                    sort_col,
+                    2,
+                )
+                if low:
+                    out["weakest_detail"] = f"Weak **{weakest_cat}** — thin production beyond {', '.join(low)}."
 
     z_parts = []
     if "HR" in strengths and "SB" in strengths:
@@ -18343,6 +18457,8 @@ if active_page == "Fantasy Lineup Assistant":
                     "room_your_team": st.session_state.get("room_your_team"),
                     "lineup_team": st.session_state.get("lineup_team"),
                     "lineup_format": st.session_state.get("lineup_format"),
+                    "room_format": st.session_state.get("room_format"),
+                    "standings_scoring_format": st.session_state.get("standings_scoring_format"),
                     "fantasy_state_lineup_filters": (
                         (st.session_state.get("fantasy_state") or {})
                         .get("lineup", {})
@@ -18355,11 +18471,11 @@ if active_page == "Fantasy Lineup Assistant":
         from global_fantasy_settings_state import (
             active_fantasy_team_label,
             get_active_fantasy_team,
-            normalize_league_format,
+            resolve_lineup_scoring_format,
             sync_lineup_format_from_canonical,
         )
 
-        sync_lineup_format_from_canonical(st.session_state)
+        sync_lineup_format_from_canonical(st.session_state, force=True)
         lineup_team = get_active_fantasy_team(st.session_state)
         lineup_teams = sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
         if lineup_team and lineup_team not in lineup_teams and lineup_teams:
@@ -18376,17 +18492,15 @@ if active_page == "Fantasy Lineup Assistant":
                 "To change your team, update it in **Draft Room** / **Live Draft Room**."
             )
         with l2:
-            default_lineup_format = normalize_league_format(
-                st.session_state.get("room_format") or st.session_state.get("lineup_format") or "5x5 Roto"
-            )
-            if st.session_state.get("lineup_format") == "Head-to-Head Categories":
-                default_lineup_format = "Head-to-Head Categories"
-            ensure_select_in_options("lineup_format", _lineup_format_options, default_lineup_format)
+            _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
+            st.session_state["lineup_format"] = _lineup_fmt_resolved
+            ensure_select_in_options("lineup_format", _lineup_format_options, _lineup_fmt_resolved)
             lineup_format = st.selectbox(
                 "Lineup Scoring Mode",
                 _lineup_format_options,
                 key="lineup_format",
                 on_change=fantasy_filter_changed,
+                help="Roto and Points League follow your global fantasy format (Draft Room / Standings). Head-to-Head is lineup-only.",
             )
         if developer_mode_enabled():
             with st.sidebar.expander("Lineup data trace", expanded=False):
@@ -18398,6 +18512,8 @@ if active_page == "Fantasy Lineup Assistant":
                     "lineup_team_in_options": lineup_team in lineup_teams,
                     "all_teams": lineup_teams,
                     "lineup_format": st.session_state.get("lineup_format"),
+                    "room_format": st.session_state.get("room_format"),
+                    "standings_scoring_format": st.session_state.get("standings_scoring_format"),
                     "room_your_team": st.session_state.get("room_your_team"),
                     "draft_room_pick_count": safe_collection_len(st.session_state.get("draft_room_table")),
                     "cloud_restore_source": st.session_state.get("_fantasy_restore_source"),
@@ -18452,6 +18568,7 @@ if active_page == "Fantasy Lineup Assistant":
         if team_roster.empty:
             st.warning("No players found for the selected team.")
         else:
+            team_roster = enrich_lineup_roster_positions(team_roster)
             scored = build_lineup_assistant_scores(team_roster, lineup_format, custom_weights)
             scored = scored.sort_values("Lineup Confidence", ascending=False)
 
@@ -18472,7 +18589,7 @@ if active_page == "Fantasy Lineup Assistant":
 
             st.subheader("Recommended Starters")
             st.caption(
-                "Starting lineup recommendations are position-aware and attempt to fill every required fantasy slot."
+                "Position-aware starters for your active team. **Lineup Reason** explains why each player is slotted to start."
             )
             starter_cols = [
                 "Fantasy slot",
@@ -18557,24 +18674,27 @@ if active_page == "Fantasy Lineup Assistant":
             cA, cB = st.columns(2)
             with cA:
                 st.markdown("**Strongest:** " + ", ".join(diag["strongest"]) if diag["strongest"] else "_—_")
-                st.markdown("**Weakest:** " + ", ".join(diag["weakest"]) if diag["weakest"] else "_—_")
+                if diag.get("strongest_detail"):
+                    st.caption(diag["strongest_detail"])
             with cB:
-                st.markdown(diag.get("balance_label", ""))
+                st.markdown("**Weakest:** " + ", ".join(diag["weakest"]) if diag["weakest"] else "_—_")
+                if diag.get("weakest_detail"):
+                    st.caption(diag["weakest_detail"])
             if diag.get("archetype"):
                 st.markdown(diag["archetype"])
+            if diag.get("balance_label"):
+                st.caption(diag["balance_label"])
             if diag.get("position_note"):
-                st.markdown(diag["position_note"])
-            if diag.get("dragger_note"):
-                st.markdown(diag["dragger_note"])
-            if diag.get("surplus_note"):
-                st.markdown(diag["surplus_note"])
+                st.caption(diag["position_note"])
 
             rec_df = pd.DataFrame(diag.get("recommendations") or [])
             if not rec_df.empty:
-                st.markdown("##### Actionable recommendations (3–5)")
+                st.subheader("Actionable Recommendations")
+                st.caption("Concrete next steps — trades, adds, and category repairs for your weakest areas.")
                 st.dataframe(rec_df, width="stretch", hide_index=True)
 
             st.subheader("Bench / Sit / Watch List")
+            st.caption("Borderline options not in the recommended lineup — compare **Lineup Reason** vs your starters.")
             assigned_ix = set(starters.index) if not starters.empty else set()
             bench_pool = scored.drop(index=list(assigned_ix), errors="ignore") if assigned_ix else scored
             bench = bench_pool.sort_values("Lineup Confidence", ascending=False).head(bench_rows_to_show).copy()
@@ -18584,53 +18704,6 @@ if active_page == "Fantasy Lineup Assistant":
                 file_name="lineup_bench_watch.csv",
                 display_rows=bench_rows_to_show,
             )
-
-            st.subheader("Lineup Intelligence Summary")
-            if not starters.empty:
-                intel_sorted = starters.sort_values("Lineup Confidence", ascending=False, na_position="last")
-                best_row = intel_sorted.iloc[0]
-                weakest_row = intel_sorted.iloc[-1]
-                st.success(
-                    f"Best start candidate: {best_row.get('Player', 'Unknown')} — "
-                    f"{best_row.get('Lineup Reason', '')}"
-                )
-                st.warning(
-                    f"Most questionable option: {weakest_row.get('Player', 'Unknown')} — "
-                    f"{weakest_row.get('Lineup Reason', '')}"
-                )
-            else:
-                st.info(
-                    "Assign a full position-valid lineup to compare best versus weakest **locked-in** starters here."
-                )
-
-            st.subheader("Roster Alerts")
-            alert_rows = []
-            for _, r in scored.iterrows():
-                player = r.get("Player", "")
-                rec = r.get("Start/Sit Recommendation", "")
-                mom = pd.to_numeric(r.get("Momentum Score", np.nan), errors="coerce")
-                conf = pd.to_numeric(r.get("Lineup Confidence", np.nan), errors="coerce")
-                vol = pd.to_numeric(r.get("Volatility Meter", np.nan), errors="coerce")
-                if rec in ["Start", "Lean Start"]:
-                    alert_rows.append({"Player": player, "Alert Type": "Start Signal", "Alert": "Strong lineup option based on current production and confidence score."})
-                elif rec in ["Sit", "Bench / Risk"]:
-                    alert_rows.append({"Player": player, "Alert Type": "Sit / Risk Signal", "Alert": "Lower confidence profile; consider benching unless matchup context is favorable."})
-                if pd.notna(mom) and mom >= 0.75 and pd.notna(conf) and conf < 0.60:
-                    alert_rows.append({"Player": player, "Alert Type": "High-Upside Volatile", "Alert": "Momentum is interesting, but overall confidence is not elite."})
-                if pd.notna(vol) and vol >= 0.75:
-                    alert_rows.append({"Player": player, "Alert Type": "Volatility Meter", "Alert": "Higher boom/bust profile; useful in upside-seeking lineup decisions."})
-
-            alerts_df = pd.DataFrame(alert_rows)
-            if alerts_df.empty:
-                st.info("No major lineup alerts were detected.")
-            else:
-                render_output_table(
-                    clean_ui_columns(alerts_df),
-                    key="lineup_alerts",
-                    file_name="lineup_alerts.csv",
-                    display_rows=30
-                )
-
 
             st.divider()
             st.subheader("🔁 Trade Analyzer / Roster Move Assistant")

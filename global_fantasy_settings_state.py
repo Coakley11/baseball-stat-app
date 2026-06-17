@@ -61,6 +61,8 @@ _GLOBAL_SNAPSHOT_EXCLUDED: frozenset[str] = frozenset(
         *FORMAT_ALIASES.keys(),
         *LIVE_FORMAT_ALIASES.keys(),
         "live_draft_my_team",
+        # Roto/points always mirror room_format; only H2H is lineup-local (see resolve_lineup_scoring_format).
+        "lineup_format",
     }
 )
 
@@ -228,10 +230,14 @@ def _lineup_format_is_h2h(session: dict[str, Any]) -> bool:
 
 def sync_lineup_format_from_canonical(session: dict[str, Any], *, force: bool = False) -> None:
     """Mirror canonical roto/points into lineup_format unless user chose H2H."""
+    session["lineup_format"] = resolve_lineup_scoring_format(session, force=force)
+
+
+def resolve_lineup_scoring_format(session: dict[str, Any], *, force: bool = False) -> str:
+    """Return the scoring format Lineup Assistant should use (canonical unless H2H)."""
     if _lineup_format_is_h2h(session) and not force:
-        return
-    fmt = normalize_league_format(session.get(GLOBAL_FORMAT_KEY) or CANONICAL_ROTO)
-    session["lineup_format"] = fmt
+        return LINEUP_H2H_FORMAT
+    return normalize_league_format(session.get(GLOBAL_FORMAT_KEY) or CANONICAL_ROTO)
 
 
 def _mirror_globals_to_aliases(session: dict[str, Any]) -> None:

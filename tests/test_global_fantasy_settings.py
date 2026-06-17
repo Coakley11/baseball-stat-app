@@ -124,6 +124,26 @@ class TestLineupFormatSync(unittest.TestCase):
         sync_lineup_format_from_canonical(session)
         self.assertEqual(session["lineup_format"], "Head-to-Head Categories")
 
+    def test_lineup_format_excluded_from_page_snapshot(self) -> None:
+        import page_state as pg
+        from global_fantasy_settings_state import global_settings_snapshot_excluded_keys
+
+        self.assertIn("lineup_format", global_settings_snapshot_excluded_keys())
+        session = {
+            "room_format": CANONICAL_POINTS,
+            "lineup_format": CANONICAL_ROTO,
+            "lineup_bench_rows": 12,
+            "page_filter_state": {
+                "Fantasy Lineup Assistant": {
+                    "lineup_format": CANONICAL_ROTO,
+                    "lineup_bench_rows": 8,
+                }
+            },
+        }
+        pg.restore_page_state(session, "Fantasy Lineup Assistant", session["page_filter_state"])
+        self.assertEqual(session["lineup_bench_rows"], 8)
+        # lineup_format not restored from snapshot — global sync applies on page load.
+
     def test_lineup_format_change_updates_canonical(self) -> None:
         from global_fantasy_settings_state import on_lineup_format_changed
 
