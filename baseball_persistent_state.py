@@ -300,6 +300,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
         sync_live_draft_session_before_save(ss)
     except ImportError:
         pass
+    try:
+        from draft_lab_state import sync_draft_lab_session_before_save
+
+        sync_draft_lab_session_before_save(ss)
+    except ImportError:
+        pass
     active = ss.get("active_page")
     if active:
         try:

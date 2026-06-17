@@ -16810,6 +16810,13 @@ if active_page == "Draft Room Simulator":
 
 
 if active_page == "Draft Simulation Test Mode":
+    try:
+        from draft_lab_state import ensure_draft_lab_widget_keys
+
+        ensure_draft_lab_widget_keys(st.session_state)
+    except ImportError:
+        pass
+
     render_section_header(
         "🧪 Draft Simulation Test Mode",
         "A portfolio-style fantasy draft lab: four teams, snake format, Draft Assistant-style decisions, post-draft analysis, exports, and trade ideas.",
@@ -16837,6 +16844,12 @@ if active_page == "Draft Simulation Test Mode":
     lc1, lc2, lc3, lc4 = st.columns(4)
     with lc1:
         def _draft_sim_setting_changed():
+            try:
+                from draft_lab_state import ensure_draft_lab_widget_keys
+
+                ensure_draft_lab_widget_keys(st.session_state)
+            except ImportError:
+                pass
             save_page_state("Draft Simulation Test Mode")
             force_save_baseball_state(st, reason="draft_sim_settings_changed")
             _record_settings_onchange("Draft Simulation Test Mode", "_draft_sim_setting_changed", "draft_sim_settings_changed")

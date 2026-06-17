@@ -224,14 +224,21 @@ def _collect_keys_for_page(session, page_name: str) -> list:
 def save_page_state(session, page_name: str, store: dict):
     """Snapshot widget keys for a page into ``store[page_name]``."""
     page_name = str(page_name)
+    existing = store.get(page_name) if isinstance(store.get(page_name), dict) else {}
     snapshot = {}
     for key in _collect_keys_for_page(session, page_name):
-        if key not in session:
-            continue
-        try:
-            snapshot[key] = copy.deepcopy(session[key])
-        except Exception:
-            snapshot[key] = session[key]
+        if key in session:
+            try:
+                snapshot[key] = copy.deepcopy(session[key])
+            except Exception:
+                snapshot[key] = session[key]
+        elif key in existing:
+            # on_change callbacks run before widgets render; keep prior snapshot
+            # values for keys not yet repopulated in session this rerun.
+            try:
+                snapshot[key] = copy.deepcopy(existing[key])
+            except Exception:
+                snapshot[key] = existing[key]
     if snapshot:
         store[page_name] = snapshot
 
