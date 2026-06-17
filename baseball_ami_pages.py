@@ -237,6 +237,15 @@ def detect_sleepers_send_intent(question: str) -> str:
         return "bust_risk_review"
     if "bust" in low and re.search(r"\b(?:draft|consider|take|pick|should|target)\b", low):
         return "bust_risk_review"
+    if "sleeper" in low and (
+        "combination" in low
+        or ("upside" in low and ("safety" in low or "safest" in low))
+        or "balanced" in low
+        or "highest upside" in low
+        or re.search(r"best.{0,30}(upside|balance|combination|safety)", low)
+        or "risk-adjusted" in low
+    ):
+        return "sleeper_ranking"
     if named_player or "sleeper" in low:
         return "sleeper_take"
     return "sleepers_general"
@@ -372,6 +381,18 @@ def finalize_sleepers_context_for_send(
         ctx.pop("player_a", None)
         ctx.pop("player_b", None)
         apply_market_bust_context_at_send(ctx, session_state, question=q, intent=intent)
+        return
+
+    if intent == "sleeper_ranking":
+        ctx.pop("player_a", None)
+        ctx.pop("player_b", None)
+        ctx.pop("question_player", None)
+        ctx.pop("player", None)
+        ctx.pop("sleeper_focus", None)
+        ctx["routing_hint"] = "sleeper_ranking"
+        ctx["problem_type_hint"] = "sleeper_ranking"
+        ctx["intent"] = "sleeper_ranking_analysis"
+        ctx["market_section"] = "Fantasy Sleepers & Busts"
         return
 
     # Two-player comparison on sleepers page: validate sleeper recommendation using snapshot data.

@@ -16,6 +16,10 @@ class TestSleepersSendIntent(unittest.TestCase):
         q = "Are there any players in Market Bust Risks that I should consider drafting?"
         self.assertEqual(detect_sleepers_send_intent(q), "bust_risk_review")
 
+    def test_sleeper_ranking_intent(self) -> None:
+        q = "Which sleeper has the best combination of upside and safety?"
+        self.assertEqual(detect_sleepers_send_intent(q), "sleeper_ranking")
+
     def test_named_sleeper_question(self) -> None:
         q = "Should I draft Nathan Lukes in this draft since he is a top sleeper?"
         self.assertEqual(detect_sleepers_send_intent(q), "sleeper_take")
@@ -99,6 +103,23 @@ class TestFinalizeSleepersContext(unittest.TestCase):
         self.assertEqual(ctx.get("intent"), "bust_risk_analysis")
         self.assertNotIn("sleeper_focus", ctx)
         self.assertGreaterEqual(len(ctx.get("bust_risks") or []), 1)
+
+    def test_finalize_sleeper_ranking_routing(self) -> None:
+        session = {
+            "_ami_sleepers_snapshot": {
+                "sleeper_candidates": [
+                    {"player": "Nathan Lukes", "Fantasy Edge": 226, "Expert Std Dev": 12.5, "ADP": 326},
+                    {"player": "Isaac Collins", "Fantasy Edge": 180, "Expert Std Dev": 28.0, "ADP": 280},
+                ],
+            }
+        }
+        ctx: dict = {}
+        question = "Which sleeper has the best combination of upside and safety?"
+        finalize_sleepers_context_for_send(ctx, session, question=question)
+        self.assertEqual(ctx.get("routing_hint"), "sleeper_ranking")
+        self.assertEqual(ctx.get("intent"), "sleeper_ranking_analysis")
+        self.assertNotIn("sleeper_focus", ctx)
+        self.assertGreaterEqual(len(ctx.get("sleeper_candidates") or []), 2)
 
 
 if __name__ == "__main__":
