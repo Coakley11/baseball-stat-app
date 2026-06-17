@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+from dataframe_utils import coerce_dataframe, is_dataframe_empty, safe_collection_len
 import numpy as np
 import matplotlib.pyplot as plt
 import altair as alt
@@ -9766,7 +9767,7 @@ def _render_live_draft_rec_cards(rec_df, max_cards=6):
 
 def live_draft_push_analysis_to_session(room):
     lab_draft = live_draft_to_lab_draft_df(room)
-    if lab_draft.empty:
+    if is_dataframe_empty(lab_draft):
         return False
     team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(lab_draft, yearly_df)
     trades = suggest_draft_lab_trades(lab_draft, team_summary, max_suggestions=12)
@@ -16947,18 +16948,20 @@ if active_page == "Draft Simulation Test Mode":
                     pass
 
     lab_state = st.session_state.get("draft_lab_results", {})
-    lab_draft = lab_state.get("draft", pd.DataFrame())
-    lab_team_summary = lab_state.get("team_summary", pd.DataFrame())
-    lab_strengths = lab_state.get("strengths", pd.DataFrame())
-    lab_pick_analysis = lab_state.get("pick_analysis", pd.DataFrame())
-    lab_gaps = lab_state.get("gaps", pd.DataFrame())
-    lab_actual_summary = lab_state.get("actual_summary", pd.DataFrame())
-    lab_trades = lab_state.get("trades", pd.DataFrame())
+    if not isinstance(lab_state, dict):
+        lab_state = {}
+    lab_draft = coerce_dataframe(lab_state.get("draft"))
+    lab_team_summary = coerce_dataframe(lab_state.get("team_summary"))
+    lab_strengths = coerce_dataframe(lab_state.get("strengths"))
+    lab_pick_analysis = coerce_dataframe(lab_state.get("pick_analysis"))
+    lab_gaps = coerce_dataframe(lab_state.get("gaps"))
+    lab_actual_summary = coerce_dataframe(lab_state.get("actual_summary"))
+    lab_trades = coerce_dataframe(lab_state.get("trades"))
 
-    if lab_draft is None or lab_draft.empty:
+    if is_dataframe_empty(lab_draft):
         st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab.")
     else:
-        if not lab_team_summary.empty:
+        if not is_dataframe_empty(lab_team_summary):
             winner = lab_team_summary.sort_values("Projected Team Rank").iloc[0]
             w1, w2, w3, w4 = st.columns(4)
             w1.metric("Projected Best Draft", winner["Fantasy Team"])
@@ -16966,7 +16969,7 @@ if active_page == "Draft Simulation Test Mode":
             w3.metric("Total Picks", f"{len(lab_draft):,}")
             w4.metric("Teams", "4")
 
-        if lab_actual_summary is not None and not lab_actual_summary.empty:
+        if not is_dataframe_empty(lab_actual_summary):
             actual_winner = lab_actual_summary.sort_values("Actual Rank").iloc[0]
             st.success(f"Actual 2026 stats are available. Actual draft winner so far: **{actual_winner['Fantasy Team']}**.")
         else:
@@ -17054,7 +17057,7 @@ if active_page == "Draft Simulation Test Mode":
             if lab_gaps is not None and not lab_gaps.empty:
                 st.subheader("Position Gaps")
                 render_output_table(clean_ui_columns(lab_gaps), key="draft_lab_position_gaps", file_name="draft_simulation_position_gaps.csv", display_rows=40)
-            if lab_actual_summary is not None and not lab_actual_summary.empty:
+            if not is_dataframe_empty(lab_actual_summary):
                 st.subheader("Actual 2026 Results Check")
                 render_output_table(
                     clean_ui_columns(lab_actual_summary),
@@ -17097,7 +17100,7 @@ if active_page == "Draft Simulation Test Mode":
                 format_draft_lab_table(lab_pick_analysis.copy(), for_export=True) if lab_pick_analysis is not None and not lab_pick_analysis.empty else lab_pick_analysis,
                 format_draft_lab_table(lab_gaps.copy(), for_export=True) if lab_gaps is not None and not lab_gaps.empty else lab_gaps,
                 format_draft_lab_table(lab_trades.copy(), for_export=True) if lab_trades is not None and not lab_trades.empty else lab_trades,
-                format_draft_lab_table(lab_actual_summary.copy(), for_export=True) if lab_actual_summary is not None and not lab_actual_summary.empty else lab_actual_summary,
+                format_draft_lab_table(lab_actual_summary.copy(), for_export=True) if not is_dataframe_empty(lab_actual_summary) else lab_actual_summary,
             )
             st.download_button(
                 "Download Full Draft Lab CSV",
@@ -18163,7 +18166,7 @@ if active_page == "Fantasy Lineup Assistant":
     if roster_stats.empty:
         _stats_loaded_at = st.session_state.get("_fantasy_standings_stats_loaded_at")
         _stats_source = st.session_state.get("_fantasy_standings_stats_source", "")
-        _draft_pick_count = len(st.session_state.get("draft_room_table") or [])
+        _draft_pick_count = safe_collection_len(st.session_state.get("draft_room_table"))
         if _stats_loaded_at:
             st.warning(
                 f"Roster stats were loaded this session at {_stats_loaded_at[:19]} UTC "
@@ -18229,7 +18232,7 @@ if active_page == "Fantasy Lineup Assistant":
                     "all_teams": lineup_teams,
                     "lineup_format": st.session_state.get("lineup_format"),
                     "room_your_team": st.session_state.get("room_your_team"),
-                    "draft_room_pick_count": len(st.session_state.get("draft_room_table") or []),
+                    "draft_room_pick_count": safe_collection_len(st.session_state.get("draft_room_table")),
                     "cloud_restore_source": st.session_state.get("_fantasy_restore_source"),
                 }
                 for _k, _v in _lu_diag.items():

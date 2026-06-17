@@ -147,6 +147,9 @@ _COMPARISON_CAPTURE_PREFIXES = (
     "is ",
     "was ",
     "were ",
+    "did ",
+    "does ",
+    "do ",
     "who is ",
     "who was ",
     "who's ",
@@ -258,6 +261,39 @@ def extract_comparison_players_from_question(question: str) -> tuple[str, str]:
         b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
         if len(a) >= 3 and len(b) >= 3:
             return a, b
+    # Peak / prime comparisons (Historical Explorer) — before generic "better X than"
+    m = re.search(
+        r"(?:did|does|do)\s+(.+?)\s+have\s+a\s+better\s+"
+        r"(?:peak|prime|stretch|run|season|years?)\s+than\s+(.+?)(?:\?|\s*$)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3:
+            return a, b
+    m = re.search(
+        r"who\s+had\s+the\s+better\s+(?:peak|prime|years?|stretch|run)\s*,?\s*(.+?)\s+or\s+(.+?)(?:\?|\s*$)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3:
+            return a, b
+    m = re.search(
+        r"(?:was|is|were)\s+(.+?)\s+(?:a\s+)?better\s+"
+        r"(?:peak|prime|stretch|run|season|years?)\s+than\s+(.+?)(?:\?|\s*$)",
+        q,
+        flags=re.I,
+    )
+    if m:
+        a = _clean_comparison_player_capture(q[m.start(1) : m.end(1)])
+        b = _clean_comparison_player_capture(q[m.start(2) : m.end(2)])
+        if len(a) >= 3 and len(b) >= 3:
+            return a, b
     # "X a better <thing> than Y [modifier]" — e.g. "Is Misner a better pick than Stone Garrett"
     m = re.search(
         r"(.+?)\s+(?:a\s+)?better\s+\w+\s+than\s+(.+?)"
@@ -329,6 +365,31 @@ def extract_season_constraint_from_question(question: str) -> str:
             if 1850 <= start <= 2100 and 1850 <= end <= 2100 and start <= end:
                 return f"{start}-{end}"
     return ""
+
+
+def is_peak_comparison_question(question: str) -> bool:
+    """Detect peak/prime/best-years comparison intent (Historical Explorer)."""
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    peak_phrases = (
+        "better peak",
+        "better prime",
+        "best peak",
+        "best prime",
+        "best years",
+        "best season",
+        "best 3-year",
+        "best three-year",
+        "best 5-year",
+        "best five-year",
+        "stronger peak",
+        "higher peak",
+        "better stretch",
+    )
+    if any(p in q for p in peak_phrases):
+        return True
+    return bool(re.search(r"\bbest\s+\d+-year", q))
 
 
 def attach_question_player_to_context(

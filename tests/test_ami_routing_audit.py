@@ -153,5 +153,33 @@ class TestDraftRosterWeaknessRouting(unittest.TestCase):
         self.assertIn("Daniel", team, f"Expected 'Daniel' in result, got {team!r}")
 
 
+# ---------------------------------------------------------------------------
+# CASE 5 — Historical Explorer: peak comparison extraction
+# ---------------------------------------------------------------------------
+class TestHistoricalPeakComparison(unittest.TestCase):
+    Q = "Did David Wright have a better peak than Carlos Beltran?"
+
+    def test_extract_peak_players(self) -> None:
+        a, b = extract_comparison_players_from_question(self.Q)
+        self.assertIn("wright", a.lower())
+        self.assertIn("beltran", b.lower())
+
+    def test_peak_intent(self) -> None:
+        from applied_math_context import is_peak_comparison_question
+
+        self.assertTrue(is_peak_comparison_question(self.Q))
+
+    def test_finalize_historical_preserves_players(self) -> None:
+        from baseball_ami_pages import finalize_historical_context_for_send
+
+        ctx: dict = {}
+        session: dict = {"_ami_historical_snapshot": {"sort_stat": "OPS", "year_range": "1990–2010"}}
+        finalize_historical_context_for_send(ctx, session, question=self.Q)
+        self.assertEqual(ctx.get("player_a"), "David Wright")
+        self.assertEqual(ctx.get("player_b"), "Carlos Beltran")
+        self.assertTrue(ctx.get("peak_comparison_mode"))
+        self.assertTrue(ctx.get("historical_comparison"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -677,7 +677,12 @@ def build_valuation_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def finalize_historical_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
+def finalize_historical_context_for_send(
+    ctx: dict[str, Any],
+    session_state: dict[str, Any],
+    *,
+    question: str = "",
+) -> None:
     """Promote Historical Explorer snapshot + active filters into send payload."""
     snap = session_state.get("_ami_historical_snapshot")
     if isinstance(snap, dict) and snap:
@@ -702,10 +707,41 @@ def finalize_historical_context_for_send(ctx: dict[str, Any], session_state: dic
     if sort_stat:
         ctx.setdefault("metrics", [str(sort_stat)])
 
-    ctx["routing_hint"] = "historical_analysis"
-    ctx["intent"] = "historical_analysis"
-    ctx.pop("player_a", None)
-    ctx.pop("player_b", None)
+    q = str(question or ctx.get("question") or "").strip()
+    try:
+        from applied_math_context import extract_comparison_players_from_question, is_peak_comparison_question
+
+        comp_a, comp_b = extract_comparison_players_from_question(q)
+    except ImportError:
+        comp_a, comp_b = "", ""
+        is_peak_comparison_question = lambda _q: False  # type: ignore[assignment]
+
+    if comp_a and comp_b:
+        ctx["player_a"] = comp_a
+        ctx["player_b"] = comp_b
+        ctx["players"] = [comp_a, comp_b]
+        ctx["historical_comparison"] = True
+        if is_peak_comparison_question(q):
+            ctx["peak_comparison_mode"] = True
+            ctx["routing_hint"] = "historical_peak_comparison"
+            ctx["problem_type_hint"] = "historical_peak_comparison"
+            ctx["intent"] = "historical_peak_comparison"
+            sort_stat = str(ctx.get("metrics") or ["OPS"])[0] if isinstance(ctx.get("metrics"), list) else "OPS"
+            ctx["ami_guidance"] = (
+                f"Compare the career peak of {comp_a} vs {comp_b} using Historical Explorer "
+                f"season data. Identify each player's best single-season (or best multi-year "
+                f"stretch if asked) in {sort_stat} and supporting categories under the active "
+                f"filters ({ctx.get('filters_applied') or ctx.get('year_range') or 'all years'}). "
+                f"State which player had the stronger peak and cite the actual peak-season values."
+            )
+        else:
+            ctx["routing_hint"] = "historical_player_comparison"
+            ctx["intent"] = "historical_player_comparison"
+    else:
+        ctx["routing_hint"] = "historical_analysis"
+        ctx["intent"] = "historical_analysis"
+        ctx.pop("player_a", None)
+        ctx.pop("player_b", None)
 
 
 def build_historical_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -785,7 +821,7 @@ def promote_page_ami_context_at_send(
         diag = build_valuation_send_diagnostics(ctx)
         ctx["valuation_send_diagnostics"] = diag
     elif "historical" in low:
-        finalize_historical_context_for_send(ctx, session_state)
+        finalize_historical_context_for_send(ctx, session_state, question=question)
         diag = build_historical_send_diagnostics(ctx)
         ctx["historical_send_diagnostics"] = diag
     elif "career" in low:
