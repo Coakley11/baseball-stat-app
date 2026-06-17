@@ -1454,6 +1454,21 @@ def cache_page_context(session_state: dict[str, Any], page: str, ctx: dict[str, 
     session_state["_ami_context_by_page"] = store
 
 
+def _should_skip_ami_page_cache(session_state: dict[str, Any], page: str, sig: tuple[Any, ...]) -> bool:
+    """Skip expensive AMI context rebuild when draft/board inputs are unchanged."""
+    sig_store = session_state.setdefault("_ami_page_cache_sigs", {})
+    if not isinstance(sig_store, dict):
+        sig_store = {}
+    page_key = str(page)
+    if sig_store.get(page_key) == sig:
+        ctx_store = session_state.get("_ami_context_by_page")
+        if isinstance(ctx_store, dict) and ctx_store.get(page_key):
+            return True
+    sig_store[page_key] = sig
+    session_state["_ami_page_cache_sigs"] = sig_store
+    return False
+
+
 def get_cached_page_context(session_state: dict[str, Any], page: str) -> dict[str, Any]:
     store = session_state.get("_ami_context_by_page")
     if not isinstance(store, dict):
@@ -1498,6 +1513,23 @@ def cache_draft_assistant_ami_context(
         from draft_state import gather_draft_ami_snapshot
     except Exception as exc:
         log.exception("cache_draft_assistant_ami_context imports failed: %s", exc)
+        return
+
+    cache_sig = (
+        int(current_pick),
+        int(drafted_total),
+        tuple(sorted(str(p) for p in (drafted_players or [])[:48])),
+        tuple(sorted(str(p) for p in (my_roster or [])[:16])),
+        str(draft_format),
+        str(assistant_team),
+        tuple(sorted(str(p) for p in (needed_positions or [])[:8])),
+        tuple(sorted(str(c) for c in (category_needs or [])[:8])),
+        int(session_state.get("draft_pick_adjustment") or 0),
+        str(session_state.get("fantasy_draft_projection_style") or ""),
+        int(session_state.get("draft_window") or 3),
+        bool(session_state.get("draft_use_ml_blend")),
+    )
+    if _should_skip_ami_page_cache(session_state, page, cache_sig):
         return
 
     draft_proj: dict[str, Any] = {
@@ -1653,6 +1685,19 @@ def cache_live_draft_ami_context(
         from draft_ami_helpers import compact_recommendation_rows, draft_ami_guidance, gather_live_draft_ami_section
         from draft_state import gather_draft_ami_snapshot
     except Exception:
+        return
+
+    room = room if isinstance(room, dict) else {}
+    slot = room.get("current_slot") or room.get("slot")
+    picks = room.get("picks") if isinstance(room.get("picks"), list) else []
+    cache_sig = (
+        str(room.get("status") or ""),
+        int(slot or 0),
+        len(picks),
+        str(room.get("user_team") or session_state.get("live_draft_user_team") or ""),
+        str(session_state.get("live_draft_scoring") or ""),
+    )
+    if _should_skip_ami_page_cache(session_state, page, cache_sig):
         return
 
     live_section = gather_live_draft_ami_section(session_state, room)

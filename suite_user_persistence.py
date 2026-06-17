@@ -890,8 +890,33 @@ def sync_workspace_protocol(
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
 
+    try:
+        from page_perf import perf_end, perf_timer
+
+        _t_cloud = perf_timer(st.session_state, "cloud_fetch")
+    except ImportError:
+        _t_cloud = 0.0
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
+    try:
+        from page_perf import perf_end
+
+        perf_end(st.session_state, "cloud_fetch", _t_cloud)
+    except ImportError:
+        pass
+
+    try:
+        from page_perf import perf_timer
+
+        _t_disk = perf_timer(st.session_state, "disk_load")
+    except ImportError:
+        _t_disk = 0.0
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
+    try:
+        from page_perf import perf_end
+
+        perf_end(st.session_state, "disk_load", _t_disk)
+    except ImportError:
+        pass
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
 
@@ -1081,6 +1106,12 @@ def sync_workspace_protocol(
         return False
 
     try:
+        from page_perf import perf_end, perf_timer
+
+        _t_apply = perf_timer(st.session_state, "workspace_apply")
+    except ImportError:
+        _t_apply = 0.0
+    try:
         apply_state(st, picked.state)
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
@@ -1092,6 +1123,12 @@ def sync_workspace_protocol(
             reason=str(exc), applied=False,
         )
         return False
+    try:
+        from page_perf import perf_end
+
+        perf_end(st.session_state, "workspace_apply", _t_apply)
+    except ImportError:
+        pass
 
     _lock_fingerprint_after_restore(st, app_id, picked.state)
     st.session_state[synced_key] = True

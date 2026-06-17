@@ -7,6 +7,7 @@ from dataframe_utils import (
     has_dataframe_column,
     is_dataframe_empty,
     safe_collection_len,
+    safe_merge_dataframes,
     safe_sort_dataframe,
 )
 import numpy as np
@@ -16926,6 +16927,12 @@ if active_page == "Draft Simulation Test Mode":
 
     run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
     if run_lab:
+        try:
+            from page_perf import perf_end, perf_timer
+
+            _t_sim = perf_timer(st.session_state, "draft_lab_simulation")
+        except ImportError:
+            _t_sim = 0.0
         with st.spinner("Building draft pool and simulating 60 picks..."):
             lab_pool = build_unified_draft_player_pool(
                 yearly_df,
@@ -16950,21 +16957,26 @@ if active_page == "Draft Simulation Test Mode":
                 "actual_summary": lab_actual_summary,
                 "trades": lab_trades,
             }
-            if run_lab:
-                try:
-                    from baseball_activity import log_draft_prep, log_roster_build
+        try:
+            from page_perf import perf_end
 
-                    lab_sig = (lab_format, lab_window, int(lab_picks_per_team))
-                    if st.session_state.get("_cc_draft_lab_activity_sig") != lab_sig:
-                        st.session_state["_cc_draft_lab_activity_sig"] = lab_sig
-                        log_draft_prep(context=lab_format, teams="4-team draft lab")
-                        if has_dataframe_column(lab_team_summary, "Projected Team Rank"):
-                            top_team = str(
-                                safe_sort_dataframe(lab_team_summary, "Projected Team Rank").iloc[0]["Fantasy Team"]
-                            )
-                            log_roster_build(team=top_team)
-                except Exception:
-                    pass
+            perf_end(st.session_state, "draft_lab_simulation", _t_sim)
+        except ImportError:
+            pass
+        try:
+            from baseball_activity import log_draft_prep, log_roster_build
+
+            lab_sig = (lab_format, lab_window, int(lab_picks_per_team))
+            if st.session_state.get("_cc_draft_lab_activity_sig") != lab_sig:
+                st.session_state["_cc_draft_lab_activity_sig"] = lab_sig
+                log_draft_prep(context=lab_format, teams="4-team draft lab")
+                if has_dataframe_column(lab_team_summary, "Projected Team Rank"):
+                    _top_sorted = safe_sort_dataframe(lab_team_summary, "Projected Team Rank")
+                    if has_dataframe_column(_top_sorted, "Fantasy Team"):
+                        top_team = str(_top_sorted.iloc[0]["Fantasy Team"])
+                        log_roster_build(team=top_team)
+        except Exception:
+            pass
 
     lab_state = st.session_state.get("draft_lab_results", {})
     if not isinstance(lab_state, dict):
@@ -16981,19 +16993,27 @@ if active_page == "Draft Simulation Test Mode":
         st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab.")
     else:
         rank_col = "Projected Team Rank"
-        if has_dataframe_column(lab_team_summary, rank_col):
-            winner = safe_sort_dataframe(lab_team_summary, rank_col).iloc[0]
+        team_col = "Fantasy Team"
+        sorted_summary = safe_sort_dataframe(lab_team_summary, rank_col)
+        if not is_dataframe_empty(sorted_summary) and has_dataframe_column(sorted_summary, team_col):
+            winner = sorted_summary.iloc[0]
             w1, w2, w3, w4 = st.columns(4)
-            w1.metric("Projected Best Draft", winner["Fantasy Team"])
-            w2.metric("Projected Value", fmt_score_2(winner["Total Projected Fantasy Value"]))
+            w1.metric("Projected Best Draft", winner[team_col])
+            if "Total Projected Fantasy Value" in sorted_summary.columns:
+                w2.metric("Projected Value", fmt_score_2(winner["Total Projected Fantasy Value"]))
+            else:
+                w2.metric("Projected Value", "—")
             w3.metric("Total Picks", f"{len(lab_draft):,}")
             w4.metric("Teams", "4")
         else:
             st.info("Run the draft simulation to generate team rankings.")
 
-        if has_dataframe_column(lab_actual_summary, "Actual Rank"):
-            actual_winner = safe_sort_dataframe(lab_actual_summary, "Actual Rank").iloc[0]
-            st.success(f"Actual 2026 stats are available. Actual draft winner so far: **{actual_winner['Fantasy Team']}**.")
+        sorted_actual = safe_sort_dataframe(lab_actual_summary, "Actual Rank")
+        if not is_dataframe_empty(sorted_actual) and has_dataframe_column(sorted_actual, team_col):
+            actual_winner = sorted_actual.iloc[0]
+            st.success(
+                f"Actual 2026 stats are available. Actual draft winner so far: **{actual_winner[team_col]}**."
+            )
         elif not is_dataframe_empty(lab_actual_summary):
             st.info("Actual 2026 team rankings are not available in the restored simulation data.")
         else:
@@ -17026,7 +17046,10 @@ if active_page == "Draft Simulation Test Mode":
             if developer_mode_enabled():
                 with st.expander("Draft Scoring Breakdown", expanded=False):
                     st.caption("Pick-level component contributions from the draft scoring engine.")
-                    _lab_brk_opts = [""] + lab_draft["fullName"].astype(str).head(25).tolist()
+                    if "fullName" in lab_draft.columns:
+                        _lab_brk_opts = [""] + lab_draft["fullName"].astype(str).head(25).tolist()
+                    else:
+                        _lab_brk_opts = [""]
                     _lab_brk_player = st.selectbox("Inspect player", _lab_brk_opts, key="draft_lab_breakdown_player")
                     render_draft_scoring_breakdown(
                         lab_draft,
@@ -17056,7 +17079,10 @@ if active_page == "Draft Simulation Test Mode":
         with tabs[1]:
             st.subheader("Team Rosters")
             team_view = st.selectbox("View Team", ["All Teams", "Team A", "Team B", "Team C", "Team D"], key="draft_lab_roster_team")
-            roster_filtered = roster_view if team_view == "All Teams" else roster_view[roster_view["Fantasy Team"] == team_view]
+            if team_view == "All Teams" or not has_dataframe_column(roster_view, "Fantasy Team"):
+                roster_filtered = roster_view
+            else:
+                roster_filtered = roster_view[roster_view["Fantasy Team"] == team_view]
             render_output_table(
                 clean_ui_columns(roster_filtered),
                 key="draft_lab_rosters",
@@ -17067,17 +17093,17 @@ if active_page == "Draft Simulation Test Mode":
 
         with tabs[2]:
             st.subheader("Final Team Rankings")
-            if not is_dataframe_empty(lab_strengths):
-                team_analysis = lab_team_summary.merge(lab_strengths, on="Fantasy Team", how="left")
+            team_analysis = safe_merge_dataframes(lab_team_summary, lab_strengths, "Fantasy Team", how="left")
+            if is_dataframe_empty(team_analysis):
+                st.info("Team ranking data is not available yet. Run the draft simulation.")
             else:
-                team_analysis = lab_team_summary
-            render_output_table(
-                clean_ui_columns(team_analysis),
-                key="draft_lab_team_analysis",
-                file_name="draft_simulation_team_analysis.csv",
-                display_rows=20,
-                style_cols=["Total Projected Fantasy Value", "Average Fantasy Edge", "Average Scarcity Score"],
-            )
+                render_output_table(
+                    clean_ui_columns(team_analysis),
+                    key="draft_lab_team_analysis",
+                    file_name="draft_simulation_team_analysis.csv",
+                    display_rows=20,
+                    style_cols=["Total Projected Fantasy Value", "Average Fantasy Edge", "Average Scarcity Score"],
+                )
             if lab_gaps is not None and not lab_gaps.empty:
                 st.subheader("Position Gaps")
                 render_output_table(clean_ui_columns(lab_gaps), key="draft_lab_position_gaps", file_name="draft_simulation_position_gaps.csv", display_rows=40)
@@ -17103,7 +17129,7 @@ if active_page == "Draft Simulation Test Mode":
         with tabs[4]:
             st.subheader("Trade Simulator")
             st.caption("One-for-one trade ideas based on projected value, team weaknesses, position scarcity, and roster needs. These are discussion starters, not forced recommendations.")
-            if lab_trades is None or lab_trades.empty:
+            if is_dataframe_empty(lab_trades):
                 st.info("No clear trade ideas found from this simulated draft. Try rerunning with a different projection style or format.")
             else:
                 render_output_table(
@@ -17119,11 +17145,11 @@ if active_page == "Draft Simulation Test Mode":
             export_frames = build_draft_lab_export_frames(
                 format_draft_lab_table(draft_board.copy(), for_export=True),
                 format_draft_lab_table(roster_view.copy(), for_export=True),
-                format_draft_lab_table(lab_team_summary.copy(), for_export=True),
-                format_draft_lab_table(lab_strengths.copy(), for_export=True) if lab_strengths is not None and not lab_strengths.empty else lab_strengths,
-                format_draft_lab_table(lab_pick_analysis.copy(), for_export=True) if lab_pick_analysis is not None and not lab_pick_analysis.empty else lab_pick_analysis,
-                format_draft_lab_table(lab_gaps.copy(), for_export=True) if lab_gaps is not None and not lab_gaps.empty else lab_gaps,
-                format_draft_lab_table(lab_trades.copy(), for_export=True) if lab_trades is not None and not lab_trades.empty else lab_trades,
+                format_draft_lab_table(lab_team_summary.copy(), for_export=True) if not is_dataframe_empty(lab_team_summary) else lab_team_summary,
+                format_draft_lab_table(lab_strengths.copy(), for_export=True) if not is_dataframe_empty(lab_strengths) else lab_strengths,
+                format_draft_lab_table(lab_pick_analysis.copy(), for_export=True) if not is_dataframe_empty(lab_pick_analysis) else lab_pick_analysis,
+                format_draft_lab_table(lab_gaps.copy(), for_export=True) if not is_dataframe_empty(lab_gaps) else lab_gaps,
+                format_draft_lab_table(lab_trades.copy(), for_export=True) if not is_dataframe_empty(lab_trades) else lab_trades,
                 format_draft_lab_table(lab_actual_summary.copy(), for_export=True) if not is_dataframe_empty(lab_actual_summary) else lab_actual_summary,
             )
             st.download_button(

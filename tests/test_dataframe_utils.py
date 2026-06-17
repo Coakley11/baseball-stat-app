@@ -8,14 +8,38 @@ import numpy as np
 import pandas as pd
 
 from dataframe_utils import (
+    can_merge_on_column,
     coerce_dataframe,
     ensure_lab_team_rank_column,
     has_dataframe_column,
     is_dataframe_empty,
     safe_collection_len,
+    safe_merge_dataframes,
     safe_sort_dataframe,
     sanitize_for_json,
 )
+
+
+class TestSafeMergeDataframes(unittest.TestCase):
+    def test_missing_merge_key_returns_left_copy(self) -> None:
+        left = pd.DataFrame({"Total Projected Fantasy Value": [100.0]})
+        right = pd.DataFrame({"Strength": ["HR"]})
+        out = safe_merge_dataframes(left, right, "Fantasy Team")
+        self.assertEqual(len(out), 1)
+        self.assertNotIn("Strength", out.columns)
+
+    def test_merge_when_key_present(self) -> None:
+        left = pd.DataFrame({"Fantasy Team": ["Team A"], "Total Projected Fantasy Value": [100.0]})
+        right = pd.DataFrame({"Fantasy Team": ["Team A"], "Strength": ["HR"]})
+        out = safe_merge_dataframes(left, right, "Fantasy Team")
+        self.assertEqual(out.iloc[0]["Strength"], "HR")
+
+    def test_can_merge_on_column(self) -> None:
+        left = pd.DataFrame({"Fantasy Team": ["Team A"]})
+        right = pd.DataFrame({"Strength": ["HR"]})
+        self.assertFalse(can_merge_on_column(left, right, "Fantasy Team"))
+        right_ok = pd.DataFrame({"Fantasy Team": ["Team A"], "Strength": ["HR"]})
+        self.assertTrue(can_merge_on_column(left, right_ok, "Fantasy Team"))
 
 
 class TestCoerceDataframe(unittest.TestCase):
