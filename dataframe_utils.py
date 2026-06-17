@@ -105,3 +105,77 @@ def sanitize_for_json(value: Any) -> Any:
         except Exception:
             pass
     return str(value)
+
+
+def has_dataframe_column(value: Any, column: str) -> bool:
+    """True when value is a non-empty DataFrame containing ``column``."""
+    df = coerce_dataframe(value)
+    if is_dataframe_empty(df):
+        return False
+    return str(column) in df.columns
+
+
+def safe_sort_dataframe(
+    value: Any,
+    column: str,
+    *,
+    ascending: bool = True,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """Sort by column when present; return empty DataFrame instead of raising KeyError."""
+    df = coerce_dataframe(value)
+    if is_dataframe_empty(df) or str(column) not in df.columns:
+        return pd.DataFrame()
+    return df.sort_values(str(column), ascending=ascending, **kwargs)
+
+
+def ensure_lab_team_rank_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Recompute Projected Team Rank when team_summary was restored without it."""
+    if is_dataframe_empty(df):
+        return df
+    if "Projected Team Rank" in df.columns:
+        return df
+    if "Total Projected Fantasy Value" not in df.columns:
+        return df
+    out = df.copy()
+    out["Projected Team Rank"] = out["Total Projected Fantasy Value"].rank(
+        ascending=False, method="min"
+    )
+    return out
+
+
+def has_dataframe_column(value: Any, column: str) -> bool:
+    """True when value is a non-empty DataFrame containing ``column``."""
+    df = coerce_dataframe(value)
+    if is_dataframe_empty(df):
+        return False
+    return str(column) in df.columns
+
+
+def safe_sort_dataframe(
+    value: Any,
+    column: str,
+    *,
+    ascending: bool = True,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """Sort by column when present; return empty DataFrame instead of raising KeyError."""
+    df = coerce_dataframe(value)
+    if is_dataframe_empty(df) or str(column) not in df.columns:
+        return pd.DataFrame()
+    return df.sort_values(str(column), ascending=ascending, **kwargs)
+
+
+def ensure_lab_team_rank_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Recompute Projected Team Rank when team_summary was restored without it."""
+    if is_dataframe_empty(df):
+        return df
+    if "Projected Team Rank" in df.columns:
+        return df
+    if "Total Projected Fantasy Value" not in df.columns:
+        return df
+    out = df.copy()
+    out["Projected Team Rank"] = out["Total Projected Fantasy Value"].rank(
+        ascending=False, method="min"
+    )
+    return out

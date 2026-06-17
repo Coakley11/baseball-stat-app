@@ -313,6 +313,17 @@ def restore_live_draft_page_filters(session: dict[str, Any], store: dict[str, An
             session[key] = val
             settings_restored = True
 
+    # Canonical league format wins over stale page snapshot for scoring label.
+    try:
+        from global_fantasy_settings_state import GLOBAL_FORMAT_KEY, to_live_draft_scoring
+
+        fmt = session.get(GLOBAL_FORMAT_KEY)
+        if fmt is not None:
+            session["live_draft_scoring"] = to_live_draft_scoring(fmt)
+            settings_restored = True
+    except ImportError:
+        pass
+
     # Room hydration is separate — only run when a full active draft blob is present.
     blob = snapshot.get(LIVE_DRAFT_ROOM_KEY)
     if not is_persisted_room_blob(blob):

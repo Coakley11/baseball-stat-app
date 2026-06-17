@@ -1,7 +1,14 @@
 
 import streamlit as st
 import pandas as pd
-from dataframe_utils import coerce_dataframe, is_dataframe_empty, safe_collection_len
+from dataframe_utils import (
+    coerce_dataframe,
+    ensure_lab_team_rank_column,
+    has_dataframe_column,
+    is_dataframe_empty,
+    safe_collection_len,
+    safe_sort_dataframe,
+)
 import numpy as np
 import matplotlib.pyplot as plt
 import altair as alt
@@ -16918,7 +16925,7 @@ if active_page == "Draft Simulation Test Mode":
     render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
 
     run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
-    if run_lab or "draft_lab_results" not in st.session_state:
+    if run_lab:
         with st.spinner("Building draft pool and simulating 60 picks..."):
             lab_pool = build_unified_draft_player_pool(
                 yearly_df,
@@ -16951,9 +16958,9 @@ if active_page == "Draft Simulation Test Mode":
                     if st.session_state.get("_cc_draft_lab_activity_sig") != lab_sig:
                         st.session_state["_cc_draft_lab_activity_sig"] = lab_sig
                         log_draft_prep(context=lab_format, teams="4-team draft lab")
-                        if lab_team_summary is not None and not lab_team_summary.empty:
+                        if has_dataframe_column(lab_team_summary, "Projected Team Rank"):
                             top_team = str(
-                                lab_team_summary.sort_values("Projected Team Rank").iloc[0]["Fantasy Team"]
+                                safe_sort_dataframe(lab_team_summary, "Projected Team Rank").iloc[0]["Fantasy Team"]
                             )
                             log_roster_build(team=top_team)
                 except Exception:
@@ -16963,7 +16970,7 @@ if active_page == "Draft Simulation Test Mode":
     if not isinstance(lab_state, dict):
         lab_state = {}
     lab_draft = coerce_dataframe(lab_state.get("draft"))
-    lab_team_summary = coerce_dataframe(lab_state.get("team_summary"))
+    lab_team_summary = ensure_lab_team_rank_column(coerce_dataframe(lab_state.get("team_summary")))
     lab_strengths = coerce_dataframe(lab_state.get("strengths"))
     lab_pick_analysis = coerce_dataframe(lab_state.get("pick_analysis"))
     lab_gaps = coerce_dataframe(lab_state.get("gaps"))
@@ -16973,17 +16980,22 @@ if active_page == "Draft Simulation Test Mode":
     if is_dataframe_empty(lab_draft):
         st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab.")
     else:
-        if not is_dataframe_empty(lab_team_summary):
-            winner = lab_team_summary.sort_values("Projected Team Rank").iloc[0]
+        rank_col = "Projected Team Rank"
+        if has_dataframe_column(lab_team_summary, rank_col):
+            winner = safe_sort_dataframe(lab_team_summary, rank_col).iloc[0]
             w1, w2, w3, w4 = st.columns(4)
             w1.metric("Projected Best Draft", winner["Fantasy Team"])
             w2.metric("Projected Value", fmt_score_2(winner["Total Projected Fantasy Value"]))
             w3.metric("Total Picks", f"{len(lab_draft):,}")
             w4.metric("Teams", "4")
+        else:
+            st.info("Run the draft simulation to generate team rankings.")
 
-        if not is_dataframe_empty(lab_actual_summary):
-            actual_winner = lab_actual_summary.sort_values("Actual Rank").iloc[0]
+        if has_dataframe_column(lab_actual_summary, "Actual Rank"):
+            actual_winner = safe_sort_dataframe(lab_actual_summary, "Actual Rank").iloc[0]
             st.success(f"Actual 2026 stats are available. Actual draft winner so far: **{actual_winner['Fantasy Team']}**.")
+        elif not is_dataframe_empty(lab_actual_summary):
+            st.info("Actual 2026 team rankings are not available in the restored simulation data.")
         else:
             st.info("Actual 2026 stats are not available in the current dataset, so the app is ranking teams using projected fantasy value instead.")
 
@@ -17055,7 +17067,7 @@ if active_page == "Draft Simulation Test Mode":
 
         with tabs[2]:
             st.subheader("Final Team Rankings")
-            if not lab_strengths.empty:
+            if not is_dataframe_empty(lab_strengths):
                 team_analysis = lab_team_summary.merge(lab_strengths, on="Fantasy Team", how="left")
             else:
                 team_analysis = lab_team_summary
@@ -17143,6 +17155,15 @@ if active_page == "Draft Simulation Test Mode":
 
 
 if active_page == "Live Draft Room":
+    try:
+        from global_fantasy_settings_state import GLOBAL_FORMAT_KEY, prepare_global_fantasy_settings, to_live_draft_scoring
+
+        prepare_global_fantasy_settings(st.session_state, force_mirror=True)
+        fmt = st.session_state.get(GLOBAL_FORMAT_KEY)
+        if fmt is not None:
+            st.session_state["live_draft_scoring"] = to_live_draft_scoring(fmt)
+    except ImportError:
+        pass
     render_section_header(
         "📡 Live Draft Room",
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",

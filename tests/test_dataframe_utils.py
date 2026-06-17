@@ -1,15 +1,21 @@
 """Regression tests for DataFrame coercion and safe length helpers."""
 from __future__ import annotations
 
+import json
 import unittest
 
+import numpy as np
 import pandas as pd
 
-import json
-
-import numpy as np
-
-from dataframe_utils import coerce_dataframe, is_dataframe_empty, safe_collection_len, sanitize_for_json
+from dataframe_utils import (
+    coerce_dataframe,
+    ensure_lab_team_rank_column,
+    has_dataframe_column,
+    is_dataframe_empty,
+    safe_collection_len,
+    safe_sort_dataframe,
+    sanitize_for_json,
+)
 
 
 class TestCoerceDataframe(unittest.TestCase):
@@ -64,7 +70,6 @@ class TestSafeCollectionLen(unittest.TestCase):
 
     def test_or_pattern_would_crash_on_dataframe(self) -> None:
         df = pd.DataFrame({"pick": [1, 2]})
-        # ``df or []`` raises ValueError on DataFrame — safe_collection_len must not.
         self.assertEqual(safe_collection_len(df), 2)
 
 
@@ -90,6 +95,38 @@ class TestSanitizeForJson(unittest.TestCase):
     def test_numpy_scalar(self) -> None:
         out = sanitize_for_json({"n": np.int64(5)})
         self.assertEqual(out["n"], 5)
+
+
+class TestSafeSortDataframe(unittest.TestCase):
+    def test_empty_summary(self) -> None:
+        self.assertTrue(safe_sort_dataframe(None, "Projected Team Rank").empty)
+
+    def test_missing_rank_column(self) -> None:
+        df = pd.DataFrame({"Fantasy Team": ["Team A"], "Total Projected Fantasy Value": [100.0]})
+        self.assertTrue(safe_sort_dataframe(df, "Projected Team Rank").empty)
+        self.assertFalse(has_dataframe_column(df, "Projected Team Rank"))
+
+    def test_populated_with_rank_column(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Fantasy Team": ["Team B", "Team A"],
+                "Total Projected Fantasy Value": [90.0, 120.0],
+                "Projected Team Rank": [2, 1],
+            }
+        )
+        sorted_df = safe_sort_dataframe(df, "Projected Team Rank")
+        self.assertEqual(sorted_df.iloc[0]["Fantasy Team"], "Team A")
+
+    def test_ensure_lab_team_rank_column(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Fantasy Team": ["Team B", "Team A"],
+                "Total Projected Fantasy Value": [90.0, 120.0],
+            }
+        )
+        out = ensure_lab_team_rank_column(df)
+        self.assertIn("Projected Team Rank", out.columns)
+        self.assertEqual(out.sort_values("Projected Team Rank").iloc[0]["Fantasy Team"], "Team A")
 
 
 if __name__ == "__main__":

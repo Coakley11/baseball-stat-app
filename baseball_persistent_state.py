@@ -346,11 +346,16 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     except ImportError:
         pass
     try:
-        from dataframe_utils import sanitize_for_json
+        import json
 
-        state = sanitize_for_json(state)
-    except ImportError:
-        pass
+        json.dumps(state)
+    except (TypeError, ValueError):
+        try:
+            from dataframe_utils import sanitize_for_json
+
+            state = sanitize_for_json(state)
+        except ImportError:
+            pass
     return state
 
 
@@ -755,12 +760,25 @@ def apply_baseball_session_defaults(st: Any) -> None:
 
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
+    ss = st.session_state
+    try:
+        from page_perf import perf_end, perf_timer
+
+        t0 = perf_timer(ss, "workspace_sync")
+    except ImportError:
+        t0 = 0.0
     result = sync_workspace_protocol(
         st,
         APP_ID,
         apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
         cloud_first=True,
     )
+    try:
+        from page_perf import perf_end
+
+        perf_end(ss, "workspace_sync", t0)
+    except ImportError:
+        pass
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
         prepare_global_fantasy_settings(st.session_state)
@@ -1259,6 +1277,12 @@ def render_cross_device_sync_debug(st: Any) -> None:
             for k, v in infra_rows.items():
                 if v is not None and v != "":
                     st.text(f"{k}: {v}")
+        perf_trace = ss.get("_page_perf_trace")
+        if isinstance(perf_trace, list) and perf_trace:
+            st.markdown("**Page perf (dev)**")
+            for row in perf_trace:
+                if isinstance(row, dict):
+                    st.text(f"{row.get('label')}: {row.get('ms')} ms")
 
 
 __all__ = [
