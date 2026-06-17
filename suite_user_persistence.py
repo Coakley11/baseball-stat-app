@@ -889,6 +889,44 @@ def sync_workspace_protocol(
 
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
+    synced_key = _workspace_synced_key(app_id)
+    refresh_needed = bool(st.session_state.pop("_suite_workspace_refresh_needed", False))
+
+    if st.session_state.get("_suite_page_user_nav"):
+        reason = "user page navigation — workspace sync skipped"
+        _mark_user_nav_sync_skipped(st, reason)
+        _record_workspace_sync_trace(
+            st, app_id, cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
+            winner="none", reason=reason, applied=False,
+        )
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
+            picked_source="none", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
+        return False
+
+    if (
+        st.session_state.get(synced_key)
+        and not refresh_needed
+        and not st.session_state.get(dirty_key)
+    ):
+        reason = "session cached — skip cloud/disk reload"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        st.session_state["_suite_workspace_sync_fast_path"] = True
+        _mark_workspace_sync_skipped(st, app_id, reason)
+        _record_workspace_sync_trace(
+            st, app_id, cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
+            winner="session", reason=reason, applied=False,
+        )
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
+            picked_source="session", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
+        return False
 
     try:
         from page_perf import perf_end, perf_timer
@@ -1012,7 +1050,6 @@ def sync_workspace_protocol(
         )
         return False
 
-    synced_key = _workspace_synced_key(app_id)
     applied_key = _applied_cloud_ts_key(app_id)
     applied_ts = st.session_state.get(applied_key)
     applied_epoch = parse_persist_timestamp(applied_ts)

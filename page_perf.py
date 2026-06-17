@@ -43,3 +43,12 @@ def perf_end(session: dict[str, Any], label: str, start: float) -> None:
     if not _dev_mode(session) or start <= 0:
         return
     perf_mark(session, label, (time.perf_counter() - start) * 1000.0)
+
+
+def perf_page_start(session: dict[str, Any], page: str) -> float:
+    """Mark page render start — dev mode only."""
+    return perf_timer(session, f"page_render:{page}")
+
+
+def perf_page_end(session: dict[str, Any], page: str, start: float) -> None:
+    perf_end(session, f"page_render:{page}", start)

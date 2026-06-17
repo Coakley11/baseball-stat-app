@@ -60,6 +60,33 @@ class TestFormatPropagation(unittest.TestCase):
         self.assertEqual(session["live_draft_scoring"], LIVE_SCORING_POINTS)
 
 
+class TestTeamPropagation(unittest.TestCase):
+    def test_write_canonical_team_mirrors_aliases(self) -> None:
+        session: dict = {}
+        write_canonical_global_fantasy_settings(session, team="Daniel", reason="test")
+        self.assertEqual(session["room_your_team"], "Daniel")
+        self.assertEqual(session["draft_assistant_synced_team"], "Daniel")
+        self.assertEqual(session["sleeper_sync_team"], "Daniel")
+
+    def test_page_restore_does_not_overwrite_canonical_team(self) -> None:
+        import page_state as pg
+
+        session = {
+            "room_your_team": "Daniel",
+            "draft_assistant_synced_team": "Daniel",
+            "page_filter_state": {
+                "Draft Assistant Simulator": {
+                    "draft_assistant_synced_team": "Team 2",
+                    "draft_window": 4,
+                }
+            },
+        }
+        pg.restore_page_state(session, "Draft Assistant Simulator", session["page_filter_state"])
+        self.assertEqual(session["room_your_team"], "Daniel")
+        self.assertEqual(session["draft_assistant_synced_team"], "Daniel")
+        self.assertEqual(session["draft_window"], 4)
+
+
 class TestNanCloudSave(unittest.TestCase):
     def test_build_disk_state_json_serializable_with_nan(self) -> None:
         st = MagicMock()

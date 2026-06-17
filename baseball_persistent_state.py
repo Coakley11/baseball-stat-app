@@ -781,7 +781,13 @@ def prepare_baseball_workspace(st: Any) -> bool:
         pass
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
-        prepare_global_fantasy_settings(st.session_state)
+
+        force_mirror = bool(
+            ss.get("_suite_page_user_nav")
+            or ss.get("_suite_workspace_refresh_needed")
+            or ss.pop("_global_settings_force_mirror", None)
+        )
+        prepare_global_fantasy_settings(ss, force_mirror=force_mirror)
     except Exception:
         pass
     return result

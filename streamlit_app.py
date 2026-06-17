@@ -11198,6 +11198,25 @@ def developer_mode_enabled() -> bool:
     return bool(st.session_state.get(DEVELOPER_MODE_KEY, False))
 
 
+def _page_perf_start(page: str) -> None:
+    try:
+        from page_perf import perf_page_start
+
+        st.session_state["_page_render_t0"] = perf_page_start(st.session_state, page)
+    except ImportError:
+        pass
+
+
+def _page_perf_end(page: str) -> None:
+    try:
+        from page_perf import perf_page_end
+
+        t0 = float(st.session_state.pop("_page_render_t0", 0.0) or 0.0)
+        perf_page_end(st.session_state, page, t0)
+    except ImportError:
+        pass
+
+
 def render_developer_mode_sidebar_toggle():
     """Single sidebar switch for all developer-only tools (default OFF)."""
     st.session_state.setdefault(DEVELOPER_MODE_KEY, False)
@@ -12317,6 +12336,8 @@ _prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
 _user_nav = bool(st.session_state.get("_suite_page_user_nav"))
 _page_changed = active_page != _prev_persisted_page
 if _page_changed or _user_nav:
+    st.session_state["_suite_workspace_refresh_needed"] = True
+    st.session_state["_global_settings_force_mirror"] = True
     _did_save = False
     if _user_nav or _page_changed:
         try:
@@ -12390,6 +12411,12 @@ pg_state.handle_sidebar_page_state(
     normalize_page_key,
     st.session_state.get("_pending_page_transfer"),
 )
+try:
+    from global_fantasy_settings_state import mirror_canonical_to_all_aliases
+
+    mirror_canonical_to_all_aliases(st.session_state)
+except ImportError:
+    pass
 # Apply contextual transfer before page widgets render (filters must be in session_state first).
 apply_pending_page_transfer(active_page)
 migrate_legacy_widget_keys()
@@ -15444,6 +15471,7 @@ if active_page == "Fantasy Sleepers & Busts":
 
 
 if active_page == "Draft Assistant Simulator":
+    _page_perf_start(active_page)
     if pp.is_screenshot_mode(st) or pp.is_demo_mode(st):
         pp.render_hero_banner(
             st,
@@ -16184,11 +16212,13 @@ if active_page == "Draft Assistant Simulator":
             "ml_projection_style": st.session_state.get("fantasy_draft_projection_style"),
         },
     )
+    _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
 if active_page == "Draft Room Simulator":
+    _page_perf_start(active_page)
     render_section_header(
         "🧾 Draft Room Simulator",
         "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft.",
@@ -16820,11 +16850,13 @@ if active_page == "Draft Room Simulator":
 
         render_draft_board_diagnostics(st)
 
+    _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
 if active_page == "Draft Simulation Test Mode":
+    _page_perf_start(active_page)
     try:
         from draft_lab_state import ensure_draft_lab_widget_keys
 
@@ -17176,11 +17208,13 @@ if active_page == "Draft Simulation Test Mode":
             label="Send draft settings to…",
         )
 
+    _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
 
 if active_page == "Live Draft Room":
+    _page_perf_start(active_page)
     try:
         from global_fantasy_settings_state import GLOBAL_FORMAT_KEY, prepare_global_fantasy_settings, to_live_draft_scoring
 
@@ -17706,11 +17740,30 @@ if active_page == "Live Draft Room":
         team_list = list(room.get("teams", []))
         user_team = cfg.get("user_team") or (team_list[0] if team_list else "")
         if team_list:
+            def _live_draft_team_changed():
+                try:
+                    from global_fantasy_settings_state import write_canonical_global_fantasy_settings
+
+                    write_canonical_global_fantasy_settings(
+                        st.session_state,
+                        team=st.session_state.get("live_draft_my_team"),
+                        reason="live_draft_my_team_changed",
+                    )
+                except ImportError:
+                    pass
+                try:
+                    from live_draft_state import mark_live_draft_local_edit
+
+                    mark_live_draft_local_edit(st.session_state)
+                except ImportError:
+                    pass
+
             user_team = st.selectbox(
                 "Your team (for survival % & next-pick logic)",
                 team_list,
                 index=team_list.index(user_team) if user_team in team_list else 0,
                 key="live_draft_my_team",
+                on_change=_live_draft_team_changed,
             )
             cfg["user_team"] = user_team
             cfg["your_team"] = user_team
@@ -17992,6 +18045,7 @@ if active_page == "Live Draft Room":
                 """
             )
 
+    _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 

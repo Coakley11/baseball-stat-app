@@ -209,6 +209,15 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
 })
 
 
+def _global_snapshot_excluded_keys() -> frozenset[str]:
+    try:
+        from global_fantasy_settings_state import global_settings_snapshot_excluded_keys
+
+        return global_settings_snapshot_excluded_keys()
+    except ImportError:
+        return frozenset()
+
+
 def _collect_keys_for_page(session, page_name: str) -> list:
     spec = PAGE_STATE_REGISTRY.get(page_name, {})
     keys = set(spec.get("exact", []))
@@ -218,6 +227,7 @@ def _collect_keys_for_page(session, page_name: str) -> list:
                 if k not in _PAGE_STATE_SKIP_KEYS:
                     keys.add(k)
     keys -= _PAGE_STATE_SKIP_KEYS
+    keys -= _global_snapshot_excluded_keys()
     return sorted(k for k in keys if not _is_ephemeral_widget_key(k))
 
 
@@ -269,7 +279,10 @@ def restore_page_state(session, page_name: str, store: dict):
     snapshot = store.get(page_name)
     if not snapshot:
         return False
+    excluded = _global_snapshot_excluded_keys()
     for key, value in snapshot.items():
+        if key in excluded:
+            continue
         if _is_ephemeral_widget_key(key) or _is_file_uploader_widget_key(key):
             session.pop(key, None)
             continue
@@ -277,6 +290,12 @@ def restore_page_state(session, page_name: str, store: dict):
             session[key] = copy.deepcopy(value)
         except Exception:
             session[key] = value
+    try:
+        from global_fantasy_settings_state import mirror_canonical_to_all_aliases
+
+        mirror_canonical_to_all_aliases(session)
+    except ImportError:
+        pass
     return True
 
 

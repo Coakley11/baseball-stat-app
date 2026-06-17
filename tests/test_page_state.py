@@ -69,10 +69,13 @@ def test_draft_room_import_uploader_not_snapshotted_or_restored():
     snap = session["page_filter_state"].get("Draft Room Simulator") or {}
     assert "draft_room_import_uploader" not in snap
     assert "draft_room_import_last_processed_hash" not in snap
-    assert snap.get("room_your_team") == "Daniel"
+    assert snap.get("room_your_team") is None
     session.pop("draft_room_import_uploader", None)
     session.pop("draft_room_import_last_processed_hash", None)
-    session["room_your_team"] = "Team 2"
+    session["page_filter_state"]["Draft Room Simulator"] = {
+        **(session["page_filter_state"].get("Draft Room Simulator") or {}),
+        "room_your_team": "Team 2",
+    }
     pg.restore_page_state(session, "Draft Room Simulator", session["page_filter_state"])
     assert "draft_room_import_uploader" not in session
     assert session.get("draft_room_import_last_processed_hash") is None

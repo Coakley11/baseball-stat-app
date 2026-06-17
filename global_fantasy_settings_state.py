@@ -47,6 +47,25 @@ LIVE_FORMAT_ALIASES: dict[str, str] = {
 
 _ALL_ALIASES: dict[str, str] = {**TEAM_ALIASES, **FORMAT_ALIASES}
 
+# Keys owned globally — never save/restore from per-page snapshots (prevents stale
+# Daniel vs Team 2 drift when navigating between draft pages).
+_GLOBAL_SNAPSHOT_EXCLUDED: frozenset[str] = frozenset(
+    {
+        GLOBAL_TEAM_KEY,
+        GLOBAL_FORMAT_KEY,
+        *TEAM_ALIASES.keys(),
+        *FORMAT_ALIASES.keys(),
+        *LIVE_FORMAT_ALIASES.keys(),
+        "live_draft_my_team",
+    }
+)
+
+
+def global_settings_snapshot_excluded_keys() -> frozenset[str]:
+    """Session keys that must not be read/written via page_filter_state snapshots."""
+    return _GLOBAL_SNAPSHOT_EXCLUDED
+
+
 # Dev trace ring buffer key — records each lifecycle step for canonical format/team.
 _FORMAT_TRACE_KEY = "_global_format_trace"
 _FORMAT_TRACE_MAX = 40
@@ -215,6 +234,28 @@ def mirror_canonical_to_all_aliases(session: dict[str, Any]) -> None:
     Equivalent to ``prepare_global_fantasy_settings(session, force_mirror=True)``.
     """
     prepare_global_fantasy_settings(session, force_mirror=True)
+    _sync_live_draft_room_team(session)
+
+
+def _sync_live_draft_room_team(session: dict[str, Any]) -> None:
+    """Keep live draft room config in sync with canonical ``room_your_team``."""
+    team = str(session.get(GLOBAL_TEAM_KEY) or "").strip()
+    if not team:
+        return
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return
+    teams = room.get("teams")
+    if isinstance(teams, list) and team not in [str(t) for t in teams]:
+        return
+    cfg = room.get("config")
+    if not isinstance(cfg, dict):
+        cfg = {}
+        room["config"] = cfg
+    if cfg.get("user_team") == team and cfg.get("your_team") == team:
+        return
+    cfg["user_team"] = team
+    cfg["your_team"] = team
 
 
 def on_alias_team_changed(session: dict[str, Any], alias_key: str) -> None:

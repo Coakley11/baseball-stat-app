@@ -1528,6 +1528,7 @@ def cache_draft_assistant_ami_context(
         str(session_state.get("fantasy_draft_projection_style") or ""),
         int(session_state.get("draft_window") or 3),
         bool(session_state.get("draft_use_ml_blend")),
+        str(session_state.get("room_your_team") or ""),
     )
     if _should_skip_ami_page_cache(session_state, page, cache_sig):
         return
@@ -1694,7 +1695,7 @@ def cache_live_draft_ami_context(
         str(room.get("status") or ""),
         int(slot or 0),
         len(picks),
-        str(room.get("user_team") or session_state.get("live_draft_user_team") or ""),
+        str(room.get("user_team") or session_state.get("live_draft_my_team") or session_state.get("room_your_team") or ""),
         str(session_state.get("live_draft_scoring") or ""),
     )
     if _should_skip_ami_page_cache(session_state, page, cache_sig):
@@ -1805,6 +1806,24 @@ def cache_fantasy_sleepers_ami_context(
     try:
         from draft_ami_helpers import compact_fantasy_market_rows, draft_ami_guidance
     except Exception:
+        return
+
+    team = str(
+        session_state.get("room_your_team")
+        or session_state.get("sleeper_sync_team")
+        or ""
+    ).strip()
+    cache_sig = (
+        team,
+        str(fantasy_format or ""),
+        int(top_n),
+        tuple(sorted(str(p) for p in (synced_roster or [])[:16])),
+        tuple(sorted(str(p) for p in (drafted_exclusions or [])[:48])),
+        tuple(sorted(str(p) for p in (needed_positions or [])[:8])),
+        int(session_state.get("sleeper_max_market_rank") or 0),
+        int(session_state.get("sleeper_max_model_rank") or 0),
+    )
+    if _should_skip_ami_page_cache(session_state, "Fantasy Sleepers & Busts", cache_sig):
         return
 
     snap = gather_sleepers_ami_snapshot(session_state)
