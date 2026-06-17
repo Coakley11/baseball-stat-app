@@ -98,6 +98,40 @@ class TestExtractPlayerFromQuestion(unittest.TestCase):
         q = "Would Eric Wagaman help my team if I draft him?"
         self.assertEqual(extract_player_from_question(q), "Eric Wagaman")
 
+    def test_wagaman_fantasy_team_sleeper_question(self) -> None:
+        from applied_math_context import extract_player_from_question, is_named_player_team_fit_question
+
+        q = "Would Eric Wagaman help my fantasy team as a sleeper?"
+        self.assertEqual(extract_player_from_question(q), "Eric Wagaman")
+        self.assertTrue(is_named_player_team_fit_question(q))
+
+
+class TestLineupFormatSync(unittest.TestCase):
+    def test_canonical_points_syncs_to_lineup_format(self) -> None:
+        from global_fantasy_settings_state import sync_lineup_format_from_canonical, write_canonical_global_fantasy_settings
+
+        session: dict = {"lineup_format": "5x5 Roto"}
+        write_canonical_global_fantasy_settings(session, format_="Points League", reason="test")
+        sync_lineup_format_from_canonical(session)
+        self.assertEqual(session["lineup_format"], CANONICAL_POINTS)
+        self.assertEqual(session["standings_scoring_format"], CANONICAL_POINTS)
+
+    def test_lineup_h2h_preserved_when_canonical_changes(self) -> None:
+        from global_fantasy_settings_state import sync_lineup_format_from_canonical, write_canonical_global_fantasy_settings
+
+        session = {"lineup_format": "Head-to-Head Categories", "room_format": CANONICAL_ROTO}
+        write_canonical_global_fantasy_settings(session, format_=CANONICAL_POINTS, reason="test")
+        sync_lineup_format_from_canonical(session)
+        self.assertEqual(session["lineup_format"], "Head-to-Head Categories")
+
+    def test_lineup_format_change_updates_canonical(self) -> None:
+        from global_fantasy_settings_state import on_lineup_format_changed
+
+        session = {"lineup_format": "Points League", "room_format": CANONICAL_ROTO}
+        on_lineup_format_changed(session)
+        self.assertEqual(session["room_format"], CANONICAL_POINTS)
+        self.assertEqual(session["draft_format"], CANONICAL_POINTS)
+
 
 class TestTeamPropagationPageRestore(unittest.TestCase):
     def test_page_restore_does_not_overwrite_canonical_team(self) -> None:

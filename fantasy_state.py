@@ -541,6 +541,12 @@ def prepare_fantasy_standings_filters(session: dict[str, Any]) -> None:
 
 
 def prepare_fantasy_lineup_page(session: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from global_fantasy_settings_state import sync_lineup_format_from_canonical
+
+        sync_lineup_format_from_canonical(session)
+    except ImportError:
+        pass
     return prepare_fantasy_section_page(session, "lineup")
 
 

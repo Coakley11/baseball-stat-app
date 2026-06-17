@@ -226,9 +226,11 @@ def detect_sleepers_send_intent(question: str) -> str:
     if not low:
         return "sleepers_general"
     try:
-        from applied_math_context import extract_player_from_question
+        from applied_math_context import extract_player_from_question, is_named_player_team_fit_question
 
         named_player = extract_player_from_question(q)
+        if named_player and is_named_player_team_fit_question(q):
+            return "team_fit"
     except ImportError:
         named_player = ""
     if named_player and "bust" in low and re.search(r"\b(?:draft|consider|take|pick|should|target)\b", low):
@@ -360,6 +362,7 @@ def finalize_sleepers_context_for_send(
             extract_comparison_players_from_question,
             extract_player_from_question,
             gather_sleepers_ami_snapshot,
+            is_named_player_team_fit_question,
         )
     except ImportError:
         return
@@ -375,6 +378,22 @@ def finalize_sleepers_context_for_send(
         snap = {**snap, **copy.deepcopy(cached)}
     if snap:
         _promote_sleepers_snapshot_fields(ctx, snap)
+
+    if is_named_player_team_fit_question(q):
+        target = extract_player_from_question(q) or str(ctx.get("question_player") or "").strip()
+        if target:
+            ctx.pop("player_a", None)
+            ctx.pop("player_b", None)
+            ctx["question_player"] = target
+            ctx["player"] = target
+            ctx["players"] = [target]
+            ctx["routing_hint"] = "player_why"
+            ctx["problem_type_hint"] = "team_fit"
+            ctx["intent"] = "team_fit_analysis"
+            row = _find_sleeper_row_for_name(ctx.get("sleeper_candidates"), target)
+            if row:
+                ctx["question_player_row"] = row
+            return
 
     if intent in ("bust_risk_review", "bust_take"):
         # Bust context path: clear comparison players, apply bust routing

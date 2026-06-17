@@ -17,8 +17,12 @@ GLOBAL_FORMAT_KEY = "room_format"
 
 CANONICAL_ROTO = "5x5 Roto"
 CANONICAL_POINTS = "Points League"
+LINEUP_H2H_FORMAT = "Head-to-Head Categories"
 LIVE_SCORING_ROTO = "Roto (5x5)"
 LIVE_SCORING_POINTS = "Points League"
+
+# Optional words between "my" and "team/roster" (e.g. "my fantasy team").
+_MY_TEAM_MIDDLE = r"(?:\s+\w+){0,3}"
 
 # ── page-local aliases that should mirror the canonical values ───────────────
 # Maps alias key → canonical key.
@@ -218,6 +222,18 @@ def write_canonical_global_fantasy_settings(
         pass
 
 
+def _lineup_format_is_h2h(session: dict[str, Any]) -> bool:
+    return str(session.get("lineup_format") or "").strip() == LINEUP_H2H_FORMAT
+
+
+def sync_lineup_format_from_canonical(session: dict[str, Any], *, force: bool = False) -> None:
+    """Mirror canonical roto/points into lineup_format unless user chose H2H."""
+    if _lineup_format_is_h2h(session) and not force:
+        return
+    fmt = normalize_league_format(session.get(GLOBAL_FORMAT_KEY) or CANONICAL_ROTO)
+    session["lineup_format"] = fmt
+
+
 def _mirror_globals_to_aliases(session: dict[str, Any]) -> None:
     """Push canonical team/format values into all alias keys."""
     team = session.get(GLOBAL_TEAM_KEY)
@@ -227,6 +243,7 @@ def _mirror_globals_to_aliases(session: dict[str, Any]) -> None:
         canonical_val = team if canonical_key == GLOBAL_TEAM_KEY else fmt
         if canonical_val is not None:
             session[alias] = canonical_val
+    sync_lineup_format_from_canonical(session)
 
 
 def prepare_global_fantasy_settings(
@@ -273,6 +290,7 @@ def prepare_global_fantasy_settings(
                     session[alias] = canonical_val
     if normalized_fmt is not None:
         _mirror_live_format_aliases(session, normalized_fmt)
+        sync_lineup_format_from_canonical(session, force=force_mirror)
     # Record what we propagated so we can detect vs user-local edits next time.
     propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
     session["_global_settings_last_propagated"] = propagated
@@ -327,6 +345,15 @@ def on_alias_format_changed(session: dict[str, Any], alias_key: str) -> None:
     new_fmt = session.get(alias_key) or session.get(GLOBAL_FORMAT_KEY)
     if new_fmt is not None:
         write_canonical_global_fantasy_settings(session, format_=str(new_fmt).strip())
+
+
+def on_lineup_format_changed(session: dict[str, Any]) -> None:
+    """on_change for lineup scoring — roto/points update canonical; H2H stays lineup-local."""
+    lf = str(session.get("lineup_format") or "").strip()
+    if lf == LINEUP_H2H_FORMAT:
+        return
+    if lf:
+        write_canonical_global_fantasy_settings(session, format_=lf, reason="lineup_format")
 
 
 def on_global_team_changed(session: dict[str, Any]) -> None:

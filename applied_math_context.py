@@ -103,8 +103,8 @@ _QUESTION_PLAYER_PATTERNS: tuple[str, ...] = (
     r"why is (.+?) a good",
     r"why is (.+?) worth",
     r"why (.+?)(?:\?|\s*$)",
-    r"would (.+?) help (?:my team|my roster|the team|us)",
-    r"would (.+?) be (?:a )?good (?:fit|add|pick|draft|choice)(?: for my team)?",
+    r"would (.+?) help(?: my(?:\s+\w+){0,3}\s+team| my(?:\s+\w+){0,3}\s+roster| the team| us)",
+    r"would (.+?) be (?:a )?good (?:fit|add|pick|draft|choice)(?: for my(?:\s+\w+){0,3}\s+team)?",
     r"would (.+?) make a good (?:pick|draft|choice|target|option|fit|add)",
     r"(?:do you think i should|should i|would you recommend i|would i) (?:draft|pick|target|select|take) (.+?)(?: as an? | as a | for | in | at | with | despite |\?|$)",
     r"(?:draft|target|select) (.+?)(?: as an? | as a | for | in this | in | at |\?|$)",
@@ -126,6 +126,26 @@ def extract_player_from_question(question: str) -> str:
         if name:
             return name
     return ""
+
+
+def is_named_player_team_fit_question(question: str) -> bool:
+    """True when the user asks whether a named player fits their team/roster."""
+    q = str(question or "").strip()
+    if not q:
+        return False
+    low = q.lower()
+    if not extract_player_from_question(q):
+        return False
+    if re.search(
+        r"help(?: my(?:\s+\w+){0,3}\s+team| my(?:\s+\w+){0,3}\s+roster| the team| us)",
+        low,
+    ):
+        return True
+    if re.search(r"would .+ be (?:a )?good (?:fit|add)", low):
+        return True
+    if re.search(r"fits? my(?:\s+\w+){0,3}\s+(?:team|roster)", low):
+        return True
+    return False
 
 
 def _find_player_row_in_pools(name: str, *pools: Any) -> dict[str, Any] | None:
@@ -500,11 +520,15 @@ def attach_question_player_to_context(
             )
     if row:
         ctx["question_player_row"] = row
-        if is_sleepers:
+        if is_sleepers and not is_named_player_team_fit_question(question):
             ctx["sleeper_focus"] = row
             ctx["routing_hint"] = "sleeper_take"
             ctx["problem_type_hint"] = "sleeper_take"
             ctx["intent"] = "sleeper_analysis"
+        elif is_named_player_team_fit_question(question):
+            ctx["routing_hint"] = "player_why"
+            ctx["problem_type_hint"] = "team_fit"
+            ctx["intent"] = "team_fit_analysis"
 
 
 def attach_draft_team_to_context(

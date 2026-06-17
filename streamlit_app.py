@@ -13050,6 +13050,14 @@ def fantasy_filter_changed():
             mark_fantasy_filter_pending_sync(st.session_state, section)
     except Exception:
         pass
+    # Propagate lineup scoring (roto/points) to canonical format.
+    try:
+        from global_fantasy_settings_state import on_lineup_format_changed
+
+        if "lineup_format" in st.session_state:
+            on_lineup_format_changed(st.session_state)
+    except Exception:
+        pass
     # Propagate any alias format change to the canonical key so all pages see it.
     try:
         from global_fantasy_settings_state import FORMAT_ALIASES, on_alias_format_changed
@@ -18344,16 +18352,36 @@ if active_page == "Fantasy Lineup Assistant":
                     ),
                 })
     else:
+        from global_fantasy_settings_state import (
+            active_fantasy_team_label,
+            get_active_fantasy_team,
+            normalize_league_format,
+            sync_lineup_format_from_canonical,
+        )
+
+        sync_lineup_format_from_canonical(st.session_state)
+        lineup_team = get_active_fantasy_team(st.session_state)
         lineup_teams = sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
-        default_lineup_team = st.session_state.get("room_your_team", lineup_teams[0] if lineup_teams else "")
+        if lineup_team and lineup_team not in lineup_teams and lineup_teams:
+            st.warning(
+                f"Active team **{lineup_team}** was not found in loaded roster stats. "
+                f"Teams available: {', '.join(lineup_teams[:6])}{'…' if len(lineup_teams) > 6 else ''}."
+            )
 
         _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
         l1, l2, l3 = st.columns(3)
         with l1:
-            ensure_select_in_options("lineup_team", lineup_teams, default_lineup_team if default_lineup_team in lineup_teams else lineup_teams[0])
-            lineup_team = st.selectbox("Fantasy Team", lineup_teams, key="lineup_team", on_change=fantasy_filter_changed)
+            st.caption(
+                f"**Active fantasy team:** {active_fantasy_team_label(st.session_state)}. "
+                "To change your team, update it in **Draft Room** / **Live Draft Room**."
+            )
         with l2:
-            ensure_select_in_options("lineup_format", _lineup_format_options, "5x5 Roto")
+            default_lineup_format = normalize_league_format(
+                st.session_state.get("room_format") or st.session_state.get("lineup_format") or "5x5 Roto"
+            )
+            if st.session_state.get("lineup_format") == "Head-to-Head Categories":
+                default_lineup_format = "Head-to-Head Categories"
+            ensure_select_in_options("lineup_format", _lineup_format_options, default_lineup_format)
             lineup_format = st.selectbox(
                 "Lineup Scoring Mode",
                 _lineup_format_options,
@@ -18620,9 +18648,10 @@ if active_page == "Fantasy Lineup Assistant":
                 )
             else:
                 trade_teams = sorted(lineup_trade_roster_stats["Team"].dropna().astype(str).unique())
-                default_trade_team = lineup_team if lineup_team in trade_teams else (trade_teams[0] if trade_teams else "")
-                ensure_select_in_options("lineup_trade_my_team", trade_teams, default_trade_team)
-                my_team_trade = st.selectbox("Trade Analyzer: Your Team", trade_teams, key="lineup_trade_my_team")
+                my_team_trade = lineup_team if lineup_team in trade_teams else (
+                    trade_teams[0] if trade_teams else ""
+                )
+                st.caption(f"**Your team:** {my_team_trade or '—'} (from active fantasy team)")
                 other_trade_teams = [t for t in trade_teams if t != my_team_trade]
 
                 if not other_trade_teams:
