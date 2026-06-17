@@ -16203,8 +16203,14 @@ if active_page == "Draft Room Simulator":
             except Exception:
                 pass
             try:
-                from global_fantasy_settings_state import prepare_global_fantasy_settings
-                prepare_global_fantasy_settings(st.session_state)
+                from global_fantasy_settings_state import write_canonical_global_fantasy_settings
+
+                write_canonical_global_fantasy_settings(
+                    st.session_state,
+                    team=st.session_state.get("room_your_team"),
+                    format_=st.session_state.get("room_format"),
+                    reason="draft_room_settings_changed",
+                )
             except Exception:
                 pass
             # Persist to page_filter_state AND force cloud save so that a browser
@@ -16849,6 +16855,12 @@ if active_page == "Draft Simulation Test Mode":
                 from draft_lab_state import ensure_draft_lab_widget_keys
 
                 ensure_draft_lab_widget_keys(st.session_state)
+            except ImportError:
+                pass
+            try:
+                from global_fantasy_settings_state import on_alias_format_changed
+
+                on_alias_format_changed(st.session_state, "draft_lab_scoring_type")
             except ImportError:
                 pass
             save_page_state("Draft Simulation Test Mode")
@@ -17511,6 +17523,13 @@ if active_page == "Live Draft Room":
             _live_proj_window_options = [3, 4, 5]
 
             def _live_draft_setting_changed():
+                try:
+                    from global_fantasy_settings_state import on_live_draft_scoring_changed
+
+                    if "live_draft_scoring" in st.session_state:
+                        on_live_draft_scoring_changed(st.session_state)
+                except ImportError:
+                    pass
                 # Persist to page_filter_state AND force cloud save so that a browser
                 # refresh restores the user's settings rather than reverting to defaults.
                 save_page_state("Live Draft Room")
@@ -17546,7 +17565,12 @@ if active_page == "Live Draft Room":
                 validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
                 live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type", on_change=_live_draft_setting_changed)
                 validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
-                live_scoring = st.selectbox("Scoring Type", _live_scoring_options, key="live_draft_scoring", on_change=_live_draft_setting_changed)
+                live_scoring = st.selectbox(
+                    "Scoring Type",
+                    _live_scoring_options,
+                    key="live_draft_scoring",
+                    on_change=_live_draft_setting_changed,
+                )
                 validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
                 live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer", on_change=_live_draft_setting_changed)
             with lc3:

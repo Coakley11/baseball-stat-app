@@ -345,6 +345,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
         state = sanitize_draft_room(state)
     except ImportError:
         pass
+    try:
+        from dataframe_utils import sanitize_for_json
+
+        state = sanitize_for_json(state)
+    except ImportError:
+        pass
     return state
 
 
@@ -1020,6 +1026,10 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "device_id": cloud_meta.get("device_id"),
         "schema_version": cloud_meta.get("schema_version"),
         "historical_filters": cloud_meta.get("historical_filters") or _historical_filter_summary(cloud_hist) or None,
+        "room_format": cloud_state.get("room_format"),
+        "room_team_count": cloud_state.get("room_team_count"),
+        "room_your_team": cloud_state.get("room_your_team"),
+        "live_draft_scoring": cloud_state.get("live_draft_scoring"),
     }
     local_rows = {
         "updated_at": disk_ts or applied_ts or local_meta.get("updated_at"),
@@ -1029,6 +1039,13 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "dirty_flag": ss.get(_local_dirty_key(APP_ID)),
         "page_filter_pages": local_pf_pages or None,
         "device_id": local_meta.get("device_id") or ss.get("_suite_device_id"),
+        "room_format": ss.get("room_format"),
+        "room_team_count": ss.get("room_team_count"),
+        "room_your_team": ss.get("room_your_team"),
+        "live_draft_scoring": ss.get("live_draft_scoring"),
+        "draft_lab_scoring_type": ss.get("draft_lab_scoring_type"),
+        "draft_format": ss.get("draft_format"),
+        "fantasy_market_format": ss.get("fantasy_market_format"),
     }
     cloud_top_cs = cloud_state.get("comparison_state") if isinstance(cloud_state.get("comparison_state"), dict) else {}
     startup_rows = {
@@ -1167,6 +1184,11 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "final_page": ss.get("active_page"),
         "final_comparison_players": ss.get("compare_players"),
         "final_trend_players": ss.get("trend_players_multi"),
+        "final_room_format": ss.get("room_format"),
+        "final_room_team_count": ss.get("room_team_count"),
+        "final_room_your_team": ss.get("room_your_team"),
+        "final_live_draft_scoring": ss.get("live_draft_scoring"),
+        "final_draft_lab_scoring_type": ss.get("draft_lab_scoring_type"),
     }
     nav_rows = {
         "nav_phase": ss.get("_suite_sidebar_nav_phase"),

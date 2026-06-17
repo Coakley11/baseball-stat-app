@@ -47,14 +47,15 @@ def _coerce_window(val: Any) -> int:
 
 
 def _coerce_format(val: Any) -> str:
-    s = str(val or "").strip()
-    if s in _LAB_FORMAT_OPTIONS:
-        return s
-    low = s.lower()
-    for opt in _LAB_FORMAT_OPTIONS:
-        if low == opt.lower() or low in opt.lower() or opt.lower() in low:
-            return opt
-    return DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_scoring_type"]
+    try:
+        from global_fantasy_settings_state import normalize_league_format
+
+        return normalize_league_format(val)
+    except ImportError:
+        s = str(val or "").strip()
+        if s in _LAB_FORMAT_OPTIONS:
+            return s
+        return DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_scoring_type"]
 
 
 def _coerce_picks(val: Any) -> int:

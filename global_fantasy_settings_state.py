@@ -15,6 +15,11 @@ from typing import Any
 GLOBAL_TEAM_KEY = "room_your_team"
 GLOBAL_FORMAT_KEY = "room_format"
 
+CANONICAL_ROTO = "5x5 Roto"
+CANONICAL_POINTS = "Points League"
+LIVE_SCORING_ROTO = "Roto (5x5)"
+LIVE_SCORING_POINTS = "Points League"
+
 # ── page-local aliases that should mirror the canonical values ───────────────
 # Maps alias key → canonical key.
 # Pages whose alias intentionally differs (e.g. lineup_format can be H2H) are
@@ -35,11 +40,39 @@ FORMAT_ALIASES: dict[str, str] = {
     "standings_scoring_format": GLOBAL_FORMAT_KEY,
 }
 
+# Keys that use alternate labels but should still follow canonical format.
+LIVE_FORMAT_ALIASES: dict[str, str] = {
+    "live_draft_scoring": GLOBAL_FORMAT_KEY,
+}
+
 _ALL_ALIASES: dict[str, str] = {**TEAM_ALIASES, **FORMAT_ALIASES}
 
 # Dev trace ring buffer key — records each lifecycle step for canonical format/team.
 _FORMAT_TRACE_KEY = "_global_format_trace"
 _FORMAT_TRACE_MAX = 40
+
+
+def normalize_league_format(val: Any) -> str:
+    """Map Roto / 5x5 Roto / Points / Points League / Roto (5x5) → canonical label."""
+    s = str(val or "").strip()
+    if not s:
+        return CANONICAL_ROTO
+    low = s.lower()
+    if "point" in low:
+        return CANONICAL_POINTS
+    if "roto" in low or "5x5" in low:
+        return CANONICAL_ROTO
+    if low in (CANONICAL_ROTO.lower(), CANONICAL_POINTS.lower()):
+        return CANONICAL_ROTO if low == CANONICAL_ROTO.lower() else CANONICAL_POINTS
+    return CANONICAL_ROTO
+
+
+def to_live_draft_scoring(fmt: Any) -> str:
+    return LIVE_SCORING_POINTS if normalize_league_format(fmt) == CANONICAL_POINTS else LIVE_SCORING_ROTO
+
+
+def from_live_draft_scoring(scoring: Any) -> str:
+    return normalize_league_format(scoring)
 
 
 def record_global_settings_trace(session: dict[str, Any], step: str) -> None:
@@ -53,7 +86,9 @@ def record_global_settings_trace(session: dict[str, Any], step: str) -> None:
             "step": step,
             "canonical_format": session.get(GLOBAL_FORMAT_KEY),
             "canonical_team": session.get(GLOBAL_TEAM_KEY),
+            "canonical_team_count": session.get("room_team_count"),
             "format_aliases": {a: session.get(a) for a in FORMAT_ALIASES},
+            "live_draft_scoring": session.get("live_draft_scoring"),
             "team_aliases": {a: session.get(a) for a in TEAM_ALIASES},
         }
         trace = session.get(_FORMAT_TRACE_KEY)
@@ -69,6 +104,13 @@ def _canonical_value(session: dict[str, Any], canonical_key: str) -> Any:
     return session.get(canonical_key)
 
 
+def _mirror_live_format_aliases(session: dict[str, Any], fmt: str) -> None:
+    """Push canonical format into live-draft scoring labels."""
+    canonical = normalize_league_format(fmt)
+    for alias in LIVE_FORMAT_ALIASES:
+        session[alias] = to_live_draft_scoring(canonical)
+
+
 def write_canonical_global_fantasy_settings(
     session: dict[str, Any],
     *,
@@ -80,11 +122,14 @@ def write_canonical_global_fantasy_settings(
     if team is not None:
         session[GLOBAL_TEAM_KEY] = str(team).strip()
     if format_ is not None:
-        session[GLOBAL_FORMAT_KEY] = str(format_).strip()
+        session[GLOBAL_FORMAT_KEY] = normalize_league_format(format_)
     _mirror_globals_to_aliases(session)
+    if format_ is not None or session.get(GLOBAL_FORMAT_KEY) is not None:
+        _mirror_live_format_aliases(session, session.get(GLOBAL_FORMAT_KEY) or CANONICAL_ROTO)
     record_global_settings_trace(session, f"write_canonical:{reason or 'unspecified'}")
     try:
         from draft_room_state import mark_draft_room_local_edit
+
         mark_draft_room_local_edit(session)
     except Exception:
         pass
@@ -93,7 +138,8 @@ def write_canonical_global_fantasy_settings(
 def _mirror_globals_to_aliases(session: dict[str, Any]) -> None:
     """Push canonical team/format values into all alias keys."""
     team = session.get(GLOBAL_TEAM_KEY)
-    fmt = session.get(GLOBAL_FORMAT_KEY)
+    fmt = normalize_league_format(session.get(GLOBAL_FORMAT_KEY) or CANONICAL_ROTO)
+    session[GLOBAL_FORMAT_KEY] = fmt
     for alias, canonical_key in _ALL_ALIASES.items():
         canonical_val = team if canonical_key == GLOBAL_TEAM_KEY else fmt
         if canonical_val is not None:
@@ -124,8 +170,11 @@ def prepare_global_fantasy_settings(
     fmt = session.get(GLOBAL_FORMAT_KEY)
     if team is None and fmt is None:
         return
+    normalized_fmt = normalize_league_format(fmt or CANONICAL_ROTO) if fmt is not None else None
+    if normalized_fmt is not None:
+        session[GLOBAL_FORMAT_KEY] = normalized_fmt
     for alias, canonical_key in _ALL_ALIASES.items():
-        canonical_val = team if canonical_key == GLOBAL_TEAM_KEY else fmt
+        canonical_val = team if canonical_key == GLOBAL_TEAM_KEY else normalized_fmt
         if canonical_val is None:
             continue
         if alias not in session:
@@ -139,6 +188,8 @@ def prepare_global_fantasy_settings(
                 last = session.get("_global_settings_last_propagated") or {}
                 if isinstance(last, dict) and last.get(alias) == session[alias]:
                     session[alias] = canonical_val
+    if normalized_fmt is not None:
+        _mirror_live_format_aliases(session, normalized_fmt)
     # Record what we propagated so we can detect vs user-local edits next time.
     propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
     session["_global_settings_last_propagated"] = propagated
@@ -179,3 +230,15 @@ def on_global_team_changed(session: dict[str, Any]) -> None:
 def on_global_format_changed(session: dict[str, Any]) -> None:
     """on_change callback for canonical format selectbox — write canonical + mirror."""
     write_canonical_global_fantasy_settings(session, format_=session.get(GLOBAL_FORMAT_KEY))
+
+
+def on_live_draft_scoring_changed(session: dict[str, Any]) -> None:
+    """on_change for live_draft_scoring — map Roto (5x5) labels to canonical room_format."""
+    scoring = session.get("live_draft_scoring")
+    if scoring is not None:
+        write_canonical_global_fantasy_settings(
+            session,
+            format_=from_live_draft_scoring(scoring),
+            reason="live_draft_scoring_changed",
+        )
+

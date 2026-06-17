@@ -9,6 +9,8 @@ from typing import Any
 
 import pandas as pd
 
+from dataframe_utils import sanitize_for_json
+
 DRAFT_ROOM_PAGE_BLOCK = "Draft Room Simulator"
 DRAFT_ROOM_TABLE_KEY = "draft_room_table"
 DRAFT_ROOM_EDITOR_KEY_PREFIX = "draft_room_board_editor"
@@ -79,18 +81,7 @@ def _utc_now_iso() -> str:
 
 
 def _json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v) for v in value]
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    return str(value)
+    return sanitize_for_json(value)
 
 
 def editor_widget_key(session: dict[str, Any]) -> str:
@@ -2461,7 +2452,7 @@ def _deep_convert_runtime_tables(obj: Any, report: dict[str, Any]) -> Any:
         return [_deep_convert_runtime_tables(val, report) for val in obj]
     if isinstance(obj, tuple):
         return [_deep_convert_runtime_tables(val, report) for val in obj]
-    return obj
+    return sanitize_for_json(obj)
 
 
 def _find_non_json_keys(obj: Any, path: str = "") -> list[str]:

@@ -5,7 +5,11 @@ import unittest
 
 import pandas as pd
 
-from dataframe_utils import coerce_dataframe, is_dataframe_empty, safe_collection_len
+import json
+
+import numpy as np
+
+from dataframe_utils import coerce_dataframe, is_dataframe_empty, safe_collection_len, sanitize_for_json
 
 
 class TestCoerceDataframe(unittest.TestCase):
@@ -62,6 +66,30 @@ class TestSafeCollectionLen(unittest.TestCase):
         df = pd.DataFrame({"pick": [1, 2]})
         # ``df or []`` raises ValueError on DataFrame — safe_collection_len must not.
         self.assertEqual(safe_collection_len(df), 2)
+
+
+class TestSanitizeForJson(unittest.TestCase):
+    def test_nan_float_becomes_none(self) -> None:
+        out = sanitize_for_json({"ops": float("nan")})
+        self.assertIsNone(out["ops"])
+        json.dumps(out)
+
+    def test_inf_becomes_none(self) -> None:
+        out = sanitize_for_json({"x": float("inf"), "y": float("-inf")})
+        self.assertIsNone(out["x"])
+        self.assertIsNone(out["y"])
+        json.dumps(out)
+
+    def test_dataframe_with_nan(self) -> None:
+        df = pd.DataFrame({"HR": [1.0, float("nan")]})
+        out = sanitize_for_json({"rows": df})
+        self.assertEqual(out["rows"][0]["HR"], 1.0)
+        self.assertIsNone(out["rows"][1]["HR"])
+        json.dumps(out)
+
+    def test_numpy_scalar(self) -> None:
+        out = sanitize_for_json({"n": np.int64(5)})
+        self.assertEqual(out["n"], 5)
 
 
 if __name__ == "__main__":
