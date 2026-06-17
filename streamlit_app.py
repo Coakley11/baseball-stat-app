@@ -11393,9 +11393,15 @@ def render_settings_persistence_trace(page_name: str):
             "`cloud_snapshot` is correct → RESTORE drops it. If `cloud_snapshot` is "
             "default/old right after a save → SAVE never persisted it."
         )
+        # Auto-load the durable blobs every render (dev-mode only, perf is fine) so the
+        # cloud/disk columns are never empty just because nobody clicked a button. A
+        # manual refresh button is still offered for re-reading after a save.
         cloud_state: dict = {}
         disk_state: dict = {}
-        if st.button("Load durable cloud + disk blobs", key=f"_spt_load_{page}"):
+        force_reload = st.button("Reload durable cloud + disk blobs", key=f"_spt_load_{page}")
+        cached_cloud = st.session_state.get("_spt_cloud_cache")
+        cached_disk = st.session_state.get("_spt_disk_cache")
+        if force_reload or cached_cloud is None or cached_disk is None:
             try:
                 from suite_cloud_state import load_cloud_full_session
 
@@ -11410,8 +11416,17 @@ def render_settings_persistence_trace(page_name: str):
                 st.caption(f"disk load failed: {exc}")
             st.session_state["_spt_cloud_cache"] = cloud_state
             st.session_state["_spt_disk_cache"] = disk_state
-        cloud_state = st.session_state.get("_spt_cloud_cache") or cloud_state
-        disk_state = st.session_state.get("_spt_disk_cache") or disk_state
+        else:
+            cloud_state = cached_cloud
+            disk_state = cached_disk
+
+        # ── DECISIVE SIGNAL: does the durable blob actually contain THIS page? ──
+        st.caption("**Durable blob contents for this page** (the decisive save/restore signal):")
+        st.write({
+            "page": page,
+            "cloud": spt.durable_pf_summary(cloud_state, page),
+            "disk": spt.durable_pf_summary(disk_state, page),
+        })
 
         # Startup / sync status — did the durable cloud blob actually get applied on
         # this load? If apply was skipped, restored values never reach the widgets and
@@ -14167,6 +14182,13 @@ if active_page == "Trend Value":
     trend_value_df = add_latest_and_projection_columns(trend_value_df, recent_data_trend)
     trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)
     trend_value_df = filter_players_by_fantasy_position(trend_value_df, trend_position_filter)
+
+    try:
+        from applied_math_context import cache_trend_comparison_index
+
+        cache_trend_comparison_index(st.session_state, trend_value_df)
+    except Exception:
+        pass
 
     trend_display = trend_value_df[
         ["fullName", "Position", "bats", "R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend", "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend"]

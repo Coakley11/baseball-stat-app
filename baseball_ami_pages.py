@@ -127,15 +127,36 @@ def finalize_trend_context_for_send(
         trend_snap["comparison_player_a"] = ctx["player_a"]
         trend_snap["comparison_player_b"] = ctx["player_b"]
         ctx["trend_snapshot"] = trend_snap
-        # Give the solver explicit guidance so it routes to cross-player trend comparison
-        # even if it does not read routing_hint directly.
+        # Attach BOTH players' real trend metrics (slope deltas, projections, latest
+        # season) from the cached trend index so the solver can produce a data-driven
+        # verdict instead of generic "open the comparison tool" advice.
         pa = ctx["player_a"]
         pb = ctx["player_b"]
+        try:
+            from applied_math_context import lookup_trend_player_entry
+
+            entry_a = lookup_trend_player_entry(session_state, pa)
+            entry_b = lookup_trend_player_entry(session_state, pb)
+            if entry_a or entry_b:
+                tc: dict[str, Any] = {}
+                if entry_a:
+                    tc["player_a"] = entry_a
+                if entry_b:
+                    tc["player_b"] = entry_b
+                metrics = ctx.get("metrics")
+                if isinstance(metrics, list) and metrics:
+                    tc["metric"] = str(metrics[0])
+                elif isinstance(metrics, str) and metrics.strip():
+                    tc["metric"] = metrics.strip()
+                ctx["trend_comparison"] = tc
+        except ImportError:
+            pass
         ctx["ami_guidance"] = (
-            f"Compare {pa}'s statistical trend trajectory against {pb}'s. "
-            f"Use rolling trend data, recent performance, and trend-based projections for both. "
-            f"Determine which player has the better trend outlook and is the better pick "
-            f"based on that trending data. Do not anchor on a different player."
+            f"Compare {pa}'s statistical trend trajectory against {pb}'s using the "
+            f"trend_comparison block (slope deltas, next-season projections, latest-season "
+            f"levels for both). State which player is the better pick and explain WHY with "
+            f"specific numbers — trend direction, projected production, and current level. "
+            f"Do not tell the user to open another tool; answer the comparison directly."
         )
     else:
         # Pure trend significance question — clear stale comparison players

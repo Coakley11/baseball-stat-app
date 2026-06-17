@@ -64,11 +64,12 @@ TRACKED_SETTINGS: dict[str, list[dict[str, str]]] = {
     ],
     "Draft Simulation Test Mode": [
         {"key": "draft_lab_window", "label": "Projection window"},
-        {"key": "draft_lab_scoring_type", "label": "Scoring type", "kind": "format"},
-        {"key": "draft_lab_format", "label": "Format"},
+        {"key": "draft_lab_scoring_type", "label": "Scoring type"},
         {"key": "draft_lab_projection_style", "label": "Projection style"},
         {"key": "draft_lab_picks_per_team", "label": "Picks/team"},
-        {"key": "draft_lab_roster_team", "label": "Roster team", "kind": "team"},
+        # NOTE: draft_lab_roster_team is a page-local "View Team" selector
+        # ("All Teams"/"Team A"...), NOT a canonical team alias — do not tag kind=team.
+        {"key": "draft_lab_roster_team", "label": "Roster view (local)"},
     ],
 }
 
@@ -230,6 +231,29 @@ def build_comparison_rows(
             "disk_snapshot": _repr(disk_block.get(k)),
         })
     return rows
+
+
+def durable_pf_summary(blob: dict[str, Any] | None, page: str) -> dict[str, Any]:
+    """Summarize a durable blob's page_filter_state: does it even contain this page?
+
+    This is the single most decisive signal for the 'reverts on refresh' bug:
+      * has_page_filter_state=False  -> blob has no snapshots at all (SAVE side broken).
+      * page_present=False           -> save_page_state never wrote THIS page's block.
+      * page_present=True            -> SAVE works; problem is on the RESTORE/apply side.
+    """
+    if not isinstance(blob, dict):
+        return {"blob_loaded": False}
+    pf = blob.get("page_filter_state")
+    if not isinstance(pf, dict):
+        return {"blob_loaded": True, "has_page_filter_state": False, "pages": []}
+    block = pf.get(page)
+    return {
+        "blob_loaded": True,
+        "has_page_filter_state": True,
+        "page_present": isinstance(block, dict) and bool(block),
+        "page_block_keys": sorted(block.keys()) if isinstance(block, dict) else [],
+        "pages_with_snapshots": sorted(pf.keys()),
+    }
 
 
 def get_save_trace(session: dict[str, Any]) -> list[dict[str, Any]]:

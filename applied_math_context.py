@@ -1877,6 +1877,85 @@ def cache_trend_player_context(
         session_state["_ami_trend_snapshot"] = snap
 
 
+def _trend_row_to_entry(row_dict: dict[str, Any]) -> dict[str, Any]:
+    """Compact per-player trend entry: deltas (slope/season), projections, latest season."""
+    import pandas as pd  # noqa: PLC0415
+
+    name = str(row_dict.get("fullName") or "").strip()
+    entry: dict[str, Any] = {"player": name}
+    for key in ("Position", "fantasy_position", "Age", "bats"):
+        val = row_dict.get(key)
+        if val is not None and (not _is_num(val) or pd.notna(val)):
+            entry[key.lower()] = val
+    deltas = {c[:-6]: round(float(v), 3) for c, v in row_dict.items()
+              if c.endswith("_trend") and _is_num(v) and pd.notna(v)}
+    projs = {c[5:]: round(float(v), 3) for c, v in row_dict.items()
+             if c.startswith("proj_") and _is_num(v) and pd.notna(v)}
+    latests = {c[7:]: round(float(v), 3) for c, v in row_dict.items()
+               if c.startswith("latest_") and _is_num(v) and pd.notna(v)}
+    if deltas:
+        entry["stat_deltas"] = deltas
+    if projs:
+        entry["projections"] = projs
+    if latests:
+        entry["latest_season"] = latests
+    return entry
+
+
+def cache_trend_comparison_index(session_state: dict[str, Any], trend_value_df: Any = None) -> None:
+    """Cache a per-player trend lookup (name -> deltas/projections/latest) for the Trend page.
+
+    Two-player trend comparison questions ("Is Misner a better pick than Garrett?") name
+    arbitrary players in the question text, so finalize_trend_context_for_send needs to look
+    up *both* players' real metrics at send time. This builds that lookup once per data
+    change (guarded by a cheap signature) so the solver can produce a data-driven verdict
+    instead of generic "open the comparison tool" advice.
+    """
+    try:
+        import pandas as pd  # noqa: PLC0415
+
+        if trend_value_df is None or getattr(trend_value_df, "empty", True):
+            return
+        if "fullName" not in trend_value_df.columns:
+            return
+        sig = (
+            int(len(trend_value_df)),
+            str(trend_value_df["fullName"].iloc[0]),
+            str(trend_value_df["fullName"].iloc[-1]),
+        )
+        if (
+            session_state.get("_ami_trend_index_sig") == sig
+            and session_state.get("_ami_trend_player_index")
+        ):
+            return
+        index: dict[str, Any] = {}
+        for record in trend_value_df.to_dict("records"):
+            name = str(record.get("fullName") or "").strip()
+            if not name:
+                continue
+            index[name.lower()] = _trend_row_to_entry(record)
+        if index:
+            session_state["_ami_trend_player_index"] = index
+            session_state["_ami_trend_index_sig"] = sig
+    except Exception:
+        pass
+
+
+def lookup_trend_player_entry(session_state: dict[str, Any], name: str) -> dict[str, Any]:
+    """Look up a cached trend entry by player name (case/space tolerant)."""
+    index = session_state.get("_ami_trend_player_index")
+    if not isinstance(index, dict) or not name:
+        return {}
+    key = str(name).strip().lower()
+    if key in index:
+        return dict(index[key])
+    # tolerate accent/punctuation differences via loose contains match on surname
+    for idx_key, entry in index.items():
+        if idx_key == key:
+            return dict(entry)
+    return {}
+
+
 def cache_valuation_ami_context(
     session_state: dict[str, Any],
     *,
