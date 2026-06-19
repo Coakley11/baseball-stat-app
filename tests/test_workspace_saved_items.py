@@ -118,5 +118,36 @@ class TestDanielArielBaseballBlobIsolation(unittest.TestCase):
                 )
 
 
+class TestResumeItemScoping(unittest.TestCase):
+    def test_upsert_resume_uses_scoped_app_key(self) -> None:
+        with patch("suite_storage_supabase._request") as req_mock, patch(
+            "suite_workspace.resolve_workspace_id", return_value="ariel"
+        ), patch("suite_storage_supabase._cloud_user_id", return_value="user-1"):
+            from suite_storage_supabase import upsert_resume_item
+
+            upsert_resume_item(
+                "baseball",
+                "ai:question:test-q",
+                title="Test question",
+                subtitle="ctx",
+                action_url="https://example.test",
+            )
+        body = req_mock.call_args.kwargs.get("json_body")
+        self.assertEqual(body.get("app"), "baseball__ariel")
+
+    def test_load_active_resume_items_filters_workspace_apps(self) -> None:
+        with patch("suite_storage_supabase._request") as req_mock, patch(
+            "suite_workspace.resolve_workspace_id", return_value="ariel"
+        ), patch("suite_storage_supabase._scoped_user_id", return_value="user-1"):
+            req_mock.return_value = []
+            from suite_storage_supabase import load_active_resume_items
+
+            load_active_resume_items(limit=5)
+        params = req_mock.call_args.kwargs.get("params")
+        app_filter = params.get("app", "")
+        self.assertIn("baseball__ariel", app_filter)
+        self.assertNotIn("in.(baseball,", app_filter)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,6 @@ import json
 import logging
 import re
 import copy
-import time
 from datetime import datetime, timezone
 from collections.abc import Callable
 from typing import Any
@@ -22,99 +21,12 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-05-27-ami-send-speed-v4"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-return-insight-restore-v12"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
 ANALYTICAL_QUESTION_BUTTON_LABEL = "Continue in Applied Mathematics →"
 _SEND_COOLDOWN_SECONDS = 120
-
-_SUBMIT_PIPELINE_KEYS = (
-    "submit_received",
-    "question_text",
-    "question_id",
-    "instant_solve_started",
-    "instant_solve_finished",
-    "instant_solve_reason",
-    "ami_repo_found",
-    "insight_card_created",
-    "activity_created",
-    "continue_item_created",
-    "command_center_write_status",
-    "cloud_persist_status",
-    "blob_save_deferred",
-    "duplicate_detected",
-    "last_exception",
-)
-
-
-def _update_submit_pipeline_diag(
-    session_state: dict[str, Any] | None,
-    **fields: Any,
-) -> dict[str, Any]:
-    """Merge step-by-step Baseball Insight submit diagnostics for Dev Mode."""
-    if session_state is None:
-        return dict(fields)
-    diag = dict(session_state.get("_ami_submit_pipeline") or {})
-    diag.update({k: v for k, v in fields.items() if v is not None or k == "last_exception"})
-    diag["updated_at"] = utc_now_iso()
-    session_state["_ami_submit_pipeline"] = diag
-    return diag
-
-
-def _record_submit_activity(
-    payload: dict[str, Any],
-    *,
-    action_url: str,
-    timing: dict[str, Any],
-) -> tuple[bool, str]:
-    """Write Command Center activity; returns (created, status)."""
-    metrics = metrics_for_activity_record(payload)
-    app_norm = normalize_source_app_id(
-        str(payload.get("source_app") or ""),
-        dict(payload.get("context") or {}),
-    )
-    metrics["source_app"] = app_norm
-    metrics["continue_action_url"] = action_url
-    metrics["target_app"] = "applied_intelligence"
-    if app_norm == "music":
-        summary = f"Asked Music Coach: {payload['question'][:80]}"
-    else:
-        summary = f"Asked Applied Math: {payload['question'][:80]}"
-    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
-    try:
-        from suite_activity_client import last_record_trace, record_activity
-
-        record_activity(
-            payload["source_app"],
-            "analytical_question",
-            page=payload["source_page"],
-            metrics=metrics,
-            summary=summary,
-            resume_key=str(payload.get("resume_key") or ""),
-            resume_title=card_title,
-            resume_subtitle=card_subtitle,
-            action_url=action_url,
-        )
-        rec_trace = last_record_trace()
-        for key in (
-            "payload_prepare_ms",
-            "activity_api_ms",
-            "append_event_ms",
-            "activity_storage_ms",
-            "saved_item_link_ms",
-            "command_center_index_ms",
-            "record_activity_total_ms",
-        ):
-            if key in rec_trace:
-                timing[key] = rec_trace[key]
-        if rec_trace.get("recorded"):
-            return True, "ok"
-        return False, str(rec_trace.get("error") or rec_trace.get("write_path") or "not_recorded")
-    except Exception as exc:
-        log.warning("record_activity failed for analytical_question: %s", exc)
-        return False, str(exc)
-
 
 _SOURCE_AREA: dict[str, str] = {
     "baseball": "sports",
@@ -228,22 +140,13 @@ _PUBLIC_CONTEXT_KEYS = (
     "total_drift",
     "historical_comparison",
     "draft_snapshot",
-    "draft_projection",
     "roster",
-    "draft_queue",
-    "watchlist",
-    "tracked_players",
-    "drafted_players",
-    "best_available",
-    "needed_positions",
-    "category_needs",
-    "sleeper_candidates",
-    "bust_risks",
-    "drafted_exclusions",
-    "valuation_snapshot",
-    "draft_status",
+    "recommended_players",
+    "sleepers",
+    "scoring_settings",
     "ami_guidance",
-    "ami_quality_rule",
+    "projection",
+    "watchlist",
 )
 
 _CONTEXT_LABELS = {
@@ -298,22 +201,6 @@ _CONTEXT_LABELS = {
     "rebalance_recommendation": "Rebalance recommendation",
     "total_drift": "Total drift",
     "historical_comparison": "Historical comparison",
-    "draft_snapshot": "Draft snapshot",
-    "roster": "Roster",
-    "draft_queue": "Draft queue",
-    "watchlist": "Watchlist",
-    "tracked_players": "Tracked players",
-    "drafted_players": "Drafted players",
-    "best_available": "Best available",
-    "needed_positions": "Needed positions",
-    "category_needs": "Category needs",
-    "sleeper_candidates": "Sleeper candidates",
-    "bust_risks": "Bust risks",
-    "drafted_exclusions": "Drafted exclusions",
-    "valuation_snapshot": "Valuation snapshot",
-    "draft_status": "Draft status",
-    "ami_guidance": "AMI guidance",
-    "ami_quality_rule": "AMI quality rule",
 }
 
 
@@ -337,9 +224,7 @@ def source_question_card_title(
     if app == "music":
         return "Music Coach question from Music"
     label = _SOURCE_LABELS.get(app, app.replace("_", " ").title())
-    if app == "baseball":
-        return f"Baseball Insight question from {label}"
-    if app in {"nba", "investment"}:
+    if app in {"baseball", "nba", "investment"}:
         return f"Applied Math question from {label}"
     return f"Question from {label}"
 
@@ -354,59 +239,6 @@ def music_coach_question_placeholder(source_page: str) -> str:
 
 def _normalize_question(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
-
-
-def _draft_board_fingerprint_parts(ctx: dict[str, Any]) -> list[str]:
-    """Draft board state for question_id — avoids stale blob collisions across pick/pool changes."""
-    parts: list[str] = []
-    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
-    pick = ctx.get("current_pick")
-    if pick is None:
-        pick = snap.get("current_pick")
-    rnd = ctx.get("draft_round")
-    if rnd is None:
-        rnd = snap.get("draft_round")
-    if pick is not None:
-        parts.append(f"pick={int(pick)}")
-    if rnd is not None:
-        parts.append(f"round={int(rnd)}")
-    diag = ctx.get("send_pipeline_diagnostics") if isinstance(ctx.get("send_pipeline_diagnostics"), dict) else {}
-    board_picks = diag.get("session_pick_count")
-    if board_picks is not None:
-        parts.append(f"board_picks={int(board_picks)}")
-    pool_n = diag.get("session_projection_available_count")
-    if pool_n is None:
-        pool_n = diag.get("ctx_available_players_count")
-    if pool_n is not None:
-        parts.append(f"pool={int(pool_n)}")
-    return parts
-
-
-def _is_draft_context(ctx: dict[str, Any], source_page: str = "") -> bool:
-    if "draft" in str(source_page or "").lower():
-        return True
-    workflow = str(ctx.get("workflow") or "").lower()
-    return "draft" in workflow or bool(ctx.get("draft_snapshot"))
-
-
-def _context_payload_hash(ctx: dict[str, Any]) -> str:
-    text = json.dumps(ctx, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _blob_diagnostics_from_context(ctx: dict[str, Any]) -> dict[str, Any]:
-    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
-    avail = ctx.get("available_players") or snap.get("available_players") or []
-    best = ctx.get("best_available") or snap.get("best_available_players") or []
-    return {
-        "available_players_count": len(avail) if isinstance(avail, list) else 0,
-        "draft_snapshot_available_players_count": len(snap.get("available_players") or [])
-        if isinstance(snap.get("available_players"), list)
-        else 0,
-        "best_available_count": len(best) if isinstance(best, list) else 0,
-        "current_pick": ctx.get("current_pick") or snap.get("current_pick"),
-        "draft_round": ctx.get("draft_round") or snap.get("draft_round"),
-    }
 
 
 def _player_name(raw: Any) -> str:
@@ -445,8 +277,6 @@ def question_dedupe_fingerprint(
             parts.append(",".join(sorted(str(v).lower() for v in val)))
         else:
             parts.append(str(val).lower())
-    if _is_draft_context(ctx, source_page):
-        parts.extend(_draft_board_fingerprint_parts(ctx))
     blob = "|".join(parts)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
@@ -497,121 +327,43 @@ def _parse_context_from_resume_subtitle(subtitle: str) -> dict[str, Any]:
         return {}
 
 
-def _store_question_context_blob(
-    payload: dict[str, Any],
-    *,
-    store_apps: list[str] | None = None,
-) -> dict[str, Any]:
+def _store_question_context_blob(payload: dict[str, Any]) -> None:
     """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
-        return {"blob_updated": False, "reason": "missing_question_id"}
-    ctx = dict(payload.get("context") or {})
-    saved_at = utc_now_iso()
-    payload_hash = _context_payload_hash(ctx)
-    blob_diag = _blob_diagnostics_from_context(ctx)
+        return
     blob = {
         "question": payload.get("question"),
         "question_id": qid,
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "quant_area": payload.get("quant_area"),
-        "context": ctx,
+        "context": dict(payload.get("context") or {}),
         "source_state": dict(payload.get("source_state") or {}),
-        "saved_at": saved_at,
-        "payload_hash": payload_hash,
-        "blob_diagnostics": blob_diag,
     }
-    avail_n = blob_diag.get("available_players_count") or 0
-    if "draft" in str(payload.get("source_page") or "").lower() and avail_n == 0:
-        log.warning(
-            "AMI blob save for %s has zero available_players (pick=%s hash=%s diag=%s)",
-            qid,
-            blob_diag.get("current_pick"),
-            payload_hash,
-            ctx.get("send_pipeline_diagnostics"),
-        )
-    if store_apps is None:
-        store_apps = ["applied_intelligence"]
-    store_results: list[dict[str, Any]] = []
-    blob_save_ms_by_app: dict[str, float] = {}
     try:
         from suite_account import remember_saved_item
 
+        store_apps: list[str] = ["applied_intelligence"]
+        src_app = str(payload.get("source_app") or "").strip().lower()
+        if src_app and src_app not in store_apps:
+            store_apps.append(src_app)
         for app_name in store_apps:
-            t_app = time.perf_counter()
-            result = remember_saved_item(
+            remember_saved_item(
                 app_name,
                 _CONTEXT_ITEM_TYPE,
                 qid,
                 title=str(payload.get("question") or "Applied Math question")[:200],
                 payload=blob,
             )
-            blob_save_ms_by_app[app_name] = round((time.perf_counter() - t_app) * 1000, 1)
-            store_results.append({"app": app_name, **(result if isinstance(result, dict) else {})})
+        return
     except Exception as exc:
         log.warning("remember_saved_item failed for analytical context: %s", exc)
-        return {
-            "blob_updated": False,
-            "question_id": qid,
-            "blob_updated_at": saved_at,
-            "blob_payload_hash": payload_hash,
-            "blob_store_error": str(exc),
-            "blob_payload_available_players_count_after_save": blob_diag.get("available_players_count"),
-            "blob_payload_current_pick_after_save": blob_diag.get("current_pick"),
-        }
-    return {
-        "blob_updated": True,
-        "question_id": qid,
-        "blob_updated_at": saved_at,
-        "blob_payload_hash": payload_hash,
-        "blob_payload_available_players_count_after_save": blob_diag.get("available_players_count"),
-        "blob_payload_draft_snapshot_available_players_count_after_save": blob_diag.get(
-            "draft_snapshot_available_players_count"
-        ),
-        "blob_payload_best_available_count_after_save": blob_diag.get("best_available_count"),
-        "blob_payload_current_pick_after_save": blob_diag.get("current_pick"),
-        "blob_payload_draft_round_after_save": blob_diag.get("draft_round"),
-        "blob_store_apps": store_apps,
-        "blob_store_results": store_results,
-        "blob_save_ms_by_app": blob_save_ms_by_app,
-    }
 
 
-def _blob_candidate_score(payload: dict[str, Any], updated_at: str) -> tuple[str, int]:
-    """Sort key: prefer newest store time, then richest pool."""
-    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
-    diag = payload.get("blob_diagnostics") if isinstance(payload.get("blob_diagnostics"), dict) else {}
-    avail = diag.get("available_players_count")
-    if avail is None:
-        avail = len(ctx.get("available_players") or snap.get("available_players") or [])
-    ts = str(updated_at or payload.get("saved_at") or payload.get("blob_store_updated_at") or "")
-    return (ts, int(avail or 0))
-
-
-def _select_best_blob_payload(candidates: list[tuple[str, str, dict[str, Any]]]) -> dict[str, Any] | None:
-    if not candidates:
-        return None
-    best_ts, best_app, best_payload = max(
-        candidates,
-        key=lambda item: _blob_candidate_score(item[2], item[0]),
-    )
-    out = copy.deepcopy(best_payload)
-    out["blob_store_updated_at"] = best_ts or out.get("saved_at")
-    out["blob_store_app"] = best_app
-    out["blob_load_source"] = "saved_items"
-    if len(candidates) > 1:
-        out["blob_load_candidates"] = [
-            {
-                "app": app,
-                "updated_at": ts,
-                "payload_hash": (payload or {}).get("payload_hash"),
-                "available_players_count": _blob_candidate_score(payload, ts)[1],
-            }
-            for ts, app, payload in candidates
-        ]
-    return out
+def persist_question_context_blob(payload: dict[str, Any]) -> None:
+    """Public wrapper: persist question send snapshot (context + source_state) by question_id."""
+    _store_question_context_blob(payload)
 
 
 def load_analytical_question_context(question_id: str) -> dict[str, Any]:
@@ -625,75 +377,44 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     if not qid:
         return {}
     resume_key = f"ai:question:{qid}"
-    search_apps = ["applied_intelligence", "baseball", "investment", "nba", "music"]
-    load_error = ""
+    search_apps = ["applied_intelligence"]
     try:
         from suite_account import load_saved_items
 
-        candidates: list[tuple[str, str, dict[str, Any]]] = []
         for app_name in search_apps:
             rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
             for row in rows:
-                if str(row.get("item_key") or "") != qid:
-                    continue
-                payload = row.get("payload")
-                if isinstance(payload, dict):
-                    candidates.append((str(row.get("updated_at") or ""), app_name, payload))
-        picked = _select_best_blob_payload(candidates)
-        if picked:
-            return picked
+                if str(row.get("item_key") or "") == qid:
+                    payload = row.get("payload")
+                    if isinstance(payload, dict):
+                        return copy.deepcopy(payload)
+        for app_name in ("investment", "baseball", "nba", "music"):
+            if app_name in search_apps:
+                continue
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
+            for row in rows:
+                if str(row.get("item_key") or "") == qid:
+                    payload = row.get("payload")
+                    if isinstance(payload, dict):
+                        return copy.deepcopy(payload)
     except Exception as exc:
         log.warning("load_saved_items failed for question context: %s", exc)
-        load_error = str(exc)
     try:
         from suite_storage_supabase import load_active_resume_items
+        from suite_workspace import scoped_cloud_app_id
 
-        for row in load_active_resume_items(limit=40):
-            if str(row.get("app") or "") != "applied_intelligence":
+        scoped_ai = scoped_cloud_app_id("applied_intelligence")
+        for row in load_active_resume_items(limit=40, app="applied_intelligence"):
+            if str(row.get("app") or "") != scoped_ai:
                 continue
             if str(row.get("item_key") or "") != resume_key:
                 continue
             ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
             if ctx:
-                return {
-                    "context": ctx,
-                    "question_id": qid,
-                    "blob_load_source": "resume_subtitle",
-                    "payload_hash": _context_payload_hash(ctx),
-                }
+                return {"context": ctx, "question_id": qid}
     except Exception:
         pass
-    return {"blob_load_error": load_error or "no_blob_context_for_question_id", "question_id": qid}
-
-
-def build_send_identity_diagnostics(session_state: dict[str, Any]) -> dict[str, Any]:
-    """Hard identity block for Baseball Dev Mode after AMI send."""
-    try:
-        from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
-    except ImportError:
-        SUITE_BUILD_LABEL, GIT_COMMIT_SHORT = "unknown", "unknown"
-    last_send = session_state.get("_ami_last_send") if isinstance(session_state.get("_ami_last_send"), dict) else {}
-    send_diag = (
-        session_state.get("_ami_last_send_diagnostics")
-        if isinstance(session_state.get("_ami_last_send_diagnostics"), dict)
-        else {}
-    )
-    identity: dict[str, Any] = {
-        "deploy_build": SUITE_BUILD_LABEL,
-        "deploy_commit": GIT_COMMIT_SHORT,
-        "question_id": last_send.get("question_id") or send_diag.get("question_id"),
-        "blob_updated": last_send.get("blob_updated", send_diag.get("blob_updated")),
-        "blob_updated_at": last_send.get("blob_updated_at") or send_diag.get("blob_updated_at"),
-        "blob_payload_hash": last_send.get("blob_payload_hash") or send_diag.get("blob_payload_hash"),
-        "blob_payload_available_players_count_after_save": send_diag.get(
-            "blob_payload_available_players_count_after_save"
-        ),
-        "blob_payload_current_pick_after_save": send_diag.get("blob_payload_current_pick_after_save"),
-        "blob_store_apps": send_diag.get("blob_store_apps"),
-        "cache_build_action": send_diag.get("cache_build_action"),
-        "skip_reason": send_diag.get("skip_reason"),
-    }
-    return identity
+    return {}
 
 
 def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
@@ -727,20 +448,39 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     page = str(m.get("page") or _qp("suite_page") or "Solve a Problem").strip()
 
     ctx: dict[str, Any] = {}
+    source_state: dict[str, Any] = {}
+    hydrate_source = "none"
+
+    # Blob-first: full context by question_id before metrics/URL (avoids truncated deep links).
+    if qid:
+        blob_payload = load_analytical_question_payload(qid)
+        blob_ctx = blob_payload.get("context") if isinstance(blob_payload.get("context"), dict) else {}
+        if blob_ctx:
+            ctx = copy.deepcopy(blob_ctx)
+            hydrate_source = "question_id_blob"
+        blob_ss = blob_payload.get("source_state") if isinstance(blob_payload.get("source_state"), dict) else {}
+        if blob_ss:
+            source_state = copy.deepcopy(blob_ss)
+
+    metrics_ctx: dict[str, Any] = {}
     if isinstance(m.get("context"), dict):
-        ctx = copy.deepcopy(m["context"])
+        metrics_ctx = copy.deepcopy(m["context"])
     elif m.get("context_json"):
         try:
             parsed = json.loads(str(m["context_json"]))
             if isinstance(parsed, dict):
-                ctx = parsed
+                metrics_ctx = parsed
         except json.JSONDecodeError:
             pass
-    if not ctx and qid:
-        ctx = load_analytical_question_context(qid)
-    source_state: dict[str, Any] = {}
-    if qid:
-        source_state = load_analytical_question_source_state(qid)
+    if metrics_ctx:
+        if not ctx:
+            ctx = metrics_ctx
+            hydrate_source = "metrics"
+        else:
+            for key, val in metrics_ctx.items():
+                if key not in ctx or not ctx.get(key):
+                    ctx[key] = val
+
     if not ctx:
         raw_ctx = _qp("suite_ai_context")
         if raw_ctx:
@@ -748,6 +488,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
                 parsed = json.loads(raw_ctx)
                 if isinstance(parsed, dict):
                     ctx = parsed
+                    hydrate_source = "url_query"
             except json.JSONDecodeError:
                 pass
 
@@ -768,6 +509,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         ss["_suite_ai_context"] = json.dumps(ctx, ensure_ascii=False)
     if source_state:
         ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
+    ss["_suite_ai_hydrate_source"] = hydrate_source
 
 
 def _format_context_value(key: str, val: Any) -> str:
@@ -822,38 +564,14 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
     return (title, question, ANALYTICAL_QUESTION_BUTTON_LABEL)
 
 
-def analytical_question_storage_subtitle(payload: dict[str, Any], *, include_context_json: bool = True) -> str:
-    """Resume-item subtitle — question text only when blob is saved by question_id."""
+def analytical_question_storage_subtitle(payload: dict[str, Any]) -> str:
+    """Resume-item subtitle for storage/rebuild — question only on CC cards; context stays in metrics/URL."""
     question = str(payload.get("question") or "").strip()
-    qid = str(payload.get("question_id") or "").strip()
-    if qid and not include_context_json:
-        return question
     ctx = dict(payload.get("context") or {})
     ctx_json = json.dumps(ctx, ensure_ascii=False) if ctx else ""
     if ctx_json:
         return f"{question}\n__ctx_json__:{ctx_json[:_CTX_JSON_SUBTITLE_LIMIT]}"
     return question
-
-
-def metrics_for_activity_record(payload: dict[str, Any]) -> dict[str, Any]:
-    """Lean Command Center activity metrics — full solver context lives in saved blob."""
-    ctx = dict(payload.get("context") or {})
-    diag = ctx.get("send_pipeline_diagnostics") if isinstance(ctx.get("send_pipeline_diagnostics"), dict) else {}
-    avail = ctx.get("available_players")
-    return {
-        "question": payload.get("question"),
-        "question_id": payload.get("question_id"),
-        "resume_key": payload.get("resume_key"),
-        "page": "Solve a Problem",
-        "source_app": payload.get("source_app"),
-        "source_page": payload.get("source_page"),
-        "context_summary": payload.get("context_summary"),
-        "quant_area": payload.get("quant_area"),
-        "dedupe_fingerprint": payload.get("question_id"),
-        "cache_build_action": diag.get("cache_build_action"),
-        "current_pick": ctx.get("current_pick"),
-        "available_players_count": len(avail) if isinstance(avail, list) else None,
-    }
 
 
 def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
@@ -863,7 +581,6 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "question": payload.get("question"),
         "question_id": payload.get("question_id"),
-        "page": "Solve a Problem",
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "context_summary": payload.get("context_summary"),
@@ -877,43 +594,13 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _flush_pending_blob_save(session_state: dict[str, Any] | None) -> None:
-    """Run deferred question-context blob save from a prior send."""
-    if not session_state:
-        return
-    pending = session_state.pop("_ami_pending_blob_save", None)
-    if not isinstance(pending, dict):
-        return
-    payload = pending.get("payload")
-    store_apps = pending.get("store_apps")
-    if isinstance(payload, dict):
-        _store_question_context_blob(
-            payload,
-            store_apps=store_apps if isinstance(store_apps, list) else None,
-        )
-
-
-def _flush_pending_resume_upsert(session_state: dict[str, Any] | None) -> None:
-    """Run deferred Applied Intelligence resume upsert from a prior send (non-blocking path)."""
-    if not session_state:
-        return
-    pending = session_state.pop("_ami_pending_resume_upsert", None)
-    if not isinstance(pending, dict):
-        return
-    payload = pending.get("payload")
-    action_url = str(pending.get("action_url") or "")
-    if isinstance(payload, dict) and action_url:
-        _upsert_applied_intelligence_resume(payload, action_url=action_url, include_context_json=False)
-
-
 def _upsert_applied_intelligence_resume(
     payload: dict[str, Any],
     *,
     action_url: str,
-    include_context_json: bool = True,
 ) -> None:
     title, _, _ = analytical_question_continue_copy(payload)
-    subtitle = analytical_question_storage_subtitle(payload, include_context_json=include_context_json)
+    subtitle = analytical_question_storage_subtitle(payload)
     resume_key = str(payload.get("resume_key") or "").strip()
     if not resume_key:
         return
@@ -991,17 +678,6 @@ def _display_page_name(source_app: str, page: str) -> str:
 
 def _short_context_summary(ctx: dict[str, Any]) -> str:
     workflow = str(ctx.get("workflow") or "").strip()
-    snap = ctx.get("draft_snapshot") if isinstance(ctx.get("draft_snapshot"), dict) else {}
-    if snap:
-        parts = ["Fantasy draft"]
-        if snap.get("draft_round") and snap.get("current_pick"):
-            parts.append(f"R{snap['draft_round']} pick {snap['current_pick']}")
-        recs = snap.get("recommended_players") or []
-        if isinstance(recs, list) and recs:
-            names = [str(r.get("player") or r) for r in recs[:3] if r]
-            if names:
-                parts.append(f"top: {', '.join(names)}")
-        return " · ".join(parts)
     if workflow:
         players = ctx.get("players")
         if isinstance(players, list) and players:
@@ -1059,13 +735,8 @@ def submit_analytical_question(
     quant_area: str = "",
     source_state: dict[str, Any] | None = None,
     session_state: dict[str, Any] | None = None,
-    defer_blob_save: bool = False,
 ) -> dict[str, Any]:
     """Log event on source app and upsert Applied Intelligence resume item."""
-    timing: dict[str, Any] = {}
-    t_total = time.perf_counter()
-
-    t0 = time.perf_counter()
     payload = build_question_payload(
         source_app=source_app,
         source_page=source_page,
@@ -1075,140 +746,47 @@ def submit_analytical_question(
         quant_area=quant_area,
         source_state=source_state,
     )
-    timing["build_payload_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-
-    t1 = time.perf_counter()
     action_url = build_applied_math_resume_url(payload)
-    timing["action_url_ms"] = round((time.perf_counter() - t1) * 1000, 1)
-
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
-    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
-    blob_meta: dict[str, Any] = {}
-    activity_created = False
-    continue_item_created = False
-    cc_status = "pending"
-    app_norm = normalize_source_app_id(
-        str(payload.get("source_app") or ""),
-        dict(payload.get("context") or {}),
-    )
-    refresh_activity = app_norm == "baseball"
-
-    if duplicate and not refresh_activity:
-        t_blob = time.perf_counter()
-        blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
-        timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
-        timing["duplicate_send"] = True
-        cc_status = "skipped_duplicate"
-    else:
-        if duplicate:
-            timing["duplicate_send"] = True
-        t_rec = time.perf_counter()
-        activity_created, cc_status = _record_submit_activity(payload, action_url=action_url, timing=timing)
-        timing["record_activity_ms"] = round((time.perf_counter() - t_rec) * 1000, 1)
-
-        t_blob = time.perf_counter()
-        if defer_blob_save and session_state is not None:
-            session_state["_ami_pending_blob_save"] = {
-                "payload": payload,
-                "store_apps": ["applied_intelligence"],
-            }
-            blob_meta = {"blob_updated": False, "blob_save_deferred": True}
-            timing["blob_save_deferred"] = True
-            timing["blob_save_ms"] = 0.0
-            session_state["_ami_pending_resume_upsert"] = {
-                "payload": payload,
-                "action_url": action_url,
-            }
-            continue_item_created = True
-            timing["resume_upsert_ms"] = 0.0
+    if not duplicate:
+        metrics = metrics_for_applied_math_resume(payload)
+        metrics["source_app"] = normalize_source_app_id(
+            str(payload.get("source_app") or ""),
+            dict(payload.get("context") or {}),
+        )
+        if metrics["source_app"] == "music":
+            summary = f"Asked Music Coach: {payload['question'][:80]}"
         else:
-            blob_meta = _store_question_context_blob(payload, store_apps=["applied_intelligence"])
-            timing["blob_save_ms"] = round((time.perf_counter() - t_blob) * 1000, 1)
-        if isinstance(blob_meta.get("blob_save_ms_by_app"), dict):
-            timing["blob_save_ms_by_app"] = blob_meta["blob_save_ms_by_app"]
+            summary = f"Asked Applied Math: {payload['question'][:80]}"
+        try:
+            from suite_activity_client import record_activity
 
-        if blob_meta.get("blob_updated"):
-            if session_state is not None:
-                session_state["_ami_pending_resume_upsert"] = {
-                    "payload": payload,
-                    "action_url": action_url,
-                }
-                continue_item_created = True
-                timing["resume_upsert_ms"] = 0.0
-                timing["resume_upsert_deferred"] = True
-            else:
-                t_resume = time.perf_counter()
-                _upsert_applied_intelligence_resume(payload, action_url=action_url, include_context_json=False)
-                continue_item_created = True
-                timing["resume_upsert_ms"] = round((time.perf_counter() - t_resume) * 1000, 1)
-    timing["send_total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
-    if timing:
-        numeric = {k: v for k, v in timing.items() if isinstance(v, (int, float)) and k != "send_total_ms"}
-        if numeric:
-            timing["slowest_step"] = max(numeric, key=lambda k: numeric[k])
-            timing["slowest_step_ms"] = numeric[timing["slowest_step"]]
-
+            record_activity(
+                payload["source_app"],
+                "analytical_question",
+                page=payload["source_page"],
+                metrics=metrics,
+                summary=summary,
+            )
+        except Exception as exc:
+            log.warning("record_activity failed for analytical_question: %s", exc)
+    _upsert_applied_intelligence_resume(payload, action_url=action_url)
+    ss = payload.get("source_state")
+    refresh_blob = not duplicate or (
+        str(payload.get("source_app") or "").strip().lower() == "investment"
+        and isinstance(ss, dict)
+        and bool(ss.get("entity_params"))
+    )
+    if refresh_blob:
+        _store_question_context_blob(payload)
     if session_state is not None:
-        ctx = dict(payload.get("context") or {})
-        send_diag = dict(ctx.get("send_pipeline_diagnostics") or {})
-        send_diag.update(blob_meta)
-        send_diag.update(timing)
-        build_timing = session_state.get("_ami_last_send_build_timing")
-        if isinstance(build_timing, dict):
-            send_diag.update(build_timing)
-        numeric = {
-            k: v
-            for k, v in send_diag.items()
-            if isinstance(v, (int, float)) and k not in ("send_total_ms",)
-        }
-        if numeric:
-            send_diag["slowest_step"] = max(numeric, key=lambda k: numeric[k])
-            send_diag["slowest_step_ms"] = numeric[send_diag["slowest_step"]]
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
             "question": payload["question"],
             "source_app": payload["source_app"],
             "submitted_at": utc_now_iso(),
-            "duplicate": duplicate,
-            **blob_meta,
         }
-        submit_diag = {
-            "source_page": payload.get("source_page"),
-            "question_id": payload.get("question_id"),
-            "activity_created": activity_created,
-            "continue_item_created": continue_item_created,
-            "duplicate_detected": duplicate,
-            "insight_card_created": bool(session_state.get("_ami_last_instant_insight_ok")),
-            "command_center_write_status": cc_status if cc_status != "pending" else (
-                "skipped_duplicate" if duplicate else ("ok" if activity_created else "failed")
-            ),
-        }
-        ctx_diag = dict(payload.get("context") or {})
-        if ctx_diag.get("trend_send_diagnostics"):
-            submit_diag.update(dict(ctx_diag["trend_send_diagnostics"]))
-        team_diag = ctx_diag.get("_draft_team_diagnostics")
-        if isinstance(team_diag, dict):
-            submit_diag.update(team_diag)
-        if ctx_diag.get("send_pipeline_diagnostics"):
-            submit_diag.update(
-                {
-                    k: v
-                    for k, v in dict(ctx_diag["send_pipeline_diagnostics"]).items()
-                    if k.startswith(("requested_team", "resolved_team", "roster_", "trend_", "source_page", "routing_"))
-                }
-            )
-        session_state["_ami_last_submit_diagnostics"] = submit_diag
-        send_diag.update(submit_diag)
-        pipeline = dict(session_state.get("_ami_submit_pipeline") or {})
-        pipeline.update(
-            {
-                k: submit_diag.get(k)
-                for k in _SUBMIT_PIPELINE_KEYS
-                if k in submit_diag
-            }
-        )
-        session_state["_ami_submit_pipeline"] = pipeline
-        session_state["_ami_last_send_diagnostics"] = send_diag
+    card_title, card_subtitle, _ = analytical_question_continue_copy(payload)
     return {
         **payload,
         "action_url": action_url,
@@ -1216,7 +794,6 @@ def submit_analytical_question(
         "continue_subtitle": card_subtitle,
         "duplicate": duplicate,
         "submitted_at": utc_now_iso(),
-        "send_timing": timing,
     }
 
 
@@ -1227,157 +804,19 @@ def build_submit_context(
     *,
     context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
     context_extra: dict[str, Any] | None = None,
-    question: str = "",
 ) -> dict[str, Any]:
     """Fresh context at Send time — page hooks may run after sidebar render."""
-    timing: dict[str, Any] = {}
-    t0 = time.perf_counter()
     ctx, _ = build_context_from_session(source_app, source_page, session_state)
-    ctx["source_page"] = str(source_page or "").strip()
-    timing["build_context_from_session_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-
-    low_page = str(source_page or "").lower()
-    draft_cached = False
-    if str(source_app or "").strip().lower() == "baseball" and "draft" in low_page:
+    extra: dict[str, Any] | None = None
+    if context_extra_builder is not None:
         try:
-            from draft_ami_helpers import draft_ami_cache_has_pool
-
-            draft_cached = draft_ami_cache_has_pool(session_state)
-        except ImportError:
-            draft_cached = False
-
-    if not draft_cached:
-        extra: dict[str, Any] | None = None
-        t_extra = time.perf_counter()
-        if context_extra_builder is not None:
-            try:
-                extra = context_extra_builder()
-            except Exception:
-                log.exception("AMI context builder failed for %s (%s)", source_app, source_page)
-        elif context_extra:
-            extra = context_extra
-        if extra:
-            ctx = merge_analytical_context(ctx, extra)
-        timing["context_extra_builder_ms"] = round((time.perf_counter() - t_extra) * 1000, 1)
-    else:
-        timing["context_extra_builder_ms"] = 0.0
-        timing["cache_build_action"] = "already_present"
-
-    if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
-        try:
-            from applied_math_context import (
-                attach_draft_team_to_context,
-                attach_question_player_to_context,
-                augment_ami_available_pool_at_send,
-                ensure_draft_assistant_ami_cache_at_send,
-                finalize_draft_context_for_send,
-            )
-
-            attach_question_player_to_context(ctx, str(question).strip(), session_state)
-            if "draft" in low_page:
-                if draft_cached:
-                    timing["cache_build_ms"] = 0.0
-                    timing["cache_build_action"] = timing.get("cache_build_action") or "already_present"
-                else:
-                    t_cache = time.perf_counter()
-                    cache_trace = ensure_draft_assistant_ami_cache_at_send(session_state, source_page=source_page)
-                    timing["cache_build_ms"] = round((time.perf_counter() - t_cache) * 1000, 1)
-                    timing["cache_build_action"] = cache_trace.get("cache_action")
-                augment_ami_available_pool_at_send(ctx, str(question).strip(), session_state)
-                t_fin = time.perf_counter()
-                finalize_draft_context_for_send(ctx, session_state)
-                timing["finalize_context_ms"] = round((time.perf_counter() - t_fin) * 1000, 1)
-            attach_draft_team_to_context(ctx, str(question).strip(), session_state)
-            if "draft" in low_page:
-                from applied_math_context import build_draft_send_pipeline_diagnostics
-
-                diag = build_draft_send_pipeline_diagnostics(ctx, session_state)
-                ctx["send_pipeline_diagnostics"] = diag
-            else:
-                try:
-                    from baseball_ami_pages import promote_page_ami_context_at_send
-
-                    page_diag = promote_page_ami_context_at_send(
-                        ctx, session_state, source_page=source_page, question=str(question).strip()
-                    )
-                    if page_diag:
-                        ctx.setdefault("send_pipeline_diagnostics", {})
-                        if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
-                            ctx["send_pipeline_diagnostics"].update(page_diag)
-                    sleepers_diag = ctx.get("sleepers_send_diagnostics")
-                    if isinstance(sleepers_diag, dict):
-                        ctx.setdefault("send_pipeline_diagnostics", {})
-                        if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
-                            ctx["send_pipeline_diagnostics"].update(sleepers_diag)
-                    comparison_diag = ctx.get("comparison_send_diagnostics")
-                    if isinstance(comparison_diag, dict):
-                        ctx.setdefault("send_pipeline_diagnostics", {})
-                        if isinstance(ctx.get("send_pipeline_diagnostics"), dict):
-                            ctx["send_pipeline_diagnostics"].update(comparison_diag)
-                except ImportError:
-                    pass
-            try:
-                from baseball_ami_pages import apply_market_bust_context_at_send, detect_sleepers_send_intent
-
-                bust_intent = detect_sleepers_send_intent(str(question).strip())
-                if bust_intent in ("bust_risk_review", "bust_take"):
-                    apply_market_bust_context_at_send(
-                        ctx,
-                        session_state,
-                        question=str(question).strip(),
-                        intent=bust_intent,
-                    )
-            except ImportError:
-                pass
+            extra = context_extra_builder()
         except Exception:
-            log.exception("attach_question_player_to_context failed for %s (%s)", source_app, source_page)
-
-    # Build dev trace — stored in session_state for display in developer mode and audit tooling.
-    # This records the full routing decision pipeline so intent/entity/workflow issues are visible.
-    if str(source_app or "").strip().lower() == "baseball" and str(question or "").strip():
-        try:
-            _trace: dict[str, Any] = {
-                "raw_question": str(question or "").strip(),
-                "source_page": str(source_page or "").strip(),
-                "extracted_player_a": str(ctx.get("player_a") or ""),
-                "extracted_player_b": str(ctx.get("player_b") or ""),
-                "extracted_single_player": str(ctx.get("question_player") or ctx.get("player") or ""),
-                "detected_intent": str(ctx.get("intent") or ""),
-                "routing_hint": str(ctx.get("routing_hint") or ""),
-                "problem_type_hint": str(ctx.get("problem_type_hint") or ""),
-                "comparison_mode": str(ctx.get("comparison_mode") or ""),
-                "draft_mode_hint": str(ctx.get("draft_mode_hint") or ""),
-                "comparison_age_range": str(ctx.get("comparison_age_range") or ""),
-                "comparison_season_range": str(ctx.get("comparison_season_range") or ""),
-                "comparison_constraint_note": str(ctx.get("comparison_constraint_note") or ""),
-                "trend_comparison_mode": bool(ctx.get("trend_comparison_mode")),
-                "category_diagnostics_present": bool(ctx.get("category_diagnostics")),
-                "position_scarcity_table_present": bool(ctx.get("position_scarcity_table")),
-                "sleeper_focus_present": bool(ctx.get("sleeper_focus")),
-                "sleeper_focus_a_present": bool(ctx.get("sleeper_focus_a")),
-                "sleeper_focus_b_present": bool(ctx.get("sleeper_focus_b")),
-                "roster_present": bool(ctx.get("roster") or ctx.get("user_roster")),
-                "draft_review_team": str(ctx.get("draft_review_team") or ""),
-                "attached_context_keys": sorted(
-                    k for k, v in ctx.items()
-                    if v and k not in ("ami_question", "question") and not k.startswith("_")
-                ),
-                "send_pipeline_diagnostics": ctx.get("send_pipeline_diagnostics"),
-                "timing_ms": timing,
-            }
-            session_state["_ami_last_request_trace"] = _trace
-            log.debug(
-                "AMI request trace — page=%s intent=%s routing=%s player_a=%r player_b=%r",
-                _trace["source_page"],
-                _trace["detected_intent"],
-                _trace["routing_hint"],
-                _trace["extracted_player_a"],
-                _trace["extracted_player_b"],
-            )
-        except Exception:
-            log.debug("AMI trace build failed", exc_info=True)
-
-    session_state["_ami_last_send_build_timing"] = timing
+            log.exception("AMI context builder failed for %s (%s)", source_app, source_page)
+    elif context_extra:
+        extra = context_extra
+    if extra:
+        ctx = merge_analytical_context(ctx, extra)
     return ctx
 
 
@@ -1397,24 +836,16 @@ def render_analyze_with_applied_math_sidebar(
 ) -> None:
     """Always-visible sidebar block: question → Command Center → Applied Intelligence."""
     ss = session_state if session_state is not None else st.session_state
-    _flush_pending_resume_upsert(ss)
-    _flush_pending_blob_save(ss)
     page_suffix = _safe_widget_suffix(source_page)
     send_gen = int(ss.get(f"_ami_send_gen_{source_app}_{page_suffix}") or 0)
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
     is_music = str(source_app or "").strip().lower() == "music"
-    is_baseball = str(source_app or "").strip().lower() == "baseball"
     if is_music:
         st.sidebar.markdown("### Ask the Music Coach")
         st.sidebar.caption(
             "Get help with practice, theory, navigation, backing tracks, karaoke, or this app."
-        )
-    elif is_baseball:
-        st.sidebar.markdown("### Get Baseball Insight")
-        st.sidebar.caption(
-            "Ask a fantasy baseball question about what you are viewing on this page."
         )
     else:
         st.sidebar.markdown("### Analyze with Applied Math")
@@ -1429,361 +860,80 @@ def render_analyze_with_applied_math_sidebar(
         sent_msg = (
             "Question sent to Command Center. Open Command Center to continue with the Music Coach."
             if is_music
-            else (
-                "Baseball Insight is ready on this page."
-                if is_baseball
-                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
-            )
+            else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
         )
         st.sidebar.success(sent_msg)
 
-    if question_key not in ss:
-        ss[question_key] = str(default_question or ss.get("_ami_last_typed_question") or "").strip()
+    question = st.sidebar.text_area(
+        "Question",
+        value=str(ss.get(question_key) or default_question or "").strip(),
+        placeholder=(
+            music_coach_question_placeholder(source_page)
+            if is_music
+            else "e.g. Is this trend meaningful statistically?"
+        ),
+        height=88,
+        key=question_key,
+        label_visibility="visible",
+    )
 
-    form_key = f"ami_form_{source_app}_{page_suffix}_{send_gen}"
-    with st.sidebar.form(key=form_key, clear_on_submit=False):
-        question = st.text_area(
-            "Question",
-            placeholder=(
-                music_coach_question_placeholder(source_page)
-                if is_music
-                else "e.g. Is this trend meaningful statistically?"
-            ),
-            height=88,
-            key=question_key,
-            label_visibility="visible",
-        )
-
-        submit_label = (
-            "Get Baseball Insight"
-            if is_baseball
-            else ("Ask the Music Coach" if is_music else "Send to Command Center")
-        )
-        submitted = st.form_submit_button(
-            submit_label,
-            use_container_width=True,
-            type="primary",
-        )
-
-    if submitted:
-        q = str(ss.get(question_key) or question or "").strip()
-        pipeline: dict[str, Any] = {"submit_received": True, "question_text": q, "last_exception": None}
-        _update_submit_pipeline_diag(ss, **pipeline)
+    if st.sidebar.button(
+        "Send to Command Center",
+        key=submit_key,
+        use_container_width=True,
+        type="primary",
+    ):
+        q = str(question or "").strip()
         if not q:
             st.sidebar.warning("Enter a question first.")
         else:
-            ss["_ami_last_typed_question"] = q
-            insight_card_created = False
-            cloud_persist_status = "not_attempted"
-            instant_solve_reason = ""
-            try:
-                t_send = time.perf_counter()
-                submit_ctx = build_submit_context(
-                    source_app,
-                    source_page,
-                    ss,
-                    context_extra_builder=context_extra_builder,
-                    context_extra=context,
-                    question=q,
-                )
-                build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-                build_timing["build_submit_context_total_ms"] = round((time.perf_counter() - t_send) * 1000, 1)
-                ss["_ami_last_send_build_timing"] = build_timing
-                submit_source_state: dict[str, Any] | None = None
-                skip_source_state = False
-                if is_baseball and "draft" in str(source_page or "").lower():
-                    try:
-                        from draft_ami_helpers import draft_ami_cache_has_pool
-
-                        skip_source_state = draft_ami_cache_has_pool(ss)
-                    except ImportError:
-                        skip_source_state = False
-                if source_state_builder is not None and not skip_source_state:
-                    try:
-                        submit_source_state = source_state_builder()
-                    except Exception as exc:
-                        log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
-                        pipeline["last_exception"] = f"source_state: {exc}"
-                elif skip_source_state:
-                    build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-                    build_timing["source_state_builder_skipped"] = "draft_cache_present"
-                    ss["_ami_last_send_build_timing"] = build_timing
-
-                pre_payload = build_question_payload(
-                    source_app=source_app,
-                    source_page=source_page,
-                    question=q,
-                    context=submit_ctx,
-                    context_summary=context_summary,
-                    source_state=submit_source_state,
-                )
-                action_url_pre = build_applied_math_resume_url(pre_payload)
-                _update_submit_pipeline_diag(
-                    ss,
-                    question_id=str(pre_payload.get("question_id") or ""),
-                )
-
-                instant_solved = False
-                if is_baseball:
-                    from draft_ami_instant_solver import ami_solver_availability, solve_instant_baseball_insight
-
-                    avail = ami_solver_availability()
-                    _update_submit_pipeline_diag(
-                        ss,
-                        instant_solve_started=True,
-                        ami_repo_found=bool(avail.get("repo_found")),
-                    )
-                    t_inst = time.perf_counter()
-                    try:
-                        from applied_math_return_insight import (
-                            build_return_insight_payload,
-                            build_submit_fallback_insight,
-                            render_suite_applied_math_insight_for_page,
-                            stage_pending_insight,
-                        )
-
-                        solved_pair = solve_instant_baseball_insight(q, submit_ctx)
-                        if solved_pair:
-                            route, solved = solved_pair
-                            insight = build_return_insight_payload(
-                                question=q,
-                                source_app=source_app,
-                                source_page=source_page,
-                                question_id=str(pre_payload.get("question_id") or ""),
-                                route=route,
-                                result=solved,
-                                full_analysis_url=action_url_pre,
-                                context=submit_ctx,
-                                resume_key=str(pre_payload.get("resume_key") or ""),
-                            )
-                            instant_solve_reason = "solver_ok"
-                        else:
-                            insight = build_submit_fallback_insight(
-                                question=q,
-                                source_app=source_app,
-                                source_page=source_page,
-                                question_id=str(pre_payload.get("question_id") or ""),
-                                full_analysis_url=action_url_pre,
-                                resume_key=str(pre_payload.get("resume_key") or ""),
-                                reason=str(avail.get("reason") or "solver_unavailable"),
-                            )
-                            instant_solve_reason = str(avail.get("reason") or "solver_unavailable")
-                        stage_pending_insight(ss, insight, return_context=submit_ctx)
-                        insight_card_created = True
-                        ss["_ami_force_insight_render"] = True
-                        ss["_ami_submit_render_insight_this_run"] = True
-                        ss["_ami_insight_return_preserve"] = True
-                        try:
-                            render_suite_applied_math_insight_for_page(
-                                st,
-                                source_app=source_app,
-                                source_page=source_page,
-                            )
-                            ss["_ami_insight_rendered_inline_after_submit"] = True
-                        except Exception:
-                            log.exception(
-                                "inline Baseball Insight render failed for %s (%s)",
-                                source_app,
-                                source_page,
-                            )
-                        try:
-                            from applied_math_return_insight import (
-                                SESSION_PERSIST_INSIGHT_DIRTY,
-                                store_applied_math_insight,
-                            )
-
-                            insight_data = (
-                                insight.to_dict() if hasattr(insight, "to_dict") else dict(insight)
-                            )
-                            store_applied_math_insight(
-                                insight_data,
-                                return_context=submit_ctx,
-                                source_state=submit_source_state,
-                                st=ss,
-                            )
-                            ss[SESSION_PERSIST_INSIGHT_DIRTY] = True
-                            cloud_persist_status = "ok"
-                            instant_solved = bool(solved_pair)
-                        except Exception as exc:
-                            log.exception("instant insight cloud persist failed")
-                            cloud_persist_status = f"failed: {exc}"
-                            pipeline["last_exception"] = str(exc)
-                            instant_solved = bool(solved_pair)
-                    except Exception as exc:
-                        log.exception("instant Baseball Insight failed for %s (%s)", source_app, source_page)
-                        pipeline["last_exception"] = str(exc)
-                        instant_solve_reason = f"exception: {exc}"
-                        try:
-                            from applied_math_return_insight import (
-                                build_submit_fallback_insight,
-                                render_suite_applied_math_insight_for_page,
-                                stage_pending_insight,
-                            )
-
-                            insight = build_submit_fallback_insight(
-                                question=q,
-                                source_app=source_app,
-                                source_page=source_page,
-                                question_id=str(pre_payload.get("question_id") or ""),
-                                full_analysis_url=action_url_pre,
-                                resume_key=str(pre_payload.get("resume_key") or ""),
-                                reason=str(exc),
-                            )
-                            stage_pending_insight(ss, insight, return_context=submit_ctx)
-                            insight_card_created = True
-                            ss["_ami_force_insight_render"] = True
-                            ss["_ami_submit_render_insight_this_run"] = True
-                            ss["_ami_insight_return_preserve"] = True
-                            try:
-                                render_suite_applied_math_insight_for_page(
-                                    st,
-                                    source_app=source_app,
-                                    source_page=source_page,
-                                )
-                                ss["_ami_insight_rendered_inline_after_submit"] = True
-                            except Exception:
-                                log.exception(
-                                    "inline Baseball Insight render failed for %s (%s)",
-                                    source_app,
-                                    source_page,
-                                )
-                        except Exception:
-                            pass
-                    build_timing = dict(ss.get("_ami_last_send_build_timing") or {})
-                    build_timing["instant_insight_ms"] = round((time.perf_counter() - t_inst) * 1000, 1)
-                    build_timing["instant_insight_ok"] = instant_solved
-                    ss["_ami_last_send_build_timing"] = build_timing
-                    _update_submit_pipeline_diag(
-                        ss,
-                        instant_solve_finished=True,
-                        instant_solve_reason=instant_solve_reason,
-                        insight_card_created=insight_card_created,
-                        cloud_persist_status=cloud_persist_status,
-                    )
-                ss["_ami_last_instant_insight_ok"] = insight_card_created
-
-                result = submit_analytical_question(
-                    source_app=source_app,
-                    source_page=source_page,
-                    question=q,
-                    context=submit_ctx,
-                    context_summary=context_summary,
-                    source_state=submit_source_state,
-                    session_state=ss,
-                    defer_blob_save=is_baseball and bool(ss.get("_ami_last_instant_insight_ok")),
-                )
-                if is_baseball:
-                    _flush_pending_blob_save(ss)
-                    _flush_pending_resume_upsert(ss)
-                ss["_last_analytical_question"] = result
-                ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
-                submit_diag = dict(ss.get("_ami_last_submit_diagnostics") or {})
-                _update_submit_pipeline_diag(
-                    ss,
-                    activity_created=submit_diag.get("activity_created"),
-                    continue_item_created=submit_diag.get("continue_item_created"),
-                    command_center_write_status=submit_diag.get("command_center_write_status"),
-                    duplicate_detected=result.get("duplicate"),
-                    insight_card_created=insight_card_created,
-                    cloud_persist_status=cloud_persist_status,
-                )
-                dup_msg = (
-                    "That question was already sent recently. Open Command Center to continue with the Music Coach."
-                    if is_music
-                    else (
-                        "That question was already sent recently. Open Command Center to continue with Baseball Insight."
-                        if is_baseball
-                        else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
-                    )
-                )
-                ok_msg = (
-                    "Question sent to Command Center. Open Command Center to continue with the Music Coach."
-                    if is_music
-                    else (
-                        "Baseball Insight is ready on this page — use Open full analysis for the deep dive."
-                        if is_baseball
-                        else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
-                    )
-                )
-                if result.get("duplicate"):
-                    st.sidebar.info(dup_msg)
-                else:
-                    st.sidebar.success(ok_msg)
-                if on_after_send is not None:
-                    try:
-                        on_after_send()
-                    except Exception as exc:
-                        log.exception("on_after_send hook failed for %s (%s)", source_app, source_page)
-                        _update_submit_pipeline_diag(ss, last_exception=str(exc))
-            except Exception as exc:
-                log.exception("AMI submit pipeline failed for %s (%s)", source_app, source_page)
-                _update_submit_pipeline_diag(ss, last_exception=str(exc))
-                st.sidebar.error(f"Submit failed: {exc}")
+            submit_ctx = build_submit_context(
+                source_app,
+                source_page,
+                ss,
+                context_extra_builder=context_extra_builder,
+                context_extra=context,
+            )
+            submit_source_state: dict[str, Any] | None = None
+            if source_state_builder is not None:
+                try:
+                    submit_source_state = source_state_builder()
+                except Exception:
+                    log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
+            result = submit_analytical_question(
+                source_app=source_app,
+                source_page=source_page,
+                question=q,
+                context=submit_ctx,
+                context_summary=context_summary,
+                source_state=submit_source_state,
+                session_state=ss,
+            )
+            ss["_last_analytical_question"] = result
+            ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
+            dup_msg = (
+                "That question was already sent recently. Open Command Center to continue with the Music Coach."
+                if is_music
+                else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+            )
+            ok_msg = (
+                "Question sent to Command Center. Open Command Center to continue with the Music Coach."
+                if is_music
+                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+            )
+            if result.get("duplicate"):
+                st.sidebar.info(dup_msg)
+            else:
+                st.sidebar.success(ok_msg)
+            if on_after_send is not None and not result.get("duplicate"):
+                try:
+                    on_after_send()
+                except Exception:
+                    log.exception("on_after_send hook failed for %s (%s)", source_app, source_page)
+            st.rerun()
 
     if developer_mode:
         st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
-        try:
-            from suite_analytical_question import build_send_identity_diagnostics
-
-            identity = build_send_identity_diagnostics(ss)
-            with st.sidebar.expander("AMI blob identity (last send)", expanded=True):
-                for key, val in identity.items():
-                    if val is not None and val != "" and val != []:
-                        st.text(f"{key}: {val}")
-        except Exception:
-            pass
-        submit_diag = ss.get("_ami_last_submit_diagnostics")
-        pipeline_diag = ss.get("_ami_submit_pipeline")
-        if isinstance(pipeline_diag, dict) and pipeline_diag:
-            with st.sidebar.expander("Baseball Insight submit pipeline", expanded=True):
-                for key in _SUBMIT_PIPELINE_KEYS:
-                    val = pipeline_diag.get(key)
-                    if val is not None and val != "" and val != []:
-                        st.text(f"{key}: {val}")
-                for key, val in pipeline_diag.items():
-                    if key in _SUBMIT_PIPELINE_KEYS or key in ("updated_at",):
-                        continue
-                    if val is not None and val != "" and val != []:
-                        st.text(f"{key}: {val}")
-        if isinstance(submit_diag, dict) and submit_diag:
-            with st.sidebar.expander("AMI submit diagnostics (last send)", expanded=False):
-                for key, val in submit_diag.items():
-                    if val is not None and val != "" and val != []:
-                        st.text(f"{key}: {val}")
-        last_diag = ss.get("_ami_last_send_diagnostics")
-        if isinstance(last_diag, dict) and last_diag:
-            with st.sidebar.expander("AMI send pipeline (last send)", expanded=False):
-                timing_keys = (
-                    "send_total_ms",
-                    "slowest_step",
-                    "slowest_step_ms",
-                    "build_submit_context_total_ms",
-                    "build_context_from_session_ms",
-                    "context_extra_builder_ms",
-                    "cache_build_ms",
-                    "cache_build_action",
-                    "finalize_context_ms",
-                    "build_payload_ms",
-                    "action_url_ms",
-                    "blob_save_ms",
-                    "blob_save_ms_by_app",
-                    "record_activity_ms",
-                    "payload_prepare_ms",
-                    "activity_api_ms",
-                    "append_event_ms",
-                    "activity_storage_ms",
-                    "saved_item_link_ms",
-                    "command_center_index_ms",
-                    "record_activity_total_ms",
-                    "resume_upsert_ms",
-                )
-                for key in timing_keys:
-                    if key in last_diag and last_diag[key] is not None:
-                        st.text(f"{key}: {last_diag[key]}")
-                for key, val in last_diag.items():
-                    if key in timing_keys:
-                        continue
-                    st.text(f"{key}: {val}")
     st.sidebar.divider()
 
 
@@ -1864,28 +1014,13 @@ def build_context_from_session(
             if fmt:
                 ctx["league_format"] = fmt
                 ctx["draft_format"] = fmt
-            room = session_state.get("live_draft_room") or session_state.get("draft_room_state") or {}
-            if "live draft" in low_page and isinstance(room, dict):
+            room = session_state.get("draft_room_state") or {}
+            if isinstance(room, dict):
                 idx = int(room.get("current_pick_index") or 0)
-                cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
-                num_teams = int(
-                    cfg.get("num_teams")
-                    or room.get("num_teams")
-                    or session_state.get("draft_num_teams")
-                    or session_state.get("room_team_count")
-                    or 12
-                )
+                num_teams = int(room.get("num_teams") or session_state.get("draft_num_teams") or 12)
                 if idx >= 0 and num_teams > 0:
                     ctx["current_pick"] = idx + 1
                     ctx["draft_round"] = (idx // num_teams) + 1
-                your_team = str(cfg.get("your_team") or session_state.get("room_your_team") or "").strip()
-                if your_team and isinstance(room.get("rosters"), dict):
-                    roster = room["rosters"].get(your_team) or []
-                    ctx["roster"] = [
-                        str(p.get("fullName") or p.get("Player") or p)
-                        for p in roster[:12]
-                        if isinstance(p, dict)
-                    ]
             dq = session_state.get("draft_queue") or []
             if isinstance(dq, list) and dq:
                 ctx["player"] = _player_name(dq[0])
@@ -1901,8 +1036,6 @@ def build_context_from_session(
                 ctx["players"] = [ctx["player_a"], ctx["player_b"]]
                 summary = f"{ctx['player_a']} vs {ctx['player_b']}"
         elif source_page == "Trend Value":
-            ctx.pop("player_a", None)
-            ctx.pop("player_b", None)
             multi = session_state.get("trend_players_multi") or []
             multi_names = [_player_name(x) for x in multi if x][:6]
             plot_stat = str(session_state.get("trend_plot_stat") or "").strip()
@@ -1916,7 +1049,7 @@ def build_context_from_session(
                     if s_str and s_str not in metrics:
                         metrics.append(s_str)
             if len(multi_names) >= 2:
-                ctx["workflow"] = "Multi-player trend analysis"
+                ctx["workflow"] = "Player trend comparison"
                 ctx["players"] = multi_names
                 if metrics:
                     ctx["metrics"] = metrics[:6]
