@@ -1,7 +1,7 @@
 """
 Per-app persistent user state for Daniel AI Streamlit apps.
 
-Local JSON under ``data/{app_id}_user_state.json`` plus optional Supabase
+Local JSON under ``data/workspaces/{workspace_id}/{app_id}_user_state.json`` plus optional Supabase
 ``metrics.full_session`` for cross-device restore on direct app open.
 """
 
@@ -40,9 +40,22 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def state_file_path(app_id: str) -> Path:
+def state_file_path(app_id: str, workspace_id: str | None = None) -> Path:
+    from suite_workspace import migrate_legacy_app_state_to_daniel, normalize_workspace_id, resolve_workspace_id, workspace_dir
+
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(app_id or "app"))
-    return DATA_DIR / f"{safe}_user_state.json"
+    ws = resolve_workspace_id(explicit=workspace_id) if workspace_id else resolve_workspace_id()
+    if ws == normalize_workspace_id("daniel"):
+        migrate_legacy_app_state_to_daniel(app_id)
+    path = workspace_dir(ws) / f"{safe}_user_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def legacy_state_file_path(app_id: str) -> Path:
+    from suite_workspace import legacy_state_file_path as _legacy
+
+    return _legacy(app_id)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -80,9 +93,12 @@ def _migrate_legacy_combined(app_id: str) -> dict[str, Any] | None:
     return out
 
 
-def _load_raw(app_id: str) -> tuple[dict[str, Any], str | None, str | None]:
+def _load_raw(
+    app_id: str,
+    workspace_id: str | None = None,
+) -> tuple[dict[str, Any], str | None, str | None]:
     """Return ``(state_dict, warning, saved_at_iso)``."""
-    path = state_file_path(app_id)
+    path = state_file_path(app_id, workspace_id)
     raw = _read_json(path)
     if raw is None:
         raw = _migrate_legacy_combined(app_id)
@@ -109,7 +125,7 @@ def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
     return state, warning
 
 
-def save_user_state(app_id: str, state: dict[str, Any]) -> bool:
+def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | None = None) -> bool:
     if not isinstance(state, dict):
         return False
     payload = {
@@ -118,11 +134,11 @@ def save_user_state(app_id: str, state: dict[str, Any]) -> bool:
         "saved_at": _utc_now_iso(),
         "state": state,
     }
-    return _write_json(state_file_path(app_id), payload)
+    return _write_json(state_file_path(app_id, workspace_id), payload)
 
 
-def reset_user_state(app_id: str) -> bool:
-    path = state_file_path(app_id)
+def reset_user_state(app_id: str, *, workspace_id: str | None = None) -> bool:
+    path = state_file_path(app_id, workspace_id)
     try:
         if path.is_file():
             path.unlink()
@@ -169,22 +185,6 @@ def _lock_fingerprint_after_restore(st: Any, app_id: str, state: dict[str, Any])
 
 def clear_workspace_autosave_block(st: Any, app_id: str) -> None:
     """Call at end of script run to allow autosave on the next rerun."""
-    if app_id == "baseball" and st.session_state.get(_autosave_block_key(app_id)):
-        try:
-            from draft_room_state import draft_room_restore_stats
-
-            restored = int(st.session_state.get("restored_draft_room_pick_count") or 0)
-            session_picks = draft_room_restore_stats(st.session_state).get("pick_count", 0)
-            if restored > 0 and session_picks < restored:
-                st.session_state["_suite_autosave_block_kept_pick_loss"] = (
-                    f"restored={restored} session={session_picks}"
-                )
-                return
-            if session_picks > 0:
-                st.session_state["_suite_autosave_block_kept_has_picks"] = session_picks
-                return
-        except ImportError:
-            pass
     st.session_state.pop(_autosave_block_key(app_id), None)
     st.session_state.pop("_cloud_workspace_restored_this_run", None)
     st.session_state.pop("_suite_user_nav_sync_skipped", None)
@@ -250,18 +250,6 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "trend_edit",
     "career_edit",
     "draft_edit",
-    "draft_room_pick",
-    "live_draft_pick",
-    "live_draft_manual_save",
-    "live_draft_start",
-    "manual_save",
-    "simulator_add_player",
-    "simulator_paste",
-    "board_edit",
-    "draft_queue_pick",
-    "draft_pick",
-    "live_draft_delete",
-    "reset_canonical_board",
     "historical_edit",
     "valuation_edit",
     "projections_edit",
@@ -274,131 +262,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "music_coach_send",
     "song_edit",
     "practice_edit",
-    # Settings-change saves must reach the cloud even when the startup workspace
-    # sync was skipped this run. Without these, the change saves to local disk
-    # only and the stale cloud blob wins on the next cloud-first restore — which
-    # is exactly why draft settings and league format reverted on refresh while
-    # historical/career chart saves (historical_edit/career_edit) persisted.
-    "draft_room_settings_changed",
-    "live_draft_setting_changed",
-    "draft_sim_settings_changed",
-    "draft_assistant_settings_changed",
-    "global_settings_changed",
-    "historical_chart_save",
-    "career_chart_save",
 })
-
-_DRAFT_BOARD_CLOUD_SAVE_REASONS = frozenset({
-    "draft_room_pick",
-    "live_draft_pick",
-    "live_draft_manual_save",
-    "live_draft_start",
-    "manual_save",
-    "simulator_add_player",
-    "simulator_paste",
-    "board_edit",
-    "draft_queue_pick",
-    "draft_pick",
-    "live_draft_delete",
-    "reset_canonical_board",
-})
-
-
-def _merge_cloud_draft_room_before_save(
-    st: Any,
-    app_id: str,
-    state: dict[str, Any],
-) -> dict[str, Any]:
-    """Never let an empty local session wipe a cloud in-progress Draft Room Simulator board."""
-    if app_id != "baseball":
-        return state
-    try:
-        from draft_room_state import (
-            DRAFT_ROOM_PAGE_BLOCK,
-            DRAFT_ROOM_STATE_KEY,
-            DRAFT_ROOM_TABLE_KEY,
-            _draft_room_from_blob,
-            is_draft_room_locally_dirty,
-            table_pick_count,
-        )
-        from suite_cloud_state import load_cloud_full_session
-    except ImportError:
-        return state
-
-    local = _draft_room_from_blob(state)
-    local_picks = table_pick_count(local) if isinstance(local, dict) else 0
-    if local and local_picks > 0 and not is_draft_room_locally_dirty(st.session_state):
-        return state
-    if is_draft_room_locally_dirty(st.session_state):
-        return state
-
-    cloud_state, _ = load_cloud_full_session(app_id)
-    if not isinstance(cloud_state, dict) or not cloud_state:
-        return state
-    cloud_dr = _draft_room_from_blob(cloud_state)
-    cloud_picks = table_pick_count(cloud_dr) if cloud_dr else 0
-    if not cloud_dr or cloud_picks <= 0:
-        return state
-    if cloud_picks <= local_picks:
-        return state
-
-    out = copy.deepcopy(state)
-    out[DRAFT_ROOM_STATE_KEY] = copy.deepcopy(cloud_dr)
-    out[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
-    pf = out.setdefault("page_filter_state", {})
-    if not isinstance(pf, dict):
-        pf = {}
-        out["page_filter_state"] = pf
-    block = pf.setdefault(DRAFT_ROOM_PAGE_BLOCK, {})
-    if isinstance(block, dict):
-        block[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
-    return out
-
-
-def _merge_cloud_live_draft_before_save(
-    st: Any,
-    app_id: str,
-    state: dict[str, Any],
-) -> dict[str, Any]:
-    """Never let an empty local session wipe a cloud in-progress live draft on autosave."""
-    if app_id != "baseball":
-        return state
-    try:
-        from live_draft_state import (
-            LIVE_DRAFT_PAGE_BLOCK,
-            LIVE_DRAFT_ROOM_KEY,
-            LIVE_DRAFT_STATE_KEY,
-            _live_draft_from_blob,
-            is_live_draft_locally_dirty,
-        )
-        from suite_cloud_state import load_cloud_full_session
-    except ImportError:
-        return state
-
-    local = _live_draft_from_blob(state)
-    if local and local.get("draft_room_id"):
-        return state
-    if is_live_draft_locally_dirty(st.session_state):
-        return state
-
-    cloud_state, _ = load_cloud_full_session(app_id)
-    if not isinstance(cloud_state, dict) or not cloud_state:
-        return state
-    cloud_ld = _live_draft_from_blob(cloud_state)
-    if not cloud_ld or not cloud_ld.get("draft_room_id"):
-        return state
-
-    out = copy.deepcopy(state)
-    out[LIVE_DRAFT_STATE_KEY] = copy.deepcopy(cloud_ld)
-    out[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
-    pf = out.setdefault("page_filter_state", {})
-    if not isinstance(pf, dict):
-        pf = {}
-        out["page_filter_state"] = pf
-    block = pf.setdefault(LIVE_DRAFT_PAGE_BLOCK, {})
-    if isinstance(block, dict):
-        block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
-    return out
 
 
 def _cloud_autosave_blocked_reason(
@@ -408,8 +272,6 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
-    if save_reason in _DRAFT_BOARD_CLOUD_SAVE_REASONS:
-        return None
     if save_reason in _FORCE_SAVE_CLOUD_REASONS:
         if save_reason == "page_change":
             return None
@@ -417,23 +279,6 @@ def _cloud_autosave_blocked_reason(
             return None
     elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
-    if app_id == "baseball":
-        try:
-            from live_draft_state import _live_draft_from_blob
-
-            local_ld = _live_draft_from_blob(state)
-            if local_ld and local_ld.get("draft_room_id"):
-                return None
-        except ImportError:
-            pass
-        try:
-            from draft_room_state import _draft_room_from_blob, table_pick_count
-
-            local_dr = _draft_room_from_blob(state)
-            if local_dr and table_pick_count(local_dr) > 0:
-                return None
-        except ImportError:
-            pass
     if app_id != "baseball":
         return None
     local_players = _workspace_comparison_players(state)
@@ -503,52 +348,6 @@ def _preserve_cloud_widget_fields_on_page_change(
                     pf = {}
                     out["page_filter_state"] = pf
                 pf["Trend Value"] = copy.deepcopy(trend_block)
-    try:
-        from draft_room_state import (
-            DRAFT_ROOM_PAGE_BLOCK,
-            DRAFT_ROOM_STATE_KEY,
-            DRAFT_ROOM_TABLE_KEY,
-            _draft_room_from_blob,
-            table_pick_count,
-        )
-
-        local_dr = _draft_room_from_blob(out)
-        if not (local_dr and table_pick_count(local_dr) > 0):
-            cloud_dr = _draft_room_from_blob(cloud_state)
-            if cloud_dr and table_pick_count(cloud_dr) > 0:
-                out[DRAFT_ROOM_STATE_KEY] = copy.deepcopy(cloud_dr)
-                out[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
-                pf = out.setdefault("page_filter_state", {})
-                if isinstance(pf, dict):
-                    block = pf.setdefault(DRAFT_ROOM_PAGE_BLOCK, {})
-                    if isinstance(block, dict):
-                        block[DRAFT_ROOM_TABLE_KEY] = copy.deepcopy(cloud_dr)
-    except ImportError:
-        pass
-    try:
-        from live_draft_state import (
-            LIVE_DRAFT_PAGE_BLOCK,
-            LIVE_DRAFT_ROOM_KEY,
-            LIVE_DRAFT_STATE_KEY,
-            _live_draft_from_blob,
-        )
-        from suite_cloud_state import load_cloud_full_session
-
-        local_ld = _live_draft_from_blob(out)
-        if not (local_ld and local_ld.get("draft_room_id")):
-            cloud_state, _ = load_cloud_full_session(app_id)
-            if isinstance(cloud_state, dict) and cloud_state:
-                cloud_ld = _live_draft_from_blob(cloud_state)
-                if cloud_ld and cloud_ld.get("draft_room_id"):
-                    out[LIVE_DRAFT_STATE_KEY] = copy.deepcopy(cloud_ld)
-                    out[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
-                    pf = out.setdefault("page_filter_state", {})
-                    if isinstance(pf, dict):
-                        block = pf.setdefault(LIVE_DRAFT_PAGE_BLOCK, {})
-                        if isinstance(block, dict):
-                            block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(cloud_ld)
-    except ImportError:
-        pass
     return out
 
 
@@ -749,19 +548,11 @@ def _record_startup_restore_diagnostics(
     diag = probe_cloud_restore_diagnostics(st, app_id) if probe_cloud_restore_diagnostics else {}
     cloud_players = _workspace_comparison_players(cloud_state) if cloud_state else []
     st.session_state["_suite_cloud_fetch_attempted"] = True
-    st.session_state["cloud_fetch_attempted"] = True
     st.session_state["_suite_cloud_fetch_success"] = bool(cloud_state) or bool(
         diag.get("cloud_has_full_session")
     )
-    st.session_state["cloud_fetch_success"] = st.session_state["_suite_cloud_fetch_success"]
-    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or diag.get("cloud_fetch_user_id") or "")[:32] or None
-    st.session_state["cloud_fetch_user_id"] = st.session_state["_suite_cloud_fetch_user_id"]
-    st.session_state["cloud_fetch_app_id"] = diag.get("cloud_fetch_app_id") or diag.get("cloud_target_app_id")
+    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or "")[:32] or None
     st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts or diag.get("cloud_updated_at")
-    st.session_state["cloud_fetch_updated_at"] = st.session_state["_suite_cloud_fetch_updated_at"]
-    st.session_state["cloud_fetch_pick_count"] = diag.get("cloud_fetch_pick_count")
-    st.session_state["cloud_row_count"] = diag.get("cloud_row_count")
-    st.session_state["cloud_row_pick_counts"] = diag.get("cloud_row_pick_counts")
     st.session_state["_suite_cloud_fetch_active_page"] = (
         cloud_state.get("active_page")
         if isinstance(cloud_state, dict)
@@ -777,39 +568,6 @@ def _record_startup_restore_diagnostics(
     st.session_state["_suite_disk_restore_after_cloud"] = picked_source == "disk" and bool(cloud_state)
     st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
     st.session_state["_suite_post_restore_comparison_players"] = _session_comparison_players(st) or None
-    try:
-        from live_draft_state import live_draft_restore_stats
-
-        cloud_ld = live_draft_restore_stats(cloud_state)
-        disk_ld = live_draft_restore_stats(disk_state)
-        st.session_state["cloud_has_live_draft_state"] = cloud_ld["has_live_draft_state"]
-        st.session_state["cloud_live_draft_pick_count"] = cloud_ld["pick_count"]
-        st.session_state["local_has_live_draft_state"] = disk_ld["has_live_draft_state"]
-        st.session_state["local_live_draft_pick_count"] = disk_ld["pick_count"]
-    except ImportError:
-        pass
-    try:
-        from draft_room_state import draft_board_diagnostics, draft_room_restore_stats
-
-        cloud_dr = draft_room_restore_stats(cloud_state)
-        disk_dr = draft_room_restore_stats(disk_state)
-        st.session_state["cloud_has_draft_room_board"] = cloud_dr["has_draft_board"]
-        st.session_state["cloud_draft_room_pick_count"] = cloud_dr["pick_count"]
-        st.session_state["local_has_draft_room_board"] = disk_dr["has_draft_board"]
-        st.session_state["local_draft_room_pick_count"] = disk_dr["pick_count"]
-        board = draft_board_diagnostics(st.session_state)
-        st.session_state["active_draft_page"] = board.get("active_draft_page")
-        st.session_state["draft_board_source_key"] = board.get("draft_board_source_key")
-        st.session_state["session_has_draft_board"] = board.get("session_has_draft_board")
-        st.session_state["session_pick_count"] = board.get("session_pick_count")
-        st.session_state["restore_source"] = picked_source
-        st.session_state["restore_reason"] = picked_reason
-    except ImportError:
-        pass
-    st.session_state["restore_winner_reason_detail"] = picked_reason
-    st.session_state["already_synced_why"] = skip_reason if not applied else apply_reason
-    st.session_state["local_disk_updated_at"] = disk_ts
-    st.session_state["cloud_updated_at_at_restore"] = cloud_ts
 
 
 def sync_workspace_protocol(
@@ -889,101 +647,15 @@ def sync_workspace_protocol(
 
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
-    synced_key = _workspace_synced_key(app_id)
-    refresh_needed = bool(st.session_state.pop("_suite_workspace_refresh_needed", False))
 
-    if st.session_state.get("_suite_page_user_nav"):
-        reason = "user page navigation — workspace sync skipped"
-        _mark_user_nav_sync_skipped(st, reason)
-        _record_workspace_sync_trace(
-            st, app_id, cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
-            winner="none", reason=reason, applied=False,
-        )
-        _record_startup_restore_diagnostics(
-            st, app_id,
-            cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
-            picked_source="none", picked_reason=reason,
-            should_apply=False, apply_reason="", skip_reason=reason,
-        )
-        return False
-
-    if (
-        st.session_state.get(synced_key)
-        and not refresh_needed
-        and not st.session_state.get(dirty_key)
-    ):
-        reason = "session cached — skip cloud/disk reload"
-        st.session_state["_suite_persist_restore_skip_reason"] = reason
-        st.session_state["_suite_workspace_sync_fast_path"] = True
-        _mark_workspace_sync_skipped(st, app_id, reason)
-        _record_workspace_sync_trace(
-            st, app_id, cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
-            winner="session", reason=reason, applied=False,
-        )
-        _record_startup_restore_diagnostics(
-            st, app_id,
-            cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
-            picked_source="session", picked_reason=reason,
-            should_apply=False, apply_reason="", skip_reason=reason,
-        )
-        return False
-
-    try:
-        from page_perf import perf_end, perf_timer
-
-        _t_cloud = perf_timer(st.session_state, "cloud_fetch")
-    except ImportError:
-        _t_cloud = 0.0
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
-    try:
-        from page_perf import perf_end
-
-        perf_end(st.session_state, "cloud_fetch", _t_cloud)
-    except ImportError:
-        pass
-
-    try:
-        from page_perf import perf_timer
-
-        _t_disk = perf_timer(st.session_state, "disk_load")
-    except ImportError:
-        _t_disk = 0.0
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
-    try:
-        from page_perf import perf_end
-
-        perf_end(st.session_state, "disk_load", _t_disk)
-    except ImportError:
-        pass
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
 
     cloud_epoch = parse_persist_timestamp(cloud_ts)
     disk_epoch = parse_persist_timestamp(disk_ts)
     cloud_newer_than_disk = bool(cloud_ts and cloud_epoch > disk_epoch)
-    disk_newer_than_cloud = bool(disk_ts and disk_epoch > cloud_epoch)
-
-    try:
-        from live_draft_state import live_draft_restore_stats
-
-        _cloud_ld = live_draft_restore_stats(cloud_state)
-        _disk_ld = live_draft_restore_stats(disk_state)
-        live_draft_disk_beats_stale_cloud = bool(
-            _disk_ld["has_live_draft_state"] and not _cloud_ld["has_live_draft_state"]
-        )
-    except ImportError:
-        live_draft_disk_beats_stale_cloud = False
-
-    try:
-        from draft_room_state import draft_room_restore_stats
-
-        _cloud_dr = draft_room_restore_stats(cloud_state)
-        _disk_dr = draft_room_restore_stats(disk_state)
-        draft_room_disk_beats_stale_cloud = bool(
-            _disk_dr.get("pick_count", 0) > _cloud_dr.get("pick_count", 0)
-        )
-    except ImportError:
-        draft_room_disk_beats_stale_cloud = False
 
     if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
         reason = "local unsaved edits — workspace sync skipped"
@@ -1050,6 +722,7 @@ def sync_workspace_protocol(
         )
         return False
 
+    synced_key = _workspace_synced_key(app_id)
     applied_key = _applied_cloud_ts_key(app_id)
     applied_ts = st.session_state.get(applied_key)
     applied_epoch = parse_persist_timestamp(applied_ts)
@@ -1077,12 +750,6 @@ def sync_workspace_protocol(
         apply_reasons.append("cloud_newer_than_applied")
     if cloud_newer_than_disk:
         apply_reasons.append("cloud_newer_than_disk")
-    if disk_newer_than_cloud:
-        apply_reasons.append("disk_newer_than_cloud")
-    if live_draft_disk_beats_stale_cloud:
-        apply_reasons.append("live_draft_disk_beats_stale_cloud")
-    if draft_room_disk_beats_stale_cloud:
-        apply_reasons.append("draft_room_disk_beats_stale_cloud")
     page_mismatch_apply = bool(
         page_mismatch
         and (first_sync or cloud_newer_than_applied or cloud_newer_than_disk)
@@ -1107,19 +774,11 @@ def sync_workspace_protocol(
             first_sync
             or cloud_newer_than_applied
             or cloud_newer_than_disk
-            or disk_newer_than_cloud
-            or live_draft_disk_beats_stale_cloud
-            or draft_room_disk_beats_stale_cloud
             or page_mismatch_apply
             or comparison_mismatch_apply
         )
     )
     apply_reason = ", ".join(apply_reasons) if apply_reasons else "none"
-    st.session_state["already_synced_why"] = (
-        f"would_apply={should_apply}; triggers=[{apply_reason}]"
-        if not st.session_state.get(synced_key) or should_apply
-        else f"already_synced; triggers=[{apply_reason}] insufficient"
-    )
 
     if cloud_newer_than_disk and picked.source == "cloud":
         st.session_state.pop(synced_key, None)
@@ -1143,12 +802,6 @@ def sync_workspace_protocol(
         return False
 
     try:
-        from page_perf import perf_end, perf_timer
-
-        _t_apply = perf_timer(st.session_state, "workspace_apply")
-    except ImportError:
-        _t_apply = 0.0
-    try:
         apply_state(st, picked.state)
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
@@ -1160,12 +813,6 @@ def sync_workspace_protocol(
             reason=str(exc), applied=False,
         )
         return False
-    try:
-        from page_perf import perf_end
-
-        perf_end(st.session_state, "workspace_apply", _t_apply)
-    except ImportError:
-        pass
 
     _lock_fingerprint_after_restore(st, app_id, picked.state)
     st.session_state[synced_key] = True
@@ -1187,27 +834,6 @@ def sync_workspace_protocol(
     elif picked.source == "disk":
         st.session_state[applied_key] = disk_ts or _utc_now_iso()
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
-        if app_id == "baseball":
-            try:
-                from live_draft_state import live_draft_restore_stats, push_local_draft_to_cloud
-
-                if live_draft_restore_stats(picked.state)["has_live_draft_state"]:
-                    st.session_state["_suite_push_local_draft_after_disk_restore"] = True
-                    push_local_draft_to_cloud(
-                        st,
-                        st.session_state,
-                        st.session_state.get("live_draft_room"),
-                    )
-            except Exception as exc:
-                st.session_state["_suite_push_local_draft_error"] = f"{type(exc).__name__}: {exc}"
-            try:
-                from draft_room_state import draft_room_restore_stats, push_local_draft_room_to_cloud
-
-                if draft_room_restore_stats(picked.state).get("pick_count", 0) > 0:
-                    st.session_state["_suite_push_local_draft_room_after_disk_restore"] = True
-                    push_local_draft_room_to_cloud(st, st.session_state)
-            except Exception as exc:
-                st.session_state["_suite_push_local_draft_room_error"] = f"{type(exc).__name__}: {exc}"
 
     _record_workspace_sync_trace(
         st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -1692,18 +1318,6 @@ def force_autosave(
             "trend_edit",
             "career_edit",
             "draft_edit",
-            "draft_room_pick",
-            "live_draft_pick",
-            "live_draft_manual_save",
-            "live_draft_start",
-            "manual_save",
-            "simulator_add_player",
-            "simulator_paste",
-            "board_edit",
-            "draft_queue_pick",
-            "draft_pick",
-            "live_draft_delete",
-            "reset_canonical_board",
             "historical_edit",
             "valuation_edit",
             "projections_edit",
@@ -1714,16 +1328,6 @@ def force_autosave(
             "insight_hydrate",
             "applied_math_send",
             "music_coach_send",
-            # Settings-change saves must bypass the post-restore cooldown block.
-            # The block was designed to protect draft pick data — it must not silently
-            # discard settings changes made while a draft board is in session.
-            "draft_room_settings_changed",
-            "live_draft_setting_changed",
-            "draft_sim_settings_changed",
-            "draft_assistant_settings_changed",
-            "global_settings_changed",
-            "historical_chart_save",
-            "career_chart_save",
         )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
@@ -1734,88 +1338,19 @@ def force_autosave(
 
         if reason:
             st.session_state["_suite_pending_save_reason"] = reason
-        cloud_state_before, _ = load_cloud_full_session(app_id)
-        cloud_existing_before = False
-        if app_id == "baseball":
-            try:
-                from live_draft_state import _live_draft_from_blob
-
-                cloud_existing_before = bool(_live_draft_from_blob(cloud_state_before or {}))
-            except ImportError:
-                pass
         state = build_state(st)
-        preserved_on_page_change = False
-        if app_id == "baseball":
-            state = _merge_cloud_draft_room_before_save(st, app_id, state)
-            state = _merge_cloud_live_draft_before_save(st, app_id, state)
-            if reason == "page_change":
-                ld_before = None
-                try:
-                    from live_draft_state import _live_draft_from_blob
-
-                    ld_before = _live_draft_from_blob(state)
-                except ImportError:
-                    pass
-                state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
-                try:
-                    from live_draft_state import _live_draft_from_blob
-
-                    ld_after = _live_draft_from_blob(state)
-                    preserved_on_page_change = bool(not ld_before and ld_after)
-                except ImportError:
-                    pass
-            try:
-                from live_draft_state import record_live_draft_cloud_save_diagnostics
-
-                record_live_draft_cloud_save_diagnostics(
-                    st.session_state,
-                    payload=state,
-                    cloud_existing_before=cloud_existing_before,
-                    preserved_on_page_change=preserved_on_page_change,
-                )
-            except ImportError:
-                pass
-        if reason == "page_change" and app_id != "baseball":
+        if reason == "page_change":
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
-        try:
-            blob = json.dumps(state, sort_keys=True, default=str)
-        except Exception as exc:
-            err = f"payload_json_error:{type(exc).__name__}:{exc}"
-            st.session_state["_suite_force_autosave_last_error"] = err
-            st.session_state["_suite_autosave_last_error"] = err
-            return False
+        blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
-        st.session_state["_suite_last_save_payload_bytes"] = len(blob)
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
         cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=reason)
         saved_cloud = False
-        cloud_err = ""
         if cloud_block:
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
-            cloud_err = cloud_block
         else:
-            from suite_cloud_state import save_cloud_full_session_with_result
-
-            saved_cloud, cloud_err = save_cloud_full_session_with_result(
-                app_id, state, page=page, summary=summary
-            )
-            if cloud_err:
-                st.session_state["_suite_persist_last_cloud_error"] = cloud_err
-        if app_id == "baseball":
-            try:
-                from settings_persistence_trace import record_save_event
-
-                record_save_event(
-                    st.session_state,
-                    reason=reason,
-                    state=state,
-                    saved_disk=saved_disk,
-                    saved_cloud=saved_cloud,
-                    cloud_block=cloud_block,
-                )
-            except Exception:
-                pass
+            saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
@@ -1825,10 +1360,6 @@ def force_autosave(
             if saved_cloud:
                 _, cloud_ts = load_cloud_full_session(app_id)
                 st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()
-                st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts
-                st.session_state.pop("_suite_persist_last_cloud_error", None)
-            elif cloud_err:
-                st.session_state["_suite_persist_last_cloud_error"] = cloud_err
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
@@ -1842,10 +1373,8 @@ def force_autosave(
             )
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True
             return True
-    except Exception as exc:
-        err = f"{type(exc).__name__}:{exc}"
-        st.session_state["_suite_force_autosave_last_error"] = err
-        st.session_state["_suite_autosave_last_error"] = err
+    except Exception:
+        pass
     return False
 
 
@@ -1882,43 +1411,6 @@ def autosave_if_changed(
             return
 
         state = build_state(st)
-        if app_id == "baseball":
-            state = _merge_cloud_draft_room_before_save(st, app_id, state)
-            state = _merge_cloud_live_draft_before_save(st, app_id, state)
-            try:
-                from draft_room_state import draft_room_restore_stats
-
-                local_picks = draft_room_restore_stats(state).get("pick_count", 0)
-                from suite_cloud_state import load_cloud_full_session, read_cloud_persistence_boundary
-
-                cloud_state, _ = load_cloud_full_session(app_id)
-                cloud_picks = draft_room_restore_stats(cloud_state or {}).get("pick_count", 0)
-                boundary = read_cloud_persistence_boundary(app_id)
-                richest_cloud_picks = int(
-                    max(
-                        cloud_picks,
-                        int(boundary.get("cloud_fetch_pick_count") or 0),
-                        int(boundary.get("supabase_row_pick_count_after_write") or 0),
-                    )
-                )
-                if richest_cloud_picks > 0 and local_picks < richest_cloud_picks:
-                    st.session_state["_suite_autosave_skipped_draft_room_drop"] = (
-                        f"cloud={richest_cloud_picks} local={local_picks}"
-                    )
-                    return
-            except ImportError:
-                pass
-            try:
-                from live_draft_state import record_live_draft_cloud_save_diagnostics
-
-                record_live_draft_cloud_save_diagnostics(
-                    st.session_state,
-                    payload=state,
-                    cloud_existing_before=False,
-                    preserved_on_page_change=False,
-                )
-            except ImportError:
-                pass
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         key = f"_suite_autosave_fp::{app_id}"
@@ -1977,8 +1469,8 @@ def autosave_if_changed(
             if cloud_err:
                 st.session_state["_suite_persist_last_cloud_error"] = cloud_err
             st.session_state[_SESSION_SAVED_FLASH_KEY] = True
-    except Exception as exc:
-        st.session_state["_suite_autosave_last_error"] = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        pass
 
 
 def show_persistence_messages(st: Any) -> None:

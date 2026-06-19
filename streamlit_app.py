@@ -472,6 +472,20 @@ import portfolio_demo as pdemo
 pp.inject_polish_css(st, app_slug="baseball")
 
 try:
+    from suite_workspace import init_suite_workspace
+
+    init_suite_workspace(st)
+except Exception:
+    pass
+
+try:
+    from suite_workspace import init_suite_workspace
+
+    init_suite_workspace(st)
+except Exception:
+    pass
+
+try:
     from suite_resume_launch import apply_suite_resume_launch
 except Exception:
     apply_suite_resume_launch = None  # type: ignore
@@ -12572,9 +12586,10 @@ try:
 except Exception:
     pass
 
-# Skip the global insight render when the submit handler already rendered inline
-# (avoids showing the same insight card twice on the same rerun).
-if not st.session_state.pop("_ami_submit_render_insight_this_run", None):
+# Skip the global insight render only when inline submit already rendered successfully
+# (avoids duplicate cards; still render when inline attempt failed).
+_submit_insight_run = st.session_state.pop("_ami_submit_render_insight_this_run", None)
+if not _submit_insight_run or not st.session_state.get("_ami_insight_render_success"):
     render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
 
 # Drop restored file_uploader widget keys only (restoring them crashes Streamlit).

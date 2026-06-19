@@ -4,6 +4,7 @@ Build Continue / resume deep links for suite Streamlit apps.
 Query params (read by suite_resume_launch in each app):
   suite_resume  — resume item key (e.g. song:pick-123, compare:Judge:Soto)
   suite_page    — target page/tab label
+  suite_workspace — active workspace profile (daniel, ariel, guest, test_user)
   suite_pick_key, suite_song, suite_display_key, suite_instrument, suite_section_focus — music shortcuts
   suite_holdings_fp — investment portfolio fingerprint
   suite_player_a, suite_player_b — baseball comparison players
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 from urllib.parse import quote, urlencode
+
+from suite_workspace import append_suite_workspace_param, normalize_workspace_id, resolve_workspace_id
 
 # Mirror app_urls.py — updated when dev URLs change.
 APP_BASE_URLS: dict[str, str] = {
@@ -174,7 +177,7 @@ def _resolve_page(app: str, resume_key: str, page: str, metrics: dict[str, Any])
             return "skills"
         return "simulation"
     if app == "applied_intelligence":
-        return str(metrics.get("page") or page or "Solve a Problem")
+        return str(metrics.get("page") or "lessons")
     return ""
 
 
@@ -313,11 +316,15 @@ def build_resume_action_url(
             params["suite_ai_context"] = ctx[:400]
 
     if not params:
-        return f"{base}/"
+        return append_suite_workspace_param(f"{base}/", workspace_id=resolve_workspace_id())
     ami_insight = str(m.get("ami_insight") or "").strip()
     if ami_insight:
         params["suite_ami_insight"] = ami_insight[:40]
-    return f"{base}/?{urlencode(params, quote_via=quote)}"
+    ws = str(m.get("workspace_id") or "").strip()
+    if not ws:
+        ws = resolve_workspace_id()
+    params["suite_workspace"] = normalize_workspace_id(ws)
+    return append_suite_workspace_param(f"{base}/?{urlencode(params, quote_via=quote)}", workspace_id=ws)
 
 
 def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "") -> tuple[str, dict[str, Any]]:
