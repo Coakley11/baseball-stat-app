@@ -872,6 +872,15 @@ def _set_restore_skip_reason(st: Any, reason: str) -> None:
     st.session_state["_suite_persist_restore_skip_reason"] = reason
 
 
+def _restore_cloud_first(has_disk_state: bool) -> bool:
+    try:
+        from suite_workspace import workspace_restore_cloud_first
+
+        return workspace_restore_cloud_first(has_disk_state=has_disk_state)
+    except ImportError:
+        return not has_disk_state
+
+
 def restore_once(
     st: Any,
     app_id: str,
@@ -952,7 +961,7 @@ def restore_once(
             disk_state,
             disk_ts,
             local_dirty=local_dirty,
-            cloud_first=True,
+            cloud_first=_restore_cloud_first(bool(disk_state)),
         )
         state = picked.state
         pick_source = picked.source

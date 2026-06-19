@@ -14,11 +14,6 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 FULL_SESSION_KEY = "full_session"
-_LAST_CLOUD_WRITE: dict[str, Any] = {}
-
-
-def last_cloud_write_meta() -> dict[str, Any]:
-    return dict(_LAST_CLOUD_WRITE)
 
 PickSource = Literal["cloud", "disk", "none"]
 
@@ -67,6 +62,31 @@ _RESUME_QUERY_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _normalize_resume_app_key(app_key: str) -> str:
+    key = str(app_key or "").strip()
+    if key == "math":
+        return "applied_intelligence"
+    return key
+
+
+# URL params that must preserve return/source page navigation — block cloud workspace restore.
+_WORKSPACE_RESTORE_BLOCKING_QUERY_KEYS: dict[str, tuple[str, ...]] = {
+    "music": (
+        "suite_resume",
+        "suite_page",
+        "suite_ami_insight",
+        "suite_ai_question_id",
+    ),
+}
+
+
+def _workspace_restore_blocking_keys(app_key: str) -> tuple[str, ...]:
+    key = _normalize_resume_app_key(app_key)
+    if key in _WORKSPACE_RESTORE_BLOCKING_QUERY_KEYS:
+        return _WORKSPACE_RESTORE_BLOCKING_QUERY_KEYS[key]
+    return _RESUME_QUERY_KEYS.get(key, ("suite_resume", "suite_page"))
+
+
 def _qp_get(st: Any, name: str) -> str:
     try:
         raw = st.query_params.get(name)
@@ -91,23 +111,23 @@ def ami_return_resume_consumed(st: Any, app_key: str) -> bool:
     return bool(st.session_state.get(_ami_resume_consumed_flag(app_key)))
 
 
-def _normalize_resume_app_key(app_key: str) -> str:
-    key = str(app_key or "").strip()
-    if key == "math":
-        return "applied_intelligence"
-    return key
-
-
 def list_active_resume_query_params(st: Any, app_key: str) -> list[str]:
-    """Resume / AMI query param names currently present in the URL."""
+    """Resume / deep-link query param names currently present in the URL."""
     key = _normalize_resume_app_key(app_key)
     params = _RESUME_QUERY_KEYS.get(key, ("suite_resume", "suite_page"))
     return [name for name in params if _qp_get(st, name)]
 
 
+def list_workspace_restore_blocking_query_params(st: Any, app_key: str) -> list[str]:
+    """URL params that block cloud workspace restore (return/AMI navigation, not song hydrate)."""
+    key = _normalize_resume_app_key(app_key)
+    params = _workspace_restore_blocking_keys(key)
+    return [name for name in params if _qp_get(st, name)]
+
+
 def _ami_return_url_active(st: Any, app_key: str) -> bool:
-    """True when resume/AMI steering comes from the current URL (not stale session flags)."""
-    if list_active_resume_query_params(st, app_key):
+    """True when return/AMI URL params steer page navigation (not song hydrate-only params)."""
+    if list_workspace_restore_blocking_query_params(st, app_key):
         return True
     try:
         from applied_math_return_insight import _active_ami_return_query_param_keys, insight_return_query_id
@@ -185,7 +205,7 @@ def should_skip_workspace_restore_for_resume(
         return False
     if reconcile_first:
         reconcile_stale_resume_session_flags(st, app_key)
-    if list_active_resume_query_params(st, app_key):
+    if list_workspace_restore_blocking_query_params(st, app_key):
         return True
     try:
         from applied_math_return_insight import ami_return_navigation_active
@@ -226,10 +246,15 @@ def _parse_ts(ts: str | None) -> float:
 
 
 def _import_storage() -> tuple[Any, str]:
-    """Always use PostgREST backend for full_session read/write (standalone deploys)."""
-    import suite_storage_supabase as storage
+    """Resolve storage backend; standalone deploys use ``suite_storage_supabase``."""
+    try:
+        import suite_storage as storage
 
-    return storage, "suite_storage_supabase"
+        return storage, "suite_storage"
+    except ImportError:
+        import suite_storage_supabase as storage
+
+        return storage, "suite_storage_supabase"
 
 
 def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
@@ -283,14 +308,6 @@ def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
     try:
         storage, diag["storage_module"] = _import_storage()
         app_key = storage.normalize_app_key(app_id)
-        diag["cloud_fetch_app_id"] = app_key
-        if hasattr(storage, "load_cloud_row_diagnostics"):
-            row_diag = storage.load_cloud_row_diagnostics(app_id)
-            diag.update(row_diag)
-            diag["cloud_row_found"] = bool(row_diag.get("cloud_row_count"))
-            diag["cloud_has_full_session"] = bool(row_diag.get("cloud_fetch_success"))
-            diag["cloud_updated_at"] = row_diag.get("cloud_fetch_updated_at")
-            return diag
         row = storage.load_current_states().get(app_key) or {}
         if isinstance(row, dict) and row:
             diag["cloud_row_found"] = True
@@ -299,17 +316,19 @@ def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
             if isinstance(metrics, dict):
                 blob = metrics.get(FULL_SESSION_KEY)
                 diag["cloud_has_full_session"] = isinstance(blob, dict) and bool(blob)
-                if isinstance(blob, dict):
-                    try:
-                        from draft_room_state import draft_room_restore_stats
-
-                        diag["cloud_fetch_pick_count"] = draft_room_restore_stats(blob).get("pick_count", 0)
-                    except ImportError:
-                        pass
     except Exception as exc:
         diag["cloud_load_error"] = str(exc)
 
     return diag
+
+
+def _cloud_storage_app_id(app_id: str) -> str:
+    try:
+        from suite_workspace import scoped_cloud_app_id
+
+        return scoped_cloud_app_id(app_id)
+    except ImportError:
+        return str(app_id or "").strip()
 
 
 def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
@@ -323,7 +342,7 @@ def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
     try:
         storage, _ = _import_storage()
 
-        app_key = storage.normalize_app_key(app_id)
+        app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
         row = storage.load_current_states().get(app_key) or {}
         if not isinstance(row, dict):
             return {}, None
@@ -338,115 +357,6 @@ def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
         return {}, None
 
 
-def read_cloud_persistence_boundary(app_id: str) -> dict[str, Any]:
-    """Authoritative read-back for save/restore diagnostics."""
-    try:
-        storage, module = _import_storage()
-        if hasattr(storage, "load_cloud_row_diagnostics"):
-            diag = storage.load_cloud_row_diagnostics(app_id)
-            diag["storage_module"] = module
-            return diag
-    except Exception as exc:
-        return {
-            "cloud_fetch_attempted": True,
-            "cloud_fetch_success": False,
-            "cloud_load_error": f"{type(exc).__name__}:{exc}",
-        }
-    return {"cloud_fetch_attempted": False, "cloud_fetch_success": False}
-
-
-def save_cloud_full_session_with_result(
-    app_id: str,
-    state: dict[str, Any],
-    *,
-    page: str = "",
-    summary: str = "",
-    min_draft_pick_count: int = 0,
-) -> tuple[bool, str]:
-    """Persist full_session to Supabase. Returns (ok, error_message)."""
-    if not state:
-        return False, "empty_state"
-    try:
-        from suite_storage_config import cloud_storage_enabled
-    except ImportError:
-        return False, "cloud_config_import_failed"
-    if not cloud_storage_enabled():
-        return False, "cloud_storage_disabled"
-    try:
-        import json
-
-        serde_diag: dict[str, Any] = {}
-        try:
-            from live_draft_state import sanitize_state_dict_for_json as sanitize_live_draft
-            from draft_room_state import sanitize_state_dict_for_json as sanitize_draft_room
-
-            state = sanitize_live_draft(state)
-            state = sanitize_draft_room(state, diag=serde_diag)
-        except ImportError:
-            pass
-
-        try:
-            json.dumps(state)
-        except TypeError as exc:
-            err_key = str(serde_diag.get("json_serialization_error_key") or f"{type(exc).__name__}: {exc}")
-            offenders = serde_diag.get("non_json_safe_keys") or []
-            return False, f"payload_json_error:{err_key}:keys={offenders}"
-    except Exception as exc:
-        return False, f"payload_json_error:{type(exc).__name__}:{exc}"
-    try:
-        storage, _ = _import_storage()
-        app_key = storage.normalize_app_key(app_id)
-        global _LAST_CLOUD_WRITE
-        _LAST_CLOUD_WRITE = {}
-        expected_picks = int(min_draft_pick_count or 0)
-        if expected_picks <= 0:
-            try:
-                from draft_room_state import draft_room_restore_stats
-
-                expected_picks = int(draft_room_restore_stats(state).get("pick_count") or 0)
-            except ImportError:
-                expected_picks = 0
-
-        write_result: dict[str, Any] = {}
-        if hasattr(storage, "save_current_state_with_result"):
-            write_result = storage.save_current_state_with_result(
-                app_key,
-                page=page or "",
-                summary=summary or "Last session",
-                metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
-            )
-        else:
-            storage.save_current_state(
-                app_key,
-                page=page or "",
-                summary=summary or "Last session",
-                metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
-            )
-            write_result = {"ok": True, "write_mode": "legacy"}
-
-        _LAST_CLOUD_WRITE = dict(write_result)
-        if not write_result.get("ok", True):
-            return False, str(write_result.get("cloud_write_error") or "cloud_write_failed")
-
-        boundary = (
-            storage.load_cloud_row_diagnostics(app_id)
-            if hasattr(storage, "load_cloud_row_diagnostics")
-            else read_cloud_persistence_boundary(app_id)
-        )
-        readback_picks = int(boundary.get("supabase_row_pick_count_after_write") or 0)
-        if expected_picks > 0 and readback_picks < expected_picks:
-            return (
-                False,
-                (
-                    f"readback_pick_mismatch:expected={expected_picks} "
-                    f"got={readback_picks} write_mode={write_result.get('write_mode')}"
-                ),
-            )
-        return True, ""
-    except Exception as exc:
-        return False, f"{type(exc).__name__}:{exc}"
-
-
 def save_cloud_full_session(
     app_id: str,
     state: dict[str, Any],
@@ -455,10 +365,26 @@ def save_cloud_full_session(
     summary: str = "",
 ) -> bool:
     """Persist full_session to Supabase. Returns True when cloud write succeeds."""
-    ok, _ = save_cloud_full_session_with_result(
-        app_id, state, page=page, summary=summary
-    )
-    return ok
+    if not state:
+        return False
+    try:
+        from suite_storage_config import cloud_storage_enabled
+    except ImportError:
+        return False
+    if not cloud_storage_enabled():
+        return False
+    try:
+        storage, _ = _import_storage()
+        app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+        storage.save_current_state(
+            app_key,
+            page=page or "",
+            summary=summary or "Last session",
+            metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+        )
+        return True
+    except Exception:
+        return False
 
 
 def clear_cloud_full_session(app_id: str) -> None:
@@ -471,7 +397,7 @@ def clear_cloud_full_session(app_id: str) -> None:
         return
     try:
         storage, _ = _import_storage()
-        app_key = storage.normalize_app_key(app_id)
+        app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
         storage.save_current_state(
             app_key,
             page="",
@@ -519,126 +445,19 @@ def pick_restore_session(
             disk_ts,
         )
 
-    try:
-        from live_draft_state import live_draft_restore_stats
-
-        cloud_ld = live_draft_restore_stats(cloud_state)
-        disk_ld = live_draft_restore_stats(disk_state)
-        cloud_has_ld = cloud_ld["has_live_draft_state"]
-        disk_has_ld = disk_ld["has_live_draft_state"]
-    except ImportError:
-        cloud_has_ld = disk_has_ld = False
-
-    try:
-        from draft_room_state import draft_room_restore_stats
-
-        cloud_dr = draft_room_restore_stats(cloud_state)
-        disk_dr = draft_room_restore_stats(disk_state)
-        cloud_has_dr = cloud_dr["pick_count"] > 0
-        disk_has_dr = disk_dr["pick_count"] > 0
-    except ImportError:
-        cloud_has_dr = disk_has_dr = False
-
-    if disk_epoch > cloud_epoch:
+    if cloud_first and cloud_state:
         return RestorePickResult(
-            disk_state,
-            "disk",
-            f"disk newer than cloud ({disk_ts} > {cloud_ts})",
+            cloud_state,
+            "cloud",
+            "cloud-first workspace sync",
             cloud_ts,
             disk_ts,
         )
 
     if cloud_epoch > disk_epoch:
-        if disk_has_dr and not cloud_has_dr:
-            return RestorePickResult(
-                disk_state,
-                "disk",
-                "disk has draft room board; cloud newer but empty board",
-                cloud_ts,
-                disk_ts,
-            )
-        if disk_has_dr and cloud_has_dr and disk_dr["pick_count"] > cloud_dr["pick_count"]:
-            return RestorePickResult(
-                disk_state,
-                "disk",
-                (
-                    f"disk has more draft room picks despite newer cloud "
-                    f"({disk_dr['pick_count']} > {cloud_dr['pick_count']})"
-                ),
-                cloud_ts,
-                disk_ts,
-            )
-        return RestorePickResult(
-            cloud_state,
-            "cloud",
-            f"cloud newer than disk ({cloud_ts} > {disk_ts})",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if disk_has_ld and not cloud_has_ld:
-        return RestorePickResult(
-            disk_state,
-            "disk",
-            "disk has live draft; cloud missing",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if cloud_has_ld and not disk_has_ld:
-        return RestorePickResult(
-            cloud_state,
-            "cloud",
-            "cloud has live draft; disk missing",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if disk_has_dr and not cloud_has_dr:
-        return RestorePickResult(
-            disk_state,
-            "disk",
-            "disk has draft room board; cloud missing",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if cloud_has_dr and not disk_has_dr:
-        return RestorePickResult(
-            cloud_state,
-            "cloud",
-            "cloud has draft room board; disk missing",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if disk_has_dr and cloud_has_dr and disk_dr["pick_count"] > cloud_dr["pick_count"]:
-        return RestorePickResult(
-            disk_state,
-            "disk",
-            f"disk has more draft room picks ({disk_dr['pick_count']} > {cloud_dr['pick_count']})",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if cloud_has_dr and disk_has_dr and cloud_dr["pick_count"] > disk_dr["pick_count"]:
-        return RestorePickResult(
-            cloud_state,
-            "cloud",
-            f"cloud has more draft room picks ({cloud_dr['pick_count']} > {disk_dr['pick_count']})",
-            cloud_ts,
-            disk_ts,
-        )
-
-    if cloud_first and cloud_state:
-        return RestorePickResult(
-            cloud_state,
-            "cloud",
-            "cloud-first workspace sync (timestamps tied)",
-            cloud_ts,
-            disk_ts,
-        )
-
+        return RestorePickResult(cloud_state, "cloud", "cloud newer", cloud_ts, disk_ts)
+    if disk_epoch > cloud_epoch:
+        return RestorePickResult(disk_state, "disk", "disk newer", cloud_ts, disk_ts)
     if prefer_cloud_on_tie:
         return RestorePickResult(cloud_state, "cloud", "tie → cloud", cloud_ts, disk_ts)
     return RestorePickResult(disk_state, "disk", "tie → disk", cloud_ts, disk_ts)

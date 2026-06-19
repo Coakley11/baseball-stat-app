@@ -197,6 +197,58 @@ def workspace_badge_html(workspace_id: str | None = None) -> str:
     return f'Profile: {workspace_label(ws)}'
 
 
+def scoped_cloud_app_id(app_id: str, workspace_id: str | None = None) -> str:
+    """
+    Supabase ``app`` row key namespaced by workspace.
+
+    Daniel keeps the legacy unscoped key (``investment``) for phone/Dell continuity.
+    Other profiles use ``{app}__{workspace_id}`` (e.g. ``investment__ariel``).
+    """
+    base = str(app_id or "").strip()
+    if base == "math":
+        base = "applied_intelligence"
+    ws = normalize_workspace_id(
+        workspace_id if workspace_id not in (None, "") else resolve_workspace_id()
+    )
+    if ws == DEFAULT_WORKSPACE_ID:
+        return base
+    return f"{base}__{ws}"
+
+
+def workspace_restore_cloud_first(*, has_disk_state: bool) -> bool:
+    """
+    Phase 1 workspace isolation: prefer workspace-local disk when it exists.
+
+    Prevents a shared legacy cloud row from overwriting another profile's saved state.
+    """
+    if has_disk_state:
+        return False
+    return True
+
+
+def workspace_persistence_meta(
+    app_id: str,
+    *,
+    st: Any | None = None,
+    workspace_id: str | None = None,
+) -> dict[str, str]:
+    """Diagnostic fields for save/restore traces (workspace_id, paths, cloud key)."""
+    ws = normalize_workspace_id(
+        workspace_id if workspace_id not in (None, "") else get_active_workspace_id(st)
+    )
+    try:
+        from suite_user_persistence import state_file_path
+
+        local_path = str(state_file_path(app_id, ws))
+    except Exception:
+        local_path = str(workspace_dir(ws) / f"{app_id}_user_state.json")
+    return {
+        "active_workspace_id": ws,
+        "local_state_path": local_path,
+        "cloud_app_key": scoped_cloud_app_id(app_id, ws),
+    }
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
