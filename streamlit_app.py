@@ -479,13 +479,6 @@ except Exception:
     pass
 
 try:
-    from suite_workspace import init_suite_workspace
-
-    init_suite_workspace(st)
-except Exception:
-    pass
-
-try:
     from suite_resume_launch import apply_suite_resume_launch
 except Exception:
     apply_suite_resume_launch = None  # type: ignore
