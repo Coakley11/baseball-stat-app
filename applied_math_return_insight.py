@@ -1941,10 +1941,16 @@ def render_applied_math_insight_panel(
             try:
                 from investment_ami_sliders import render_ami_assumption_controls
 
-                if render_ami_assumption_controls(st, data):
-                    st.rerun()
+                refreshed = render_ami_assumption_controls(st, data)
+                if refreshed:
+                    updated = st.session_state.get(SESSION_PENDING_KEY)
+                    if isinstance(updated, dict) and updated.get("conclusion"):
+                        data = updated
+                    st.session_state["_ami_force_insight_render"] = True
             except ImportError:
                 pass
+            except Exception as exc:
+                st.warning(f"Assumption controls could not update the analysis ({exc}). Showing the last result.")
         sections = data.get("analyst_sections")
         if not isinstance(sections, dict) or not sections:
             kn = data.get("key_numbers")
