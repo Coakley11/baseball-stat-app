@@ -9,6 +9,26 @@ _PERF_MAX = 24
 
 
 def _dev_mode(session: dict[str, Any]) -> bool:
+    try:
+        from suite_workspace import (
+            DEVELOPER_SESSION_FLAG_KEYS,
+            DEFAULT_WORKSPACE_ID,
+            normalize_workspace_id,
+            load_persisted_workspace_id,
+        )
+
+        ws = normalize_workspace_id(
+            session.get("_suite_active_workspace_id") or load_persisted_workspace_id()
+        )
+        if ws != DEFAULT_WORKSPACE_ID:
+            return False
+        if session.get("_suite_dev_mode"):
+            return True
+        for key in DEVELOPER_SESSION_FLAG_KEYS:
+            if session.get(key):
+                return True
+    except ImportError:
+        pass
     if session.get("_suite_dev_mode"):
         return True
     try:
@@ -16,7 +36,12 @@ def _dev_mode(session: dict[str, Any]) -> bool:
 
         qp = st.query_params
         if str(qp.get("dev") or qp.get("developer") or "").strip().lower() in ("1", "true", "yes"):
-            return True
+            try:
+                from suite_workspace import is_developer_workspace
+
+                return is_developer_workspace(st=st)
+            except ImportError:
+                return True
     except Exception:
         pass
     return False

@@ -11309,6 +11309,12 @@ DEVELOPER_MODE_KEY = "app_developer_mode"
 def developer_mode_enabled() -> bool:
     """When False (default), hide debug/diagnostic UI and skip expensive debug work."""
     try:
+        from suite_workspace import can_show_developer_tools
+
+        return can_show_developer_tools(st=st)
+    except ImportError:
+        pass
+    try:
         raw = st.query_params.get("dev")
     except Exception:
         raw = None
@@ -11340,6 +11346,13 @@ def _page_perf_end(page: str) -> None:
 
 def render_developer_mode_sidebar_toggle():
     """Single sidebar switch for all developer-only tools (default OFF)."""
+    try:
+        from suite_workspace import is_developer_workspace
+
+        if not is_developer_workspace(st=st):
+            return
+    except ImportError:
+        pass
     st.session_state.setdefault(DEVELOPER_MODE_KEY, False)
     st.sidebar.checkbox(
         "Developer Mode",
