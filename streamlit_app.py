@@ -11313,16 +11313,7 @@ def developer_mode_enabled() -> bool:
 
         return can_show_developer_tools(st=st)
     except ImportError:
-        pass
-    try:
-        raw = st.query_params.get("dev")
-    except Exception:
-        raw = None
-    if raw is not None:
-        val = str(raw[0] if isinstance(raw, list) else raw).strip().lower()
-        if val in ("1", "true", "yes", "on"):
-            return True
-    return bool(st.session_state.get(DEVELOPER_MODE_KEY, False))
+        return False
 
 
 def _page_perf_start(page: str) -> None:
@@ -16832,8 +16823,9 @@ if active_page == "Draft Room Simulator":
                     record_manual_save_error(st.session_state, exc)
                     st.error(f"Save failed: {type(exc).__name__}: {exc}")
 
-            render_manual_save_readback_panel(st)
-            render_board_tab_diagnostics(st)
+            if developer_mode_enabled():
+                render_manual_save_readback_panel(st)
+                render_board_tab_diagnostics(st)
         except Exception as exc:
             st.error(f"Manual save panel error: {type(exc).__name__}: {exc}")
         removed_after_edit = _auto_remove_drafted_from_queue()
