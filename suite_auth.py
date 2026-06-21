@@ -25,8 +25,10 @@ AUTH_TOKENS_KEY = "_suite_auth_tokens"
 AUTH_CLIENT_KEY = "_suite_auth_supabase_client"
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
+# Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
+# Child accounts remain scoped to their own profile only (C5).
 _DEFAULT_ALLOWED_WORKSPACES: dict[str, tuple[str, ...]] = {
-    "daniel": ("daniel",),
+    "daniel": ("daniel", "ariel", "guest", "test_user"),
     "ariel": ("ariel",),
     "guest": ("guest",),
     "test_user": ("test_user",),
@@ -76,8 +78,30 @@ def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
     if key in _DEFAULT_ALLOWED_WORKSPACES:
         return _DEFAULT_ALLOWED_WORKSPACES[key]
     if key == "default":
-        return ("daniel", "guest", "test_user")
+        return ("daniel", "ariel", "guest", "test_user")
     return ("daniel", "guest", "test_user")
+
+
+def resolve_auth_external_id(session_state: dict[str, Any]) -> str:
+    """Best-effort suite profile id for the signed-in account."""
+    return str(
+        session_state.get(AUTH_EXTERNAL_ID_KEY)
+        or session_state.get(AUTH_USER_ID_KEY)
+        or _infer_external_id_from_email(current_auth_email(session_state))
+        or ""
+    ).strip()
+
+
+def allowed_workspaces_for_session(session_state: dict[str, Any]) -> tuple[str, ...]:
+    """Allowed workspace ids for this session — all presets when auth is off."""
+    if not is_auth_enabled() or not is_authenticated(session_state):
+        try:
+            from suite_workspace import WORKSPACE_PRESETS
+
+            return tuple(p["id"] for p in WORKSPACE_PRESETS)
+        except ImportError:
+            return ("daniel", "ariel", "guest", "test_user")
+    return allowed_workspaces_for_user(resolve_auth_external_id(session_state))
 
 
 def _infer_external_id_from_email(email: str) -> str:
@@ -104,13 +128,7 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         from suite_workspace import get_active_workspace_id, normalize_workspace_id, set_active_workspace_id
 
         st = SimpleNamespace(session_state=session_state)
-        ext = str(
-            session_state.get(AUTH_EXTERNAL_ID_KEY)
-            or session_state.get(AUTH_USER_ID_KEY)
-            or _infer_external_id_from_email(current_auth_email(session_state))
-            or ""
-        ).strip()
-        allowed = allowed_workspaces_for_user(ext)
+        allowed = allowed_workspaces_for_session(session_state)
         active = normalize_workspace_id(get_active_workspace_id(st))
         if active not in allowed and allowed:
             set_active_workspace_id(st, allowed[0])

@@ -17,6 +17,7 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_WORKSPACE_ID = "daniel"
 SESSION_KEY = "_suite_active_workspace_id"
 _INITIALIZED_KEY = "_suite_workspace_initialized"
+WORKSPACE_SELECTOR_WIDGET_KEY = "_suite_workspace_selector_widget"
 _QUERY_PARAM = "suite_workspace"
 _PERSISTED_FILE = DATA_DIR / "suite_active_workspace.json"
 
@@ -105,12 +106,21 @@ def get_active_workspace_id(st: Any | None = None) -> str:
     return resolve_workspace_id(st=st)
 
 
+def _sync_workspace_selector_widget(st: Any, workspace_id: str) -> None:
+    """Keep sidebar selectbox aligned with SESSION_KEY (widget key can desync after auth clamp)."""
+    try:
+        st.session_state[WORKSPACE_SELECTOR_WIDGET_KEY] = workspace_label(workspace_id)
+    except Exception:
+        pass
+
+
 def set_active_workspace_id(st: Any, workspace_id: str) -> str:
     ws = normalize_workspace_id(workspace_id)
     prev_raw = st.session_state.get(SESSION_KEY)
     prev = normalize_workspace_id(str(prev_raw)) if prev_raw not in (None, "") else None
     st.session_state[SESSION_KEY] = ws
     persist_active_workspace_id(ws)
+    _sync_workspace_selector_widget(st, ws)
     if prev is not None and prev != ws:
         _on_active_workspace_changed(st)
     return ws
@@ -277,29 +287,54 @@ def migrate_legacy_app_state_to_daniel(app_id: str) -> bool:
 
 
 def append_suite_workspace_param(url: str, workspace_id: str | None = None) -> str:
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
     base = str(url or "").strip()
     if not base:
         return ""
-    ws = normalize_workspace_id(workspace_id or load_persisted_workspace_id())
-    if f"{_QUERY_PARAM}=" in base:
-        return base
-    joiner = "&" if "?" in base else "?"
-    sep = "" if base.endswith("?") or base.endswith("&") else joiner
-    return f"{base}{sep}{_QUERY_PARAM}={ws}"
+    ws = normalize_workspace_id(workspace_id if workspace_id not in (None, "") else load_persisted_workspace_id())
+    parsed = urlparse(base)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params[_QUERY_PARAM] = [ws]
+    new_query = urlencode(params, doseq=True)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+
+def _workspace_presets_for_session(st: Any) -> tuple[dict[str, str], ...]:
+    presets: tuple[dict[str, str], ...] = WORKSPACE_PRESETS
+    try:
+        from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(st.session_state):
+            allowed = frozenset(allowed_workspaces_for_session(st.session_state))
+            filtered = tuple(p for p in WORKSPACE_PRESETS if p["id"] in allowed)
+            if filtered:
+                presets = filtered
+    except ImportError:
+        pass
+    return presets
 
 
 def render_workspace_selector_sidebar(st: Any) -> str:
     """Command Center sidebar profile selector. Returns active workspace id."""
     init_suite_workspace(st)
+    try:
+        from suite_auth import enforce_workspace_ownership
+
+        enforce_workspace_ownership(st.session_state)
+    except ImportError:
+        pass
     current = get_active_workspace_id(st)
-    labels = [p["label"] for p in WORKSPACE_PRESETS]
-    ids = [p["id"] for p in WORKSPACE_PRESETS]
+    _sync_workspace_selector_widget(st, current)
+    presets = _workspace_presets_for_session(st)
+    labels = [p["label"] for p in presets]
+    ids = [p["id"] for p in presets]
     idx = ids.index(current) if current in ids else 0
     choice = st.selectbox(
         "Workspace profile",
         labels,
         index=idx,
-        key="_suite_workspace_selector_widget",
+        key=WORKSPACE_SELECTOR_WIDGET_KEY,
         help="Apps opened from Command Center use this profile. Each profile keeps separate saved state.",
     )
     selected = ids[labels.index(choice)]
