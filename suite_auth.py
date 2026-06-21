@@ -24,8 +24,12 @@ AUTH_EXTERNAL_ID_KEY = "_suite_auth_external_id"
 AUTH_TOKENS_KEY = "_suite_auth_tokens"
 AUTH_CLIENT_KEY = "_suite_auth_supabase_client"
 AUTH_RECOVERY_PENDING_KEY = "_suite_auth_recovery_pending"
-AUTH_HASH_BRIDGE_SHOWN_KEY = "_suite_auth_recovery_hash_bridge_shown"
+AUTH_RECOVERY_LAST_ERROR_KEY = "_suite_auth_recovery_last_error"
 AUTH_REDIRECT_URL_ENV = "SUITE_AUTH_REDIRECT_URL"
+AUTH_RECOVERY_HASH_PROBE_PARAM = "suite_auth_hash_probe"
+AUTH_RECOVERY_FLAG_PARAM = "suite_auth_recovery"
+AUTH_RECOVERY_ACCESS_PARAM = "suite_auth_access"
+AUTH_RECOVERY_REFRESH_PARAM = "suite_auth_refresh"
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -573,16 +577,14 @@ def _bridge_supabase_recovery_hash_to_query(st: Any) -> None:
     """
     Streamlit cannot read URL hash fragments server-side.
 
-    Supabase recovery redirects with #access_token=...&type=recovery — promote to query params once.
+    Supabase recovery redirects with #access_token=...&type=recovery — promote to query params.
     """
-    try:
-        if str(st.query_params.get("suite_auth_recovery") or "").strip() == "1":
-            return
-    except Exception:
-        pass
-    if st.session_state.get(AUTH_HASH_BRIDGE_SHOWN_KEY):
+    if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
         return
-    st.session_state[AUTH_HASH_BRIDGE_SHOWN_KEY] = True
+    if _qp_get(st, "type") == "recovery" and _qp_get(st, "token_hash"):
+        return
+    if _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM) == "none":
+        return
     try:
         import streamlit.components.v1 as components
     except ImportError:
@@ -591,20 +593,39 @@ def _bridge_supabase_recovery_hash_to_query(st: Any) -> None:
         """
 <script>
 (function () {
+  function pickWindow() {
+    try { if (window.top && window.top.location) return window.top; } catch (e) {}
+    try { if (window.parent && window.parent.location) return window.parent; } catch (e) {}
+    return window;
+  }
   try {
-    var w = window.parent !== window ? window.parent : window;
+    var w = pickWindow();
+    var href = String(w.location.href || "");
     var hash = (w.location.hash || "").replace(/^#/, "");
-    if (!hash || hash.indexOf("type=recovery") === -1) return;
-    var params = new URLSearchParams(hash);
-    var access = params.get("access_token");
-    var refresh = params.get("refresh_token");
-    if (!access || !refresh) return;
-    var base = w.location.href.split("#")[0];
+    var base = href.split("#")[0];
     var u = new URL(base);
-    u.searchParams.set("suite_auth_recovery", "1");
-    u.searchParams.set("suite_auth_access", access);
-    u.searchParams.set("suite_auth_refresh", refresh);
-    w.location.replace(u.toString());
+    if (hash) {
+      var params = new URLSearchParams(hash);
+      var type = params.get("type") || "";
+      var access = params.get("access_token");
+      var refresh = params.get("refresh_token");
+      if (type === "recovery" && access && refresh) {
+        u.searchParams.set("suite_auth_recovery", "1");
+        u.searchParams.set("suite_auth_access", access);
+        u.searchParams.set("suite_auth_refresh", refresh);
+        u.searchParams.delete("suite_auth_hash_probe");
+        w.location.replace(u.toString());
+        return;
+      }
+    }
+    var probe = "none";
+    if (hash && (hash.indexOf("type=recovery") !== -1 || hash.indexOf("type%3Drecovery") !== -1)) {
+      probe = "recovery";
+    }
+    if (u.searchParams.get("suite_auth_hash_probe") !== probe) {
+      u.searchParams.set("suite_auth_hash_probe", probe);
+      w.location.replace(u.toString());
+    }
   } catch (e) {}
 })();
 </script>
@@ -612,6 +633,66 @@ def _bridge_supabase_recovery_hash_to_query(st: Any) -> None:
         height=0,
         width=0,
     )
+
+
+def _needs_recovery_hash_bridge(st: Any) -> bool:
+    probe = _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM)
+    if probe == "none":
+        return False
+    if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
+        return False
+    if _qp_get(st, "type") == "recovery" and _qp_get(st, "token_hash"):
+        return False
+    return True
+
+
+def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
+    """Safe recovery-flow diagnostics for dev panels (no secret values)."""
+    if st is None:
+        try:
+            import streamlit as st_mod  # noqa: WPS433
+
+            st = st_mod
+        except Exception:
+            return {"available": False}
+    ss = st.session_state
+    recovery_query = _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1"
+    token_hash_query = _qp_get(st, "type") == "recovery" and bool(_qp_get(st, "token_hash"))
+    access_query = bool(_qp_get(st, AUTH_RECOVERY_ACCESS_PARAM))
+    refresh_query = bool(_qp_get(st, AUTH_RECOVERY_REFRESH_PARAM))
+    hash_probe = _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM)
+    pending = bool(ss.get(AUTH_RECOVERY_PENDING_KEY))
+    recovery_mode = pending or recovery_query or token_hash_query or hash_probe == "recovery"
+    return {
+        "available": True,
+        "recovery_token_in_query": recovery_query and access_query and refresh_query,
+        "recovery_token_hash_in_query": token_hash_query,
+        "recovery_hash_probe": hash_probe or "",
+        "recovery_mode_detected": recovery_mode,
+        "recovery_pending_session": pending,
+        "set_password_panel_enabled": pending,
+        "hash_bridge_waiting": hash_probe == "recovery" and not pending,
+        "last_recovery_error": str(ss.get(AUTH_RECOVERY_LAST_ERROR_KEY) or ""),
+        "authenticated_before_recovery_panel": bool(ss.get(AUTH_SESSION_KEY)) and not pending,
+    }
+
+
+def render_auth_recovery_diagnostics(st: Any, *, expanded: bool = False, force: bool = False) -> None:
+    """Developer-only recovery landing diagnostics (force=True during recovery wait screen)."""
+    if not force:
+        try:
+            from suite_workspace import can_show_developer_tools
+
+            if not can_show_developer_tools(st=st):
+                return
+        except ImportError:
+            return
+    with st.expander("Auth recovery (dev)", expanded=expanded):
+        st.json(auth_recovery_diagnostics(st=st))
+        st.caption(
+            "Supabase recovery tokens arrive in the URL hash (#access_token=...&type=recovery). "
+            "Streamlit promotes them to query params before the Set new password panel appears."
+        )
 
 
 def _qp_get(st: Any, name: str) -> str:
@@ -637,12 +718,51 @@ def _qp_clear(st: Any, *keys: str) -> None:
             pass
 
 
-def _consume_auth_recovery_query(st: Any) -> bool:
-    """Exchange recovery tokens from email link into a temporary auth session."""
-    if _qp_get(st, "suite_auth_recovery") != "1":
+def _recovery_landing_in_progress(st: Any) -> bool:
+    diag = auth_recovery_diagnostics(st=st)
+    return bool(diag.get("recovery_mode_detected"))
+
+
+def _mark_recovery_session(session_state: dict[str, Any], *, user: Any | None, tokens: dict[str, Any]) -> None:
+    if user is not None:
+        _apply_authenticated_user(session_state, user, tokens=tokens)
+    else:
+        session_state[AUTH_TOKENS_KEY] = dict(tokens)
+        session_state[AUTH_SESSION_KEY] = True
+    session_state[AUTH_RECOVERY_PENDING_KEY] = True
+    session_state.pop(AUTH_RECOVERY_LAST_ERROR_KEY, None)
+
+
+def _consume_auth_recovery_token_hash(st: Any) -> bool:
+    """PKCE-style recovery links put token_hash and type=recovery in the query string."""
+    if _qp_get(st, "type") != "recovery":
         return False
-    access = _qp_get(st, "suite_auth_access")
-    refresh = _qp_get(st, "suite_auth_refresh")
+    token_hash = _qp_get(st, "token_hash")
+    if not token_hash:
+        return False
+    session_state = st.session_state
+    try:
+        auth = _create_fresh_supabase_client().auth
+        resp = auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+        user = _user_from_auth_response(resp)
+        tokens = _tokens_from_auth_response(resp)
+        if not tokens:
+            session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = "Recovery verify_otp returned no session tokens."
+            return False
+        _mark_recovery_session(session_state, user=user, tokens=tokens)
+    except Exception as exc:
+        session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = str(exc)
+        return False
+    _qp_clear(st, "type", "token_hash", AUTH_RECOVERY_HASH_PROBE_PARAM)
+    return True
+
+
+def _consume_auth_recovery_query(st: Any) -> bool:
+    """Exchange recovery tokens promoted from the URL hash into a temporary auth session."""
+    if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) != "1":
+        return False
+    access = _qp_get(st, AUTH_RECOVERY_ACCESS_PARAM)
+    refresh = _qp_get(st, AUTH_RECOVERY_REFRESH_PARAM)
     if not access or not refresh:
         return False
     session_state = st.session_state
@@ -655,16 +775,28 @@ def _consume_auth_recovery_query(st: Any) -> bool:
             "refresh_token": refresh,
             "expires_at": 0,
         }
-        if user is not None:
-            _apply_authenticated_user(session_state, user, tokens=tokens)
-        else:
-            session_state[AUTH_TOKENS_KEY] = dict(tokens)
-            session_state[AUTH_SESSION_KEY] = True
-        session_state[AUTH_RECOVERY_PENDING_KEY] = True
-    except Exception:
+        _mark_recovery_session(session_state, user=user, tokens=tokens)
+    except Exception as exc:
+        session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = str(exc)
         return False
-    _qp_clear(st, "suite_auth_recovery", "suite_auth_access", "suite_auth_refresh")
+    _qp_clear(
+        st,
+        AUTH_RECOVERY_FLAG_PARAM,
+        AUTH_RECOVERY_ACCESS_PARAM,
+        AUTH_RECOVERY_REFRESH_PARAM,
+        AUTH_RECOVERY_HASH_PROBE_PARAM,
+    )
     return True
+
+
+def _render_recovery_landing_wait(st: Any) -> None:
+    st.title("Daniel AI Suite")
+    st.info("Processing password reset link…")
+    err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
+    if err:
+        st.error(err)
+    render_auth_recovery_diagnostics(st, expanded=True, force=True)
+    st.stop()
 
 
 def complete_password_recovery(session_state: dict[str, Any], new_password: str) -> tuple[bool, str]:
@@ -834,12 +966,29 @@ def render_auth_gate(st: Any) -> bool:
     """
     if not is_auth_enabled():
         return True
-    _bridge_supabase_recovery_hash_to_query(st)
+
+    if _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM) == "none":
+        _qp_clear(st, AUTH_RECOVERY_HASH_PROBE_PARAM)
+
+    if _consume_auth_recovery_token_hash(st):
+        st.rerun()
+
     if _consume_auth_recovery_query(st):
         st.rerun()
+
     if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
         _render_password_recovery_panel(st)
         return False
+
+    if _needs_recovery_hash_bridge(st):
+        _bridge_supabase_recovery_hash_to_query(st)
+        _render_recovery_landing_wait(st)
+        return False
+
+    if _recovery_landing_in_progress(st):
+        _render_recovery_landing_wait(st)
+        return False
+
     restore_auth_session(st.session_state, st=st)
     if is_authenticated(st.session_state):
         enforce_workspace_ownership(st.session_state)

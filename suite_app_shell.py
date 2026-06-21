@@ -107,6 +107,12 @@ def render_suite_sidebar_account_shell(
                     st.json(browser_auth_storage_status(st))
                 except ImportError:
                     st.caption("suite_auth_browser unavailable")
+            try:
+                from suite_auth import render_auth_recovery_diagnostics
+
+                render_auth_recovery_diagnostics(st, expanded=False)
+            except ImportError:
+                pass
     except Exception:
         pass
 
