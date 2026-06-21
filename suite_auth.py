@@ -526,6 +526,13 @@ def render_auth_panel(st: Any, *, expanded: bool = False) -> None:
             if st.button("Log in", key="suite_auth_login_btn", use_container_width=True):
                 ok, msg = login_with_email(session, email=email, password=password)
                 if ok:
+                    try:
+                        from suite_auth_browser import init_browser_auth_storage
+
+                        if init_browser_auth_storage(st) == "sync_pending":
+                            st.rerun()
+                    except ImportError:
+                        pass
                     st.rerun()
                 else:
                     st.error(msg)
@@ -557,10 +564,13 @@ def render_auth_gate(st: Any) -> bool:
     if not is_auth_enabled():
         return True
     try:
-        from suite_auth_browser import ensure_browser_cookies_loaded
+        from suite_auth_browser import init_browser_auth_storage
 
-        if not ensure_browser_cookies_loaded(st):
-            st.stop()
+        storage_state = init_browser_auth_storage(st)
+        if storage_state == "wait":
+            st.rerun()
+        if storage_state == "sync_pending":
+            st.rerun()
     except ImportError:
         pass
     restore_auth_session(st.session_state, st=st)

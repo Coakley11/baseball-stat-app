@@ -97,6 +97,20 @@ def render_suite_sidebar_account_shell(
         st.sidebar.divider()
 
     try:
+        from suite_workspace import can_show_developer_tools
+
+        if can_show_developer_tools(st=st):
+            with st.sidebar.expander("Auth persistence (dev)", expanded=False):
+                try:
+                    from suite_auth_browser import browser_auth_storage_status
+
+                    st.json(browser_auth_storage_status(st))
+                except ImportError:
+                    st.caption("suite_auth_browser unavailable")
+    except Exception:
+        pass
+
+    try:
         from suite_egress_trace import render_egress_sidebar_panel
 
         render_egress_sidebar_panel(st)
