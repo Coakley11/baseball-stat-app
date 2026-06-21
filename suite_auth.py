@@ -23,6 +23,9 @@ AUTH_NOTICE_KEY = "_suite_auth_notice"
 AUTH_EXTERNAL_ID_KEY = "_suite_auth_external_id"
 AUTH_TOKENS_KEY = "_suite_auth_tokens"
 AUTH_CLIENT_KEY = "_suite_auth_supabase_client"
+AUTH_RECOVERY_PENDING_KEY = "_suite_auth_recovery_pending"
+AUTH_HASH_BRIDGE_SHOWN_KEY = "_suite_auth_recovery_hash_bridge_shown"
+AUTH_REDIRECT_URL_ENV = "SUITE_AUTH_REDIRECT_URL"
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -457,6 +460,8 @@ def auth_backend_status() -> dict[str, Any]:
         return out
     out["ready"] = True
     out["message"] = "Auth backend ready (C2b query-param + Supabase session storage)."
+    out["password_reset_redirect_url"] = auth_password_reset_redirect_url()
+    out["supabase_redirect_urls"] = list(supabase_auth_redirect_url_checklist())
     return out
 
 
@@ -466,6 +471,249 @@ def _auth_not_configured_message() -> str:
         return "Auth is not configured on this deployment."
     msg = str(status.get("message") or "").strip()
     return msg or "Auth is not configured on this deployment."
+
+
+def _read_secret_auth_redirect_url() -> str:
+    env = os.environ.get(AUTH_REDIRECT_URL_ENV, "").strip()
+    if env:
+        return env.rstrip("/")
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        block = st.secrets.get("suite_activity") if hasattr(st, "secrets") else None
+        if block is None:
+            try:
+                block = st.secrets["suite_activity"]
+            except Exception:
+                block = None
+        if block is not None:
+            raw = ""
+            if hasattr(block, "get"):
+                raw = str(block.get("suite_auth_redirect_url") or "").strip()
+            elif isinstance(block, dict):
+                raw = str(block.get("suite_auth_redirect_url") or "").strip()
+            if raw:
+                return raw.rstrip("/")
+    except Exception:
+        pass
+    return ""
+
+
+def auth_password_reset_redirect_url() -> str:
+    """
+    Landing URL embedded in Supabase password-reset emails (redirect_to).
+
+    Must match Supabase Auth → URL configuration (Site URL + Redirect URLs).
+    """
+    custom = _read_secret_auth_redirect_url()
+    if custom:
+        return custom
+    try:
+        from app_urls import HOMEPAGE_DEV_URL, HOMEPAGE_PRODUCTION_URL
+
+        base = (HOMEPAGE_DEV_URL or HOMEPAGE_PRODUCTION_URL or "").strip().rstrip("/")
+        if base:
+            return base
+    except ImportError:
+        pass
+    try:
+        from suite_command_center_link import _HOMEPAGE_DEV_URL
+
+        return str(_HOMEPAGE_DEV_URL or "").strip().rstrip("/")
+    except ImportError:
+        return ""
+
+
+def supabase_auth_redirect_url_checklist() -> tuple[str, ...]:
+    """Public app URLs to whitelist in Supabase Auth → URL configuration."""
+    candidates: list[str] = []
+    custom = _read_secret_auth_redirect_url()
+    if custom:
+        candidates.append(custom)
+    reset_target = auth_password_reset_redirect_url()
+    if reset_target:
+        candidates.append(reset_target)
+    try:
+        from app_urls import (
+            APPLIED_INTELLIGENCE_URL,
+            BASEBALL_APP_URL,
+            FUTURE_LENS_URL,
+            HOMEPAGE_DEV_URL,
+            HOMEPAGE_PRODUCTION_URL,
+            INVESTMENT_APP_URL,
+            MUSIC_APP_URL,
+            NBA_APP_URL,
+        )
+
+        for raw in (
+            HOMEPAGE_DEV_URL,
+            HOMEPAGE_PRODUCTION_URL,
+            MUSIC_APP_URL,
+            INVESTMENT_APP_URL,
+            NBA_APP_URL,
+            APPLIED_INTELLIGENCE_URL,
+            FUTURE_LENS_URL,
+            BASEBALL_APP_URL,
+        ):
+            text = str(raw or "").strip().rstrip("/")
+            if text:
+                candidates.append(text)
+    except ImportError:
+        pass
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in candidates:
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return tuple(out)
+
+
+def _bridge_supabase_recovery_hash_to_query(st: Any) -> None:
+    """
+    Streamlit cannot read URL hash fragments server-side.
+
+    Supabase recovery redirects with #access_token=...&type=recovery — promote to query params once.
+    """
+    try:
+        if str(st.query_params.get("suite_auth_recovery") or "").strip() == "1":
+            return
+    except Exception:
+        pass
+    if st.session_state.get(AUTH_HASH_BRIDGE_SHOWN_KEY):
+        return
+    st.session_state[AUTH_HASH_BRIDGE_SHOWN_KEY] = True
+    try:
+        import streamlit.components.v1 as components
+    except ImportError:
+        return
+    components.html(
+        """
+<script>
+(function () {
+  try {
+    var w = window.parent !== window ? window.parent : window;
+    var hash = (w.location.hash || "").replace(/^#/, "");
+    if (!hash || hash.indexOf("type=recovery") === -1) return;
+    var params = new URLSearchParams(hash);
+    var access = params.get("access_token");
+    var refresh = params.get("refresh_token");
+    if (!access || !refresh) return;
+    var base = w.location.href.split("#")[0];
+    var u = new URL(base);
+    u.searchParams.set("suite_auth_recovery", "1");
+    u.searchParams.set("suite_auth_access", access);
+    u.searchParams.set("suite_auth_refresh", refresh);
+    w.location.replace(u.toString());
+  } catch (e) {}
+})();
+</script>
+        """.strip(),
+        height=0,
+        width=0,
+    )
+
+
+def _qp_get(st: Any, name: str) -> str:
+    try:
+        raw = st.query_params.get(name)
+    except Exception:
+        return ""
+    if raw is None:
+        return ""
+    if isinstance(raw, list):
+        return str(raw[0] or "").strip()
+    return str(raw).strip()
+
+
+def _qp_clear(st: Any, *keys: str) -> None:
+    for key in keys:
+        try:
+            if hasattr(st.query_params, "pop"):
+                st.query_params.pop(key, None)
+            else:
+                del st.query_params[key]
+        except Exception:
+            pass
+
+
+def _consume_auth_recovery_query(st: Any) -> bool:
+    """Exchange recovery tokens from email link into a temporary auth session."""
+    if _qp_get(st, "suite_auth_recovery") != "1":
+        return False
+    access = _qp_get(st, "suite_auth_access")
+    refresh = _qp_get(st, "suite_auth_refresh")
+    if not access or not refresh:
+        return False
+    session_state = st.session_state
+    try:
+        auth = _auth_api(session_state)
+        resp = auth.set_session(access, refresh)
+        user = _user_from_auth_response(resp)
+        tokens = _tokens_from_auth_response(resp) or {
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_at": 0,
+        }
+        if user is not None:
+            _apply_authenticated_user(session_state, user, tokens=tokens)
+        else:
+            session_state[AUTH_TOKENS_KEY] = dict(tokens)
+            session_state[AUTH_SESSION_KEY] = True
+        session_state[AUTH_RECOVERY_PENDING_KEY] = True
+    except Exception:
+        return False
+    _qp_clear(st, "suite_auth_recovery", "suite_auth_access", "suite_auth_refresh")
+    return True
+
+
+def complete_password_recovery(session_state: dict[str, Any], new_password: str) -> tuple[bool, str]:
+    """Finish Supabase recovery flow after user sets a new password."""
+    if not str(new_password or "").strip():
+        return False, "Enter a new password."
+    try:
+        auth = _auth_api(session_state)
+        auth.update_user({"password": str(new_password)})
+    except Exception as exc:
+        return False, str(exc)
+    session_state.pop(AUTH_RECOVERY_PENDING_KEY, None)
+    session_state[AUTH_NOTICE_KEY] = "Password updated. You are signed in."
+    return True, "Password updated."
+
+
+def _render_password_recovery_panel(st: Any) -> None:
+    """Block app until the user chooses a new password from an email recovery link."""
+    st.title("Set new password")
+    st.caption("You opened a password reset link. Choose a new password to continue.")
+    pw1 = st.text_input("New password", type="password", key="suite_auth_recovery_pw1")
+    pw2 = st.text_input("Confirm password", type="password", key="suite_auth_recovery_pw2")
+    if st.button("Update password", key="suite_auth_recovery_submit", use_container_width=True):
+        if pw1 != pw2:
+            st.error("Passwords do not match.")
+        elif len(str(pw1 or "")) < 6:
+            st.error("Password must be at least 6 characters.")
+        else:
+            ok, msg = complete_password_recovery(st.session_state, pw1)
+            if ok:
+                try:
+                    from suite_auth_browser import save_browser_auth_tokens
+                    from suite_user import get_account_user_id
+
+                    tokens = dict(st.session_state.get(AUTH_TOKENS_KEY) or {})
+                    if tokens.get("access_token"):
+                        save_browser_auth_tokens(
+                            st,
+                            tokens,
+                            auth_user_id=get_account_user_id(),
+                        )
+                except ImportError:
+                    pass
+                enforce_workspace_ownership(st.session_state)
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+    st.stop()
 
 
 def signup_with_email(session_state: dict[str, Any], *, email: str, password: str) -> tuple[bool, str]:
@@ -512,16 +760,23 @@ def login_with_email(session_state: dict[str, Any], *, email: str, password: str
         return False, str(exc)
 
 
-def request_password_reset(email: str) -> tuple[bool, str]:
+def request_password_reset(email: str, *, redirect_to: str | None = None) -> tuple[bool, str]:
     if not is_auth_enabled():
         return False, "Auth is disabled."
     try:
         auth = _create_fresh_supabase_client().auth
     except Exception:
         return False, _auth_not_configured_message()
+    target = str(redirect_to or auth_password_reset_redirect_url() or "").strip().rstrip("/")
+    if not target:
+        return (
+            False,
+            "Password reset redirect URL is not configured. Set suite_auth_redirect_url in secrets "
+            "or deploy app_urls with HOMEPAGE_DEV_URL.",
+        )
     try:
-        auth.reset_password_email(email.strip())
-        return True, "Password reset email sent."
+        auth.reset_password_email(email.strip(), {"redirect_to": target})
+        return True, f"Password reset email sent. After clicking the link, you will return to {target}."
     except Exception as exc:
         return False, str(exc)
 
@@ -579,6 +834,12 @@ def render_auth_gate(st: Any) -> bool:
     """
     if not is_auth_enabled():
         return True
+    _bridge_supabase_recovery_hash_to_query(st)
+    if _consume_auth_recovery_query(st):
+        st.rerun()
+    if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+        _render_password_recovery_panel(st)
+        return False
     restore_auth_session(st.session_state, st=st)
     if is_authenticated(st.session_state):
         enforce_workspace_ownership(st.session_state)
