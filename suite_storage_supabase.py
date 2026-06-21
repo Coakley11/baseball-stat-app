@@ -31,6 +31,138 @@ _TABLE_SAVED = "suite_saved_items"
 _TABLE_SETTINGS = "suite_user_settings"
 _SAVED_ITEM_CONFLICT_COLS = "user_id,app,item_type,item_key"
 _FULL_SESSION_KEY = "full_session"
+_READ_CACHE_KEY = "_suite_supabase_get_cache"
+
+
+def _read_cache_bucket() -> dict[tuple[str, str, tuple[tuple[str, str], ...]], tuple[int, Any]]:
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        raw = st.session_state.get(_READ_CACHE_KEY)
+        if isinstance(raw, dict):
+            return raw
+        bucket: dict[tuple[str, str, tuple[tuple[str, str], ...]], tuple[int, Any]] = {}
+        st.session_state[_READ_CACHE_KEY] = bucket
+        return bucket
+    except Exception:
+        return {}
+
+
+def _cache_key(method: str, path: str, params: dict[str, str] | None) -> tuple[str, str, tuple[tuple[str, str], ...]]:
+    items = tuple(sorted((params or {}).items()))
+    return (method.upper(), path, items)
+
+
+def _invalidate_read_cache_for_table(table: str) -> None:
+    bucket = _read_cache_bucket()
+    if not bucket:
+        return
+    drop = [k for k in bucket if k[1] == table or k[1].startswith(f"{table}/")]
+    for key in drop:
+        bucket.pop(key, None)
+
+
+def _row_to_state_dict(row: dict[str, Any], *, logical: str) -> dict[str, Any]:
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    page = str(row.get("page") or "")
+    if not page.strip():
+        full_session = metrics.get(_FULL_SESSION_KEY)
+        if isinstance(full_session, dict):
+            page = str(full_session.get("view_mode") or full_session.get("page") or "")
+    return {
+        "page": page,
+        "summary": str(row.get("summary") or ""),
+        "metrics": metrics,
+        "updated_at": str(row.get("updated_at") or "")[:19],
+    }
+
+
+def load_current_state_meta_for_app(app: str) -> dict[str, Any]:
+    """Lightweight row metadata for one app (no metrics / full_session download)."""
+    from suite_workspace import logical_storage_app_key
+
+    storage_app = _scoped_storage_app(app)
+    logical = logical_storage_app_key(storage_app)
+    if logical not in ACTIVE_APP_KEYS:
+        return {}
+    params: dict[str, str] = {
+        "select": "app,page,summary,updated_at",
+        "app": f"eq.{storage_app}",
+        "limit": "1",
+    }
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
+    with _egress("load_current_state_meta_for_app"):
+        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return {}
+    row = rows[0]
+    return {
+        "app": logical,
+        "page": str(row.get("page") or ""),
+        "summary": str(row.get("summary") or ""),
+        "updated_at": str(row.get("updated_at") or "")[:19],
+    }
+
+
+def load_current_state_for_app(app: str) -> dict[str, Any]:
+    """Fetch one app's state row including metrics/full_session (not all apps)."""
+    from suite_workspace import logical_storage_app_key
+
+    storage_app = _scoped_storage_app(app)
+    logical = logical_storage_app_key(storage_app)
+    if logical not in ACTIVE_APP_KEYS:
+        return {}
+    params: dict[str, str] = {
+        "select": "app,page,summary,metrics,updated_at",
+        "app": f"eq.{storage_app}",
+        "limit": "1",
+    }
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
+    with _egress("load_current_state_for_app"):
+        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return {}
+    return _row_to_state_dict(rows[0], logical=logical)
+
+
+def load_current_states_summary() -> dict[str, dict[str, Any]]:
+    """All workspace apps — page/summary/updated_at only (no metrics blobs)."""
+    from suite_workspace import logical_storage_app_key, workspace_storage_app_keys
+
+    allowed = workspace_storage_app_keys()
+    params: dict[str, str] = {"select": "app,page,summary,updated_at"}
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
+    if allowed:
+        params["app"] = f"in.({','.join(sorted(allowed))})"
+    with _egress("load_current_states_summary"):
+        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        storage_app = str(row.get("app") or "")
+        if storage_app not in allowed:
+            continue
+        logical = logical_storage_app_key(storage_app)
+        if logical not in ACTIVE_APP_KEYS:
+            continue
+        out[logical] = {
+            "page": str(row.get("page") or ""),
+            "summary": str(row.get("summary") or ""),
+            "metrics": {},
+            "updated_at": str(row.get("updated_at") or "")[:19],
+        }
+    return out
 
 
 def _merge_state_metrics(scoped_app_key: str, incoming: dict[str, Any] | None) -> dict[str, Any]:
@@ -74,6 +206,17 @@ def _headers(cfg: SuiteCloudConfig, *, prefer: str = "return=minimal") -> dict[s
     }
 
 
+def _egress(source: str):
+    try:
+        from suite_egress_trace import egress_source
+
+        return egress_source(source)
+    except ImportError:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
 def _request(
     method: str,
     path: str,
@@ -89,6 +232,28 @@ def _request(
     if config is None:
         raise RuntimeError("Supabase is not configured")
 
+    table = str(path or "").split("/", 1)[0]
+    method_u = method.upper()
+    cache_key = _cache_key(method_u, table, params)
+    cached = False
+    if method_u == "GET":
+        bucket = _read_cache_bucket()
+        hit = bucket.get(cache_key)
+        if hit is not None:
+            cached = True
+            try:
+                from suite_egress_trace import record_egress
+
+                record_egress(
+                    method=method_u,
+                    path=table,
+                    bytes_in=hit[0],
+                    cached=True,
+                )
+            except ImportError:
+                pass
+            return hit[1]
+
     url = f"{config.url}/rest/v1/{path}"
     response = requests.request(
         method,
@@ -101,12 +266,30 @@ def _request(
     if response.status_code >= 400:
         detail = response.text[:500]
         raise RuntimeError(f"Supabase {method} {path} failed ({response.status_code}): {detail}")
+    bytes_in = len(response.content or b"")
+    bytes_out = 0
+    if json_body is not None:
+        try:
+            bytes_out = len(json.dumps(json_body, default=str).encode("utf-8"))
+        except Exception:
+            bytes_out = 0
+    try:
+        from suite_egress_trace import record_egress
+
+        record_egress(method=method_u, path=table, bytes_in=bytes_in, bytes_out=bytes_out, cached=False)
+    except ImportError:
+        pass
+    if method_u != "GET":
+        _invalidate_read_cache_for_table(table)
     if not response.content:
         return None
     try:
-        return response.json()
+        parsed = response.json()
     except json.JSONDecodeError:
-        return None
+        parsed = None
+    if method_u == "GET" and parsed is not None:
+        _read_cache_bucket()[cache_key] = (bytes_in, parsed)
+    return parsed
 
 
 def normalize_app_key(app: str) -> str:
@@ -380,12 +563,13 @@ def load_events(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
         params["user_id"] = "is.null"
     if allowed:
         params["app"] = f"in.({','.join(sorted(allowed))})"
-    rows = _request(
-        "GET",
-        _TABLE_EVENTS,
-        params=params,
-        prefer="return=representation",
-    )
+    with _egress("load_events"):
+        rows = _request(
+            "GET",
+            _TABLE_EVENTS,
+            params=params,
+            prefer="return=representation",
+        )
     if not isinstance(rows, list):
         return []
     out: list[dict[str, Any]] = []
@@ -411,7 +595,15 @@ def load_events(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
     return out
 
 
-def load_current_states() -> dict[str, dict[str, Any]]:
+def load_current_states(*, include_metrics: bool = False) -> dict[str, dict[str, Any]]:
+    """
+    Load current app states for active workspace.
+
+    Default is summary-only (no metrics/full_session) to limit Supabase egress.
+    Pass ``include_metrics=True`` only when shallow resume hints inside metrics are required.
+    """
+    if not include_metrics:
+        return load_current_states_summary()
     from suite_workspace import logical_storage_app_key, workspace_storage_app_keys
 
     allowed = workspace_storage_app_keys()
@@ -421,12 +613,13 @@ def load_current_states() -> dict[str, dict[str, Any]]:
         params["user_id"] = f"eq.{uid}"
     if allowed:
         params["app"] = f"in.({','.join(sorted(allowed))})"
-    rows = _request(
-        "GET",
-        _TABLE_STATE,
-        params=params,
-        prefer="return=representation",
-    )
+    with _egress("load_current_states"):
+        rows = _request(
+            "GET",
+            _TABLE_STATE,
+            params=params,
+            prefer="return=representation",
+        )
     if not isinstance(rows, list):
         return {}
     out: dict[str, dict[str, Any]] = {}
@@ -439,19 +632,7 @@ def load_current_states() -> dict[str, dict[str, Any]]:
         logical = logical_storage_app_key(storage_app)
         if logical not in ACTIVE_APP_KEYS:
             continue
-        metrics = row.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = {}
-        page = str(row.get("page") or "")
-        full_session = metrics.get("full_session")
-        if isinstance(full_session, dict) and not page.strip():
-            page = str(full_session.get("view_mode") or full_session.get("page") or "")
-        out[logical] = {
-            "page": page,
-            "summary": str(row.get("summary") or ""),
-            "metrics": metrics,
-            "updated_at": str(row.get("updated_at") or "")[:19],
-        }
+        out[logical] = _row_to_state_dict(row, logical=logical)
     return out
 
 
@@ -461,19 +642,20 @@ def load_active_resume_items(limit: int = 8, *, app: str | None = None) -> list[
     app_keys = [_scoped_storage_app(app)] if app else _workspace_storage_app_keys()
     if not app_keys:
         return []
-    rows = _request(
-        "GET",
-        _TABLE_RESUME,
-        params={
-            "select": "app,item_key,title,subtitle,action_url,updated_at",
-            "user_id": f"eq.{_scoped_user_id()}",
-            "valid": "eq.true",
-            "order": "updated_at.desc",
-            "limit": str(limit),
-            "app": f"in.({','.join(app_keys)})",
-        },
-        prefer="return=representation",
-    )
+    with _egress("load_active_resume_items"):
+        rows = _request(
+            "GET",
+            _TABLE_RESUME,
+            params={
+                "select": "app,item_key,title,subtitle,action_url,updated_at",
+                "user_id": f"eq.{_scoped_user_id()}",
+                "valid": "eq.true",
+                "order": "updated_at.desc",
+                "limit": str(limit),
+                "app": f"in.({','.join(app_keys)})",
+            },
+            prefer="return=representation",
+        )
     if not isinstance(rows, list):
         return []
     return [

@@ -95,3 +95,10 @@ def render_suite_sidebar_account_shell(
             pass
     elif command_center_divider:
         st.sidebar.divider()
+
+    try:
+        from suite_egress_trace import render_egress_sidebar_panel
+
+        render_egress_sidebar_panel(st)
+    except ImportError:
+        pass

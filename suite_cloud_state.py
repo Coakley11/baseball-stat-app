@@ -308,10 +308,20 @@ def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:
     try:
         storage, diag["storage_module"] = _import_storage()
         app_key = storage.normalize_app_key(app_id)
-        row = storage.load_current_states().get(app_key) or {}
+        meta_fn = getattr(storage, "load_current_state_meta_for_app", None)
+        row_fn = getattr(storage, "load_current_state_for_app", None)
+        if meta_fn and row_fn:
+            meta = meta_fn(app_id) or {}
+            if isinstance(meta, dict) and meta:
+                diag["cloud_row_found"] = True
+                diag["cloud_updated_at"] = str(meta.get("updated_at") or "") or None
+            row = row_fn(app_id) if diag["cloud_row_found"] else {}
+        else:
+            row = storage.load_current_states(include_metrics=True).get(app_key) or {}
+            if isinstance(row, dict) and row:
+                diag["cloud_row_found"] = True
+                diag["cloud_updated_at"] = str(row.get("updated_at") or "") or None
         if isinstance(row, dict) and row:
-            diag["cloud_row_found"] = True
-            diag["cloud_updated_at"] = str(row.get("updated_at") or "") or None
             metrics = row.get("metrics")
             if isinstance(metrics, dict):
                 blob = metrics.get(FULL_SESSION_KEY)
@@ -331,7 +341,35 @@ def _cloud_storage_app_id(app_id: str) -> str:
         return str(app_id or "").strip()
 
 
-def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
+def _full_session_cache_keys(app_key: str) -> tuple[str, str]:
+    return f"_suite_full_session_ts_{app_key}", f"_suite_full_session_blob_{app_key}"
+
+
+def _streamlit_session() -> Any | None:
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        return st.session_state
+    except Exception:
+        return None
+
+
+def invalidate_cloud_full_session_cache(app_id: str) -> None:
+    """Drop cached full_session after a local or cloud write."""
+    try:
+        import suite_storage as storage
+    except ImportError:
+        return
+    app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+    ss = _streamlit_session()
+    if ss is None:
+        return
+    ts_key, blob_key = _full_session_cache_keys(app_key)
+    ss.pop(ts_key, None)
+    ss.pop(blob_key, None)
+
+
+def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[str, Any], str | None]:
     """Return ``(session_dict, updated_at_iso)`` from cloud, or empty dict."""
     try:
         from suite_storage_config import cloud_storage_enabled
@@ -343,16 +381,38 @@ def load_cloud_full_session(app_id: str) -> tuple[dict[str, Any], str | None]:
         storage, _ = _import_storage()
 
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
-        row = storage.load_current_states().get(app_key) or {}
+        meta_fn = getattr(storage, "load_current_state_meta_for_app", None)
+        row_fn = getattr(storage, "load_current_state_for_app", None)
+        ss = _streamlit_session()
+        ts_key, blob_key = _full_session_cache_keys(app_key)
+
+        updated_at: str | None = None
+        if meta_fn:
+            meta = meta_fn(app_id) or {}
+            updated_at = str(meta.get("updated_at") or "") or None
+            if not force and ss is not None and ss.get(ts_key) == updated_at:
+                cached = ss.get(blob_key)
+                if isinstance(cached, dict):
+                    return copy.deepcopy(cached), updated_at
+
+        if row_fn:
+            row = row_fn(app_id) or {}
+        else:
+            row = storage.load_current_states(include_metrics=True).get(app_key) or {}
         if not isinstance(row, dict):
             return {}, None
+        updated_at = str(row.get("updated_at") or "") or updated_at
         metrics = row.get("metrics")
         if not isinstance(metrics, dict):
             metrics = {}
         blob = metrics.get(FULL_SESSION_KEY)
+        session_out: dict[str, Any] = {}
         if isinstance(blob, dict) and blob:
-            return copy.deepcopy(blob), str(row.get("updated_at") or "") or None
-        return {}, str(row.get("updated_at") or "") or None
+            session_out = copy.deepcopy(blob)
+        if ss is not None:
+            ss[blob_key] = copy.deepcopy(session_out)
+            ss[ts_key] = updated_at
+        return session_out, updated_at
     except Exception:
         return {}, None
 
@@ -382,6 +442,7 @@ def save_cloud_full_session(
             summary=summary or "Last session",
             metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
         )
+        invalidate_cloud_full_session_cache(app_id)
         return True
     except Exception:
         return False
