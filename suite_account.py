@@ -15,14 +15,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from suite_user import account_mode, get_account_user_id, get_display_name, get_external_user_id
+from suite_user import (
+    account_mode,
+    get_account_user_id,
+    get_display_name,
+    get_external_user_id,
+    get_user_email,
+)
 
 
 def account_summary() -> dict[str, str]:
+    email = get_user_email()
     return {
         "external_id": get_external_user_id(),
         "user_id": get_account_user_id(),
         "display_name": get_display_name(),
+        "email": email,
         "mode": account_mode(),
     }
 
@@ -31,12 +39,15 @@ def _scoped_storage_app(app: str | None) -> str | None:
     """Map logical app id to workspace-scoped cloud key (Daniel keeps legacy unscoped)."""
     if not app:
         return None
+    base = str(app or "").strip()
+    if "__" in base:
+        return base
     try:
         from suite_workspace import scoped_cloud_app_id
 
-        return scoped_cloud_app_id(app)
+        return scoped_cloud_app_id(base)
     except Exception:
-        return str(app or "").strip() or None
+        return base or None
 
 
 def remember_saved_item(

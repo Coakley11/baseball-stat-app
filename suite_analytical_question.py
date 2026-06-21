@@ -237,6 +237,21 @@ def music_coach_question_placeholder(source_page: str) -> str:
     )
 
 
+NBA_INSIGHT_EXAMPLE_QUESTIONS: tuple[str, ...] = (
+    "Is the Knicks' fourth-quarter scoring trend meaningful?",
+    "Which player matchup matters most tonight?",
+    "Is this playoff series shifting momentum?",
+    "Are the Knicks relying too much on Brunson?",
+    "What is the biggest risk for this team tonight?",
+    "Which lineup has the best advantage?",
+)
+
+
+def nba_insight_question_placeholder(source_page: str) -> str:
+    _ = source_page
+    return f"e.g. {NBA_INSIGHT_EXAMPLE_QUESTIONS[0]}"
+
+
 def _normalize_question(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
@@ -401,11 +416,9 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
         log.warning("load_saved_items failed for question context: %s", exc)
     try:
         from suite_storage_supabase import load_active_resume_items
-        from suite_workspace import scoped_cloud_app_id
 
-        scoped_ai = scoped_cloud_app_id("applied_intelligence")
-        for row in load_active_resume_items(limit=40, app="applied_intelligence"):
-            if str(row.get("app") or "") != scoped_ai:
+        for row in load_active_resume_items(limit=40):
+            if str(row.get("app") or "") != "applied_intelligence":
                 continue
             if str(row.get("item_key") or "") != resume_key:
                 continue
@@ -578,7 +591,7 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
     """Metrics bundle for deep links into Applied Intelligence."""
     ctx = dict(payload.get("context") or {})
     ctx_lines = format_context_lines(ctx)
-    return {
+    metrics = {
         "question": payload.get("question"),
         "question_id": payload.get("question_id"),
         "source_app": payload.get("source_app"),
@@ -592,6 +605,13 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
         "saved_item_type": _CONTEXT_ITEM_TYPE,
         "saved_item_key": payload.get("question_id"),
     }
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        metrics["workspace_id"] = get_active_workspace_id()
+    except ImportError:
+        pass
+    return metrics
 
 
 def _upsert_applied_intelligence_resume(
@@ -842,14 +862,23 @@ def render_analyze_with_applied_math_sidebar(
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
     is_music = str(source_app or "").strip().lower() == "music"
+    is_nba = str(source_app or "").strip().lower() == "nba"
     if is_music:
         st.sidebar.markdown("### Ask the Music Coach")
         st.sidebar.caption(
             "Get help with practice, theory, navigation, backing tracks, karaoke, or this app."
         )
+        submit_label = "Ask the Music Coach"
+    elif is_nba:
+        st.sidebar.markdown("### Get Basketball Insight")
+        st.sidebar.caption(
+            "Ask an NBA or playoff question about the team, matchup, or page you're viewing."
+        )
+        submit_label = "Get NBA Insight"
     else:
         st.sidebar.markdown("### Analyze with Applied Math")
         st.sidebar.caption("Ask a math question about what you are viewing.")
+        submit_label = "Send to Command Center"
 
     last = ss.get("_ami_last_send")
     if (
@@ -860,7 +889,11 @@ def render_analyze_with_applied_math_sidebar(
         sent_msg = (
             "Question sent to Command Center. Open Command Center to continue with the Music Coach."
             if is_music
-            else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+            else (
+                "NBA insight request saved. Open Command Center when you're ready to review it."
+                if is_nba
+                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+            )
         )
         st.sidebar.success(sent_msg)
 
@@ -870,7 +903,11 @@ def render_analyze_with_applied_math_sidebar(
         placeholder=(
             music_coach_question_placeholder(source_page)
             if is_music
-            else "e.g. Is this trend meaningful statistically?"
+            else (
+                nba_insight_question_placeholder(source_page)
+                if is_nba
+                else "e.g. Is this trend meaningful statistically?"
+            )
         ),
         height=88,
         key=question_key,
@@ -878,7 +915,7 @@ def render_analyze_with_applied_math_sidebar(
     )
 
     if st.sidebar.button(
-        "Send to Command Center",
+        submit_label,
         key=submit_key,
         use_container_width=True,
         type="primary",
@@ -914,12 +951,20 @@ def render_analyze_with_applied_math_sidebar(
             dup_msg = (
                 "That question was already sent recently. Open Command Center to continue with the Music Coach."
                 if is_music
-                else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                else (
+                    "That NBA insight was already requested recently. Open Command Center to review it."
+                    if is_nba
+                    else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                )
             )
             ok_msg = (
                 "Question sent to Command Center. Open Command Center to continue with the Music Coach."
                 if is_music
-                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                else (
+                    "NBA insight request saved. Open Command Center when you're ready to review it."
+                    if is_nba
+                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                )
             )
             if result.get("duplicate"):
                 st.sidebar.info(dup_msg)

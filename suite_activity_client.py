@@ -57,7 +57,6 @@ def _record_via_cloud(
     resume_title: str = "",
     resume_subtitle: str = "",
     action_url: str = "",
-    timing_out: dict[str, Any] | None = None,
 ) -> bool:
     global _LAST_CLOUD_ERROR
     _LAST_CLOUD_ERROR = ""
@@ -81,7 +80,6 @@ def _record_via_cloud(
             resume_title=resume_title,
             resume_subtitle=resume_subtitle,
             action_url=action_url,
-            timing_out=timing_out,
         )
         return True
     except Exception as exc:
@@ -89,13 +87,26 @@ def _record_via_cloud(
         return False
 
 
-def _fallback_path(app: str) -> Path:
+def _fallback_path(app: str, metrics: dict[str, Any] | None = None) -> Path:
     LOCAL_FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
-    return LOCAL_FALLBACK_DIR / f"{app}_activity_fallback.json"
+    try:
+        from suite_workspace import normalize_workspace_id, scoped_cloud_app_id
+
+        ws = ""
+        if metrics:
+            ws = str(metrics.get("workspace_id") or "").strip()
+        if ws:
+            scoped = scoped_cloud_app_id(app, normalize_workspace_id(ws))
+        else:
+            scoped = scoped_cloud_app_id(app)
+        safe = scoped.replace("/", "_").replace("\\", "_")
+        return LOCAL_FALLBACK_DIR / f"{safe}_activity_fallback.json"
+    except Exception:
+        return LOCAL_FALLBACK_DIR / f"{app}_activity_fallback.json"
 
 
 def _fallback_append(app: str, event: str, page: str, metrics: dict[str, Any], summary: str) -> None:
-    path = _fallback_path(app)
+    path = _fallback_path(app, metrics)
     rows: list[dict[str, Any]] = []
     if path.is_file():
         try:
@@ -163,12 +174,14 @@ def record_activity(
     action_url: str = "",
     local_state: dict[str, Any] | None = None,
 ) -> None:
-    import time
-
     global _LAST_RECORD_TRACE
-    t_total = time.perf_counter()
     metrics = metrics or {}
-    sub_timing: dict[str, Any] = {}
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        metrics.setdefault("workspace_id", get_active_workspace_id())
+    except ImportError:
+        pass
     trace: dict[str, Any] = {
         "app": app,
         "event": event,
@@ -180,25 +193,18 @@ def record_activity(
         "write_path": "none",
         "error": "",
     }
-    t_prep = time.perf_counter()
     if not str(action_url or "").strip():
-        continue_url = str(metrics.get("continue_action_url") or "").strip()
-        if continue_url:
-            action_url = continue_url
-        else:
-            try:
-                from suite_deep_links import build_resume_action_url
+        try:
+            from suite_deep_links import build_resume_action_url
 
-                action_url = build_resume_action_url(
-                    app,
-                    resume_key=resume_key,
-                    page=page,
-                    metrics=metrics,
-                )
-            except Exception:
-                pass
-    sub_timing["payload_prepare_ms"] = round((time.perf_counter() - t_prep) * 1000, 1)
-    t_api = time.perf_counter()
+            action_url = build_resume_action_url(
+                app,
+                resume_key=resume_key,
+                page=page,
+                metrics=metrics,
+            )
+        except Exception:
+            pass
     if _record_via_cloud(
         app,
         event,
@@ -209,9 +215,7 @@ def record_activity(
         resume_title=resume_title,
         resume_subtitle=resume_subtitle,
         action_url=action_url,
-        timing_out=sub_timing,
     ):
-        sub_timing.setdefault("activity_api_ms", round((time.perf_counter() - t_api) * 1000, 1))
         trace.update(
             {
                 "recorded": True,
@@ -220,9 +224,6 @@ def record_activity(
                 "error": "",
             }
         )
-        trace.update(sub_timing)
-        sub_timing["record_activity_total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
-        trace["record_activity_total_ms"] = sub_timing["record_activity_total_ms"]
         _LAST_RECORD_TRACE = trace
         if local_state is not None:
             save_local_app_state(app, local_state)
