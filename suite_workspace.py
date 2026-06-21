@@ -325,7 +325,6 @@ def render_workspace_selector_sidebar(st: Any) -> str:
     except ImportError:
         pass
     current = get_active_workspace_id(st)
-    _sync_workspace_selector_widget(st, current)
     presets = _workspace_presets_for_session(st)
     labels = [p["label"] for p in presets]
     ids = [p["id"] for p in presets]
@@ -345,6 +344,8 @@ def render_workspace_selector_sidebar(st: Any) -> str:
             st.rerun()
         except Exception:
             pass
+    elif st.session_state.get(WORKSPACE_SELECTOR_WIDGET_KEY) != workspace_label(current):
+        _sync_workspace_selector_widget(st, current)
     st.caption(f"Active profile: **{workspace_label(current)}** (`{current}`)")
     return current
 
