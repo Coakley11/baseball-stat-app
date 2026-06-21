@@ -742,6 +742,122 @@ def upsert_saved_item(
         return {"write_mode": "update", "duplicate_handled": True}
 
 
+_AUTH_BROWSER_APP = "_auth_browser"
+_AUTH_SESSION_ITEM_TYPE = "browser_session"
+
+
+def save_browser_auth_session(
+    session_id: str,
+    *,
+    user_id: str,
+    tokens: dict[str, Any],
+) -> None:
+    """Persist refreshable auth tokens server-side; URL holds opaque session id only."""
+    sid = str(session_id or "").strip()
+    uid = str(user_id or "").strip()
+    access = str((tokens or {}).get("access_token") or "").strip()
+    refresh = str((tokens or {}).get("refresh_token") or "").strip()
+    if not sid or not uid or not access or not refresh:
+        return
+    payload = {
+        "access_token": access,
+        "refresh_token": refresh,
+        "expires_at": int((tokens or {}).get("expires_at") or 0),
+    }
+    row_body = {
+        "user_id": uid,
+        "app": _AUTH_BROWSER_APP,
+        "item_type": _AUTH_SESSION_ITEM_TYPE,
+        "item_key": sid,
+        "title": "Browser auth session",
+        "payload": payload,
+        "valid": True,
+        "updated_at": _now_iso(),
+    }
+    patch_body = {
+        "title": "Browser auth session",
+        "payload": payload,
+        "valid": True,
+        "updated_at": _now_iso(),
+    }
+    patch_params = {
+        "user_id": f"eq.{uid}",
+        "app": f"eq.{_AUTH_BROWSER_APP}",
+        "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
+        "item_key": f"eq.{sid}",
+    }
+    try:
+        _request(
+            "POST",
+            _TABLE_SAVED,
+            params={"on_conflict": _SAVED_ITEM_CONFLICT_COLS},
+            json_body=row_body,
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+    except RuntimeError as exc:
+        if not _is_duplicate_key_error(exc):
+            raise
+        _request(
+            "PATCH",
+            _TABLE_SAVED,
+            params=patch_params,
+            json_body=patch_body,
+            prefer="return=minimal",
+        )
+
+
+def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
+    """Load token bundle by opaque browser session id (capability URL)."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    with _egress("load_browser_auth_session"):
+        rows = _request(
+            "GET",
+            _TABLE_SAVED,
+            params={
+                "select": "payload,updated_at",
+                "app": f"eq.{_AUTH_BROWSER_APP}",
+                "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
+                "item_key": f"eq.{sid}",
+                "valid": "eq.true",
+                "limit": "1",
+            },
+            prefer="return=representation",
+        )
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return None
+    payload = rows[0].get("payload")
+    if not isinstance(payload, dict):
+        return None
+    access = str(payload.get("access_token") or "").strip()
+    refresh = str(payload.get("refresh_token") or "").strip()
+    if not access or not refresh:
+        return None
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "expires_at": int(payload.get("expires_at") or 0),
+    }
+
+
+def invalidate_browser_auth_session(session_id: str) -> None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    _request(
+        "PATCH",
+        _TABLE_SAVED,
+        params={
+            "app": f"eq.{_AUTH_BROWSER_APP}",
+            "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
+            "item_key": f"eq.{sid}",
+        },
+        json_body={"valid": False, "updated_at": _now_iso()},
+        prefer="return=minimal",
+    )
+
+
 def invalidate_saved_item(app: str, item_type: str, item_key: str) -> None:
     app_key = _scoped_storage_app(app)
     key = str(item_key or "").strip()

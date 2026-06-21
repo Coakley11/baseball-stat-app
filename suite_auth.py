@@ -255,19 +255,26 @@ def _persist_auth_session(
     st: Any | None = None,
 ) -> None:
     _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback)
+    suite_user_id = ""
     try:
         from suite_storage_supabase import ensure_user_row
 
-        ensure_user_row(
+        suite_user_id = ensure_user_row(
             external_id=session_state.get(AUTH_USER_EMAIL_KEY) or session_state.get(AUTH_USER_ID_KEY) or ""
         )
+        try:
+            from suite_user import reset_account_cache
+
+            reset_account_cache()
+        except ImportError:
+            pass
     except Exception:
         pass
-    if st is not None and tokens:
+    if st is not None and tokens and suite_user_id:
         try:
             from suite_auth_browser import save_browser_auth_tokens
 
-            save_browser_auth_tokens(st, tokens)
+            save_browser_auth_tokens(st, tokens, auth_user_id=suite_user_id)
         except ImportError:
             pass
 
@@ -312,11 +319,16 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         if refreshed:
             tokens = refreshed
         _apply_authenticated_user(session_state, user, tokens=tokens)
-        if st is not None:
+        if st is not None and session_state.get(AUTH_USER_EMAIL_KEY):
             try:
                 from suite_auth_browser import save_browser_auth_tokens
+                from suite_user import get_account_user_id
 
-                save_browser_auth_tokens(st, tokens)
+                save_browser_auth_tokens(
+                    st,
+                    tokens,
+                    auth_user_id=get_account_user_id(),
+                )
             except ImportError:
                 pass
         enforce_workspace_ownership(session_state)
@@ -387,7 +399,8 @@ def auth_backend_status() -> dict[str, Any]:
         "supabase_package_installed": False,
         "cloud_config": False,
         "auth_api_key_set": False,
-        "browser_persistence": False,
+        "browser_persistence": True,
+        "browser_persistence_mode": "supabase_query_param",
     }
     if not is_auth_enabled():
         out["message"] = "Auth UI disabled (set suite_auth_enabled = true)."
@@ -399,15 +412,6 @@ def auth_backend_status() -> dict[str, Any]:
     except ImportError:
         out["message"] = (
             "Python package 'supabase' is not installed. Add supabase>=2.0.0 to requirements.txt and redeploy."
-        )
-        return out
-    try:
-        import extra_streamlit_components  # noqa: F401
-
-        out["browser_persistence"] = True
-    except ImportError:
-        out["message"] = (
-            "Browser auth persistence requires extra-streamlit-components — add to requirements.txt and redeploy."
         )
         return out
     try:
@@ -433,7 +437,7 @@ def auth_backend_status() -> dict[str, Any]:
         out["message"] = "Supabase Auth client could not be initialized."
         return out
     out["ready"] = True
-    out["message"] = "Auth backend ready (C2b browser persistence enabled)."
+    out["message"] = "Auth backend ready (C2b query-param + Supabase session storage)."
     return out
 
 
@@ -526,13 +530,6 @@ def render_auth_panel(st: Any, *, expanded: bool = False) -> None:
             if st.button("Log in", key="suite_auth_login_btn", use_container_width=True):
                 ok, msg = login_with_email(session, email=email, password=password)
                 if ok:
-                    try:
-                        from suite_auth_browser import init_browser_auth_storage
-
-                        if init_browser_auth_storage(st) == "sync_pending":
-                            st.rerun()
-                    except ImportError:
-                        pass
                     st.rerun()
                 else:
                     st.error(msg)
@@ -563,16 +560,6 @@ def render_auth_gate(st: Any) -> bool:
     """
     if not is_auth_enabled():
         return True
-    try:
-        from suite_auth_browser import init_browser_auth_storage
-
-        storage_state = init_browser_auth_storage(st)
-        if storage_state == "wait":
-            st.rerun()
-        if storage_state == "sync_pending":
-            st.rerun()
-    except ImportError:
-        pass
     restore_auth_session(st.session_state, st=st)
     if is_authenticated(st.session_state):
         enforce_workspace_ownership(st.session_state)

@@ -15,4 +15,3 @@ xlsxwriter
 supabase>=2.0.0
 
 
-extra-streamlit-components>=0.1.60
