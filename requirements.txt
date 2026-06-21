@@ -11,3 +11,6 @@ pybaseball
 openpyxl
 xlsxwriter
 
+
+supabase>=2.0.0
+

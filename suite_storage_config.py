@@ -7,6 +7,7 @@ Same block on Command Center and every suite app.
 Environment fallback (local / CI):
   SUITE_SUPABASE_URL
   SUITE_SUPABASE_KEY
+  SUITE_SUPABASE_ANON_KEY  (preferred for Auth sign-in; optional — falls back to SUPABASE_KEY)
 """
 
 from __future__ import annotations
@@ -21,9 +22,13 @@ EXPECTED_SECRETS_TOML = """\
 [suite_activity]
 supabase_url = "https://YOUR_PROJECT_REF.supabase.co"
 supabase_key = "YOUR_SERVICE_ROLE_KEY"
+# Public anon key — required for Real Accounts email/password login (Supabase Auth API)
+supabase_anon_key = "YOUR_ANON_PUBLIC_KEY"
 # Same on phone, laptop, and every suite app (unified account memory)
 suite_user_id = "daniel"
 suite_user_email = "you@example.com"
+# Dev only — Real Accounts UI + Supabase Auth (Sprint C/D)
+# suite_auth_enabled = true
 """
 
 
@@ -186,3 +191,56 @@ def cloud_storage_enabled() -> bool:
 
 def reset_cloud_config_cache() -> None:
     get_cloud_config.cache_clear()
+    get_auth_api_key.cache_clear()
+    try:
+        from suite_storage_supabase import reset_supabase_client_cache
+
+        reset_supabase_client_cache()
+    except ImportError:
+        pass
+
+
+def _auth_key_from_streamlit_secrets() -> str:
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        root = st.secrets
+        block = None
+        try:
+            block = root.get("suite_activity")
+        except Exception:
+            try:
+                block = root["suite_activity"]
+            except Exception:
+                block = None
+        if block is not None:
+            key = _mapping_get(
+                block,
+                "supabase_anon_key",
+                "anon_key",
+                "SUPABASE_ANON_KEY",
+                "supabase_public_key",
+            )
+            if key:
+                return key
+        return _mapping_get(root, "supabase_anon_key", "anon_key", "SUPABASE_ANON_KEY")
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def get_auth_api_key() -> str | None:
+    """
+    API key for Supabase Auth (sign-in / sign-up / reset).
+
+    Prefer the public anon key. Falls back to ``supabase_key`` (service role) for dev
+    when anon is not set — anon is recommended for production auth flows.
+    """
+    env_anon = os.environ.get("SUITE_SUPABASE_ANON_KEY", "").strip()
+    if env_anon:
+        return env_anon
+    secret_anon = _auth_key_from_streamlit_secrets()
+    if secret_anon:
+        return secret_anon
+    cfg = get_cloud_config()
+    return cfg.key if cfg else None

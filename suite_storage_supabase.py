@@ -9,7 +9,7 @@ from activity_time import normalize_timestamp_iso, utc_now_iso
 from datetime import datetime
 from typing import Any
 
-from suite_storage_config import SuiteCloudConfig, get_cloud_config
+from suite_storage_config import SuiteCloudConfig, get_auth_api_key, get_cloud_config, reset_cloud_config_cache
 
 MAX_EVENTS = 2000
 ACTIVE_APP_KEYS = frozenset(
@@ -203,6 +203,44 @@ def ping() -> bool:
         return True
     except Exception:
         return False
+
+
+_supabase_client: Any | None = None
+
+
+def get_supabase_client() -> Any:
+    """
+    Lazy Supabase Python client for Auth API (``client.auth``).
+
+    Requires ``supabase`` package and ``supabase_url`` + auth API key in secrets.
+    """
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client
+    cfg = get_cloud_config()
+    if cfg is None:
+        raise RuntimeError(
+            "Supabase is not configured — set supabase_url and supabase_key under [suite_activity]."
+        )
+    auth_key = get_auth_api_key()
+    if not auth_key:
+        raise RuntimeError(
+            "Supabase Auth key missing — set supabase_anon_key under [suite_activity] "
+            "(or SUITE_SUPABASE_ANON_KEY env)."
+        )
+    try:
+        from supabase import create_client
+    except ImportError as exc:
+        raise RuntimeError(
+            "Python package 'supabase' is not installed — add supabase>=2.0.0 to requirements.txt."
+        ) from exc
+    _supabase_client = create_client(cfg.url, auth_key)
+    return _supabase_client
+
+
+def reset_supabase_client_cache() -> None:
+    global _supabase_client
+    _supabase_client = None
 
 
 def append_event(

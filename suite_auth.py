@@ -154,15 +154,75 @@ def _supabase_auth_client() -> Any | None:
         from suite_storage_supabase import get_supabase_client
 
         client = get_supabase_client()
-        return getattr(client, "auth", None)
+        auth = getattr(client, "auth", None)
+        if auth is None:
+            return None
+        return auth
     except Exception:
         return None
+
+
+def auth_backend_status() -> dict[str, Any]:
+    """Safe diagnostics for Real Accounts — no secret values."""
+    out: dict[str, Any] = {
+        "auth_ui_enabled": is_auth_enabled(),
+        "ready": False,
+        "message": "",
+        "supabase_package_installed": False,
+        "cloud_config": False,
+        "auth_api_key_set": False,
+    }
+    if not is_auth_enabled():
+        out["message"] = "Auth UI disabled (set suite_auth_enabled = true)."
+        return out
+    try:
+        import supabase  # noqa: F401
+
+        out["supabase_package_installed"] = True
+    except ImportError:
+        out["message"] = (
+            "Python package 'supabase' is not installed. Add supabase>=2.0.0 to requirements.txt and redeploy."
+        )
+        return out
+    try:
+        from suite_storage_config import get_auth_api_key, get_cloud_config
+
+        out["cloud_config"] = get_cloud_config() is not None
+        out["auth_api_key_set"] = bool(get_auth_api_key())
+    except Exception as exc:
+        out["message"] = str(exc)
+        return out
+    if not out["cloud_config"]:
+        out["message"] = (
+            "Supabase cloud config missing — set supabase_url and supabase_key under [suite_activity]."
+        )
+        return out
+    if not out["auth_api_key_set"]:
+        out["message"] = (
+            "Supabase Auth key missing — set supabase_anon_key under [suite_activity] "
+            "(Supabase → Settings → API → anon public)."
+        )
+        return out
+    if _supabase_auth_client() is None:
+        out["message"] = "Supabase Auth client could not be initialized."
+        return out
+    out["ready"] = True
+    out["message"] = "Auth backend ready."
+    return out
+
+
+def _auth_not_configured_message() -> str:
+    status = auth_backend_status()
+    if status.get("ready"):
+        return "Auth is not configured on this deployment."
+    msg = str(status.get("message") or "").strip()
+    return msg or "Auth is not configured on this deployment."
 
 
 def signup_with_email(session_state: dict[str, Any], *, email: str, password: str) -> tuple[bool, str]:
     auth = _supabase_auth_client()
     if auth is None:
-        return False, "Auth is not configured on this deployment."
+        return False, _auth_not_configured_message()
     try:
         resp = auth.sign_up({"email": email.strip(), "password": password})
         user = getattr(resp, "user", None) or (resp.get("user") if isinstance(resp, dict) else None)
@@ -177,7 +237,7 @@ def signup_with_email(session_state: dict[str, Any], *, email: str, password: st
 def login_with_email(session_state: dict[str, Any], *, email: str, password: str) -> tuple[bool, str]:
     auth = _supabase_auth_client()
     if auth is None:
-        return False, "Auth is not configured on this deployment."
+        return False, _auth_not_configured_message()
     try:
         resp = auth.sign_in_with_password({"email": email.strip(), "password": password})
         user = getattr(resp, "user", None) or (resp.get("user") if isinstance(resp, dict) else None)
@@ -207,7 +267,7 @@ def login_with_email(session_state: dict[str, Any], *, email: str, password: str
 def request_password_reset(email: str) -> tuple[bool, str]:
     auth = _supabase_auth_client()
     if auth is None:
-        return False, "Password reset requires Supabase Auth (enable SUITE_AUTH_ENABLED)."
+        return False, _auth_not_configured_message()
     try:
         auth.reset_password_email(email.strip())
         return True, "Password reset email sent."
