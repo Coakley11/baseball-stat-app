@@ -37,6 +37,8 @@ AUTH_LANDING_QUERY_KEYS_KEY = "_suite_auth_landing_query_keys"
 AUTH_CONFIGURED_RESET_REDIRECT_KEY = "_suite_auth_configured_reset_redirect"
 AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY = "_suite_auth_recovery_verify_attempted"
 AUTH_RECOVERY_QUERY_PROMOTED_PARAM = "suite_auth_recovery_promoted"
+AUTH_BROWSER_QUERY_KEYS_PARAM = "suite_auth_browser_keys"
+AUTH_RESET_EXPECTED_HREF_PREFIX_KEY = "_suite_auth_reset_expected_href_prefix"
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -554,6 +556,14 @@ def auth_password_reset_redirect_url(*, with_landing_hint: bool = True) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
 
 
+def expected_recovery_email_href_prefix(*, site_url: str | None = None) -> str:
+    """Prefix of the href Supabase must put in the Recovery email (TokenHash appended by template)."""
+    base = str(site_url or auth_password_reset_redirect_url(with_landing_hint=False) or "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}?suite_auth_landing=recovery&token_hash="
+
+
 def supabase_auth_redirect_url_checklist() -> tuple[str, ...]:
     """Public app URLs to whitelist in Supabase Auth → URL configuration."""
     candidates: list[str] = []
@@ -661,7 +671,49 @@ def _bridge_supabase_recovery_hash_to_query(st: Any) -> None:
     )
 
 
+def _browser_query_keys_from_snapshot(snapshot: str) -> list[str]:
+    for part in str(snapshot or "").split(","):
+        if part.startswith("keys:"):
+            raw = part[5:]
+            if raw in ("", "none"):
+                return []
+            return [k for k in raw.split("|") if k]
+    return []
+
+
+def _recovery_bare_site_landing(st: Any) -> bool:
+    """
+    True when neither server nor browser URL contains recovery query params.
+
+    Usually means the reset email href still uses ConfirmationURL / bare Site URL.
+    """
+    if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+        return False
+    if _recovery_token_hash_present(st) or _safe_query_param_keys(st):
+        return False
+    browser_keys_raw = _qp_get(st, AUTH_BROWSER_QUERY_KEYS_PARAM)
+    if browser_keys_raw and browser_keys_raw != "none":
+        recovery_keys = {"token_hash", "type", "suite_auth_landing", "code", "access_token"}
+        if recovery_keys.intersection(browser_keys_raw.split("|")):
+            return False
+    snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or "")
+    if snap:
+        if "th:1" in snap:
+            return False
+        browser_keys = _browser_query_keys_from_snapshot(snap)
+        if browser_keys:
+            recovery_keys = {"token_hash", "type", "suite_auth_landing", "code", "access_token"}
+            if recovery_keys.intersection(browser_keys):
+                return False
+        return "keys:none" in snap or "th:0" in snap
+    if browser_keys_raw == "none":
+        return True
+    return False
+
+
 def _needs_recovery_hash_bridge(st: Any) -> bool:
+    if _recovery_bare_site_landing(st):
+        return False
     probe = _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM)
     if probe == "none":
         return False
@@ -840,23 +892,33 @@ def _redact_url_for_log(st: Any) -> str:
 
 def _capture_auth_landing_snapshot(st: Any) -> None:
     diag = _qp_get(st, AUTH_LANDING_DIAG_PARAM)
-    if not diag:
+    browser_keys = _qp_get(st, AUTH_BROWSER_QUERY_KEYS_PARAM)
+    if not diag and not browser_keys:
         return
-    st.session_state[AUTH_LANDING_SNAPSHOT_KEY] = diag
-    st.session_state[AUTH_LANDING_QUERY_KEYS_KEY] = _safe_query_param_keys(st)
-    _qp_clear(st, AUTH_LANDING_DIAG_PARAM)
+    if diag:
+        st.session_state[AUTH_LANDING_SNAPSHOT_KEY] = diag
+    if browser_keys:
+        st.session_state[AUTH_LANDING_QUERY_KEYS_KEY] = [
+            k for k in browser_keys.split("|") if k and k != "none"
+        ]
+    elif diag:
+        st.session_state[AUTH_LANDING_QUERY_KEYS_KEY] = _browser_query_keys_from_snapshot(diag)
+    else:
+        st.session_state[AUTH_LANDING_QUERY_KEYS_KEY] = _safe_query_param_keys(st)
+    _qp_clear(st, AUTH_LANDING_DIAG_PARAM, AUTH_BROWSER_QUERY_KEYS_PARAM)
 
 
-def _inject_auth_landing_client_probe(st: Any) -> None:
+def _inject_auth_landing_client_probe(st: Any, *, force: bool = False) -> None:
     """Report whether the browser URL has a Supabase recovery hash or PKCE query params."""
-    if _qp_get(st, AUTH_LANDING_DIAG_PARAM):
-        return
-    if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
-        return
-    if _recovery_token_hash_present(st):
-        return
-    if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
-        return
+    if not force:
+        if _qp_get(st, AUTH_LANDING_DIAG_PARAM):
+            return
+        if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
+            return
+        if _recovery_token_hash_present(st):
+            return
+        if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+            return
     try:
         import streamlit.components.v1 as components
     except ImportError:
@@ -877,15 +939,28 @@ def _inject_auth_landing_client_probe(st: Any) -> None:
     var search = String(w.location.search || "");
     var base = href.split("#")[0];
     var u = new URL(base);
+    var keyList = [];
+    u.searchParams.forEach(function (_v, k) { keyList.push(k); });
+    keyList.sort();
+    var browserKeys = keyList.length ? keyList.join("|") : "none";
     var diag = [
       "hash:" + (hash.length > 1 ? "1" : "0"),
       "rec:" + ((hash.indexOf("type=recovery") !== -1 || hash.indexOf("type%3Drecovery") !== -1) ? "1" : "0"),
       "code:" + (search.indexOf("code=") !== -1 ? "1" : "0"),
       "th:" + (search.indexOf("token_hash=") !== -1 ? "1" : "0"),
-      "at:" + (search.indexOf("access_token=") !== -1 ? "1" : "0")
+      "at:" + (search.indexOf("access_token=") !== -1 ? "1" : "0"),
+      "keys:" + browserKeys
     ].join(",");
+    var changed = false;
     if (u.searchParams.get("suite_auth_landing_diag") !== diag) {
       u.searchParams.set("suite_auth_landing_diag", diag);
+      changed = true;
+    }
+    if (u.searchParams.get("suite_auth_browser_keys") !== browserKeys) {
+      u.searchParams.set("suite_auth_browser_keys", browserKeys);
+      changed = true;
+    }
+    if (changed) {
       w.location.replace(u.toString());
     }
   } catch (e) {}
@@ -957,15 +1032,25 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
         or hash_probe == "recovery"
         or landing_hint == "recovery"
     )
-    configured_redirect = str(ss.get(AUTH_CONFIGURED_RESET_REDIRECT_KEY) or auth_password_reset_redirect_url())
     landing_failed = _recovery_landing_failed(st) if landing_hint == "recovery" else False
     verify_attempted = bool(ss.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY))
     query_promotion_needed = _needs_recovery_query_promotion(st)
+    configured_redirect = str(ss.get(AUTH_CONFIGURED_RESET_REDIRECT_KEY) or "")
+    site_url_expected = auth_password_reset_redirect_url(with_landing_hint=False)
+    expected_href_prefix = str(
+        ss.get(AUTH_RESET_EXPECTED_HREF_PREFIX_KEY) or expected_recovery_email_href_prefix()
+    )
+    browser_keys = ss.get(AUTH_LANDING_QUERY_KEYS_KEY) or _browser_query_keys_from_snapshot(landing_snapshot)
+    bare_site_landing = _recovery_bare_site_landing(st)
     return {
         "available": True,
-        "configured_reset_redirect_to": configured_redirect,
+        "reset_redirect_to_sent": configured_redirect or site_url_expected,
+        "supabase_site_url_expected": site_url_expected,
+        "expected_email_href_prefix": expected_href_prefix,
+        "configured_reset_redirect_to": configured_redirect or site_url_expected,
         "redacted_incoming_url": _redact_url_for_log(st),
         "query_param_keys": list(query_keys) if isinstance(query_keys, list) else [],
+        "browser_query_keys": list(browser_keys) if isinstance(browser_keys, list) else [],
         "landing_hint": landing_hint or "",
         "client_landing_snapshot": landing_snapshot,
         "recovery_token_in_query": recovery_query and access_query and refresh_query,
@@ -984,9 +1069,10 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
         "recovery_landing_failed": landing_failed,
         "recovery_query_promotion_needed": query_promotion_needed,
         "recovery_verify_attempted": verify_attempted,
+        "recovery_bare_site_landing": bare_site_landing,
         "last_recovery_error": str(ss.get(AUTH_RECOVERY_LAST_ERROR_KEY) or ""),
         "authenticated_before_recovery_panel": bool(ss.get(AUTH_SESSION_KEY)) and not pending,
-        "email_template_action_required": landing_failed,
+        "email_template_action_required": landing_failed or bare_site_landing,
     }
 
 
@@ -1021,6 +1107,8 @@ def _qp_clear(st: Any, *keys: str) -> None:
 
 def _recovery_landing_in_progress(st: Any) -> bool:
     if _recovery_verify_failed(st):
+        return False
+    if _recovery_bare_site_landing(st):
         return False
     diag = auth_recovery_diagnostics(st=st)
     return bool(diag.get("recovery_mode_detected"))
@@ -1066,6 +1154,7 @@ def _clear_recovery_query_params(st: Any) -> None:
         "access_token",
         "refresh_token",
         AUTH_RECOVERY_QUERY_PROMOTED_PARAM,
+        AUTH_BROWSER_QUERY_KEYS_PARAM,
     )
 
 
@@ -1198,12 +1287,53 @@ def _render_recovery_verify_failed(st: Any) -> None:
     st.stop()
 
 
+def _render_recovery_bare_site_landing(st: Any) -> None:
+    st.title("Password reset link missing tokens")
+    diag = auth_recovery_diagnostics(st=st)
+    prefix = str(diag.get("expected_email_href_prefix") or "")
+    site = str(diag.get("supabase_site_url_expected") or "")
+    st.error(
+        "Command Center opened **without any recovery query parameters** (`/` only). "
+        "The reset email link is almost certainly **not** the PKCE `token_hash` template — "
+        "Supabase is likely still sending `{{ .ConfirmationURL }}` or a bare Site URL redirect."
+    )
+    st.markdown(
+        f"""
+**Verify the actual email href** (right-click → Copy link address). It must visibly contain:
+
+- `suite_auth_landing=recovery`
+- `token_hash=`
+- `type=recovery`
+
+**Expected start of href:** `{prefix}<TokenHash>&type=recovery`
+
+**Supabase Site URL must be exactly:** `{site}` (no path, no extra query)
+
+**Reset password template** (use `{{{{ .SiteURL }}}}` — not `{{{{ .ConfirmationURL }}}}`):
+
+```html
+<a href="{{{{ .SiteURL }}}}?suite_auth_landing=recovery&token_hash={{{{.TokenHash}}}}&type=recovery">Reset password</a>
+```
+
+Save the template, then send a **new** reset email.
+"""
+    )
+    render_auth_recovery_diagnostics(st, expanded=True, force=True)
+    if st.button("Back to sign in", key="suite_auth_recovery_bare_back", use_container_width=True):
+        st.session_state.pop(AUTH_LANDING_SNAPSHOT_KEY, None)
+        st.session_state.pop(AUTH_LANDING_QUERY_KEYS_KEY, None)
+        _clear_recovery_query_params(st)
+        st.rerun()
+    st.stop()
+
+
 def _render_recovery_landing_wait(st: Any) -> None:
     st.title("Daniel AI Suite")
     st.info("Processing password reset link…")
     err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
     if err:
         st.error(err)
+    _inject_auth_landing_client_probe(st, force=True)
     render_auth_recovery_diagnostics(st, expanded=True, force=True)
     st.stop()
 
@@ -1340,16 +1470,19 @@ def request_password_reset(email: str, *, redirect_to: str | None = None) -> tup
         import streamlit as st_mod  # noqa: WPS433
 
         st_mod.session_state[AUTH_CONFIGURED_RESET_REDIRECT_KEY] = target
+        st_mod.session_state[AUTH_RESET_EXPECTED_HREF_PREFIX_KEY] = expected_recovery_email_href_prefix(
+            site_url=target
+        )
     except Exception:
         pass
     try:
         auth.reset_password_email(email.strip(), {"redirect_to": target})
+        href_prefix = expected_recovery_email_href_prefix(site_url=target)
         return (
             True,
-            f"Password reset email sent. Redirect target: {target}. "
-            "Ensure Supabase Recovery template adds "
-            "?suite_auth_landing=recovery&token_hash={{ .TokenHash }}&type=recovery "
-            "(see docs/SUPABASE_RECOVERY_EMAIL_TEMPLATE.md).",
+            f"Password reset email sent. redirect_to={target}. "
+            f"Email href must start with: {href_prefix}<TokenHash>&type=recovery "
+            "(Supabase template must use {{ .SiteURL }} + token_hash — see docs/SUPABASE_RECOVERY_EMAIL_TEMPLATE.md).",
         )
     except Exception as exc:
         return False, str(exc)
@@ -1436,9 +1569,13 @@ def render_auth_gate(st: Any) -> bool:
 
     if not _recovery_token_hash_present(st) and not st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
         _inject_auth_landing_client_probe(st)
-        if _qp_get(st, AUTH_LANDING_DIAG_PARAM):
+        if _qp_get(st, AUTH_LANDING_DIAG_PARAM) or _qp_get(st, AUTH_BROWSER_QUERY_KEYS_PARAM):
             _capture_auth_landing_snapshot(st)
             st.rerun()
+
+    if _recovery_bare_site_landing(st):
+        _render_recovery_bare_site_landing(st)
+        return False
 
     if _needs_recovery_query_promotion(st):
         _promote_recovery_query_from_browser(st)
