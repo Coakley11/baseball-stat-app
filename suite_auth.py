@@ -35,6 +35,7 @@ AUTH_LANDING_DIAG_PARAM = "suite_auth_landing_diag"
 AUTH_LANDING_SNAPSHOT_KEY = "_suite_auth_landing_snapshot"
 AUTH_LANDING_QUERY_KEYS_KEY = "_suite_auth_landing_query_keys"
 AUTH_CONFIGURED_RESET_REDIRECT_KEY = "_suite_auth_configured_reset_redirect"
+AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY = "_suite_auth_recovery_verify_attempted"
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -597,7 +598,7 @@ def _bridge_supabase_recovery_hash_to_query(st: Any) -> None:
     """
     if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
         return
-    if _qp_get(st, "type") == "recovery" and _qp_get(st, "token_hash"):
+    if _qp_get(st, "type") == "recovery" and _recovery_token_hash_present(st):
         return
     if _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM) == "none":
         return
@@ -657,7 +658,7 @@ def _needs_recovery_hash_bridge(st: Any) -> bool:
         return False
     if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
         return False
-    if _qp_get(st, "type") == "recovery" and _qp_get(st, "token_hash"):
+    if _qp_get(st, "type") == "recovery" and _recovery_token_hash_present(st):
         return False
     return True
 
@@ -672,6 +673,41 @@ def _qp_get(st: Any, name: str) -> str:
     if isinstance(raw, list):
         return str(raw[0] or "").strip()
     return str(raw).strip()
+
+
+def _recovery_token_hash_from_query(st: Any) -> str:
+    """
+    Read PKCE recovery token_hash from query params.
+
+    Email templates that append ``?token_hash=`` to a RedirectTo URL that already
+    contains ``?suite_auth_landing=recovery`` produce a malformed query where
+    token_hash is embedded in the landing param value — parse that fallback too.
+    """
+    direct = _qp_get(st, "token_hash")
+    if direct:
+        return direct
+    landing = _qp_get(st, AUTH_LANDING_HINT_PARAM)
+    if landing and "token_hash=" in landing:
+        from urllib.parse import unquote
+
+        tail = landing.split("token_hash=", 1)[1]
+        token = tail.split("&")[0].split("?")[0].strip()
+        if token:
+            return unquote(token)
+    return ""
+
+
+def _recovery_type_from_query(st: Any) -> str:
+    recovery_type = _qp_get(st, "type")
+    if recovery_type:
+        return recovery_type
+    if _recovery_token_hash_from_query(st):
+        return "recovery"
+    return ""
+
+
+def _recovery_token_hash_present(st: Any) -> bool:
+    return bool(_recovery_token_hash_from_query(st))
 
 
 def _safe_query_param_keys(st: Any) -> list[str]:
@@ -773,7 +809,7 @@ def _recovery_landing_failed(st: Any) -> bool:
         return False
     if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
         return False
-    if _qp_get(st, "type") == "recovery" and _qp_get(st, "token_hash"):
+    if _qp_get(st, "type") == "recovery" and _recovery_token_hash_present(st):
         return False
     if _qp_get(st, "code"):
         return False
@@ -804,7 +840,8 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
             return {"available": False}
     ss = st.session_state
     recovery_query = _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1"
-    token_hash_query = _qp_get(st, "type") == "recovery" and bool(_qp_get(st, "token_hash"))
+    token_hash_query = _recovery_type_from_query(st) == "recovery" and _recovery_token_hash_present(st)
+    token_hash_parsed = _recovery_token_hash_from_query(st)
     pkce_code_query = bool(_qp_get(st, "code"))
     access_in_query = bool(_qp_get(st, "access_token"))
     refresh_in_query = bool(_qp_get(st, "refresh_token"))
@@ -835,6 +872,10 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
         "client_landing_snapshot": landing_snapshot,
         "recovery_token_in_query": recovery_query and access_query and refresh_query,
         "recovery_token_hash_in_query": token_hash_query,
+        "recovery_token_hash_parsed": bool(token_hash_parsed),
+        "recovery_token_hash_malformed_landing": bool(
+            token_hash_parsed and not _qp_get(st, "token_hash")
+        ),
         "recovery_pkce_code_in_query": pkce_code_query,
         "recovery_access_token_in_query": access_in_query and refresh_in_query,
         "recovery_hash_probe": hash_probe or "",
@@ -879,6 +920,8 @@ def _qp_clear(st: Any, *keys: str) -> None:
 
 
 def _recovery_landing_in_progress(st: Any) -> bool:
+    if _recovery_verify_failed(st):
+        return False
     diag = auth_recovery_diagnostics(st=st)
     return bool(diag.get("recovery_mode_detected"))
 
@@ -893,14 +936,46 @@ def _mark_recovery_session(session_state: dict[str, Any], *, user: Any | None, t
     session_state.pop(AUTH_RECOVERY_LAST_ERROR_KEY, None)
 
 
+def _recovery_verify_failed(st: Any) -> bool:
+    """True when token_hash was parsed but verify_otp did not establish a recovery session."""
+    if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+        return False
+    err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
+    if not err:
+        return False
+    return _recovery_token_hash_present(st) or bool(
+        st.session_state.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY)
+    )
+
+
+def _clear_recovery_query_params(st: Any) -> None:
+    _qp_clear(
+        st,
+        "type",
+        "token_hash",
+        AUTH_LANDING_HINT_PARAM,
+        AUTH_LANDING_DIAG_PARAM,
+        AUTH_RECOVERY_HASH_PROBE_PARAM,
+        AUTH_RECOVERY_FLAG_PARAM,
+        AUTH_RECOVERY_ACCESS_PARAM,
+        AUTH_RECOVERY_REFRESH_PARAM,
+        "code",
+        "access_token",
+        "refresh_token",
+    )
+
+
 def _consume_auth_recovery_token_hash(st: Any) -> bool:
     """PKCE-style recovery links put token_hash and type=recovery in the query string."""
-    if _qp_get(st, "type") != "recovery":
-        return False
-    token_hash = _qp_get(st, "token_hash")
+    token_hash = _recovery_token_hash_from_query(st)
     if not token_hash:
         return False
+    if _recovery_type_from_query(st) != "recovery":
+        return False
     session_state = st.session_state
+    if session_state.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY) == token_hash:
+        return False
+    session_state[AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY] = token_hash
     try:
         auth = _create_fresh_supabase_client().auth
         resp = auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
@@ -908,12 +983,14 @@ def _consume_auth_recovery_token_hash(st: Any) -> bool:
         tokens = _tokens_from_auth_response(resp)
         if not tokens:
             session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = "Recovery verify_otp returned no session tokens."
+            _clear_recovery_query_params(st)
             return False
         _mark_recovery_session(session_state, user=user, tokens=tokens)
     except Exception as exc:
         session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = str(exc)
+        _clear_recovery_query_params(st)
         return False
-    _qp_clear(st, "type", "token_hash", AUTH_RECOVERY_HASH_PROBE_PARAM)
+    _clear_recovery_query_params(st)
     return True
 
 
@@ -995,6 +1072,24 @@ def _consume_auth_recovery_implicit_query(st: Any) -> bool:
         return False
     _qp_clear(st, "type", "access_token", "refresh_token", AUTH_RECOVERY_HASH_PROBE_PARAM)
     return True
+
+
+def _render_recovery_verify_failed(st: Any) -> None:
+    st.title("Password reset verification failed")
+    err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
+    st.error(err or "Could not verify the recovery link.")
+    st.markdown(
+        "Request a **new** reset email. If this keeps failing, confirm the Recovery template uses "
+        "`?suite_auth_landing=recovery&token_hash=...` (see `docs/SUPABASE_RECOVERY_EMAIL_TEMPLATE.md`)."
+    )
+    render_auth_recovery_diagnostics(st, expanded=True, force=True)
+    if st.button("Back to sign in", key="suite_auth_recovery_verify_failed_back", use_container_width=True):
+        st.session_state.pop(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY, None)
+        st.session_state.pop(AUTH_RECOVERY_LAST_ERROR_KEY, None)
+        st.session_state.pop(AUTH_LANDING_SNAPSHOT_KEY, None)
+        _clear_recovery_query_params(st)
+        st.rerun()
+    st.stop()
 
 
 def _render_recovery_landing_wait(st: Any) -> None:
@@ -1126,7 +1221,9 @@ def request_password_reset(email: str, *, redirect_to: str | None = None) -> tup
         auth = _create_fresh_supabase_client().auth
     except Exception:
         return False, _auth_not_configured_message()
-    target = str(redirect_to or auth_password_reset_redirect_url() or "").strip().rstrip("/")
+    target = str(
+        redirect_to or auth_password_reset_redirect_url(with_landing_hint=False) or ""
+    ).strip().rstrip("/")
     if not target:
         return (
             False,
@@ -1144,7 +1241,9 @@ def request_password_reset(email: str, *, redirect_to: str | None = None) -> tup
         return (
             True,
             f"Password reset email sent. Redirect target: {target}. "
-            "Ensure Supabase Recovery template uses PKCE token_hash (see docs/SUPABASE_RECOVERY_EMAIL_TEMPLATE.md).",
+            "Ensure Supabase Recovery template adds "
+            "?suite_auth_landing=recovery&token_hash={{ .TokenHash }}&type=recovery "
+            "(see docs/SUPABASE_RECOVERY_EMAIL_TEMPLATE.md).",
         )
     except Exception as exc:
         return False, str(exc)
@@ -1227,6 +1326,10 @@ def render_auth_gate(st: Any) -> bool:
 
     if _recovery_landing_failed(st):
         _render_recovery_landing_failed(st)
+        return False
+
+    if _recovery_verify_failed(st):
+        _render_recovery_verify_failed(st)
         return False
 
     if _needs_recovery_hash_bridge(st):
