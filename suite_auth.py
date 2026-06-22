@@ -681,19 +681,74 @@ def _browser_query_keys_from_snapshot(snapshot: str) -> list[str]:
     return []
 
 
+def _recovery_landing_signal_present(st: Any) -> bool:
+    """True only when URL or snapshot indicates a password-reset landing (not a normal homepage visit)."""
+    if _qp_get(st, AUTH_LANDING_HINT_PARAM) == "recovery":
+        return True
+    if _qp_get(st, "type") == "recovery":
+        return True
+    if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
+        return True
+    if _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM) == "recovery":
+        return True
+    if _qp_get(st, "code") or _recovery_token_hash_present(st):
+        return True
+    if _qp_get(st, "access_token") and _qp_get(st, "refresh_token"):
+        return True
+    snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or _qp_get(st, AUTH_LANDING_DIAG_PARAM) or "")
+    for token in ("th:1", "rec:1", "code:1", "at:1"):
+        if token in snap:
+            return True
+    if _qp_get(st, AUTH_LANDING_HINT_PARAM) or _qp_get(st, "token_hash"):
+        return True
+    return False
+
+
+def _clear_stale_recovery_state(st: Any) -> None:
+    """Drop recovery-only session keys when this is a normal visit (bare homepage)."""
+    ss = st.session_state
+    for key in (
+        AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY,
+        AUTH_LANDING_SNAPSHOT_KEY,
+        AUTH_LANDING_QUERY_KEYS_KEY,
+        AUTH_RECOVERY_LAST_ERROR_KEY,
+        AUTH_CONFIGURED_RESET_REDIRECT_KEY,
+        AUTH_RESET_EXPECTED_HREF_PREFIX_KEY,
+    ):
+        ss.pop(key, None)
+    _clear_recovery_query_params(st)
+
+
+def _recovery_token_query_param_keys(st: Any) -> set[str]:
+    keys = set(_safe_query_param_keys(st))
+    token_keys = {
+        "token_hash",
+        "type",
+        "code",
+        "access_token",
+        "refresh_token",
+        AUTH_RECOVERY_FLAG_PARAM,
+        AUTH_RECOVERY_ACCESS_PARAM,
+        AUTH_RECOVERY_REFRESH_PARAM,
+    }
+    return keys.intersection(token_keys)
+
+
 def _recovery_bare_site_landing(st: Any) -> bool:
     """
-    True when neither server nor browser URL contains recovery query params.
+    True when a reset landing was signaled but neither server nor browser has recovery tokens.
 
-    Usually means the reset email href still uses ConfirmationURL / bare Site URL.
+    Not triggered on a normal bare homepage visit (no recovery query hint).
     """
+    if not _recovery_landing_signal_present(st):
+        return False
     if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
         return False
-    if _recovery_token_hash_present(st) or _safe_query_param_keys(st):
+    if _recovery_token_hash_present(st) or _recovery_token_query_param_keys(st):
         return False
     browser_keys_raw = _qp_get(st, AUTH_BROWSER_QUERY_KEYS_PARAM)
     if browser_keys_raw and browser_keys_raw != "none":
-        recovery_keys = {"token_hash", "type", "suite_auth_landing", "code", "access_token"}
+        recovery_keys = {"token_hash", "type", "code", "access_token", "refresh_token"}
         if recovery_keys.intersection(browser_keys_raw.split("|")):
             return False
     snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or "")
@@ -702,7 +757,7 @@ def _recovery_bare_site_landing(st: Any) -> bool:
             return False
         browser_keys = _browser_query_keys_from_snapshot(snap)
         if browser_keys:
-            recovery_keys = {"token_hash", "type", "suite_auth_landing", "code", "access_token"}
+            recovery_keys = {"token_hash", "type", "code", "access_token", "refresh_token"}
             if recovery_keys.intersection(browser_keys):
                 return False
         return "keys:none" in snap or "th:0" in snap
@@ -712,6 +767,9 @@ def _recovery_bare_site_landing(st: Any) -> bool:
 
 
 def _needs_recovery_hash_bridge(st: Any) -> bool:
+    """Promote #access_token hash fragments — only when recovery landing was signaled."""
+    if not _recovery_landing_signal_present(st):
+        return False
     if _recovery_bare_site_landing(st):
         return False
     probe = _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM)
@@ -724,7 +782,11 @@ def _needs_recovery_hash_bridge(st: Any) -> bool:
     snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or "")
     if "th:1" in snap or _needs_recovery_query_promotion(st):
         return False
-    return True
+    if probe == "recovery":
+        return True
+    if "rec:1" in snap:
+        return True
+    return False
 
 
 def _read_query_param(st: Any, name: str) -> str:
@@ -789,6 +851,8 @@ def _needs_recovery_query_promotion(st: Any) -> bool:
     Browser URL shows token_hash (landing snapshot th:1) but Streamlit query_params
     did not surface token_hash — normalize via client-side location.replace.
     """
+    if not _recovery_landing_signal_present(st):
+        return False
     if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
         return False
     if _recovery_token_hash_from_query(st):
@@ -1023,14 +1087,16 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
     landing_snapshot = str(ss.get(AUTH_LANDING_SNAPSHOT_KEY) or _qp_get(st, AUTH_LANDING_DIAG_PARAM) or "")
     query_keys = ss.get(AUTH_LANDING_QUERY_KEYS_KEY) or _safe_query_param_keys(st)
     pending = bool(ss.get(AUTH_RECOVERY_PENDING_KEY))
-    recovery_mode = (
-        pending
-        or recovery_query
-        or token_hash_query
-        or pkce_code_query
-        or (access_in_query and refresh_in_query)
-        or hash_probe == "recovery"
-        or landing_hint == "recovery"
+    recovery_mode = pending or (
+        _recovery_landing_signal_present(st)
+        and (
+            recovery_query
+            or token_hash_query
+            or pkce_code_query
+            or (access_in_query and refresh_in_query)
+            or hash_probe == "recovery"
+            or landing_hint == "recovery"
+        )
     )
     landing_failed = _recovery_landing_failed(st) if landing_hint == "recovery" else False
     verify_attempted = bool(ss.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY))
@@ -1070,6 +1136,7 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
         "recovery_query_promotion_needed": query_promotion_needed,
         "recovery_verify_attempted": verify_attempted,
         "recovery_bare_site_landing": bare_site_landing,
+        "recovery_landing_signal_present": _recovery_landing_signal_present(st),
         "last_recovery_error": str(ss.get(AUTH_RECOVERY_LAST_ERROR_KEY) or ""),
         "authenticated_before_recovery_panel": bool(ss.get(AUTH_SESSION_KEY)) and not pending,
         "email_template_action_required": landing_failed or bare_site_landing,
@@ -1106,6 +1173,8 @@ def _qp_clear(st: Any, *keys: str) -> None:
 
 
 def _recovery_landing_in_progress(st: Any) -> bool:
+    if not _recovery_landing_signal_present(st):
+        return False
     if _recovery_verify_failed(st):
         return False
     if _recovery_bare_site_landing(st):
@@ -1333,8 +1402,29 @@ def _render_recovery_landing_wait(st: Any) -> None:
     err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
     if err:
         st.error(err)
+    st.caption(
+        "If this screen does not advance within a few seconds, **do not keep clicking the email link**. "
+        "Open an incognito window, request a **new** reset email, right-click the link → **Copy link address**, "
+        "and paste that URL (redact the token_hash value) before clicking."
+    )
+    diag = auth_recovery_diagnostics(st=st)
+    st.markdown(
+        "**Recovery status (safe):** "
+        f"server keys={diag.get('query_param_keys') or []} · "
+        f"browser keys={diag.get('browser_query_keys') or []} · "
+        f"token_parsed={diag.get('recovery_token_hash_parsed')} · "
+        f"verify_attempted={diag.get('recovery_verify_attempted')} · "
+        f"bare_landing={diag.get('recovery_bare_site_landing')}"
+    )
     _inject_auth_landing_client_probe(st, force=True)
     render_auth_recovery_diagnostics(st, expanded=True, force=True)
+    if st.button("Back to sign in", key="suite_auth_recovery_wait_back", use_container_width=True):
+        st.session_state.pop(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY, None)
+        st.session_state.pop(AUTH_RECOVERY_LAST_ERROR_KEY, None)
+        st.session_state.pop(AUTH_LANDING_SNAPSHOT_KEY, None)
+        st.session_state.pop(AUTH_LANDING_QUERY_KEYS_KEY, None)
+        _clear_recovery_query_params(st)
+        st.rerun()
     st.stop()
 
 
@@ -1567,29 +1657,32 @@ def render_auth_gate(st: Any) -> bool:
         _render_recovery_verify_failed(st)
         return False
 
-    if not _recovery_token_hash_present(st) and not st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
-        _inject_auth_landing_client_probe(st)
-        if _qp_get(st, AUTH_LANDING_DIAG_PARAM) or _qp_get(st, AUTH_BROWSER_QUERY_KEYS_PARAM):
-            _capture_auth_landing_snapshot(st)
-            st.rerun()
+    if _recovery_landing_signal_present(st):
+        if not _recovery_token_hash_present(st) and not st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+            _inject_auth_landing_client_probe(st)
+            if _qp_get(st, AUTH_LANDING_DIAG_PARAM) or _qp_get(st, AUTH_BROWSER_QUERY_KEYS_PARAM):
+                _capture_auth_landing_snapshot(st)
+                st.rerun()
 
-    if _recovery_bare_site_landing(st):
-        _render_recovery_bare_site_landing(st)
-        return False
+        if _recovery_bare_site_landing(st):
+            _render_recovery_bare_site_landing(st)
+            return False
 
-    if _needs_recovery_query_promotion(st):
-        _promote_recovery_query_from_browser(st)
-        _render_recovery_landing_wait(st)
-        return False
+        if _needs_recovery_query_promotion(st):
+            _promote_recovery_query_from_browser(st)
+            _render_recovery_landing_wait(st)
+            return False
 
-    if _needs_recovery_hash_bridge(st):
-        _bridge_supabase_recovery_hash_to_query(st)
-        _render_recovery_landing_wait(st)
-        return False
+        if _needs_recovery_hash_bridge(st):
+            _bridge_supabase_recovery_hash_to_query(st)
+            _render_recovery_landing_wait(st)
+            return False
 
-    if _recovery_landing_in_progress(st):
-        _render_recovery_landing_wait(st)
-        return False
+        if _recovery_landing_in_progress(st):
+            _render_recovery_landing_wait(st)
+            return False
+    else:
+        _clear_stale_recovery_state(st)
 
     restore_auth_session(st.session_state, st=st)
     if is_authenticated(st.session_state):
