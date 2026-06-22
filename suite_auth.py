@@ -36,6 +36,7 @@ AUTH_LANDING_SNAPSHOT_KEY = "_suite_auth_landing_snapshot"
 AUTH_LANDING_QUERY_KEYS_KEY = "_suite_auth_landing_query_keys"
 AUTH_CONFIGURED_RESET_REDIRECT_KEY = "_suite_auth_configured_reset_redirect"
 AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY = "_suite_auth_recovery_verify_attempted"
+AUTH_RECOVERY_QUERY_PROMOTED_PARAM = "suite_auth_recovery_promoted"
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -212,6 +213,14 @@ def _tokens_from_auth_response(resp: Any) -> dict[str, Any]:
             "refresh_token": str(refresh),
             "expires_at": int(getattr(resp, "expires_at", None) or 0),
         }
+    # supabase-py AuthResponse (Pydantic) — session may need model_dump on edge builds
+    if session is not None and hasattr(session, "model_dump"):
+        try:
+            tokens = _tokens_from_session_obj(session.model_dump())
+            if tokens:
+                return tokens
+        except Exception:
+            pass
     return {}
 
 
@@ -660,19 +669,32 @@ def _needs_recovery_hash_bridge(st: Any) -> bool:
         return False
     if _qp_get(st, "type") == "recovery" and _recovery_token_hash_present(st):
         return False
+    snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or "")
+    if "th:1" in snap or _needs_recovery_query_promotion(st):
+        return False
     return True
 
 
-def _qp_get(st: Any, name: str) -> str:
+def _read_query_param(st: Any, name: str) -> str:
     try:
         raw = st.query_params.get(name)
     except Exception:
-        return ""
+        raw = None
+    if raw is None:
+        try:
+            legacy = st.experimental_get_query_params()
+            raw = legacy.get(name)
+        except Exception:
+            raw = None
     if raw is None:
         return ""
     if isinstance(raw, list):
         return str(raw[0] or "").strip()
     return str(raw).strip()
+
+
+def _qp_get(st: Any, name: str) -> str:
+    return _read_query_param(st, name)
 
 
 def _recovery_token_hash_from_query(st: Any) -> str:
@@ -708,6 +730,76 @@ def _recovery_type_from_query(st: Any) -> str:
 
 def _recovery_token_hash_present(st: Any) -> bool:
     return bool(_recovery_token_hash_from_query(st))
+
+
+def _needs_recovery_query_promotion(st: Any) -> bool:
+    """
+    Browser URL shows token_hash (landing snapshot th:1) but Streamlit query_params
+    did not surface token_hash — normalize via client-side location.replace.
+    """
+    if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+        return False
+    if _recovery_token_hash_from_query(st):
+        return False
+    if _qp_get(st, AUTH_RECOVERY_QUERY_PROMOTED_PARAM) == "done":
+        return False
+    snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or _qp_get(st, AUTH_LANDING_DIAG_PARAM) or "")
+    if "th:1" in snap:
+        return True
+    if _qp_get(st, AUTH_LANDING_HINT_PARAM) == "recovery" and _qp_get(st, "type") == "recovery":
+        return True
+    return False
+
+
+def _promote_recovery_query_from_browser(st: Any) -> None:
+    """Re-write recovery query params from window.location so Streamlit can read them."""
+    if _qp_get(st, AUTH_RECOVERY_QUERY_PROMOTED_PARAM) == "done":
+        return
+    try:
+        import streamlit.components.v1 as components
+    except ImportError:
+        return
+    components.html(
+        """
+<script>
+(function () {
+  function pickWindow() {
+    try { if (window.top && window.top.location) return window.top; } catch (e) {}
+    try { if (window.parent && window.parent.location) return window.parent; } catch (e) {}
+    return window;
+  }
+  try {
+    var w = pickWindow();
+    var href = String(w.location.href || "").split("#")[0];
+    var u = new URL(href);
+    var th = u.searchParams.get("token_hash") || "";
+    var typ = u.searchParams.get("type") || "";
+    if (!th) {
+      var landing = u.searchParams.get("suite_auth_landing") || "";
+      if (landing.indexOf("token_hash=") !== -1) {
+        var tail = landing.split("token_hash=")[1];
+        th = tail.split("&")[0].split("?")[0];
+      }
+    }
+    if (typ !== "recovery" || !th) {
+      u.searchParams.set("suite_auth_recovery_promoted", "done");
+      w.location.replace(u.toString());
+      return;
+    }
+    u.searchParams.set("suite_auth_landing", "recovery");
+    u.searchParams.set("token_hash", th);
+    u.searchParams.set("type", "recovery");
+    u.searchParams.set("suite_auth_recovery_promoted", "done");
+    u.searchParams.delete("suite_auth_landing_diag");
+    u.searchParams.delete("suite_auth_hash_probe");
+    w.location.replace(u.toString());
+  } catch (e) {}
+})();
+</script>
+        """.strip(),
+        height=0,
+        width=0,
+    )
 
 
 def _safe_query_param_keys(st: Any) -> list[str]:
@@ -760,6 +852,10 @@ def _inject_auth_landing_client_probe(st: Any) -> None:
     if _qp_get(st, AUTH_LANDING_DIAG_PARAM):
         return
     if _qp_get(st, AUTH_RECOVERY_FLAG_PARAM) == "1":
+        return
+    if _recovery_token_hash_present(st):
+        return
+    if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
         return
     try:
         import streamlit.components.v1 as components
@@ -863,6 +959,8 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
     )
     configured_redirect = str(ss.get(AUTH_CONFIGURED_RESET_REDIRECT_KEY) or auth_password_reset_redirect_url())
     landing_failed = _recovery_landing_failed(st) if landing_hint == "recovery" else False
+    verify_attempted = bool(ss.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY))
+    query_promotion_needed = _needs_recovery_query_promotion(st)
     return {
         "available": True,
         "configured_reset_redirect_to": configured_redirect,
@@ -884,6 +982,8 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
         "set_password_panel_enabled": pending,
         "hash_bridge_waiting": hash_probe == "recovery" and not pending,
         "recovery_landing_failed": landing_failed,
+        "recovery_query_promotion_needed": query_promotion_needed,
+        "recovery_verify_attempted": verify_attempted,
         "last_recovery_error": str(ss.get(AUTH_RECOVERY_LAST_ERROR_KEY) or ""),
         "authenticated_before_recovery_panel": bool(ss.get(AUTH_SESSION_KEY)) and not pending,
         "email_template_action_required": landing_failed,
@@ -941,11 +1041,14 @@ def _recovery_verify_failed(st: Any) -> bool:
     if st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
         return False
     err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
-    if not err:
-        return False
-    return _recovery_token_hash_present(st) or bool(
-        st.session_state.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY)
-    )
+    attempted = st.session_state.get(AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY)
+    if err:
+        return bool(attempted) or _recovery_token_hash_present(st)
+    if attempted and not _recovery_token_hash_present(st):
+        snap = str(st.session_state.get(AUTH_LANDING_SNAPSHOT_KEY) or "")
+        if "th:1" in snap:
+            return True
+    return False
 
 
 def _clear_recovery_query_params(st: Any) -> None:
@@ -962,6 +1065,7 @@ def _clear_recovery_query_params(st: Any) -> None:
         "code",
         "access_token",
         "refresh_token",
+        AUTH_RECOVERY_QUERY_PROMOTED_PARAM,
     )
 
 
@@ -977,7 +1081,8 @@ def _consume_auth_recovery_token_hash(st: Any) -> bool:
         return False
     session_state[AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY] = token_hash
     try:
-        auth = _create_fresh_supabase_client().auth
+        client = _create_fresh_supabase_client()
+        auth = client.auth
         resp = auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
         user = _user_from_auth_response(resp)
         tokens = _tokens_from_auth_response(resp)
@@ -985,6 +1090,7 @@ def _consume_auth_recovery_token_hash(st: Any) -> bool:
             session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = "Recovery verify_otp returned no session tokens."
             _clear_recovery_query_params(st)
             return False
+        session_state[AUTH_CLIENT_KEY] = client
         _mark_recovery_session(session_state, user=user, tokens=tokens)
     except Exception as exc:
         session_state[AUTH_RECOVERY_LAST_ERROR_KEY] = str(exc)
@@ -1303,14 +1409,10 @@ def render_auth_gate(st: Any) -> bool:
     if not is_auth_enabled():
         return True
 
-    _inject_auth_landing_client_probe(st)
-    if _qp_get(st, AUTH_LANDING_DIAG_PARAM):
-        _capture_auth_landing_snapshot(st)
-        st.rerun()
-
     if _qp_get(st, AUTH_RECOVERY_HASH_PROBE_PARAM) == "none":
         _qp_clear(st, AUTH_RECOVERY_HASH_PROBE_PARAM)
 
+    # Consume recovery tokens before landing probe can trigger an early rerun.
     if _consume_auth_recovery_token_hash(st):
         st.rerun()
     if _consume_auth_recovery_code(st):
@@ -1330,6 +1432,17 @@ def render_auth_gate(st: Any) -> bool:
 
     if _recovery_verify_failed(st):
         _render_recovery_verify_failed(st)
+        return False
+
+    if not _recovery_token_hash_present(st) and not st.session_state.get(AUTH_RECOVERY_PENDING_KEY):
+        _inject_auth_landing_client_probe(st)
+        if _qp_get(st, AUTH_LANDING_DIAG_PARAM):
+            _capture_auth_landing_snapshot(st)
+            st.rerun()
+
+    if _needs_recovery_query_promotion(st):
+        _promote_recovery_query_from_browser(st)
+        _render_recovery_landing_wait(st)
         return False
 
     if _needs_recovery_hash_bridge(st):
