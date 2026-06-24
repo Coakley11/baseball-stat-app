@@ -466,6 +466,14 @@ def publish_shared_room_runtime(
 
     repair_stale_live_draft_progress(runtime)
     try:
+        from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
+
+        pool = runtime.get("pool")
+        if pool is not None and hasattr(pool, "columns"):
+            record_scoring_pipeline_stage(session, "restored", pool)
+    except ImportError:
+        pass
+    try:
         import json
 
         session["_shared_room_last_payload_bytes"] = len(

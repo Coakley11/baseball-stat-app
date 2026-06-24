@@ -211,6 +211,7 @@ def set_active_participant(
     session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
     state = participant_state_for_room(session, code)
     state["joined_at"] = _utc_now_iso()
+    clear_participant_left_room(session, code)
     _persist_room_membership(session, room_code=code, participant_id=pid, assigned_team=team)
     return state
 
@@ -372,32 +373,91 @@ def register_participant_in_shared_document(
     return out
 
 
+def participant_has_left_room(session: dict[str, Any], room_code: str) -> bool:
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return False
+    room_state = participant_state_for_room(session, code)
+    by_pid = room_state.get("by_participant")
+    if isinstance(by_pid, dict):
+        pid = str(resolve_participant_id(session)).strip()
+        slot = by_pid.get(pid)
+        if isinstance(slot, dict) and str(slot.get("left_at") or "").strip():
+            return True
+        for slot in by_pid.values():
+            if isinstance(slot, dict) and str(slot.get("left_at") or "").strip():
+                return True
+    return False
+
+
+def mark_participant_left_room(
+    session: dict[str, Any],
+    room_code: str,
+    *,
+    participant_id: str | None = None,
+) -> None:
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return
+    pid = str(participant_id or session.get(ACTIVE_PARTICIPANT_ID_KEY) or resolve_participant_id(session)).strip()
+    room_state = participant_state_for_room(session, code)
+    by_pid = room_state.get("by_participant")
+    if not isinstance(by_pid, dict):
+        by_pid = {}
+        room_state["by_participant"] = by_pid
+    slot = by_pid.get(pid)
+    if not isinstance(slot, dict):
+        slot = {"participant_id": pid}
+        by_pid[pid] = slot
+    slot["left_at"] = _utc_now_iso()
+    slot.pop("joined_at", None)
+
+
+def clear_participant_left_room(session: dict[str, Any], room_code: str) -> None:
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return
+    slot = participant_workflow_slot(session, code)
+    slot.pop("left_at", None)
+    slot["joined_at"] = _utc_now_iso()
+
+
 def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     """Rehydrate active room code + team from persisted workspace blob after refresh."""
     pid = resolve_participant_id(session)
     code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     if code:
-        _hydrate_team_from_membership(session, code, participant_id=pid)
-        return code
+        if participant_has_left_room(session, code):
+            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+            code = ""
+        else:
+            _hydrate_team_from_membership(session, code, participant_id=pid)
+            return code
 
     membership = session.get(MEMBERSHIP_KEY)
     if isinstance(membership, dict):
         for raw_code, room_mem in membership.items():
             room_code = str(raw_code or "").strip().upper()
-            if not room_code:
+            if not room_code or participant_has_left_room(session, room_code):
                 continue
             team = membership_team_for_participant(session, room_code, participant_id=pid)
             if team:
                 session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
                 session[ACTIVE_PARTICIPANT_ID_KEY] = pid
                 session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+                try:
+                    from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+
+                    note_prepare_global_rehydrate(session, room_code=room_code, source="membership_blob")
+                except ImportError:
+                    pass
                 return room_code
 
     bucket = session.get(PARTICIPANT_STATE_KEY)
     if isinstance(bucket, dict):
         for raw_code, state in bucket.items():
             room_code = str(raw_code or "").strip().upper()
-            if not room_code or not isinstance(state, dict):
+            if not room_code or not isinstance(state, dict) or participant_has_left_room(session, room_code):
                 continue
             legacy_pid = str(state.get("participant_id") or "").strip()
             team = membership_team_for_participant(session, room_code, participant_id=pid)
@@ -407,6 +467,12 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
                 session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
                 session[ACTIVE_PARTICIPANT_ID_KEY] = pid
                 session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+                try:
+                    from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+
+                    note_prepare_global_rehydrate(session, room_code=room_code, source="participant_state_blob")
+                except ImportError:
+                    pass
                 return room_code
     return ""
 

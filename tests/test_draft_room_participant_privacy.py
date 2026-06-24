@@ -166,10 +166,12 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
 
     def test_leave_shared_draft_room_clears_runtime_state(self) -> None:
         from draft_room_context import leave_shared_draft_room
+        from draft_room_participant_state import ACTIVE_PARTICIPANT_ID_KEY, participant_has_left_room
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
         session: dict = {
             "active_shared_draft_room_code": "ABC123",
+            ACTIVE_PARTICIPANT_ID_KEY: "auth-guest-uuid",
             "draft_room_shared_meta": {"revision": 2},
             "draft_room_participant_team": "Team 2",
             "draft_room_participant_id": "auth-guest-uuid",
@@ -180,6 +182,29 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
         self.assertNotIn("active_shared_draft_room_code", session)
         self.assertNotIn(LIVE_DRAFT_ROOM_KEY, session)
         self.assertEqual(session.get(DRAFT_QUEUE_KEY), [])
+        self.assertTrue(participant_has_left_room(session, "ABC123"))
+
+    def test_restore_skips_room_user_explicitly_left(self) -> None:
+        from draft_room_context import prepare_global_draft_context
+        from draft_room_participant_state import mark_participant_left_room, restore_persisted_shared_room_membership
+
+        session: dict = {
+            AUTH_USER_ID_KEY: "auth-guest-uuid",
+            "draft_room_participant_membership": {
+                "ABC123": {
+                    "auth-guest-uuid": {
+                        "participant_id": "auth-guest-uuid",
+                        "assigned_team": "Team 2",
+                    }
+                }
+            },
+        }
+        mark_participant_left_room(session, "ABC123")
+        self.assertEqual(restore_persisted_shared_room_membership(session), "")
+        session["active_shared_draft_room_code"] = "ABC123"
+        self.assertEqual(restore_persisted_shared_room_membership(session), "")
+        prepare_global_draft_context(session)
+        self.assertNotIn("active_shared_draft_room_code", session)
 
 
 if __name__ == "__main__":

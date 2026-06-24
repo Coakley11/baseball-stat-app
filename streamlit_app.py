@@ -17453,6 +17453,12 @@ if active_page == "Live Draft Room":
                     st.rerun()
         if render_shared_draft_room_panel(st, st.session_state):
             st.rerun()
+        try:
+            from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
+
+            render_runtime_diagnostic_table(st, st.session_state)
+        except ImportError:
+            pass
     except ImportError:
         pass
     apply_pending_page_transfer(active_page)
@@ -17967,23 +17973,25 @@ if active_page == "Live Draft Room":
         total_picks = len(room.get("pick_order", []))
         picks_done = len(room.get("draft_board", []))
         team_list = list(room.get("teams", []))
-        user_team = cfg.get("user_team") or (team_list[0] if team_list else "")
+        user_team = str(cfg.get("user_team") or cfg.get("your_team") or "").strip()
+        if not user_team and team_list:
+            user_team = str(team_list[0])
         try:
-            from draft_room_context import is_multiplayer_draft_active, recommendation_team
+            from draft_room_context import is_multiplayer_draft_active
 
             _multiplayer_draft = is_multiplayer_draft_active(st.session_state)
         except ImportError:
             _multiplayer_draft = False
-            recommendation_team = None  # type: ignore[assignment,misc]
         if team_list:
             if _multiplayer_draft:
-                user_team = (recommendation_team(st.session_state) if recommendation_team else "") or user_team
+                try:
+                    from draft_room_context import active_participant_team
+
+                    pteam = str(active_participant_team(st.session_state) or "").strip()
+                except ImportError:
+                    pteam = ""
+                user_team = pteam or "—"
                 st.markdown(f"**Your team:** {user_team} *(shared room assignment)*")
-                cfg["user_team"] = user_team
-                cfg["your_team"] = user_team
-                room["config"]["user_team"] = user_team
-                room["config"]["your_team"] = user_team
-                st.session_state["room_your_team"] = user_team
             else:
                 def _live_draft_team_changed():
                     try:
@@ -18123,6 +18131,13 @@ if active_page == "Live Draft Room":
                 top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
                     room, top_n=6, team=_rec_team
                 )
+                try:
+                    from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
+
+                    available = live_draft_get_available(room)
+                    record_scoring_pipeline_stage(st.session_state, "displayed", available)
+                except Exception:
+                    pass
                 try:
                     from applied_math_context import cache_live_draft_ami_context
 

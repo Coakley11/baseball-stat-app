@@ -431,6 +431,18 @@ def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict
         ).strip()
         if code:
             return False
+        try:
+            from draft_room_participant_state import participant_has_left_room
+
+            for raw_code in (
+                session.get("active_shared_draft_room_code"),
+                state.get("active_shared_draft_room_code"),
+            ):
+                rc = str(raw_code or "").strip().upper()
+                if rc and participant_has_left_room(session, rc):
+                    return False
+        except ImportError:
+            pass
     except ImportError:
         pass
     if is_live_draft_locally_dirty(session):

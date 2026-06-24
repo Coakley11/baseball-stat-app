@@ -95,9 +95,7 @@ def get_active_fantasy_team(session: dict[str, Any]) -> str:
         from draft_room_context import is_multiplayer_draft_active, recommendation_team
 
         if is_multiplayer_draft_active(session):
-            team = recommendation_team(session)
-            if team:
-                return team
+            return str(recommendation_team(session) or "").strip()
     except ImportError:
         pass
     if active_fantasy_team_source(session) == "live_draft":

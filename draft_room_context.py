@@ -94,6 +94,13 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
 
     restored_code = restore_persisted_shared_room_membership(session)
     try:
+        from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+
+        if restored_code:
+            note_prepare_global_rehydrate(session, room_code=str(restored_code), source="restore_persisted_membership")
+    except ImportError:
+        pass
+    try:
         from draft_room_join_trace import trace_join_step
 
         if restored_code:
@@ -264,6 +271,12 @@ def create_and_host_shared_room(
 
         pool = live_room.get("pool")
         if isinstance(pool, pd.DataFrame) and not pool.empty:
+            try:
+                from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
+
+                record_scoring_pipeline_stage(session, "original_source", pool)
+            except ImportError:
+                pass
             prepared, scoring_report = prepare_pool_for_compact_serialization(pool)
             live_room["pool"] = prepared
             live_room["_live_draft_pool_scoring_diag"] = scoring_report
@@ -292,6 +305,12 @@ def create_and_host_shared_room(
         assigned_team=assigned,
         display_name=participant_display_name(session),
     )
+    try:
+        from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
+
+        record_scoring_pipeline_stage(session, "compact_serialized", None, document=document)
+    except ImportError:
+        pass
     try:
         saved = backend.save(document)
     except SharedRoomSupabaseError as exc:
@@ -594,14 +613,24 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
     from draft_room_participant_state import (
         ACTIVE_PARTICIPANT_ID_KEY,
         PARTICIPANT_NOTES_KEY,
+        mark_participant_left_room,
         save_participant_workflow_from_session,
     )
     from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY
-    from live_draft_state import LIVE_DRAFT_ROOM_KEY
+    from live_draft_state import LIVE_DRAFT_ROOM_KEY, clear_live_draft_state
+
+    try:
+        from draft_room_runtime_diagnostics import capture_leave_state_before
+
+        capture_leave_state_before(session)
+    except ImportError:
+        pass
 
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    leave_pid = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or resolve_participant_id(session)).strip()
     if room_code:
         save_participant_workflow_from_session(session, room_code)
+        mark_participant_left_room(session, room_code, participant_id=leave_pid)
     for key in (
         ACTIVE_SHARED_ROOM_CODE_KEY,
         SHARED_ROOM_META_KEY,
@@ -620,6 +649,17 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
     session[DRAFT_QUEUE_KEY] = []
     session[DRAFT_WATCHLIST_FOCUS_KEY] = []
     session[DRAFT_WATCHLIST_FAVORITES_KEY] = []
+    try:
+        clear_live_draft_state(session, reason="leave_shared_room")
+    except Exception:
+        pass
+    session.pop(LIVE_DRAFT_ROOM_KEY, None)
+    try:
+        from draft_room_runtime_diagnostics import capture_leave_state_after
+
+        capture_leave_state_after(session, membership_marked_left=bool(room_code))
+    except ImportError:
+        pass
 
 
 def recommendation_team(session: dict[str, Any], *, on_clock_team: str | None = None) -> str:

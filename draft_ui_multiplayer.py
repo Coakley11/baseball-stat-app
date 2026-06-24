@@ -196,6 +196,12 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 pass
             render_shared_room_diagnostics(st, session)
             render_compact_pool_diagnostics(st, session)
+            try:
+                from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
+
+                render_runtime_diagnostic_table(st, session)
+            except ImportError:
+                pass
             render_shared_room_create_diagnostics(st, session)
             render_shared_room_auth_diagnostics(st, session)
             render_join_trace_panel(st, session)
