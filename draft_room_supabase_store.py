@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from draft_room_json_sanitize import SharedRoomJsonSerializeError, prepare_supabase_json_body
 from draft_room_shared_state import sanitize_shared_room_document
 
 _TABLE = "baseball_shared_draft_rooms"
@@ -48,7 +49,20 @@ def document_to_row(document: dict[str, Any], *, created: bool = False) -> dict[
     }
     if created:
         row["created_at"] = str(doc.get("created_at") or now)
-    return row
+    return prepare_supabase_json_body(row, path="$")
+
+
+def _supabase_write_body(row: dict[str, Any], *, patch: bool) -> dict[str, Any]:
+    if patch:
+        body = {
+            "host_user_id": row["host_user_id"],
+            "shared_room_json": row["shared_room_json"],
+            "revision": row["revision"],
+            "status": row["status"],
+            "updated_at": row["updated_at"],
+        }
+        return prepare_supabase_json_body(body, path="$.patch")
+    return prepare_supabase_json_body(row, path="$.post")
 
 
 def row_to_document(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -115,26 +129,23 @@ class SupabaseSharedRoomStore:
         code = str(document.get("room_code") or "").strip().upper()
         if not code:
             raise ValueError("shared room document missing room_code")
-        row = document_to_row(document)
+        try:
+            row = document_to_row(document, created=not self.exists(code))
+        except SharedRoomJsonSerializeError as exc:
+            raise ValueError(str(exc)) from exc
         if self.exists(code):
             rows = _request(
                 "PATCH",
                 _TABLE,
                 params={"room_code": f"eq.{code}"},
-                json_body={
-                    "host_user_id": row["host_user_id"],
-                    "shared_room_json": row["shared_room_json"],
-                    "revision": row["revision"],
-                    "status": row["status"],
-                    "updated_at": row["updated_at"],
-                },
+                json_body=_supabase_write_body(row, patch=True),
                 prefer="return=representation",
             )
         else:
             rows = _request(
                 "POST",
                 _TABLE,
-                json_body=document_to_row(document, created=True),
+                json_body=_supabase_write_body(row, patch=False),
                 prefer="return=representation",
             )
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
@@ -163,6 +174,10 @@ class SupabaseSharedRoomStore:
 
         row = document_to_row(document)
         try:
+            patch_body = _supabase_write_body(row, patch=True)
+        except SharedRoomJsonSerializeError as exc:
+            raise ValueError(str(exc)) from exc
+        try:
             rows = _request(
                 "PATCH",
                 _TABLE,
@@ -170,13 +185,7 @@ class SupabaseSharedRoomStore:
                     "room_code": f"eq.{code}",
                     "revision": f"eq.{current_rev}",
                 },
-                json_body={
-                    "host_user_id": row["host_user_id"],
-                    "shared_room_json": row["shared_room_json"],
-                    "revision": row["revision"],
-                    "status": row["status"],
-                    "updated_at": row["updated_at"],
-                },
+                json_body=patch_body,
                 prefer="return=representation",
             )
         except RuntimeError:

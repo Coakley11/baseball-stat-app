@@ -48,7 +48,7 @@ _PARTICIPANT_PUBLIC_KEYS = frozenset({"assigned_team", "display_name", "joined_a
 
 
 def sanitize_shared_room_document(document: dict[str, Any]) -> dict[str, Any]:
-    """Strip private participant strategy fields before shared persistence."""
+    """Strip private participant strategy fields and coerce to strict JSON-safe values."""
     if not isinstance(document, dict):
         return {}
     out = copy.deepcopy(document)
@@ -66,7 +66,20 @@ def sanitize_shared_room_document(document: dict[str, Any]) -> dict[str, Any]:
     if isinstance(room, dict):
         for key in _PRIVATE_DOCUMENT_KEYS:
             room.pop(key, None)
-    return out
+        try:
+            from live_draft_state import is_runtime_room, room_to_persist_dict
+
+            if is_runtime_room(room):
+                out["room"] = room_to_persist_dict(room)
+        except ImportError:
+            pass
+    try:
+        from draft_room_json_sanitize import sanitize_shared_room_json
+
+        sanitized = sanitize_shared_room_json(out)
+        return sanitized if isinstance(sanitized, dict) else {}
+    except ImportError:
+        return out
 
 
 def _utc_now_iso() -> str:
