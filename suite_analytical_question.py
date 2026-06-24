@@ -266,17 +266,20 @@ def ami_sidebar_build_marker() -> str:
         return "build marker unavailable"
 
 
-def _ami_sidebar_debug_visible(st: Any, developer_mode: bool) -> bool:
-    if developer_mode:
+def _ami_sidebar_debug_visible(st: Any, session_state: dict[str, Any]) -> bool:
+    """True only for ?dev=1, Developer Mode checkbox, or dev_mode session flag."""
+    if session_state.get("dev_mode"):
+        return True
+    if session_state.get("app_developer_mode"):
         return True
     try:
-        raw = st.query_params.get("ami_debug")
-    except Exception:
-        return False
-    if raw is None:
-        return False
-    val = str(raw[0] if isinstance(raw, list) else raw).strip().lower()
-    return val in ("1", "true", "yes", "on")
+        from suite_workspace import _developer_query_enabled
+
+        if _developer_query_enabled(st):
+            return True
+    except ImportError:
+        pass
+    return False
 
 
 def render_ami_sidebar_submit_debug(
@@ -285,10 +288,10 @@ def render_ami_sidebar_submit_debug(
     source_app_raw: str,
     source_app_resolved: str,
     submit_label: str,
-    developer_mode: bool,
+    session_state: dict[str, Any],
 ) -> None:
-    """Temporary dev marker beside the AMI submit button."""
-    if not _ami_sidebar_debug_visible(st, developer_mode):
+    """Dev-only marker beside the AMI submit button."""
+    if not _ami_sidebar_debug_visible(st, session_state):
         return
     st.sidebar.caption(
         "🛠 **AMI submit debug** · "
@@ -950,14 +953,16 @@ def render_analyze_with_applied_math_sidebar(
     is_music = app_id == "music"
     is_nba = app_id == "nba"
     submit_label = ami_sidebar_submit_label(source_app, ss)
-    ss["_ami_sidebar_render_debug"] = {
-        "module": AMI_SIDEBAR_RENDER_MODULE,
-        "source_app_raw": str(source_app or ""),
-        "source_app_resolved": app_id,
-        "submit_label": submit_label,
-        "deploy_version": AMI_SIDEBAR_DEPLOY_VERSION,
-        "build_marker": ami_sidebar_build_marker(),
-    }
+    debug_on = _ami_sidebar_debug_visible(st, ss)
+    if debug_on:
+        ss["_ami_sidebar_render_debug"] = {
+            "module": AMI_SIDEBAR_RENDER_MODULE,
+            "source_app_raw": str(source_app or ""),
+            "source_app_resolved": app_id,
+            "submit_label": submit_label,
+            "deploy_version": AMI_SIDEBAR_DEPLOY_VERSION,
+            "build_marker": ami_sidebar_build_marker(),
+        }
     if is_music:
         st.sidebar.markdown("### Ask the Music Coach")
         st.sidebar.caption(
@@ -1017,13 +1022,14 @@ def render_analyze_with_applied_math_sidebar(
         label_visibility="visible",
     )
 
-    render_ami_sidebar_submit_debug(
-        st,
-        source_app_raw=str(source_app or ""),
-        source_app_resolved=app_id,
-        submit_label=submit_label,
-        developer_mode=developer_mode,
-    )
+    if debug_on:
+        render_ami_sidebar_submit_debug(
+            st,
+            source_app_raw=str(source_app or ""),
+            source_app_resolved=app_id,
+            submit_label=submit_label,
+            session_state=ss,
+        )
 
     if st.sidebar.button(
         submit_label,
@@ -1096,7 +1102,7 @@ def render_analyze_with_applied_math_sidebar(
                     log.exception("on_after_send hook failed for %s (%s)", source_app, source_page)
             st.rerun()
 
-    if developer_mode:
+    if debug_on and developer_mode:
         st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
     st.sidebar.divider()
 

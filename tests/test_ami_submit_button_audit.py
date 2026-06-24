@@ -24,7 +24,8 @@ class AmiSubmitButtonPathAuditTests(unittest.TestCase):
         self.assertTrue(path.is_file(), "baseball_ami_sidebar.py must exist")
         text = path.read_text(encoding="utf-8")
         self.assertIn("⚾ Baseball Insight", text)
-        self.assertIn("render_ami_submit_visible_marker", text)
+        self.assertIn("_render_ami_submit_debug_panel", text)
+        self.assertIn("_ami_debug_visible", text)
         self.assertIn("st.sidebar.button", text)
         self.assertNotIn(f'st.sidebar.button(\n        "{SEND_CC}"', text)
 

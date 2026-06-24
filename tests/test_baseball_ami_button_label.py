@@ -50,7 +50,7 @@ class BaseballAmiButtonLabelTests(unittest.TestCase):
         self.assertEqual(ami_sidebar_submit_label("nba"), "Get NBA Insight")
         self.assertEqual(ami_sidebar_submit_label("music"), "Ask the Music Coach")
 
-    def test_baseball_sidebar_renders_insight_button(self) -> None:
+    def test_baseball_sidebar_renders_insight_button_without_debug_marker(self) -> None:
         mock_st = MagicMock()
         mock_st.session_state = {"_suite_runtime_app_id": "baseball"}
         mock_st.sidebar = MagicMock()
@@ -67,17 +67,51 @@ class BaseballAmiButtonLabelTests(unittest.TestCase):
         self.assertGreaterEqual(len(button_calls), 1)
         label = button_calls[0].args[0]
         self.assertEqual(label, "⚾ Baseball Insight")
-        self.assertNotEqual(label, "Send to Command Center")
+        mock_st.sidebar.info.assert_not_called()
+        self.assertNotIn("_ami_sidebar_render_debug", mock_st.session_state)
 
-        info_calls = mock_st.sidebar.info.call_args_list
-        self.assertGreaterEqual(len(info_calls), 1)
-        marker_text = str(info_calls[0].args[0])
+    def test_baseball_sidebar_hides_debug_for_unrelated_session_flags(self) -> None:
+        mock_st = MagicMock()
+        mock_st.session_state = {
+            "_suite_runtime_app_id": "baseball",
+            "investment_show_dev_diagnostics": True,
+            "cc_developer_mode": True,
+        }
+        mock_st.sidebar = MagicMock()
+        mock_st.sidebar.text_area.return_value = ""
+        mock_st.sidebar.button.return_value = False
+
+        render_baseball_insight_sidebar(
+            mock_st,
+            source_page="Live Draft Room",
+            session_state=mock_st.session_state,
+        )
+
+        caption_calls = [str(c.args[0]) for c in mock_st.sidebar.caption.call_args_list if c.args]
+        self.assertTrue(any("Ask about players" in t for t in caption_calls))
+        self.assertFalse(any("AMI submit debug" in t for t in caption_calls))
+        self.assertNotIn("_ami_sidebar_render_debug", mock_st.session_state)
+
+    def test_baseball_sidebar_shows_debug_when_dev_mode(self) -> None:
+        mock_st = MagicMock()
+        mock_st.session_state = {"_suite_runtime_app_id": "baseball", "dev_mode": True}
+        mock_st.sidebar = MagicMock()
+        mock_st.sidebar.text_area.return_value = ""
+        mock_st.sidebar.button.return_value = False
+
+        render_baseball_insight_sidebar(
+            mock_st,
+            source_page="Live Draft Room",
+            session_state=mock_st.session_state,
+        )
+
+        caption_calls = mock_st.sidebar.caption.call_args_list
+        self.assertGreaterEqual(len(caption_calls), 1)
+        marker_text = " ".join(str(c.args[0]) for c in caption_calls if c.args)
         self.assertIn(RENDER_MODULE, marker_text)
         self.assertIn("CURRENT", marker_text)
-
         debug = mock_st.session_state.get("_ami_sidebar_render_debug") or {}
         self.assertEqual(debug.get("submit_label"), "⚾ Baseball Insight")
-        self.assertEqual(debug.get("module"), RENDER_MODULE)
 
     def test_streamlit_entrypoint_uses_baseball_ami_sidebar(self) -> None:
         root = Path(__file__).resolve().parents[1]

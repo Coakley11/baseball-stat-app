@@ -12,7 +12,6 @@ log = logging.getLogger(__name__)
 SOURCE_APP = "baseball"
 RENDER_MODULE = "baseball_ami_sidebar.py"
 ENTRYPOINT_MODULE = "streamlit_app.py"
-# Bump when changing label/render path — marker shows CURRENT vs STALE.
 BASEBALL_AMI_SIDEBAR_CODE_GENERATION = "baseball-ami-sidebar-v3"
 EXPECTED_CODE_GENERATION = "baseball-ami-sidebar-v3"
 
@@ -44,28 +43,39 @@ def _code_status() -> str:
     return f"STALE (expected {EXPECTED_CODE_GENERATION!r})"
 
 
-def render_ami_submit_visible_marker(
+def _ami_debug_visible(st: Any, session_state: dict[str, Any]) -> bool:
+    """True only for explicit dev surfaces — never for normal users."""
+    if session_state.get("dev_mode"):
+        return True
+    if session_state.get("app_developer_mode"):
+        return True
+    try:
+        from suite_workspace import _developer_query_enabled
+
+        if _developer_query_enabled(st):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def _render_ami_submit_debug_panel(
     st: Any,
     *,
     source_app: str,
     submit_label: str,
     source_page: str = "",
 ) -> None:
-    """Always-visible marker beside the red submit button (temporary deploy verification)."""
+    """Dev-only diagnostics beside the submit button (?dev=1 or dev_mode)."""
     module_path = str(Path(__file__).resolve())
     status = _code_status()
-    st.sidebar.info(
-        "**AMI submit marker** (always on until verified)\n\n"
-        f"- **Rendering module:** `{RENDER_MODULE}`\n"
-        f"- **Module path:** `{module_path}`\n"
-        f"- **App entrypoint:** `{ENTRYPOINT_MODULE}`\n"
-        f"- **source_app:** `{source_app}`\n"
-        f"- **source_page:** `{source_page or '—'}`\n"
-        f"- **Computed button label:** `{submit_label}`\n"
-        f"- **Code generation:** `{BASEBALL_AMI_SIDEBAR_CODE_GENERATION}` → **{status}**\n"
-        f"- **Git/build:** {_build_marker()}\n\n"
-        "If this marker is missing, the deployed app is **not** running this commit "
-        f"or is using a different entrypoint than `{ENTRYPOINT_MODULE}`."
+    st.sidebar.caption(
+        "🛠 **AMI submit debug** · "
+        f"module `{RENDER_MODULE}` · path `{module_path}` · "
+        f"entry `{ENTRYPOINT_MODULE}` · source_app={source_app!r} · "
+        f"page={source_page or '—'!r} · label={submit_label!r} · "
+        f"code `{BASEBALL_AMI_SIDEBAR_CODE_GENERATION}` → {status} · "
+        f"{_build_marker()}"
     )
 
 
@@ -90,22 +100,24 @@ def render_baseball_insight_sidebar(
     ss["_suite_runtime_app_id"] = SOURCE_APP
     source_app = SOURCE_APP
     submit_label = baseball_insight_button_label()
+    debug_on = _ami_debug_visible(st, ss)
 
     page_suffix = _safe_widget_suffix(source_page)
     send_gen = int(ss.get(f"_ami_send_gen_{source_app}_{page_suffix}") or 0)
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
-    ss["_ami_sidebar_render_debug"] = {
-        "module": RENDER_MODULE,
-        "entrypoint": ENTRYPOINT_MODULE,
-        "source_app_raw": source_app,
-        "source_app_resolved": source_app,
-        "submit_label": submit_label,
-        "code_generation": BASEBALL_AMI_SIDEBAR_CODE_GENERATION,
-        "code_status": _code_status(),
-        "build_marker": _build_marker(),
-    }
+    if debug_on:
+        ss["_ami_sidebar_render_debug"] = {
+            "module": RENDER_MODULE,
+            "entrypoint": ENTRYPOINT_MODULE,
+            "source_app_raw": source_app,
+            "source_app_resolved": source_app,
+            "submit_label": submit_label,
+            "code_generation": BASEBALL_AMI_SIDEBAR_CODE_GENERATION,
+            "code_status": _code_status(),
+            "build_marker": _build_marker(),
+        }
 
     st.sidebar.markdown(f"### {BASEBALL_INSIGHT_SECTION_TITLE}")
     st.sidebar.caption(
@@ -131,12 +143,13 @@ def render_baseball_insight_sidebar(
         label_visibility="visible",
     )
 
-    render_ami_submit_visible_marker(
-        st,
-        source_app=source_app,
-        submit_label=submit_label,
-        source_page=source_page,
-    )
+    if debug_on:
+        _render_ami_submit_debug_panel(
+            st,
+            source_app=source_app,
+            submit_label=submit_label,
+            source_page=source_page,
+        )
 
     if st.sidebar.button(
         submit_label,
