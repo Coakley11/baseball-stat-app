@@ -26,6 +26,7 @@ from draft_room_shared_state import (
     get_shared_room_store,
     load_shared_room,
     publish_shared_room_runtime,
+    shared_room_backend_name,
 )
 from live_draft_state import LIVE_DRAFT_ROOM_KEY, has_active_live_draft, prepare_live_draft_state
 
@@ -71,10 +72,35 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     """Bootstrap hook — hydrate runtime room and participant-private workflow."""
     from draft_room_participant_state import restore_persisted_shared_room_membership
 
-    restore_persisted_shared_room_membership(session)
+    restored_code = restore_persisted_shared_room_membership(session)
+    try:
+        from draft_room_join_trace import trace_join_step
+
+        if restored_code:
+            trace_join_step(
+                session,
+                "membership_restored",
+                room_code=restored_code,
+                assigned_team=active_participant_team(session),
+            )
+    except ImportError:
+        pass
     ctx = get_global_draft_context(session)
     room_code = ctx.get("room_code")
     if room_code:
+        backend_name = shared_room_backend_name()
+        try:
+            from draft_room_join_trace import trace_join_step
+
+            trace_join_step(
+                session,
+                "prepare_global_context",
+                room_code=room_code,
+                backend=backend_name,
+                multiplayer=True,
+            )
+        except ImportError:
+            pass
         document = load_shared_room(str(room_code))
         if document:
             publish_shared_room_runtime(session, document, reason="global_context_prepare")
@@ -182,16 +208,47 @@ def join_shared_draft_room(
 
     from draft_room_participant_state import register_participant_in_shared_document
 
-    ok_auth, auth_msg = ensure_authenticated_for_shared_room(session)
-    if not ok_auth:
-        return False, auth_msg, None
-
     code = str(room_code or "").strip().upper()
     backend = store or get_shared_room_store()
+    backend_name = shared_room_backend_name()
+    try:
+        from draft_room_join_trace import trace_join_step
+
+        trace_join_step(
+            session,
+            "join_called",
+            room_code_entered=code or None,
+            backend=backend_name,
+        )
+    except ImportError:
+        pass
+
+    ok_auth, auth_msg = ensure_authenticated_for_shared_room(session)
+    if not ok_auth:
+        try:
+            from draft_room_join_trace import trace_join_step
+
+            trace_join_step(session, "join_auth_blocked", message=auth_msg, backend=backend_name)
+        except ImportError:
+            pass
+        return False, auth_msg, None
+
     document = backend.load(code)
     if not isinstance(document, dict):
+        try:
+            from draft_room_join_trace import trace_join_step
+
+            trace_join_step(session, "join_room_not_found", room_code=code, backend=backend_name)
+        except ImportError:
+            pass
         return False, "Room not found.", None
     if str(document.get("status") or "").lower() == "closed":
+        try:
+            from draft_room_join_trace import trace_join_step
+
+            trace_join_step(session, "join_room_closed", room_code=code, backend=backend_name)
+        except ImportError:
+            pass
         return False, "This draft room has been closed by the host.", None
 
     participant_id = resolve_participant_id(session)
@@ -220,6 +277,20 @@ def join_shared_draft_room(
     publish_shared_room_runtime(session, document, reason="shared_room_join")
     load_participant_workflow_into_session(session, code)
     _sync_participant_team_aliases(session, assigned)
+    try:
+        from draft_room_join_trace import trace_join_step
+
+        trace_join_step(
+            session,
+            "join_success",
+            room_code=code,
+            assigned_team=assigned,
+            backend=backend_name,
+            multiplayer_active=is_multiplayer_draft_active(session),
+            revision=document.get("revision"),
+        )
+    except ImportError:
+        pass
     return True, f"Joined room {code} as {assigned}.", document
 
 

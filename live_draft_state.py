@@ -218,6 +218,16 @@ def clear_live_draft_state(session: dict[str, Any], *, reason: str = "reset") ->
 
 def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
     """Hydrate runtime room from canonical blob before Live Draft Room renders."""
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if is_runtime_room(room):
+                write_canonical_live_draft_state(session, room, reason="multiplayer_hydrate", local_edit=False)
+            return room if isinstance(room, dict) else None
+    except ImportError:
+        pass
     canonical = canonical_live_draft(session)
     room = session.get(LIVE_DRAFT_ROOM_KEY)
     if isinstance(canonical, dict) and canonical.get("draft_room_id"):

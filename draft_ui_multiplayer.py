@@ -2,10 +2,40 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from draft_room_diagnostics import render_shared_room_diagnostics
 from draft_source_validation import ALLOW_FREE_POOL_KEY
+
+
+def _show_join_auth_hint(st: Any, session: dict[str, Any]) -> None:
+    try:
+        from draft_room_membership import is_auth_session, shared_room_requires_auth
+
+        if shared_room_requires_auth() and not is_auth_session(session):
+            st.warning(
+                "Shared draft rooms use cloud sync — **log in** on this device before joining a room code."
+            )
+    except ImportError:
+        pass
+
+
+def _finalize_successful_join(session: dict[str, Any], message: str) -> None:
+    from draft_room_context import prepare_global_draft_context
+
+    prepare_global_draft_context(session)
+    session["_draft_join_flash"] = message
+    session["_shared_draft_poll_ts"] = time.time()
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(
+            type("S", (), {"session_state": session})(),
+            reason="shared_draft_join",
+        )
+    except ImportError:
+        pass
 
 
 def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
@@ -19,9 +49,18 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             leave_shared_draft_room,
             sync_shared_draft_room,
         )
+        from draft_room_join_trace import render_join_trace_panel, trace_join_step
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
     except ImportError:
         return False
+
+    join_flash = session.pop("_draft_join_flash", None)
+    if join_flash:
+        st.success(str(join_flash))
+
+    join_error = session.pop("_draft_join_error", None)
+    if join_error:
+        st.error(str(join_error))
 
     ctx = get_global_draft_context(session)
     room = session.get(LIVE_DRAFT_ROOM_KEY)
@@ -52,6 +91,13 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             st.warning(str(conflict))
 
         if is_multiplayer_draft_active(session):
+            trace_join_step(
+                session,
+                "multiplayer_ui_active",
+                room_code=ctx.get("room_code"),
+                assigned_team=ctx.get("participant_team"),
+                backend=ctx.get("shared_storage_backend"),
+            )
             is_host = bool(ctx.get("is_room_host"))
             room_cfg = dict((room or {}).get("config") or {}) if isinstance(room, dict) else {}
             free_pool_default = bool(room_cfg.get(ALLOW_FREE_POOL_KEY, session.get(ALLOW_FREE_POOL_KEY, False)))
@@ -86,7 +132,10 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 st.info("Left shared draft room. Your private queue and watchlist are saved.")
                 return True
             render_shared_room_diagnostics(st, session)
+            render_join_trace_panel(st, session)
             return False
+
+        _show_join_auth_hint(st, session)
 
         col_create, col_join = st.columns(2)
         with col_create:
@@ -107,16 +156,26 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     if not code:
                         st.error(session.pop("_draft_room_last_error", "Could not create shared room."))
                     else:
-                        st.success(f"Shared room created. Share code **{code}** with other managers.")
+                        _finalize_successful_join(session, f"Shared room created. Share code **{code}** with other managers.")
                     return True
         with col_join:
-            join_input = st.text_input("Join room code", key="shared_draft_join_code_input", placeholder="ABC123")
-            if st.button("Join Room by Code", key="shared_draft_join_btn"):
+            with st.form("shared_draft_join_form", clear_on_submit=False):
+                join_input = st.text_input(
+                    "Join room code",
+                    placeholder="ABC123",
+                    help="Enter the code from the host device, then tap Join.",
+                )
+                submitted = st.form_submit_button("Join Room by Code", type="primary")
+            if submitted:
+                trace_join_step(session, "join_button_clicked", room_code_entered=str(join_input or "").strip().upper() or None)
                 ok, msg, _ = join_shared_draft_room(session, join_input)
                 if ok:
-                    st.success(msg)
+                    _finalize_successful_join(session, msg)
                 else:
-                    st.error(msg)
+                    session["_draft_join_error"] = msg
+                    trace_join_step(session, "join_failed", message=msg)
                 return True
+
+        render_join_trace_panel(st, session)
 
     return False
