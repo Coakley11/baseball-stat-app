@@ -18021,11 +18021,15 @@ if active_page == "Live Draft Room":
             if _multiplayer_draft:
                 try:
                     from draft_room_context import active_participant_team
+                    from draft_room_participant_state import ensure_participant_team_assigned
 
+                    ensure_participant_team_assigned(st.session_state)
                     pteam = str(active_participant_team(st.session_state) or "").strip()
                 except ImportError:
                     pteam = ""
                 user_team = pteam or "—"
+                if pteam in ("", "—"):
+                    st.warning("Your assigned team is missing — open **Team assignment (join/restore)** in Shared Draft Room.")
                 st.markdown(f"**Your team:** {user_team} *(shared room assignment)*")
             else:
                 def _live_draft_team_changed():

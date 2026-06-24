@@ -142,7 +142,12 @@ def _participant_membership_diag(session: dict[str, Any]) -> dict[str, Any]:
             "auth_user_id": extra.get("auth_user_id"),
             "membership_team": extra.get("membership_team"),
             "membership_blob_team": extra.get("membership_blob_team"),
+            "membership_assigned_team": extra.get("membership_assigned_team"),
             "registry_assigned_team": extra.get("registry_assigned_team"),
+            "participant_registry_found": extra.get("participant_registry_found"),
+            "displayed_team": extra.get("displayed_team"),
+            "displayed_team_source": extra.get("displayed_team_source"),
+            "assignment_failure_reason": extra.get("assignment_failure_reason"),
             "active_queue_key": extra.get("active_queue_key"),
             "active_watchlist_focus_key": extra.get("active_watchlist_focus_key"),
             "active_watchlist_favorites_key": extra.get("active_watchlist_favorites_key"),
@@ -170,6 +175,10 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
             ("Auth user id", diag.get("auth_user_id") or "—"),
             ("Registry team", diag.get("registry_assigned_team") or "—"),
             ("Membership team (blob)", diag.get("membership_blob_team") or diag.get("membership_team") or "—"),
+            ("Registry found", str(diag.get("participant_registry_found"))),
+            ("Displayed team", diag.get("displayed_team") or "—"),
+            ("Displayed team source", diag.get("displayed_team_source") or "—"),
+            ("Assignment failure", diag.get("assignment_failure_reason") or "—"),
             ("Backend", diag.get("backend") or "—"),
             ("Revision", str(diag.get("revision") if diag.get("revision") is not None else "—")),
             ("Last sync", diag.get("last_sync_time") or "—"),
@@ -271,6 +280,33 @@ def render_compact_pool_diagnostics(st: Any, session: dict[str, Any]) -> None:
             st.caption("Derived: " + ", ".join(derived))
         if isinstance(scoring_diag, dict) and scoring_diag.get("default_filled_counts"):
             st.text(f"Last scoring hydrate defaults: {scoring_diag.get('default_filled_counts')}")
+
+
+def render_join_assignment_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Team assignment trace after join or restore (acceptance)."""
+    raw = session.get("_draft_room_join_assignment_diag")
+    if not isinstance(raw, dict):
+        return
+    with st.expander("Team assignment (join/restore)", expanded=not raw.get("displayed_team")):
+        rows = [
+            ("room_code", raw.get("room_code") or "—"),
+            ("auth_user_id", raw.get("auth_user_id") or "—"),
+            ("participant_id", raw.get("participant_id") or "—"),
+            ("participant_registry_found", str(raw.get("participant_registry_found"))),
+            ("registry_assigned_team", raw.get("registry_assigned_team") or "—"),
+            ("membership_assigned_team", raw.get("membership_assigned_team") or "—"),
+            ("displayed_team", raw.get("displayed_team") or "—"),
+            ("displayed_team_source", raw.get("displayed_team_source") or "—"),
+            ("assignment_failure_reason", raw.get("assignment_failure_reason") or "—"),
+            ("assignment_source", raw.get("assignment_source") or "—"),
+        ]
+        for label, value in rows:
+            st.text(f"{label}: {value}")
+        if raw.get("assignment_failure_reason") and not raw.get("displayed_team"):
+            st.error(
+                "Team assignment is missing — recommendations and draft buttons may be disabled. "
+                "Try **Refresh board now** or re-join with the share code."
+            )
 
 
 def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any]) -> None:

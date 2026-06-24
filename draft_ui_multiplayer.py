@@ -7,6 +7,7 @@ from typing import Any
 
 from draft_room_diagnostics import (
     render_compact_pool_diagnostics,
+    render_join_assignment_diagnostics,
     render_shared_room_create_diagnostics,
     render_shared_room_diagnostics,
     render_shared_room_join_load_diagnostics,
@@ -199,6 +200,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             except ImportError:
                 pass
             render_shared_room_diagnostics(st, session)
+            render_join_assignment_diagnostics(st, session)
             render_compact_pool_diagnostics(st, session)
             try:
                 from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
@@ -282,6 +284,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 ok, msg, _ = join_shared_draft_room(session, join_input)
                 if ok:
                     _finalize_successful_join(session, msg)
+                    render_join_assignment_diagnostics(st, session)
                 else:
                     session["_draft_join_error"] = msg
                     render_shared_room_join_load_diagnostics(st, session)

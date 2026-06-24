@@ -75,6 +75,10 @@ def _snapshot_identity(session: dict[str, Any]) -> dict[str, Any]:
         pass
 
     displayed_team, display_source = resolve_displayed_team_label(session)
+    registry_found = bool(code and participant_id and registry_team)
+    failure_reason = str(session.get("_draft_room_assignment_failure_reason") or "").strip() or None
+    if not failure_reason and code and not displayed_team:
+        failure_reason = "team_unassigned"
     return {
         "auth_email": auth_email,
         "auth_user_id": auth_user_id,
@@ -88,6 +92,8 @@ def _snapshot_identity(session: dict[str, Any]) -> dict[str, Any]:
         "room_your_team": session.get("room_your_team"),
         "displayed_team_label": displayed_team or None,
         "displayed_team_source": display_source,
+        "participant_registry_found": registry_found if code else None,
+        "assignment_failure_reason": failure_reason,
     }
 
 
@@ -250,6 +256,8 @@ def get_runtime_diagnostic_rows(session: dict[str, Any]) -> list[tuple[str, str,
         "room_your_team",
         "displayed_team_label",
         "displayed_team_source",
+        "participant_registry_found",
+        "assignment_failure_reason",
     ):
         rows.append(("Identity", key, str(ident.get(key) if ident.get(key) is not None else "—")))
 

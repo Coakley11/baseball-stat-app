@@ -243,6 +243,30 @@ class DraftRoomMembershipTests(unittest.TestCase):
         self.assertEqual(team, "Team 2")
         self.assertNotEqual(team, "Team Daniel")
 
+    @patch("suite_auth.is_auth_enabled", return_value=True)
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
+    def test_guest_team_restored_from_registry_without_local_membership(self, _mock_auth: object, _mock_enabled: object) -> None:
+        from draft_room_participant_state import (
+            ACTIVE_PARTICIPANT_TEAM_KEY,
+            MEMBERSHIP_KEY,
+            active_participant_team,
+        )
+        from suite_auth import AUTH_SESSION_KEY
+
+        self.host_session[AUTH_SESSION_KEY] = True
+        self.guest_session[AUTH_SESSION_KEY] = True
+
+        code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        self.assertTrue(ok, msg)
+        self.guest_session.pop(MEMBERSHIP_KEY, None)
+        self.guest_session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+        self.guest_session.pop("draft_room_participant_id", None)
+        self.guest_session.pop("room_your_team", None)
+        self.assertEqual(self.guest_session.get("active_shared_draft_room_code"), code)
+        prepare_global_draft_context(self.guest_session)
+        self.assertEqual(active_participant_team(self.guest_session), "Team 2")
+
     def test_private_fields_not_in_shared_document(self) -> None:
         doc = {
             "room_code": "X",

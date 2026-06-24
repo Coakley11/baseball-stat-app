@@ -179,6 +179,27 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
 
         if already_hydrated:
             load_participant_workflow_into_session(session, str(room_code))
+            document = load_shared_room(str(room_code))
+            if isinstance(document, dict):
+                try:
+                    from draft_room_membership import sync_membership_from_document
+
+                    sync_membership_from_document(session, document)
+                except ImportError:
+                    pass
+            try:
+                from draft_room_participant_state import ensure_participant_team_assigned, record_join_assignment_diagnostics
+
+                team, fail = ensure_participant_team_assigned(
+                    session,
+                    room_code=str(room_code),
+                    document=document if isinstance(document, dict) else None,
+                )
+                record_join_assignment_diagnostics(session, source="prepare_global_hydrated", failure_reason=fail)
+                if team:
+                    _sync_participant_team_aliases(session, team)
+            except ImportError:
+                pass
         else:
             document = load_shared_room(str(room_code))
             if document:
@@ -641,6 +662,16 @@ def join_shared_draft_room(
         return False, str(session.get("_draft_room_publish_error") or "Shared room data is invalid."), document
     load_participant_workflow_into_session(session, code)
     _sync_participant_team_aliases(session, assigned)
+    try:
+        from draft_room_participant_state import ensure_participant_team_assigned, record_join_assignment_diagnostics
+
+        team, fail = ensure_participant_team_assigned(session, room_code=code, document=document)
+        if team and team != assigned:
+            assigned = team
+            _sync_participant_team_aliases(session, assigned)
+        record_join_assignment_diagnostics(session, source="join_success", failure_reason=fail)
+    except ImportError:
+        pass
     try:
         from draft_room_join_trace import trace_join_step
 

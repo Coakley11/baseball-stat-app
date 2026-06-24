@@ -31,13 +31,13 @@ def _utc_now_iso() -> str:
 
 
 def resolve_participant_id(session: dict[str, Any]) -> str:
-    """Stable participant key — auth user id when logged in, else workspace (dev)."""
+    """Stable participant key — auth user id when Real Accounts is on, else workspace (dev)."""
     try:
-        from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
+        from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled
 
         if is_auth_enabled():
             auth_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
-            if is_authenticated(session) and auth_id:
+            if auth_id:
                 stale = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
                 if stale and stale != auth_id:
                     session.pop(ACTIVE_PARTICIPANT_ID_KEY, None)
@@ -248,6 +248,11 @@ def active_participant_team(session: dict[str, Any]) -> str:
                         return team
                 except ImportError:
                     pass
+            team, fail = ensure_participant_team_assigned(session, room_code=code)
+            if fail:
+                session[ASSIGNMENT_FAILURE_KEY] = fail
+            if team:
+                return team
             return ""
     except ImportError:
         pass
@@ -344,6 +349,141 @@ def assign_team_for_join(
     return None
 
 
+JOIN_ASSIGNMENT_DIAG_KEY = "_draft_room_join_assignment_diag"
+ASSIGNMENT_FAILURE_KEY = "_draft_room_assignment_failure_reason"
+
+
+def ensure_participant_team_assigned(
+    session: dict[str, Any],
+    *,
+    room_code: str | None = None,
+    document: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Reconcile assigned team from local membership or shared participant registry."""
+    code = str(room_code or session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    if not code:
+        return "", "no_room_code"
+    pid = resolve_participant_id(session)
+    if not pid:
+        return "", "no_participant_id"
+
+    team = membership_team_for_participant(session, code, participant_id=pid)
+    if team:
+        set_active_participant(session, room_code=code, participant_id=pid, assigned_team=team)
+        return team, ""
+
+    slot = participant_workflow_slot(session, code)
+    slot_team = str(slot.get("assigned_team") or "").strip()
+    if slot_team:
+        set_active_participant(session, room_code=code, participant_id=pid, assigned_team=slot_team)
+        return slot_team, ""
+
+    doc = document
+    if doc is None:
+        try:
+            from draft_room_shared_state import load_shared_room
+
+            doc = load_shared_room(code)
+        except ImportError:
+            doc = None
+
+    if not isinstance(doc, dict):
+        return "", "registry_load_failed"
+
+    participants = dict(doc.get("participants") or {})
+    if pid not in participants:
+        return "", "participant_not_in_registry"
+
+    meta = participants.get(pid)
+    if not isinstance(meta, dict) or not meta.get("assigned_team"):
+        return "", "registry_missing_assigned_team"
+
+    team = str(meta["assigned_team"]).strip()
+    set_active_participant(session, room_code=code, participant_id=pid, assigned_team=team)
+    save_participant_workflow_from_session(session, code)
+    return team, ""
+
+
+def build_participant_assignment_diagnostics(
+    session: dict[str, Any],
+    *,
+    failure_reason: str = "",
+    source: str = "",
+) -> dict[str, Any]:
+    """Snapshot for join/restore team assignment acceptance."""
+    pid = resolve_participant_id(session)
+    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    auth_user_id = ""
+    try:
+        from suite_auth import AUTH_USER_ID_KEY, is_authenticated
+
+        if is_authenticated(session):
+            auth_user_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+    except ImportError:
+        pass
+
+    membership_blob_team = membership_team_for_participant(session, code, participant_id=pid) if code else ""
+    registry_team = ""
+    registry_found = False
+    if code and pid:
+        try:
+            from draft_room_shared_state import load_shared_room
+
+            doc = load_shared_room(code)
+            if isinstance(doc, dict):
+                participants = dict(doc.get("participants") or {})
+                if pid in participants:
+                    registry_found = True
+                    meta = participants.get(pid)
+                    if isinstance(meta, dict):
+                        registry_team = str(meta.get("assigned_team") or "").strip()
+        except ImportError:
+            pass
+
+    displayed_team = ""
+    displayed_source = ""
+    try:
+        from draft_room_runtime_diagnostics import resolve_displayed_team_label
+
+        displayed_team, displayed_source = resolve_displayed_team_label(session)
+    except ImportError:
+        displayed_team = active_participant_team(session)
+        displayed_source = "active_participant_team" if displayed_team else "none"
+
+    session_team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
+    reason = str(failure_reason or session.get(ASSIGNMENT_FAILURE_KEY) or "").strip()
+    if not reason and code and not session_team and not registry_team and not membership_blob_team:
+        reason = "team_unassigned"
+
+    return {
+        "room_code": code or None,
+        "auth_user_id": auth_user_id or None,
+        "participant_id": pid or None,
+        "participant_registry_found": registry_found,
+        "registry_assigned_team": registry_team or None,
+        "membership_assigned_team": membership_blob_team or None,
+        "displayed_team": displayed_team or None,
+        "displayed_team_source": displayed_source or None,
+        "assignment_failure_reason": reason or None,
+        "assignment_source": source or None,
+    }
+
+
+def record_join_assignment_diagnostics(
+    session: dict[str, Any],
+    *,
+    source: str = "join",
+    failure_reason: str = "",
+) -> dict[str, Any]:
+    diag = build_participant_assignment_diagnostics(session, failure_reason=failure_reason, source=source)
+    session[JOIN_ASSIGNMENT_DIAG_KEY] = diag
+    if failure_reason:
+        session[ASSIGNMENT_FAILURE_KEY] = failure_reason
+    else:
+        session.pop(ASSIGNMENT_FAILURE_KEY, None)
+    return diag
+
+
 def register_participant_in_shared_document(
     shared_document: dict[str, Any],
     *,
@@ -358,7 +498,11 @@ def register_participant_in_shared_document(
         entry = dict(participants[pid])
         if display_name:
             entry["display_name"] = str(display_name)
-        entry.setdefault("assigned_team", str(assigned_team))
+        team_val = str(assigned_team or "").strip()
+        if team_val:
+            entry["assigned_team"] = team_val
+        else:
+            entry.setdefault("assigned_team", "")
         entry.setdefault("joined_at", _utc_now_iso())
         participants[pid] = entry
     else:
@@ -445,6 +589,11 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
             code = ""
         else:
             _hydrate_team_from_membership(session, code, participant_id=pid)
+            if not str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip():
+                team, _fail = ensure_participant_team_assigned(session, room_code=code)
+                if team:
+                    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+                    session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
             return code
 
     membership = session.get(MEMBERSHIP_KEY)
@@ -536,16 +685,15 @@ def clear_multiplayer_membership_for_account(session: dict[str, Any]) -> str:
 
 def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     """Auth + membership snapshot for dev acceptance (per device)."""
-    pid = resolve_participant_id(session)
-    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    assignment = build_participant_assignment_diagnostics(session)
+    pid = str(assignment.get("participant_id") or resolve_participant_id(session))
+    code = str(assignment.get("room_code") or session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     auth_email = ""
-    auth_user_id = ""
     try:
-        from suite_auth import AUTH_USER_ID_KEY, current_auth_email, is_authenticated
+        from suite_auth import current_auth_email, is_authenticated
 
         if is_authenticated(session):
             auth_email = str(current_auth_email(session) or "")
-            auth_user_id = str(session.get(AUTH_USER_ID_KEY) or "")
     except ImportError:
         pass
 
@@ -562,23 +710,23 @@ def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str,
             pass
 
     persisted_blob: dict[str, Any] = {}
-    registry_team = None
     if isinstance(membership, dict) and code:
         persisted_blob = _normalize_room_membership(membership.get(code))
-    if code and pid:
-        entry = room_registry.get(pid)
-        if isinstance(entry, dict) and entry.get("assigned_team"):
-            registry_team = str(entry["assigned_team"])
 
     return {
         "auth_email": auth_email,
-        "auth_user_id": auth_user_id,
-        "participant_id": pid,
+        "auth_user_id": assignment.get("auth_user_id"),
+        "participant_id": pid or None,
         "room_code": code or None,
         "assigned_team": active_participant_team(session) or None,
-        "registry_assigned_team": registry_team,
-        "membership_team": membership_team_for_participant(session, code) if code else None,
-        "membership_blob_team": membership_team_for_participant(session, code) if code else None,
+        "registry_assigned_team": assignment.get("registry_assigned_team"),
+        "membership_team": assignment.get("membership_assigned_team"),
+        "membership_blob_team": assignment.get("membership_assigned_team"),
+        "membership_assigned_team": assignment.get("membership_assigned_team"),
+        "participant_registry_found": assignment.get("participant_registry_found"),
+        "displayed_team": assignment.get("displayed_team"),
+        "displayed_team_source": assignment.get("displayed_team_source"),
+        "assignment_failure_reason": assignment.get("assignment_failure_reason"),
         "active_queue_key": "draft_queue",
         "active_watchlist_focus_key": "draft_assistant_focus_players",
         "active_watchlist_favorites_key": "workflow_favorite_targets",
