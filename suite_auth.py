@@ -127,7 +127,7 @@ def _infer_external_id_from_email(email: str) -> str:
         return ""
     if "ariel" in low:
         return "ariel"
-    if "daniel" in low or "coakley" in low:
+    if "daniel" in low:
         return "daniel"
     local = low.split("@", 1)[0]
     if local in _DEFAULT_ALLOWED_WORKSPACES:

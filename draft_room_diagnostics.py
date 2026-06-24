@@ -34,6 +34,7 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     return {
         "active": True,
         "room_code": ctx.get("room_code"),
+        "draft_room_id": ctx.get("draft_room_id"),
         "assigned_team": ctx.get("participant_team"),
         "participant_id": ctx.get("participant_id"),
         "backend": ctx.get("shared_storage_backend") or "unknown",
@@ -59,6 +60,10 @@ def _participant_membership_diag(session: dict[str, Any]) -> dict[str, Any]:
             "auth_email": extra.get("auth_email"),
             "auth_user_id": extra.get("auth_user_id"),
             "membership_team": extra.get("membership_team"),
+            "registry_assigned_team": extra.get("registry_assigned_team"),
+            "active_queue_key": extra.get("active_queue_key"),
+            "active_watchlist_focus_key": extra.get("active_watchlist_focus_key"),
+            "active_watchlist_favorites_key": extra.get("active_watchlist_favorites_key"),
             "room_participant_registry": extra.get("room_participant_registry"),
             "persisted_membership_blob": extra.get("persisted_membership_blob"),
         }
@@ -76,10 +81,12 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
         st.caption("Acceptance / dev snapshot — use to verify multiplayer sync.")
         rows = [
             ("Room code", diag.get("room_code") or "—"),
+            ("Session draft id", diag.get("draft_room_id") or "—"),
             ("Assigned team", diag.get("assigned_team") or "—"),
             ("Participant id", diag.get("participant_id") or "—"),
             ("Auth email", diag.get("auth_email") or "—"),
             ("Auth user id", diag.get("auth_user_id") or "—"),
+            ("Registry team", diag.get("registry_assigned_team") or "—"),
             ("Membership team (blob)", diag.get("membership_team") or "—"),
             ("Backend", diag.get("backend") or "—"),
             ("Revision", str(diag.get("revision") if diag.get("revision") is not None else "—")),
@@ -125,8 +132,14 @@ def render_compact_pool_diagnostics(st: Any, session: dict[str, Any]) -> None:
 
     scoring_diag = room.get("_live_draft_pool_scoring_diag")
     with st.expander("Compact pool scoring (dev)", expanded=False):
+        source_cols = diag.get("source_columns") or []
+        if source_cols:
+            st.text(f"Source columns ({len(source_cols)}): {', '.join(source_cols[:30])}{'…' if len(source_cols) > 30 else ''}")
         st.text(f"Pool players: {diag.get('pool_count')}")
         st.text(f"Compact columns ({diag.get('compact_column_count')}): {', '.join(diag.get('compact_columns') or [])}")
+        quality = diag.get("scoring_quality") or {}
+        for col, counts in quality.items():
+            st.text(f"{col}: real={counts.get('real', 0)} default={counts.get('default', 0)}")
         missing = diag.get("missing_required") or []
         if missing:
             st.text(f"Missing from source pool: {', '.join(missing[:20])}{'…' if len(missing) > 20 else ''}")

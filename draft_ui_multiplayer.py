@@ -174,6 +174,19 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 leave_shared_draft_room(session)
                 st.info("Left shared draft room. Your private queue and watchlist are saved.")
                 return True
+            try:
+                from suite_workspace import can_show_developer_tools
+
+                if can_show_developer_tools(st=st):
+                    if st.button("Reset multiplayer membership (dev)", key="shared_draft_reset_membership_btn"):
+                        from draft_room_participant_state import clear_multiplayer_membership_for_account
+
+                        clear_multiplayer_membership_for_account(session)
+                        prepare_global_draft_context(session)
+                        st.warning("Cleared stale membership/team globals for this auth account. Re-join the room if needed.")
+                        return True
+            except ImportError:
+                pass
             render_shared_room_diagnostics(st, session)
             render_compact_pool_diagnostics(st, session)
             render_shared_room_create_diagnostics(st, session)

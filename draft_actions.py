@@ -266,20 +266,57 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
     ctx = draft_action_context(session)
     allowed = False
     reason = ""
+    disable_reason = ""
     name = str(player_name or "").strip()
+    participant_team = ""
+    assigned_team = ""
+    commissioner_mode = False
+    player_source_valid = None
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            participant_team = active_participant_team(session)
+            assigned_team = participant_team
+    except ImportError:
+        pass
+    try:
+        from draft_source_validation import allow_free_pool_drafting
+
+        commissioner_mode = bool(allow_free_pool_drafting(session, live_room=session.get("live_draft_room")))
+    except ImportError:
+        pass
     if name:
         allowed, reason = can_draft_player(session, name)
+        disable_reason = "" if allowed else _classify_disable_reason(reason)
+        try:
+            from draft_source_validation import is_allowed_draft_source
+
+            src_ok, src_reason, _ = is_allowed_draft_source(
+                session,
+                name,
+                live_room=session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None,
+            )
+            player_source_valid = src_ok
+            if not src_ok and not disable_reason:
+                disable_reason = _classify_disable_reason(src_reason)
+        except ImportError:
+            pass
     else:
         if ctx.get("draft_complete"):
             reason = "Draft is complete."
+            disable_reason = "draft_complete"
         elif ctx.get("board_full") and not ctx.get("live_draft_active"):
             reason = "Board is full."
+            disable_reason = "board_full"
         elif not ctx.get("your_team"):
             reason = "Set your team in Draft Room settings."
+            disable_reason = "participant_team_mismatch"
         elif not ctx.get("is_your_pick"):
             on_clock = ctx.get("on_clock_team") or "another team"
             pick_n = ctx.get("current_pick")
             reason = f"Not your pick (Pick {pick_n}: {on_clock})." if pick_n else f"Not your pick ({on_clock})."
+            disable_reason = "not_your_turn"
         else:
             allowed = True
             reason = ""
@@ -287,15 +324,39 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         "active_draft_source": ctx.get("active_draft_source"),
         "active_draft_mode": ctx.get("active_mode"),
         "your_team": ctx.get("your_team") or None,
+        "assigned_team": assigned_team or ctx.get("your_team") or None,
+        "participant_team": participant_team or ctx.get("your_team") or None,
         "on_clock_team": ctx.get("on_clock_team") or None,
         "current_pick": ctx.get("current_pick"),
+        "is_my_turn": ctx.get("is_your_pick"),
         "is_your_pick": ctx.get("is_your_pick"),
+        "commissioner_mode": commissioner_mode,
+        "player_source_valid": player_source_valid,
+        "draft_enabled": allowed if name else bool(ctx.get("is_your_pick") and ctx.get("your_team")),
+        "disable_reason": disable_reason or (None if allowed else _classify_disable_reason(reason)),
+        "reason_if_disabled": None if allowed else (reason or "Cannot draft"),
+        "sample_player_allowed": allowed if name else None,
         "draft_complete": ctx.get("draft_complete"),
         "board_full": ctx.get("board_full"),
         "live_draft_active": ctx.get("live_draft_active"),
-        "reason_if_disabled": None if allowed else (reason or "Cannot draft"),
-        "sample_player_allowed": allowed if name else None,
     }
+
+
+def _classify_disable_reason(reason: str) -> str:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return "unknown"
+    if "not your pick" in text:
+        return "not_your_turn"
+    if "already drafted" in text:
+        return "player_already_drafted"
+    if "queue" in text or "watchlist" in text or "tracked" in text:
+        return "player_not_in_queue_watchlist_tracked"
+    if "team" in text or "membership" in text:
+        return "participant_team_mismatch"
+    if "not available" in text:
+        return "player_already_drafted"
+    return "multiplayer_membership_guard" if "membership" in text else text[:48].replace(" ", "_")
 
 
 def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, str]:

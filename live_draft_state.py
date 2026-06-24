@@ -16,6 +16,7 @@ LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
 from draft_scoring_pool import (
     LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS,
+    prepare_pool_for_compact_serialization,
     select_live_draft_compact_columns,
 )
 
@@ -89,6 +90,7 @@ def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = Fa
             elif hasattr(pool, "to_dict"):
                 frame = pool
                 if compact_pool:
+                    frame, _compact_report = prepare_pool_for_compact_serialization(frame)
                     cols = select_live_draft_compact_columns(frame)
                     if cols:
                         frame = frame[cols]
@@ -98,9 +100,9 @@ def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = Fa
                 records = val.get("pool_records") or []
                 columns = [str(c) for c in (val.get("pool_columns") or [])]
                 if compact_pool and records and columns:
-                    keep = select_live_draft_compact_columns(
-                        pd.DataFrame(records, columns=columns) if columns else pd.DataFrame(records)
-                    )
+                    frame = pd.DataFrame(records, columns=columns) if columns else pd.DataFrame(records)
+                    frame, _compact_report = prepare_pool_for_compact_serialization(frame)
+                    keep = select_live_draft_compact_columns(frame)
                     if not keep:
                         keep = [c for c in LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS if c in columns]
                     if keep:

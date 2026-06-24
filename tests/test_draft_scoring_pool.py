@@ -10,6 +10,7 @@ from draft_scoring_pool import (
     LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS,
     analyze_compact_pool,
     ensure_draft_scoring_pool_columns,
+    prepare_pool_for_compact_serialization,
     select_live_draft_compact_columns,
 )
 
@@ -95,11 +96,31 @@ class DraftScoringPoolTests(unittest.TestCase):
         )
         diag = analyze_compact_pool(pool)
         self.assertIn("Model Rank", diag["missing_required"])
-        self.assertIn("Model Rank", diag["default_filled_counts"])
+        self.assertIn("Market Rank", diag["missing_required"])
+        derived = diag.get("derived_columns") or []
+        self.assertTrue("Model Rank" in derived or "Fantasy Edge" in derived)
 
-    def test_compact_column_list_is_stable(self) -> None:
-        self.assertIn("Fantasy Edge", LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS)
-        self.assertIn("proj_HR", LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS)
+    def test_prepare_compact_derives_ranks_from_adp_and_efv(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.95,
+                    "ADP Rank": 12,
+                }
+            ]
+        )
+        prepared, report = prepare_pool_for_compact_serialization(pool)
+        self.assertIn("Model Rank", prepared.columns)
+        self.assertIn("Market Rank", prepared.columns)
+        self.assertIn("Fantasy Edge", prepared.columns)
+        self.assertEqual(float(prepared.loc[0, "Market Rank"]), 12.0)
+        self.assertLess(float(prepared.loc[0, "Model Rank"]), 9000)
+        self.assertNotEqual(float(prepared.loc[0, "Fantasy Edge"]), 0.0)
+        quality = report.get("scoring_quality") or {}
+        self.assertGreaterEqual(quality.get("Market Rank", {}).get("real", 0), 1)
 
 
 if __name__ == "__main__":

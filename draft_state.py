@@ -141,9 +141,40 @@ def write_canonical_draft_state(
     session["_suite_last_cloud_payload_draft_workflow"] = copy.deepcopy(payload)
     _sync_page_filter_draft_block(session, data=payload)
     record_draft_field_write(session, "draft_workflow", reason or "canonical", new=payload)
+    _sync_participant_workflow_if_multiplayer(session, reason=reason or "canonical")
     if local_edit:
         mark_draft_local_edit(session)
     return meta
+
+
+def _sync_participant_workflow_if_multiplayer(session: dict[str, Any], *, reason: str = "") -> None:
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from draft_room_participant_state import save_participant_workflow_from_session
+        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY
+
+        if not is_multiplayer_draft_active(session):
+            return
+        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        if code:
+            save_participant_workflow_from_session(session, code)
+    except ImportError:
+        pass
+
+
+def _load_participant_workflow_if_multiplayer(session: dict[str, Any]) -> None:
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from draft_room_participant_state import load_participant_workflow_into_session
+        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY
+
+        if not is_multiplayer_draft_active(session):
+            return
+        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        if code:
+            load_participant_workflow_into_session(session, code)
+    except ImportError:
+        pass
 
 
 def _draft_workflow_from_blob(state: dict[str, Any]) -> dict[str, list[str]]:
@@ -228,6 +259,7 @@ def gather_draft_workflow(session: dict[str, Any]) -> dict[str, list[str]]:
 
 def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
     """Reconcile draft queue + watchlist before sidebar widgets render."""
+    _load_participant_workflow_if_multiplayer(session)
     widget = _read_widget_lists(session)
     drift = _draft_widget_drift(session) or bool(session.get(DRAFT_PENDING_SYNC_KEY))
     if is_draft_locally_dirty(session) or drift:
@@ -439,6 +471,13 @@ def restore_draft_workflow_page_filters(session: dict[str, Any], store: dict[str
 
 
 def apply_cloud_draft_state_if_allowed(session: dict[str, Any], state: dict[str, Any]) -> bool:
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            return False
+    except ImportError:
+        pass
     if is_draft_locally_dirty(session):
         return False
     data = _draft_workflow_from_blob(state)

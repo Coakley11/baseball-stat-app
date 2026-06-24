@@ -150,6 +150,16 @@ class DraftRoomMembershipTests(unittest.TestCase):
         self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_new_guest_join_does_not_inherit_host_queue_from_globals(self, _mock_auth: object) -> None:
+        from draft_state import DRAFT_QUEUE_KEY
+
+        code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
+        self.guest_session[DRAFT_QUEUE_KEY] = ["Aaron Judge", "Juan Soto"]
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.guest_session.get(DRAFT_QUEUE_KEY), [])
+
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_rejoin_restores_same_team(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
         join_shared_draft_room(self.guest_session, code, store=self.store)

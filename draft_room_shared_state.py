@@ -391,6 +391,50 @@ def load_shared_room(room_code: str, *, store: SharedRoomStore | None = None) ->
     return backend.load(str(room_code or "").strip().upper())
 
 
+def _merge_runtime_pool(existing: dict[str, Any], runtime: dict[str, Any]) -> None:
+    """Keep richer scoring columns from the local pool when a compact shared sync is thinner."""
+    import pandas as pd
+
+    existing_pool = existing.get("pool")
+    incoming = runtime.get("pool")
+    if not isinstance(incoming, pd.DataFrame) or incoming.empty:
+        return
+    if not isinstance(existing_pool, pd.DataFrame) or existing_pool.empty:
+        return
+    if "playerID" not in incoming.columns or "playerID" not in existing_pool.columns:
+        return
+    try:
+        from draft_scoring_pool import LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS, _RANK_DEFAULT
+    except ImportError:
+        return
+
+    ex = existing_pool.copy()
+    inc = incoming.copy()
+    ex["playerID"] = ex["playerID"].astype(str)
+    inc["playerID"] = inc["playerID"].astype(str)
+    ex = ex.set_index("playerID")
+    inc = inc.set_index("playerID")
+    shared_ids = inc.index.intersection(ex.index)
+    if shared_ids.empty:
+        return
+    for col in LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS:
+        if col not in ex.columns:
+            continue
+        if col not in inc.columns:
+            inc[col] = ex[col]
+            continue
+        inc_vals = pd.to_numeric(inc[col], errors="coerce") if col != "Primary Position" else inc[col]
+        if col in ("Model Rank", "Market Rank"):
+            bad = inc_vals.isna() | inc_vals.ge(_RANK_DEFAULT)
+        elif col == "Fantasy Edge":
+            bad = inc_vals.isna() | inc_vals.eq(0)
+        else:
+            bad = inc_vals.isna() if hasattr(inc_vals, "isna") else inc[col].isna()
+        if bad.any():
+            inc.loc[bad, col] = ex.loc[bad, col]
+    runtime["pool"] = inc.reset_index()
+
+
 def publish_shared_room_runtime(
     session: dict[str, Any],
     document: dict[str, Any],
@@ -426,6 +470,9 @@ def publish_shared_room_runtime(
         and len(existing.get("draft_board") or []) > len(runtime.get("draft_board") or [])
     ):
         return existing
+
+    if isinstance(existing, dict):
+        _merge_runtime_pool(existing, runtime)
 
     session.pop("_draft_room_publish_error", None)
     session[LIVE_DRAFT_ROOM_KEY] = runtime

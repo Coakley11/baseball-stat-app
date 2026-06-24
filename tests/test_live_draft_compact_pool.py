@@ -61,8 +61,9 @@ class LiveDraftCompactPoolTests(unittest.TestCase):
         room = {"status": "in_progress", "pool": pool}
         full = room_to_persist_dict(room, compact_pool=False)
         compact = room_to_persist_dict(room, compact_pool=True)
-        self.assertLess(len(compact["pool_columns"]), len(full["pool_columns"]))
         self.assertLessEqual(len(compact["pool_columns"]), len(LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS))
+        self.assertIn("Model Rank", compact["pool_columns"])
+        self.assertNotIn("extra_lahman_col", compact["pool_columns"])
 
     def test_manual_draft_sort_on_compact_pool(self) -> None:
         """Manual Draft sort by Expected Fantasy Value + Model Rank must not crash."""

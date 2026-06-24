@@ -150,7 +150,7 @@ def participant_workflow_slot(session: dict[str, Any], room_code: str) -> dict[s
         slot: dict[str, Any] = {"participant_id": pid}
         legacy_workflow = room_state.get("workflow")
         legacy_pid = str(room_state.get("participant_id") or "").strip()
-        if isinstance(legacy_workflow, dict) and (not legacy_pid or legacy_pid == pid):
+        if isinstance(legacy_workflow, dict) and legacy_pid == pid:
             slot["workflow"] = copy.deepcopy(legacy_workflow)
             if isinstance(room_state.get("notes"), str):
                 slot["notes"] = room_state["notes"]
@@ -214,23 +214,47 @@ def set_active_participant(
 
 
 def active_participant_team(session: dict[str, Any]) -> str:
-    team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
-    if team:
-        return team
-
+    pid = resolve_participant_id(session)
     try:
         from draft_room_context import is_multiplayer_draft_active
 
         if is_multiplayer_draft_active(session):
             code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
             if code:
-                scoped = membership_team_for_participant(session, code)
+                scoped = membership_team_for_participant(session, code, participant_id=pid)
                 if scoped:
+                    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
                     session[ACTIVE_PARTICIPANT_TEAM_KEY] = scoped
                     return scoped
+                try:
+                    from draft_room_shared_state import load_shared_room
+
+                    doc = load_shared_room(code)
+                    participants = dict((doc or {}).get("participants") or {})
+                    meta = participants.get(pid)
+                    if isinstance(meta, dict) and meta.get("assigned_team"):
+                        team = str(meta["assigned_team"]).strip()
+                        session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+                        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+                        _persist_room_membership(
+                            session,
+                            room_code=code,
+                            participant_id=pid,
+                            assigned_team=team,
+                        )
+                        return team
+                except ImportError:
+                    pass
             return ""
     except ImportError:
         pass
+
+    team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
+    if team:
+        stored_pid = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
+        if stored_pid and stored_pid != pid:
+            return ""
+        return team
 
     try:
         from global_fantasy_settings_state import GLOBAL_TEAM_KEY
@@ -261,7 +285,6 @@ def load_participant_workflow_into_session(session: dict[str, Any], room_code: s
 
 def save_participant_workflow_from_session(session: dict[str, Any], room_code: str) -> dict[str, Any]:
     """Persist queue/watchlist from session into participant-private storage."""
-    prepare_draft_workflow(session)
     workflow = gather_draft_workflow(session)
     slot = participant_workflow_slot(session, room_code)
     slot["workflow"] = {
@@ -388,6 +411,32 @@ def _hydrate_team_from_membership(
         session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
 
 
+def clear_multiplayer_membership_for_account(session: dict[str, Any]) -> str:
+    """Dev helper — clear stale multiplayer membership/team globals for the current auth user."""
+    pid = resolve_participant_id(session)
+    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+    session.pop(ACTIVE_PARTICIPANT_ID_KEY, None)
+    session.pop("room_your_team", None)
+    if code:
+        membership = session.get(MEMBERSHIP_KEY)
+        if isinstance(membership, dict) and isinstance(membership.get(code), dict):
+            room_mem = _normalize_room_membership(membership.get(code))
+            room_mem.pop(pid, None)
+            if room_mem:
+                membership[code] = room_mem
+            else:
+                membership.pop(code, None)
+        room_state = participant_state_for_room(session, code)
+        by_pid = room_state.get("by_participant")
+        if isinstance(by_pid, dict):
+            by_pid.pop(pid, None)
+        if str(room_state.get("participant_id") or "") == pid:
+            room_state.pop("participant_id", None)
+            room_state.pop("assigned_team", None)
+    return pid
+
+
 def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     """Auth + membership snapshot for dev acceptance (per device)."""
     pid = resolve_participant_id(session)
@@ -416,8 +465,13 @@ def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str,
             pass
 
     persisted_blob: dict[str, Any] = {}
+    registry_team = None
     if isinstance(membership, dict) and code:
         persisted_blob = _normalize_room_membership(membership.get(code))
+    if code and pid:
+        entry = room_registry.get(pid)
+        if isinstance(entry, dict) and entry.get("assigned_team"):
+            registry_team = str(entry["assigned_team"])
 
     return {
         "auth_email": auth_email,
@@ -425,7 +479,11 @@ def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str,
         "participant_id": pid,
         "room_code": code or None,
         "assigned_team": active_participant_team(session) or None,
+        "registry_assigned_team": registry_team,
         "membership_team": membership_team_for_participant(session, code) if code else None,
+        "active_queue_key": "draft_queue",
+        "active_watchlist_focus_key": "draft_assistant_focus_players",
+        "active_watchlist_favorites_key": "workflow_favorite_targets",
         "room_participant_registry": room_registry,
         "persisted_membership_blob": persisted_blob,
     }

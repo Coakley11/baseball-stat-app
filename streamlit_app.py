@@ -18015,8 +18015,20 @@ if active_page == "Live Draft Room":
                 room["config"]["user_team"] = user_team
                 room["config"]["your_team"] = user_team
                 st.session_state["room_your_team"] = user_team
+        room_label = str(room.get("draft_room_id") or "")
+        if _multiplayer_draft:
+            try:
+                share_code = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+            except Exception:
+                share_code = ""
+            if share_code:
+                room_label = f"Share code **{share_code}** · Session `{room.get('draft_room_id', '')}`"
+            else:
+                room_label = f"Session `{room.get('draft_room_id', '')}`"
+        else:
+            room_label = f"Room `{room.get('draft_room_id', '')}`"
         st.caption(
-            f"**{cfg.get('league_name', 'League')}** · Room `{room.get('draft_room_id', '')}` · "
+            f"**{cfg.get('league_name', 'League')}** · {room_label} · "
             f"Your team: **{user_team}** · "
             f"Status: **{str(room.get('status', '')).replace('_', ' ').title()}** · "
             f"Pick {min(picks_done + 1, total_picks)} of {total_picks}"

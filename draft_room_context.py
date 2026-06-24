@@ -76,6 +76,7 @@ def get_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
         "room_code": room_code or None,
         "participant_id": participant_id,
         "participant_team": participant_team,
+        "draft_room_id": str(room.get("draft_room_id") or "") if isinstance(room, dict) else "",
         "is_room_host": is_host,
         "shared_revision": shared_meta.get("revision"),
         "shared_updated_at": shared_meta.get("updated_at"),
@@ -476,6 +477,16 @@ def join_shared_draft_room(
             raise
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
+    from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY
+    from draft_room_participant_state import participant_workflow_slot
+
+    slot = participant_workflow_slot(session, code)
+    workflow = dict(slot.get("workflow") or {})
+    if not any(workflow.get(k) for k in ("queue", "watchlist_focus", "watchlist_favorites")):
+        session[DRAFT_QUEUE_KEY] = []
+        session[DRAFT_WATCHLIST_FOCUS_KEY] = []
+        session[DRAFT_WATCHLIST_FAVORITES_KEY] = []
+    load_participant_workflow_into_session(session, code)
     save_participant_workflow_from_session(session, code)
     runtime = publish_shared_room_runtime(session, document, reason="shared_room_join")
     if runtime is None:

@@ -24,6 +24,27 @@ WORKSPACE_SCHEMA_VERSION = 1
 _DEFAULT_PAGE = "Historical Explorer"
 _DEFAULT_SIDEBAR_PAGE = "Historical Explorer"
 
+_DRAFT_ROOM_SETTINGS_GLOBALS = frozenset(
+    {"room_format", "room_team_count", "room_rounds", "room_your_team", "room_window"}
+)
+
+_MULTIPLAYER_SCOPED_GLOBALS = frozenset(
+    {
+        "draft_room_participant_team",
+        "draft_room_participant_id",
+        "room_your_team",
+    }
+)
+
+
+def _multiplayer_restore_active(ss: dict[str, Any], state: dict[str, Any]) -> bool:
+    code = str(
+        ss.get("active_shared_draft_room_code")
+        or state.get("active_shared_draft_room_code")
+        or ""
+    ).strip()
+    return bool(code)
+
 _GLOBAL_KEYS = (
     "active_page",
     "main_sidebar_page",
@@ -423,13 +444,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     # draft-room blob. When the user edits settings, draft_room_state_dirty is set
     # (via mark_draft_room_local_edit on_change) and we must not let the cloud blob
     # overwrite their live edits on the very next rerun.
-    _DRAFT_ROOM_SETTINGS_GLOBALS = frozenset(
-        {"room_format", "room_team_count", "room_rounds", "room_your_team", "room_window"}
-    )
-
     preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
+    multiplayer_restore = _multiplayer_restore_active(ss, state)
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
+            continue
+        if multiplayer_restore and key in _MULTIPLAYER_SCOPED_GLOBALS:
             continue
         if skip_draft_room and key in (DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_STATE_KEY):
             continue

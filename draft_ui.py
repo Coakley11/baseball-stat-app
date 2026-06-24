@@ -129,7 +129,17 @@ def render_draft_button(
         type=button_type,
     )
     if show_disabled_reason:
-        container.caption(draft_disabled_hint(reason))
+        try:
+            from draft_actions import draft_button_diagnostics
+
+            diag = draft_button_diagnostics(session, name)
+            code = str(diag.get("disable_reason") or "").strip()
+            if code:
+                container.caption(f"Disabled: {code}")
+            elif reason:
+                container.caption(draft_disabled_hint(reason))
+        except ImportError:
+            container.caption(draft_disabled_hint(reason))
     return False
 
 

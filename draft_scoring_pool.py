@@ -72,6 +72,53 @@ _SCORING_FALLBACK_DEFAULTS: dict[str, float | str] = {
 }
 
 
+def _series_is_default(col: pd.Series, default: float | str) -> pd.Series:
+    numeric = pd.to_numeric(col, errors="coerce")
+    if col.dtype == object and not numeric.notna().any():
+        return col.fillna("").astype(str).eq(str(default))
+    if isinstance(default, float):
+        return numeric.isna() | numeric.eq(float(default))
+    return numeric.isna() | col.fillna("").astype(str).eq(str(default))
+
+
+def count_scoring_value_quality(pool: pd.DataFrame | None) -> dict[str, dict[str, int]]:
+    """Count real vs default-filled values for rank/edge columns."""
+    out: dict[str, dict[str, int]] = {}
+    if pool is None or not isinstance(pool, pd.DataFrame) or pool.empty:
+        return out
+    checks: tuple[tuple[str, float | str], ...] = (
+        ("Model Rank", _RANK_DEFAULT),
+        ("Market Rank", _RANK_DEFAULT),
+        ("Fantasy Edge", 0.0),
+    )
+    n = len(pool)
+    for col, default in checks:
+        if col not in pool.columns:
+            out[col] = {"real": 0, "default": n, "missing_column": n}
+            continue
+        default_mask = _series_is_default(pool[col], default)
+        default_n = int(default_mask.sum())
+        out[col] = {"real": n - default_n, "default": default_n}
+    return out
+
+
+def prepare_pool_for_compact_serialization(
+    pool: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Ensure scoring columns exist before compact shared-room serialization."""
+    if pool is None or not isinstance(pool, pd.DataFrame) or pool.empty:
+        return pd.DataFrame(), {"source_columns": [], "compact_columns": []}
+    source_columns = [str(c) for c in pool.columns]
+    prepared, report = _ensure_draft_scoring_pool_columns(pool, mutate=True)
+    compact_columns = select_live_draft_compact_columns(prepared)
+    report["source_columns"] = source_columns
+    report["source_column_count"] = len(source_columns)
+    report["compact_columns"] = compact_columns
+    report["compact_column_count"] = len(compact_columns)
+    report["scoring_quality"] = count_scoring_value_quality(prepared)
+    return prepared, report
+
+
 def select_live_draft_compact_columns(frame: pd.DataFrame) -> list[str]:
     """Columns to keep for compact shared-room pool — required scoring cols present in frame."""
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -99,17 +146,20 @@ def analyze_compact_pool(
         }
 
     src_cols = source_columns if source_columns is not None else [str(c) for c in pool.columns]
-    compact_cols = select_live_draft_compact_columns(pool)
+    prepared, prep_report = prepare_pool_for_compact_serialization(pool)
+    compact_cols = prep_report.get("compact_columns") or select_live_draft_compact_columns(prepared)
     missing = [c for c in LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS if c not in src_cols]
-    _, report = _ensure_draft_scoring_pool_columns(pool, mutate=False)
+    _, report = _ensure_draft_scoring_pool_columns(prepared, mutate=False)
     return {
         "pool_count": len(pool),
+        "source_columns": src_cols,
         "source_column_count": len(src_cols),
         "compact_columns": compact_cols,
         "compact_column_count": len(compact_cols),
         "missing_required": missing,
         "default_filled_counts": report.get("default_filled_counts") or {},
-        "derived_columns": report.get("derived_columns") or [],
+        "derived_columns": report.get("derived_columns") or prep_report.get("derived_columns") or [],
+        "scoring_quality": prep_report.get("scoring_quality") or count_scoring_value_quality(prepared),
     }
 
 
@@ -145,7 +195,18 @@ def _ensure_draft_scoring_pool_columns(
     def _derive(col: str) -> None:
         report["derived_columns"].append(col)
 
-    if "Market Rank" not in out.columns:
+    def _needs_column(col: str) -> bool:
+        if col not in out.columns:
+            return True
+        series = pd.to_numeric(out[col], errors="coerce") if col != "Primary Position" else out[col]
+        if col in ("Model Rank", "Market Rank"):
+            nums = pd.to_numeric(series, errors="coerce")
+            return nums.isna().all() or nums.eq(_RANK_DEFAULT).all()
+        if col == "Fantasy Edge":
+            return series.isna().all() or series.fillna(0).eq(0).all()
+        return series.isna().all()
+
+    if _needs_column("Market Rank"):
         if "ADP Rank" in out.columns:
             out["Market Rank"] = pd.to_numeric(out["ADP Rank"], errors="coerce")
             _derive("Market Rank")
@@ -156,11 +217,16 @@ def _ensure_draft_scoring_pool_columns(
             out["Market Rank"] = pd.to_numeric(out["FantasyPros Rank"], errors="coerce")
             _derive("Market Rank")
 
-    if "Model Rank" not in out.columns and "App Rank" in out.columns:
-        out["Model Rank"] = pd.to_numeric(out["App Rank"], errors="coerce")
-        _derive("Model Rank")
+    if _needs_column("Model Rank"):
+        if "App Rank" in out.columns:
+            out["Model Rank"] = pd.to_numeric(out["App Rank"], errors="coerce")
+            _derive("Model Rank")
+        elif "Expected Fantasy Value" in out.columns:
+            efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+            out["Model Rank"] = efv.rank(ascending=False, method="min")
+            _derive("Model Rank")
 
-    if "Fantasy Edge" not in out.columns:
+    if _needs_column("Fantasy Edge"):
         if "Market Rank" in out.columns and "Model Rank" in out.columns:
             out["Fantasy Edge"] = (
                 pd.to_numeric(out["Market Rank"], errors="coerce")
