@@ -182,14 +182,59 @@ class LocalFileSharedRoomStore:
         return self._path(room_code).is_file()
 
     def load(self, room_code: str) -> dict[str, Any] | None:
-        path = self._path(room_code)
+        result = self.load_with_diagnostics(room_code)
+        doc = result.get("document")
+        return doc if isinstance(doc, dict) else None
+
+    def load_with_diagnostics(self, room_code: str) -> dict[str, Any]:
+        code = str(room_code or "").strip().upper()
+        if not code:
+            return {
+                "found": False,
+                "document": None,
+                "reason": "invalid_code",
+                "query_error": None,
+                "backend": "local_file",
+                "room_code_queried": "",
+            }
+        path = self._path(code)
         if not path.is_file():
-            return None
+            return {
+                "found": False,
+                "document": None,
+                "reason": "not_found",
+                "query_error": None,
+                "backend": "local_file",
+                "room_code_queried": code,
+            }
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return raw if isinstance(raw, dict) else None
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "found": False,
+                "document": None,
+                "reason": "query_error",
+                "query_error": str(exc),
+                "backend": "local_file",
+                "room_code_queried": code,
+            }
+        if not isinstance(raw, dict):
+            return {
+                "found": False,
+                "document": None,
+                "reason": "invalid_row",
+                "query_error": None,
+                "backend": "local_file",
+                "room_code_queried": code,
+            }
+        return {
+            "found": True,
+            "document": raw,
+            "reason": None,
+            "query_error": None,
+            "backend": "local_file",
+            "room_code_queried": code,
+        }
 
     def load_head(self, room_code: str) -> dict[str, Any] | None:
         path = self._path(room_code)
@@ -328,11 +373,38 @@ def publish_shared_room_runtime(
     reason: str = "shared_room_sync",
 ) -> dict[str, Any] | None:
     """Mirror shared room document into session runtime keys used by existing engines."""
+    try:
+        from draft_room_create_verify import validate_shared_room_document
+
+        ok, err = validate_shared_room_document(document)
+        if not ok:
+            session["_draft_room_publish_error"] = err
+            if reason in ("shared_room_poll", "global_context_prepare"):
+                existing = session.get(LIVE_DRAFT_ROOM_KEY)
+                return existing if isinstance(existing, dict) else None
+            return None
+    except ImportError:
+        pass
+
     runtime = document_to_runtime_room(document)
     if runtime is None:
+        session["_draft_room_publish_error"] = "Shared room JSON could not be converted to a live draft room."
+        existing = session.get(LIVE_DRAFT_ROOM_KEY)
+        if reason in ("shared_room_poll", "global_context_prepare") and isinstance(existing, dict):
+            return existing
         return None
+
+    existing = session.get(LIVE_DRAFT_ROOM_KEY)
+    if (
+        reason in ("shared_room_poll", "global_context_prepare")
+        and isinstance(existing, dict)
+        and len(existing.get("draft_board") or []) > len(runtime.get("draft_board") or [])
+    ):
+        return existing
+
+    session.pop("_draft_room_publish_error", None)
     session[LIVE_DRAFT_ROOM_KEY] = runtime
-    session[ACTIVE_SHARED_ROOM_CODE_KEY] = str(document.get("room_code") or "").upper()
+    session[ACTIVE_SHARED_ROOM_CODE_KEY] = str(document.get("room_code") or "").strip().upper()
     meta = {
         "room_code": document.get("room_code"),
         "revision": document.get("revision"),

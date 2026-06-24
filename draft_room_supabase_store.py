@@ -109,9 +109,21 @@ class SupabaseSharedRoomStore:
         return isinstance(rows, list) and bool(rows)
 
     def load(self, room_code: str) -> dict[str, Any] | None:
+        result = self.load_with_diagnostics(room_code)
+        doc = result.get("document")
+        return doc if isinstance(doc, dict) else None
+
+    def load_with_diagnostics(self, room_code: str) -> dict[str, Any]:
         code = str(room_code or "").strip().upper()
         if not code:
-            return None
+            return {
+                "found": False,
+                "document": None,
+                "reason": "invalid_code",
+                "query_error": None,
+                "backend": "supabase",
+                "room_code_queried": "",
+            }
         try:
             rows = _request(
                 "GET",
@@ -123,11 +135,42 @@ class SupabaseSharedRoomStore:
                 },
                 prefer="return=representation",
             )
-        except RuntimeError:
-            return None
+        except RuntimeError as exc:
+            return {
+                "found": False,
+                "document": None,
+                "reason": "query_error",
+                "query_error": str(exc),
+                "backend": "supabase",
+                "room_code_queried": code,
+            }
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-            return None
-        return row_to_document(rows[0])
+            return {
+                "found": False,
+                "document": None,
+                "reason": "not_found",
+                "query_error": None,
+                "backend": "supabase",
+                "room_code_queried": code,
+            }
+        doc = row_to_document(rows[0])
+        if not isinstance(doc, dict):
+            return {
+                "found": False,
+                "document": None,
+                "reason": "invalid_row",
+                "query_error": None,
+                "backend": "supabase",
+                "room_code_queried": code,
+            }
+        return {
+            "found": True,
+            "document": doc,
+            "reason": None,
+            "query_error": None,
+            "backend": "supabase",
+            "room_code_queried": code,
+        }
 
     def load_head(self, room_code: str) -> dict[str, Any] | None:
         """Lightweight revision probe — no shared_room_json download."""
@@ -184,7 +227,7 @@ class SupabaseSharedRoomStore:
             saved = row_to_document(rows[0])
             if saved:
                 return saved
-        return sanitize_shared_room_document(document)
+        raise RuntimeError(f"Supabase save returned no row for shared room {code}")
 
     def save_if_revision(
         self,

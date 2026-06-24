@@ -5,7 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from draft_room_diagnostics import render_shared_room_diagnostics
+from draft_room_diagnostics import (
+    render_shared_room_create_diagnostics,
+    render_shared_room_diagnostics,
+    render_shared_room_join_load_diagnostics,
+)
 from draft_source_validation import ALLOW_FREE_POOL_KEY
 
 
@@ -170,6 +174,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 st.info("Left shared draft room. Your private queue and watchlist are saved.")
                 return True
             render_shared_room_diagnostics(st, session)
+            render_shared_room_create_diagnostics(st, session)
             render_shared_room_auth_diagnostics(st, session)
             render_join_trace_panel(st, session)
             return False
@@ -194,8 +199,10 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     code, doc = create_and_host_shared_room(session, room)
                     if not code:
                         st.error(session.pop("_draft_room_last_error", "Could not create shared room."))
+                        render_shared_room_create_diagnostics(st, session)
                         _render_supabase_error_detail(st, session)
                     else:
+                        render_shared_room_create_diagnostics(st, session)
                         _finalize_successful_join(session, f"Shared room created. Share code **{code}** with other managers.")
                     return True
         with col_join:
@@ -213,6 +220,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     _finalize_successful_join(session, msg)
                 else:
                     session["_draft_join_error"] = msg
+                    render_shared_room_join_load_diagnostics(st, session)
                     _render_supabase_error_detail(st, session)
                     trace_join_step(session, "join_failed", message=msg)
                 return True

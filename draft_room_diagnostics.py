@@ -71,8 +71,56 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
                 str(diag.get("current_pick_index") if diag.get("current_pick_index") is not None else "—"),
             ),
             ("Drafted", str(diag.get("drafted_count") if diag.get("drafted_count") is not None else "—")),
+            ("Pool count", str(diag.get("pool_count") if diag.get("pool_count") is not None else "—")),
         ]
         for label, value in rows:
             st.text(f"{label}: {value}")
         if diag.get("conflict_notice"):
             st.warning(str(diag["conflict_notice"]))
+
+
+def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Show post-create verification snapshot (dev / acceptance)."""
+    raw = session.get("_draft_room_create_diag")
+    if not isinstance(raw, dict):
+        return
+    with st.expander("Create verification (dev)", expanded=True):
+        save = raw.get("save_result") if isinstance(raw.get("save_result"), dict) else {}
+        loaded = raw.get("immediate_load") if isinstance(raw.get("immediate_load"), dict) else {}
+        load_meta = raw.get("load_result") if isinstance(raw.get("load_result"), dict) else {}
+        rows = [
+            ("Generated room code", raw.get("room_code") or save.get("room_code") or "—"),
+            ("Backend", save.get("backend") or loaded.get("backend") or load_meta.get("backend") or "—"),
+            ("Save revision", str(save.get("revision") if save.get("revision") is not None else "—")),
+            ("Save status", save.get("status") or "—"),
+            ("Save pool count", str(save.get("pool_count") if save.get("pool_count") is not None else "—")),
+            ("Save picks count", str(save.get("picks_count") if save.get("picks_count") is not None else "—")),
+            ("Save team count", str(save.get("team_count") if save.get("team_count") is not None else "—")),
+            ("Immediate load found", str(load_meta.get("found"))),
+            ("Immediate load revision", str(loaded.get("revision") if loaded.get("revision") is not None else "—")),
+            ("Immediate load status", loaded.get("status") or "—"),
+            ("Immediate load pool count", str(loaded.get("pool_count") if loaded.get("pool_count") is not None else "—")),
+            ("Immediate load picks count", str(loaded.get("picks_count") if loaded.get("picks_count") is not None else "—")),
+            ("Valid runtime", str(loaded.get("valid_runtime"))),
+        ]
+        for label, value in rows:
+            st.text(f"{label}: {value}")
+        if load_meta.get("query_error"):
+            st.code(str(load_meta.get("query_error"))[:2000])
+
+
+def render_shared_room_join_load_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    raw = session.get("_draft_room_join_load_diag")
+    if not isinstance(raw, dict):
+        return
+    with st.expander("Join lookup (dev)", expanded=True):
+        rows = [
+            ("Room code queried", raw.get("room_code_queried") or "—"),
+            ("Backend", raw.get("backend") or "—"),
+            ("Found", str(raw.get("found"))),
+            ("Reason", raw.get("reason") or "—"),
+        ]
+        for label, value in rows:
+            st.text(f"{label}: {value}")
+        if raw.get("query_error"):
+            st.code(str(raw.get("query_error"))[:2000])
