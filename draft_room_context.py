@@ -124,26 +124,65 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     return get_global_draft_context(session)
 
 
+_SHARED_DRAFT_SYNC_RUN_KEY = "_shared_draft_sync_run"
+
+
 def sync_shared_draft_room(
     session: dict[str, Any],
     *,
     force: bool = False,
     store: SharedRoomStore | None = None,
-) -> dict[str, Any] | None:
-    """Poll shared store; refresh session when revision advances."""
+) -> bool:
+    """Poll shared store; refresh session when revision advances.
+
+    Returns True when the local runtime was updated from a newer remote revision.
+    """
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     if not room_code:
-        return None
+        return False
+    if not force and session.get(_SHARED_DRAFT_SYNC_RUN_KEY):
+        return False
+
     backend = store or get_shared_room_store()
-    document = backend.load(room_code)
-    if not isinstance(document, dict):
-        return None
     local_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+
+    if not force:
+        load_head = getattr(backend, "load_head", None)
+        if callable(load_head):
+            head = load_head(room_code)
+            if isinstance(head, dict):
+                remote_rev = int(head.get("revision") or 0)
+                if remote_rev <= local_rev:
+                    session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
+                    return False
+
+    document = backend.load(room_code)
+    session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
+    if not isinstance(document, dict):
+        return False
     remote_rev = int(document.get("revision") or 0)
     if force or remote_rev > local_rev:
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
         load_participant_workflow_into_session(session, room_code)
-    return document
+        return True
+    return False
+
+
+def poll_shared_draft_room(
+    session: dict[str, Any],
+    *,
+    force: bool = False,
+    store: SharedRoomStore | None = None,
+) -> bool:
+    """Poll shared draft room and defer cloud autosave churn. Returns True if revision changed."""
+    try:
+        from suite_egress_policy import block_cloud_autosave_for_poll_sync
+
+        if not force:
+            block_cloud_autosave_for_poll_sync(session)
+    except ImportError:
+        pass
+    return sync_shared_draft_room(session, force=force, store=store)
 
 
 def create_and_host_shared_room(

@@ -15,6 +15,11 @@ from typing import Any, Literal
 
 FULL_SESSION_KEY = "full_session"
 
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 PickSource = Literal["cloud", "disk", "none"]
 
 
@@ -387,6 +392,12 @@ def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[s
         ts_key, blob_key = _full_session_cache_keys(app_key)
 
         updated_at: str | None = None
+        run_guard_key = f"_suite_full_session_fetch_run::{app_key}"
+        if not force and ss is not None and ss.get(run_guard_key):
+            cached = ss.get(blob_key)
+            if isinstance(cached, dict):
+                return copy.deepcopy(cached), ss.get(ts_key)
+
         if meta_fn:
             meta = meta_fn(app_id) or {}
             updated_at = str(meta.get("updated_at") or "") or None
@@ -412,6 +423,7 @@ def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[s
         if ss is not None:
             ss[blob_key] = copy.deepcopy(session_out)
             ss[ts_key] = updated_at
+            ss[run_guard_key] = True
         return session_out, updated_at
     except Exception:
         return {}, None
@@ -442,7 +454,11 @@ def save_cloud_full_session(
             summary=summary or "Last session",
             metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
         )
-        invalidate_cloud_full_session_cache(app_id)
+        ss = _streamlit_session()
+        if ss is not None:
+            ts_key, blob_key = _full_session_cache_keys(app_key)
+            ss[blob_key] = copy.deepcopy(state)
+            ss[ts_key] = _utc_now_iso()
         return True
     except Exception:
         return False

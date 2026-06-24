@@ -168,13 +168,50 @@ def get_run_egress_summary() -> dict[str, Any]:
     }
 
 
+_EGRESS_RUN_WARN_BYTES = 512 * 1024
+_EGRESS_RUN_HARD_BYTES = 2 * 1024 * 1024
+
+
+def clear_per_run_supabase_guards() -> None:
+    """Drop same-run fetch guards so each Streamlit script run starts fresh."""
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        ss = st.session_state
+        for key in list(ss.keys()):
+            sk = str(key)
+            if sk.startswith("_suite_full_session_fetch_run::") or sk == "_shared_draft_sync_run":
+                ss.pop(key, None)
+    except Exception:
+        pass
+
+
 def reset_run_egress_summary() -> None:
     try:
         import streamlit as st  # noqa: WPS433
 
+        clear_per_run_supabase_guards()
         st.session_state["_suite_egress_summary"] = EgressRunSummary()
     except Exception:
         pass
+
+
+def egress_run_threshold_status(summary: dict[str, Any] | None = None) -> tuple[str, str]:
+    """Return (level, message) where level is ok|warn|high."""
+    data = summary or get_run_egress_summary()
+    nbytes = int(data.get("bytes_in") or 0)
+    reads = int(data.get("reads") or 0)
+    if nbytes >= _EGRESS_RUN_HARD_BYTES or reads >= 25:
+        return (
+            "high",
+            f"High egress this render: {reads} reads, download≈{_human_bytes(nbytes)}",
+        )
+    if nbytes >= _EGRESS_RUN_WARN_BYTES or reads >= 8:
+        return (
+            "warn",
+            f"Elevated egress this render: {reads} reads, download≈{_human_bytes(nbytes)}",
+        )
+    return ("ok", "")
 
 
 def format_egress_summary_markdown(summary: dict[str, Any] | None = None) -> str:
@@ -224,9 +261,29 @@ def render_egress_sidebar_panel(st: Any) -> None:
     except Exception:
         return
     with st.sidebar.expander("Supabase egress (dev)", expanded=False):
-        st.markdown(format_egress_summary_markdown())
-        summary = _session_bucket()
-        if summary and summary.events:
+        summary = get_run_egress_summary()
+        level, threshold_msg = egress_run_threshold_status(summary)
+        if level == "high":
+            st.error(threshold_msg)
+        elif level == "warn":
+            st.warning(threshold_msg)
+        st.markdown(format_egress_summary_markdown(summary))
+        try:
+            from suite_egress_policy import low_egress_mode, set_low_egress_mode
+
+            low_on = low_egress_mode(st.session_state)
+            if st.checkbox(
+                "Low-egress mode (slower poll, fewer cloud saves)",
+                value=low_on,
+                key="suite_low_egress_toggle",
+            ):
+                set_low_egress_mode(st.session_state, True)
+            else:
+                set_low_egress_mode(st.session_state, False)
+        except ImportError:
+            pass
+        bucket = _session_bucket()
+        if bucket and bucket.events:
             st.caption("Recent fetches (newest last)")
-            tail = summary.events[-12:]
+            tail = bucket.events[-12:]
             st.code(json.dumps([e.__dict__ for e in tail], indent=2), language="json")

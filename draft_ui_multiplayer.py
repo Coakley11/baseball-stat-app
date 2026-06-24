@@ -119,8 +119,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             st.caption("**Single-user** live draft — create a shared room to invite other managers.")
         else:
             st.caption("Start or resume a live draft, then create a shared room for multiplayer.")
-
-        sync_shared_draft_room(session)
+            sync_shared_draft_room(session)
 
         notice = session.pop("_draft_room_membership_notice", None)
         if notice:

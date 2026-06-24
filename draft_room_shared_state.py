@@ -70,7 +70,7 @@ def sanitize_shared_room_document(document: dict[str, Any]) -> dict[str, Any]:
             from live_draft_state import is_runtime_room, room_to_persist_dict
 
             if is_runtime_room(room):
-                out["room"] = room_to_persist_dict(room)
+                out["room"] = room_to_persist_dict(room, compact_pool=True)
         except ImportError:
             pass
     try:
@@ -104,7 +104,7 @@ def shared_room_document(
     revision: int = 1,
 ) -> dict[str, Any]:
     """Wrap canonical live draft blob with multiplayer metadata."""
-    blob = room_to_persist_dict(live_room) if live_room.get("pool") is not None else copy.deepcopy(live_room)
+    blob = room_to_persist_dict(live_room, compact_pool=True) if live_room.get("pool") is not None else copy.deepcopy(live_room)
     blob.pop("pool", None)
     return {
         "schema_version": 1,
@@ -145,7 +145,7 @@ def bump_revision(document: dict[str, Any], *, live_room: dict[str, Any] | None 
     out["revision"] = int(out.get("revision") or 0) + 1
     out["updated_at"] = _utc_now_iso()
     if live_room is not None:
-        out["room"] = room_to_persist_dict(live_room)
+        out["room"] = room_to_persist_dict(live_room, compact_pool=True)
         out["status"] = str(live_room.get("status") or out.get("status") or "")
     return out
 
@@ -155,6 +155,8 @@ class SharedRoomStore(Protocol):
     def exists(self, room_code: str) -> bool: ...
 
     def load(self, room_code: str) -> dict[str, Any] | None: ...
+
+    def load_head(self, room_code: str) -> dict[str, Any] | None: ...
 
     def save(self, document: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -188,6 +190,23 @@ class LocalFileSharedRoomStore:
         except (OSError, json.JSONDecodeError):
             return None
         return raw if isinstance(raw, dict) else None
+
+    def load_head(self, room_code: str) -> dict[str, Any] | None:
+        path = self._path(room_code)
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        return {
+            "room_code": str(raw.get("room_code") or room_code).upper(),
+            "revision": int(raw.get("revision") or 1),
+            "status": str(raw.get("status") or ""),
+            "updated_at": str(raw.get("updated_at") or ""),
+        }
 
     def save(self, document: dict[str, Any]) -> dict[str, Any]:
         code = str(document.get("room_code") or "").strip().upper()
@@ -323,12 +342,13 @@ def publish_shared_room_runtime(
         "storage_backend": shared_room_backend_name(),
     }
     session[SHARED_ROOM_META_KEY] = meta
-    try:
-        from live_draft_state import write_canonical_live_draft_state
+    if reason not in ("shared_room_poll",):
+        try:
+            from live_draft_state import write_canonical_live_draft_state
 
-        write_canonical_live_draft_state(session, runtime, reason=reason)
-    except ImportError:
-        pass
+            write_canonical_live_draft_state(session, runtime, reason=reason)
+        except ImportError:
+            pass
     return runtime
 
 

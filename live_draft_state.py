@@ -16,6 +16,13 @@ LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
 LIVE_DRAFT_PERSIST_SCHEMA = 1
 
+SHARED_DRAFT_POOL_COLUMNS = (
+    "playerID",
+    "fullName",
+    "Primary Position",
+    "Expected Fantasy Value",
+)
+
 LIVE_DRAFT_SETTINGS_KEYS = (
     "live_draft_league_name",
     "live_draft_team_count",
@@ -67,7 +74,7 @@ def is_persisted_room_blob(data: Any) -> bool:
     )
 
 
-def room_to_persist_dict(room: dict[str, Any] | None) -> dict[str, Any]:
+def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = False) -> dict[str, Any]:
     """Convert in-memory live draft room to JSON-safe canonical blob."""
     if not room:
         return {}
@@ -79,11 +86,30 @@ def room_to_persist_dict(room: dict[str, Any] | None) -> dict[str, Any]:
                 out["pool_records"] = []
                 out["pool_columns"] = []
             elif hasattr(pool, "to_dict"):
-                out["pool_records"] = _json_safe(pool.to_dict(orient="records"))
-                out["pool_columns"] = [str(c) for c in pool.columns]
+                frame = pool
+                if compact_pool:
+                    cols = [c for c in SHARED_DRAFT_POOL_COLUMNS if c in frame.columns]
+                    if cols:
+                        frame = frame[cols]
+                out["pool_records"] = _json_safe(frame.to_dict(orient="records"))
+                out["pool_columns"] = [str(c) for c in frame.columns]
             elif isinstance(val, dict) and "pool_records" in val:
-                out["pool_records"] = _json_safe(val.get("pool_records") or [])
-                out["pool_columns"] = [str(c) for c in (val.get("pool_columns") or [])]
+                records = val.get("pool_records") or []
+                columns = [str(c) for c in (val.get("pool_columns") or [])]
+                if compact_pool and records and columns:
+                    keep = [c for c in SHARED_DRAFT_POOL_COLUMNS if c in columns]
+                    if keep:
+                        idx = {c: columns.index(c) for c in keep}
+                        slim_records = []
+                        for row in records:
+                            if isinstance(row, dict):
+                                slim_records.append({c: row.get(c) for c in keep})
+                            else:
+                                slim_records.append({c: row[idx[c]] for c in keep if idx[c] < len(row)})
+                        records = slim_records
+                        columns = keep
+                out["pool_records"] = _json_safe(records)
+                out["pool_columns"] = columns
             else:
                 out["pool_records"] = []
                 out["pool_columns"] = []

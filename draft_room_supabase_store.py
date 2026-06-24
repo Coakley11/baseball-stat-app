@@ -129,6 +129,34 @@ class SupabaseSharedRoomStore:
             return None
         return row_to_document(rows[0])
 
+    def load_head(self, room_code: str) -> dict[str, Any] | None:
+        """Lightweight revision probe — no shared_room_json download."""
+        code = str(room_code or "").strip().upper()
+        if not code:
+            return None
+        try:
+            rows = _request(
+                "GET",
+                _TABLE,
+                params={
+                    "select": "room_code,revision,status,updated_at",
+                    "room_code": f"eq.{code}",
+                    "limit": "1",
+                },
+                prefer="return=representation",
+            )
+        except RuntimeError:
+            return None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        return {
+            "room_code": str(row.get("room_code") or code).upper(),
+            "revision": int(row.get("revision") or 1),
+            "status": str(row.get("status") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        }
+
     def save(self, document: dict[str, Any]) -> dict[str, Any]:
         code = str(document.get("room_code") or "").strip().upper()
         if not code:
@@ -167,14 +195,14 @@ class SupabaseSharedRoomStore:
         code = str(document.get("room_code") or "").strip().upper()
         if not code:
             return False, None
-        current = self.load(code)
-        if current is None:
+        head = self.load_head(code)
+        if head is None:
             saved = self.save(document)
             return True, saved
 
-        current_rev = int(current.get("revision") or 0)
+        current_rev = int(head.get("revision") or 0)
         if expected_revision is not None and current_rev != int(expected_revision):
-            return False, current
+            return False, self.load(code)
 
         row = document_to_row(document)
         try:

@@ -479,6 +479,13 @@ except Exception:
     pass
 
 try:
+    from suite_egress_trace import reset_run_egress_summary
+
+    reset_run_egress_summary()
+except Exception:
+    pass
+
+try:
     from baseball_account_sidebar import prepare_baseball_auth_session
 
     prepare_baseball_auth_session(st)
@@ -17410,20 +17417,25 @@ if active_page == "Live Draft Room":
         compact=True,
     )
     try:
-        from draft_room_context import is_multiplayer_draft_active, sync_shared_draft_room
+        from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room
         from draft_ui_multiplayer import render_shared_draft_room_panel
+        from suite_egress_policy import shared_draft_poll_interval_sec
 
         if is_multiplayer_draft_active(st.session_state):
             import time
 
+            interval = shared_draft_poll_interval_sec(st.session_state)
             _poll_last = float(st.session_state.get("_shared_draft_poll_ts") or 0)
             _poll_now = time.time()
-            if _poll_now - _poll_last >= 2.5:
+            _prev_page = st.session_state.get("_shared_draft_poll_active_page")
+            _cur_page = st.session_state.get("active_page")
+            page_entered = _cur_page == "Live Draft Room" and _prev_page != _cur_page
+            st.session_state["_shared_draft_poll_active_page"] = _cur_page
+            poll_due = page_entered or (_poll_now - _poll_last >= interval)
+            if poll_due:
                 st.session_state["_shared_draft_poll_ts"] = _poll_now
-                sync_shared_draft_room(st.session_state)
-                st.rerun()
-            else:
-                sync_shared_draft_room(st.session_state)
+                if poll_shared_draft_room(st.session_state):
+                    st.rerun()
         if render_shared_draft_room_panel(st, st.session_state):
             st.rerun()
     except ImportError:

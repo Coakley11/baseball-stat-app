@@ -267,6 +267,27 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
 })
 
 
+def _egress_cloud_autosave_block(
+    st: Any,
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    save_reason: str,
+) -> str | None:
+    cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=save_reason)
+    if cloud_block:
+        return cloud_block
+    try:
+        from suite_egress_policy import cloud_autosave_allowed, poll_sync_defer_active
+
+        allowed, throttle_reason = cloud_autosave_allowed(st, app_id, save_reason=save_reason)
+        if not allowed or poll_sync_defer_active(st.session_state):
+            return throttle_reason or "autosave_throttled"
+    except ImportError:
+        pass
+    return None
+
+
 def _cloud_autosave_blocked_reason(
     st: Any,
     app_id: str,
@@ -649,6 +670,27 @@ def sync_workspace_protocol(
 
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
+
+    synced_key = _workspace_synced_key(app_id)
+    already_synced = bool(st.session_state.get(synced_key))
+    if already_synced and not st.session_state.get("_suite_workspace_force_sync"):
+        try:
+            from suite_egress_policy import lightweight_workspace_meta_check, workspace_cloud_fetch_needed
+
+            if not workspace_cloud_fetch_needed(st, app_id):
+                skip_reason = "workspace synced — skipped cloud full_session fetch (egress save)"
+                st.session_state["_suite_persist_restore_skip_reason"] = skip_reason
+                _record_workspace_sync_trace(
+                    st, app_id, cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
+                    winner="none", reason=skip_reason, applied=False,
+                )
+                return False
+            if not lightweight_workspace_meta_check(st, app_id):
+                skip_reason = "workspace synced — cloud meta unchanged (egress save)"
+                st.session_state["_suite_persist_restore_skip_reason"] = skip_reason
+                return False
+        except ImportError:
+            pass
 
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
@@ -1374,7 +1416,7 @@ def force_autosave(
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
-        cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=reason)
+        cloud_block = _egress_cloud_autosave_block(st, app_id, state, save_reason=reason or "force_autosave")
         saved_cloud = False
         if cloud_block:
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
@@ -1387,8 +1429,13 @@ def force_autosave(
             if reason == "page_change":
                 _release_user_page_ownership_after_save(st, str(state.get("active_page") or ""))
             if saved_cloud:
-                _, cloud_ts = load_cloud_full_session(app_id)
-                st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()
+                try:
+                    from suite_egress_policy import mark_cloud_autosave
+
+                    mark_cloud_autosave(st)
+                except ImportError:
+                    pass
+                st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
@@ -1461,7 +1508,7 @@ def autosave_if_changed(
             from suite_cloud_state import save_cloud_full_session, session_page_summary
 
             page, summary = session_page_summary(app_id, state)
-            cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason="autosave")
+            cloud_block = _egress_cloud_autosave_block(st, app_id, state, save_reason="autosave")
             if cloud_block:
                 st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
             else:
@@ -1469,11 +1516,13 @@ def autosave_if_changed(
                     save_cloud_full_session(app_id, state, page=page, summary=summary)
                 )
                 if saved_cloud:
-                    from suite_cloud_state import load_cloud_full_session
+                    try:
+                        from suite_egress_policy import mark_cloud_autosave
 
-                    _, cloud_ts_after = load_cloud_full_session(app_id)
-                    if cloud_ts_after:
-                        st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts_after
+                        mark_cloud_autosave(st)
+                    except ImportError:
+                        pass
+                    st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
         except Exception as exc:
             cloud_err = str(exc)
         if saved_disk or saved_cloud:

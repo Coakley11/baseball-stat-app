@@ -148,9 +148,41 @@ class DraftRoomContextTests(unittest.TestCase):
         updated = bump_revision(document, live_room=room)
         self.store.save(updated)
 
-        sync_shared_draft_room(session, store=self.store)
+        self.assertTrue(sync_shared_draft_room(session, store=self.store))
         refreshed = session[LIVE_DRAFT_ROOM_KEY]
         self.assertEqual(int(refreshed.get("current_pick_index") or 0), 1)
+
+    def test_sync_skips_full_load_when_revision_unchanged(self) -> None:
+        session: dict = {ACTIVE_PARTICIPANT_ID_KEY: "host-user"}
+        room_code, _document = create_and_host_shared_room(
+            session,
+            _sample_live_room(),
+            host_team="Team 1",
+            store=self.store,
+        )
+        loads: list[str] = []
+        original_load = self.store.load
+        original_head = self.store.load_head
+
+        def _tracked_load(code: str):
+            loads.append("load")
+            return original_load(code)
+
+        def _tracked_head(code: str):
+            loads.append("head")
+            return original_head(code)
+
+        self.store.load = _tracked_load  # type: ignore[method-assign]
+        self.store.load_head = _tracked_head  # type: ignore[method-assign]
+
+        self.assertFalse(sync_shared_draft_room(session, store=self.store))
+        self.assertIn("head", loads)
+        self.assertNotIn("load", loads)
+
+        session.pop("_shared_draft_sync_run", None)
+        loads.clear()
+        self.assertFalse(sync_shared_draft_room(session, store=self.store))
+        self.assertEqual(loads, ["head"])
 
 
 if __name__ == "__main__":
