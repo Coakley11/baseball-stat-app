@@ -1585,7 +1585,7 @@ def request_password_reset(email: str, *, redirect_to: str | None = None) -> tup
         return False, str(exc)
 
 
-def render_auth_panel(st: Any, *, expanded: bool = False) -> None:
+def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status: bool = True) -> None:
     """Login / sign-up panel when Real Accounts are enabled."""
     if not is_auth_enabled():
         return
@@ -1594,7 +1594,8 @@ def render_auth_panel(st: Any, *, expanded: bool = False) -> None:
     if notice:
         st.info(str(notice))
     if is_authenticated(session):
-        st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
+        if show_signed_in_status:
+            st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
         if st.button("Log out", key="suite_auth_logout_btn", use_container_width=True):
             logout(session, st=st)
             st.rerun()

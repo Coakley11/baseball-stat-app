@@ -1182,6 +1182,14 @@ def render_cross_device_sync_debug(st: Any) -> None:
     except ImportError:
         pass
     try:
+        from suite_workspace import DEVELOPER_MODE_DIAG_KEY
+
+        dev_diag = ss.get(DEVELOPER_MODE_DIAG_KEY)
+        if isinstance(dev_diag, dict):
+            startup_rows.update(dev_diag)
+    except ImportError:
+        pass
+    try:
         from live_draft_state import live_draft_envelope_summary, live_draft_restore_diagnostics
 
         live_draft_rows = dict(live_draft_restore_diagnostics(ss))

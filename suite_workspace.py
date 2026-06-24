@@ -141,6 +141,8 @@ def _on_active_workspace_changed(st: Any) -> None:
         elif sk.startswith(("_suite_ai_", "ps_")) or sk in ("view_mode", "ps_library_problem"):
             ss.pop(key, None)
     for key in DEVELOPER_SESSION_FLAG_KEYS:
+        if key == DEVELOPER_MODE_WIDGET_KEY:
+            continue
         ss.pop(key, None)
     try:
         import streamlit as st_module
@@ -173,10 +175,13 @@ def storage_app_in_workspace(storage_app: str, workspace_id: str | None = None) 
 
 
 DEVELOPER_QUERY_PARAM = "dev"
+DEVELOPER_MODE_WIDGET_KEY = "app_developer_mode"
+DEVELOPER_MODE_PERSIST_KEY = "_suite_developer_mode_user"
+DEVELOPER_MODE_DIAG_KEY = "_suite_developer_mode_diag"
 DEVELOPER_SESSION_FLAG_KEYS: tuple[str, ...] = (
     "_suite_dev_mode",
     "cc_developer_mode",
-    "app_developer_mode",
+    DEVELOPER_MODE_WIDGET_KEY,
     "developer_mode",
     "investment_show_dev_diagnostics",
     "investment_pr1_diagnostics_enabled",
@@ -213,12 +218,64 @@ def is_developer_mode_enabled(*, st: Any | None = None) -> bool:
         import streamlit as st_module  # noqa: WPS433
 
         ss = st.session_state if st is not None else st_module.session_state
+        if ss.get(DEVELOPER_MODE_PERSIST_KEY):
+            return True
         for key in DEVELOPER_SESSION_FLAG_KEYS:
             if ss.get(key):
                 return True
     except Exception:
         pass
     return False
+
+
+def set_developer_mode_user(
+    session_state: dict[str, Any],
+    enabled: bool,
+    *,
+    source: str = "unknown",
+) -> None:
+    """Canonical user intent for Developer Mode (survives reruns; not cloud-restored)."""
+    session_state[DEVELOPER_MODE_PERSIST_KEY] = bool(enabled)
+    session_state[DEVELOPER_MODE_WIDGET_KEY] = bool(enabled)
+    record_developer_mode_diagnostics(
+        session_state,
+        source=source,
+        reset_reason="" if enabled else "user_off",
+    )
+
+
+def sync_developer_mode_widget(session_state: dict[str, Any], *, source: str = "pre_render") -> None:
+    """Align checkbox session key with persisted user intent before widgets draw."""
+    persist = bool(session_state.get(DEVELOPER_MODE_PERSIST_KEY))
+    widget = bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY))
+    reset_reason = ""
+    if persist and not widget:
+        session_state[DEVELOPER_MODE_WIDGET_KEY] = True
+        reset_reason = "restored_from_persist"
+    elif not persist and widget:
+        session_state[DEVELOPER_MODE_WIDGET_KEY] = False
+        reset_reason = "cleared_without_persist"
+    record_developer_mode_diagnostics(
+        session_state,
+        source=source,
+        reset_reason=reset_reason,
+    )
+
+
+def record_developer_mode_diagnostics(
+    session_state: dict[str, Any],
+    *,
+    source: str = "",
+    reset_reason: str = "",
+) -> None:
+    """Dev diagnostics for checkbox vs session vs persisted developer mode."""
+    session_state[DEVELOPER_MODE_DIAG_KEY] = {
+        "developer_mode_checkbox_value": bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY)),
+        "developer_mode_session_value": bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY)),
+        "developer_mode_restored_value": bool(session_state.get(DEVELOPER_MODE_PERSIST_KEY)),
+        "developer_mode_reset_reason": str(reset_reason or "").strip(),
+        "developer_mode_source": str(source or "").strip(),
+    }
 
 
 def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:

@@ -1644,6 +1644,13 @@ def render_reset_controls(
         _RESTORED_FP_PREFIX,
     ),
 ) -> None:
+    try:
+        from suite_sidebar_run import GUARD_SAVED_SESSION, claim_sidebar_render
+
+        if not claim_sidebar_render(st.session_state, GUARD_SAVED_SESSION):
+            return
+    except ImportError:
+        pass
     pending = bool(st.session_state.get(reset_confirm_session_key(app_id)))
     with st.sidebar.expander("Saved session", expanded=pending):
         st.caption("Your last page, filters, and inputs reload automatically.")

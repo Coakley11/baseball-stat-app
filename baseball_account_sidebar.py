@@ -74,6 +74,13 @@ def request_account_sign_in_panel(session: dict[str, Any]) -> None:
 
 def render_baseball_account_sidebar(st: Any) -> None:
     """Compact sidebar account status + sign-in controls."""
+    try:
+        from suite_sidebar_run import GUARD_ACCOUNT, claim_sidebar_render
+
+        if not claim_sidebar_render(st.session_state, GUARD_ACCOUNT):
+            return
+    except ImportError:
+        pass
     session = st.session_state
     prepare_baseball_auth_session(st)
     status = real_account_status(session)
@@ -93,9 +100,7 @@ def render_baseball_account_sidebar(st: Any) -> None:
         st.sidebar.caption("Account: **not signed in** (shared drafts need Real Accounts)")
 
     with st.sidebar.expander("Account & sign-in", expanded=expanded):
-        if status["signed_in"]:
-            st.success(status["message"])
-        else:
+        if not status["signed_in"]:
             st.warning(
                 "**Not signed in** — shared draft rooms require Real Account sign-in. "
                 "Workspace and cloud sync alone are not enough."
@@ -108,6 +113,10 @@ def render_baseball_account_sidebar(st: Any) -> None:
         try:
             from suite_auth import render_auth_panel
 
-            render_auth_panel(st, expanded=not status["signed_in"])
+            render_auth_panel(
+                st,
+                expanded=not status["signed_in"],
+                show_signed_in_status=False,
+            )
         except ImportError:
             st.caption("Sign-in controls unavailable.")

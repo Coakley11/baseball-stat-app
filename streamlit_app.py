@@ -479,6 +479,13 @@ except Exception:
     pass
 
 try:
+    from suite_sidebar_run import reset_sidebar_run_guards
+
+    reset_sidebar_run_guards(st.session_state)
+except Exception:
+    pass
+
+try:
     from suite_egress_trace import reset_run_egress_summary
 
     reset_run_egress_summary()
@@ -11332,7 +11339,6 @@ PAGE_STATE_DEBUG_PREFIXES = {
 }
 
 DEVELOPER_MODE_KEY = "app_developer_mode"
-_DEV_MODE_TOGGLE_RENDERED = False
 
 
 def developer_mode_enabled() -> bool:
@@ -11366,26 +11372,64 @@ def _page_perf_end(page: str) -> None:
 
 def render_developer_mode_sidebar_toggle():
     """Single sidebar switch for all developer-only tools (default OFF)."""
-    global _DEV_MODE_TOGGLE_RENDERED
-    if _DEV_MODE_TOGGLE_RENDERED:
-        return
     try:
-        from suite_workspace import developer_tools_workspace_eligible, is_developer_mode_enabled
+        from suite_sidebar_run import GUARD_DEV_TOGGLE, claim_sidebar_render
 
+        if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
+            return
+    except ImportError:
+        pass
+    try:
+        from suite_workspace import (
+            DEVELOPER_MODE_DIAG_KEY,
+            developer_tools_workspace_eligible,
+            is_developer_mode_enabled,
+            record_developer_mode_diagnostics,
+            sync_developer_mode_widget,
+        )
+
+        sync_developer_mode_widget(st.session_state, source="pre_toggle_render")
         eligible = developer_tools_workspace_eligible(st=st)
         dev_on = is_developer_mode_enabled(st=st)
         if not eligible and not dev_on and not st.session_state.get(DEVELOPER_MODE_KEY):
             return
     except ImportError:
         pass
-    st.session_state.setdefault(DEVELOPER_MODE_KEY, False)
+
+    if DEVELOPER_MODE_KEY not in st.session_state:
+        st.session_state[DEVELOPER_MODE_KEY] = bool(st.session_state.get("_suite_developer_mode_user"))
+
+    def _on_developer_mode_change() -> None:
+        try:
+            from suite_workspace import set_developer_mode_user
+
+            set_developer_mode_user(
+                st.session_state,
+                bool(st.session_state.get(DEVELOPER_MODE_KEY)),
+                source="checkbox",
+            )
+        except ImportError:
+            pass
+
     st.sidebar.checkbox(
         "Developer Mode",
-        value=False,
         key=DEVELOPER_MODE_KEY,
+        on_change=_on_developer_mode_change,
         help="Show saved filter state, performance timing, scoring validation, and draft score breakdowns.",
     )
-    _DEV_MODE_TOGGLE_RENDERED = True
+    try:
+        from suite_workspace import record_developer_mode_diagnostics
+
+        record_developer_mode_diagnostics(st.session_state, source="post_toggle_render")
+        diag = st.session_state.get(DEVELOPER_MODE_DIAG_KEY)
+        if isinstance(diag, dict) and (
+            diag.get("developer_mode_restored_value") or diag.get("developer_mode_reset_reason")
+        ):
+            with st.sidebar.expander("Developer mode trace", expanded=False):
+                for label, value in diag.items():
+                    st.text(f"{label}: {value}")
+    except ImportError:
+        pass
 
 
 def migrate_legacy_widget_keys():
@@ -12336,15 +12380,8 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
         pass
 
 
-_SIDEBAR_CHROME_RENDERED = False
-
-
 def _render_baseball_sidebar_chrome(st_obj) -> None:
     """Render Command Center link + Saved session once per script run."""
-    global _SIDEBAR_CHROME_RENDERED
-    if _SIDEBAR_CHROME_RENDERED:
-        return
-    _SIDEBAR_CHROME_RENDERED = True
     try:
         from baseball_account_sidebar import render_baseball_account_sidebar
 
@@ -12427,6 +12464,12 @@ try:
     from baseball_persistent_state import prepare_baseball_workspace
 
     prepare_baseball_workspace(st)
+except Exception:
+    pass
+try:
+    from suite_workspace import sync_developer_mode_widget
+
+    sync_developer_mode_widget(st.session_state, source="post_workspace_sync")
 except Exception:
     pass
 try:
