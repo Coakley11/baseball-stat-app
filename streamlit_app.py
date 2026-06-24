@@ -11332,6 +11332,7 @@ PAGE_STATE_DEBUG_PREFIXES = {
 }
 
 DEVELOPER_MODE_KEY = "app_developer_mode"
+_DEV_MODE_TOGGLE_RENDERED = False
 
 
 def developer_mode_enabled() -> bool:
@@ -11365,10 +11366,15 @@ def _page_perf_end(page: str) -> None:
 
 def render_developer_mode_sidebar_toggle():
     """Single sidebar switch for all developer-only tools (default OFF)."""
+    global _DEV_MODE_TOGGLE_RENDERED
+    if _DEV_MODE_TOGGLE_RENDERED:
+        return
     try:
-        from suite_workspace import is_developer_workspace
+        from suite_workspace import developer_tools_workspace_eligible, is_developer_mode_enabled
 
-        if not is_developer_workspace(st=st):
+        eligible = developer_tools_workspace_eligible(st=st)
+        dev_on = is_developer_mode_enabled(st=st)
+        if not eligible and not dev_on and not st.session_state.get(DEVELOPER_MODE_KEY):
             return
     except ImportError:
         pass
@@ -11379,6 +11385,7 @@ def render_developer_mode_sidebar_toggle():
         key=DEVELOPER_MODE_KEY,
         help="Show saved filter state, performance timing, scoring validation, and draft score breakdowns.",
     )
+    _DEV_MODE_TOGGLE_RENDERED = True
 
 
 def migrate_legacy_widget_keys():
@@ -12480,6 +12487,7 @@ except Exception:
 _render_baseball_sidebar_chrome(st)
 
 pp.render_sidebar_toggle(st)
+render_developer_mode_sidebar_toggle()
 
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
@@ -12636,7 +12644,6 @@ for _ephemeral_key in list(st.session_state.keys()):
 
 if not pp.is_screenshot_mode(st):
     st.sidebar.caption("Filters are remembered as you move between pages.")
-render_developer_mode_sidebar_toggle()
 if developer_mode_enabled():
     try:
         from baseball_persistent_state import render_cross_device_sync_debug

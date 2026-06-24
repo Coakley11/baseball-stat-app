@@ -221,9 +221,27 @@ def is_developer_mode_enabled(*, st: Any | None = None) -> bool:
     return False
 
 
+def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:
+    """Profiles that may show the Developer Mode toggle and dev-only panels."""
+    if is_developer_workspace(st=st):
+        return True
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
+
+        ss = st.session_state if st is not None else __import__("streamlit").session_state
+        if is_auth_enabled() and is_authenticated(ss):
+            ws = normalize_workspace_id(get_active_workspace_id(st=st))
+            ext = normalize_workspace_id(resolve_auth_external_id(ss))
+            if ext and ws == ext:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def can_show_developer_tools(*, st: Any | None = None) -> bool:
-    """Daniel workspace only, with explicit developer mode enabled."""
-    return is_developer_workspace(st=st) and is_developer_mode_enabled(st=st)
+    """Explicit developer mode on an eligible workspace profile."""
+    return developer_tools_workspace_eligible(st=st) and is_developer_mode_enabled(st=st)
 
 
 def _qp_get(st: Any, name: str) -> str:

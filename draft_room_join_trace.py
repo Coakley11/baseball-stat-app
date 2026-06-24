@@ -35,17 +35,16 @@ def trace_join_step(session: dict[str, Any], step: str, **fields: Any) -> None:
 
 
 def join_trace_visible(session: dict[str, Any]) -> bool:
-    if session.get("dev_mode") or session.get("app_developer_mode"):
-        return True
+    """Match Developer Mode toggle gating (eligible workspace + dev flag or ?dev=1)."""
     try:
-        from suite_workspace import _developer_query_enabled
+        from suite_workspace import can_show_developer_tools
 
-        st_obj = type("S", (), {"session_state": session})()
-        if _developer_query_enabled(st_obj):
-            return True
+        st_obj = type("_JoinTraceSt", (), {"session_state": session, "query_params": {}})()
+        return can_show_developer_tools(st=st_obj)
     except ImportError:
-        pass
-    return False
+        return bool(session.get("dev_mode") or session.get("app_developer_mode"))
+    except Exception:
+        return bool(session.get("dev_mode") or session.get("app_developer_mode"))
 
 
 def get_shared_room_auth_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
