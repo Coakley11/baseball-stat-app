@@ -34,6 +34,23 @@ class DraftRoomRuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(label, "Team 2")
         self.assertEqual(source, "active_participant_team")
 
+    def test_identity_skips_mp_team_until_room_joined(self) -> None:
+        session = {
+            "draft_room_participant_id": "guest-1",
+            "room_your_team": "Daniel",
+            "global_fantasy_settings": {"room_your_team": "Daniel"},
+        }
+        try:
+            from global_fantasy_settings_state import GLOBAL_TEAM_KEY
+
+            session[GLOBAL_TEAM_KEY] = "Daniel"
+        except ImportError:
+            pass
+        rows = dict((b, c) for a, b, c in get_runtime_diagnostic_rows(session) if a == "Identity")
+        self.assertEqual(rows.get("multiplayer_joined"), "False")
+        self.assertEqual(rows.get("assigned_team"), "—")
+        self.assertEqual(rows.get("displayed_team_label"), "Daniel")
+
     def test_leave_trace_captured(self) -> None:
         session = {
             "active_shared_draft_room_code": "ABC123",

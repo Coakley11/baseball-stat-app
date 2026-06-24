@@ -49,6 +49,7 @@ def _snapshot_identity(session: dict[str, Any]) -> dict[str, Any]:
     assigned_team = ""
     registry_team = ""
     membership_blob_team = ""
+    code = ""
     try:
         from draft_room_participant_state import (
             active_participant_team,
@@ -57,9 +58,9 @@ def _snapshot_identity(session: dict[str, Any]) -> dict[str, Any]:
         )
 
         participant_id = resolve_participant_id(session)
-        assigned_team = active_participant_team(session) or ""
         code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
         if code:
+            assigned_team = active_participant_team(session) or ""
             membership_blob_team = membership_team_for_participant(session, code, participant_id=participant_id)
             try:
                 from draft_room_shared_state import load_shared_room
@@ -78,7 +79,8 @@ def _snapshot_identity(session: dict[str, Any]) -> dict[str, Any]:
         "auth_email": auth_email,
         "auth_user_id": auth_user_id,
         "workspace_profile": _workspace_profile(session),
-        "active_shared_draft_room_code": str(session.get("active_shared_draft_room_code") or "") or None,
+        "active_shared_draft_room_code": code or None,
+        "multiplayer_joined": bool(code),
         "participant_id": participant_id or None,
         "assigned_team": assigned_team or None,
         "registry_assigned_team": registry_team or None,
@@ -222,6 +224,7 @@ def get_runtime_diagnostic_rows(session: dict[str, Any]) -> list[tuple[str, str,
         "auth_user_id",
         "workspace_profile",
         "active_shared_draft_room_code",
+        "multiplayer_joined",
         "participant_id",
         "assigned_team",
         "registry_assigned_team",
@@ -298,6 +301,7 @@ def render_runtime_diagnostic_table(st: Any, session: dict[str, Any]) -> None:
         st.caption(f"**Dev build** · {format_deploy_caption()}")
         st.caption(
             f"Runtime fixes loaded: leave={verify.get('leave_room_fix')} · "
+            f"leave_api={verify.get('leave_shared_draft_room')} · "
             f"diagnostics={verify.get('runtime_diagnostics')} · "
             f"mp_gen={verify.get('mp_draft_code_generation')} · "
             f"source={verify.get('deploy_commit_source')}"

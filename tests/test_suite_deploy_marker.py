@@ -29,8 +29,9 @@ class SuiteDeployMarkerTests(unittest.TestCase):
 
         flags = marker.runtime_feature_verification()
         self.assertEqual(flags["mp_draft_code_generation"], marker.MP_DRAFT_CODE_GENERATION)
-        self.assertIn(flags["leave_room_fix"], ("present", "missing"))
-        self.assertIn(flags["runtime_diagnostics"], ("present", "missing"))
+        self.assertEqual(flags["leave_room_fix"], "present")
+        self.assertEqual(flags["leave_shared_draft_room"], "present")
+        self.assertEqual(flags["runtime_diagnostics"], "present")
 
     def test_format_deploy_caption_uses_streamlit_entrypoint(self) -> None:
         import suite_deploy_marker as marker

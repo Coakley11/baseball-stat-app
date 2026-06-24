@@ -59,7 +59,7 @@ def get_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     """Structured context for pages, AMI, and recommendation wrappers."""
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     participant_id = resolve_participant_id(session)
-    participant_team = active_participant_team(session)
+    participant_team = active_participant_team(session) if room_code else ""
     shared_meta = dict(session.get(SHARED_ROOM_META_KEY) or {})
     room = session.get(LIVE_DRAFT_ROOM_KEY)
     runtime_active = has_active_live_draft(session)

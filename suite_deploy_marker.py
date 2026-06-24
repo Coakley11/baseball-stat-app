@@ -123,12 +123,18 @@ def runtime_feature_verification() -> dict[str, str]:
         "mp_draft_code_generation": MP_DRAFT_CODE_GENERATION,
     }
     try:
-        from draft_room_context import active_participant_team, mark_participant_left_room
+        from draft_room_participant_state import mark_participant_left_room
 
         flags["leave_room_fix"] = "present" if callable(mark_participant_left_room) else "missing"
-        flags["active_participant_team"] = "present" if callable(active_participant_team) else "missing"
     except ImportError:
         flags["leave_room_fix"] = "missing"
+    try:
+        from draft_room_context import active_participant_team, leave_shared_draft_room
+
+        flags["leave_shared_draft_room"] = "present" if callable(leave_shared_draft_room) else "missing"
+        flags["active_participant_team"] = "present" if callable(active_participant_team) else "missing"
+    except ImportError:
+        flags["leave_shared_draft_room"] = "missing"
         flags["active_participant_team"] = "missing"
     try:
         import draft_room_runtime_diagnostics as drd
