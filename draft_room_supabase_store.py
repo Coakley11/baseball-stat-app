@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from draft_room_json_sanitize import SharedRoomJsonSerializeError, prepare_supabase_json_body
+from draft_room_supabase_errors import SharedRoomSupabaseError, shared_room_supabase_error_from_runtime
 from draft_room_shared_state import sanitize_shared_room_document
 
 _TABLE = "baseball_shared_draft_rooms"
@@ -29,7 +30,10 @@ def _host_user_id() -> str:
 def _request(method: str, path: str, **kwargs: Any) -> Any:
     from suite_storage_supabase import _invalidate_read_cache_for_table, _request as supabase_request
 
-    result = supabase_request(method, path, **kwargs)
+    try:
+        result = supabase_request(method, path, **kwargs)
+    except RuntimeError as exc:
+        raise shared_room_supabase_error_from_runtime(exc) from exc
     if method.upper() != "GET":
         _invalidate_read_cache_for_table(_TABLE)
     return result
@@ -188,6 +192,9 @@ class SupabaseSharedRoomStore:
                 json_body=patch_body,
                 prefer="return=representation",
             )
+        except SharedRoomSupabaseError:
+            refreshed = self.load(code)
+            return False, refreshed
         except RuntimeError:
             refreshed = self.load(code)
             return False, refreshed

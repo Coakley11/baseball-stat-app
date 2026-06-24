@@ -21,12 +21,13 @@ from draft_room_shared_state import (
     ACTIVE_SHARED_ROOM_CODE_KEY,
     SHARED_ROOM_META_KEY,
     SharedRoomStore,
-    create_shared_room,
     document_to_runtime_room,
+    generate_room_code,
     get_shared_room_store,
     load_shared_room,
     publish_shared_room_runtime,
     shared_room_backend_name,
+    shared_room_document,
 )
 from live_draft_state import LIVE_DRAFT_ROOM_KEY, has_active_live_draft, prepare_live_draft_state
 
@@ -154,6 +155,7 @@ def create_and_host_shared_room(
 ) -> tuple[str, dict[str, Any]]:
     """Create a shared room, register host, and hydrate session."""
     from draft_room_membership import (
+        auth_user_id,
         default_host_team,
         ensure_authenticated_for_shared_room,
         participant_display_name,
@@ -168,27 +170,68 @@ def create_and_host_shared_room(
     backend = store or get_shared_room_store()
     participant_id = resolve_participant_id(session)
     assigned = str(host_team or "").strip() or default_host_team(live_room)
-    document = create_shared_room(live_room, host_participant_id=participant_id, store=backend)
-    document["host_user_id"] = participant_id
+    try:
+        from draft_room_supabase_errors import SharedRoomSupabaseError, record_shared_room_supabase_error
+    except ImportError:
+        SharedRoomSupabaseError = RuntimeError  # type: ignore[misc, assignment]
+        record_shared_room_supabase_error = None  # type: ignore[assignment]
+
+    code = generate_room_code(exists=backend.exists)
+    document = shared_room_document(
+        room_code=code,
+        host_participant_id=participant_id,
+        live_room=live_room,
+        revision=1,
+    )
+    document["created_at"] = document.get("updated_at") or document.get("created_at")
+    document["host_user_id"] = str(auth_user_id(session) or participant_id)
     document["host_participant_id"] = participant_id
+    document["_storage_backend"] = shared_room_backend_name()
     document = register_participant_in_shared_document(
         document,
         participant_id=participant_id,
         assigned_team=assigned,
         display_name=participant_display_name(session),
     )
-    backend.save(document)
-    session[ACTIVE_SHARED_ROOM_CODE_KEY] = document["room_code"]
+    try:
+        saved = backend.save(document)
+    except SharedRoomSupabaseError as exc:
+        if record_shared_room_supabase_error is not None:
+            record_shared_room_supabase_error(session, exc)
+        else:
+            session["_draft_room_last_error"] = str(exc)
+        return "", {}
+    except ValueError as exc:
+        session["_draft_room_last_error"] = str(exc)
+        return "", {}
+    except RuntimeError as exc:
+        try:
+            from draft_room_supabase_errors import (
+                record_shared_room_supabase_error,
+                shared_room_supabase_error_from_runtime,
+            )
+
+            parsed = shared_room_supabase_error_from_runtime(exc)
+            record_shared_room_supabase_error(session, parsed)
+        except ImportError:
+            session["_draft_room_last_error"] = str(exc)
+        return "", {}
+
+    if not isinstance(saved, dict) or not saved.get("room_code"):
+        session["_draft_room_last_error"] = "Could not create shared room."
+        return "", {}
+
+    session[ACTIVE_SHARED_ROOM_CODE_KEY] = saved["room_code"]
     set_active_participant(
         session,
-        room_code=document["room_code"],
+        room_code=saved["room_code"],
         participant_id=participant_id,
         assigned_team=assigned,
     )
-    save_participant_workflow_from_session(session, str(document["room_code"]))
-    publish_shared_room_runtime(session, document, reason="shared_room_create")
+    save_participant_workflow_from_session(session, str(saved["room_code"]))
+    publish_shared_room_runtime(session, saved, reason="shared_room_create")
     _sync_participant_team_aliases(session, assigned)
-    return str(document["room_code"]), document
+    return str(saved["room_code"]), saved
 
 
 def join_shared_draft_room(
@@ -271,7 +314,26 @@ def join_shared_draft_room(
             assigned_team=assigned,
             display_name=display_name or participant_display_name(session),
         )
-        backend.save(document)
+        try:
+            backend.save(document)
+        except Exception as exc:
+            try:
+                from draft_room_supabase_errors import (
+                    SharedRoomSupabaseError,
+                    record_shared_room_supabase_error,
+                    shared_room_supabase_error_from_runtime,
+                )
+
+                if isinstance(exc, SharedRoomSupabaseError):
+                    return False, record_shared_room_supabase_error(session, exc), document
+                if isinstance(exc, RuntimeError):
+                    parsed = shared_room_supabase_error_from_runtime(exc)
+                    return False, record_shared_room_supabase_error(session, parsed), document
+            except ImportError:
+                pass
+            if isinstance(exc, ValueError):
+                return False, str(exc), document
+            raise
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
     save_participant_workflow_from_session(session, code)

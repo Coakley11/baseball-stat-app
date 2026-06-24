@@ -40,6 +40,24 @@ def _show_join_auth_hint(st: Any, session: dict[str, Any]) -> bool:
     return False
 
 
+def _render_supabase_error_detail(st: Any, session: dict[str, Any]) -> None:
+    try:
+        from draft_room_join_trace import join_trace_visible
+    except ImportError:
+        return
+    if not join_trace_visible(session):
+        return
+    diag = session.get("_draft_room_supabase_error")
+    if not isinstance(diag, dict):
+        return
+    with st.expander("Supabase error detail (dev)", expanded=True):
+        st.text(f"status_code: {diag.get('status_code')}")
+        st.text(f"method: {diag.get('method')}")
+        st.text(f"path: {diag.get('path')}")
+        if diag.get("detail"):
+            st.code(str(diag.get("detail"))[:2000])
+
+
 def _finalize_successful_join(session: dict[str, Any], message: str) -> None:
     from draft_room_context import prepare_global_draft_context
 
@@ -69,6 +87,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             sync_shared_draft_room,
         )
         from draft_room_join_trace import render_join_trace_panel, render_shared_room_auth_diagnostics, trace_join_step
+        from draft_room_supabase_health import render_shared_room_supabase_health
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
     except ImportError:
         return False
@@ -87,6 +106,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
 
     with st.container(border=True):
         st.markdown("#### Shared Draft Room")
+        render_shared_room_supabase_health(st, session)
         mode = ctx.get("mode") or "none"
         if mode == "multiplayer":
             backend = (ctx.get("shared_storage_backend") or "unknown")
@@ -175,6 +195,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     code, doc = create_and_host_shared_room(session, room)
                     if not code:
                         st.error(session.pop("_draft_room_last_error", "Could not create shared room."))
+                        _render_supabase_error_detail(st, session)
                     else:
                         _finalize_successful_join(session, f"Shared room created. Share code **{code}** with other managers.")
                     return True
@@ -193,6 +214,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     _finalize_successful_join(session, msg)
                 else:
                     session["_draft_join_error"] = msg
+                    _render_supabase_error_detail(st, session)
                     trace_join_step(session, "join_failed", message=msg)
                 return True
 
