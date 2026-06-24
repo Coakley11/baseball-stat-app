@@ -1,0 +1,2 @@
+243fea6  # auto-generated; Streamlit Cloud reads this at runtime
+branch: dev

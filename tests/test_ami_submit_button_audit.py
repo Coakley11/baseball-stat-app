@@ -49,9 +49,15 @@ class AmiSubmitButtonPathAuditTests(unittest.TestCase):
                 hits.append(rel)
         self.assertEqual(hits, [], f"Unexpected st.button('Send to Command Center') in: {hits}")
 
-    def test_deploy_marker_has_sidebar_v3(self) -> None:
+    def test_deploy_marker_resolves_commit_dynamically(self) -> None:
+        import suite_deploy_marker as marker
+
         text = (ROOT / "suite_deploy_marker.py").read_text(encoding="utf-8")
-        self.assertIn("baseball-ami-sidebar-v3", text)
+        self.assertNotIn('GIT_COMMIT_SHORT = "6842410"', text)
+        self.assertIn("resolve_git_commit_short", text)
+        commit = marker.resolve_git_commit_short()
+        self.assertNotEqual(commit, "6842410")
+        self.assertIn("streamlit_app.py", marker.format_deploy_caption())
 
 
 if __name__ == "__main__":

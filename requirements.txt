@@ -1,3 +1,4 @@
+# deploy-bump: 2026-06-23-mp-draft-v1 (forces Streamlit Cloud full redeploy)
 streamlit
 pandas
 numpy

@@ -17467,12 +17467,10 @@ if active_page == "Live Draft Room":
 
     prepare_live_draft_state(st.session_state)
     if developer_mode_enabled():
-        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+        from suite_deploy_marker import format_deploy_caption
         from draft_ui import render_start_live_draft_dev_panel
 
-        st.caption(
-            f"Build `{SUITE_BUILD_LABEL}` · commit `{GIT_COMMIT_SHORT}` · branch `{GIT_BRANCH}`"
-        )
+        st.caption(format_deploy_caption())
         render_live_draft_save_diagnostics(st)
         render_start_live_draft_dev_panel(st, st.session_state, developer_mode=True)
 

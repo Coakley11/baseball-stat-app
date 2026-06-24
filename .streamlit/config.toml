@@ -4,5 +4,7 @@ headless = true
 [browser]
 gatherUsageStats = false
 
-# Streamlit Cloud entrypoint must be streamlit_app.py (lowercase).
-# Do not use Streamlit_app.py — on Linux it is a separate stale copy.
+# Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
+# Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
+# App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
+# After push: Manage app → Reboot app if diagnostics still show a stale commit.

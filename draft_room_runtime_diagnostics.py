@@ -200,9 +200,22 @@ def record_scoring_pipeline_stage(
     session[_PIPELINE_KEY] = trace_root
 
 
+def _deploy_marker_rows() -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    try:
+        from suite_deploy_marker import format_deploy_caption, runtime_feature_verification
+
+        rows.append(("Deploy", "caption", format_deploy_caption()))
+        for key, value in runtime_feature_verification().items():
+            rows.append(("Deploy", key, str(value)))
+    except ImportError:
+        rows.append(("Deploy", "marker", "suite_deploy_marker unavailable"))
+    return rows
+
+
 def get_runtime_diagnostic_rows(session: dict[str, Any]) -> list[tuple[str, str, str]]:
     """Flat rows for side-by-side diagnostic table: section, field, value."""
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str, str]] = _deploy_marker_rows()
     ident = _snapshot_identity(session)
     for key in (
         "auth_email",
@@ -278,6 +291,19 @@ def render_runtime_diagnostic_table(st: Any, session: dict[str, Any]) -> None:
         return
 
     rows = get_runtime_diagnostic_rows(session)
+    try:
+        from suite_deploy_marker import format_deploy_caption, runtime_feature_verification
+
+        verify = runtime_feature_verification()
+        st.caption(f"**Dev build** · {format_deploy_caption()}")
+        st.caption(
+            f"Runtime fixes loaded: leave={verify.get('leave_room_fix')} · "
+            f"diagnostics={verify.get('runtime_diagnostics')} · "
+            f"mp_gen={verify.get('mp_draft_code_generation')} · "
+            f"source={verify.get('deploy_commit_source')}"
+        )
+    except ImportError:
+        pass
     with st.expander("Multiplayer runtime diagnostics (acceptance)", expanded=True):
         st.caption(
             "Deployed runtime values — verify leave, identity, and scoring pipeline before calling fixes done."
