@@ -9563,22 +9563,9 @@ def _live_draft_score_available(available, roster_df, rule, target_counts, confi
 
 
 def live_draft_get_available(room):
-    pool = room.get("pool")
-    if pool is None or getattr(pool, "empty", True):
-        return pd.DataFrame()
-    drafted = set(room.get("drafted_player_ids", []) or [])
-    if not drafted:
-        out = pool.copy()
-    else:
-        out = pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
-    try:
-        from draft_scoring_pool import ensure_draft_scoring_pool_columns_with_report
+    from live_draft_state import live_draft_get_available as _get_available
 
-        out, report = ensure_draft_scoring_pool_columns_with_report(out)
-        room["_live_draft_pool_scoring_diag"] = report
-    except ImportError:
-        pass
-    return out
+    return _get_available(room)
 
 
 def live_draft_current_slot(room):

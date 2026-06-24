@@ -331,9 +331,19 @@ def on_start_new_live_draft() -> None:
 _LIVE_DRAFT_UI_DIAG_KEY = "_live_draft_ui_diag"
 
 
-def record_live_draft_ui_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+def record_live_draft_ui_diagnostics(
+    session: dict[str, Any],
+    updates: dict[str, Any] | None = None,
+    /,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Merge manual-draft UI diagnostic fields into session (accepts dict and/or kwargs)."""
+    merged: dict[str, Any] = {}
+    if updates:
+        merged.update(updates)
+    merged.update(fields)
     diag = dict(session.get(_LIVE_DRAFT_UI_DIAG_KEY) or {})
-    diag.update({k: v for k, v in fields.items() if v is not None})
+    diag.update(merged)
     session[_LIVE_DRAFT_UI_DIAG_KEY] = diag
     return diag
 
@@ -372,7 +382,10 @@ def render_live_manual_draft_panel(
     try:
         from live_draft_state import live_draft_get_available
 
-        available = live_draft_get_available(room)
+        try:
+            available = live_draft_get_available(room)
+        except Exception:
+            available = None
     except ImportError:
         available = None
 
@@ -380,16 +393,28 @@ def render_live_manual_draft_panel(
     diag_base["available_player_count"] = available_count
 
     st.subheader("Manual Draft")
-    if available is None or available_count == 0:
+    if available is None:
         record_live_draft_ui_diagnostics(
             session,
-            **diag_base,
-            filtered_player_count=0,
-            draft_button_rendered=False,
-            draft_action_disable_reason="empty_pool" if available_count == 0 else "pool_unavailable",
+            {
+                **diag_base,
+                "filtered_player_count": 0,
+                "draft_button_rendered": False,
+                "draft_action_disable_reason": "pool_unavailable",
+            },
         )
-        if available_count == 0:
-            st.warning("No players left in the pool.")
+        return False
+    if available_count == 0:
+        record_live_draft_ui_diagnostics(
+            session,
+            {
+                **diag_base,
+                "filtered_player_count": 0,
+                "draft_button_rendered": False,
+                "draft_action_disable_reason": "empty_pool",
+            },
+        )
+        st.warning("No players left in the pool.")
         return False
 
     all_player_options = available.sort_values(
@@ -416,9 +441,11 @@ def render_live_manual_draft_panel(
     if not player_options:
         record_live_draft_ui_diagnostics(
             session,
-            **diag_base,
-            draft_button_rendered=False,
-            draft_action_disable_reason="no_allowed_players",
+            {
+                **diag_base,
+                "draft_button_rendered": False,
+                "draft_action_disable_reason": "no_allowed_players",
+            },
         )
         st.info(
             "Add players to your **Queue**, **Watchlist**, or **Tracked Players** "
@@ -458,14 +485,16 @@ def render_live_manual_draft_panel(
         extra_disabled=paused,
         extra_disabled_reason="Draft is paused — resume to pick.",
     ):
-        record_live_draft_ui_diagnostics(session, **diag_base, draft_button_rendered=True)
+        record_live_draft_ui_diagnostics(session, {**diag_base, "draft_button_rendered": True})
         return True
 
     record_live_draft_ui_diagnostics(
         session,
-        **diag_base,
-        draft_button_rendered=True,
-        draft_action_disable_reason=disable_reason if not allowed else "",
+        {
+            **diag_base,
+            "draft_button_rendered": True,
+            "draft_action_disable_reason": disable_reason if not allowed else "",
+        },
     )
     return False
 

@@ -435,6 +435,39 @@ def repair_stale_live_draft_progress(room: dict[str, Any]) -> dict[str, Any]:
     return room
 
 
+def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
+    """Return undrafted pool rows for manual draft UI."""
+    if not isinstance(room, dict):
+        return pd.DataFrame()
+    pool = room.get("pool")
+    if pool is None or getattr(pool, "empty", True):
+        records = room.get("pool_records") or []
+        columns = room.get("pool_columns") or []
+        if records:
+            pool = pd.DataFrame(records)
+            if columns:
+                ordered = [c for c in columns if c in pool.columns]
+                extras = [c for c in pool.columns if c not in ordered]
+                pool = pool[ordered + extras]
+        else:
+            return pd.DataFrame()
+    drafted = set(room.get("drafted_player_ids", []) or [])
+    if not drafted:
+        out = pool.copy()
+    elif "playerID" in pool.columns:
+        out = pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
+    else:
+        out = pool.copy()
+    try:
+        from draft_scoring_pool import ensure_draft_scoring_pool_columns_with_report
+
+        out, report = ensure_draft_scoring_pool_columns_with_report(out)
+        room["_live_draft_pool_scoring_diag"] = report
+    except ImportError:
+        pass
+    return out
+
+
 def canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
     meta = session.get(LIVE_DRAFT_STATE_KEY)
     return copy.deepcopy(meta) if isinstance(meta, dict) and meta.get("draft_room_id") else None
