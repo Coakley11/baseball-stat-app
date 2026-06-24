@@ -450,6 +450,8 @@ def publish_shared_room_runtime(
         if not ok:
             session["_draft_room_publish_error"] = err
             if reason in ("shared_room_poll", "global_context_prepare"):
+                session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+                session.pop(SHARED_ROOM_META_KEY, None)
                 existing = session.get(LIVE_DRAFT_ROOM_KEY)
                 return existing if isinstance(existing, dict) else None
             return None
@@ -459,9 +461,12 @@ def publish_shared_room_runtime(
     runtime = document_to_runtime_room(document)
     if runtime is None:
         session["_draft_room_publish_error"] = "Shared room JSON could not be converted to a live draft room."
-        existing = session.get(LIVE_DRAFT_ROOM_KEY)
-        if reason in ("shared_room_poll", "global_context_prepare") and isinstance(existing, dict):
-            return existing
+        if reason in ("shared_room_poll", "global_context_prepare"):
+            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+            session.pop(SHARED_ROOM_META_KEY, None)
+            existing = session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(existing, dict):
+                return existing
         return None
 
     repair_stale_live_draft_progress(runtime)

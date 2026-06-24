@@ -274,33 +274,48 @@ def render_compact_pool_diagnostics(st: Any, session: dict[str, Any]) -> None:
 
 
 def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any]) -> None:
-    """Show post-create verification snapshot (dev / acceptance)."""
+    """Show post-create verification snapshot (always after create attempt)."""
     raw = session.get("_draft_room_create_diag")
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict) or not raw.get("create_button_clicked"):
         return
-    with st.expander("Create verification (dev)", expanded=True):
-        save = raw.get("save_result") if isinstance(raw.get("save_result"), dict) else {}
-        loaded = raw.get("immediate_load") if isinstance(raw.get("immediate_load"), dict) else {}
-        load_meta = raw.get("load_result") if isinstance(raw.get("load_result"), dict) else {}
+    save = raw.get("save_result") if isinstance(raw.get("save_result"), dict) else {}
+    loaded = raw.get("immediate_load") if isinstance(raw.get("immediate_load"), dict) else {}
+    load_meta = raw.get("load_result") if isinstance(raw.get("load_result"), dict) else {}
+    verified = bool(
+        raw.get("supabase_save_success")
+        and raw.get("immediate_load_success")
+        and raw.get("valid_runtime_room")
+        and raw.get("shared_room_code_displayed_to_user")
+    )
+    title = "Shared room create — verified" if verified else "Shared room create — failed or incomplete"
+    with st.expander(title, expanded=not verified):
+        st.caption(
+            "**Share code** (6 characters) is what other managers enter to join. "
+            "**Internal session ID** is local-only and must not be used as a join code."
+        )
         rows = [
-            ("Generated room code", raw.get("room_code") or save.get("room_code") or "—"),
+            ("create_button_clicked", str(raw.get("create_button_clicked"))),
+            ("generated_share_code", raw.get("generated_share_code") or "—"),
+            ("internal_draft_session_id", raw.get("internal_draft_session_id") or save.get("draft_room_id") or "—"),
+            ("supabase_save_attempted", str(raw.get("supabase_save_attempted"))),
+            ("supabase_save_success", str(raw.get("supabase_save_success"))),
+            ("immediate_load_success", str(raw.get("immediate_load_success"))),
+            ("valid_runtime_room", str(raw.get("valid_runtime_room"))),
+            ("shared_room_code_displayed_to_user", str(raw.get("shared_room_code_displayed_to_user"))),
             ("Backend", save.get("backend") or loaded.get("backend") or load_meta.get("backend") or "—"),
-            ("Save revision", str(save.get("revision") if save.get("revision") is not None else "—")),
-            ("Save status", save.get("status") or "—"),
             ("Save pool count", str(save.get("pool_count") if save.get("pool_count") is not None else "—")),
-            ("Save picks count", str(save.get("picks_count") if save.get("picks_count") is not None else "—")),
-            ("Save team count", str(save.get("team_count") if save.get("team_count") is not None else "—")),
             ("Immediate load found", str(load_meta.get("found"))),
-            ("Immediate load revision", str(loaded.get("revision") if loaded.get("revision") is not None else "—")),
-            ("Immediate load status", loaded.get("status") or "—"),
             ("Immediate load pool count", str(loaded.get("pool_count") if loaded.get("pool_count") is not None else "—")),
-            ("Immediate load picks count", str(loaded.get("picks_count") if loaded.get("picks_count") is not None else "—")),
-            ("Valid runtime", str(loaded.get("valid_runtime"))),
         ]
         for label, value in rows:
             st.text(f"{label}: {value}")
         if load_meta.get("query_error"):
             st.code(str(load_meta.get("query_error"))[:2000])
+        if not verified:
+            st.error(
+                "Do **not** share the internal session ID. "
+                "Fix the error above and tap **Create Shared Draft Room** again."
+            )
 
 
 def render_shared_room_join_load_diagnostics(st: Any, session: dict[str, Any]) -> None:

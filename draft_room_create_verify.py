@@ -2,13 +2,71 @@
 
 from __future__ import annotations
 
+import string
 from typing import Any
 
-from draft_room_shared_state import document_to_runtime_room
+from draft_room_shared_state import ROOM_CODE_ALPHABET, ROOM_CODE_LEN, document_to_runtime_room
 
 
 def normalize_room_code(room_code: str | None) -> str:
     return str(room_code or "").strip().upper()
+
+
+def is_plausible_share_code(room_code: str | None) -> bool:
+    """True for a 6-character shared join code (not an internal draft session id)."""
+    code = normalize_room_code(room_code)
+    if len(code) != ROOM_CODE_LEN:
+        return False
+    return all(ch in ROOM_CODE_ALPHABET for ch in code)
+
+
+def looks_like_internal_draft_session_id(value: str | None) -> bool:
+    """Heuristic: uuid[:8] session ids are 8 hex-ish chars — not join codes."""
+    raw = normalize_room_code(value)
+    if len(raw) != 8:
+        return False
+    return all(ch in (string.digits + "ABCDEF") for ch in raw)
+
+
+def share_code_hint(value: str | None) -> str:
+    code = normalize_room_code(value)
+    if not code:
+        return ""
+    if is_plausible_share_code(code):
+        return ""
+    if looks_like_internal_draft_session_id(code):
+        return (
+            f"**{code}** looks like an internal session ID (8 characters), not a "
+            f"**{ROOM_CODE_LEN}-character share code**. Ask the host for the share code shown "
+            "after **Create Shared Draft Room** succeeds."
+        )
+    return f"**{code}** is not a valid {ROOM_CODE_LEN}-character share code."
+
+
+def init_create_flow_diagnostics(session: dict[str, Any], *, clicked: bool = False) -> dict[str, Any]:
+    """Reset/create the host create-flow diagnostic blob."""
+    diag: dict[str, Any] = {
+        "create_button_clicked": bool(clicked),
+        "generated_share_code": "",
+        "internal_draft_session_id": "",
+        "supabase_save_attempted": False,
+        "supabase_save_success": False,
+        "immediate_load_success": False,
+        "valid_runtime_room": False,
+        "shared_room_code_displayed_to_user": False,
+    }
+    session["_draft_room_create_diag"] = diag
+    return diag
+
+
+def merge_create_flow_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    raw = session.get("_draft_room_create_diag")
+    diag = dict(raw) if isinstance(raw, dict) else init_create_flow_diagnostics(session)
+    for key, value in fields.items():
+        if value is not None:
+            diag[key] = value
+    session["_draft_room_create_diag"] = diag
+    return diag
 
 
 def shared_room_document_stats(document: dict[str, Any] | None) -> dict[str, Any]:
@@ -157,6 +215,8 @@ def verify_shared_room_persisted(
     ok, msg = validate_shared_room_document(loaded if isinstance(loaded, dict) else None)
     stats = shared_room_document_stats(loaded if isinstance(loaded, dict) else None)
     diagnostics["immediate_load"] = stats
+    diagnostics["immediate_load_success"] = bool(load_result.get("found"))
+    diagnostics["valid_runtime_room"] = bool(stats.get("valid_runtime"))
     if not ok:
         return False, msg, diagnostics
     return True, "", diagnostics

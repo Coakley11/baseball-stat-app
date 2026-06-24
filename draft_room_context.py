@@ -43,16 +43,49 @@ def abort_shared_room_create(
     session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
     session.pop(SHARED_ROOM_META_KEY, None)
     session.pop("_shared_draft_sync_run", None)
-    if backup_room_code:
-        session[ACTIVE_SHARED_ROOM_CODE_KEY] = str(backup_room_code).strip().upper()
+    session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+    if backup_room_code and str(backup_room_code).strip():
+        from draft_room_create_verify import is_plausible_share_code
+
+        if is_plausible_share_code(backup_room_code):
+            session[ACTIVE_SHARED_ROOM_CODE_KEY] = str(backup_room_code).strip().upper()
     if isinstance(backup_room, dict):
         session[LIVE_DRAFT_ROOM_KEY] = backup_room
+
+
+def clear_stale_multiplayer_state(session: dict[str, Any], *, reason: str = "") -> None:
+    """Drop invalid multiplayer flags and restore single-user live draft when possible."""
+    backup = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not isinstance(backup, dict):
+        try:
+            from live_draft_state import canonical_live_draft, room_from_persist_dict
+
+            blob = canonical_live_draft(session)
+            if isinstance(blob, dict) and blob.get("draft_room_id"):
+                restored = room_from_persist_dict(blob)
+                if restored:
+                    backup = restored
+        except ImportError:
+            pass
+    session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+    session.pop(SHARED_ROOM_META_KEY, None)
     session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+    session.pop("_shared_draft_sync_run", None)
+    if isinstance(backup, dict):
+        session[LIVE_DRAFT_ROOM_KEY] = backup
+    if reason:
+        session["_draft_room_membership_notice"] = reason
 
 
 def is_multiplayer_draft_active(session: dict[str, Any]) -> bool:
-    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip()
-    return bool(code)
+    try:
+        from draft_room_create_verify import is_plausible_share_code
+
+        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        return bool(code) and is_plausible_share_code(code)
+    except ImportError:
+        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip()
+        return bool(code)
 
 
 def get_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
@@ -131,34 +164,70 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
             )
         except ImportError:
             pass
-        document = load_shared_room(str(room_code))
-        if document:
-            runtime = publish_shared_room_runtime(session, document, reason="global_context_prepare")
-            if runtime is None:
-                session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
-                session.pop(SHARED_ROOM_META_KEY, None)
-                session["_draft_room_last_error"] = str(
-                    session.get("_draft_room_publish_error") or "Shared room data is invalid or empty."
-                )
-            else:
-                load_participant_workflow_into_session(session, str(room_code))
-                try:
-                    from draft_room_membership import sync_membership_from_document
+        existing_room = session.get(LIVE_DRAFT_ROOM_KEY)
+        shared_meta = session.get(SHARED_ROOM_META_KEY)
+        try:
+            from live_draft_state import is_runtime_room
 
-                    ok, notice = sync_membership_from_document(session, document)
-                    if notice:
-                        session["_draft_room_membership_notice"] = notice
-                except ImportError:
-                    membership = dict(document.get("participants") or {}).get(ctx["participant_id"])
-                    if isinstance(membership, dict):
-                        team = str(membership.get("assigned_team") or "").strip()
-                        if team:
-                            session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
-                            _sync_participant_team_aliases(session, team)
-        elif room_code:
-            session["_draft_room_last_error"] = (
-                f"Shared room **{room_code}** could not be loaded from {shared_room_backend_name()}."
+            already_hydrated = (
+                is_runtime_room(existing_room)
+                and isinstance(shared_meta, dict)
+                and str(shared_meta.get("room_code") or "").strip().upper() == str(room_code).strip().upper()
             )
+        except ImportError:
+            already_hydrated = isinstance(existing_room, dict) and bool(existing_room.get("draft_room_id"))
+
+        if already_hydrated:
+            load_participant_workflow_into_session(session, str(room_code))
+        else:
+            document = load_shared_room(str(room_code))
+            if document:
+                runtime = publish_shared_room_runtime(session, document, reason="global_context_prepare")
+                if runtime is None:
+                    clear_stale_multiplayer_state(
+                        session,
+                        reason=str(
+                            session.get("_draft_room_publish_error") or "Shared room data is invalid or empty."
+                        ),
+                    )
+                else:
+                    load_participant_workflow_into_session(session, str(room_code))
+                    try:
+                        from draft_room_membership import sync_membership_from_document
+
+                        ok, notice = sync_membership_from_document(session, document)
+                        if notice:
+                            session["_draft_room_membership_notice"] = notice
+                    except ImportError:
+                        membership = dict(document.get("participants") or {}).get(ctx["participant_id"])
+                        if isinstance(membership, dict):
+                            team = str(membership.get("assigned_team") or "").strip()
+                            if team:
+                                session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+                                _sync_participant_team_aliases(session, team)
+            elif room_code:
+                from draft_room_create_verify import is_plausible_share_code, looks_like_internal_draft_session_id, share_code_hint
+
+                if not is_plausible_share_code(room_code):
+                    clear_stale_multiplayer_state(
+                        session,
+                        reason=share_code_hint(room_code)
+                        or f"Invalid share code **{room_code}** — cleared multiplayer mode.",
+                    )
+                else:
+                    session["_draft_room_last_error"] = (
+                        f"Shared room **{room_code}** could not be loaded from {shared_room_backend_name()}."
+                    )
+                    hint = ""
+                    if looks_like_internal_draft_session_id(room_code):
+                        hint = " Use the 6-character share code, not the internal session ID."
+                    clear_stale_multiplayer_state(
+                        session,
+                        reason=(
+                            f"Shared room **{room_code}** was not found in {shared_room_backend_name()}.{hint} "
+                            "Your single-user draft is still available."
+                        ),
+                    )
     else:
         prepare_live_draft_state(session)
     if is_multiplayer_draft_active(session):
@@ -245,7 +314,17 @@ def create_and_host_shared_room(
 
     import copy
 
-    from draft_room_create_verify import normalize_room_code, verify_shared_room_persisted
+    from draft_room_create_verify import (
+        merge_create_flow_diagnostics,
+        normalize_room_code,
+        verify_shared_room_persisted,
+    )
+
+    merge_create_flow_diagnostics(
+        session,
+        create_button_clicked=True,
+        internal_draft_session_id=str(live_room.get("draft_room_id") or "").strip().upper(),
+    )
 
     backup_room = copy.deepcopy(live_room) if isinstance(live_room, dict) else None
     backup_room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper() or None
@@ -289,6 +368,7 @@ def create_and_host_shared_room(
         record_shared_room_supabase_error = None  # type: ignore[assignment]
 
     code = generate_room_code(exists=backend.exists)
+    merge_create_flow_diagnostics(session, generated_share_code=code)
     document = shared_room_document(
         room_code=code,
         host_participant_id=participant_id,
@@ -311,9 +391,11 @@ def create_and_host_shared_room(
         record_scoring_pipeline_stage(session, "compact_serialized", None, document=document)
     except ImportError:
         pass
+    merge_create_flow_diagnostics(session, supabase_save_attempted=True)
     try:
         saved = backend.save(document)
     except SharedRoomSupabaseError as exc:
+        merge_create_flow_diagnostics(session, supabase_save_success=False)
         if record_shared_room_supabase_error is not None:
             record_shared_room_supabase_error(session, exc)
         else:
@@ -321,10 +403,12 @@ def create_and_host_shared_room(
         abort_shared_room_create(session, backup_room=backup_room, backup_room_code=backup_room_code)
         return "", {}
     except ValueError as exc:
+        merge_create_flow_diagnostics(session, supabase_save_success=False)
         session["_draft_room_last_error"] = str(exc)
         abort_shared_room_create(session, backup_room=backup_room, backup_room_code=backup_room_code)
         return "", {}
     except RuntimeError as exc:
+        merge_create_flow_diagnostics(session, supabase_save_success=False)
         try:
             from draft_room_supabase_errors import (
                 record_shared_room_supabase_error,
@@ -339,24 +423,28 @@ def create_and_host_shared_room(
         return "", {}
 
     if not isinstance(saved, dict) or not saved.get("room_code"):
+        merge_create_flow_diagnostics(session, supabase_save_success=False)
         session["_draft_room_last_error"] = "Could not create shared room."
         abort_shared_room_create(session, backup_room=backup_room, backup_room_code=backup_room_code)
         return "", {}
 
     saved_code = normalize_room_code(saved.get("room_code"))
+    merge_create_flow_diagnostics(session, supabase_save_success=True)
     verified, verify_msg, verify_diag = verify_shared_room_persisted(
         backend,
         saved_code,
         saved_document=saved,
     )
-    session["_draft_room_create_diag"] = verify_diag
+    merge_create_flow_diagnostics(session, **verify_diag)
     if not verified:
+        merge_create_flow_diagnostics(session, shared_room_code_displayed_to_user=False)
         session["_draft_room_last_error"] = verify_msg
         abort_shared_room_create(session, backup_room=backup_room, backup_room_code=backup_room_code)
         return "", {}
 
     runtime = publish_shared_room_runtime(session, saved, reason="shared_room_create")
     if runtime is None:
+        merge_create_flow_diagnostics(session, shared_room_code_displayed_to_user=False)
         session["_draft_room_last_error"] = str(
             session.get("_draft_room_publish_error") or "Shared room saved but draft board could not be loaded."
         )
@@ -385,6 +473,11 @@ def create_and_host_shared_room(
         )
     except ImportError:
         pass
+    merge_create_flow_diagnostics(
+        session,
+        shared_room_code_displayed_to_user=True,
+        valid_runtime_room=True,
+    )
     return saved_code, saved
 
 
@@ -408,6 +501,15 @@ def join_shared_draft_room(
     code = str(room_code or "").strip().upper()
     if not code:
         return False, "Enter a room code.", None
+    try:
+        from draft_room_create_verify import is_plausible_share_code, share_code_hint
+        from draft_room_shared_state import ROOM_CODE_LEN
+
+        if not is_plausible_share_code(code):
+            hint = share_code_hint(code)
+            return False, hint or f"Enter a valid {ROOM_CODE_LEN}-character share code from the host.", None
+    except ImportError:
+        pass
     backend = store or get_shared_room_store()
     backend_name = shared_room_backend_name()
     try:
@@ -462,7 +564,11 @@ def join_shared_draft_room(
         if reason == "query_error":
             detail = str(load_result.get("query_error") or "Supabase query failed")
             return False, f"Could not look up room **{code}** ({backend_name}): {detail}", None
-        return False, f"Room **{code}** not found in {backend_name}. Check the code and try again.", None
+        return False, (
+            f"Share code **{code}** not found in {backend_name}. "
+            "Ask the host for the **6-character share code** shown after Create Shared Draft Room — "
+            "not the 8-character internal session ID."
+        ), None
 
     ok_doc, doc_err = validate_shared_room_document(document)
     if not ok_doc:

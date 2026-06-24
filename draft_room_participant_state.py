@@ -424,8 +424,21 @@ def clear_participant_left_room(session: dict[str, Any], room_code: str) -> None
 
 def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     """Rehydrate active room code + team from persisted workspace blob after refresh."""
+    try:
+        from draft_room_create_verify import is_plausible_share_code
+    except ImportError:
+        is_plausible_share_code = None  # type: ignore[assignment,misc]
+
+    def _valid_code(raw: str) -> str:
+        code = str(raw or "").strip().upper()
+        if not code:
+            return ""
+        if is_plausible_share_code is not None and not is_plausible_share_code(code):
+            return ""
+        return code
+
     pid = resolve_participant_id(session)
-    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    code = _valid_code(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "")
     if code:
         if participant_has_left_room(session, code):
             session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
@@ -437,7 +450,7 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     membership = session.get(MEMBERSHIP_KEY)
     if isinstance(membership, dict):
         for raw_code, room_mem in membership.items():
-            room_code = str(raw_code or "").strip().upper()
+            room_code = _valid_code(raw_code)
             if not room_code or participant_has_left_room(session, room_code):
                 continue
             team = membership_team_for_participant(session, room_code, participant_id=pid)
@@ -456,7 +469,7 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     bucket = session.get(PARTICIPANT_STATE_KEY)
     if isinstance(bucket, dict):
         for raw_code, state in bucket.items():
-            room_code = str(raw_code or "").strip().upper()
+            room_code = _valid_code(raw_code)
             if not room_code or not isinstance(state, dict) or participant_has_left_room(session, room_code):
                 continue
             legacy_pid = str(state.get("participant_id") or "").strip()

@@ -116,8 +116,11 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
         mode = ctx.get("mode") or "none"
         if mode == "multiplayer":
             backend = (ctx.get("shared_storage_backend") or "unknown")
+            share = str(ctx.get("room_code") or "").strip().upper()
+            internal_id = str(ctx.get("draft_room_id") or "").strip()
             st.caption(
-                f"**Multiplayer** · Room code **{ctx.get('room_code')}** · "
+                f"**Multiplayer** · Share code **{share}** *(6 chars — give this to join)* · "
+                f"Internal session `{internal_id}` · "
                 f"Your team: **{ctx.get('participant_team') or '—'}** · "
                 f"Revision {ctx.get('shared_revision') or '—'} · Backend `{backend}`"
             )
@@ -163,10 +166,11 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 st.caption(f"Free pool drafting is **{label}** (host commissioner setting).")
 
             join_code = st.text_input(
-                "Room code",
+                "Share code (6 characters)",
                 value=str(ctx.get("room_code") or ""),
                 key="shared_draft_room_code_display",
                 disabled=True,
+                help="Other managers enter this code under Join room code — not the internal session ID.",
             )
             if st.button("Refresh board now", key="shared_draft_refresh_btn"):
                 sync_shared_draft_room(session, force=True)
@@ -217,28 +221,60 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 key="shared_draft_create_btn",
                 type="primary",
                 disabled=create_disabled,
-                help="Requires an active live draft.",
+                help="Requires an active live draft. Publishes a 6-character share code to Supabase.",
             ):
                 if isinstance(room, dict):
+                    try:
+                        from draft_room_create_verify import init_create_flow_diagnostics
+
+                        init_create_flow_diagnostics(
+                            session,
+                            clicked=True,
+                        )
+                        session["_draft_room_create_diag"]["internal_draft_session_id"] = str(
+                            room.get("draft_room_id") or ""
+                        ).strip().upper()
+                    except ImportError:
+                        session["_draft_room_create_diag"] = {"create_button_clicked": True}
                     session[ALLOW_FREE_POOL_KEY] = False
                     cfg = dict(room.get("config") or {})
                     cfg[ALLOW_FREE_POOL_KEY] = False
                     room["config"] = cfg
                     code, doc = create_and_host_shared_room(session, room)
+                    render_shared_room_create_diagnostics(st, session)
                     if not code:
-                        st.error(session.pop("_draft_room_last_error", "Could not create shared room."))
-                        render_shared_room_create_diagnostics(st, session)
+                        err = session.pop("_draft_room_last_error", "Could not create shared room.")
+                        st.error(err)
+                        st.warning(
+                            "Staying in **single-user** live draft mode. "
+                            "Your board and player pool are unchanged — fix the error and try again."
+                        )
                         _render_supabase_error_detail(st, session)
                     else:
-                        render_shared_room_create_diagnostics(st, session)
-                        _finalize_successful_join(session, f"Shared room created. Share code **{code}** with other managers.")
+                        try:
+                            from draft_room_create_verify import is_plausible_share_code
+
+                            if not is_plausible_share_code(code):
+                                session.pop("_draft_room_last_error", None)
+                                st.error(f"Invalid share code returned ({code!r}). Shared room was not activated.")
+                            else:
+                                _finalize_successful_join(
+                                    session,
+                                    f"Shared room created. Share code **{code}** (6 characters) — "
+                                    f"not the internal session ID `{room.get('draft_room_id', '')}`.",
+                                )
+                        except ImportError:
+                            _finalize_successful_join(
+                                session,
+                                f"Shared room created. Share code **{code}** with other managers.",
+                            )
                     return True
         with col_join:
             with st.form("shared_draft_join_form", clear_on_submit=False):
                 join_input = st.text_input(
                     "Join room code",
                     placeholder="ABC123",
-                    help="Enter the code from the host device, then tap Join.",
+                    help="6-character share code from the host — not the 8-character internal session ID.",
                 )
                 submitted = st.form_submit_button("Join Room by Code", type="primary")
             if submitted:

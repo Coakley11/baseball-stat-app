@@ -18059,17 +18059,23 @@ if active_page == "Live Draft Room":
                 room["config"]["your_team"] = user_team
                 st.session_state["room_your_team"] = user_team
         room_label = str(room.get("draft_room_id") or "")
+        internal_id = room_label
         if _multiplayer_draft:
             try:
+                from draft_room_create_verify import is_plausible_share_code
+
                 share_code = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
             except Exception:
                 share_code = ""
-            if share_code:
-                room_label = f"Share code **{share_code}** · Session `{room.get('draft_room_id', '')}`"
+            if share_code and is_plausible_share_code(share_code):
+                room_label = (
+                    f"Share code **{share_code}** *(join with this)* · "
+                    f"Internal session `{internal_id}` *(do not share for join)*"
+                )
             else:
-                room_label = f"Session `{room.get('draft_room_id', '')}`"
+                room_label = f"Internal session `{internal_id}` *(not a join code)*"
         else:
-            room_label = f"Room `{room.get('draft_room_id', '')}`"
+            room_label = f"Internal session `{internal_id}` *(single-user — not a share/join code)*"
         st.caption(
             f"**{cfg.get('league_name', 'League')}** · {room_label} · "
             f"Your team: **{user_team}** · "
