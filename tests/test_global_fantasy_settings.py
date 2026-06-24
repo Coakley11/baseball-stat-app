@@ -90,6 +90,20 @@ class TestTeamPropagation(unittest.TestCase):
         self.assertEqual(active_fantasy_team_source(session), "live_draft")
         self.assertEqual(get_active_fantasy_team(session), "Team A")
 
+    def test_multiplayer_uses_participant_team(self) -> None:
+        from global_fantasy_settings_state import get_active_fantasy_team
+
+        session = {
+            "room_your_team": "Team 1",
+            "active_shared_draft_room_code": "ABC123",
+            "draft_room_participant_team": "Team 2",
+            "live_draft_room": {
+                "status": "in_progress",
+                "config": {"user_team": "Team 1", "your_team": "Team 1"},
+            },
+        }
+        self.assertEqual(get_active_fantasy_team(session), "Team 2")
+
 
 class TestExtractPlayerFromQuestion(unittest.TestCase):
     def test_wagaman_team_fit_question(self) -> None:

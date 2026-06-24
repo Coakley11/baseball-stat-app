@@ -33,6 +33,13 @@ _GLOBAL_KEYS = (
     "room_team_count",
     "room_rounds",
     "room_format",
+    "active_shared_draft_room_code",
+    "draft_room_participant_state",
+    "draft_room_participant_id",
+    "draft_room_participant_team",
+    "draft_room_participant_membership",
+    "draft_room_shared_meta",
+    "allow_free_pool_drafting",
 )
 
 _INSIGHT_KEYS = (

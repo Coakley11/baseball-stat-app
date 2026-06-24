@@ -33,6 +33,15 @@ def _import_baseball_app():
 
 
 def _your_team(session: dict[str, Any], *, live_room: dict[str, Any] | None = None) -> str:
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            team = active_participant_team(session)
+            if team:
+                return team
+    except ImportError:
+        pass
     if isinstance(live_room, dict):
         cfg = dict(live_room.get("config") or {})
         team = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
@@ -326,6 +335,19 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
         if not ok:
             return False, reason
 
+    try:
+        from draft_source_validation import is_allowed_draft_source
+
+        src_ok, src_reason, _ = is_allowed_draft_source(
+            session,
+            name,
+            live_room=session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None,
+        )
+        if not src_ok:
+            return False, src_reason
+    except ImportError:
+        pass
+
     return True, ""
 
 
@@ -517,6 +539,22 @@ def _draft_live(
         return result
 
     session[LIVE_DRAFT_ROOM_KEY] = room
+    try:
+        from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            ok_commit, commit_msg, _saved = commit_shared_room_state(session, room, player_name=player_name)
+            if not ok_commit:
+                refreshed = session.get(LIVE_DRAFT_ROOM_KEY)
+                if isinstance(refreshed, dict):
+                    room = refreshed
+                result["error"] = "shared_commit_failed"
+                result["message"] = commit_msg or "Could not sync pick to shared room."
+                session["_draft_room_conflict_notice"] = result["message"]
+                return result
+    except ImportError:
+        pass
+
     write_canonical_live_draft_state(session, room, reason=f"draft_player:{source}", local_edit=True)
     sync_live_draft_room_to_canonical_board(session, room)
 

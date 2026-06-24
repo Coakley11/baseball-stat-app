@@ -142,6 +142,39 @@ class TestInstantInsightSubmit(unittest.TestCase):
         )
         self.assertEqual(session[SESSION_PENDING_KEY]["insight_id"], "ins-map")
 
+    def test_global_render_retries_when_inline_submit_failed(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from applied_math_return_insight import (
+            SESSION_PENDING_KEY,
+            render_suite_applied_math_insight_for_page,
+        )
+
+        insight = {
+            "insight_id": "ins-retry",
+            "source_app": "baseball",
+            "source_page": "Fantasy Sleepers & Busts",
+            "conclusion": "Eric Wagaman is a strong sleeper add.",
+            "question": "Would Eric Wagaman help my fantasy team as a sleeper?",
+        }
+        st = MagicMock()
+        st.session_state = {
+            SESSION_PENDING_KEY: insight,
+            "_ami_last_submit_source_page": "Fantasy Sleepers & Busts",
+        }
+
+        with patch(
+            "applied_math_return_insight.render_applied_math_insight_panel",
+            return_value=True,
+        ) as mock_panel:
+            ok = render_suite_applied_math_insight_for_page(
+                st,
+                source_app="baseball",
+                source_page="Fantasy Sleepers & Busts",
+            )
+        self.assertTrue(ok)
+        mock_panel.assert_called_once()
+
     def test_hydrate_skips_cloud_when_submit_staged(self) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch

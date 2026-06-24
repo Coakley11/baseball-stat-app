@@ -108,7 +108,7 @@ These four questions test draft board context, roster needs, player binding, and
 ## 3. Procedure (each question)
 
 1. Open the page listed (with your **saved draft board**, not the harness scenario).
-2. Sidebar → **Analyze with Applied Math** → enter question → **Send to Command Center**.
+2. Sidebar → **Baseball Insight** → enter question → **⚾ Baseball Insight**.
 3. Command Center → **Continue** → Applied Intelligence runs analysis.
 4. Read the answer as a fantasy player would — trust, not checklist keywords.
 5. Record in `docs/ami_manual_responses_<date>.md` (see §6 template).

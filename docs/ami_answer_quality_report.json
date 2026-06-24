@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-16T13:12:50.960342+00:00",
+  "generated_at": "2026-06-16T22:14:26.385450+00:00",
   "north_star": "Routing pass with a useless answer is still a failure.",
   "criteria": [
     "understands_question",
@@ -22,10 +22,10 @@
   ],
   "summary": {
     "total": 32,
-    "passed": 27,
-    "failed": 5,
-    "player_trustworthy": 27,
-    "routing_only_failures": 5,
+    "passed": 26,
+    "failed": 6,
+    "player_trustworthy": 26,
+    "routing_only_failures": 6,
     "ready_for_manual_acceptance": false,
     "by_family": {
       "Draft Market": {
@@ -40,8 +40,8 @@
       },
       "Draft Assistant": {
         "total": 6,
-        "trustworthy": 5,
-        "routing_only_fail": 1
+        "trustworthy": 4,
+        "routing_only_fail": 2
       },
       "Sleepers": {
         "total": 3,
@@ -1491,9 +1491,9 @@
       "category": "Roster weakness",
       "question": "What is my biggest roster weakness?",
       "family": "Draft Assistant",
-      "passed": true,
-      "player_trustworthy": true,
-      "routing_only_pass": false,
+      "passed": false,
+      "player_trustworthy": false,
+      "routing_only_pass": true,
       "dimensions": [
         {
           "id": "understands_question",
@@ -1528,8 +1528,8 @@
         {
           "id": "provides_recommendation",
           "label": "Does it provide a actionable recommendation?",
-          "passed": true,
-          "note": "Clear take/lean"
+          "passed": false,
+          "note": "No actionable recommendation"
         },
         {
           "id": "real_players_and_data",
@@ -1558,26 +1558,27 @@
         {
           "id": "player_trustworthy",
           "label": "Would a knowledgeable fantasy baseball player trust this answer?",
-          "passed": true,
-          "note": "Believable and useful"
+          "passed": false,
+          "note": "Would not pass knowledgeable-player sniff test"
         }
       ],
-      "failures": [],
+      "failures": [
+        "No clear recommendation for a decision question"
+      ],
       "strengths": [
-        "Passes fantasy-player trust bar",
         "Cites measurable evidence"
       ],
       "route_id": "baseball_draft_decision",
-      "draft_mode": "roster_weakness",
-      "short_answer": "Your biggest **roster weakness** is **C** depth with a **HR** category gap on your **2**-player roster (**Juan Soto** (already drafted), **Elly De La Cruz** (already drafted)) at pick **6** (round **1**). **Target Cal Ra",
+      "draft_mode": "roster_needs",
+      "short_answer": "**Positions already filled:**\n- **?**: Juan Soto\n- **?**: Elly De La Cruz\n\n**Still needed (priority order):**\n1. **C** — catcher tiers thin quickly after the top names leave the board\n2. **SS** — shortstop is a high-scar",
       "pipeline": {
         "A_context_keys": 28,
         "A_has_draft_snapshot": true,
         "B_route_id": "baseball_draft_decision",
-        "C_draft_mode": "roster_weakness",
-        "D_answer_chars": 3538,
+        "C_draft_mode": "roster_needs",
+        "D_answer_chars": 3895,
         "E_has_evidence": true,
-        "F_player_trustworthy": true
+        "F_player_trustworthy": false
       }
     },
     {

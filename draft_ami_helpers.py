@@ -509,6 +509,12 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
 
     slot = live_draft_current_slot(live_room)
     user_team = str(cfg.get("your_team") or session.get("room_your_team") or "")
+    try:
+        from draft_room_context import recommendation_team
+
+        user_team = recommendation_team(session, on_clock_team=str(slot.get("Team") or "") if slot else None) or user_team
+    except ImportError:
+        pass
     if slot:
         idx = int(serialized.get("current_pick_index") or 0)
         num_teams = int(cfg.get("num_teams") or len(live_room.get("teams") or []) or 12)
@@ -561,7 +567,20 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
             if isinstance(b, dict)
         ]
 
-    top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(live_room, top_n=8)
+    rec_team = None
+    try:
+        from draft_room_context import is_multiplayer_draft_active, recommendation_team
+
+        if is_multiplayer_draft_active(session):
+            rec_team = recommendation_team(session) or None
+    except ImportError:
+        pass
+
+    top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
+        live_room,
+        top_n=8,
+        team=rec_team,
+    )
     out["recommended_players"] = compact_recommendation_rows(top_rec)
     out["available_players"] = compact_recommendation_rows(best_avail)
     out["positional_fits"] = compact_recommendation_rows(pos_fit)

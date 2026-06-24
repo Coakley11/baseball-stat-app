@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-SUITE_BUILD_LABEL = "2026-05-27-baseball-sync-ami-platform-v1"
-GIT_COMMIT_SHORT = "7e96fbb"
+SUITE_BUILD_LABEL = "2026-06-23-baseball-ami-sidebar-v3"
+GIT_COMMIT_SHORT = "6842410"
 GIT_BRANCH = "dev"
 TREND_ACTIVITY_DIAGNOSTICS_LIVE = True
 DEPLOY_COMMITS_INCLUDED = (

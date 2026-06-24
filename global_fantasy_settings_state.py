@@ -91,6 +91,15 @@ def active_fantasy_team_source(session: dict[str, Any]) -> str:
 
 def get_active_fantasy_team(session: dict[str, Any]) -> str:
     """Single active fantasy team for the whole app."""
+    try:
+        from draft_room_context import is_multiplayer_draft_active, recommendation_team
+
+        if is_multiplayer_draft_active(session):
+            team = recommendation_team(session)
+            if team:
+                return team
+    except ImportError:
+        pass
     if active_fantasy_team_source(session) == "live_draft":
         room = session.get("live_draft_room")
         if isinstance(room, dict):
@@ -120,6 +129,14 @@ def sync_active_fantasy_team_to_canonical(session: dict[str, Any]) -> str:
 
 def active_fantasy_team_label(session: dict[str, Any]) -> str:
     """Human-readable label for dev UI / captions."""
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            team = get_active_fantasy_team(session) or "—"
+            return f"{team} (Shared Draft Room)"
+    except ImportError:
+        pass
     team = get_active_fantasy_team(session) or "—"
     src = active_fantasy_team_source(session)
     if src == "live_draft":

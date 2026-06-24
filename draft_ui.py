@@ -116,6 +116,8 @@ def render_draft_button(
             result = draft_player(session, name, source=source, st_obj=st)
             msg = str(result.get("message") or result.get("error") or "Drafted.")
             session[flash_key] = msg
+            if not result.get("ok") and result.get("error") == "shared_commit_failed":
+                session["_draft_room_conflict_notice"] = msg
             return True
         return False
 

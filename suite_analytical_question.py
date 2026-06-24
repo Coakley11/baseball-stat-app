@@ -21,11 +21,14 @@ from activity_time import parse_activity_timestamp, utc_now_iso
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-return-insight-restore-v12"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-23-baseball-insight-label-v2"
+AMI_SIDEBAR_RENDER_MODULE = "suite_analytical_question.render_analyze_with_applied_math_sidebar"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
 ANALYTICAL_QUESTION_BUTTON_LABEL = "Continue in Applied Mathematics →"
+BASEBALL_INSIGHT_BUTTON_LABEL = "⚾ Baseball Insight"
+BASEBALL_INSIGHT_SECTION_TITLE = "Baseball Insight"
 _SEND_COOLDOWN_SECONDS = 120
 
 _SOURCE_AREA: dict[str, str] = {
@@ -213,6 +216,87 @@ def source_app_label(source_app: str) -> str:
     if key == "music":
         return "Music Practice Coach"
     return _SOURCE_LABELS.get(key, key.replace("_", " ").title())
+
+
+def infer_runtime_suite_app_id(session: dict[str, Any] | None = None) -> str:
+    """Suite app id set by hosting app entrypoint (e.g. streamlit_app.py)."""
+    ss = session or {}
+    explicit = str(ss.get("_suite_runtime_app_id") or "").strip()
+    if explicit:
+        return normalize_source_app_id(explicit)
+    return ""
+
+
+def resolve_ami_sidebar_app_id(
+    source_app: str,
+    session: dict[str, Any] | None = None,
+) -> str:
+    """Canonical app id for AMI sidebar labels — prefers explicit baseball runtime."""
+    passed = normalize_source_app_id(source_app)
+    runtime = infer_runtime_suite_app_id(session)
+    if passed == "baseball" or runtime == "baseball":
+        return "baseball"
+    if passed:
+        return passed
+    return runtime
+
+
+def ami_sidebar_submit_label(
+    source_app: str,
+    session: dict[str, Any] | None = None,
+) -> str:
+    """Primary sidebar button label — baseball uses Baseball Insight; routing unchanged."""
+    app = resolve_ami_sidebar_app_id(source_app, session)
+    if app == "music":
+        return "Ask the Music Coach"
+    if app == "nba":
+        return "Get NBA Insight"
+    if app == "baseball":
+        return BASEBALL_INSIGHT_BUTTON_LABEL
+    return "Send to Command Center"
+
+
+def ami_sidebar_build_marker() -> str:
+    """Git/build stamp for AMI sidebar debug."""
+    try:
+        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
+
+        return f"{SUITE_BUILD_LABEL} · commit `{GIT_COMMIT_SHORT}` · branch `{GIT_BRANCH}`"
+    except ImportError:
+        return "build marker unavailable"
+
+
+def _ami_sidebar_debug_visible(st: Any, developer_mode: bool) -> bool:
+    if developer_mode:
+        return True
+    try:
+        raw = st.query_params.get("ami_debug")
+    except Exception:
+        return False
+    if raw is None:
+        return False
+    val = str(raw[0] if isinstance(raw, list) else raw).strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def render_ami_sidebar_submit_debug(
+    st: Any,
+    *,
+    source_app_raw: str,
+    source_app_resolved: str,
+    submit_label: str,
+    developer_mode: bool,
+) -> None:
+    """Temporary dev marker beside the AMI submit button."""
+    if not _ami_sidebar_debug_visible(st, developer_mode):
+        return
+    st.sidebar.caption(
+        "🛠 **AMI submit debug** · "
+        f"module `{AMI_SIDEBAR_RENDER_MODULE}` · "
+        f"source_app={source_app_raw!r} → {source_app_resolved!r} · "
+        f"label={submit_label!r} · "
+        f"{AMI_SIDEBAR_DEPLOY_VERSION} · {ami_sidebar_build_marker()}"
+    )
 
 
 def source_question_card_title(
@@ -861,29 +945,44 @@ def render_analyze_with_applied_math_sidebar(
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
-    is_music = str(source_app or "").strip().lower() == "music"
-    is_nba = str(source_app or "").strip().lower() == "nba"
+    app_id = resolve_ami_sidebar_app_id(source_app, ss)
+    is_baseball = app_id == "baseball"
+    is_music = app_id == "music"
+    is_nba = app_id == "nba"
+    submit_label = ami_sidebar_submit_label(source_app, ss)
+    ss["_ami_sidebar_render_debug"] = {
+        "module": AMI_SIDEBAR_RENDER_MODULE,
+        "source_app_raw": str(source_app or ""),
+        "source_app_resolved": app_id,
+        "submit_label": submit_label,
+        "deploy_version": AMI_SIDEBAR_DEPLOY_VERSION,
+        "build_marker": ami_sidebar_build_marker(),
+    }
     if is_music:
         st.sidebar.markdown("### Ask the Music Coach")
         st.sidebar.caption(
             "Get help with practice, theory, navigation, backing tracks, karaoke, or this app."
         )
-        submit_label = "Ask the Music Coach"
     elif is_nba:
         st.sidebar.markdown("### Get Basketball Insight")
         st.sidebar.caption(
             "Ask an NBA or playoff question about the team, matchup, or page you're viewing."
         )
-        submit_label = "Get NBA Insight"
+    elif is_baseball:
+        st.sidebar.markdown(f"### {BASEBALL_INSIGHT_SECTION_TITLE}")
+        st.sidebar.caption(
+            "Ask about players, trades, sleepers, roster weaknesses, strategy, draft picks, "
+            "projections, or team decisions."
+        )
     else:
         st.sidebar.markdown("### Analyze with Applied Math")
         st.sidebar.caption("Ask a math question about what you are viewing.")
-        submit_label = "Send to Command Center"
 
     last = ss.get("_ami_last_send")
+    effective_source_app = app_id or str(source_app or "").strip()
     if (
         isinstance(last, dict)
-        and last.get("source_app") == source_app
+        and str(last.get("source_app") or "").strip().lower() == str(effective_source_app).strip().lower()
         and _recent_duplicate_send(ss, str(last.get("question_id") or ""))
     ):
         sent_msg = (
@@ -892,7 +991,11 @@ def render_analyze_with_applied_math_sidebar(
             else (
                 "NBA insight request saved. Open Command Center when you're ready to review it."
                 if is_nba
-                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                else (
+                    "Baseball insight request saved. Open Command Center when you're ready to review it."
+                    if is_baseball
+                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                )
             )
         )
         st.sidebar.success(sent_msg)
@@ -914,6 +1017,14 @@ def render_analyze_with_applied_math_sidebar(
         label_visibility="visible",
     )
 
+    render_ami_sidebar_submit_debug(
+        st,
+        source_app_raw=str(source_app or ""),
+        source_app_resolved=app_id,
+        submit_label=submit_label,
+        developer_mode=developer_mode,
+    )
+
     if st.sidebar.button(
         submit_label,
         key=submit_key,
@@ -925,7 +1036,7 @@ def render_analyze_with_applied_math_sidebar(
             st.sidebar.warning("Enter a question first.")
         else:
             submit_ctx = build_submit_context(
-                source_app,
+                effective_source_app,
                 source_page,
                 ss,
                 context_extra_builder=context_extra_builder,
@@ -938,7 +1049,7 @@ def render_analyze_with_applied_math_sidebar(
                 except Exception:
                     log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
             result = submit_analytical_question(
-                source_app=source_app,
+                source_app=app_id or source_app,
                 source_page=source_page,
                 question=q,
                 context=submit_ctx,
@@ -954,7 +1065,11 @@ def render_analyze_with_applied_math_sidebar(
                 else (
                     "That NBA insight was already requested recently. Open Command Center to review it."
                     if is_nba
-                    else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                    else (
+                        "That baseball insight was already requested recently. Open Command Center to review it."
+                        if is_baseball
+                        else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
+                    )
                 )
             )
             ok_msg = (
@@ -963,7 +1078,11 @@ def render_analyze_with_applied_math_sidebar(
                 else (
                     "NBA insight request saved. Open Command Center when you're ready to review it."
                     if is_nba
-                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                    else (
+                        "Baseball insight request saved. Open Command Center when you're ready to review it."
+                        if is_baseball
+                        else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
+                    )
                 )
             )
             if result.get("duplicate"):
@@ -996,6 +1115,18 @@ def render_applied_math_sidebar_entry(
     **kwargs: Any,
 ) -> None:
     """Render AMI sidebar near the top; log and surface failures in Developer Mode."""
+    if normalize_source_app_id(source_app) == "baseball":
+        from baseball_ami_sidebar import render_baseball_insight_sidebar
+
+        render_baseball_insight_sidebar(
+            st,
+            source_page=source_page,
+            session_state=session_state,
+            context_extra_builder=context_extra_builder,
+            source_state_builder=source_state_builder,
+            on_after_send=on_after_send,
+        )
+        return
     if context_extra_builder is None:
         legacy_builder = kwargs.pop("context_builder", None)
         if callable(legacy_builder):

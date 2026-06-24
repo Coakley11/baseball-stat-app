@@ -9695,18 +9695,20 @@ def live_draft_build_board_df(room):
     return df[[c for c in show if c in df.columns]]
 
 
-def live_draft_recommendations(room, top_n=8):
+def live_draft_recommendations(room, top_n=8, team=None):
     slot = live_draft_current_slot(room)
     if slot is None:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     available = live_draft_get_available(room)
     if available.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    team = slot["Team"]
-    roster_df = pd.DataFrame(room["rosters"].get(team, []))
+    target_team = str(team or slot.get("Team") or "").strip()
+    if not target_team:
+        target_team = str(slot["Team"])
+    roster_df = pd.DataFrame(room["rosters"].get(target_team, []))
     cfg = dict(room.get("config", {}))
     cfg["current_pick"] = int(slot.get("Pick", 1))
-    cfg["next_user_pick"] = live_draft_next_pick_for_team(room, team)
+    cfg["next_user_pick"] = live_draft_next_pick_for_team(room, target_team)
     cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
     target_counts = _live_draft_target_counts(cfg)
     balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg)
@@ -9917,6 +9919,16 @@ def live_draft_push_analysis_to_session(room):
 def _persist_live_draft_room(room, *, reason: str, rerun: bool = True) -> None:
     """Write canonical live draft state, sync to draft_room_table, force-save."""
     from live_draft_state import commit_live_draft_room
+
+    try:
+        from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(st.session_state) and reason not in ("start_draft",):
+            ok, msg, _ = commit_shared_room_state(st.session_state, room)
+            if not ok and msg:
+                st.warning(msg)
+    except ImportError:
+        pass
 
     commit_live_draft_room(st, st.session_state, room, reason=reason)
     try:
@@ -12388,6 +12400,12 @@ try:
     prepare_baseball_workspace(st)
 except Exception:
     pass
+try:
+    from draft_room_context import prepare_global_draft_context
+
+    prepare_global_draft_context(st.session_state)
+except Exception:
+    pass
 _active_page_for_prep = str(st.session_state.get("active_page") or "")
 _DRAFT_BOARD_PAGES = frozenset({
     "Draft Room Simulator",
@@ -12516,7 +12534,9 @@ _record_sidebar_nav_trace(
     page_overwrite_source=st.session_state.get("_suite_page_overwrite_source") or "",
 )
 
-from suite_analytical_question import render_applied_math_sidebar_entry
+from baseball_ami_sidebar import render_baseball_insight_sidebar
+
+st.session_state["_suite_runtime_app_id"] = "baseball"
 
 try:
     from applied_math_context import build_baseball_applied_math_context, build_source_state
@@ -12530,12 +12550,10 @@ def _force_save_before_ami_return(active_page: str) -> None:
     st.session_state["_suite_defer_baseball_save_reason"] = f"ami_send:{active_page}"
 
 
-render_applied_math_sidebar_entry(
+render_baseball_insight_sidebar(
     st,
-    source_app="baseball",
     source_page=active_page,
     session_state=st.session_state,
-    developer_mode=developer_mode_enabled(),
     context_extra_builder=(
         lambda: build_baseball_applied_math_context(active_page, st.session_state)
         if build_baseball_applied_math_context
@@ -17378,6 +17396,25 @@ if active_page == "Live Draft Room":
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
         compact=True,
     )
+    try:
+        from draft_room_context import is_multiplayer_draft_active, sync_shared_draft_room
+        from draft_ui_multiplayer import render_shared_draft_room_panel
+
+        if is_multiplayer_draft_active(st.session_state):
+            import time
+
+            _poll_last = float(st.session_state.get("_shared_draft_poll_ts") or 0)
+            _poll_now = time.time()
+            if _poll_now - _poll_last >= 2.5:
+                st.session_state["_shared_draft_poll_ts"] = _poll_now
+                sync_shared_draft_room(st.session_state)
+                st.rerun()
+            else:
+                sync_shared_draft_room(st.session_state)
+        if render_shared_draft_room_panel(st, st.session_state):
+            st.rerun()
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
     from draft_ui import on_open_simulator_convert_panel, on_start_new_live_draft
     from live_draft_state import prepare_live_draft_state, render_live_draft_save_diagnostics
@@ -17855,13 +17892,16 @@ if active_page == "Live Draft Room":
                 reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
 
             if reset_live:
-                from draft_room_state import delete_live_draft_only
-                from live_draft_state import commit_live_draft_room
+                from draft_room_membership import reset_live_draft_with_membership_guard
 
-                delete_live_draft_only(st.session_state)
-                commit_live_draft_room(st, st.session_state, None, reason="reset_draft")
-                st.success("Live draft deleted.")
-                st.rerun()
+                ok, msg = reset_live_draft_with_membership_guard(
+                    st.session_state, st_obj=st, reason="reset_draft"
+                )
+                if ok:
+                    st.success("Live draft deleted.")
+                    st.rerun()
+                else:
+                    st.error(msg)
 
             with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
                 st.caption(
@@ -17888,37 +17928,53 @@ if active_page == "Live Draft Room":
         picks_done = len(room.get("draft_board", []))
         team_list = list(room.get("teams", []))
         user_team = cfg.get("user_team") or (team_list[0] if team_list else "")
+        try:
+            from draft_room_context import is_multiplayer_draft_active, recommendation_team
+
+            _multiplayer_draft = is_multiplayer_draft_active(st.session_state)
+        except ImportError:
+            _multiplayer_draft = False
+            recommendation_team = None  # type: ignore[assignment,misc]
         if team_list:
-            def _live_draft_team_changed():
-                try:
-                    from global_fantasy_settings_state import write_canonical_global_fantasy_settings
+            if _multiplayer_draft:
+                user_team = (recommendation_team(st.session_state) if recommendation_team else "") or user_team
+                st.markdown(f"**Your team:** {user_team} *(shared room assignment)*")
+                cfg["user_team"] = user_team
+                cfg["your_team"] = user_team
+                room["config"]["user_team"] = user_team
+                room["config"]["your_team"] = user_team
+                st.session_state["room_your_team"] = user_team
+            else:
+                def _live_draft_team_changed():
+                    try:
+                        from global_fantasy_settings_state import write_canonical_global_fantasy_settings
 
-                    write_canonical_global_fantasy_settings(
-                        st.session_state,
-                        team=st.session_state.get("live_draft_my_team"),
-                        reason="live_draft_my_team_changed",
-                    )
-                except ImportError:
-                    pass
-                try:
-                    from live_draft_state import mark_live_draft_local_edit
+                        write_canonical_global_fantasy_settings(
+                            st.session_state,
+                            team=st.session_state.get("live_draft_my_team"),
+                            reason="live_draft_my_team_changed",
+                        )
+                    except ImportError:
+                        pass
+                    try:
+                        from live_draft_state import mark_live_draft_local_edit
 
-                    mark_live_draft_local_edit(st.session_state)
-                except ImportError:
-                    pass
+                        mark_live_draft_local_edit(st.session_state)
+                    except ImportError:
+                        pass
 
-            user_team = st.selectbox(
-                "Your team (for survival % & next-pick logic)",
-                team_list,
-                index=team_list.index(user_team) if user_team in team_list else 0,
-                key="live_draft_my_team",
-                on_change=_live_draft_team_changed,
-            )
-            cfg["user_team"] = user_team
-            cfg["your_team"] = user_team
-            room["config"]["user_team"] = user_team
-            room["config"]["your_team"] = user_team
-            st.session_state["room_your_team"] = user_team
+                user_team = st.selectbox(
+                    "Your team (for survival % & next-pick logic)",
+                    team_list,
+                    index=team_list.index(user_team) if user_team in team_list else 0,
+                    key="live_draft_my_team",
+                    on_change=_live_draft_team_changed,
+                )
+                cfg["user_team"] = user_team
+                cfg["your_team"] = user_team
+                room["config"]["user_team"] = user_team
+                room["config"]["your_team"] = user_team
+                st.session_state["room_your_team"] = user_team
         st.caption(
             f"**{cfg.get('league_name', 'League')}** · Room `{room.get('draft_room_id', '')}` · "
             f"Your team: **{user_team}** · "
@@ -17972,13 +18028,16 @@ if active_page == "Live Draft Room":
                 key="live_draft_abandon_btn",
                 help="Abandon this live draft and return ownership to the Draft Room Simulator.",
             ):
-                from draft_room_state import delete_live_draft_only
-                from live_draft_state import commit_live_draft_room
+                from draft_room_membership import reset_live_draft_with_membership_guard
 
-                delete_live_draft_only(st.session_state)
-                commit_live_draft_room(st, st.session_state, None, reason="abandon_live_draft")
-                st.success("Live draft deleted.")
-                st.rerun()
+                ok, msg = reset_live_draft_with_membership_guard(
+                    st.session_state, st_obj=st, reason="abandon_live_draft"
+                )
+                if ok:
+                    st.success("Live draft deleted.")
+                    st.rerun()
+                else:
+                    st.error(msg)
         st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
@@ -18008,7 +18067,10 @@ if active_page == "Live Draft Room":
                 remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
                 _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
-                top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=6)
+                _rec_team = user_team if _multiplayer_draft else None
+                top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
+                    room, top_n=6, team=_rec_team
+                )
                 try:
                     from applied_math_context import cache_live_draft_ami_context
 
@@ -18078,25 +18140,49 @@ if active_page == "Live Draft Room":
                 if available.empty:
                     st.warning("No players left in the pool.")
                 else:
-                    player_options = available.sort_values(
+                    all_player_options = available.sort_values(
                         ["Expected Fantasy Value", "Model Rank"], ascending=[False, True]
                     )["fullName"].astype(str).tolist()
-                    selected_player = st.selectbox("Available Player", player_options, key="live_draft_player_select")
-                    from draft_ui import render_draft_button
+                    try:
+                        from draft_source_validation import allow_free_pool_drafting, allowed_draft_player_names
 
-                    paused = room.get("status") == "paused"
-                    if render_draft_button(
-                        st,
-                        st.session_state,
-                        selected_player,
-                        source="live_draft_room",
-                        key_suffix="live_manual",
-                        label="Draft Player",
-                        button_type="primary",
-                        extra_disabled=paused,
-                        extra_disabled_reason="Draft is paused — resume to pick.",
-                    ):
-                        st.rerun()
+                        if allow_free_pool_drafting(st.session_state, live_room=room):
+                            player_options = all_player_options
+                        else:
+                            player_options = allowed_draft_player_names(
+                                st.session_state,
+                                live_room=room,
+                                available_names=all_player_options,
+                            )
+                    except ImportError:
+                        player_options = all_player_options
+                    if not player_options:
+                        st.info(
+                            "Add players to your **Queue**, **Watchlist**, or **Tracked Players** "
+                            "to draft — or enable free pool drafting in the shared room panel."
+                        )
+                    else:
+                        selected_player = st.selectbox(
+                            "Draft candidate",
+                            player_options,
+                            key="live_draft_player_select",
+                            help="Draft from your queue, watchlist, tracked players, or the full pool when enabled.",
+                        )
+                        from draft_ui import render_draft_button
+
+                        paused = room.get("status") == "paused"
+                        if render_draft_button(
+                            st,
+                            st.session_state,
+                            selected_player,
+                            source="live_draft_room",
+                            key_suffix="live_manual",
+                            label="Draft Player",
+                            button_type="primary",
+                            extra_disabled=paused,
+                            extra_disabled_reason="Draft is paused — resume to pick.",
+                        ):
+                            st.rerun()
 
         if room.get("status") != "complete":
             render_contextual_page_nav(
@@ -18106,10 +18192,8 @@ if active_page == "Live Draft Room":
             )
 
         if developer_mode_enabled():
-            with st.expander("Future multiplayer architecture (local preview)", expanded=False):
-                st.caption(
-                    "Room state is session-local today. This snapshot is the shape a future sync service would persist."
-                )
+            with st.expander("Live draft room debug (Dev)", expanded=False):
+                st.caption("Serialized room snapshot for diagnostics.")
                 st.json(serialize_live_draft_room(room))
 
         st.subheader("Team Rosters")
