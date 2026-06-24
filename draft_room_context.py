@@ -103,6 +103,9 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
             )
     except ImportError:
         pass
+    restored_team = active_participant_team(session)
+    if restored_code and restored_team:
+        _sync_participant_team_aliases(session, restored_team)
     ctx = get_global_draft_context(session)
     room_code = ctx.get("room_code")
     if room_code:

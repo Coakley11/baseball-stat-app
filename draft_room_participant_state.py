@@ -58,6 +58,67 @@ def resolve_participant_id(session: dict[str, Any]) -> str:
         return "anonymous"
 
 
+def _is_legacy_room_membership(room_mem: dict[str, Any]) -> bool:
+    return bool(room_mem.get("assigned_team")) and bool(room_mem.get("participant_id"))
+
+
+def _normalize_room_membership(room_mem: Any) -> dict[str, dict[str, Any]]:
+    """Normalize room membership to ``{participant_id: {assigned_team, participant_id}}``."""
+    if not isinstance(room_mem, dict):
+        return {}
+    if _is_legacy_room_membership(room_mem):
+        pid = str(room_mem.get("participant_id") or "").strip()
+        if not pid:
+            return {}
+        return {
+            pid: {
+                "participant_id": pid,
+                "assigned_team": str(room_mem.get("assigned_team") or "").strip(),
+            }
+        }
+    out: dict[str, dict[str, Any]] = {}
+    for key, meta in room_mem.items():
+        if not isinstance(meta, dict):
+            continue
+        pid = str(meta.get("participant_id") or key or "").strip()
+        team = str(meta.get("assigned_team") or "").strip()
+        if pid and team:
+            out[pid] = {"participant_id": pid, "assigned_team": team}
+    return out
+
+
+def membership_team_for_participant(
+    session: dict[str, Any],
+    room_code: str,
+    *,
+    participant_id: str | None = None,
+) -> str:
+    """Assigned team for ``(room_code, participant_id)`` from persisted membership blobs."""
+    code = str(room_code or "").strip().upper()
+    pid = str(participant_id or resolve_participant_id(session)).strip()
+    if not code or not pid:
+        return ""
+
+    membership = session.get(MEMBERSHIP_KEY)
+    if isinstance(membership, dict):
+        room_mem = _normalize_room_membership(membership.get(code))
+        entry = room_mem.get(pid)
+        if isinstance(entry, dict) and entry.get("assigned_team"):
+            return str(entry["assigned_team"]).strip()
+
+    room_state = participant_state_for_room(session, code)
+    by_pid = room_state.get("by_participant")
+    if isinstance(by_pid, dict):
+        slot = by_pid.get(pid)
+        if isinstance(slot, dict) and slot.get("assigned_team"):
+            return str(slot["assigned_team"]).strip()
+
+    legacy_pid = str(room_state.get("participant_id") or "").strip()
+    if legacy_pid == pid and room_state.get("assigned_team"):
+        return str(room_state["assigned_team"]).strip()
+    return ""
+
+
 def _participant_bucket(session: dict[str, Any]) -> dict[str, Any]:
     root = session.setdefault(PARTICIPANT_STATE_KEY, {})
     if not isinstance(root, dict):
@@ -102,6 +163,37 @@ def participant_workflow_slot(session: dict[str, Any], room_code: str) -> dict[s
     return slot
 
 
+def _persist_room_membership(
+    session: dict[str, Any],
+    *,
+    room_code: str,
+    participant_id: str,
+    assigned_team: str,
+) -> None:
+    code = str(room_code or "").strip().upper()
+    pid = str(participant_id or "").strip()
+    team = str(assigned_team or "").strip()
+    if not code or not pid or not team:
+        return
+
+    membership = session.setdefault(MEMBERSHIP_KEY, {})
+    if not isinstance(membership, dict):
+        membership = {}
+        session[MEMBERSHIP_KEY] = membership
+
+    existing = membership.get(code)
+    room_mem = _normalize_room_membership(existing)
+    room_mem[pid] = {"participant_id": pid, "assigned_team": team}
+    membership[code] = room_mem
+
+    slot = participant_workflow_slot(session, code)
+    slot["assigned_team"] = team
+
+    state = participant_state_for_room(session, code)
+    state["participant_id"] = pid
+    state["assigned_team"] = team
+
+
 def set_active_participant(
     session: dict[str, Any],
     *,
@@ -116,12 +208,8 @@ def set_active_participant(
     session[ACTIVE_PARTICIPANT_ID_KEY] = pid
     session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
     state = participant_state_for_room(session, code)
-    state["participant_id"] = pid
-    state["assigned_team"] = team
     state["joined_at"] = _utc_now_iso()
-    membership = session.setdefault(MEMBERSHIP_KEY, {})
-    if isinstance(membership, dict):
-        membership[code] = {"participant_id": pid, "assigned_team": team}
+    _persist_room_membership(session, room_code=code, participant_id=pid, assigned_team=team)
     return state
 
 
@@ -129,6 +217,21 @@ def active_participant_team(session: dict[str, Any]) -> str:
     team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
     if team:
         return team
+
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+            if code:
+                scoped = membership_team_for_participant(session, code)
+                if scoped:
+                    session[ACTIVE_PARTICIPANT_TEAM_KEY] = scoped
+                    return scoped
+            return ""
+    except ImportError:
+        pass
+
     try:
         from global_fantasy_settings_state import GLOBAL_TEAM_KEY
 
@@ -150,6 +253,9 @@ def load_participant_workflow_into_session(session: dict[str, Any], room_code: s
     notes = slot.get("notes")
     if isinstance(notes, str):
         session[PARTICIPANT_NOTES_KEY] = notes
+    team = str(slot.get("assigned_team") or "").strip()
+    if team:
+        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
     return participant_state_for_room(session, room_code)
 
 
@@ -167,6 +273,10 @@ def save_participant_workflow_from_session(session: dict[str, Any], room_code: s
     notes = session.get(PARTICIPANT_NOTES_KEY)
     if isinstance(notes, str):
         slot["notes"] = notes
+    pid = resolve_participant_id(session)
+    team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or slot.get("assigned_team") or "").strip()
+    if team:
+        _persist_room_membership(session, room_code=room_code, participant_id=pid, assigned_team=team)
     return participant_state_for_room(session, room_code)
 
 
@@ -227,10 +337,24 @@ def register_participant_in_shared_document(
 
 def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     """Rehydrate active room code + team from persisted workspace blob after refresh."""
+    pid = resolve_participant_id(session)
     code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     if code:
-        _hydrate_team_from_membership(session, code)
+        _hydrate_team_from_membership(session, code, participant_id=pid)
         return code
+
+    membership = session.get(MEMBERSHIP_KEY)
+    if isinstance(membership, dict):
+        for raw_code, room_mem in membership.items():
+            room_code = str(raw_code or "").strip().upper()
+            if not room_code:
+                continue
+            team = membership_team_for_participant(session, room_code, participant_id=pid)
+            if team:
+                session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
+                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+                session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+                return room_code
 
     bucket = session.get(PARTICIPANT_STATE_KEY)
     if isinstance(bucket, dict):
@@ -238,38 +362,70 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
             room_code = str(raw_code or "").strip().upper()
             if not room_code or not isinstance(state, dict):
                 continue
-            session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
-            pid = str(state.get("participant_id") or resolve_participant_id(session))
-            team = str(state.get("assigned_team") or "").strip()
-            if pid:
-                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+            legacy_pid = str(state.get("participant_id") or "").strip()
+            team = membership_team_for_participant(session, room_code, participant_id=pid)
+            if not team and legacy_pid == pid:
+                team = str(state.get("assigned_team") or "").strip()
             if team:
+                session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
+                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
                 session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
-            return room_code
-
-    membership = session.get(MEMBERSHIP_KEY)
-    if isinstance(membership, dict):
-        for raw_code, meta in membership.items():
-            room_code = str(raw_code or "").strip().upper()
-            if not room_code or not isinstance(meta, dict):
-                continue
-            session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
-            if meta.get("participant_id"):
-                session[ACTIVE_PARTICIPANT_ID_KEY] = str(meta["participant_id"])
-            if meta.get("assigned_team"):
-                session[ACTIVE_PARTICIPANT_TEAM_KEY] = str(meta["assigned_team"])
-            return room_code
+                return room_code
     return ""
 
 
-def _hydrate_team_from_membership(session: dict[str, Any], room_code: str) -> None:
+def _hydrate_team_from_membership(
+    session: dict[str, Any],
+    room_code: str,
+    *,
+    participant_id: str | None = None,
+) -> None:
+    pid = str(participant_id or resolve_participant_id(session)).strip()
     code = str(room_code or "").strip().upper()
+    team = membership_team_for_participant(session, code, participant_id=pid)
+    if team:
+        session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+
+
+def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Auth + membership snapshot for dev acceptance (per device)."""
+    pid = resolve_participant_id(session)
+    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    auth_email = ""
+    auth_user_id = ""
+    try:
+        from suite_auth import AUTH_USER_ID_KEY, current_auth_email, is_authenticated
+
+        if is_authenticated(session):
+            auth_email = str(current_auth_email(session) or "")
+            auth_user_id = str(session.get(AUTH_USER_ID_KEY) or "")
+    except ImportError:
+        pass
+
     membership = session.get(MEMBERSHIP_KEY)
-    if isinstance(membership, dict):
-        meta = membership.get(code)
-        if isinstance(meta, dict) and meta.get("assigned_team"):
-            session[ACTIVE_PARTICIPANT_TEAM_KEY] = str(meta["assigned_team"])
-            return
-    state = participant_state_for_room(session, code)
-    if state.get("assigned_team"):
-        session[ACTIVE_PARTICIPANT_TEAM_KEY] = str(state["assigned_team"])
+    room_registry: dict[str, Any] = {}
+    if code:
+        try:
+            from draft_room_shared_state import load_shared_room
+
+            doc = load_shared_room(code)
+            if isinstance(doc, dict):
+                room_registry = dict(doc.get("participants") or {})
+        except ImportError:
+            pass
+
+    persisted_blob: dict[str, Any] = {}
+    if isinstance(membership, dict) and code:
+        persisted_blob = _normalize_room_membership(membership.get(code))
+
+    return {
+        "auth_email": auth_email,
+        "auth_user_id": auth_user_id,
+        "participant_id": pid,
+        "room_code": code or None,
+        "assigned_team": active_participant_team(session) or None,
+        "membership_team": membership_team_for_participant(session, code) if code else None,
+        "room_participant_registry": room_registry,
+        "persisted_membership_blob": persisted_blob,
+    }

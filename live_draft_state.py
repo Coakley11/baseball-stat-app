@@ -14,17 +14,15 @@ LIVE_DRAFT_ROOM_KEY = "live_draft_room"
 LIVE_DRAFT_DIRTY_KEY = "live_draft_state_dirty"
 LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
-from draft_scoring_pool import SHARED_DRAFT_SCORING_COLUMNS
+from draft_scoring_pool import (
+    LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS,
+    select_live_draft_compact_columns,
+)
 
 LIVE_DRAFT_PERSIST_SCHEMA = 1
 
-SHARED_DRAFT_POOL_COLUMNS = (
-    "playerID",
-    "fullName",
-    "Primary Position",
-    "Expected Fantasy Value",
-    *SHARED_DRAFT_SCORING_COLUMNS,
-)
+# Compact shared-room pools keep all live-draft scoring columns present in the source frame.
+SHARED_DRAFT_POOL_COLUMNS = LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS
 
 LIVE_DRAFT_SETTINGS_KEYS = (
     "live_draft_league_name",
@@ -91,7 +89,7 @@ def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = Fa
             elif hasattr(pool, "to_dict"):
                 frame = pool
                 if compact_pool:
-                    cols = [c for c in SHARED_DRAFT_POOL_COLUMNS if c in frame.columns]
+                    cols = select_live_draft_compact_columns(frame)
                     if cols:
                         frame = frame[cols]
                 out["pool_records"] = _json_safe(frame.to_dict(orient="records"))
@@ -100,7 +98,11 @@ def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = Fa
                 records = val.get("pool_records") or []
                 columns = [str(c) for c in (val.get("pool_columns") or [])]
                 if compact_pool and records and columns:
-                    keep = [c for c in SHARED_DRAFT_POOL_COLUMNS if c in columns]
+                    keep = select_live_draft_compact_columns(
+                        pd.DataFrame(records, columns=columns) if columns else pd.DataFrame(records)
+                    )
+                    if not keep:
+                        keep = [c for c in LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS if c in columns]
                     if keep:
                         idx = {c: columns.index(c) for c in keep}
                         slim_records = []

@@ -314,6 +314,18 @@ def prepare_global_fantasy_settings(
     if normalized_fmt is not None:
         _mirror_live_format_aliases(session, normalized_fmt)
         sync_lineup_format_from_canonical(session, force=force_mirror)
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            pteam = active_participant_team(session)
+            if pteam and pteam != session.get(GLOBAL_TEAM_KEY):
+                session[GLOBAL_TEAM_KEY] = pteam
+                for alias, canonical_key in _ALL_ALIASES.items():
+                    if canonical_key == GLOBAL_TEAM_KEY:
+                        session[alias] = pteam
+    except ImportError:
+        pass
     # Record what we propagated so we can detect vs user-local edits next time.
     propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
     session["_global_settings_last_propagated"] = propagated
@@ -336,6 +348,15 @@ def mirror_canonical_to_all_aliases(session: dict[str, Any]) -> None:
 def _sync_live_draft_room_team(session: dict[str, Any]) -> None:
     """Keep live draft room config in sync with canonical ``room_your_team``."""
     team = str(session.get(GLOBAL_TEAM_KEY) or "").strip()
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            pteam = active_participant_team(session)
+            if pteam:
+                team = pteam
+    except ImportError:
+        pass
     if not team:
         return
     room = session.get("live_draft_room")

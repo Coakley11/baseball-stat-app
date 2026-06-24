@@ -24,10 +24,10 @@ from draft_room_membership import (
     resolve_join_team_assignment,
     reset_live_draft_with_membership_guard,
 )
-from draft_room_participant_state import ACTIVE_PARTICIPANT_ID_KEY
+from draft_room_participant_state import ACTIVE_PARTICIPANT_ID_KEY, MEMBERSHIP_KEY
 from draft_room_shared_state import LocalFileSharedRoomStore, sanitize_shared_room_document
 from draft_source_validation import validate_shared_pick_commit
-from suite_auth import AUTH_USER_ID_KEY
+from suite_auth import AUTH_USER_EMAIL_KEY, AUTH_USER_ID_KEY
 
 
 def _sample_live_room() -> dict:
@@ -61,10 +61,24 @@ class DraftRoomMembershipTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.store = LocalFileSharedRoomStore(root=Path(self._tmpdir.name))
-        self.host_session = {ACTIVE_PARTICIPANT_ID_KEY: "auth-host-uuid", AUTH_USER_ID_KEY: "auth-host-uuid"}
-        self.guest_session = {ACTIVE_PARTICIPANT_ID_KEY: "auth-guest-uuid", AUTH_USER_ID_KEY: "auth-guest-uuid"}
+        self.host_session = {
+            ACTIVE_PARTICIPANT_ID_KEY: "auth-host-uuid",
+            AUTH_USER_ID_KEY: "auth-host-uuid",
+            AUTH_USER_EMAIL_KEY: "Daniel.cohen11@yahoo.com",
+        }
+        self.guest_session = {
+            ACTIVE_PARTICIPANT_ID_KEY: "auth-guest-uuid",
+            AUTH_USER_ID_KEY: "auth-guest-uuid",
+            AUTH_USER_EMAIL_KEY: "Coakley11@aol.com",
+        }
+        self._store_patch = patch(
+            "draft_room_shared_state.get_shared_room_store",
+            return_value=self.store,
+        )
+        self._store_patch.start()
 
     def tearDown(self) -> None:
+        self._store_patch.stop()
         self._tmpdir.cleanup()
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
@@ -83,6 +97,56 @@ class DraftRoomMembershipTests(unittest.TestCase):
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
         ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
         self.assertTrue(ok, msg)
+        self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
+
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_different_auth_users_receive_different_teams(self, _mock_auth: object) -> None:
+        code, doc = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
+        ok, msg, joined = join_shared_draft_room(self.guest_session, code, store=self.store)
+        self.assertTrue(ok, msg)
+        self.assertIsInstance(joined, dict)
+        participants = dict(joined.get("participants") or {})
+        host_team = participants["auth-host-uuid"]["assigned_team"]
+        guest_team = participants["auth-guest-uuid"]["assigned_team"]
+        self.assertNotEqual(host_team, guest_team)
+        self.assertEqual(self.host_session.get("draft_room_participant_team"), host_team)
+        self.assertEqual(self.guest_session.get("draft_room_participant_team"), guest_team)
+
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_guest_team_survives_shared_workspace_host_membership_blob(self, _mock_auth: object) -> None:
+        """Regression: shared daniel workspace must not overwrite guest team with host team."""
+        code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
+        join_shared_draft_room(self.guest_session, code, store=self.store)
+        self.guest_session.pop("draft_room_participant_team", None)
+        self.guest_session["room_your_team"] = "Team 1"
+        self.guest_session[MEMBERSHIP_KEY] = {
+            code: {
+                "auth-host-uuid": {
+                    "participant_id": "auth-host-uuid",
+                    "assigned_team": "Team 1",
+                },
+                "auth-guest-uuid": {
+                    "participant_id": "auth-guest-uuid",
+                    "assigned_team": "Team 2",
+                },
+            }
+        }
+        prepare_global_draft_context(self.guest_session)
+        self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
+        self.assertEqual(self.guest_session.get("room_your_team"), "Team 2")
+
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_legacy_host_only_membership_does_not_assign_guest_host_team(self, _mock_auth: object) -> None:
+        code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
+        join_shared_draft_room(self.guest_session, code, store=self.store)
+        self.guest_session.pop("draft_room_participant_team", None)
+        self.guest_session[MEMBERSHIP_KEY] = {
+            code: {
+                "participant_id": "auth-host-uuid",
+                "assigned_team": "Team 1",
+            }
+        }
+        prepare_global_draft_context(self.guest_session)
         self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)

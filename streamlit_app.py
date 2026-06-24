@@ -9352,7 +9352,7 @@ def apply_draft_pick_scoring(
     else:
         scored["Confidence Component"] = pd.Series(0.0, index=scored.index)
 
-    scored["Market Edge Component"] = normalize_series(scored["Fantasy Edge"].fillna(0)) * 0.22
+    scored["Market Edge Component"] = normalize_series(safe_numeric_series(scored, "Fantasy Edge", 0)) * 0.22
     scored["Roster Need Component"] = normalize_series(scored["Position Need Bonus"].fillna(0)) * 0.14
     scored["Scarcity Component"] = normalize_series(scored["Position Scarcity Bonus"].fillna(0))
     scored["Category Fit Component"] = normalize_series(scored["Category Need Bonus"].fillna(0)) * 0.08
@@ -9403,7 +9403,7 @@ def apply_draft_pick_scoring(
     market_dec = (
         normalize_series(scored["Market vs Model Score"])
         if "Market vs Model Score" in scored.columns
-        else normalize_series(scored["Fantasy Edge"].fillna(0))
+        else normalize_series(safe_numeric_series(scored, "Fantasy Edge", 0))
     )
     value_dec = normalize_series(scored["Expected Fantasy Value"])
 
@@ -9568,8 +9568,17 @@ def live_draft_get_available(room):
         return pd.DataFrame()
     drafted = set(room.get("drafted_player_ids", []) or [])
     if not drafted:
-        return pool.copy()
-    return pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
+        out = pool.copy()
+    else:
+        out = pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
+    try:
+        from draft_scoring_pool import ensure_draft_scoring_pool_columns_with_report
+
+        out, report = ensure_draft_scoring_pool_columns_with_report(out)
+        room["_live_draft_pool_scoring_diag"] = report
+    except ImportError:
+        pass
+    return out
 
 
 def live_draft_current_slot(room):

@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from draft_room_diagnostics import (
+    render_compact_pool_diagnostics,
     render_shared_room_create_diagnostics,
     render_shared_room_diagnostics,
     render_shared_room_join_load_diagnostics,
@@ -174,6 +175,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 st.info("Left shared draft room. Your private queue and watchlist are saved.")
                 return True
             render_shared_room_diagnostics(st, session)
+            render_compact_pool_diagnostics(st, session)
             render_shared_room_create_diagnostics(st, session)
             render_shared_room_auth_diagnostics(st, session)
             render_join_trace_panel(st, session)

@@ -168,8 +168,10 @@ def sync_membership_from_document(
 
     team = str(meta.get("assigned_team") or "").strip()
     session_team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
+    global_team = str(session.get("room_your_team") or "").strip()
     changed = bool(session_team and team and session_team != team)
-    if team and (changed or not session_team):
+    needs_sync = bool(team and (changed or not session_team or global_team != team))
+    if needs_sync:
         set_active_participant(session, room_code=code, participant_id=pid, assigned_team=team)
         session["room_your_team"] = team
         try:

@@ -183,31 +183,66 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                 fit2["Primary Position"].astype(str).tolist(),
             )
 
-    def test_compact_pool_runs_recommendations_without_keyerror(self) -> None:
-        """Regression: compact shared-room pool missing Fantasy Edge must not crash scoring."""
+    def test_compact_pool_runs_recommendations_with_real_rank_values(self) -> None:
+        """Compact round-trip pool must produce real Model/Market/Edge in recommendations."""
         live_draft_recommendations, _ = _import_live_draft_recommendations()
-        room = _sample_room()
-        room["pool"] = pd.DataFrame(
+        from live_draft_state import room_from_persist_dict, room_to_persist_dict
+
+        pool = pd.DataFrame(
             [
                 {
                     "playerID": "p1",
                     "fullName": "Compact Star",
                     "Primary Position": "OF",
-                    "Expected Fantasy Value": 92.0,
+                    "Expected Fantasy Value": 0.92,
+                    "Model Rank": 5,
+                    "Market Rank": 18,
+                    "Fantasy Edge": 13,
+                    "Sleeper Score": 0.55,
+                    "Expert Std Dev": 3.0,
+                    "Scarcity Score": 0.4,
+                    "Trend Signal": 0.1,
+                    "proj_HR": 35,
+                    "proj_RBI": 90,
+                    "proj_R": 80,
+                    "proj_SB": 10,
+                    "proj_BA": 0.280,
+                    "proj_OPS": 0.900,
                 },
                 {
                     "playerID": "p2",
                     "fullName": "Compact Ace",
                     "Primary Position": "SP",
-                    "Expected Fantasy Value": 88.0,
+                    "Expected Fantasy Value": 0.88,
+                    "Model Rank": 12,
+                    "Market Rank": 20,
+                    "Fantasy Edge": 8,
+                    "Sleeper Score": 0.48,
+                    "Expert Std Dev": 4.0,
+                    "Scarcity Score": 0.35,
+                    "Trend Signal": 0.05,
+                    "proj_HR": 0,
+                    "proj_RBI": 0,
+                    "proj_R": 0,
+                    "proj_SB": 0,
+                    "proj_BA": 0.0,
+                    "proj_OPS": 0.0,
                 },
             ]
         )
-        top, best, positional, sleepers = live_draft_recommendations(room, top_n=2)
+        room = _sample_room()
+        blob = room_to_persist_dict({**room, "pool": pool}, compact_pool=True)
+        restored = room_from_persist_dict(blob)
+        assert isinstance(restored, dict)
+        room["pool"] = restored["pool"]
+
+        top, best, _positional, _sleepers = live_draft_recommendations(room, top_n=2)
         self.assertFalse(top.empty)
-        self.assertFalse(best.empty)
+        row = top.iloc[0]
+        self.assertLess(float(row["Model Rank"]), 9000)
+        self.assertLess(float(row["Market Rank"]), 9000)
+        self.assertNotEqual(float(row["Fantasy Edge"]), 0.0)
         self.assertIn("Decision Score", top.columns)
-        self.assertIn("Fantasy Edge", top.columns)
 
 
 if __name__ == "__main__":

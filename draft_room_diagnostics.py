@@ -46,7 +46,24 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "drafted_count": drafted_count,
         "pool_count": pool_count,
         "conflict_notice": session.get("_draft_room_conflict_notice"),
+        **_participant_membership_diag(session),
     }
+
+
+def _participant_membership_diag(session: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from draft_room_participant_state import get_participant_membership_diagnostics
+
+        extra = get_participant_membership_diagnostics(session)
+        return {
+            "auth_email": extra.get("auth_email"),
+            "auth_user_id": extra.get("auth_user_id"),
+            "membership_team": extra.get("membership_team"),
+            "room_participant_registry": extra.get("room_participant_registry"),
+            "persisted_membership_blob": extra.get("persisted_membership_blob"),
+        }
+    except ImportError:
+        return {}
 
 
 def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
@@ -61,6 +78,9 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
             ("Room code", diag.get("room_code") or "—"),
             ("Assigned team", diag.get("assigned_team") or "—"),
             ("Participant id", diag.get("participant_id") or "—"),
+            ("Auth email", diag.get("auth_email") or "—"),
+            ("Auth user id", diag.get("auth_user_id") or "—"),
+            ("Membership team (blob)", diag.get("membership_team") or "—"),
             ("Backend", diag.get("backend") or "—"),
             ("Revision", str(diag.get("revision") if diag.get("revision") is not None else "—")),
             ("Last sync", diag.get("last_sync_time") or "—"),
@@ -77,6 +97,49 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
             st.text(f"{label}: {value}")
         if diag.get("conflict_notice"):
             st.warning(str(diag["conflict_notice"]))
+
+
+def render_compact_pool_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Dev diagnostics for compact shared-room pool column coverage."""
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if not can_show_developer_tools(st=st):
+            return
+    except Exception:
+        return
+
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return
+    pool = room.get("pool")
+    if pool is None or not hasattr(pool, "columns"):
+        return
+
+    try:
+        from draft_scoring_pool import analyze_compact_pool
+
+        diag = analyze_compact_pool(pool)
+    except ImportError:
+        return
+
+    scoring_diag = room.get("_live_draft_pool_scoring_diag")
+    with st.expander("Compact pool scoring (dev)", expanded=False):
+        st.text(f"Pool players: {diag.get('pool_count')}")
+        st.text(f"Compact columns ({diag.get('compact_column_count')}): {', '.join(diag.get('compact_columns') or [])}")
+        missing = diag.get("missing_required") or []
+        if missing:
+            st.text(f"Missing from source pool: {', '.join(missing[:20])}{'…' if len(missing) > 20 else ''}")
+        defaults = diag.get("default_filled_counts") or {}
+        if defaults:
+            st.warning("Default-filled scoring columns: " + ", ".join(f"{k} ({v})" for k, v in defaults.items()))
+        else:
+            st.caption("No default-filled rank/edge columns.")
+        derived = diag.get("derived_columns") or []
+        if derived:
+            st.caption("Derived: " + ", ".join(derived))
+        if isinstance(scoring_diag, dict) and scoring_diag.get("default_filled_counts"):
+            st.text(f"Last scoring hydrate defaults: {scoring_diag.get('default_filled_counts')}")
 
 
 def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any]) -> None:
