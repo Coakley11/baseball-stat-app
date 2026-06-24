@@ -202,6 +202,24 @@ def record_scoring_pipeline_stage(
     session[_PIPELINE_KEY] = trace_root
 
 
+def _live_draft_restore_rows() -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        session = st.session_state
+    except Exception:
+        return rows
+    try:
+        from live_draft_state import live_draft_identity_diagnostics
+
+        for key, value in live_draft_identity_diagnostics(session).items():
+            rows.append(("Live draft restore", key, str(value if value not in (None, "") else "—")))
+    except ImportError:
+        pass
+    return rows
+
+
 def _deploy_marker_rows() -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     try:
@@ -217,7 +235,7 @@ def _deploy_marker_rows() -> list[tuple[str, str, str]]:
 
 def get_runtime_diagnostic_rows(session: dict[str, Any]) -> list[tuple[str, str, str]]:
     """Flat rows for side-by-side diagnostic table: section, field, value."""
-    rows: list[tuple[str, str, str]] = _deploy_marker_rows()
+    rows: list[tuple[str, str, str]] = _deploy_marker_rows() + _live_draft_restore_rows()
     ident = _snapshot_identity(session)
     for key in (
         "auth_email",

@@ -323,7 +323,7 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         else:
             allowed = True
             reason = ""
-    return {
+    out = {
         "active_draft_source": ctx.get("active_draft_source"),
         "active_draft_mode": ctx.get("active_mode"),
         "your_team": ctx.get("your_team") or None,
@@ -353,6 +353,21 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         "total_picks": ctx.get("total_picks"),
         "draft_complete_reason": ctx.get("draft_complete_reason") or None,
     }
+    ui_diag = dict(session.get("_live_draft_ui_diag") or {})
+    if ui_diag:
+        out.update(
+            {
+                "draft_button_should_render": ui_diag.get("draft_button_should_render"),
+                "draft_button_rendered": ui_diag.get("draft_button_rendered"),
+                "player_action_panel_rendered": ui_diag.get("player_action_panel_rendered"),
+                "available_player_count": ui_diag.get("available_player_count"),
+                "filtered_player_count": ui_diag.get("filtered_player_count"),
+                "selected_player": ui_diag.get("selected_player"),
+                "draft_action_disable_reason": ui_diag.get("draft_action_disable_reason") or out.get("disable_reason"),
+                "render_path": ui_diag.get("render_path"),
+            }
+        )
+    return out
 
 
 def _classify_disable_reason(reason: str) -> str:

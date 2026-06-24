@@ -14,6 +14,9 @@ LIVE_DRAFT_ROOM_KEY = "live_draft_room"
 LIVE_DRAFT_DIRTY_KEY = "live_draft_state_dirty"
 LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
+LIVE_DRAFT_OWNER_AUTH_KEY = "owner_auth_user_id"
+LIVE_DRAFT_OWNER_EXTERNAL_KEY = "owner_external_id"
+LIVE_DRAFT_OWNER_WORKSPACE_KEY = "owner_workspace_id"
 from draft_scoring_pool import (
     LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS,
     prepare_pool_for_compact_serialization,
@@ -21,6 +24,173 @@ from draft_scoring_pool import (
 )
 
 LIVE_DRAFT_PERSIST_SCHEMA = 1
+
+
+def _current_auth_user_id(session: dict[str, Any]) -> str:
+    try:
+        from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(session):
+            return str(session.get(AUTH_USER_ID_KEY) or "").strip()
+    except ImportError:
+        pass
+    return ""
+
+
+def _current_auth_external_id(session: dict[str, Any]) -> str:
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
+
+        if is_auth_enabled() and is_authenticated(session):
+            return str(resolve_auth_external_id(session) or "").strip()
+    except ImportError:
+        pass
+    return ""
+
+
+def _current_workspace_id(session: dict[str, Any]) -> str:
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        return str(get_active_workspace_id(st=type("S", (), {"session_state": session})()) or "")
+    except ImportError:
+        return ""
+
+
+def _stamp_live_draft_owner(session: dict[str, Any], blob: dict[str, Any]) -> None:
+    auth_uid = _current_auth_user_id(session)
+    if auth_uid:
+        blob[LIVE_DRAFT_OWNER_AUTH_KEY] = auth_uid
+    ext = _current_auth_external_id(session)
+    if ext:
+        blob[LIVE_DRAFT_OWNER_EXTERNAL_KEY] = ext
+    ws = _current_workspace_id(session)
+    if ws:
+        blob[LIVE_DRAFT_OWNER_WORKSPACE_KEY] = ws
+
+
+def live_draft_blob_owner_auth_id(blob: dict[str, Any] | None) -> str:
+    if not isinstance(blob, dict):
+        return ""
+    return str(blob.get(LIVE_DRAFT_OWNER_AUTH_KEY) or "").strip()
+
+
+def live_draft_restore_allowed(
+    session: dict[str, Any],
+    blob: dict[str, Any] | None,
+    *,
+    source: str = "",
+) -> tuple[bool, str]:
+    """Return (allowed, reason) for applying a persisted live draft blob."""
+    if not isinstance(blob, dict) or not blob.get("draft_room_id"):
+        return False, "empty_blob"
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+    except ImportError:
+        return True, "auth_module_missing"
+
+    if not is_auth_enabled() or not is_authenticated(session):
+        return True, "auth_disabled"
+
+    current_auth = _current_auth_user_id(session)
+    owner_auth = live_draft_blob_owner_auth_id(blob)
+    if owner_auth:
+        if not current_auth:
+            return False, "auth_required_for_owned_blob"
+        if owner_auth != current_auth:
+            return False, "auth_user_mismatch"
+        return True, "auth_owner_match"
+
+    owner_ext = str(blob.get(LIVE_DRAFT_OWNER_EXTERNAL_KEY) or "").strip()
+    current_ext = _current_auth_external_id(session)
+    if owner_ext and current_ext and owner_ext != current_ext:
+        return False, "external_id_mismatch"
+
+    owner_ws = str(blob.get(LIVE_DRAFT_OWNER_WORKSPACE_KEY) or "").strip()
+    current_ws = _current_workspace_id(session)
+    if owner_ws and current_ws and owner_ws != current_ws:
+        return False, "workspace_mismatch"
+
+    # Legacy blob without owner stamp — only Daniel may load from shared daniel workspace.
+    if current_ext and current_ext not in ("daniel", ""):
+        return False, "legacy_unowned_foreign_blob"
+    if current_ws and current_ws not in ("daniel", ""):
+        return False, "legacy_unowned_foreign_workspace"
+    return True, f"legacy_allowed:{source or 'unknown'}"
+
+
+def clear_foreign_live_draft_state(session: dict[str, Any], *, reason: str) -> None:
+    session.pop(LIVE_DRAFT_STATE_KEY, None)
+    session.pop(LIVE_DRAFT_ROOM_KEY, None)
+    session["_live_draft_restore_blocked_reason"] = reason
+    pf = session.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
+        if isinstance(block, dict):
+            block.pop(LIVE_DRAFT_ROOM_KEY, None)
+
+
+def workspace_blob_owned_by_session(session: dict[str, Any], state: dict[str, Any]) -> tuple[bool, str]:
+    """True when a full workspace restore blob belongs to the signed-in user."""
+    blob = _live_draft_from_blob(state)
+    if isinstance(blob, dict) and blob.get("draft_room_id"):
+        allowed, reason = live_draft_restore_allowed(session, blob, source="workspace_blob")
+        if not allowed:
+            return False, reason
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        if not is_auth_enabled() or not is_authenticated(session):
+            return True, "auth_disabled"
+    except ImportError:
+        return True, "auth_module_missing"
+
+    current_ext = _current_auth_external_id(session)
+    current_ws = _current_workspace_id(session)
+    if current_ext and current_ext not in ("daniel", "") and current_ws == "daniel":
+        return False, "foreign_daniel_workspace"
+    return True, "owned"
+
+
+def live_draft_identity_diagnostics(session: dict[str, Any]) -> dict[str, str]:
+    """Restore ownership trace for runtime acceptance."""
+    diag: dict[str, str] = {}
+    try:
+        from suite_user import get_external_user_id
+
+        diag["suite_external_user_id"] = str(get_external_user_id() or "")
+    except ImportError:
+        diag["suite_external_user_id"] = ""
+    diag["auth_user_id"] = _current_auth_user_id(session)
+    diag["auth_external_id"] = _current_auth_external_id(session)
+    diag["workspace_owner"] = _current_workspace_id(session)
+    diag["restoring_source"] = str(
+        session.get("_live_draft_restore_source")
+        or session.get("_suite_persist_debug_pick_source")
+        or session.get("restore_source")
+        or "—"
+    )
+    diag["restore_blocked_reason"] = str(session.get("_live_draft_restore_blocked_reason") or "—")
+    blob = canonical_live_draft(session) or {}
+    if isinstance(blob, dict):
+        diag["live_draft_owner_auth_uuid"] = live_draft_blob_owner_auth_id(blob) or "—"
+        diag["live_draft_owner_external_id"] = str(blob.get(LIVE_DRAFT_OWNER_EXTERNAL_KEY) or "—")
+        diag["live_draft_owner_workspace"] = str(blob.get(LIVE_DRAFT_OWNER_WORKSPACE_KEY) or "—")
+    else:
+        diag["live_draft_owner_auth_uuid"] = "—"
+        diag["live_draft_owner_external_id"] = "—"
+        diag["live_draft_owner_workspace"] = "—"
+    try:
+        from draft_actions import draft_action_context
+
+        ctx = draft_action_context(session)
+        diag["assigned_team"] = str(ctx.get("your_team") or "—")
+        diag["team_source"] = "live_draft_or_participant"
+    except ImportError:
+        diag["assigned_team"] = str(session.get("room_your_team") or "—")
+        diag["team_source"] = "room_your_team"
+    return diag
+
 
 # Compact shared-room pools keep all live-draft scoring columns present in the source frame.
 SHARED_DRAFT_POOL_COLUMNS = LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS
@@ -334,6 +504,7 @@ def write_canonical_live_draft_state(
         return {}
     blob = room_to_persist_dict(room)
     blob["last_write_reason"] = reason or None
+    _stamp_live_draft_owner(session, blob)
     session[LIVE_DRAFT_STATE_KEY] = blob
     session[LIVE_DRAFT_ROOM_KEY] = room
     _sync_page_filter_live_draft_block(session, blob=blob)
@@ -367,6 +538,10 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
     canonical = canonical_live_draft(session)
     room = session.get(LIVE_DRAFT_ROOM_KEY)
     if isinstance(canonical, dict) and canonical.get("draft_room_id"):
+        allowed, block_reason = live_draft_restore_allowed(session, canonical, source="session_canonical")
+        if not allowed:
+            clear_foreign_live_draft_state(session, reason=block_reason)
+            return None
         restored = room_from_persist_dict(canonical)
         if restored:
             session[LIVE_DRAFT_ROOM_KEY] = restored
@@ -450,6 +625,10 @@ def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict
     blob = _live_draft_from_blob(state)
     if not blob or not blob.get("draft_room_id"):
         return False
+    allowed, block_reason = live_draft_restore_allowed(session, blob, source="cloud_or_workspace")
+    if not allowed:
+        clear_foreign_live_draft_state(session, reason=block_reason)
+        return False
     restored = room_from_persist_dict(blob)
     if not restored:
         return False
@@ -499,6 +678,10 @@ def restore_live_draft_page_filters(session: dict[str, Any], store: dict[str, An
     # Room hydration is separate — only run when a full active draft blob is present.
     blob = snapshot.get(LIVE_DRAFT_ROOM_KEY)
     if not is_persisted_room_blob(blob):
+        return settings_restored
+    allowed, block_reason = live_draft_restore_allowed(session, blob if isinstance(blob, dict) else None, source="page_filter")
+    if not allowed:
+        clear_foreign_live_draft_state(session, reason=block_reason)
         return settings_restored
     restored = room_from_persist_dict(blob)
     if not restored:

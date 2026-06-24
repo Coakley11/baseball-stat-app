@@ -18201,53 +18201,16 @@ if active_page == "Live Draft Room":
                         )
 
                 st.subheader("Manual Draft")
-                available = live_draft_get_available(room)
-                if available.empty:
-                    st.warning("No players left in the pool.")
-                else:
-                    all_player_options = available.sort_values(
-                        ["Expected Fantasy Value", "Model Rank"], ascending=[False, True]
-                    )["fullName"].astype(str).tolist()
-                    try:
-                        from draft_source_validation import allow_free_pool_drafting, allowed_draft_player_names
+                from draft_ui import render_live_manual_draft_panel
 
-                        if allow_free_pool_drafting(st.session_state, live_room=room):
-                            player_options = all_player_options
-                        else:
-                            player_options = allowed_draft_player_names(
-                                st.session_state,
-                                live_room=room,
-                                available_names=all_player_options,
-                            )
-                    except ImportError:
-                        player_options = all_player_options
-                    if not player_options:
-                        st.info(
-                            "Add players to your **Queue**, **Watchlist**, or **Tracked Players** "
-                            "to draft — or enable free pool drafting in the shared room panel."
-                        )
-                    else:
-                        selected_player = st.selectbox(
-                            "Draft candidate",
-                            player_options,
-                            key="live_draft_player_select",
-                            help="Draft from your queue, watchlist, tracked players, or the full pool when enabled.",
-                        )
-                        from draft_ui import render_draft_button
-
-                        paused = room.get("status") == "paused"
-                        if render_draft_button(
-                            st,
-                            st.session_state,
-                            selected_player,
-                            source="live_draft_room",
-                            key_suffix="live_manual",
-                            label="Draft Player",
-                            button_type="primary",
-                            extra_disabled=paused,
-                            extra_disabled_reason="Draft is paused — resume to pick.",
-                        ):
-                            st.rerun()
+                if render_live_manual_draft_panel(
+                    st,
+                    st.session_state,
+                    room,
+                    user_team=user_team,
+                    multiplayer=_multiplayer_draft,
+                ):
+                    st.rerun()
 
         if room.get("status") != "complete":
             render_contextual_page_nav(

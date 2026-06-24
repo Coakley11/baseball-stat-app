@@ -12,6 +12,7 @@ Synced to sibling repos via ``scripts/sync_suite_cloud_modules.py``.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 AUTH_ENABLED_ENV = "SUITE_AUTH_ENABLED"
@@ -95,6 +96,8 @@ def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
         return _DEFAULT_ALLOWED_WORKSPACES[key]
     if key == "default":
         return ("daniel", "ariel", "guest", "test_user")
+    if re.fullmatch(r"[a-z0-9_]+", key) and key not in _DEFAULT_ALLOWED_WORKSPACES:
+        return (key, "guest", "test_user")
     return ("daniel", "guest", "test_user")
 
 
@@ -146,7 +149,11 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
 
         st = SimpleNamespace(session_state=session_state)
         allowed = allowed_workspaces_for_session(session_state)
+        preferred = normalize_workspace_id(resolve_auth_external_id(session_state))
         active = normalize_workspace_id(get_active_workspace_id(st))
+        if preferred in allowed and active != preferred:
+            set_active_workspace_id(st, preferred)
+            return
         if active not in allowed and allowed:
             set_active_workspace_id(st, allowed[0])
     except ImportError:

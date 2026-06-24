@@ -442,6 +442,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             ss["page_filter_state"] = new_pf
         else:
             ss["page_filter_state"] = copy.deepcopy(pf)
+        if foreign_blob and isinstance(ss.get("page_filter_state"), dict):
+            pf_live = ss["page_filter_state"].get("Live Draft Room")
+            if isinstance(pf_live, dict):
+                pf_live.pop("live_draft_room", None)
     else:
         ss.setdefault("page_filter_state", {})
 
@@ -451,8 +455,33 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     # overwrite their live edits on the very next rerun.
     preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
     multiplayer_restore = _multiplayer_restore_active(ss, state)
+    foreign_blob = False
+    foreign_reason = ""
+    try:
+        from live_draft_state import workspace_blob_owned_by_session
+
+        owned, foreign_reason = workspace_blob_owned_by_session(ss, state)
+        foreign_blob = not owned
+        if foreign_blob:
+            ss["_live_draft_restore_blocked_reason"] = foreign_reason
+    except ImportError:
+        pass
+    _FOREIGN_GLOBAL_KEYS = frozenset(
+        {
+            "room_your_team",
+            "room_format",
+            "room_team_count",
+            "room_rounds",
+            "room_window",
+            "allow_free_pool_drafting",
+            "live_draft_state",
+            "live_draft_room",
+        }
+    )
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
+            continue
+        if foreign_blob and key in _FOREIGN_GLOBAL_KEYS:
             continue
         if multiplayer_restore and key in _MULTIPLAYER_SCOPED_GLOBALS:
             continue

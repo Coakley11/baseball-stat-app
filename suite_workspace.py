@@ -52,7 +52,12 @@ def normalize_workspace_id(raw: str | None) -> str:
         "default": DEFAULT_WORKSPACE_ID,
     }
     text = aliases.get(text, text)
-    return text if text in _VALID_IDS else DEFAULT_WORKSPACE_ID
+    if text in _VALID_IDS:
+        return text
+    # Auth-scoped profile ids (e.g. coakley11) — do not fall back to shared daniel default.
+    if re.fullmatch(r"[a-z0-9_]+", text):
+        return text
+    return DEFAULT_WORKSPACE_ID
 
 
 def workspace_label(workspace_id: str) -> str:

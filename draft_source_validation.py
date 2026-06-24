@@ -33,8 +33,11 @@ def allow_free_pool_drafting(session: dict[str, Any], *, live_room: dict[str, An
     """True when any available pool player may be drafted (commissioner setting)."""
     try:
         from draft_room_context import is_multiplayer_draft_active
+
+        if not is_multiplayer_draft_active(session):
+            return True
     except ImportError:
-        is_multiplayer_draft_active = lambda _s: False  # noqa: E731
+        pass
 
     if ALLOW_FREE_POOL_KEY in session:
         return bool(session.get(ALLOW_FREE_POOL_KEY))
@@ -43,7 +46,7 @@ def allow_free_pool_drafting(session: dict[str, Any], *, live_room: dict[str, An
         cfg = dict(room.get("config") or {})
         if ALLOW_FREE_POOL_KEY in cfg:
             return bool(cfg.get(ALLOW_FREE_POOL_KEY))
-    return not is_multiplayer_draft_active(session)
+    return False
 
 
 def match_draft_source(player_name: str, sources: dict[str, list[str]]) -> str | None:
