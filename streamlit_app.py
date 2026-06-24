@@ -9279,6 +9279,12 @@ def apply_draft_pick_scoring(
 
     All component columns are exposed for the Draft Scoring Breakdown debug expander.
     """
+    try:
+        from draft_scoring_pool import ensure_draft_scoring_pool_columns
+
+        available = ensure_draft_scoring_pool_columns(available)
+    except ImportError:
+        pass
     scored = available.copy()
     roster_df = roster_df if roster_df is not None else pd.DataFrame()
     target_counts = target_counts or {}

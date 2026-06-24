@@ -14,6 +14,8 @@ LIVE_DRAFT_ROOM_KEY = "live_draft_room"
 LIVE_DRAFT_DIRTY_KEY = "live_draft_state_dirty"
 LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
+from draft_scoring_pool import SHARED_DRAFT_SCORING_COLUMNS
+
 LIVE_DRAFT_PERSIST_SCHEMA = 1
 
 SHARED_DRAFT_POOL_COLUMNS = (
@@ -21,6 +23,7 @@ SHARED_DRAFT_POOL_COLUMNS = (
     "fullName",
     "Primary Position",
     "Expected Fantasy Value",
+    *SHARED_DRAFT_SCORING_COLUMNS,
 )
 
 LIVE_DRAFT_SETTINGS_KEYS = (

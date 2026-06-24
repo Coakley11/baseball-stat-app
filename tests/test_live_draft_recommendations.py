@@ -183,6 +183,32 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                 fit2["Primary Position"].astype(str).tolist(),
             )
 
+    def test_compact_pool_runs_recommendations_without_keyerror(self) -> None:
+        """Regression: compact shared-room pool missing Fantasy Edge must not crash scoring."""
+        live_draft_recommendations, _ = _import_live_draft_recommendations()
+        room = _sample_room()
+        room["pool"] = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Compact Star",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 92.0,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Compact Ace",
+                    "Primary Position": "SP",
+                    "Expected Fantasy Value": 88.0,
+                },
+            ]
+        )
+        top, best, positional, sleepers = live_draft_recommendations(room, top_n=2)
+        self.assertFalse(top.empty)
+        self.assertFalse(best.empty)
+        self.assertIn("Decision Score", top.columns)
+        self.assertIn("Fantasy Edge", top.columns)
+
 
 if __name__ == "__main__":
     unittest.main()
