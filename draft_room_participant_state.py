@@ -35,9 +35,13 @@ def resolve_participant_id(session: dict[str, Any]) -> str:
     try:
         from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
 
-        if is_auth_enabled() and is_authenticated(session):
+        if is_auth_enabled():
             auth_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
-            if auth_id:
+            if is_authenticated(session) and auth_id:
+                stale = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
+                if stale and stale != auth_id:
+                    session.pop(ACTIVE_PARTICIPANT_ID_KEY, None)
+                    session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
                 return auth_id
     except ImportError:
         pass
@@ -252,7 +256,7 @@ def active_participant_team(session: dict[str, Any]) -> str:
     team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
     if team:
         stored_pid = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
-        if stored_pid and stored_pid != pid:
+        if not stored_pid or stored_pid != pid:
             return ""
         return team
 

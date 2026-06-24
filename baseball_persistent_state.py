@@ -33,6 +33,7 @@ _MULTIPLAYER_SCOPED_GLOBALS = frozenset(
         "draft_room_participant_team",
         "draft_room_participant_id",
         "room_your_team",
+        "draft_room_participant_membership",
     }
 )
 
@@ -43,7 +44,11 @@ def _multiplayer_restore_active(ss: dict[str, Any], state: dict[str, Any]) -> bo
         or state.get("active_shared_draft_room_code")
         or ""
     ).strip()
-    return bool(code)
+    if code:
+        return True
+    if state.get("draft_room_participant_membership"):
+        return True
+    return False
 
 _GLOBAL_KEYS = (
     "active_page",

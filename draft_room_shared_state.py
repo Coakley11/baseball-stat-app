@@ -16,6 +16,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from live_draft_state import (
     LIVE_DRAFT_ROOM_KEY,
+    repair_stale_live_draft_progress,
     room_from_persist_dict,
     room_to_persist_dict,
 )
@@ -462,6 +463,14 @@ def publish_shared_room_runtime(
         if reason in ("shared_room_poll", "global_context_prepare") and isinstance(existing, dict):
             return existing
         return None
+
+    repair_stale_live_draft_progress(runtime)
+    doc_status = str(document.get("status") or "").strip()
+    if doc_status and doc_status != str(runtime.get("status") or "").strip():
+        if doc_status == "closed":
+            runtime["status"] = "complete"
+        elif doc_status in ("in_progress", "paused", "not_started", "complete"):
+            runtime["status"] = doc_status
 
     existing = session.get(LIVE_DRAFT_ROOM_KEY)
     if (

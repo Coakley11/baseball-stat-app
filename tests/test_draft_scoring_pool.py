@@ -122,6 +122,59 @@ class DraftScoringPoolTests(unittest.TestCase):
         quality = report.get("scoring_quality") or {}
         self.assertGreaterEqual(quality.get("Market Rank", {}).get("real", 0), 1)
 
+    def test_repairs_baked_9999_ranks_from_efv_and_adp_on_restore(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.95,
+                    "ADP Rank": 8,
+                    "Model Rank": 9999.0,
+                    "Market Rank": 9999.0,
+                    "Fantasy Edge": 0.0,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Juan Soto",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.90,
+                    "ADP Rank": 5,
+                    "Model Rank": 9999.0,
+                    "Market Rank": 9999.0,
+                    "Fantasy Edge": 0.0,
+                },
+            ]
+        )
+        out = ensure_draft_scoring_pool_columns(pool)
+        judge = out.loc[out["fullName"] == "Aaron Judge"].iloc[0]
+        self.assertLess(float(judge["Model Rank"]), 9000)
+        self.assertEqual(float(judge["Market Rank"]), 8.0)
+        self.assertNotEqual(float(judge["Fantasy Edge"]), 0.0)
+
+    def test_compact_round_trip_repairs_defaults(self) -> None:
+        from live_draft_state import room_from_persist_dict, room_to_persist_dict
+
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.95,
+                    "ADP Rank": 12,
+                }
+            ]
+        )
+        room = {"status": "in_progress", "pool": pool}
+        blob = room_to_persist_dict(room, compact_pool=True)
+        restored = room_from_persist_dict(blob)
+        assert isinstance(restored, dict)
+        frame = restored["pool"]
+        self.assertLess(float(frame.loc[0, "Model Rank"]), 9000)
+        self.assertEqual(float(frame.loc[0, "Market Rank"]), 12.0)
+
 
 if __name__ == "__main__":
     unittest.main()

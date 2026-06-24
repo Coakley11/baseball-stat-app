@@ -81,6 +81,29 @@ def _series_is_default(col: pd.Series, default: float | str) -> pd.Series:
     return numeric.isna() | col.fillna("").astype(str).eq(str(default))
 
 
+def _bad_rank_mask(series: pd.Series) -> pd.Series:
+    nums = pd.to_numeric(series, errors="coerce")
+    return nums.isna() | nums.ge(_RANK_DEFAULT)
+
+
+def _fill_bad_rows(
+    out: pd.DataFrame,
+    col: str,
+    values: pd.Series,
+    *,
+    bad: pd.Series,
+    report: dict[str, Any],
+    derived_name: str | None = None,
+) -> None:
+    if not bad.any():
+        return
+    out.loc[bad, col] = values.loc[bad]
+    if derived_name:
+        derived = report.setdefault("derived_columns", [])
+        if derived_name not in derived:
+            derived.append(derived_name)
+
+
 def count_scoring_value_quality(pool: pd.DataFrame | None) -> dict[str, dict[str, int]]:
     """Count real vs default-filled values for rank/edge columns."""
     out: dict[str, dict[str, int]] = {}
@@ -192,51 +215,99 @@ def _ensure_draft_scoring_pool_columns(
 
     out = pool if mutate else pool.copy()
 
-    def _derive(col: str) -> None:
-        report["derived_columns"].append(col)
-
-    def _needs_column(col: str) -> bool:
-        if col not in out.columns:
-            return True
-        series = pd.to_numeric(out[col], errors="coerce") if col != "Primary Position" else out[col]
-        if col in ("Model Rank", "Market Rank"):
-            nums = pd.to_numeric(series, errors="coerce")
-            return nums.isna().all() or nums.eq(_RANK_DEFAULT).all()
-        if col == "Fantasy Edge":
-            return series.isna().all() or series.fillna(0).eq(0).all()
-        return series.isna().all()
-
-    if _needs_column("Market Rank"):
+    if "Market Rank" not in out.columns:
+        out["Market Rank"] = pd.NA
+    market_bad = _bad_rank_mask(out["Market Rank"])
+    if market_bad.any():
         if "ADP Rank" in out.columns:
-            out["Market Rank"] = pd.to_numeric(out["ADP Rank"], errors="coerce")
-            _derive("Market Rank")
-        elif "ADP" in out.columns:
-            out["Market Rank"] = pd.to_numeric(out["ADP"], errors="coerce")
-            _derive("Market Rank")
-        elif "FantasyPros Rank" in out.columns:
-            out["Market Rank"] = pd.to_numeric(out["FantasyPros Rank"], errors="coerce")
-            _derive("Market Rank")
-
-    if _needs_column("Model Rank"):
-        if "App Rank" in out.columns:
-            out["Model Rank"] = pd.to_numeric(out["App Rank"], errors="coerce")
-            _derive("Model Rank")
-        elif "Expected Fantasy Value" in out.columns:
-            efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
-            out["Model Rank"] = efv.rank(ascending=False, method="min")
-            _derive("Model Rank")
-
-    if _needs_column("Fantasy Edge"):
-        if "Market Rank" in out.columns and "Model Rank" in out.columns:
-            out["Fantasy Edge"] = (
-                pd.to_numeric(out["Market Rank"], errors="coerce")
-                - pd.to_numeric(out["Model Rank"], errors="coerce")
+            _fill_bad_rows(
+                out,
+                "Market Rank",
+                pd.to_numeric(out["ADP Rank"], errors="coerce"),
+                bad=market_bad,
+                report=report,
+                derived_name="Market Rank",
             )
-            _derive("Fantasy Edge")
+            market_bad = _bad_rank_mask(out["Market Rank"])
+        if market_bad.any() and "ADP" in out.columns:
+            _fill_bad_rows(
+                out,
+                "Market Rank",
+                pd.to_numeric(out["ADP"], errors="coerce"),
+                bad=market_bad,
+                report=report,
+                derived_name="Market Rank",
+            )
+            market_bad = _bad_rank_mask(out["Market Rank"])
+        if market_bad.any() and "FantasyPros Rank" in out.columns:
+            _fill_bad_rows(
+                out,
+                "Market Rank",
+                pd.to_numeric(out["FantasyPros Rank"], errors="coerce"),
+                bad=market_bad,
+                report=report,
+                derived_name="Market Rank",
+            )
+
+    if "Model Rank" not in out.columns:
+        out["Model Rank"] = pd.NA
+    model_bad = _bad_rank_mask(out["Model Rank"])
+    if model_bad.any() and "App Rank" in out.columns:
+        _fill_bad_rows(
+            out,
+            "Model Rank",
+            pd.to_numeric(out["App Rank"], errors="coerce"),
+            bad=model_bad,
+            report=report,
+            derived_name="Model Rank",
+        )
+        model_bad = _bad_rank_mask(out["Model Rank"])
+    if model_bad.any() and "Expected Fantasy Value" in out.columns:
+        efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+        if efv.notna().any():
+            model_rank = efv.rank(ascending=False, method="min")
+            _fill_bad_rows(
+                out,
+                "Model Rank",
+                model_rank,
+                bad=model_bad,
+                report=report,
+                derived_name="Model Rank",
+            )
+
+    if "Market Rank" in out.columns and "Model Rank" in out.columns:
+        market = pd.to_numeric(out["Market Rank"], errors="coerce")
+        model = pd.to_numeric(out["Model Rank"], errors="coerce")
+        computed_edge = market - model
+        if "Fantasy Edge" not in out.columns:
+            out["Fantasy Edge"] = pd.NA
+        edge_vals = pd.to_numeric(out["Fantasy Edge"], errors="coerce")
+        edge_bad = edge_vals.isna() | _bad_rank_mask(out["Fantasy Edge"])
+        edge_bad = edge_bad | (edge_vals.fillna(0).eq(0) & computed_edge.notna() & computed_edge.ne(0))
+        _fill_bad_rows(
+            out,
+            "Fantasy Edge",
+            computed_edge,
+            bad=edge_bad,
+            report=report,
+            derived_name="Fantasy Edge",
+        )
 
     for col, default in _SCORING_FALLBACK_DEFAULTS.items():
         if col not in out.columns:
             out[col] = default
             report["default_filled_counts"][col] = len(out)
+            continue
+        if col in ("Model Rank", "Market Rank"):
+            bad = _bad_rank_mask(out[col])
+        elif col == "Fantasy Edge":
+            bad = pd.to_numeric(out[col], errors="coerce").isna()
+        elif col == "Primary Position":
+            bad = out[col].fillna("").astype(str).eq("")
+        else:
+            bad = pd.to_numeric(out[col], errors="coerce").isna()
+        if bad.any():
+            out.loc[bad, col] = default
+            report["default_filled_counts"][col] = int(bad.sum())
 
     return out, report

@@ -55,9 +55,31 @@ def is_live_draft_runtime_active(session: dict[str, Any]) -> bool:
         return False
 
 
+def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
+    """True when draft buttons and validation should use live_draft_room progress."""
+    if is_live_draft_runtime_active(session):
+        return True
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_runtime_room
+
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if not is_runtime_room(room) or not list(room.get("pick_order") or []):
+            return False
+        if is_multiplayer_draft_active(session):
+            return True
+        if str(room.get("status") or "") == "not_started" and not open_pick_row_options(
+            get_canonical_draft_board(session)
+        ):
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def resolve_active_draft_source(session: dict[str, Any]) -> str:
     """Single ownership: live when runtime live draft is active, else simulator."""
-    return ACTIVE_DRAFT_SOURCE_LIVE if is_live_draft_runtime_active(session) else ACTIVE_DRAFT_SOURCE_SIMULATOR
+    return ACTIVE_DRAFT_SOURCE_LIVE if should_resolve_live_draft_source(session) else ACTIVE_DRAFT_SOURCE_SIMULATOR
 
 
 def simulator_teams_from_board(board: Any) -> list[str]:
@@ -1310,9 +1332,24 @@ def sync_live_draft_room_to_canonical_board(session: dict[str, Any], room: Any) 
         session["room_team_names"] = "\n".join(teams)
         session["room_team_count"] = len(teams)
     session["room_rounds"] = picks_per_team
-    your_team = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
+    your_team = ""
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            your_team = active_participant_team(session)
+    except ImportError:
+        pass
+    if not your_team:
+        your_team = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
     if your_team:
-        session["room_your_team"] = your_team
+        try:
+            from draft_room_context import is_multiplayer_draft_active
+
+            if not is_multiplayer_draft_active(session):
+                session["room_your_team"] = your_team
+        except ImportError:
+            session["room_your_team"] = your_team
     if cfg.get("scoring_type"):
         session["room_format"] = str(cfg.get("scoring_type"))
 
@@ -2663,6 +2700,20 @@ def commit_draft_room_table(
 
 
 def apply_cloud_draft_room_state_if_allowed(session: dict[str, Any], state: dict[str, Any]) -> bool:
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            return False
+        code = str(
+            session.get("active_shared_draft_room_code")
+            or state.get("active_shared_draft_room_code")
+            or ""
+        ).strip()
+        if code:
+            return False
+    except ImportError:
+        pass
     if is_draft_room_locally_dirty(session):
         return False
     blob = _draft_room_from_blob(state)
@@ -2671,8 +2722,20 @@ def apply_cloud_draft_room_state_if_allowed(session: dict[str, Any], state: dict
     restored = table_from_persist_dict(blob)
     if restored is None:
         return False
+    skip_team_settings = False
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        skip_team_settings = bool(
+            is_multiplayer_draft_active(session)
+            or str(session.get("active_shared_draft_room_code") or state.get("active_shared_draft_room_code") or "").strip()
+        )
+    except ImportError:
+        pass
     for key in DRAFT_ROOM_SETTINGS_KEYS:
         if key in blob:
+            if skip_team_settings and key == "room_your_team":
+                continue
             session[key] = blob[key]
     apply_restored_board_to_session(session, restored, blob=copy.deepcopy(blob), bump_widget=True)
     session["_draft_room_restore_source"] = "cloud_or_workspace"

@@ -202,6 +202,9 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
         "current_pick": None,
         "is_your_pick": False,
         "draft_complete": False,
+        "draft_complete_reason": "",
+        "draft_status": "",
+        "total_picks": 0,
         "board_full": False,
         "live_draft_active": source == ACTIVE_DRAFT_SOURCE_LIVE,
     }
@@ -209,31 +212,20 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
 
     if source == ACTIVE_DRAFT_SOURCE_LIVE:
         try:
-            from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress, prepare_live_draft_state
 
             prepare_live_draft_state(session)
             room = session.get(LIVE_DRAFT_ROOM_KEY)
-            if isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused"):
-                live_room = room
-                try:
-                    app = _import_baseball_app()
-                    slot_fn = app.live_draft_current_slot
-                except Exception:
-                    slot_fn = None
-                slot = None
-                if slot_fn:
-                    try:
-                        slot = slot_fn(live_room)
-                    except (IndexError, KeyError, TypeError):
-                        slot = None
-                if slot is None:
-                    ctx["draft_complete"] = True
-                else:
-                    ctx["on_clock_team"] = str(slot.get("Team") or "").strip()
-                    try:
-                        ctx["current_pick"] = int(slot.get("Pick"))
-                    except (TypeError, ValueError):
-                        ctx["current_pick"] = None
+            if isinstance(room, dict):
+                progress = analyze_live_draft_progress(room)
+                ctx["draft_status"] = str(progress.get("draft_status") or "")
+                ctx["draft_complete"] = bool(progress.get("draft_complete"))
+                ctx["draft_complete_reason"] = str(progress.get("draft_complete_reason") or "")
+                ctx["current_pick"] = progress.get("current_pick")
+                ctx["on_clock_team"] = progress.get("on_clock_team") or ""
+                ctx["total_picks"] = int(progress.get("total_picks") or 0)
+                if not progress.get("draft_complete"):
+                    live_room = room
         except ImportError:
             pass
 
@@ -303,9 +295,20 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         except ImportError:
             pass
     else:
-        if ctx.get("draft_complete"):
-            reason = "Draft is complete."
-            disable_reason = "draft_complete"
+        if str(ctx.get("draft_status") or "") == "not_started":
+            reason = "Draft has not started yet."
+            disable_reason = "draft_not_started"
+        elif ctx.get("draft_complete"):
+            reason_code = str(ctx.get("draft_complete_reason") or "")
+            if reason_code == "missing_pick_order":
+                reason = "Draft pick order is missing."
+                disable_reason = "missing_pick_order"
+            elif reason_code == "pick_index_past_end":
+                reason = "Draft pick index is past the final pick."
+                disable_reason = "pick_index_past_end"
+            else:
+                reason = "Draft is complete."
+                disable_reason = "draft_complete"
         elif ctx.get("board_full") and not ctx.get("live_draft_active"):
             reason = "Board is full."
             disable_reason = "board_full"
@@ -332,13 +335,23 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         "is_your_pick": ctx.get("is_your_pick"),
         "commissioner_mode": commissioner_mode,
         "player_source_valid": player_source_valid,
-        "draft_enabled": allowed if name else bool(ctx.get("is_your_pick") and ctx.get("your_team")),
+        "draft_enabled": allowed
+        if name
+        else bool(
+            ctx.get("is_your_pick")
+            and ctx.get("your_team")
+            and str(ctx.get("draft_status") or "") not in ("", "not_started")
+            and not ctx.get("draft_complete")
+        ),
         "disable_reason": disable_reason or (None if allowed else _classify_disable_reason(reason)),
         "reason_if_disabled": None if allowed else (reason or "Cannot draft"),
         "sample_player_allowed": allowed if name else None,
         "draft_complete": ctx.get("draft_complete"),
         "board_full": ctx.get("board_full"),
         "live_draft_active": ctx.get("live_draft_active"),
+        "draft_status": ctx.get("draft_status"),
+        "total_picks": ctx.get("total_picks"),
+        "draft_complete_reason": ctx.get("draft_complete_reason") or None,
     }
 
 
@@ -367,7 +380,16 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
 
     ctx = draft_action_context(session)
     if ctx.get("draft_complete"):
+        reason_code = str(ctx.get("draft_complete_reason") or "")
+        if reason_code == "not_started":
+            return False, "Draft has not started yet."
+        if reason_code == "missing_pick_order":
+            return False, "Draft pick order is missing."
+        if reason_code == "pick_index_past_end":
+            return False, "Draft pick index is past the final pick."
         return False, "Draft is complete."
+    if str(ctx.get("draft_status") or "") == "not_started":
+        return False, "Draft has not started yet."
     if ctx.get("board_full") and not ctx.get("live_draft_active"):
         return False, "Board is full."
 

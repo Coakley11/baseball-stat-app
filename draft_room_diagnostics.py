@@ -18,10 +18,15 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     ctx = get_global_draft_context(session)
     meta = dict(session.get("draft_room_shared_meta") or {})
     room = session.get("live_draft_room")
-    pick_index = None
-    pool_count = None
-    drafted_count = None
+    progress: dict[str, Any] = {}
+    shared_doc_status = ""
     if isinstance(room, dict):
+        try:
+            from live_draft_state import analyze_live_draft_progress
+
+            progress = analyze_live_draft_progress(room)
+        except ImportError:
+            progress = {}
         pick_index = room.get("current_pick_index")
         drafted_count = len(room.get("drafted_player_ids") or [])
         pool = room.get("pool")
@@ -30,6 +35,21 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
                 pool_count = len(pool)
             except Exception:
                 pool_count = None
+    else:
+        pick_index = None
+        drafted_count = None
+        pool_count = None
+
+    code = str(ctx.get("room_code") or "").strip().upper()
+    if code:
+        try:
+            from draft_room_shared_state import load_shared_room
+
+            doc = load_shared_room(code)
+            if isinstance(doc, dict):
+                shared_doc_status = str(doc.get("status") or "")
+        except ImportError:
+            pass
 
     return {
         "active": True,
@@ -43,8 +63,14 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "last_sync_reason": meta.get("last_sync_reason") or meta.get("reason"),
         "is_room_host": bool(ctx.get("is_room_host")),
         "room_status": ctx.get("room_status"),
-        "current_pick_index": pick_index,
-        "drafted_count": drafted_count,
+        "shared_document_status": shared_doc_status or None,
+        "draft_status": progress.get("draft_status"),
+        "draft_complete_reason": progress.get("draft_complete_reason"),
+        "current_pick_index": progress.get("current_pick_index", pick_index),
+        "current_pick": progress.get("current_pick"),
+        "total_picks": progress.get("total_picks"),
+        "drafted_count": progress.get("drafted_player_count", drafted_count),
+        "draft_board_count": progress.get("draft_board_count"),
         "pool_count": pool_count,
         "conflict_notice": session.get("_draft_room_conflict_notice"),
         **_participant_membership_diag(session),
@@ -93,11 +119,17 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
             ("Last sync", diag.get("last_sync_time") or "—"),
             ("Sync reason", diag.get("last_sync_reason") or "—"),
             ("Host", "yes" if diag.get("is_room_host") else "no"),
+            ("Shared doc status", diag.get("shared_document_status") or "—"),
+            ("Draft status", diag.get("draft_status") or "—"),
+            ("Draft complete reason", diag.get("draft_complete_reason") or "—"),
+            ("Current pick", str(diag.get("current_pick") if diag.get("current_pick") is not None else "—")),
             (
                 "Pick index",
                 str(diag.get("current_pick_index") if diag.get("current_pick_index") is not None else "—"),
             ),
+            ("Total picks", str(diag.get("total_picks") if diag.get("total_picks") is not None else "—")),
             ("Drafted", str(diag.get("drafted_count") if diag.get("drafted_count") is not None else "—")),
+            ("Board picks", str(diag.get("draft_board_count") if diag.get("draft_board_count") is not None else "—")),
             ("Pool count", str(diag.get("pool_count") if diag.get("pool_count") is not None else "—")),
         ]
         for label, value in rows:

@@ -209,6 +209,39 @@ class DraftRoomMembershipTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Not your pick", msg)
 
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
+    def test_stale_participant_id_cleared_for_authenticated_guest(self, _mock_auth: object) -> None:
+        from suite_auth import AUTH_SESSION_KEY
+        from draft_room_participant_state import (
+            ACTIVE_PARTICIPANT_ID_KEY,
+            ACTIVE_PARTICIPANT_TEAM_KEY,
+            active_participant_team,
+            resolve_participant_id,
+        )
+
+        guest = {
+            ACTIVE_PARTICIPANT_ID_KEY: "auth-host-uuid",
+            ACTIVE_PARTICIPANT_TEAM_KEY: "Team Daniel",
+            AUTH_USER_ID_KEY: "auth-guest-uuid",
+            AUTH_USER_EMAIL_KEY: "Coakley11@aol.com",
+            AUTH_SESSION_KEY: True,
+        }
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ):
+            self.assertEqual(resolve_participant_id(guest), "auth-guest-uuid")
+            self.assertNotIn(ACTIVE_PARTICIPANT_ID_KEY, guest)
+            code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
+            ok, msg, _ = join_shared_draft_room(guest, code, store=self.store)
+            self.assertTrue(ok, msg)
+        guest["active_shared_draft_room_code"] = code
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ):
+            team = active_participant_team(guest)
+        self.assertEqual(team, "Team 2")
+        self.assertNotEqual(team, "Team Daniel")
+
     def test_private_fields_not_in_shared_document(self) -> None:
         doc = {
             "room_code": "X",

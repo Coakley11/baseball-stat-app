@@ -249,6 +249,12 @@ def create_and_host_shared_room(
     participant_id = resolve_participant_id(session)
     assigned = str(host_team or "").strip() or default_host_team(live_room)
     try:
+        from live_draft_state import repair_stale_live_draft_progress
+
+        live_room = repair_stale_live_draft_progress(copy.deepcopy(live_room))
+    except ImportError:
+        live_room = copy.deepcopy(live_room)
+    try:
         from draft_room_supabase_errors import SharedRoomSupabaseError, record_shared_room_supabase_error
     except ImportError:
         SharedRoomSupabaseError = RuntimeError  # type: ignore[misc, assignment]

@@ -152,7 +152,12 @@ def room_from_persist_dict(data: dict[str, Any] | None) -> dict[str, Any] | None
                 df = df[ordered + extras]
         else:
             df = pd.DataFrame(columns=list(columns or []))
-        out["pool"] = df
+        try:
+            from draft_scoring_pool import ensure_draft_scoring_pool_columns
+
+            out["pool"] = ensure_draft_scoring_pool_columns(df)
+        except ImportError:
+            out["pool"] = df
     elif isinstance(data.get("pool"), str):
         out["pool"] = pd.DataFrame()
     if resume_timer and out.get("status") == "in_progress":
@@ -160,6 +165,104 @@ def room_from_persist_dict(data: dict[str, Any] | None) -> dict[str, Any] | None
 
         out["timer_started_at"] = time.time()
     return out
+
+
+def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
+    """Summarize pick progress and why a draft may read as complete."""
+    if not isinstance(room, dict):
+        return {
+            "draft_status": "",
+            "shared_document_status": "",
+            "current_pick_index": 0,
+            "total_picks": 0,
+            "drafted_player_count": 0,
+            "draft_board_count": 0,
+            "draft_complete": True,
+            "draft_complete_reason": "no_room",
+            "current_pick": None,
+            "on_clock_team": None,
+            "slot": None,
+        }
+
+    pick_order = list(room.get("pick_order") or [])
+    idx = int(room.get("current_pick_index") or 0)
+    status = str(room.get("status") or "").strip()
+    total = len(pick_order)
+    board = room.get("draft_board") or []
+    board_count = len(board) if isinstance(board, list) else 0
+    drafted_ids = room.get("drafted_player_ids") or []
+    drafted_count = len(drafted_ids) if isinstance(drafted_ids, list) else board_count
+
+    base: dict[str, Any] = {
+        "draft_status": status,
+        "shared_document_status": status,
+        "current_pick_index": idx,
+        "total_picks": total,
+        "drafted_player_count": drafted_count,
+        "draft_board_count": board_count,
+        "draft_complete": False,
+        "draft_complete_reason": "",
+        "current_pick": None,
+        "on_clock_team": None,
+        "slot": None,
+    }
+
+    if not pick_order:
+        base["draft_complete"] = True
+        base["draft_complete_reason"] = "missing_pick_order"
+        return base
+
+    if status == "complete":
+        base["draft_complete"] = True
+        base["draft_complete_reason"] = "status_complete"
+        return base
+
+    if idx >= total:
+        base["draft_complete"] = True
+        base["draft_complete_reason"] = "pick_index_past_end"
+        return base
+
+    slot = pick_order[idx]
+    base["slot"] = slot
+    try:
+        base["current_pick"] = int(slot.get("Pick"))
+    except (TypeError, ValueError):
+        base["current_pick"] = None
+    base["on_clock_team"] = str(slot.get("Team") or "").strip() or None
+
+    if status == "not_started":
+        base["draft_complete_reason"] = "not_started"
+        return base
+
+    return base
+
+
+def repair_stale_live_draft_progress(room: dict[str, Any]) -> dict[str, Any]:
+    """Correct stale complete status or pick index when hydrating shared rooms."""
+    if not isinstance(room, dict):
+        return room
+    pick_order = list(room.get("pick_order") or [])
+    if not pick_order:
+        return room
+
+    total = len(pick_order)
+    idx = int(room.get("current_pick_index") or 0)
+    status = str(room.get("status") or "").strip()
+    board = room.get("draft_board") or []
+    board_count = len(board) if isinstance(board, list) else 0
+
+    if status == "complete" and board_count < total:
+        room["status"] = "in_progress" if board_count > 0 else "not_started"
+        room["current_pick_index"] = min(board_count, max(total - 1, 0))
+
+    if int(room.get("current_pick_index") or 0) >= total and board_count < total:
+        room["current_pick_index"] = min(board_count, max(total - 1, 0))
+        room["status"] = "in_progress" if board_count > 0 else str(room.get("status") or "not_started")
+
+    if status == "complete" and board_count >= total:
+        room["current_pick_index"] = total
+
+    return room
 
 
 def canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -316,6 +419,20 @@ def live_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict[str, Any]) -> bool:
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            return False
+        code = str(
+            session.get("active_shared_draft_room_code")
+            or state.get("active_shared_draft_room_code")
+            or ""
+        ).strip()
+        if code:
+            return False
+    except ImportError:
+        pass
     if is_live_draft_locally_dirty(session):
         return False
     blob = _live_draft_from_blob(state)
