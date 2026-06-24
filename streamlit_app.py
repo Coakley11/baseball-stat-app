@@ -479,6 +479,13 @@ except Exception:
     pass
 
 try:
+    from baseball_account_sidebar import prepare_baseball_auth_session
+
+    prepare_baseball_auth_session(st)
+except Exception:
+    pass
+
+try:
     from suite_resume_launch import apply_suite_resume_launch
 except Exception:
     apply_suite_resume_launch = None  # type: ignore
@@ -12322,6 +12329,12 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
     if _SIDEBAR_CHROME_RENDERED:
         return
     _SIDEBAR_CHROME_RENDERED = True
+    try:
+        from baseball_account_sidebar import render_baseball_account_sidebar
+
+        render_baseball_account_sidebar(st_obj)
+    except Exception:
+        pass
     try:
         from suite_command_center_link import render_command_center_sidebar_link
 

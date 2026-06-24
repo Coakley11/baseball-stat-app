@@ -86,5 +86,25 @@ class DraftRoomJoinTraceTests(unittest.TestCase):
         self.assertEqual(trace[0]["room_code_entered"], "ABC123")
 
 
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
+    def test_auth_diagnostics_when_not_signed_in(self, _mock_auth: object) -> None:
+        from draft_room_join_trace import get_shared_room_auth_diagnostics
+
+        diag = get_shared_room_auth_diagnostics({})
+        self.assertTrue(diag["shared_room_requires_auth"])
+        self.assertFalse(diag["join_would_pass"])
+        self.assertIn("log in", str(diag["join_block_reason"]).lower())
+
+    @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
+    @patch("draft_room_membership.is_auth_session", return_value=True)
+    @patch("draft_room_membership.auth_user_id", return_value="uuid-guest-1")
+    def test_auth_diagnostics_when_signed_in(self, _uid: object, _sess: object, _req: object) -> None:
+        from draft_room_join_trace import get_shared_room_auth_diagnostics
+
+        diag = get_shared_room_auth_diagnostics({"_suite_auth_session": True, "_suite_auth_user_id": "uuid-guest-1"})
+        self.assertTrue(diag["join_would_pass"])
+        self.assertEqual(diag["auth_user_id"], "uuid-guest-1")
+
+
 if __name__ == "__main__":
     unittest.main()

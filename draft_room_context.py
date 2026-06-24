@@ -226,9 +226,10 @@ def join_shared_draft_room(
     ok_auth, auth_msg = ensure_authenticated_for_shared_room(session)
     if not ok_auth:
         try:
-            from draft_room_join_trace import trace_join_step
+            from draft_room_join_trace import get_shared_room_auth_diagnostics, trace_join_step
 
             trace_join_step(session, "join_auth_blocked", message=auth_msg, backend=backend_name)
+            trace_join_step(session, "join_auth_diag", **get_shared_room_auth_diagnostics(session))
         except ImportError:
             pass
         return False, auth_msg, None

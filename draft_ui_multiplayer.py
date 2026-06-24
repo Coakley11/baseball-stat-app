@@ -9,16 +9,35 @@ from draft_room_diagnostics import render_shared_room_diagnostics
 from draft_source_validation import ALLOW_FREE_POOL_KEY
 
 
-def _show_join_auth_hint(st: Any, session: dict[str, Any]) -> None:
+def _show_join_auth_hint(st: Any, session: dict[str, Any]) -> bool:
+    """Warn and offer sign-in when shared rooms require Real Accounts. Returns True if blocked."""
     try:
-        from draft_room_membership import is_auth_session, shared_room_requires_auth
-
-        if shared_room_requires_auth() and not is_auth_session(session):
-            st.warning(
-                "Shared draft rooms use cloud sync — **log in** on this device before joining a room code."
-            )
+        from baseball_account_sidebar import request_account_sign_in_panel
+        from draft_room_join_trace import render_shared_room_auth_diagnostics
+        from draft_room_membership import shared_room_requires_auth
+        from draft_room_join_trace import get_shared_room_auth_diagnostics
     except ImportError:
-        pass
+        return False
+
+    if not shared_room_requires_auth():
+        return False
+    diag = get_shared_room_auth_diagnostics(session)
+    if diag.get("join_would_pass"):
+        return False
+
+    st.warning(
+        "Shared draft rooms require **Real Account sign-in**. "
+        "Workspace/cloud sync is not enough."
+    )
+    st.caption(
+        "Open **Account & sign-in** in the sidebar (or tap below), then try Join again."
+    )
+    if st.button("Open sign-in", key="shared_draft_open_sign_in_btn", type="secondary"):
+        request_account_sign_in_panel(session)
+        return True
+
+    render_shared_room_auth_diagnostics(st, session)
+    return False
 
 
 def _finalize_successful_join(session: dict[str, Any], message: str) -> None:
@@ -49,7 +68,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             leave_shared_draft_room,
             sync_shared_draft_room,
         )
-        from draft_room_join_trace import render_join_trace_panel, trace_join_step
+        from draft_room_join_trace import render_join_trace_panel, render_shared_room_auth_diagnostics, trace_join_step
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
     except ImportError:
         return False
@@ -132,10 +151,11 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 st.info("Left shared draft room. Your private queue and watchlist are saved.")
                 return True
             render_shared_room_diagnostics(st, session)
+            render_shared_room_auth_diagnostics(st, session)
             render_join_trace_panel(st, session)
             return False
 
-        _show_join_auth_hint(st, session)
+        needs_sign_in_rerun = _show_join_auth_hint(st, session)
 
         col_create, col_join = st.columns(2)
         with col_create:
@@ -176,6 +196,10 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     trace_join_step(session, "join_failed", message=msg)
                 return True
 
+        render_shared_room_auth_diagnostics(st, session)
         render_join_trace_panel(st, session)
+
+        if needs_sign_in_rerun:
+            return True
 
     return False

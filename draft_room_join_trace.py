@@ -48,6 +48,109 @@ def join_trace_visible(session: dict[str, Any]) -> bool:
     return False
 
 
+def get_shared_room_auth_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot of what multiplayer join checks for authentication."""
+    diag: dict[str, Any] = {
+        "shared_room_requires_auth": False,
+        "auth_ui_enabled": False,
+        "authenticated": False,
+        "auth_session_flag": False,
+        "auth_user_id": "",
+        "auth_email": "",
+        "join_would_pass": False,
+        "join_block_reason": "",
+        "backend": "unknown",
+        "suite_storage_user_id": "",
+        "suite_external_user_id": "",
+        "participant_id": "",
+    }
+    try:
+        from draft_room_membership import (
+            auth_user_id,
+            ensure_authenticated_for_shared_room,
+            is_auth_session,
+            shared_room_requires_auth,
+        )
+        from draft_room_shared_state import shared_room_backend_name
+
+        diag["shared_room_requires_auth"] = bool(shared_room_requires_auth())
+        diag["backend"] = shared_room_backend_name()
+        diag["auth_user_id"] = auth_user_id(session)
+        diag["authenticated"] = bool(is_auth_session(session) and diag["auth_user_id"])
+        ok, msg = ensure_authenticated_for_shared_room(session)
+        diag["join_would_pass"] = bool(ok)
+        diag["join_block_reason"] = "" if ok else str(msg)
+    except ImportError:
+        diag["join_block_reason"] = "draft_room_membership unavailable"
+    try:
+        from suite_auth import (
+            AUTH_SESSION_KEY,
+            AUTH_USER_EMAIL_KEY,
+            AUTH_USER_ID_KEY,
+            is_auth_enabled,
+            is_authenticated,
+        )
+
+        diag["auth_ui_enabled"] = bool(is_auth_enabled())
+        diag["auth_session_flag"] = bool(session.get(AUTH_SESSION_KEY))
+        diag["auth_email"] = str(session.get(AUTH_USER_EMAIL_KEY) or "").strip()
+        if not diag["auth_user_id"]:
+            diag["auth_user_id"] = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+        if diag["auth_ui_enabled"]:
+            diag["authenticated"] = bool(
+                diag["auth_session_flag"] and bool(str(diag["auth_user_id"] or "").strip())
+            )
+    except ImportError:
+        pass
+    try:
+        from suite_user import get_account_user_id, get_external_user_id
+
+        diag["suite_storage_user_id"] = str(get_account_user_id() or "")
+        diag["suite_external_user_id"] = str(get_external_user_id() or "")
+    except ImportError:
+        pass
+    try:
+        from draft_room_participant_state import resolve_participant_id
+
+        diag["participant_id"] = resolve_participant_id(session)
+    except ImportError:
+        pass
+    return diag
+
+
+def render_shared_room_auth_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Dev-only: show why join may treat the user as logged out."""
+    if not join_trace_visible(session):
+        return
+    diag = get_shared_room_auth_diagnostics(session)
+    with st.expander("Shared room auth (dev)", expanded=not diag.get("join_would_pass")):
+        st.caption(
+            "Multiplayer join requires **Supabase Real Accounts** session keys "
+            "(`_suite_auth_session` + `_suite_auth_user_id`), not workspace profile or secrets identity alone."
+        )
+        rows = [
+            ("shared_room_requires_auth", str(diag.get("shared_room_requires_auth"))),
+            ("auth_ui_enabled (Real Accounts)", str(diag.get("auth_ui_enabled"))),
+            ("authenticated (join check)", str(diag.get("authenticated"))),
+            ("auth_session_flag", str(diag.get("auth_session_flag"))),
+            ("auth_user_id", diag.get("auth_user_id") or "—"),
+            ("auth_email", diag.get("auth_email") or "—"),
+            ("backend", diag.get("backend") or "—"),
+            ("join_would_pass", str(diag.get("join_would_pass"))),
+            ("join_block_reason", diag.get("join_block_reason") or "—"),
+            ("suite_storage_user_id", diag.get("suite_storage_user_id") or "—"),
+            ("suite_external_user_id", diag.get("suite_external_user_id") or "—"),
+            ("participant_id", diag.get("participant_id") or "—"),
+        ]
+        for label, value in rows:
+            st.text(f"{label}: {value}")
+        if diag.get("shared_room_requires_auth") and not diag.get("join_would_pass"):
+            st.info(
+                "Use **Account Settings → Sign-in & password** (Command Center apps) or enable "
+                "Real Accounts here, then sign in with email/password on this device."
+            )
+
+
 def render_join_trace_panel(st: Any, session: dict[str, Any]) -> None:
     if not join_trace_visible(session):
         return
