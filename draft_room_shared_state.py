@@ -465,6 +465,14 @@ def publish_shared_room_runtime(
         return None
 
     repair_stale_live_draft_progress(runtime)
+    try:
+        import json
+
+        session["_shared_room_last_payload_bytes"] = len(
+            json.dumps(document, ensure_ascii=False, default=str).encode("utf-8")
+        )
+    except Exception:
+        pass
     doc_status = str(document.get("status") or "").strip()
     if doc_status and doc_status != str(runtime.get("status") or "").strip():
         if doc_status == "closed":

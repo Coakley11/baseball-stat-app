@@ -72,6 +72,57 @@ _SCORING_FALLBACK_DEFAULTS: dict[str, float | str] = {
 }
 
 
+SCORING_TRACE_COLUMNS: tuple[str, ...] = (
+    "Expected Fantasy Value",
+    "Model Rank",
+    "Market Rank",
+    "Fantasy Edge",
+    "ADP Rank",
+    "ADP",
+    "Sleeper Score",
+)
+
+DEFAULT_SCORING_TRACE_PLAYERS: tuple[str, ...] = (
+    "Aaron Judge",
+    "Shohei Ohtani",
+    "Juan Soto",
+)
+
+
+def trace_player_scoring(
+    pool: pd.DataFrame | None,
+    player_names: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Snapshot scoring fields for acceptance players (dev / stabilization)."""
+    names = tuple(player_names or DEFAULT_SCORING_TRACE_PLAYERS)
+    out: dict[str, dict[str, Any]] = {}
+    if pool is None or not isinstance(pool, pd.DataFrame) or pool.empty or "fullName" not in pool.columns:
+        return {name: {"found": False} for name in names}
+    work = pool.copy()
+    work["_trace_name"] = work["fullName"].astype(str).str.strip()
+    for name in names:
+        rows = work[work["_trace_name"].str.casefold() == str(name).strip().casefold()]
+        if rows.empty:
+            out[name] = {"found": False}
+            continue
+        row = rows.iloc[0]
+        fields: dict[str, Any] = {"found": True, "playerID": str(row.get("playerID") or "")}
+        for col in SCORING_TRACE_COLUMNS:
+            if col in row.index:
+                val = row.get(col)
+                try:
+                    if pd.isna(val):
+                        fields[col] = None
+                    elif isinstance(val, (int, float)):
+                        fields[col] = float(val)
+                    else:
+                        fields[col] = val
+                except Exception:
+                    fields[col] = val
+        out[name] = fields
+    return out
+
+
 def _series_is_default(col: pd.Series, default: float | str) -> pd.Series:
     numeric = pd.to_numeric(col, errors="coerce")
     if col.dtype == object and not numeric.notna().any():

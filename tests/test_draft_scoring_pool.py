@@ -153,6 +153,28 @@ class DraftScoringPoolTests(unittest.TestCase):
         self.assertEqual(float(judge["Market Rank"]), 8.0)
         self.assertNotEqual(float(judge["Fantasy Edge"]), 0.0)
 
+    def test_trace_player_scoring_reads_real_values(self) -> None:
+        from draft_scoring_pool import trace_player_scoring
+
+        pool = pd.DataFrame(
+            [
+                {
+                    "fullName": "Aaron Judge",
+                    "Expected Fantasy Value": 0.95,
+                    "Model Rank": 3,
+                    "Market Rank": 8,
+                    "Fantasy Edge": 5,
+                    "ADP Rank": 8,
+                    "Sleeper Score": 0.7,
+                }
+            ]
+        )
+        trace = trace_player_scoring(pool)
+        judge = trace["Aaron Judge"]
+        self.assertTrue(judge.get("found"))
+        self.assertLess(float(judge["Model Rank"]), 9000)
+        self.assertEqual(float(judge["Fantasy Edge"]), 5.0)
+
     def test_compact_round_trip_repairs_defaults(self) -> None:
         from live_draft_state import room_from_persist_dict, room_to_persist_dict
 

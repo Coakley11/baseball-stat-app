@@ -476,6 +476,10 @@ def apply_cloud_draft_state_if_allowed(session: dict[str, Any], state: dict[str,
 
         if is_multiplayer_draft_active(session):
             return False
+        if str(session.get("active_shared_draft_room_code") or state.get("active_shared_draft_room_code") or "").strip():
+            return False
+        if session.get("draft_room_participant_membership") or state.get("draft_room_participant_membership"):
+            return False
     except ImportError:
         pass
     if is_draft_locally_dirty(session):

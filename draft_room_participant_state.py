@@ -193,9 +193,7 @@ def _persist_room_membership(
     slot = participant_workflow_slot(session, code)
     slot["assigned_team"] = team
 
-    state = participant_state_for_room(session, code)
-    state["participant_id"] = pid
-    state["assigned_team"] = team
+    # Room-level legacy fields are host-only; per-participant data lives in by_participant.
 
 
 def set_active_participant(
@@ -261,28 +259,40 @@ def active_participant_team(session: dict[str, Any]) -> str:
         return team
 
     try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            return ""
+    except ImportError:
+        pass
+
+    try:
         from global_fantasy_settings_state import GLOBAL_TEAM_KEY
 
         return str(session.get(GLOBAL_TEAM_KEY) or "").strip()
     except ImportError:
-        return str(session.get("room_your_team") or "").strip()
+        return ""
 
 
 def load_participant_workflow_into_session(session: dict[str, Any], room_code: str) -> dict[str, Any]:
     """Hydrate widget/canonical queue keys from participant-private storage."""
     slot = participant_workflow_slot(session, room_code)
     workflow = dict(slot.get("workflow") or {})
-    if workflow.get("queue") is not None:
-        session[DRAFT_QUEUE_KEY] = copy.deepcopy(workflow.get("queue") or [])
-    if workflow.get("watchlist_focus") is not None:
-        session[DRAFT_WATCHLIST_FOCUS_KEY] = copy.deepcopy(workflow.get("watchlist_focus") or [])
-    if workflow.get("watchlist_favorites") is not None:
-        session[DRAFT_WATCHLIST_FAVORITES_KEY] = copy.deepcopy(workflow.get("watchlist_favorites") or [])
+    # Always scope session widgets to this participant — never leave a prior user's queue visible.
+    session[DRAFT_QUEUE_KEY] = copy.deepcopy(workflow.get("queue") or [])
+    session[DRAFT_WATCHLIST_FOCUS_KEY] = copy.deepcopy(workflow.get("watchlist_focus") or [])
+    session[DRAFT_WATCHLIST_FAVORITES_KEY] = copy.deepcopy(workflow.get("watchlist_favorites") or [])
     notes = slot.get("notes")
     if isinstance(notes, str):
         session[PARTICIPANT_NOTES_KEY] = notes
-    team = str(slot.get("assigned_team") or "").strip()
+    else:
+        session.pop(PARTICIPANT_NOTES_KEY, None)
+    pid = resolve_participant_id(session)
+    team = membership_team_for_participant(session, room_code, participant_id=pid)
+    if not team:
+        team = str(slot.get("assigned_team") or "").strip()
     if team:
+        session[ACTIVE_PARTICIPANT_ID_KEY] = pid
         session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
     return participant_state_for_room(session, room_code)
 
@@ -422,6 +432,10 @@ def clear_multiplayer_membership_for_account(session: dict[str, Any]) -> str:
     session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
     session.pop(ACTIVE_PARTICIPANT_ID_KEY, None)
     session.pop("room_your_team", None)
+    session.pop(PARTICIPANT_NOTES_KEY, None)
+    session[DRAFT_QUEUE_KEY] = []
+    session[DRAFT_WATCHLIST_FOCUS_KEY] = []
+    session[DRAFT_WATCHLIST_FAVORITES_KEY] = []
     if code:
         membership = session.get(MEMBERSHIP_KEY)
         if isinstance(membership, dict) and isinstance(membership.get(code), dict):
@@ -485,6 +499,7 @@ def get_participant_membership_diagnostics(session: dict[str, Any]) -> dict[str,
         "assigned_team": active_participant_team(session) or None,
         "registry_assigned_team": registry_team,
         "membership_team": membership_team_for_participant(session, code) if code else None,
+        "membership_blob_team": membership_team_for_participant(session, code) if code else None,
         "active_queue_key": "draft_queue",
         "active_watchlist_focus_key": "draft_assistant_focus_players",
         "active_watchlist_favorites_key": "workflow_favorite_targets",

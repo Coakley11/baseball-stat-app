@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -20,6 +21,7 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     room = session.get("live_draft_room")
     progress: dict[str, Any] = {}
     shared_doc_status = ""
+    scoring_trace: dict[str, Any] = {}
     if isinstance(room, dict):
         try:
             from live_draft_state import analyze_live_draft_progress
@@ -35,6 +37,13 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
                 pool_count = len(pool)
             except Exception:
                 pool_count = None
+        try:
+            from draft_scoring_pool import trace_player_scoring
+
+            if pool is not None and hasattr(pool, "columns"):
+                scoring_trace = trace_player_scoring(pool)
+        except ImportError:
+            scoring_trace = {}
     else:
         pick_index = None
         drafted_count = None
@@ -50,6 +59,16 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
                 shared_doc_status = str(doc.get("status") or "")
         except ImportError:
             pass
+
+    button_diag: dict[str, Any] = {}
+    try:
+        from draft_actions import draft_button_diagnostics
+
+        button_diag = draft_button_diagnostics(session)
+    except ImportError:
+        pass
+
+    egress_diag = _egress_diag(session)
 
     return {
         "active": True,
@@ -72,9 +91,45 @@ def get_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "drafted_count": progress.get("drafted_player_count", drafted_count),
         "draft_board_count": progress.get("draft_board_count"),
         "pool_count": pool_count,
+        "scoring_trace": scoring_trace,
+        "on_clock_team": button_diag.get("on_clock_team"),
+        "is_my_turn": button_diag.get("is_my_turn"),
+        "disable_reason": button_diag.get("disable_reason"),
+        "draft_enabled": button_diag.get("draft_enabled"),
+        "queue_len": len(session.get("draft_queue") or []),
+        "watchlist_len": len(session.get("draft_assistant_focus_players") or []),
         "conflict_notice": session.get("_draft_room_conflict_notice"),
+        "room_payload_bytes": session.get("_shared_room_last_payload_bytes"),
+        **egress_diag,
         **_participant_membership_diag(session),
     }
+
+
+def _egress_diag(session: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "egress_reads_render": None,
+        "egress_writes_render": None,
+        "egress_bytes_downloaded": None,
+        "egress_bytes_uploaded": None,
+        "workspace_payload_bytes": None,
+    }
+    try:
+        from suite_egress_trace import get_run_egress_summary
+
+        summary = get_run_egress_summary()
+        out["egress_reads_render"] = summary.get("reads")
+        out["egress_writes_render"] = summary.get("writes")
+        out["egress_bytes_downloaded"] = summary.get("bytes_in")
+        out["egress_bytes_uploaded"] = summary.get("bytes_out")
+    except ImportError:
+        pass
+    cloud = session.get("_suite_last_cloud_payload")
+    if isinstance(cloud, dict):
+        try:
+            out["workspace_payload_bytes"] = len(json.dumps(cloud, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            pass
+    return out
 
 
 def _participant_membership_diag(session: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +141,7 @@ def _participant_membership_diag(session: dict[str, Any]) -> dict[str, Any]:
             "auth_email": extra.get("auth_email"),
             "auth_user_id": extra.get("auth_user_id"),
             "membership_team": extra.get("membership_team"),
+            "membership_blob_team": extra.get("membership_blob_team"),
             "registry_assigned_team": extra.get("registry_assigned_team"),
             "active_queue_key": extra.get("active_queue_key"),
             "active_watchlist_focus_key": extra.get("active_watchlist_focus_key"),
@@ -113,7 +169,7 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
             ("Auth email", diag.get("auth_email") or "—"),
             ("Auth user id", diag.get("auth_user_id") or "—"),
             ("Registry team", diag.get("registry_assigned_team") or "—"),
-            ("Membership team (blob)", diag.get("membership_team") or "—"),
+            ("Membership team (blob)", diag.get("membership_blob_team") or diag.get("membership_team") or "—"),
             ("Backend", diag.get("backend") or "—"),
             ("Revision", str(diag.get("revision") if diag.get("revision") is not None else "—")),
             ("Last sync", diag.get("last_sync_time") or "—"),
@@ -128,12 +184,42 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
                 str(diag.get("current_pick_index") if diag.get("current_pick_index") is not None else "—"),
             ),
             ("Total picks", str(diag.get("total_picks") if diag.get("total_picks") is not None else "—")),
+            ("On clock team", diag.get("on_clock_team") or "—"),
+            ("Is my turn", str(diag.get("is_my_turn"))),
+            ("Draft enabled", str(diag.get("draft_enabled"))),
+            ("Disable reason", diag.get("disable_reason") or "—"),
+            ("Queue len", str(diag.get("queue_len"))),
+            ("Watchlist len", str(diag.get("watchlist_len"))),
             ("Drafted", str(diag.get("drafted_count") if diag.get("drafted_count") is not None else "—")),
             ("Board picks", str(diag.get("draft_board_count") if diag.get("draft_board_count") is not None else "—")),
             ("Pool count", str(diag.get("pool_count") if diag.get("pool_count") is not None else "—")),
+            ("Room payload bytes", str(diag.get("room_payload_bytes") or "—")),
+            ("Workspace payload bytes", str(diag.get("workspace_payload_bytes") or "—")),
+            ("Reads / render", str(diag.get("egress_reads_render") or "—")),
+            ("Writes / render", str(diag.get("egress_writes_render") or "—")),
+            ("Bytes downloaded", str(diag.get("egress_bytes_downloaded") or "—")),
+            ("Bytes uploaded", str(diag.get("egress_bytes_uploaded") or "—")),
         ]
         for label, value in rows:
             st.text(f"{label}: {value}")
+        trace = diag.get("scoring_trace") or {}
+        if trace:
+            st.markdown("**Scoring trace (top players)**")
+            for player, fields in trace.items():
+                if not isinstance(fields, dict):
+                    continue
+                if not fields.get("found"):
+                    st.text(f"{player}: not in pool")
+                    continue
+                bits = [
+                    f"EFV={fields.get('Expected Fantasy Value')}",
+                    f"Model={fields.get('Model Rank')}",
+                    f"Market={fields.get('Market Rank')}",
+                    f"Edge={fields.get('Fantasy Edge')}",
+                    f"ADP Rank={fields.get('ADP Rank')}",
+                    f"Sleeper={fields.get('Sleeper Score')}",
+                ]
+                st.text(f"{player}: " + ", ".join(str(b) for b in bits))
         if diag.get("conflict_notice"):
             st.warning(str(diag["conflict_notice"]))
 

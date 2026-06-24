@@ -173,6 +173,12 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 return True
             if st.button("Leave shared room", key="shared_draft_leave_btn"):
                 leave_shared_draft_room(session)
+                try:
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    force_save_baseball_state(st, reason="shared_draft_leave")
+                except ImportError:
+                    pass
                 st.info("Left shared draft room. Your private queue and watchlist are saved.")
                 return True
             try:

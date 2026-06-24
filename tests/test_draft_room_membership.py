@@ -133,7 +133,8 @@ class DraftRoomMembershipTests(unittest.TestCase):
         }
         prepare_global_draft_context(self.guest_session)
         self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
-        self.assertEqual(self.guest_session.get("room_your_team"), "Team 2")
+        self.assertNotEqual(self.guest_session.get("draft_room_participant_team"), "Team 1")
+        self.assertIsNone(self.guest_session.get("room_your_team"))
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_legacy_host_only_membership_does_not_assign_guest_host_team(self, _mock_auth: object) -> None:

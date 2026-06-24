@@ -144,6 +144,43 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
         self.assertNotIn('"watchlist_favorites"', raw)
         self.assertNotIn('"by_participant"', raw)
 
+    def test_load_participant_workflow_clears_inherited_host_queue(self) -> None:
+        room_code = "ROOM01"
+        guest_pid = "auth-guest-uuid"
+        guest: dict = {
+            ACTIVE_PARTICIPANT_ID_KEY: guest_pid,
+            AUTH_USER_ID_KEY: guest_pid,
+            DRAFT_QUEUE_KEY: ["Aaron Judge"],
+            "active_shared_draft_room_code": room_code,
+        }
+        guest[PARTICIPANT_STATE_KEY] = {
+            room_code: {
+                "participant_id": "auth-host-uuid",
+                "assigned_team": "Team 1",
+                "workflow": {"queue": ["Aaron Judge"]},
+                "by_participant": {},
+            }
+        }
+        load_participant_workflow_into_session(guest, room_code)
+        self.assertEqual(guest.get(DRAFT_QUEUE_KEY), [])
+
+    def test_leave_shared_draft_room_clears_runtime_state(self) -> None:
+        from draft_room_context import leave_shared_draft_room
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        session: dict = {
+            "active_shared_draft_room_code": "ABC123",
+            "draft_room_shared_meta": {"revision": 2},
+            "draft_room_participant_team": "Team 2",
+            "draft_room_participant_id": "auth-guest-uuid",
+            LIVE_DRAFT_ROOM_KEY: {"status": "in_progress"},
+            DRAFT_QUEUE_KEY: ["Juan Soto"],
+        }
+        leave_shared_draft_room(session)
+        self.assertNotIn("active_shared_draft_room_code", session)
+        self.assertNotIn(LIVE_DRAFT_ROOM_KEY, session)
+        self.assertEqual(session.get(DRAFT_QUEUE_KEY), [])
+
 
 if __name__ == "__main__":
     unittest.main()

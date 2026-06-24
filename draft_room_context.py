@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from draft_room_participant_state import (
+    ACTIVE_PARTICIPANT_ID_KEY,
     ACTIVE_PARTICIPANT_TEAM_KEY,
     active_participant_team,
     load_participant_workflow_into_session,
@@ -153,6 +154,8 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
             )
     else:
         prepare_live_draft_state(session)
+    if is_multiplayer_draft_active(session):
+        session.pop("room_your_team", None)
     return get_global_draft_context(session)
 
 
@@ -254,6 +257,18 @@ def create_and_host_shared_room(
         live_room = repair_stale_live_draft_progress(copy.deepcopy(live_room))
     except ImportError:
         live_room = copy.deepcopy(live_room)
+    try:
+        import pandas as pd
+
+        from draft_scoring_pool import prepare_pool_for_compact_serialization
+
+        pool = live_room.get("pool")
+        if isinstance(pool, pd.DataFrame) and not pool.empty:
+            prepared, scoring_report = prepare_pool_for_compact_serialization(pool)
+            live_room["pool"] = prepared
+            live_room["_live_draft_pool_scoring_diag"] = scoring_report
+    except ImportError:
+        pass
     try:
         from draft_room_supabase_errors import SharedRoomSupabaseError, record_shared_room_supabase_error
     except ImportError:
@@ -575,12 +590,36 @@ def commit_shared_room_state(
 
 
 def leave_shared_draft_room(session: dict[str, Any]) -> None:
+    """Leave multiplayer room and clear shared runtime keys (private workflow is saved)."""
+    from draft_room_participant_state import (
+        ACTIVE_PARTICIPANT_ID_KEY,
+        PARTICIPANT_NOTES_KEY,
+        save_participant_workflow_from_session,
+    )
+    from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY
+    from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     if room_code:
         save_participant_workflow_from_session(session, room_code)
-    session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
-    session.pop(SHARED_ROOM_META_KEY, None)
-    session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+    for key in (
+        ACTIVE_SHARED_ROOM_CODE_KEY,
+        SHARED_ROOM_META_KEY,
+        ACTIVE_PARTICIPANT_TEAM_KEY,
+        ACTIVE_PARTICIPANT_ID_KEY,
+        LIVE_DRAFT_ROOM_KEY,
+        PARTICIPANT_NOTES_KEY,
+        "room_your_team",
+        "_draft_room_publish_error",
+        "_draft_room_conflict_notice",
+        "_draft_room_membership_notice",
+        "_shared_draft_poll_ts",
+        _SHARED_DRAFT_SYNC_RUN_KEY,
+    ):
+        session.pop(key, None)
+    session[DRAFT_QUEUE_KEY] = []
+    session[DRAFT_WATCHLIST_FOCUS_KEY] = []
+    session[DRAFT_WATCHLIST_FAVORITES_KEY] = []
 
 
 def recommendation_team(session: dict[str, Any], *, on_clock_team: str | None = None) -> str:
@@ -596,6 +635,11 @@ def recommendation_team(session: dict[str, Any], *, on_clock_team: str | None = 
 
 def _sync_participant_team_aliases(session: dict[str, Any], team: str) -> None:
     if not team:
+        return
+    pid = resolve_participant_id(session)
+    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+    session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+    if is_multiplayer_draft_active(session):
         return
     session["room_your_team"] = team
     try:
