@@ -47,6 +47,31 @@ _PRIVATE_DOCUMENT_KEYS = frozenset(
 _PARTICIPANT_PUBLIC_KEYS = frozenset({"assigned_team", "display_name", "joined_at", "participant_id"})
 
 
+def shared_room_document_private_leaks(document: dict[str, Any] | None, *, prefix: str = "") -> list[str]:
+    """Return dotted paths of private participant fields present in a shared room document."""
+    if not isinstance(document, dict):
+        return []
+    leaks: list[str] = []
+    for key in document:
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if key in _PRIVATE_DOCUMENT_KEYS:
+            leaks.append(path)
+            continue
+        val = document[key]
+        if key == "participants" and isinstance(val, dict):
+            for pid, meta in val.items():
+                if isinstance(meta, dict):
+                    for sub_key in meta:
+                        sub_path = f"{path}.{pid}.{sub_key}"
+                        if sub_key in _PRIVATE_DOCUMENT_KEYS:
+                            leaks.append(sub_path)
+        elif key == "room" and isinstance(val, dict):
+            leaks.extend(shared_room_document_private_leaks(val, prefix=path))
+        elif isinstance(val, dict):
+            leaks.extend(shared_room_document_private_leaks(val, prefix=path))
+    return leaks
+
+
 def sanitize_shared_room_document(document: dict[str, Any]) -> dict[str, Any]:
     """Strip private participant strategy fields and coerce to strict JSON-safe values."""
     if not isinstance(document, dict):

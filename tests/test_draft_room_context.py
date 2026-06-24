@@ -18,7 +18,7 @@ from draft_room_context import (
 )
 from draft_room_participant_state import (
     ACTIVE_PARTICIPANT_ID_KEY,
-    participant_state_for_room,
+    participant_workflow_slot,
     save_participant_workflow_from_session,
     set_active_participant,
 )
@@ -121,10 +121,10 @@ class DraftRoomContextTests(unittest.TestCase):
         self.assertEqual(host.get("draft_queue"), ["Aaron Judge"])
         self.assertEqual(guest.get("draft_queue"), ["Juan Soto"])
 
-        host_state = participant_state_for_room(host, room_code)
-        guest_state = participant_state_for_room(guest, room_code)
-        self.assertEqual(host_state["workflow"]["queue"], ["Aaron Judge"])
-        self.assertEqual(guest_state["workflow"]["queue"], ["Juan Soto"])
+        host_slot = participant_workflow_slot(host, room_code)
+        guest_slot = participant_workflow_slot(guest, room_code)
+        self.assertEqual(host_slot["workflow"]["queue"], ["Aaron Judge"])
+        self.assertEqual(guest_slot["workflow"]["queue"], ["Juan Soto"])
 
     def test_sync_shared_room_refreshes_runtime(self) -> None:
         session: dict = {ACTIVE_PARTICIPANT_ID_KEY: "host-user"}

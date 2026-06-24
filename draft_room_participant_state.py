@@ -76,6 +76,32 @@ def participant_state_for_room(session: dict[str, Any], room_code: str) -> dict[
     return state
 
 
+def participant_workflow_slot(session: dict[str, Any], room_code: str) -> dict[str, Any]:
+    """Private queue/watchlist slot keyed by auth user / participant id within a room."""
+    code = str(room_code or "").strip().upper()
+    room_state = participant_state_for_room(session, code)
+    pid = resolve_participant_id(session)
+    by_pid = room_state.get("by_participant")
+    if not isinstance(by_pid, dict):
+        by_pid = {}
+        room_state["by_participant"] = by_pid
+    if pid not in by_pid:
+        slot: dict[str, Any] = {"participant_id": pid}
+        legacy_workflow = room_state.get("workflow")
+        legacy_pid = str(room_state.get("participant_id") or "").strip()
+        if isinstance(legacy_workflow, dict) and (not legacy_pid or legacy_pid == pid):
+            slot["workflow"] = copy.deepcopy(legacy_workflow)
+            if isinstance(room_state.get("notes"), str):
+                slot["notes"] = room_state["notes"]
+        by_pid[pid] = slot
+    slot = by_pid[pid]
+    if not isinstance(slot, dict):
+        slot = {"participant_id": pid}
+        by_pid[pid] = slot
+    slot.setdefault("participant_id", pid)
+    return slot
+
+
 def set_active_participant(
     session: dict[str, Any],
     *,
@@ -113,26 +139,26 @@ def active_participant_team(session: dict[str, Any]) -> str:
 
 def load_participant_workflow_into_session(session: dict[str, Any], room_code: str) -> dict[str, Any]:
     """Hydrate widget/canonical queue keys from participant-private storage."""
-    state = participant_state_for_room(session, room_code)
-    workflow = dict(state.get("workflow") or {})
+    slot = participant_workflow_slot(session, room_code)
+    workflow = dict(slot.get("workflow") or {})
     if workflow.get("queue") is not None:
         session[DRAFT_QUEUE_KEY] = copy.deepcopy(workflow.get("queue") or [])
     if workflow.get("watchlist_focus") is not None:
         session[DRAFT_WATCHLIST_FOCUS_KEY] = copy.deepcopy(workflow.get("watchlist_focus") or [])
     if workflow.get("watchlist_favorites") is not None:
         session[DRAFT_WATCHLIST_FAVORITES_KEY] = copy.deepcopy(workflow.get("watchlist_favorites") or [])
-    notes = state.get("notes")
+    notes = slot.get("notes")
     if isinstance(notes, str):
         session[PARTICIPANT_NOTES_KEY] = notes
-    return state
+    return participant_state_for_room(session, room_code)
 
 
 def save_participant_workflow_from_session(session: dict[str, Any], room_code: str) -> dict[str, Any]:
     """Persist queue/watchlist from session into participant-private storage."""
     prepare_draft_workflow(session)
     workflow = gather_draft_workflow(session)
-    state = participant_state_for_room(session, room_code)
-    state["workflow"] = {
+    slot = participant_workflow_slot(session, room_code)
+    slot["workflow"] = {
         "queue": copy.deepcopy(workflow.get("queue") or []),
         "watchlist_focus": copy.deepcopy(workflow.get("watchlist_focus") or []),
         "watchlist_favorites": copy.deepcopy(workflow.get("watchlist_favorites") or []),
@@ -140,8 +166,8 @@ def save_participant_workflow_from_session(session: dict[str, Any], room_code: s
     }
     notes = session.get(PARTICIPANT_NOTES_KEY)
     if isinstance(notes, str):
-        state["notes"] = notes
-    return state
+        slot["notes"] = notes
+    return participant_state_for_room(session, room_code)
 
 
 def assign_team_for_join(
