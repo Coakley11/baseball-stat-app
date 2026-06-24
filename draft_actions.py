@@ -353,6 +353,15 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         "total_picks": ctx.get("total_picks"),
         "draft_complete_reason": ctx.get("draft_complete_reason") or None,
     }
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        col_diag = room.get("_live_draft_pool_column_diag")
+        if isinstance(col_diag, dict):
+            out["pool_duplicate_columns"] = col_diag.get("duplicate_columns")
+            out["pool_deduped"] = col_diag.get("deduped")
+        scoring_diag = room.get("_live_draft_pool_scoring_diag")
+        if isinstance(scoring_diag, dict):
+            out["pool_scoring_derived"] = scoring_diag.get("derived_columns")
     ui_diag = dict(session.get("_live_draft_ui_diag") or {})
     if ui_diag:
         out.update(
@@ -451,13 +460,12 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
 
 def _live_player_available(session: dict[str, Any], player_name: str) -> tuple[bool, str]:
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
 
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if not isinstance(room, dict):
             return False, "No active live draft."
-        app = _import_baseball_app()
-        available = app.live_draft_get_available(room)
+        available = live_draft_get_available(room)
     except Exception as exc:
         return False, f"Live draft pool unavailable: {exc}"
 
@@ -465,7 +473,10 @@ def _live_player_available(session: dict[str, Any], player_name: str) -> tuple[b
         return False, "No players available in the live draft pool."
 
     col = "fullName" if "fullName" in available.columns else "Player"
-    names = available[col].dropna().astype(str).tolist()
+    series = available[col]
+    if getattr(series, "ndim", 1) > 1:
+        series = series.iloc[:, 0]
+    names = series.dropna().astype(str).tolist()
     resolved = _resolve_player_name(player_name, names)
     if resolved not in names and player_name not in names:
         return False, f"{player_name} is not available."
@@ -474,13 +485,12 @@ def _live_player_available(session: dict[str, Any], player_name: str) -> tuple[b
 
 def _find_live_player_row(session: dict[str, Any], player_name: str) -> dict[str, Any] | None:
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
 
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if not isinstance(room, dict):
             return None
-        app = _import_baseball_app()
-        available = app.live_draft_get_available(room)
+        available = live_draft_get_available(room)
     except Exception:
         return None
 

@@ -430,6 +430,33 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         DRAFT_ROOM_STATE_KEY = "draft_room_state"
         DRAFT_ROOM_TABLE_KEY = "draft_room_table"
 
+    preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
+    multiplayer_restore = _multiplayer_restore_active(ss, state)
+    foreign_blob = False
+    foreign_reason = ""
+    try:
+        from live_draft_state import workspace_blob_owned_by_session
+
+        owned, foreign_reason = workspace_blob_owned_by_session(ss, state)
+        foreign_blob = not owned
+        if foreign_blob:
+            ss["_live_draft_restore_blocked_reason"] = foreign_reason
+    except Exception as exc:
+        ss["_live_draft_restore_blocked_reason"] = f"ownership_check_failed:{type(exc).__name__}"
+
+    _FOREIGN_GLOBAL_KEYS = frozenset(
+        {
+            "room_your_team",
+            "room_format",
+            "room_team_count",
+            "room_rounds",
+            "room_window",
+            "allow_free_pool_drafting",
+            "live_draft_state",
+            "live_draft_room",
+        }
+    )
+
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
         if skip_draft_room:
@@ -453,31 +480,6 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     # draft-room blob. When the user edits settings, draft_room_state_dirty is set
     # (via mark_draft_room_local_edit on_change) and we must not let the cloud blob
     # overwrite their live edits on the very next rerun.
-    preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
-    multiplayer_restore = _multiplayer_restore_active(ss, state)
-    foreign_blob = False
-    foreign_reason = ""
-    try:
-        from live_draft_state import workspace_blob_owned_by_session
-
-        owned, foreign_reason = workspace_blob_owned_by_session(ss, state)
-        foreign_blob = not owned
-        if foreign_blob:
-            ss["_live_draft_restore_blocked_reason"] = foreign_reason
-    except ImportError:
-        pass
-    _FOREIGN_GLOBAL_KEYS = frozenset(
-        {
-            "room_your_team",
-            "room_format",
-            "room_team_count",
-            "room_rounds",
-            "room_window",
-            "allow_free_pool_drafting",
-            "live_draft_state",
-            "live_draft_room",
-        }
-    )
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
         if key not in state:
             continue

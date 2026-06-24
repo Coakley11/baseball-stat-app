@@ -570,11 +570,27 @@ def _record_startup_restore_diagnostics(
 
     diag = probe_cloud_restore_diagnostics(st, app_id) if probe_cloud_restore_diagnostics else {}
     cloud_players = _workspace_comparison_players(cloud_state) if cloud_state else []
+    cloud_uid = str(diag.get("suite_user_id") or "")
+    cloud_app_key = ""
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
+
+        if is_auth_enabled() and is_authenticated(st.session_state):
+            cloud_uid = str(resolve_auth_external_id(st.session_state) or cloud_uid)
+    except ImportError:
+        pass
+    try:
+        from suite_workspace import scoped_cloud_app_id, get_active_workspace_id
+
+        cloud_app_key = scoped_cloud_app_id(app_id, get_active_workspace_id(st=st))
+    except ImportError:
+        pass
     st.session_state["_suite_cloud_fetch_attempted"] = True
     st.session_state["_suite_cloud_fetch_success"] = bool(cloud_state) or bool(
         diag.get("cloud_has_full_session")
     )
-    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or "")[:32] or None
+    st.session_state["_suite_cloud_fetch_user_id"] = (cloud_uid or "")[:32] or None
+    st.session_state["_suite_cloud_fetch_app_key"] = cloud_app_key or None
     st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts or diag.get("cloud_updated_at")
     st.session_state["_suite_cloud_fetch_active_page"] = (
         cloud_state.get("active_page")
@@ -610,6 +626,12 @@ def sync_workspace_protocol(
     st.session_state["_suite_persist_app_id"] = app_id
     st.session_state["_suite_workspace_sync_attempted"] = True
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
+    try:
+        from suite_auth import enforce_workspace_ownership
+
+        enforce_workspace_ownership(st.session_state)
+    except ImportError:
+        pass
     record_page_navigation_startup_diagnostics(st, app_id)
     try:
         from applied_math_return_insight import reconcile_stale_page_navigation

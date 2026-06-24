@@ -132,11 +132,6 @@ def clear_foreign_live_draft_state(session: dict[str, Any], *, reason: str) -> N
 
 def workspace_blob_owned_by_session(session: dict[str, Any], state: dict[str, Any]) -> tuple[bool, str]:
     """True when a full workspace restore blob belongs to the signed-in user."""
-    blob = _live_draft_from_blob(state)
-    if isinstance(blob, dict) and blob.get("draft_room_id"):
-        allowed, reason = live_draft_restore_allowed(session, blob, source="workspace_blob")
-        if not allowed:
-            return False, reason
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
@@ -149,6 +144,24 @@ def workspace_blob_owned_by_session(session: dict[str, Any], state: dict[str, An
     current_ws = _current_workspace_id(session)
     if current_ext and current_ext not in ("daniel", "") and current_ws == "daniel":
         return False, "foreign_daniel_workspace"
+
+    blob = _live_draft_from_blob(state)
+    if isinstance(blob, dict) and blob.get("draft_room_id"):
+        allowed, reason = live_draft_restore_allowed(session, blob, source="workspace_blob")
+        if not allowed:
+            return False, reason
+
+    if current_ext and current_ext not in ("daniel", ""):
+        owner_ext = str((blob or {}).get(LIVE_DRAFT_OWNER_EXTERNAL_KEY) or "").strip()
+        if owner_ext and owner_ext != current_ext:
+            return False, "external_id_mismatch"
+        try:
+            from suite_user import get_external_user_id
+
+            if get_external_user_id() == "daniel" and current_ws != current_ext:
+                return False, "legacy_shared_cloud_blob"
+        except ImportError:
+            pass
     return True, "owned"
 
 
@@ -171,6 +184,8 @@ def live_draft_identity_diagnostics(session: dict[str, Any]) -> dict[str, str]:
         or "—"
     )
     diag["restore_blocked_reason"] = str(session.get("_live_draft_restore_blocked_reason") or "—")
+    diag["cloud_fetch_user_id"] = str(session.get("_suite_cloud_fetch_user_id") or "—")
+    diag["cloud_fetch_app_key"] = str(session.get("_suite_cloud_fetch_app_key") or "—")
     blob = canonical_live_draft(session) or {}
     if isinstance(blob, dict):
         diag["live_draft_owner_auth_uuid"] = live_draft_blob_owner_auth_id(blob) or "—"
@@ -451,6 +466,13 @@ def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
                 pool = pool[ordered + extras]
         else:
             return pd.DataFrame()
+    if isinstance(pool, pd.DataFrame) and pool.columns.duplicated().any():
+        dupes = [str(c) for c in pool.columns[pool.columns.duplicated()].tolist()]
+        room["_live_draft_pool_column_diag"] = {
+            "duplicate_columns": dupes,
+            "deduped": True,
+        }
+        pool = pool.loc[:, ~pool.columns.duplicated()].copy()
     drafted = set(room.get("drafted_player_ids", []) or [])
     if not drafted:
         out = pool.copy()
@@ -458,6 +480,13 @@ def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
         out = pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
     else:
         out = pool.copy()
+    if isinstance(out, pd.DataFrame) and out.columns.duplicated().any():
+        dupes = [str(c) for c in out.columns[out.columns.duplicated()].tolist()]
+        room["_live_draft_pool_column_diag"] = {
+            "duplicate_columns": dupes,
+            "deduped": True,
+        }
+        out = out.loc[:, ~out.columns.duplicated()].copy()
     try:
         from draft_scoring_pool import ensure_draft_scoring_pool_columns_with_report
 
