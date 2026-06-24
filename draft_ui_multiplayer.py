@@ -89,6 +89,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             is_multiplayer_draft_active,
             join_shared_draft_room,
             leave_shared_draft_room,
+            prepare_global_draft_context,
             sync_shared_draft_room,
         )
         from draft_room_join_trace import render_join_trace_panel, render_shared_room_auth_diagnostics, trace_join_step
