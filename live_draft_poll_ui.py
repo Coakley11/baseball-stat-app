@@ -91,6 +91,14 @@ def _run_shared_poll(session: dict[str, Any]) -> bool:
 def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
     """Poll shared room on an interval and rerun when a remote pick lands."""
     try:
+        from live_draft_start_progress import should_skip_live_draft_poll
+
+        if should_skip_live_draft_poll(session):
+            record_live_poll_diagnostics(session, live_poll_enabled=False, poll_suppressed_reason="draft_start_in_flight")
+            return
+    except ImportError:
+        pass
+    try:
         from draft_room_context import is_multiplayer_draft_active
         from suite_egress_policy import shared_draft_poll_interval_sec
     except ImportError:
@@ -166,11 +174,8 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
 
 def _rerun_after_poll(st: Any, session: dict[str, Any]) -> None:
     try:
-        from live_draft_safe_mode import reconcile_live_draft_room, request_live_draft_rerun
+        from live_draft_safe_mode import request_poll_apply_rerun
 
-        room = session.get("live_draft_room")
-        if isinstance(room, dict):
-            reconcile_live_draft_room(session, room)
-        request_live_draft_rerun(st, session, "poll_fragment", room=room)
+        request_poll_apply_rerun(st, session, room=session.get("live_draft_room"))
     except ImportError:
         st.rerun()

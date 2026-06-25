@@ -545,9 +545,12 @@ def publish_shared_room_runtime(
             runtime["status"] = doc_status
 
     existing = session.get(LIVE_DRAFT_ROOM_KEY)
+    doc_rev = int(document.get("revision") or 0)
+    local_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
     if (
         reason in ("shared_room_poll", "global_context_prepare")
         and isinstance(existing, dict)
+        and doc_rev <= local_rev
         and len(existing.get("draft_board") or []) > len(runtime.get("draft_board") or [])
     ):
         return existing

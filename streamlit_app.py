@@ -17789,22 +17789,21 @@ if active_page == "Live Draft Room":
             )
             if poll_due and not _skip_poll:
                 st.session_state["_shared_draft_poll_ts"] = _poll_now
+                try:
+                    from draft_room_context import reset_shared_draft_sync_gate
+
+                    reset_shared_draft_sync_gate(st.session_state)
+                except ImportError:
+                    pass
                 _poll_changed = poll_shared_draft_room(st.session_state)
-                if _poll_changed and isinstance(st.session_state.get("live_draft_room"), dict):
-                    try:
-                        from live_draft_safe_mode import reconcile_live_draft_room
-
-                        reconcile_live_draft_room(st.session_state, st.session_state["live_draft_room"])
-                    except ImportError:
-                        pass
                 if _poll_changed:
+                    st.session_state.pop("_live_draft_rec_cache", None)
                     try:
-                        from live_draft_safe_mode import request_live_draft_rerun
+                        from live_draft_safe_mode import request_poll_apply_rerun
 
-                        request_live_draft_rerun(
+                        request_poll_apply_rerun(
                             st,
                             st.session_state,
-                            "poll_shared_draft",
                             room=st.session_state.get("live_draft_room"),
                         )
                     except ImportError:

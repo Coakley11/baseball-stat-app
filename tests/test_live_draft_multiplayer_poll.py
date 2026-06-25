@@ -128,7 +128,125 @@ class MultiplayerPollPropagationTests(unittest.TestCase):
         self.assertAlmostEqual(live_draft_seconds_remaining(guest_room), live_draft_seconds_remaining(host_room), delta=2)
 
 
-class HostAutopickTests(unittest.TestCase):
+class ReceiverPollApplyTests(unittest.TestCase):
+    """Device B commits; Device A (passive receiver) must apply without manual refresh."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.store = LocalFileSharedRoomStore(root=Path(self._tmpdir.name))
+        self.host = {"draft_room_participant_id": "host-user", "room_your_team": "Daniel"}
+        self.guest = {"draft_room_participant_id": "guest-user", "room_your_team": "Amiel"}
+        self._patch = mock.patch("draft_room_shared_state.get_shared_room_store", return_value=self.store)
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+        self._tmpdir.cleanup()
+
+    def _remote_doc_with_three_picks(self, code: str) -> None:
+        doc = self.store.load(code)
+        assert isinstance(doc, dict)
+        room = dict(self.guest[LIVE_DRAFT_ROOM_KEY])
+        board = []
+        for i in range(3):
+            row = room["pool"].iloc[i % len(room["pool"])].to_dict()
+            pick = dict(row)
+            pick["Fantasy Team"] = "Daniel" if i == 0 else "Amiel"
+            board.append(pick)
+        room["draft_board"] = board
+        room["current_pick_index"] = 3
+        room["drafted_player_ids"] = [str(p.get("playerID") or "") for p in board]
+        live_draft_reset_timer(room)
+        self.store.save(bump_revision(doc, live_room=room))
+
+    def _stale_host_at_two_picks(self, code: str) -> None:
+        doc = self.store.load(code)
+        assert isinstance(doc, dict)
+        stale_room = dict(self.host[LIVE_DRAFT_ROOM_KEY])
+        board = []
+        for i in range(2):
+            row = stale_room["pool"].iloc[i % len(stale_room["pool"])].to_dict()
+            pick = dict(row)
+            pick["Fantasy Team"] = "Daniel" if i == 0 else "Amiel"
+            board.append(pick)
+        stale_room["draft_board"] = board
+        stale_room["current_pick_index"] = 2
+        self.host[LIVE_DRAFT_ROOM_KEY] = stale_room
+        self.host[SHARED_ROOM_META_KEY] = {"revision": int(doc.get("revision") or 1) - 1}
+
+    @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_host_applies_guest_pick_three_on_poll(self, _auth: object) -> None:
+        code, _ = create_and_host_shared_room(self.host, _sample_live_room(teams=["Daniel", "Amiel"]), store=self.store)
+        join_shared_draft_room(self.guest, code, store=self.store)
+        self._remote_doc_with_three_picks(code)
+        self._stale_host_at_two_picks(code)
+        self.assertEqual(len(self.host[LIVE_DRAFT_ROOM_KEY].get("draft_board") or []), 2)
+
+        changed = poll_shared_draft_room(self.host, store=self.store)
+        self.assertTrue(changed)
+        host_room = self.host[LIVE_DRAFT_ROOM_KEY]
+        self.assertEqual(len(host_room.get("draft_board") or []), 3)
+        self.assertEqual(int(host_room.get("current_pick_index") or 0), 3)
+        diag = self.host.get("_live_draft_mp_diag") or {}
+        self.assertTrue(diag.get("remote_revision_applied"))
+
+    @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_receiver_on_clock_team_after_pick_three(self, _auth: object) -> None:
+        code, _ = create_and_host_shared_room(
+            self.host,
+            _sample_live_room(
+                teams=["Daniel", "Amiel"],
+                pick_order=[
+                    {"Pick": 1, "Round": 1, "Team": "Daniel"},
+                    {"Pick": 2, "Round": 1, "Team": "Amiel"},
+                    {"Pick": 3, "Round": 2, "Team": "Amiel"},
+                    {"Pick": 4, "Round": 2, "Team": "Daniel"},
+                ],
+            ),
+            store=self.store,
+        )
+        join_shared_draft_room(self.guest, code, store=self.store)
+        self._remote_doc_with_three_picks(code)
+        self._stale_host_at_two_picks(code)
+        poll_shared_draft_room(self.host, store=self.store)
+        slot = live_draft_current_slot(self.host[LIVE_DRAFT_ROOM_KEY])
+        assert slot is not None
+        self.assertEqual(slot.get("Team"), "Daniel")
+
+    @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_dirty_guard_does_not_block_newer_remote_revision(self, _auth: object) -> None:
+        from live_draft_state import mark_live_draft_local_edit
+
+        code, _ = create_and_host_shared_room(self.host, _sample_live_room(teams=["Daniel", "Amiel"]), store=self.store)
+        join_shared_draft_room(self.guest, code, store=self.store)
+        self._remote_doc_with_three_picks(code)
+        self._stale_host_at_two_picks(code)
+        mark_live_draft_local_edit(self.host)
+
+        changed = poll_shared_draft_room(self.host, store=self.store)
+        self.assertTrue(changed)
+        self.assertEqual(len(self.host[LIVE_DRAFT_ROOM_KEY].get("draft_board") or []), 3)
+
+    @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+    def test_poll_apply_rerun_allowed_after_excessive_timer_reruns(self, _auth: object) -> None:
+        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY
+        from live_draft_safe_mode import is_rerun_allowed, request_poll_apply_rerun
+
+        code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
+        join_shared_draft_room(self.guest, code, store=self.store)
+        self._remote_doc_with_three_picks(code)
+        self._stale_host_at_two_picks(code)
+        self.host["_live_draft_rerun_count"] = 20
+        self.host[RERUN_LOOP_PREVENTED_KEY] = True
+        self.host["_live_draft_poll_apply_pending"] = True
+        allowed, _ = is_rerun_allowed(self.host, "poll_apply")
+        self.assertTrue(allowed)
+
+        st = mock.MagicMock()
+        poll_shared_draft_room(self.host, store=self.store)
+        self.assertTrue(request_poll_apply_rerun(st, self.host))
+        st.rerun.assert_called_once()
+
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.store = LocalFileSharedRoomStore(root=Path(self._tmpdir.name))

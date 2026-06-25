@@ -13,7 +13,7 @@ SAFE_MODE_ACTIVE_KEY = "_live_draft_safe_mode_active"
 SAFE_MODE_ERROR_KEY = "_live_draft_draft_state_error"
 SAFE_MODE_ERROR_REASON_KEY = "_live_draft_draft_state_error_reason"
 
-# Rerun sources that must never fire when rerun_allowed is false
+# Rerun sources that must never fire when rerun_allowed is false (timer/autopick loops)
 _BLOCKED_RERUN_SOURCES = frozenset(
     {
         "timer_fragment",
@@ -25,6 +25,9 @@ _BLOCKED_RERUN_SOURCES = frozenset(
         "poll_fragment",
     }
 )
+
+# Remote revision apply must always repaint — not subject to passive-receiver rerun budget
+_POLL_APPLY_RERUN_SOURCES = frozenset({"poll_apply", "poll_remote_revision"})
 
 
 @dataclass
@@ -347,14 +350,30 @@ def timer_should_run(session: dict[str, Any], room: dict[str, Any]) -> bool:
     return result.timer_should_run
 
 
+def reset_poll_rerun_budget(session: dict[str, Any]) -> None:
+    """Clear passive-receiver rerun lockout after a remote revision is applied."""
+    session.pop("_live_draft_rerun_count", None)
+    session.pop("_live_draft_rerun_loop_prevented", None)
+    try:
+        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY
+
+        session.pop(RERUN_LOOP_PREVENTED_KEY, None)
+    except ImportError:
+        pass
+
+
 def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Central gate for all Live Draft Room st.rerun() calls."""
+    if source in _POLL_APPLY_RERUN_SOURCES and session.get("_live_draft_poll_apply_pending"):
+        return True, ""
     try:
         from live_draft_start_progress import is_live_draft_start_in_flight
 
         if is_live_draft_start_in_flight(session) and source in (
             "poll_fragment",
             "poll_shared_draft",
+            "poll_apply",
+            "poll_remote_revision",
             "timer_fragment",
             "page_autopick",
         ):
@@ -381,6 +400,30 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
         return False, "excessive_reruns_blocked"
 
     return True, ""
+
+
+def request_poll_apply_rerun(st: Any, session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:
+    """Rerun after remote revision apply — bypasses passive-receiver rerun budget."""
+    session["_live_draft_poll_apply_pending"] = True
+    allowed, reason = is_rerun_allowed(session, "poll_apply", room=room)
+    record_rerun_diagnostics(session, rerun_source="poll_apply", rerun_allowed=allowed, rerun_blocked_reason=reason or None)
+    try:
+        from live_draft_mp_diagnostics import record_poll_sync_trace
+
+        record_poll_sync_trace(
+            session,
+            rerun_requested_after_apply=allowed,
+            rerun_blocked_reason=reason or None,
+        )
+    except ImportError:
+        pass
+    if not allowed:
+        session.pop("_live_draft_poll_apply_pending", None)
+        return False
+    session["_live_draft_last_rerun_source"] = "poll_apply"
+    session.pop("_live_draft_poll_apply_pending", None)
+    st.rerun()
+    return True
 
 
 def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, room: dict[str, Any] | None = None) -> bool:

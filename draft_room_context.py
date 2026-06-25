@@ -7,6 +7,7 @@ queue/recommendation scope per participant.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from draft_room_participant_state import (
@@ -292,14 +293,44 @@ def sync_shared_draft_room(
 
     Returns True when the local runtime was updated from a newer remote revision.
     """
+    try:
+        from live_draft_mp_diagnostics import _last_pick_info, _on_clock_team, _pick_count, record_poll_sync_trace
+    except ImportError:
+        record_poll_sync_trace = None  # type: ignore[assignment,misc]
+
+    def _trace(**fields: Any) -> None:
+        if record_poll_sync_trace is not None:
+            record_poll_sync_trace(session, **fields)
+
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     if not room_code:
+        _trace(last_poll_result="skipped_no_room_code", poll_skipped_reason="no_room_code")
         return False
     if not force and session.get(_SHARED_DRAFT_SYNC_RUN_KEY):
+        _trace(last_poll_result="skipped_sync_gate", poll_skipped_reason="sync_gate_already_ran")
         return False
+
+    poll_started = time.time()
+    _trace(last_poll_started_at=poll_started, room_code=room_code)
 
     backend = store or get_shared_room_store()
     local_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        local_room = session.get(LIVE_DRAFT_ROOM_KEY)
+    except ImportError:
+        LIVE_DRAFT_ROOM_KEY = "live_draft_room"  # type: ignore[misc]
+        local_room = session.get("live_draft_room")
+
+    if isinstance(local_room, dict):
+        _trace(
+            local_revision=local_rev,
+            local_current_pick_index=local_room.get("current_pick_index"),
+            local_pick_count=_pick_count(local_room) if record_poll_sync_trace else len(local_room.get("draft_board") or []),
+            local_on_clock_team=_on_clock_team(local_room) if record_poll_sync_trace else "",
+            room_id=str(local_room.get("draft_room_id") or ""),
+        )
 
     if not force:
         load_head = getattr(backend, "load_head", None)
@@ -307,28 +338,83 @@ def sync_shared_draft_room(
             head = load_head(room_code)
             if isinstance(head, dict):
                 remote_rev = int(head.get("revision") or 0)
+                _trace(remote_revision=remote_rev, last_seen_remote_revision=remote_rev)
                 if remote_rev <= local_rev:
                     session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
+                    _trace(
+                        last_poll_finished_at=time.time(),
+                        last_poll_result="no_change_head",
+                        poll_skipped_reason="remote_rev_not_newer",
+                    )
                     return False
 
     document = backend.load(room_code)
     session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
     if not isinstance(document, dict):
+        _trace(
+            last_poll_finished_at=time.time(),
+            last_poll_result="load_failed",
+            poll_skipped_reason="document_missing",
+            last_apply_error="shared room document not found",
+        )
         return False
     remote_rev = int(document.get("revision") or 0)
-    if session.get("_live_draft_manual_pick_in_flight"):
-        return False
-    try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_live_draft_locally_dirty, live_draft_board_len, runtime_room_ahead_of_blob
+    remote_blob = shared_document_room_blob(document)
+    remote_player, remote_team, remote_pid = ("", "", "")
+    if record_poll_sync_trace is not None:
+        remote_player, remote_team, remote_pid = _last_pick_info(remote_blob if isinstance(remote_blob, dict) else None)
+    _trace(
+        remote_revision=remote_rev,
+        last_seen_remote_revision=remote_rev,
+        remote_room_status=str((remote_blob or {}).get("status") or document.get("status") or ""),
+        remote_current_pick_index=(remote_blob or {}).get("current_pick_index") if isinstance(remote_blob, dict) else None,
+        remote_pick_count=_pick_count(remote_blob) if isinstance(remote_blob, dict) and record_poll_sync_trace else None,
+        remote_on_clock_team=_on_clock_team(remote_blob) if isinstance(remote_blob, dict) and record_poll_sync_trace else "",
+        last_remote_pick_player=remote_player or None,
+        last_remote_pick_team=remote_team or None,
+        last_remote_pick_id=remote_pid or None,
+    )
 
-        runtime = session.get(LIVE_DRAFT_ROOM_KEY)
-        remote_blob = shared_document_room_blob(document)
-        if is_live_draft_locally_dirty(session) and isinstance(runtime, dict) and isinstance(remote_blob, dict):
-            if runtime_room_ahead_of_blob(runtime, remote_blob):
+    if session.get("_live_draft_manual_pick_in_flight"):
+        _trace(
+            last_poll_finished_at=time.time(),
+            last_poll_result="skipped_manual_pick_in_flight",
+            poll_skipped_reason="manual_pick_in_flight",
+        )
+        return False
+
+    remote_is_newer = remote_rev > local_rev
+    if not remote_is_newer and not force:
+        _trace(
+            last_poll_finished_at=time.time(),
+            last_poll_result="no_change",
+            poll_skipped_reason="remote_rev_not_newer",
+            remote_revision_applied=False,
+        )
+        return False
+
+    if not remote_is_newer:
+        try:
+            from live_draft_state import is_live_draft_locally_dirty, runtime_room_ahead_of_blob
+
+            runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+            if (
+                is_live_draft_locally_dirty(session)
+                and isinstance(runtime, dict)
+                and isinstance(remote_blob, dict)
+                and runtime_room_ahead_of_blob(runtime, remote_blob)
+            ):
+                _trace(
+                    last_poll_finished_at=time.time(),
+                    last_poll_result="skipped_dirty_local_ahead",
+                    poll_skipped_reason="dirty_local_ahead",
+                    remote_revision_applied=False,
+                )
                 return False
-    except ImportError:
-        pass
-    if force or remote_rev > local_rev:
+        except ImportError:
+            pass
+
+    try:
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
         try:
             from live_draft_state import clear_live_draft_local_edit
@@ -337,10 +423,16 @@ def sync_shared_draft_room(
         except ImportError:
             pass
         load_participant_workflow_into_session(session, room_code)
+        runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+        try:
+            from live_draft_safe_mode import reset_poll_rerun_budget
+
+            reset_poll_rerun_budget(session)
+        except ImportError:
+            pass
         try:
             from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
 
-            runtime = session.get(LIVE_DRAFT_ROOM_KEY)
             record_multiplayer_sync_diagnostics(
                 session,
                 room=runtime if isinstance(runtime, dict) else None,
@@ -367,8 +459,26 @@ def sync_shared_draft_room(
             )
         except ImportError:
             pass
+        _trace(
+            last_poll_finished_at=time.time(),
+            last_poll_result="applied",
+            poll_skipped_reason="",
+            remote_revision_applied=True,
+            local_revision=remote_rev,
+            local_current_pick_index=runtime.get("current_pick_index") if isinstance(runtime, dict) else None,
+            local_pick_count=_pick_count(runtime) if isinstance(runtime, dict) and record_poll_sync_trace else None,
+            local_on_clock_team=_on_clock_team(runtime) if isinstance(runtime, dict) and record_poll_sync_trace else "",
+        )
         return True
-    return False
+    except Exception as exc:
+        _trace(
+            last_poll_finished_at=time.time(),
+            last_poll_result="apply_failed",
+            poll_skipped_reason="apply_exception",
+            remote_revision_applied=False,
+            last_apply_error=str(exc),
+        )
+        return False
 
 
 def poll_shared_draft_room(
