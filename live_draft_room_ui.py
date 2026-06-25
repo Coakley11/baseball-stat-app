@@ -474,7 +474,18 @@ def render_live_draft_room_header(
             role = "Host"
 
     teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+    ownership_lines: list[str] = []
+    try:
+        from live_draft_team_ownership import format_team_ownership_html, team_claim_rows
+
+        ownership_lines = [format_team_ownership_html(r) for r in team_claim_rows(session, room)]
+    except ImportError:
+        ownership_lines = []
     teams_txt = ", ".join(teams) if teams else "—"
+    if ownership_lines:
+        teams_block = "<br/>".join(f"· {line}" for line in ownership_lines)
+    else:
+        teams_block = teams_txt
     live_badge = " · **Live**" if draft_in_progress else ""
     status_txt = str(status_label or room.get("status") or "—").replace("_", " ").title()
 
@@ -512,7 +523,7 @@ def render_live_draft_room_header(
                 <strong>Status:</strong> {status_txt}{live_badge} ·
                 <strong>{pick_label or "Pick"}</strong> ·
                 <strong>On clock:</strong> {on_clock_team or "—"}<br/>
-                <strong>Teams:</strong> {teams_txt}
+                <strong>Teams:</strong><br/>{teams_block}
             </div>
         </div>
         """,

@@ -342,8 +342,6 @@ def resolve_join_team_assignment(
     requested_team: str | None = None,
 ) -> tuple[str | None, str]:
     """Pick or restore team for join; return (team, error_message)."""
-    from draft_room_participant_state import assign_team_for_join
-
     pid = str(participant_id or "").strip()
     participants = dict(document.get("participants") or {})
     existing = participants.get(pid)
@@ -373,11 +371,12 @@ def resolve_join_team_assignment(
             return None, ERR_TEAM_ALREADY_ASSIGNED
         if req in teams and req not in taken_by_other:
             return req, ""
+        return None, f"Team **{req}** is not available in this room."
 
-    assigned = assign_team_for_join(document, requested_team=requested_team)
-    if not assigned:
+    open_teams = [t for t in teams if t not in taken_by_other]
+    if not open_teams:
         return None, "No open team slots in this room."
-    return assigned, ""
+    return None, "Choose a team before joining — teams are never assigned automatically."
 
 
 def sync_membership_from_document(

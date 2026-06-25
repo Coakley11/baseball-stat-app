@@ -18360,7 +18360,7 @@ if active_page == "Live Draft Room":
                     on_click=on_cancel_simulator_convert_panel,
                 )
 
-    elif room is None or room.get("status") == "not_started":
+    elif room is None:
         with st.expander("Draft Setup / Configuration", expanded=True):
             try:
                 from live_draft_setup_ui import (
@@ -18549,6 +18549,85 @@ if active_page == "Live Draft Room":
                 )
         except ImportError:
             _reconcile = None
+        try:
+            from live_draft_setup_mode import is_shared_lobby, is_shared_multiplayer_intent, setup_is_read_only
+            from live_draft_setup_ui import (
+                _is_room_host,
+                render_draft_information_panel,
+                render_shared_draft_ready_card,
+            )
+            from draft_ui import on_start_new_live_draft
+
+            _lobby_flash = st.session_state.pop("_draft_join_flash", None)
+            if _lobby_flash:
+                st.success(str(_lobby_flash))
+            _lobby_err = st.session_state.pop("_draft_join_error", None)
+            if _lobby_err:
+                st.error(str(_lobby_err))
+            if st.session_state.pop("_live_draft_lobby_left", False):
+                st.success("Left shared draft room.")
+                st.rerun()
+            if st.session_state.pop("_live_draft_lobby_refresh", False):
+                st.rerun()
+
+            if is_shared_multiplayer_intent(st.session_state, room=room):
+                _lobby_slot = live_draft_current_slot(room)
+                _lobby_pick_order = room.get("pick_order") or []
+                _lobby_total = len(_lobby_pick_order)
+                _lobby_done = len(room.get("draft_board") or [])
+                _lobby_on_clock = (
+                    str(_lobby_slot.get("Team") or "—") if isinstance(_lobby_slot, dict) else "—"
+                )
+                _lobby_pick = (
+                    f"Pick {min(_lobby_done + 1, _lobby_total) if _lobby_total else 0} / {_lobby_total}"
+                )
+                if is_shared_lobby(st.session_state, room=room):
+                    render_shared_draft_ready_card(
+                        st,
+                        st.session_state,
+                        room,
+                        on_start=on_start_new_live_draft,
+                    )
+                    render_draft_information_panel(
+                        st,
+                        st.session_state,
+                        room,
+                        on_clock_team=_lobby_on_clock,
+                        pick_label=_lobby_pick,
+                    )
+                    if _is_room_host(st.session_state) and not setup_is_read_only(room):
+                        with st.expander("Edit Draft Setup (host only)", expanded=False):
+                            st.caption(
+                                "Adjust team names before the first pick. Setup becomes read-only once picking begins."
+                            )
+                            lobby_teams = [str(t) for t in (room.get("teams") or [])]
+                            updated: list[str] = []
+                            for i, tname in enumerate(lobby_teams):
+                                updated.append(
+                                    st.text_input(
+                                        f"Team {i + 1}",
+                                        value=tname,
+                                        key=f"live_draft_lobby_team_{i}",
+                                    )
+                                )
+                            if st.button("Save setup changes", key="live_draft_lobby_save_setup"):
+                                room["teams"] = updated
+                                cfg_patch = dict(room.get("config") or {})
+                                cfg_patch["teams"] = updated
+                                room["config"] = cfg_patch
+                                st.session_state["live_draft_room"] = room
+                                try:
+                                    from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
+
+                                    if is_multiplayer_draft_active(st.session_state):
+                                        commit_shared_room_state(st.session_state, room)
+                                except ImportError:
+                                    pass
+                                st.rerun()
+                    elif setup_is_read_only(room):
+                        st.caption("Draft setup is read-only after the first pick.")
+        except ImportError:
+            pass
         cfg = room.get("config", {})
         slot = live_draft_current_slot(room)
         if slot is None and _reconcile is not None and _reconcile.manual_recovery_available:
@@ -18648,54 +18727,67 @@ if active_page == "Live Draft Room":
                 room_label = "Draft room (single session)"
         else:
             room_label = "Single-user draft"
-        st.caption(
-            f"**{cfg.get('league_name', 'League')}** · {room_label} · "
-            f"Your team: **{user_team}** · "
-            f"Status: **{str(_derived_status or room.get('status', '')).replace('_', ' ').title()}** · "
-            f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} of {total_picks}"
-        )
+        _shared_lobby_view = False
+        try:
+            from live_draft_setup_mode import is_shared_lobby, is_shared_multiplayer_intent
+
+            _shared_lobby_view = bool(
+                is_shared_multiplayer_intent(st.session_state, room=room)
+                and is_shared_lobby(st.session_state, room=room)
+            )
+        except ImportError:
+            pass
+        if not _shared_lobby_view:
+            st.caption(
+                f"**{cfg.get('league_name', 'League')}** · {room_label} · "
+                f"Your team: **{user_team}** · "
+                f"Status: **{str(_derived_status or room.get('status', '')).replace('_', ' ').title()}** · "
+                f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} of {total_picks}"
+            )
         on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
         round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
         pick_label = f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} / {total_picks}"
         _status_label = str(_derived_status or room.get("status", "")).replace("_", " ").title()
-        try:
-            from live_draft_room_ui import render_live_draft_room_header
-
-            render_live_draft_room_header(
-                st,
-                st.session_state,
-                room,
-                multiplayer=_multiplayer_draft,
-                user_team=user_team,
-                on_clock_team=on_clock_team,
-                pick_label=pick_label,
-                status_label=_status_label,
-                draft_in_progress=_draft_in_progress,
-            )
-        except ImportError:
+        if not _shared_lobby_view:
             try:
-                from live_draft_room_ui import render_live_draft_room_code_header
+                from live_draft_room_ui import render_live_draft_room_header
 
-                render_live_draft_room_code_header(st, st.session_state, multiplayer=_multiplayer_draft)
+                render_live_draft_room_header(
+                    st,
+                    st.session_state,
+                    room,
+                    multiplayer=_multiplayer_draft,
+                    user_team=user_team,
+                    on_clock_team=on_clock_team,
+                    pick_label=pick_label,
+                    status_label=_status_label,
+                    draft_in_progress=_draft_in_progress,
+                )
             except ImportError:
-                if _multiplayer_draft:
-                    sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
-                    if sc:
-                        st.markdown(f"**Room Code:** `{sc}`")
-                    else:
-                        st.warning("Room code missing — shared draft may not be joinable.")
-        try:
-            from live_draft_room_ui import render_live_draft_status_badges
+                try:
+                    from live_draft_room_ui import render_live_draft_room_code_header
 
-            render_live_draft_status_badges(
-                st,
-                pick_label=pick_label,
-                round_no=round_no,
-                on_clock_team=on_clock_team,
-                live=_draft_in_progress,
-            )
-        except ImportError:
-            pass
+                    render_live_draft_room_code_header(st, st.session_state, multiplayer=_multiplayer_draft)
+                except ImportError:
+                    if _multiplayer_draft:
+                        sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+                        if sc:
+                            st.markdown(f"**Room Code:** `{sc}`")
+                        else:
+                            st.warning("Room code missing — shared draft may not be joinable.")
+        if not _shared_lobby_view:
+            try:
+                from live_draft_room_ui import render_live_draft_status_badges
+
+                render_live_draft_status_badges(
+                    st,
+                    pick_label=pick_label,
+                    round_no=round_no,
+                    on_clock_team=on_clock_team,
+                    live=_draft_in_progress,
+                )
+            except ImportError:
+                pass
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         st.markdown('<div class="ld-controls-title">Draft control center</div>', unsafe_allow_html=True)

@@ -181,7 +181,7 @@ class MultiplayerDraftAcceptanceTests(unittest.TestCase):
 
     def test_membership_persists_after_clearing_active_code(self) -> None:
         code = self._bootstrap_host_room()
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         team_before = self.guest_session.get(ACTIVE_PARTICIPANT_TEAM_KEY)
 
         self.guest_session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
@@ -199,7 +199,7 @@ class MultiplayerDraftAcceptanceTests(unittest.TestCase):
 
     def test_guest_cannot_reset_or_close_room(self) -> None:
         code = self._bootstrap_host_room()
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.guest_session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
 
         ok_close, msg_close = close_shared_draft_room(self.guest_session, store=self.store)

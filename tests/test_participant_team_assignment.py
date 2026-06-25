@@ -72,7 +72,7 @@ class ParticipantTeamAssignmentTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
     def test_ensure_restores_team_from_registry(self, _mock_auth: object, _mock_enabled: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        ok, msg, doc = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, doc = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self._simulate_cloud_restore_skipping_mp_scoped(self.guest_session)
         team, fail = ensure_participant_team_assigned(self.guest_session, room_code=code, document=doc)
@@ -84,7 +84,7 @@ class ParticipantTeamAssignmentTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
     def test_assignment_diagnostics_fields(self, _mock_auth: object, _mock_enabled: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         diag = build_participant_assignment_diagnostics(self.guest_session, source="test")
         self.assertEqual(diag.get("room_code"), code)
         self.assertEqual(diag.get("participant_id"), "auth-guest-uuid")
@@ -96,7 +96,7 @@ class ParticipantTeamAssignmentTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=True)
     def test_prepare_global_restores_guest_team_after_restore(self, _mock_auth: object, _mock_enabled: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self._simulate_cloud_restore_skipping_mp_scoped(self.guest_session)
         self.assertEqual(self.guest_session.get("active_shared_draft_room_code"), code)

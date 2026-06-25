@@ -109,7 +109,7 @@ class SharedRoomCreateTests(unittest.TestCase):
         room = _sample_room()
         code, _ = finalize_shared_room_create(session, room, host_team="Danny", store=self.store)
         guest = {"draft_room_participant_id": "guest-user"}
-        ok, msg, _ = join_shared_draft_room(guest, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(guest, code, requested_team="Amiel", store=self.store)
         self.assertTrue(ok, msg)
         self.assertEqual(shared_room_code(guest), code)
 

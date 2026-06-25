@@ -324,7 +324,7 @@ class RecCardRemotePollTests(unittest.TestCase):
 
         room = _sample_room()
         code, _ = create_and_host_shared_room(self.host, room, store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
 
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]
         row = host_room["pool"].iloc[0].to_dict()

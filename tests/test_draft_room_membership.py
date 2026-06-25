@@ -95,14 +95,14 @@ class DraftRoomMembershipTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_second_user_joins_team_2(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_different_auth_users_receive_different_teams(self, _mock_auth: object) -> None:
         code, doc = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        ok, msg, joined = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, joined = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self.assertIsInstance(joined, dict)
         participants = dict(joined.get("participants") or {})
@@ -116,7 +116,7 @@ class DraftRoomMembershipTests(unittest.TestCase):
     def test_guest_team_survives_shared_workspace_host_membership_blob(self, _mock_auth: object) -> None:
         """Regression: shared daniel workspace must not overwrite guest team with host team."""
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.guest_session.pop("draft_room_participant_team", None)
         self.guest_session["room_your_team"] = "Team 1"
         self.guest_session[MEMBERSHIP_KEY] = {
@@ -139,7 +139,7 @@ class DraftRoomMembershipTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_legacy_host_only_membership_does_not_assign_guest_host_team(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.guest_session.pop("draft_room_participant_team", None)
         self.guest_session[MEMBERSHIP_KEY] = {
             code: {
@@ -156,16 +156,16 @@ class DraftRoomMembershipTests(unittest.TestCase):
 
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
         self.guest_session[DRAFT_QUEUE_KEY] = ["Aaron Judge", "Juan Soto"]
-        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self.assertEqual(self.guest_session.get(DRAFT_QUEUE_KEY), [])
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_rejoin_restores_same_team(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.guest_session["draft_room_participant_team"] = "Team 99"
-        ok, _, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, _, _ = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok)
         self.assertEqual(self.guest_session.get("draft_room_participant_team"), "Team 2")
 
@@ -186,7 +186,7 @@ class DraftRoomMembershipTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_guest_cannot_reset_room(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.guest_session["active_shared_draft_room_code"] = code
         ok, msg = close_shared_draft_room(self.guest_session, store=self.store)
         self.assertFalse(ok)
@@ -203,7 +203,7 @@ class DraftRoomMembershipTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_cannot_draft_for_other_team(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         prepare_global_draft_context(self.guest_session)
         room = self.guest_session["live_draft_room"]
         ok, msg = validate_shared_pick_commit(self.guest_session, room, "Aaron Judge")
@@ -233,7 +233,7 @@ class DraftRoomMembershipTests(unittest.TestCase):
             self.assertEqual(resolve_participant_id(guest), "auth-guest-uuid")
             self.assertNotIn(ACTIVE_PARTICIPANT_ID_KEY, guest)
             code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-            ok, msg, _ = join_shared_draft_room(guest, code, store=self.store)
+            ok, msg, _ = join_shared_draft_room(guest, code, requested_team="Team 2", store=self.store)
             self.assertTrue(ok, msg)
         guest["active_shared_draft_room_code"] = code
         with patch("suite_auth.is_auth_enabled", return_value=True), patch(
@@ -257,7 +257,7 @@ class DraftRoomMembershipTests(unittest.TestCase):
         self.guest_session[AUTH_SESSION_KEY] = True
 
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self.guest_session.pop(MEMBERSHIP_KEY, None)
         self.guest_session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)

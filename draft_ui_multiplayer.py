@@ -100,6 +100,15 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         return False
 
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    try:
+        from live_draft_setup_mode import should_hide_legacy_shared_panel
+
+        if should_hide_legacy_shared_panel(session, room if isinstance(room, dict) else None):
+            return False
+    except ImportError:
+        pass
+
     if is_solo_draft_mode(session) and not is_multiplayer_draft_active(session):
         return False
 
@@ -284,16 +293,39 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                             )
                     return True
         with col_join:
-            with st.form("shared_draft_join_form", clear_on_submit=False):
-                join_input = st.text_input(
-                    "Draft Room Code",
-                    placeholder="ABC123",
-                    help="Enter the 6-character Draft Room Code from your host.",
+            join_code_val = st.text_input(
+                "Draft Room Code",
+                key="shared_draft_join_code_legacy",
+                placeholder="ABC123",
+                help="Enter the 6-character Draft Room Code from your host.",
+            )
+            code = str(join_code_val or "").strip().upper()
+            open_teams: list[str] = []
+            if len(code) >= 6:
+                try:
+                    from live_draft_team_ownership import lookup_open_teams_for_code
+
+                    open_teams, lookup_err = lookup_open_teams_for_code(code)
+                    if lookup_err:
+                        st.caption(f"⚠ {lookup_err}")
+                except ImportError:
+                    lookup_err = ""
+            requested_team = ""
+            if open_teams:
+                requested_team = st.selectbox(
+                    "Choose your team",
+                    open_teams,
+                    key="shared_draft_join_team_pick",
                 )
-                submitted = st.form_submit_button("Join Room by Code", type="primary")
-            if submitted:
-                trace_join_step(session, "join_button_clicked", room_code_entered=str(join_input or "").strip().upper() or None)
-                ok, msg, _ = join_shared_draft_room(session, join_input)
+            if st.button("Join Room by Code", key="shared_draft_join_btn", type="primary"):
+                trace_join_step(session, "join_button_clicked", room_code_entered=code or None)
+                if not code:
+                    session["_draft_join_error"] = "Enter a 6-character draft room code."
+                    return True
+                if not requested_team:
+                    session["_draft_join_error"] = "Choose a team before joining."
+                    return True
+                ok, msg, _ = join_shared_draft_room(session, code, requested_team=requested_team)
                 if ok:
                     _finalize_successful_join(session, msg)
                     render_join_assignment_diagnostics(st, session)

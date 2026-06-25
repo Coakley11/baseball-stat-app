@@ -87,7 +87,7 @@ class DraftRoomContextTests(unittest.TestCase):
             store=self.store,
         )
 
-        ok, msg, joined = join_shared_draft_room(guest_session, room_code, store=self.store)
+        ok, msg, joined = join_shared_draft_room(guest_session, room_code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self.assertIsNotNone(joined)
         self.assertEqual(guest_session.get("draft_room_participant_team"), "Team 2")
@@ -112,7 +112,7 @@ class DraftRoomContextTests(unittest.TestCase):
         host["draft_queue"] = ["Aaron Judge"]
         save_participant_workflow_from_session(host, room_code)
 
-        join_shared_draft_room(guest, room_code, store=self.store)
+        join_shared_draft_room(guest, room_code, requested_team="Team 2", store=self.store)
         guest["draft_queue"] = ["Juan Soto"]
         save_participant_workflow_from_session(guest, room_code)
 

@@ -79,7 +79,7 @@ class MultiplayerPollPropagationTests(unittest.TestCase):
     @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_guest_applies_remote_pick_on_poll(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
 
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]
@@ -101,7 +101,7 @@ class MultiplayerPollPropagationTests(unittest.TestCase):
     @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_on_clock_team_updates_after_remote_pick(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]
         live_draft_make_pick(host_room, host_room["pool"].iloc[0].to_dict(), verdict="pick")
         persist_applied_pick(self.host, host_room, source="manual_pick")
@@ -116,7 +116,7 @@ class MultiplayerPollPropagationTests(unittest.TestCase):
     @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_timer_deadline_syncs_on_poll(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]
         live_draft_reset_timer(host_room)
         deadline = float(host_room["timer_deadline"])
@@ -177,7 +177,7 @@ class ReceiverPollApplyTests(unittest.TestCase):
     @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_host_applies_guest_pick_three_on_poll(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(teams=["Daniel", "Amiel"]), store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Amiel", store=self.store)
         self._remote_doc_with_three_picks(code)
         self._stale_host_at_two_picks(code)
         self.assertEqual(len(self.host[LIVE_DRAFT_ROOM_KEY].get("draft_board") or []), 2)
@@ -205,7 +205,7 @@ class ReceiverPollApplyTests(unittest.TestCase):
             ),
             store=self.store,
         )
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Amiel", store=self.store)
         self._remote_doc_with_three_picks(code)
         self._stale_host_at_two_picks(code)
         poll_shared_draft_room(self.host, store=self.store)
@@ -218,7 +218,7 @@ class ReceiverPollApplyTests(unittest.TestCase):
         from live_draft_state import mark_live_draft_local_edit
 
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(teams=["Daniel", "Amiel"]), store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Amiel", store=self.store)
         self._remote_doc_with_three_picks(code)
         self._stale_host_at_two_picks(code)
         mark_live_draft_local_edit(self.host)
@@ -233,7 +233,7 @@ class ReceiverPollApplyTests(unittest.TestCase):
         from live_draft_safe_mode import is_rerun_allowed, request_poll_apply_rerun
 
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         self._remote_doc_with_three_picks(code)
         self._stale_host_at_two_picks(code)
         self.host["_live_draft_rerun_count"] = 20
@@ -263,7 +263,7 @@ class ReceiverPollApplyTests(unittest.TestCase):
     def test_host_autopicks_at_zero_and_guest_receives(self, _auth: object) -> None:
         room = _sample_live_room(timer_deadline=time.time() - 1)
         code, _ = create_and_host_shared_room(self.host, room, store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]
         host_room["timer_deadline"] = time.time() - 1
 
@@ -281,7 +281,7 @@ class ReceiverPollApplyTests(unittest.TestCase):
     def test_guest_does_not_autopick(self, _auth: object) -> None:
         room = _sample_live_room(timer_deadline=time.time() - 1)
         code, _ = create_and_host_shared_room(self.host, room, store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         guest_room = self.guest[LIVE_DRAFT_ROOM_KEY]
         guest_room["timer_deadline"] = time.time() - 1
         result = run_expired_autopick_once(self.guest, guest_room, source="test_autopick")

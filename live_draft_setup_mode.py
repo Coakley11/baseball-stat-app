@@ -147,6 +147,35 @@ def start_prepared_shared_room(session: dict[str, Any], st_obj: Any) -> dict[str
     return result
 
 
+def setup_is_read_only(room: dict[str, Any]) -> bool:
+    """After the first pick, draft setup cannot be edited."""
+    board = room.get("draft_board") or []
+    return bool(isinstance(board, list) and len(board) > 0)
+
+
+def is_shared_lobby(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return False
+    return is_shared_multiplayer_intent(session, room=live) and str(live.get("status") or "") == "not_started"
+
+
+def should_show_full_draft_setup(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
+    """Full setup panel only before any live draft room exists."""
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    return not isinstance(live, dict)
+
+
+def should_hide_legacy_shared_panel(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
+    """Compact lobby/live UI replaces the legacy top shared panel when a room code exists."""
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return False
+    if is_shared_multiplayer_intent(session, room=live) and shared_room_code(session):
+        return True
+    return False
+
+
 def finalize_shared_room_create(
     session: dict[str, Any],
     room: dict[str, Any],
