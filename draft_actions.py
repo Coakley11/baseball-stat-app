@@ -50,6 +50,92 @@ def _your_team(session: dict[str, Any], *, live_room: dict[str, Any] | None = No
     return str(session.get("room_your_team") or "").strip()
 
 
+def compute_draft_turn_enabled(ctx: dict[str, Any]) -> bool:
+    """Same turn gate as page-level draft_button_diagnostics (no player selected)."""
+    return bool(
+        ctx.get("is_your_pick")
+        and str(ctx.get("your_team") or "").strip()
+        and str(ctx.get("draft_status") or "") not in ("", "not_started")
+        and not ctx.get("draft_complete")
+    )
+
+
+def resolve_manual_draft_panel_gate(
+    session: dict[str, Any],
+    ctx: dict[str, Any] | None = None,
+    *,
+    multiplayer: bool = False,
+    room: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Turn/progress gate for Live Draft Manual Draft panel — aligned with page diagnostics."""
+    if ctx is None:
+        ctx = draft_action_context(session)
+
+    your_team = str(ctx.get("your_team") or "").strip()
+    on_clock_team = str(ctx.get("on_clock_team") or "").strip()
+    draft_status = str(ctx.get("draft_status") or "").strip()
+    participant_team = ""
+    assigned_team = your_team
+    if multiplayer:
+        try:
+            from draft_room_context import active_participant_team
+
+            participant_team = str(active_participant_team(session) or "").strip()
+            if participant_team:
+                assigned_team = participant_team
+        except ImportError:
+            pass
+
+    live_room = room if isinstance(room, dict) else session.get("live_draft_room")
+    current_pick_index = ctx.get("current_pick_index")
+    if isinstance(live_room, dict) and current_pick_index is None:
+        try:
+            current_pick_index = int(live_room.get("current_pick_index"))
+        except (TypeError, ValueError):
+            current_pick_index = live_room.get("current_pick_index")
+
+    draft_enabled = compute_draft_turn_enabled(ctx)
+    should_render = draft_enabled
+
+    disable_reason = ""
+    if not should_render:
+        if multiplayer and not participant_team:
+            disable_reason = "multiplayer_assignment_missing"
+        elif not assigned_team and not your_team:
+            disable_reason = "missing_assigned_team"
+        elif draft_status in ("", "not_started") or ctx.get("draft_complete"):
+            disable_reason = "draft_not_in_progress"
+        elif not ctx.get("is_your_pick"):
+            if assigned_team and on_clock_team and assigned_team != on_clock_team:
+                disable_reason = "turn_team_mismatch"
+            elif your_team and on_clock_team and your_team != on_clock_team:
+                disable_reason = "turn_team_mismatch"
+            else:
+                disable_reason = "not_your_turn"
+        else:
+            disable_reason = "draft_not_in_progress"
+
+    return {
+        "draft_enabled": draft_enabled,
+        "draft_button_should_render": should_render,
+        "is_my_turn": bool(ctx.get("is_your_pick")),
+        "is_your_pick": bool(ctx.get("is_your_pick")),
+        "draft_status": draft_status or None,
+        "on_clock_team": on_clock_team or None,
+        "your_team": your_team or None,
+        "assigned_team": assigned_team or None,
+        "participant_team": participant_team or None,
+        "current_pick": ctx.get("current_pick"),
+        "current_pick_index": current_pick_index,
+        "total_picks": int(ctx.get("total_picks") or 0),
+        "multiplayer_mode": bool(multiplayer),
+        "draft_button_disable_reason": disable_reason or None,
+        "draft_complete": bool(ctx.get("draft_complete")),
+        "draft_complete_reason": ctx.get("draft_complete_reason") or None,
+        "live_draft_active": bool(ctx.get("live_draft_active")),
+    }
+
+
 def _next_on_clock_pick_info(table: Any) -> dict[str, Any] | None:
     """First open pick row on the board (overall on-clock slot)."""
     try:
@@ -224,6 +310,7 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                 ctx["current_pick"] = progress.get("current_pick")
                 ctx["on_clock_team"] = progress.get("on_clock_team") or ""
                 ctx["total_picks"] = int(progress.get("total_picks") or 0)
+                ctx["current_pick_index"] = progress.get("current_pick_index")
                 if not progress.get("draft_complete"):
                     live_room = room
         except ImportError:
@@ -234,6 +321,7 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
         ctx["is_your_pick"] = bool(
             your_team and ctx.get("on_clock_team") and your_team == ctx["on_clock_team"]
         )
+        ctx["draft_enabled"] = compute_draft_turn_enabled(ctx)
         return ctx
 
     your_team = _your_team(session)
@@ -250,6 +338,7 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
         ctx["is_your_pick"] = bool(
             your_team and ctx["on_clock_team"] and your_team == ctx["on_clock_team"]
         )
+    ctx["draft_enabled"] = compute_draft_turn_enabled(ctx)
     return ctx
 
 
@@ -335,14 +424,7 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
         "is_your_pick": ctx.get("is_your_pick"),
         "commissioner_mode": commissioner_mode,
         "player_source_valid": player_source_valid,
-        "draft_enabled": allowed
-        if name
-        else bool(
-            ctx.get("is_your_pick")
-            and ctx.get("your_team")
-            and str(ctx.get("draft_status") or "") not in ("", "not_started")
-            and not ctx.get("draft_complete")
-        ),
+        "draft_enabled": allowed if name else compute_draft_turn_enabled(ctx),
         "disable_reason": disable_reason or (None if allowed else _classify_disable_reason(reason)),
         "reason_if_disabled": None if allowed else (reason or "Cannot draft"),
         "sample_player_allowed": allowed if name else None,

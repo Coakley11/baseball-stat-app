@@ -380,6 +380,18 @@ def render_live_manual_draft_diagnostics(st: Any, session: dict[str, Any], *, de
             ("filtered_player_count", raw.get("filtered_player_count")),
             ("candidate_count", raw.get("candidate_count")),
             ("selected_player", raw.get("selected_player")),
+            ("draft_enabled", raw.get("draft_enabled")),
+            ("is_my_turn", raw.get("is_my_turn")),
+            ("is_your_pick", raw.get("is_your_pick")),
+            ("draft_status", raw.get("draft_status")),
+            ("on_clock_team", raw.get("on_clock_team")),
+            ("your_team", raw.get("your_team")),
+            ("assigned_team", raw.get("assigned_team")),
+            ("participant_team", raw.get("participant_team")),
+            ("current_pick", raw.get("current_pick")),
+            ("current_pick_index", raw.get("current_pick_index")),
+            ("total_picks", raw.get("total_picks")),
+            ("multiplayer_mode", raw.get("multiplayer_mode")),
             ("draft_button_should_render", raw.get("draft_button_should_render")),
             ("draft_button_rendered", raw.get("draft_button_rendered")),
             ("draft_button_enabled", raw.get("draft_button_enabled")),
@@ -420,26 +432,22 @@ def render_live_manual_draft_panel(
 
     Returns True when caller should rerun.
     """
-    from draft_actions import draft_action_context
+    from draft_actions import draft_action_context, resolve_manual_draft_panel_gate
 
     ctx = draft_action_context(session)
+    gate = resolve_manual_draft_panel_gate(session, ctx, multiplayer=multiplayer, room=room)
     render_path = "live_draft_room"
-    should_render = bool(
-        ctx.get("draft_enabled")
-        and ctx.get("is_your_pick")
-        and str(ctx.get("draft_status") or "") == "in_progress"
-    )
+    should_render = bool(gate.get("draft_button_should_render"))
+    turn_disable_reason = str(gate.get("draft_button_disable_reason") or "").strip()
     diag_base: dict[str, Any] = {
         "render_path": render_path,
-        "draft_button_should_render": should_render,
+        **gate,
         "draft_button_rendered": False,
         "draft_button_enabled": False,
-        "draft_button_disable_reason": "",
         "player_action_panel_rendered": True,
         "manual_draft_panel_skipped": False,
         "selected_player": "",
-        "draft_action_disable_reason": "",
-        "multiplayer_mode": multiplayer,
+        "draft_action_disable_reason": turn_disable_reason,
         "pool_source": "",
         "available_player_count": 0,
         "filtered_player_count": 0,
@@ -558,18 +566,6 @@ def render_live_manual_draft_panel(
             }
         )
 
-    if not should_render:
-        record_live_draft_ui_diagnostics(
-            session,
-            {
-                **diag_base,
-                "draft_action_disable_reason": "not_your_turn_or_not_in_progress",
-                "draft_button_disable_reason": "not_your_turn_or_not_in_progress",
-            },
-        )
-        render_live_manual_draft_diagnostics(st, session)
-        return False
-
     selected_player = st.selectbox(
         "Draft candidate",
         player_options,
@@ -579,14 +575,19 @@ def render_live_manual_draft_panel(
     diag_base["selected_player"] = str(selected_player or "")
 
     allowed, disable_reason = can_draft_player(session, str(selected_player or ""))
-    button_enabled = bool(allowed and not paused)
+    button_enabled = bool(should_render and allowed and not paused)
+    panel_disable_reason = turn_disable_reason
     if paused:
+        panel_disable_reason = panel_disable_reason or "draft_not_in_progress"
         disable_reason = disable_reason or "Draft is paused — resume to pick."
+    elif not should_render:
+        disable_reason = turn_disable_reason or "not_your_turn"
     elif not allowed:
         diag_base["draft_action_disable_reason"] = disable_reason
+        panel_disable_reason = disable_reason
 
     diag_base["draft_button_enabled"] = button_enabled
-    diag_base["draft_button_disable_reason"] = "" if button_enabled else (disable_reason or "cannot_draft")
+    diag_base["draft_button_disable_reason"] = "" if button_enabled else (panel_disable_reason or "cannot_draft")
 
     if render_draft_button(
         st,
@@ -596,8 +597,8 @@ def render_live_manual_draft_panel(
         key_suffix="live_manual",
         label="Draft Player",
         button_type="primary",
-        extra_disabled=paused or not allowed,
-        extra_disabled_reason=disable_reason if (paused or not allowed) else "",
+        extra_disabled=not button_enabled,
+        extra_disabled_reason=diag_base["draft_button_disable_reason"] if not button_enabled else "",
     ):
         record_live_draft_ui_diagnostics(session, {**diag_base, "draft_button_rendered": True})
         render_live_manual_draft_diagnostics(st, session)
