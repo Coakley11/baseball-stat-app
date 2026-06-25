@@ -84,10 +84,19 @@ def compute_draft_status(room: dict[str, Any]) -> tuple[str, str]:
 
 
 def is_draft_truly_complete(room: dict[str, Any]) -> bool:
+    """Derived completion only: board picks >= expected total."""
     total = total_expected_picks(room)
     if total <= 0:
-        return str(room.get("status") or "").strip() == "complete"
+        return False
     return _board_size(room) >= total
+
+
+def live_draft_is_in_progress(room: dict[str, Any]) -> bool:
+    """True while picks remain — ignores stale saved status flags."""
+    total = total_expected_picks(room)
+    if total <= 0:
+        return False
+    return _board_size(room) < total
 
 
 def record_safe_mode_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:

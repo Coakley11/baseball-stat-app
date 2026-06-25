@@ -52,10 +52,13 @@ def _your_team(session: dict[str, Any], *, live_room: dict[str, Any] | None = No
 
 def compute_draft_turn_enabled(ctx: dict[str, Any]) -> bool:
     """Same turn gate as page-level draft_button_diagnostics (no player selected)."""
+    draft_status = str(ctx.get("draft_status") or "").strip()
+    if draft_status == "in_progress":
+        return bool(ctx.get("is_your_pick") and str(ctx.get("your_team") or "").strip())
     return bool(
         ctx.get("is_your_pick")
         and str(ctx.get("your_team") or "").strip()
-        and str(ctx.get("draft_status") or "") not in ("", "not_started")
+        and draft_status not in ("", "not_started", "complete")
         and not ctx.get("draft_complete")
     )
 
@@ -94,16 +97,32 @@ def resolve_manual_draft_panel_gate(
         except (TypeError, ValueError):
             current_pick_index = live_room.get("current_pick_index")
 
-    draft_enabled = compute_draft_turn_enabled(ctx)
+    board_size = 0
+    room_total_picks = int(ctx.get("total_picks") or 0)
+    room_draft_complete = False
+    if isinstance(live_room, dict):
+        board_size = len(live_room.get("draft_board") or [])
+        try:
+            from live_draft_safe_mode import is_draft_truly_complete, total_expected_picks
+
+            room_total_picks = total_expected_picks(live_room)
+            room_draft_complete = is_draft_truly_complete(live_room)
+        except ImportError:
+            room_total_picks = len(live_room.get("pick_order") or [])
+            room_draft_complete = room_total_picks > 0 and board_size >= room_total_picks
+
+    draft_enabled = compute_draft_turn_enabled(ctx) and not room_draft_complete
     should_render = draft_enabled
 
     disable_reason = ""
     if not should_render:
-        if multiplayer and not participant_team:
+        if room_draft_complete:
+            disable_reason = "draft_complete"
+        elif multiplayer and not participant_team:
             disable_reason = "multiplayer_assignment_missing"
         elif not assigned_team and not your_team:
             disable_reason = "missing_assigned_team"
-        elif draft_status in ("", "not_started") or ctx.get("draft_complete"):
+        elif draft_status in ("", "not_started") or room_draft_complete:
             disable_reason = "draft_not_in_progress"
         elif not ctx.get("is_your_pick"):
             if assigned_team and on_clock_team and assigned_team != on_clock_team:
@@ -127,11 +146,11 @@ def resolve_manual_draft_panel_gate(
         "participant_team": participant_team or None,
         "current_pick": ctx.get("current_pick"),
         "current_pick_index": current_pick_index,
-        "total_picks": int(ctx.get("total_picks") or 0),
+        "total_picks": room_total_picks,
         "multiplayer_mode": bool(multiplayer),
         "draft_button_disable_reason": disable_reason or None,
-        "draft_complete": bool(ctx.get("draft_complete")),
-        "draft_complete_reason": ctx.get("draft_complete_reason") or None,
+        "draft_complete": room_draft_complete,
+        "draft_complete_reason": "board_full" if room_draft_complete else (ctx.get("draft_complete_reason") or None),
         "live_draft_active": bool(ctx.get("live_draft_active")),
     }
 
@@ -496,6 +515,17 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
     name = str(player_name or "").strip()
     if not name:
         return False, "Select a player first."
+
+    live_room = session.get("live_draft_room")
+    if isinstance(live_room, dict):
+        try:
+            from live_draft_safe_mode import is_draft_truly_complete, total_expected_picks
+
+            total = total_expected_picks(live_room)
+            if total > 0 and is_draft_truly_complete(live_room):
+                return False, "Draft is complete."
+        except ImportError:
+            pass
 
     ctx = draft_action_context(session)
     if ctx.get("draft_complete"):

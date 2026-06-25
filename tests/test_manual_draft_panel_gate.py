@@ -104,11 +104,17 @@ class RenderPanelGateAlignmentTests(unittest.TestCase):
         st = MagicMock()
         st.selectbox.return_value = "Aaron Judge"
         session: dict = {"room_your_team": "Team 2"}
-        render_live_manual_draft_panel(st, session, {"status": "in_progress"}, multiplayer=False)
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "config": {"your_team": "Team 2"},
+            "teams": ["Team 1", "Team 2"],
+            "pick_order": [{"Pick": 1, "Team": "Team 1"}, {"Pick": 2, "Team": "Team 2"}],
+            "draft_board": [],
+        }
+        render_live_manual_draft_panel(st, session, room, multiplayer=False)
         st.selectbox.assert_called()
-        diag = session.get("_live_draft_ui_diag") or {}
-        self.assertTrue(diag.get("draft_button_should_render"))
-        self.assertTrue(diag.get("draft_button_rendered"))
+        st.button.assert_called()
 
 
 if __name__ == "__main__":

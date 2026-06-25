@@ -379,13 +379,15 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
     total = len(pick_order)
 
     try:
-        from live_draft_safe_mode import compute_draft_status, total_expected_picks as _total_expected
+        from live_draft_safe_mode import compute_draft_status, is_draft_truly_complete, total_expected_picks as _total_expected
 
         if not total:
             total = _total_expected(room)
         status, _completion_source = compute_draft_status(room)
+        draft_complete = bool(total > 0 and is_draft_truly_complete(room))
     except ImportError:
         status = str(room.get("status") or "").strip()
+        draft_complete = bool(total > 0 and board_count >= total)
 
     base: dict[str, Any] = {
         "draft_status": status,
@@ -394,16 +396,19 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
         "total_picks": total,
         "drafted_player_count": drafted_count,
         "draft_board_count": board_count,
-        "draft_complete": False,
-        "draft_complete_reason": "",
+        "draft_complete": draft_complete,
+        "draft_complete_reason": "board_full" if draft_complete else "",
         "current_pick": None,
         "on_clock_team": None,
         "slot": None,
     }
 
     if not pick_order:
-        base["draft_complete"] = True
+        base["draft_complete"] = False
         base["draft_complete_reason"] = "missing_pick_order"
+        return base
+
+    if draft_complete:
         return base
 
     if board_count < total:
@@ -423,28 +428,17 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
             base["draft_complete_reason"] = "not_started"
         return base
 
-    if status == "complete":
-        base["draft_complete"] = True
-        base["draft_complete_reason"] = "status_complete"
-        return base
+    slot = pick_order[min(idx, len(pick_order) - 1)] if pick_order else None
+    if isinstance(slot, dict):
+        base["slot"] = slot
+        try:
+            base["current_pick"] = int(slot.get("Pick"))
+        except (TypeError, ValueError):
+            base["current_pick"] = None
+        base["on_clock_team"] = str(slot.get("Team") or "").strip() or None
 
-    if idx >= total:
-        base["draft_complete"] = True
-        base["draft_complete_reason"] = "pick_index_past_end"
-        return base
-
-    slot = pick_order[idx]
-    base["slot"] = slot
-    try:
-        base["current_pick"] = int(slot.get("Pick"))
-    except (TypeError, ValueError):
-        base["current_pick"] = None
-    base["on_clock_team"] = str(slot.get("Team") or "").strip() or None
-
-    if status == "not_started":
+    if status == "not_started" and board_count == 0:
         base["draft_complete_reason"] = "not_started"
-        return base
-
     return base
 
 

@@ -617,6 +617,20 @@ def record_live_draft_ui_diagnostics(
     return diag
 
 
+def _live_draft_room_progress(room: dict[str, Any]) -> tuple[int, int, bool]:
+    """Return (board_size, total_picks, draft_is_complete) from board length only."""
+    board = len(room.get("draft_board") or [])
+    try:
+        from live_draft_safe_mode import is_draft_truly_complete, total_expected_picks
+
+        total = total_expected_picks(room)
+        complete = bool(total > 0 and is_draft_truly_complete(room))
+    except ImportError:
+        total = len(room.get("pick_order") or [])
+        complete = bool(total > 0 and board >= total)
+    return board, total, complete
+
+
 def render_live_manual_draft_panel(
     st: Any,
     session: dict[str, Any],
@@ -712,13 +726,15 @@ def render_live_manual_draft_panel(
         return False
 
     def _waiting_status_message() -> str:
+        _, _, complete = _live_draft_room_progress(room)
+        if complete:
+            return "Draft is complete."
         if room.get("status") == "paused":
             return "Draft is paused — resume to pick."
-        draft_status = str(gate.get("draft_status") or room.get("status") or "").strip()
-        if draft_status in ("not_started", "") or gate.get("draft_complete"):
+        draft_status = str(gate.get("draft_status") or ctx.get("draft_status") or "").strip()
+        board_size, total_picks, _ = _live_draft_room_progress(room)
+        if draft_status == "not_started" or (draft_status == "" and board_size == 0 and total_picks > 0):
             return "Draft has not started yet."
-        if draft_status == "complete" or str(room.get("status") or "") == "complete":
-            return "Draft is complete."
         clock = str(gate.get("on_clock_team") or ctx.get("on_clock_team") or "").strip()
         if clock:
             return f"Waiting for **{clock}** to pick."
@@ -797,18 +813,26 @@ def render_live_manual_draft_panel(
         }
     )
     paused = room.get("status") == "paused"
-    room_status = str(room.get("status") or "").strip()
-    gate_status = str(gate.get("draft_status") or "").strip()
-    draft_in_progress = room_status == "in_progress" or gate_status == "in_progress"
+    board_size, total_picks, draft_is_complete = _live_draft_room_progress(room)
+    draft_in_progress = bool(total_picks > 0 and board_size < total_picks and not draft_is_complete)
     if manual_recovery and not draft_in_progress:
         try:
             from live_draft_safe_mode import total_expected_picks
 
-            board = len(room.get("draft_board") or [])
             total = total_expected_picks(room)
-            draft_in_progress = bool(total > 0 and board < total)
+            draft_in_progress = bool(total > 0 and board_size < total)
         except ImportError:
             pass
+
+    if draft_is_complete:
+        return _finish(
+            {
+                **diag_base,
+                "draft_action_disable_reason": "draft_complete",
+                "draft_button_disable_reason": "draft_complete",
+                "manual_draft_panel_skipped": True,
+            }
+        )
 
     if not player_options:
         return _finish(

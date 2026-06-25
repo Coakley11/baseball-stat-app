@@ -18102,8 +18102,24 @@ if active_page == "Live Draft Room":
             idx = int(room.get("current_pick_index") or 0)
             if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
                 slot = picks[idx]
-        total_picks = len(room.get("pick_order", []))
-        picks_done = len(room.get("draft_board", []))
+        try:
+            from live_draft_safe_mode import compute_draft_status, is_draft_truly_complete, live_draft_is_in_progress, total_expected_picks
+            from draft_ui import PENDING_MANUAL_PICK_KEY
+
+            total_picks = total_expected_picks(room)
+            picks_done = len(room.get("draft_board") or [])
+            _draft_is_complete = is_draft_truly_complete(room)
+            _draft_in_progress = live_draft_is_in_progress(room)
+            _derived_status, _ = compute_draft_status(room)
+            _pending_manual_pick = bool(st.session_state.get(PENDING_MANUAL_PICK_KEY))
+        except ImportError:
+            total_picks = len(room.get("pick_order", []))
+            picks_done = len(room.get("draft_board", []))
+            _draft_is_complete = total_picks > 0 and picks_done >= total_picks
+            _draft_in_progress = total_picks > 0 and picks_done < total_picks
+            _derived_status = str(room.get("status") or "")
+            _pending_manual_pick = False
+            PENDING_MANUAL_PICK_KEY = "_pending_manual_draft_pick"
         team_list = list(room.get("teams", []))
         user_team = str(cfg.get("user_team") or cfg.get("your_team") or "").strip()
         if not user_team and team_list:
@@ -18180,13 +18196,13 @@ if active_page == "Live Draft Room":
         st.caption(
             f"**{cfg.get('league_name', 'League')}** · {room_label} · "
             f"Your team: **{user_team}** · "
-            f"Status: **{str(room.get('status', '')).replace('_', ' ').title()}** · "
-            f"Pick {min(picks_done + 1, total_picks)} of {total_picks}"
+            f"Status: **{str(_derived_status or room.get('status', '')).replace('_', ' ').title()}** · "
+            f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} of {total_picks}"
         )
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         _timer_ok = bool(
-            room.get("status") == "in_progress"
+            _draft_in_progress
             and slot is not None
             and (_reconcile is None or getattr(_reconcile, "timer_should_run", True))
         )
@@ -18303,8 +18319,7 @@ if active_page == "Live Draft Room":
 
         with rec_col:
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
-            _draft_truly_complete = bool(total_picks > 0 and picks_done >= total_picks)
-            if slot is None and not _manual_recovery and _draft_truly_complete:
+            if _draft_is_complete and not _pending_manual_pick:
                 try:
                     from draft_ui import record_live_draft_ui_diagnostics
 
@@ -18315,17 +18330,14 @@ if active_page == "Live Draft Room":
                         draft_button_rendered=False,
                         draft_button_enabled=False,
                         manual_draft_panel_skipped=True,
-                        draft_action_disable_reason="no_current_slot",
-                        draft_button_disable_reason="no_current_slot",
+                        draft_action_disable_reason="draft_complete",
+                        draft_button_disable_reason="draft_complete",
                     )
                 except ImportError:
                     pass
-                st.success("Draft complete.")
-            elif slot is None and (_manual_recovery or not _draft_truly_complete):
-                if not _draft_truly_complete:
-                    st.warning("Draft was incorrectly marked complete. Reopened at next missing pick.")
-                else:
-                    st.error("Draft state mismatch — use Manual Draft below to recover this pick.")
+            elif not _draft_is_complete and slot is None:
+                if picks_done < total_picks:
+                    st.warning("Pick slot unavailable — use Manual Draft below to continue this pick.")
                 from draft_ui import render_live_manual_draft_panel
 
                 if render_live_manual_draft_panel(
@@ -18341,7 +18353,7 @@ if active_page == "Live Draft Room":
                         request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
                     except ImportError:
                         pass
-            else:
+            elif not _draft_is_complete:
                 remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
                 _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
@@ -18470,7 +18482,7 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         st.rerun()
 
-        if room.get("status") != "complete" or picks_done < total_picks:
+        if _draft_in_progress and not _pending_manual_pick:
             render_contextual_page_nav(
                 "Live Draft Room",
                 "after_board",
@@ -18511,7 +18523,7 @@ if active_page == "Live Draft Room":
             )
             st.markdown("</div>", unsafe_allow_html=True)
 
-        if picks_done >= total_picks and total_picks > 0:
+        if _draft_is_complete and not _pending_manual_pick:
             st.success("Draft complete. Export results or send to analysis below.")
             export_frames_live = live_draft_export_frames(room)
             ex1, ex2 = st.columns(2)
