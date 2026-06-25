@@ -9,6 +9,7 @@ from baseball_draft_activity import (
     after_live_draft_pick_committed,
     live_draft_activity_metrics,
     log_completed_live_draft,
+    log_draft_analysis_attempted,
     log_draft_analysis_created,
     log_live_draft_room_created,
 )
@@ -108,6 +109,16 @@ class TestBaseballDraftActivity(unittest.TestCase):
         _apply_baseball(st, "bb:draft_lab:ROOM-ABC123", "Draft Simulation Test Mode")
         self.assertEqual(st.session_state["_navigate_to_page"], "Draft Simulation Test Mode")
         self.assertEqual(st.session_state["_suite_resume_draft_room"], "ROOM-ABC123")
+
+
+    @patch("suite_activity_client.record_activity")
+    def test_analysis_attempted_on_failure_emits_completed(self, record_mock) -> None:
+        session: dict = {}
+        room = _sample_room(complete=True, picks=4)
+        log_draft_analysis_attempted(room, session=session, error="proj_AB crash")
+        events = [call[0][1] for call in record_mock.call_args_list]
+        self.assertIn("draft_analysis_attempted", events)
+        self.assertIn("completed_live_draft", events)
 
 
 if __name__ == "__main__":

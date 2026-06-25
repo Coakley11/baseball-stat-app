@@ -331,7 +331,7 @@ def classify_team_picks(
     best_row = working.loc[best_idx]
     best_name = str(best_row.get("fullName") or "")
 
-    team_dec = pd.to_numeric(working.get("Decision Score"), errors="coerce")
+    team_dec = _numeric_series(working, "Decision Score")
     team_median = float(team_dec.median()) if team_dec.notna().any() else np.nan
 
     pick_rows: list[dict[str, Any]] = []
@@ -478,6 +478,23 @@ def _col_mean(frame: pd.DataFrame, col: str) -> float:
     return float(vals.mean()) if vals.notna().any() else float("nan")
 
 
+def _numeric_series(frame: pd.DataFrame, col: str, *, fillna: float | None = None) -> pd.Series:
+    """Safe numeric column read — missing columns never crash optional analysis paths."""
+    if col not in frame.columns:
+        if fillna is not None:
+            return pd.Series(fillna, index=frame.index, dtype=float)
+        return pd.Series(dtype=float)
+    vals = pd.to_numeric(frame[col], errors="coerce")
+    if fillna is not None:
+        vals = vals.fillna(fillna)
+    return vals
+
+
+def _ab_weights(frame: pd.DataFrame) -> pd.Series:
+    """AB weights for rate stats; uniform weights when proj_AB is absent."""
+    return _numeric_series(frame, "proj_AB", fillna=1.0)
+
+
 def analyze_draft_lab_results(
     draft_df: pd.DataFrame,
     yearly_source: pd.DataFrame,
@@ -508,13 +525,13 @@ def analyze_draft_lab_results(
             "Projected SB": _col_sum(g, "proj_SB"),
         }
         if "proj_BA" in g.columns:
-            weights = pd.to_numeric(g.get("proj_AB"), errors="coerce").fillna(1)
+            weights = _ab_weights(g)
             ba = pd.to_numeric(g["proj_BA"], errors="coerce")
             totals["Projected AVG"] = float(np.average(ba.dropna(), weights=weights.loc[ba.notna()])) if ba.notna().any() else np.nan
         else:
             totals["Projected AVG"] = np.nan
         if "proj_OPS" in g.columns:
-            weights = pd.to_numeric(g.get("proj_AB"), errors="coerce").fillna(1)
+            weights = _ab_weights(g)
             ops = pd.to_numeric(g["proj_OPS"], errors="coerce")
             totals["Projected OPS"] = float(np.average(ops.dropna(), weights=weights.loc[ops.notna()])) if ops.notna().any() else np.nan
         else:

@@ -10015,10 +10015,22 @@ def live_draft_push_analysis_to_session(room):
         "pool": pool,
         "handoff": handoff_meta,
     }
-    team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(
-        lab_draft, yearly_df, context=analysis_ctx
-    )
-    trades = suggest_draft_lab_trades(lab_draft, team_summary, max_suggestions=12)
+    try:
+        team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(
+            lab_draft, yearly_df, context=analysis_ctx
+        )
+        trades = suggest_draft_lab_trades(lab_draft, team_summary, max_suggestions=12)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("live_draft_push_analysis_to_session failed: %s", exc)
+        try:
+            from baseball_draft_activity import log_draft_analysis_attempted
+
+            log_draft_analysis_attempted(room, session=st.session_state, error=str(exc))
+        except Exception:
+            pass
+        return False
     try:
         from draft_lab_analysis import draft_lab_roster_team_options
 

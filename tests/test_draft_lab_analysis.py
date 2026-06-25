@@ -7,6 +7,7 @@ import unittest
 import pandas as pd
 
 from draft_lab_analysis import (
+    analyze_draft_lab_results,
     build_team_roster_needs_rows,
     classify_team_picks,
     count_team_position_haves,
@@ -93,6 +94,27 @@ class DraftLabAnalysisTests(unittest.TestCase):
     def test_enrich_draft_metrics_no_crash_without_pool(self) -> None:
         out = enrich_lab_draft_metrics(_sample_draft(), None, {})
         self.assertEqual(len(out), 4)
+
+    def test_analyze_works_when_proj_ab_missing(self) -> None:
+        draft = _sample_draft().copy()
+        draft["proj_BA"] = [0.280, 0.265, 0.290, 0.275]
+        draft["proj_OPS"] = [0.820, 0.760, 0.880, 0.800]
+        ctx = {
+            "config": {"slots": {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "BN": 5}},
+            "teams": ["Ariel", "Daniel"],
+            "pool": None,
+        }
+        team_summary, strengths, pick_analysis, gaps, _actual = analyze_draft_lab_results(
+            draft,
+            pd.DataFrame(),
+            context=ctx,
+        )
+        self.assertFalse(team_summary.empty)
+        self.assertIn("Projected AVG", team_summary.columns)
+        self.assertTrue(team_summary["Projected AVG"].notna().any())
+        self.assertFalse(pick_analysis.empty)
+        self.assertFalse(gaps.empty)
+        self.assertFalse(strengths.empty)
 
 
 if __name__ == "__main__":

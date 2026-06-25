@@ -269,6 +269,45 @@ def log_draft_analysis_created(
     )
 
 
+def log_draft_analysis_attempted(
+    room: dict[str, Any] | None = None,
+    *,
+    session: dict[str, Any] | None = None,
+    error: str = "",
+) -> None:
+    """Emit when analysis handoff fails — Command Center can still surface the completed draft."""
+    if room is None and isinstance(session, dict):
+        room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
+    rid = _room_id(room, session)
+    dedup_key = f"draft_analysis_attempted:{rid}"
+    if _already_logged(session, dedup_key):
+        return
+    teams = _team_names(room)
+    matchup = _matchup_label(teams)
+    metrics = live_draft_activity_metrics(
+        room,
+        session=session,
+        activity_type="draft_analysis_attempted",
+        feature="Draft Simulation Test Mode",
+    )
+    err = str(error or "").strip()
+    if err:
+        metrics["analysis_error"] = err[:240]
+    _record_draft_event(
+        "draft_analysis_attempted",
+        page="Draft Simulation Test Mode",
+        metrics=metrics,
+        summary="Draft analysis incomplete" + (f" — {matchup}" if matchup else ""),
+        resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
+        resume_title="Review completed draft",
+        resume_subtitle=matchup or "Retry Analyze Completed Draft",
+    )
+    try:
+        log_completed_live_draft(room or {}, session=session)
+    except Exception:
+        pass
+
+
 def after_live_draft_pick_committed(session: dict[str, Any], room: dict[str, Any]) -> None:
     """Log pick progress and completion after a successful pick commit."""
     if not isinstance(room, dict):

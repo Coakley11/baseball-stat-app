@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -78,6 +79,55 @@ class AnalyzeCompletedDraftSmokeTests(unittest.TestCase):
         for pos in ("C", "1B", "2B", "3B", "SS", "OF", "UTIL", "Bench"):
             self.assertIn(pos, gap_positions)
         self.assertFalse(team_summary.empty)
+
+
+class AnalyzeHandoffActivityTests(unittest.TestCase):
+    def test_minimal_live_draft_handoff_without_proj_ab(self) -> None:
+        room = _completed_live_room()
+        draft_df = pd.DataFrame(room["draft_board"])
+        draft_df["proj_BA"] = [0.270, 0.290, 0.285, 0.280]
+        draft_df["proj_OPS"] = [0.800, 0.900, 0.880, 0.850]
+        ctx = {
+            "config": room["config"],
+            "teams": room["teams"],
+            "pool": room["pool"],
+            "handoff": {"team_names": room["teams"], "picks_per_team": 4},
+        }
+        team_summary, strengths, pick_analysis, gaps, _actual = analyze_draft_lab_results(
+            draft_df,
+            pd.DataFrame(),
+            context=ctx,
+        )
+        self.assertFalse(team_summary.empty)
+        self.assertFalse(pick_analysis.empty)
+
+    @patch("suite_activity_client.record_activity")
+    def test_draft_analysis_created_after_successful_handoff(self, record_mock) -> None:
+        from baseball_draft_activity import log_draft_analysis_created
+
+        room = _completed_live_room()
+        session: dict = {}
+        log_draft_analysis_created(room, session=session)
+        events = [call[0][1] for call in record_mock.call_args_list]
+        self.assertIn("draft_analysis_created", events)
+
+    @patch("suite_activity_client.record_activity")
+    def test_missing_proj_columns_still_emits_draft_activity(self, record_mock) -> None:
+        from baseball_draft_activity import log_draft_analysis_created
+
+        room = _completed_live_room()
+        draft_df = pd.DataFrame(room["draft_board"])
+        ctx = {
+            "config": room["config"],
+            "teams": room["teams"],
+            "pool": room["pool"],
+        }
+        analyze_draft_lab_results(draft_df, pd.DataFrame(), context=ctx)
+        session: dict = {}
+        log_draft_analysis_created(room, session=session)
+        self.assertTrue(any(call[0][1] == "draft_analysis_created" for call in record_mock.call_args_list))
+        kwargs = record_mock.call_args[1]
+        self.assertEqual(kwargs["metrics"]["team_matchup"], "Ariel vs Daniel")
 
 
 if __name__ == "__main__":
