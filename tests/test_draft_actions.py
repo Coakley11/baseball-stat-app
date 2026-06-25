@@ -186,32 +186,36 @@ class TestDraftPlayerLive(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Not your pick", reason)
 
-    @patch("live_draft_pick_engine.live_draft_make_pick")
-    def test_live_drafts_when_on_clock(self, mock_make_pick: MagicMock) -> None:
+    @patch("live_draft_pick_commit.commit_manual_live_pick")
+    def test_live_drafts_when_on_clock(self, mock_commit: MagicMock) -> None:
+        from live_draft_pick_commit import PickCommitResult
+
         session = self._live_session(your_team="Team B", pick_index=1)
-
-        def _make_pick(room, player_row, verdict="Manual pick"):
-            room["draft_board"].append(player_row)
-            room["drafted_player_ids"].append(str(player_row.get("playerID")))
-            room["current_pick_index"] = int(room.get("current_pick_index", 0)) + 1
-            return True, f"Drafted {player_row.get('fullName')}."
-
-        mock_make_pick.side_effect = _make_pick
+        mock_commit.return_value = PickCommitResult(
+            ok=True,
+            message="Drafted Kyle Tucker.",
+            error="",
+            commit_path="single_user",
+            board_size_before=1,
+            board_size_after=2,
+            current_pick_index_before=1,
+            current_pick_index_after=2,
+        )
 
         result = draft_player(session, "Kyle Tucker", source="live_queue")
         self.assertTrue(result["ok"], result.get("message"))
         self.assertEqual(result["on_clock_team"], "Team B")
         self.assertEqual(result["target_pick"], 2)
-        mock_make_pick.assert_called_once()
+        mock_commit.assert_called_once()
 
-    @patch("live_draft_pick_engine.live_draft_make_pick")
-    def test_live_validates_on_clock_before_make_pick(self, mock_make_pick: MagicMock) -> None:
+    @patch("live_draft_pick_commit.commit_manual_live_pick")
+    def test_live_validates_on_clock_before_make_pick(self, mock_commit: MagicMock) -> None:
         session = self._live_session(your_team="Team B", pick_index=0)
 
         result = draft_player(session, "Kyle Tucker", source="live_queue")
         self.assertFalse(result["ok"])
         self.assertIn("Not your pick", result.get("message", ""))
-        mock_make_pick.assert_not_called()
+        mock_commit.assert_not_called()
 
 
 class TestImportFallback(unittest.TestCase):

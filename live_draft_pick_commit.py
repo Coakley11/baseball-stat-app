@@ -1,0 +1,204 @@
+"""Unified live draft pick persistence — shared by manual pick and timer auto-pick."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from live_draft_pick_engine import live_draft_make_pick
+from live_draft_timer_logic import live_draft_current_slot
+
+
+@dataclass
+class PickCommitResult:
+    ok: bool
+    message: str
+    error: str
+    commit_path: str
+    board_size_before: int
+    board_size_after: int
+    current_pick_index_before: int
+    current_pick_index_after: int
+    expected_revision: int | None = None
+
+
+def resolve_live_room(session: dict[str, Any], room: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if isinstance(room, dict):
+        return room
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        live = session.get(LIVE_DRAFT_ROOM_KEY)
+        if isinstance(live, dict):
+            return live
+    except ImportError:
+        pass
+    return None
+
+
+def sync_expected_revision(session: dict[str, Any]) -> int | None:
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from draft_room_shared_state import (
+            ACTIVE_SHARED_ROOM_CODE_KEY,
+            SHARED_ROOM_META_KEY,
+            get_shared_room_store,
+            publish_shared_room_runtime,
+        )
+
+        if not is_multiplayer_draft_active(session):
+            return None
+        room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        backend = get_shared_room_store()
+        shared_doc = backend.load(room_code) if room_code else None
+        head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
+        meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+        if head_rev > meta_rev and isinstance(shared_doc, dict):
+            publish_shared_room_runtime(session, shared_doc, reason="shared_room_pre_pick_sync")
+        return head_rev
+    except ImportError:
+        return None
+
+
+def persist_applied_pick(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    source: str,
+    expected_revision: int | None = None,
+    board_size_before: int | None = None,
+    idx_before: int | None = None,
+) -> PickCommitResult:
+    """Persist a pick already applied to the in-memory room (make_pick already ran)."""
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, write_canonical_live_draft_state
+    except ImportError as exc:
+        return PickCommitResult(
+            ok=False,
+            message=str(exc),
+            error="import_failed",
+            commit_path="unknown",
+            board_size_before=board_size_before or 0,
+            board_size_after=len(room.get("draft_board") or []),
+            current_pick_index_before=idx_before or 0,
+            current_pick_index_after=int(room.get("current_pick_index") or 0),
+        )
+
+    board_before = board_size_before if board_size_before is not None else len(room.get("draft_board") or [])
+    idx_b = idx_before if idx_before is not None else int(room.get("current_pick_index") or 0) - 1
+    idx_a = int(room.get("current_pick_index") or 0)
+    board_after = len(room.get("draft_board") or [])
+
+    try:
+        from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
+
+        mp = is_multiplayer_draft_active(session)
+    except ImportError:
+        mp = False
+
+    commit_path = "shared_room" if mp else "single_user"
+    session[LIVE_DRAFT_ROOM_KEY] = room
+
+    if mp:
+        rev = expected_revision if expected_revision is not None else sync_expected_revision(session)
+        ok_commit, commit_msg, _saved = commit_shared_room_state(
+            session,
+            room,
+            pick_already_applied=True,
+            expected_revision=rev,
+        )
+        if not ok_commit:
+            return PickCommitResult(
+                ok=False,
+                message=commit_msg or "Could not sync pick to shared room.",
+                error="shared_commit_failed",
+                commit_path=commit_path,
+                board_size_before=board_before,
+                board_size_after=len((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_board") or []),
+                current_pick_index_before=idx_b,
+                current_pick_index_after=int((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("current_pick_index") or idx_b),
+                expected_revision=rev,
+            )
+    else:
+        try:
+            from streamlit_app import _persist_live_draft_room
+
+            _persist_live_draft_room(room, reason=source, rerun=False)
+        except ImportError:
+            write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+
+    try:
+        from draft_room_state import sync_live_draft_room_to_canonical_board
+
+        sync_live_draft_room_to_canonical_board(session, room)
+    except ImportError:
+        pass
+
+    write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+
+    return PickCommitResult(
+        ok=True,
+        message="Pick saved.",
+        error="",
+        commit_path=commit_path,
+        board_size_before=board_before,
+        board_size_after=board_after,
+        current_pick_index_before=idx_b,
+        current_pick_index_after=idx_a,
+        expected_revision=expected_revision,
+    )
+
+
+def commit_manual_live_pick(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    player_row: dict[str, Any],
+    *,
+    source: str,
+    verdict: str | None = None,
+) -> PickCommitResult:
+    """Apply make_pick then persist — manual draft path."""
+    board_before = len(room.get("draft_board") or [])
+    idx_before = int(room.get("current_pick_index") or 0)
+    verdict_text = verdict or f"Draft ({source})"
+
+    ok, msg = live_draft_make_pick(room, player_row, verdict=verdict_text)
+    if not ok:
+        return PickCommitResult(
+            ok=False,
+            message=msg,
+            error="live_make_pick_failed",
+            commit_path="not_reached",
+            board_size_before=board_before,
+            board_size_after=board_before,
+            current_pick_index_before=idx_before,
+            current_pick_index_after=idx_before,
+        )
+
+    expected_revision = sync_expected_revision(session)
+    refreshed = resolve_live_room(session, room)
+    if refreshed is not None:
+        room = refreshed
+    persisted = persist_applied_pick(
+        session,
+        room,
+        source=source,
+        expected_revision=expected_revision,
+        board_size_before=board_before,
+        idx_before=idx_before,
+    )
+    if persisted.ok:
+        persisted.message = msg
+    return persisted
+
+
+def run_autopick_selection(room: dict[str, Any]) -> tuple[bool, str]:
+    """Select and apply auto-pick to room (make_pick only — caller persists)."""
+    try:
+        from streamlit_app import live_draft_auto_pick
+    except ImportError:
+        try:
+            from Streamlit_app import live_draft_auto_pick  # type: ignore[no-redef]
+        except ImportError:
+            return False, "Auto-pick engine unavailable."
+    return live_draft_auto_pick(room)

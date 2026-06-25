@@ -686,6 +686,15 @@ def _draft_live(
         record_draft_commit_diagnostics = None  # type: ignore[assignment,misc]
         set_live_draft_pick_notice = None  # type: ignore[assignment,misc]
 
+    try:
+        from live_draft_expired_pick import clear_autopick_backoff_for_manual
+        from live_draft_pick_commit import commit_manual_live_pick
+        from live_draft_timer_logic import live_draft_current_slot
+    except ImportError:
+        clear_autopick_backoff_for_manual = None  # type: ignore[assignment,misc]
+        commit_manual_live_pick = None  # type: ignore[assignment,misc]
+        live_draft_current_slot = None  # type: ignore[assignment,misc]
+
     allowed, reason = can_draft_player(session, player_name)
     if not allowed:
         result["error"] = "not_allowed"
@@ -724,34 +733,29 @@ def _draft_live(
             draft_button_clicked=True,
             selected_player_at_click=player_name,
             draft_player_called=True,
+            manual_pick_attempted=True,
             commit_path="shared_room" if mp else "single_user",
+            manual_pick_commit_path="shared_room" if mp else "single_user",
             board_size_before=len(room.get("draft_board") or []),
+            board_size_before_manual_pick=len(room.get("draft_board") or []),
             current_pick_index_before=int(room.get("current_pick_index") or 0),
+            current_pick_index_before_manual_pick=int(room.get("current_pick_index") or 0),
         )
+
+    if clear_autopick_backoff_for_manual is not None:
+        clear_autopick_backoff_for_manual(session, room)
 
     expected_revision: int | None = None
     if mp:
         try:
-            from draft_room_shared_state import (
-                ACTIVE_SHARED_ROOM_CODE_KEY,
-                SHARED_ROOM_META_KEY,
-                get_shared_room_store,
-                publish_shared_room_runtime,
-            )
+            from live_draft_pick_commit import sync_expected_revision
 
-            room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-            backend = get_shared_room_store()
-            shared_doc = backend.load(room_code) if room_code else None
-            head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
-            meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
-            if head_rev > meta_rev and isinstance(shared_doc, dict):
-                publish_shared_room_runtime(session, shared_doc, reason="shared_room_pre_pick_sync")
-                room = session.get(LIVE_DRAFT_ROOM_KEY)
-                if not isinstance(room, dict):
-                    result["error"] = "no_live_room"
-                    result["message"] = "No active live draft."
-                    return result
-            expected_revision = head_rev
+            expected_revision = sync_expected_revision(session)
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if not isinstance(room, dict):
+                result["error"] = "no_live_room"
+                result["message"] = "No active live draft."
+                return result
             if record_draft_commit_diagnostics is not None:
                 record_draft_commit_diagnostics(
                     session,
@@ -761,22 +765,12 @@ def _draft_live(
         except ImportError:
             pass
 
-    try:
-        from live_draft_pick_engine import live_draft_make_pick as make_pick
-        from live_draft_timer_logic import live_draft_current_slot
+    if live_draft_current_slot is None:
+        result["error"] = "live_helpers"
+        result["message"] = "Live draft helpers unavailable."
+        return result
 
-        slot = live_draft_current_slot(room)
-    except ImportError:
-        try:
-            app = _import_baseball_app()
-            slot = app.live_draft_current_slot(room)
-            make_pick = app.live_draft_make_pick
-        except Exception as exc:
-            result["error"] = "live_helpers"
-            result["message"] = str(exc)
-            if set_live_draft_pick_notice is not None:
-                set_live_draft_pick_notice(session, "error", str(exc))
-            return result
+    slot = live_draft_current_slot(room)
 
     if slot is None:
         result["error"] = "draft_complete"
@@ -832,59 +826,60 @@ def _draft_live(
         except ImportError:
             pass
 
-    ok, msg = make_pick(room, player_row, verdict=f"Draft ({source})")
-    if not ok:
-        result["error"] = "live_make_pick_failed"
-        result["message"] = msg
-        if set_live_draft_pick_notice is not None:
-            set_live_draft_pick_notice(session, "error", msg)
+    if commit_manual_live_pick is None:
+        result["error"] = "live_helpers"
+        result["message"] = "Live draft commit path unavailable."
         return result
 
-    session[LIVE_DRAFT_ROOM_KEY] = room
-    if mp:
-        try:
-            from draft_room_context import commit_shared_room_state
+    commit = commit_manual_live_pick(
+        session,
+        room,
+        player_row,
+        source=source,
+        verdict=f"Draft ({source})",
+    )
+    if record_draft_commit_diagnostics is not None:
+        record_draft_commit_diagnostics(
+            session,
+            manual_pick_success=commit.ok,
+            manual_pick_error=None if commit.ok else commit.message,
+            manual_pick_commit_path=commit.commit_path,
+            board_size_after=commit.board_size_after,
+            board_size_after_manual_pick=commit.board_size_after,
+            current_pick_index_after=commit.current_pick_index_after,
+            current_pick_index_after_manual_pick=commit.current_pick_index_after,
+            shared_room_commit_called=commit.commit_path == "shared_room",
+            commit_shared_room_pick_called=commit.commit_path == "shared_room",
+            supabase_commit_success=commit.ok,
+            supabase_commit_error=None if commit.ok else commit.message,
+            rerun_after_commit=True,
+        )
 
-            ok_commit, commit_msg, _saved = commit_shared_room_state(
-                session,
-                room,
-                player_name=player_name,
-                pick_already_applied=True,
-                expected_revision=expected_revision,
-            )
-            if record_draft_commit_diagnostics is not None:
-                record_draft_commit_diagnostics(
-                    session,
-                    shared_room_commit_called=True,
-                    commit_shared_room_pick_called=True,
-                    rerun_after_commit=True,
-                )
-            if not ok_commit:
-                refreshed = session.get(LIVE_DRAFT_ROOM_KEY)
-                if isinstance(refreshed, dict):
-                    room = refreshed
-                result["error"] = "shared_commit_failed"
-                result["message"] = commit_msg or "Could not sync pick to shared room."
-                session["_draft_room_conflict_notice"] = result["message"]
-                if set_live_draft_pick_notice is not None:
-                    set_live_draft_pick_notice(session, "error", result["message"])
-                return result
-        except ImportError:
-            pass
+    if not commit.ok:
+        result["error"] = commit.error or "shared_commit_failed"
+        result["message"] = commit.message
+        if commit.error == "shared_commit_failed":
+            session["_draft_room_conflict_notice"] = commit.message
+        if set_live_draft_pick_notice is not None:
+            set_live_draft_pick_notice(session, "error", commit.message)
+        return result
 
-    write_canonical_live_draft_state(session, room, reason=f"draft_player:{source}", local_edit=True)
-    sync_live_draft_room_to_canonical_board(session, room)
+    try:
+        from live_draft_expired_pick import clear_autopick_state_for_pick_advance
 
+        clear_autopick_state_for_pick_advance(session, commit.current_pick_index_after)
+    except ImportError:
+        pass
+
+    room = session.get(LIVE_DRAFT_ROOM_KEY) or room
     result["ok"] = True
-    result["message"] = msg
+    result["message"] = commit.message if commit.message != "Pick saved." else f"Drafted {player_name}."
     if set_live_draft_pick_notice is not None:
-        set_live_draft_pick_notice(session, "success", msg)
+        set_live_draft_pick_notice(session, "success", result["message"])
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(
             session,
             pick_saved_to_room=True,
-            board_size_after=len(room.get("draft_board") or []),
-            current_pick_index_after=int(room.get("current_pick_index") or 0),
         )
     return result
 

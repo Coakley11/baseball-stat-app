@@ -18061,18 +18061,22 @@ if active_page == "Live Draft Room":
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         if room.get("status") == "in_progress" and slot is not None:
             try:
-                from live_draft_timer_autopick import LIVE_DRAFT_TIMER_EXPIRED_KEY, maybe_timer_autopick
+                from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
                 from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
 
                 note_live_draft_page_load(st.session_state, room)
                 render_live_draft_timer_bar(st, st.session_state, room)
-                if st.session_state.get(LIVE_DRAFT_TIMER_EXPIRED_KEY) or live_draft_seconds_remaining(room) <= 0:
-                    ok, msg = maybe_timer_autopick(st.session_state, room, source="page_autopick")
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    elif msg and live_draft_seconds_remaining(room) <= 0:
-                        st.warning(msg)
+                expired_result = handle_expired_pick_on_page(st.session_state, room, source="page_autopick")
+                if expired_result.error:
+                    st.error(expired_result.error)
+                else:
+                    backoff_err = autopick_error_message(st.session_state, room)
+                    if backoff_err:
+                        st.error(backoff_err)
+                if expired_result.ok and expired_result.message:
+                    st.success(expired_result.message)
+                if expired_result.should_rerun:
+                    st.rerun()
             except ImportError:
                 idx = int(room.get("current_pick_index", 0))
                 remaining = live_draft_seconds_remaining(room)
@@ -18245,6 +18249,7 @@ if active_page == "Live Draft Room":
                 try:
                     from draft_commit_diagnostics import pop_live_draft_pick_notice
                     from draft_commit_diagnostics_ui import render_draft_commit_diagnostics
+                    from live_draft_expired_pick_diagnostics_ui import render_autopick_diagnostics
                     from live_draft_timer_ui import render_live_draft_timer_diagnostics
 
                     notice = pop_live_draft_pick_notice(st.session_state)
@@ -18268,6 +18273,7 @@ if active_page == "Live Draft Room":
                         st.session_state,
                         developer_mode=developer_mode_enabled(),
                     )
+                    render_autopick_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_live_draft_timer_diagnostics(st, st.session_state)
                 except ImportError:
                     pass

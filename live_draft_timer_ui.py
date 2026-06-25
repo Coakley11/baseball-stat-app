@@ -14,7 +14,7 @@ from live_draft_timer_logic import (
 )
 
 LIVE_DRAFT_TIMER_DIAG_KEY = "_live_draft_timer_diag"
-LIVE_DRAFT_TIMER_EXPIRED_KEY = "_live_draft_timer_expired_pending"
+from live_draft_expired_pick import EXPIRED_PICK_PENDING_KEY, should_fragment_trigger_full_rerun
 LIVE_DRAFT_GRACE_MARKER_KEY = "_live_draft_grace_marker"
 _AUTOPICK_GRACE_SEC = 2.0
 
@@ -131,8 +131,8 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         tick_room = _resolve_live_room(session, room)
         ensure_live_draft_timer_for_pick(tick_room)
         _render_timer_static(st, session, tick_room, source="fragment_tick")
-        if _timer_expired_pending(session, tick_room):
-            session[LIVE_DRAFT_TIMER_EXPIRED_KEY] = True
+        if should_fragment_trigger_full_rerun(session, tick_room):
+            session[EXPIRED_PICK_PENDING_KEY] = True
             st.rerun()
 
     _timer_tick()
