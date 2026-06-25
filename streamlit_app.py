@@ -9576,26 +9576,21 @@ def live_draft_get_available(room):
 
 
 def live_draft_current_slot(room):
-    picks = room.get("pick_order", [])
-    idx = int(room.get("current_pick_index", 0))
-    if idx >= len(picks):
-        return None
-    return picks[idx]
+    from live_draft_timer_logic import live_draft_current_slot as _current_slot
+
+    return _current_slot(room)
 
 
 def live_draft_seconds_remaining(room):
-    if room.get("status") != "in_progress":
-        return int(room.get("config", {}).get("timer_seconds", 60))
-    started = room.get("timer_started_at")
-    if started is None:
-        return int(room.get("config", {}).get("timer_seconds", 60))
-    elapsed = max(0.0, time.time() - float(started))
-    return max(0, int(room.get("config", {}).get("timer_seconds", 60)) - int(elapsed))
+    from live_draft_timer_logic import live_draft_seconds_remaining as _seconds_remaining
+
+    return _seconds_remaining(room)
 
 
 def live_draft_reset_timer(room):
-    room["timer_started_at"] = time.time()
-    room["timer_handled_index"] = -1
+    from live_draft_timer_logic import live_draft_reset_timer as _reset_timer
+
+    _reset_timer(room)
 
 
 def live_draft_init_room(config, pool_df):
@@ -18090,10 +18085,16 @@ if active_page == "Live Draft Room":
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         if room.get("status") == "in_progress" and slot is not None:
             try:
+                from live_draft_timer_autopick import LIVE_DRAFT_TIMER_EXPIRED_KEY, maybe_timer_autopick
                 from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
 
                 note_live_draft_page_load(st.session_state)
                 render_live_draft_timer_bar(st, st.session_state, room)
+                if st.session_state.get(LIVE_DRAFT_TIMER_EXPIRED_KEY) or live_draft_seconds_remaining(room) <= 0:
+                    ok, msg = maybe_timer_autopick(st.session_state, room, source="page_autopick")
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
             except ImportError:
                 idx = int(room.get("current_pick_index", 0))
                 remaining = live_draft_seconds_remaining(room)
