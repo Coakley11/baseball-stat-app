@@ -39,6 +39,9 @@ class DraftLabHandoffTests(unittest.TestCase):
     def test_apply_populates_session_keys(self) -> None:
         session: dict = {"live_draft_room": _sample_room()}
         meta = apply_live_draft_handoff_to_session(session, _sample_room())
+        from draft_lab_state import apply_pending_draft_lab_widget_keys
+
+        apply_pending_draft_lab_widget_keys(session)
         self.assertEqual(session["draft_lab_window"], 3)
         self.assertEqual(session["draft_lab_scoring_type"], "5x5 Roto")
         self.assertEqual(session["draft_lab_projection_style"], "Aggressive")

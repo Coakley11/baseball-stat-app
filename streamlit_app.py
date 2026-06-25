@@ -17229,12 +17229,6 @@ if active_page == "Draft Room Simulator":
 
 if active_page == "Draft Simulation Test Mode":
     _page_perf_start(active_page)
-    try:
-        from draft_lab_state import ensure_draft_lab_widget_keys
-
-        ensure_draft_lab_widget_keys(st.session_state)
-    except ImportError:
-        pass
 
     render_section_header(
         "🧪 Draft Simulation Test Mode",
@@ -17276,6 +17270,12 @@ if active_page == "Draft Simulation Test Mode":
     lab_market_df = load_fantasypros_market_data()
     _lab_window_options = [3, 4, 5]
     _lab_format_options = ["5x5 Roto", "Points League"]
+    try:
+        from draft_lab_state import prepare_draft_lab_page_widgets
+
+        prepare_draft_lab_page_widgets(st.session_state)
+    except ImportError:
+        pass
     lc1, lc2, lc3, lc4 = st.columns(4)
     with lc1:
         def _draft_sim_setting_changed():

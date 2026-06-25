@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from draft_lab_state import PENDING_DRAFT_LAB_HANDOFF_KEY, stage_draft_lab_handoff_settings
+
 DRAFT_LAB_HANDOFF_DIAG_KEY = "_draft_lab_handoff_diag"
 
 
@@ -92,11 +94,21 @@ def record_draft_lab_handoff_diagnostics(session: dict[str, Any], extracted: dic
         "draft_lab_live_projection_style": extracted.get("draft_lab_projection_style"),
         "draft_lab_live_picks_per_team": extracted.get("draft_lab_picks_per_team"),
         "draft_lab_live_team_count": extracted.get("draft_lab_team_count"),
-        "draft_lab_lab_projection_window_after_handoff": session.get("draft_lab_window"),
-        "draft_lab_lab_fantasy_format_after_handoff": session.get("draft_lab_scoring_type"),
-        "draft_lab_lab_projection_style_after_handoff": session.get("draft_lab_projection_style"),
-        "draft_lab_lab_picks_per_team_after_handoff": session.get("draft_lab_picks_per_team"),
-        "draft_lab_lab_team_count_after_handoff": session.get("draft_lab_team_count"),
+        "draft_lab_lab_projection_window_after_handoff": (session.get(PENDING_DRAFT_LAB_HANDOFF_KEY) or {}).get("draft_lab_window")
+        if isinstance(session.get(PENDING_DRAFT_LAB_HANDOFF_KEY), dict)
+        else session.get("draft_lab_window"),
+        "draft_lab_lab_fantasy_format_after_handoff": (session.get(PENDING_DRAFT_LAB_HANDOFF_KEY) or {}).get("draft_lab_scoring_type")
+        if isinstance(session.get(PENDING_DRAFT_LAB_HANDOFF_KEY), dict)
+        else session.get("draft_lab_scoring_type"),
+        "draft_lab_lab_projection_style_after_handoff": (session.get(PENDING_DRAFT_LAB_HANDOFF_KEY) or {}).get("draft_lab_projection_style")
+        if isinstance(session.get(PENDING_DRAFT_LAB_HANDOFF_KEY), dict)
+        else session.get("draft_lab_projection_style"),
+        "draft_lab_lab_picks_per_team_after_handoff": (session.get(PENDING_DRAFT_LAB_HANDOFF_KEY) or {}).get("draft_lab_picks_per_team")
+        if isinstance(session.get(PENDING_DRAFT_LAB_HANDOFF_KEY), dict)
+        else session.get("draft_lab_picks_per_team"),
+        "draft_lab_lab_team_count_after_handoff": (session.get(PENDING_DRAFT_LAB_HANDOFF_KEY) or {}).get("draft_lab_team_count")
+        if isinstance(session.get(PENDING_DRAFT_LAB_HANDOFF_KEY), dict)
+        else session.get("draft_lab_team_count"),
         "draft_lab_board_pick_count": extracted.get("board_pick_count"),
         "draft_lab_expected_pick_count": extracted.get("expected_pick_count"),
     }
@@ -116,18 +128,10 @@ def record_draft_lab_handoff_diagnostics(session: dict[str, Any], extracted: dic
 
 
 def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
-    """Populate Draft Lab widget keys from a completed live draft room."""
+    """Stage Draft Lab widget keys from a completed live draft room (apply before widgets)."""
     extracted = extract_live_room_lab_settings(room, session)
-    for key, val in _settings_keys_from_extracted(extracted).items():
-        if val is not None and val != "":
-            session[key] = val
+    stage_draft_lab_handoff_settings(session, _settings_keys_from_extracted(extracted))
     session["live_draft_room"] = room
-    try:
-        from draft_lab_state import ensure_draft_lab_widget_keys
-
-        ensure_draft_lab_widget_keys(session)
-    except ImportError:
-        pass
     record_draft_lab_handoff_diagnostics(session, extracted, loaded=True)
     handoff_meta = {
         "source": "Live Draft Room",

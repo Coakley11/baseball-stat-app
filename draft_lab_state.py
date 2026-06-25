@@ -30,6 +30,66 @@ DRAFT_LAB_WIDGET_DEFAULTS: dict[str, Any] = {
 
 DRAFT_LAB_SNAPSHOT_KEYS = tuple(DRAFT_LAB_WIDGET_DEFAULTS.keys())
 
+PENDING_DRAFT_LAB_HANDOFF_KEY = "_pending_draft_lab_handoff"
+DRAFT_LAB_HANDOFF_WIDGET_KEYS: tuple[str, ...] = (
+    "draft_lab_window",
+    "draft_lab_scoring_type",
+    "draft_lab_format",
+    "draft_lab_projection_style",
+    "draft_lab_picks_per_team",
+    "draft_lab_team_count",
+)
+
+
+def stage_draft_lab_handoff_settings(session: dict[str, Any], keys: dict[str, Any]) -> None:
+    """Queue restored Draft Lab widget values for pre-widget application."""
+    if not keys:
+        return
+    pending = dict(session.get(PENDING_DRAFT_LAB_HANDOFF_KEY) or {})
+    for key, val in keys.items():
+        if key not in DRAFT_LAB_HANDOFF_WIDGET_KEYS:
+            continue
+        if val is None or str(val).strip() == "":
+            continue
+        pending[key] = val
+    if pending:
+        session[PENDING_DRAFT_LAB_HANDOFF_KEY] = pending
+
+
+def has_pending_draft_lab_handoff(session: dict[str, Any]) -> bool:
+    pending = session.get(PENDING_DRAFT_LAB_HANDOFF_KEY)
+    return isinstance(pending, dict) and bool(pending)
+
+
+def apply_pending_draft_lab_widget_keys(session: dict[str, Any]) -> bool:
+    """Apply staged handoff values — only call before Draft Lab widgets are created."""
+    pending = session.pop(PENDING_DRAFT_LAB_HANDOFF_KEY, None)
+    if not isinstance(pending, dict) or not pending:
+        return False
+    coercers: dict[str, Any] = {
+        "draft_lab_window": _coerce_window,
+        "draft_lab_scoring_type": _coerce_format,
+        "draft_lab_format": _coerce_format,
+        "draft_lab_projection_style": str,
+        "draft_lab_picks_per_team": _coerce_picks,
+        "draft_lab_team_count": lambda v: max(1, int(v)),
+    }
+    for key, val in pending.items():
+        if key not in DRAFT_LAB_HANDOFF_WIDGET_KEYS:
+            continue
+        coerce = coercers.get(key, str)
+        try:
+            session[key] = coerce(val) if coerce is not str else str(val)
+        except (TypeError, ValueError):
+            continue
+    return True
+
+
+def prepare_draft_lab_page_widgets(session: dict[str, Any]) -> None:
+    """Apply pending handoff then seed any missing widget keys before render."""
+    apply_pending_draft_lab_widget_keys(session)
+    ensure_draft_lab_widget_keys(session)
+
 
 def _page_snapshot(session: dict[str, Any]) -> dict[str, Any]:
     pf = session.get("page_filter_state")
@@ -132,21 +192,6 @@ def _coerce_roster_view(val: Any, options: list[str]) -> str:
 
 def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
     """Populate missing draft-lab widget keys from page snapshot, then defaults."""
-    results = session.get("draft_lab_results")
-    if isinstance(results, dict) and str(results.get("source") or "") == "Live Draft Room":
-        handoff = results.get("handoff") if isinstance(results.get("handoff"), dict) else {}
-        for key, handoff_key, coerce in (
-            ("draft_lab_window", "projection_window", _coerce_window),
-            ("draft_lab_scoring_type", "fantasy_format", _coerce_format),
-            ("draft_lab_projection_style", "projection_style", str),
-            ("draft_lab_picks_per_team", "picks_per_team", _coerce_picks),
-        ):
-            raw = handoff.get(handoff_key)
-            if raw is not None and str(raw).strip() != "":
-                session[key] = coerce(raw) if coerce is not str else str(raw)
-        if handoff.get("fantasy_format"):
-            session["draft_lab_format"] = _coerce_format(handoff.get("fantasy_format"))
-
     snap = _page_snapshot(session)
     roster_options = draft_lab_roster_view_options(session)
 

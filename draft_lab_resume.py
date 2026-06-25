@@ -8,6 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+try:
+    from draft_lab_state import has_pending_draft_lab_handoff
+except ImportError:
+    def has_pending_draft_lab_handoff(_session: dict[str, Any]) -> bool:
+        return False
+
 PENDING_RESUME_QUERY_KEY = "_suite_pending_resume_query"
 DRAFT_LAB_RESUME_PAGE = "Draft Simulation Test Mode"
 DRAFT_LAB_RESUME_ERROR_KEY = "_draft_lab_resume_error"
@@ -502,9 +508,7 @@ def draft_lab_resume_diagnostics(st: Any) -> dict[str, Any]:
         "last_hydration_diag": dict(ss.get(DRAFT_LAB_RESUME_DIAG_KEY) or {}),
     }
     out.update(_resume_diag_flags(ss))
-    if not draft_lab_resume_consumed(ss):
-        hydration = apply_draft_lab_resume(st)
-        out.update(hydration)
+    out["pending_draft_lab_handoff"] = has_pending_draft_lab_handoff(ss)
     out["draft_lab_results_after_hydration"] = _draft_lab_results_nonempty(ss)
     out["draft_lab_results_room_id_after"] = _draft_lab_results_room_id(ss)
     out["draft_lab_resume_error"] = ss.get(DRAFT_LAB_RESUME_ERROR_KEY)
