@@ -264,6 +264,25 @@ def inject_live_draft_room_styles(st: Any) -> None:
         .live-rec-card .surv-high { color: #15803d; font-weight: 700; font-size: 12px; margin-top: 6px; }
         .live-rec-card .surv-mid { color: #b45309; font-weight: 700; font-size: 12px; margin-top: 6px; }
         .live-rec-card .surv-low { color: #b91c1c; font-weight: 700; font-size: 12px; margin-top: 6px; }
+        .ld-rec-summary-banner {
+            background: linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%);
+            border: 1px solid #bfdbfe;
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin: 0 0 14px 0;
+            font-size: 14px;
+            line-height: 1.45;
+            color: #1e293b;
+        }
+        .ld-rec-tier-best { background: #dcfce7; color: #166534; }
+        .ld-rec-tier-strong { background: #dbeafe; color: #1e40af; }
+        .ld-rec-tier-value { background: #fef3c7; color: #92400e; }
+        .ld-rec-tier-need { background: #ede9fe; color: #5b21b6; }
+        .ld-rec-tier-sleeper { background: #fce7f3; color: #9d174d; }
+        .ld-rec-tier-safe { background: #f1f5f9; color: #334155; }
+        .ld-rec-edge-pos { color: #16a34a; font-weight: 900; }
+        .ld-rec-edge-neu { color: #2563eb; font-weight: 900; }
+        .ld-rec-edge-neg { color: #dc2626; font-weight: 900; }
         .live-draft-manual-panel div[data-testid="stButton"] button[kind="primary"] {
             min-height: 50px;
             font-size: 16px;
@@ -283,7 +302,13 @@ def inject_live_draft_room_styles(st: Any) -> None:
     )
 
 
-def render_draft_room_code_panel(st: Any, code: str) -> None:
+def render_draft_room_code_panel(
+    st: Any,
+    code: str,
+    *,
+    join_url: str = "",
+    show_copy: bool = True,
+) -> None:
     code = str(code or "").strip().upper()
     if not code:
         return
@@ -291,14 +316,52 @@ def render_draft_room_code_panel(st: Any, code: str) -> None:
         f"""
         <div class="ld-room-code-panel">
             <div>
-                <div class="ld-room-code-label">Draft Room Code</div>
+                <div class="ld-room-code-label">Room Code</div>
                 <div class="ld-room-code-value">{code}</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.caption("Share this code so other managers can join your live draft.")
+    try:
+        st.code(code, language=None)
+    except TypeError:
+        st.code(code)
+    st.caption("Share this 6-character code so other managers can join your live draft.")
+    if join_url:
+        st.markdown(f"**Join link:** [{join_url}]({join_url})")
+
+
+def render_live_draft_room_code_header(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    multiplayer: bool,
+    join_url: str = "",
+) -> None:
+    """Show room code, copy affordance, and missing-code warning near draft header."""
+    code = ""
+    try:
+        from draft_room_context import resolve_shared_room_code
+
+        code = resolve_shared_room_code(session)
+    except ImportError:
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+
+    if code:
+        render_draft_room_code_panel(st, code, join_url=join_url)
+        return
+    if multiplayer:
+        st.warning("Room code missing — shared draft may not be joinable.")
+        try:
+            from suite_workspace import can_show_developer_tools
+
+            if can_show_developer_tools(st=st):
+                room = session.get("live_draft_room") or {}
+                internal_id = str(room.get("draft_room_id") or "—")
+                st.caption(f"Dev: room_id `{internal_id}` · room_code `—`")
+        except ImportError:
+            pass
 
 
 def render_live_draft_status_badges(
@@ -323,41 +386,158 @@ def render_live_draft_status_badges(
     )
 
 
+def _rec_rank_label(rank: int) -> str:
+    labels = {1: "🥇 Best Pick", 2: "🥈 Second Best Option", 3: "🥉 Third Best Option"}
+    return labels.get(rank, f"Rank #{rank}")
+
+
+def _rec_tier_badge(rank: int, row: Any) -> tuple[str, str]:
+    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+    sleeper = pd.to_numeric(row.get("Sleeper Score", np.nan), errors="coerce")
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    if rank == 1:
+        return "Best Pick", "ld-rec-tier-best"
+    if pd.notna(fit) and float(fit) >= 0.65:
+        return "Position Need", "ld-rec-tier-need"
+    if pd.notna(sleeper) and float(sleeper) >= 0.6:
+        return "Sleeper", "ld-rec-tier-sleeper"
+    if pd.notna(edge) and float(edge) >= 8:
+        return "High Value", "ld-rec-tier-value"
+    if rank <= 3:
+        return "Strong Fit", "ld-rec-tier-strong"
+    return "Safe Pick", "ld-rec-tier-safe"
+
+
+def _rec_action_guidance(surv: float | None, rank: int) -> str:
+    if rank == 1:
+        return "Draft Now"
+    if surv is not None and surv < 0.25:
+        return "High Risk if Passed"
+    if surv is not None and surv < 0.45:
+        return "Strong Consideration"
+    if surv is not None and surv >= 0.7:
+        return "Can Wait One Round"
+    return "Strong Consideration"
+
+
+def _rec_plain_explanation(row: Any, pos: str) -> str:
+    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    sleeper = pd.to_numeric(row.get("Sleeper Score", np.nan), errors="coerce")
+    if pd.notna(fit) and float(fit) >= 0.65:
+        return f"Fills your {pos} need with strong projection."
+    if pd.notna(scarcity) and float(scarcity) >= 0.6:
+        return "Scarce position with few alternatives left."
+    if pd.notna(sleeper) and float(sleeper) >= 0.55:
+        return "Undervalued upside compared to market rank."
+    if pd.notna(edge) and float(edge) >= 8:
+        return "Best value remaining compared to ADP."
+    return "Strong combination of safety and upside."
+
+
+def _display_edge(edge: float | None) -> tuple[str, str]:
+    if edge is None or pd.isna(edge):
+        return "—", "ld-rec-edge-neu"
+    val = int(round(float(edge)))
+    css = "ld-rec-edge-pos" if val > 0 else ("ld-rec-edge-neg" if val < 0 else "ld-rec-edge-neu")
+    sign = "+" if val > 0 else ""
+    return f"{sign}{val}", css
+
+
+def _display_efv(efv: float | None) -> str:
+    if efv is None or pd.isna(efv):
+        return "—"
+    val = float(efv)
+    if 0 < val <= 1.5:
+        return str(int(round(val * 100)))
+    return str(int(round(val)))
+
+
+def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str] | None = None) -> None:
+    if rec_df is None or getattr(rec_df, "empty", True):
+        return
+    top_name = str(rec_df.iloc[0].get("fullName", "") or "")
+    need = ", ".join(gaps or []) or "balanced roster"
+    scarcity_note = ""
+    if "Scarcity Score" in rec_df.columns:
+        scarce = rec_df.sort_values("Scarcity Score", ascending=False).head(1)
+        if not scarce.empty:
+            sp = str(scarce.iloc[0].get("Primary Position", "") or "")
+            if sp:
+                scarcity_note = f" {sp} scarcity is rising."
+    st.markdown(
+        f'<div class="ld-rec-summary-banner"><strong>Recommendation Summary:</strong> '
+        f"You need <strong>{need}</strong>.{scarcity_note} "
+        f"Top value remaining: <strong>{top_name}</strong>.</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_live_draft_rec_cards(st: Any, rec_df: Any, *, max_cards: int = 6, fmt_rate_4=None, fmt_int=None) -> None:
     if rec_df is None or getattr(rec_df, "empty", True):
         st.caption("No recommendations available.")
         return
 
-    def _fmt_rate(v):
-        if fmt_rate_4:
-            return fmt_rate_4(v)
-        num = pd.to_numeric(v, errors="coerce")
-        return f"{num:.1f}" if pd.notna(num) else "—"
-
-    def _fmt_int(v):
-        if fmt_int:
-            return fmt_int(v)
-        num = pd.to_numeric(v, errors="coerce")
-        return f"{int(num)}" if pd.notna(num) else "—"
-
     rows = list(rec_df.head(max_cards).iterrows())
     if not rows:
         st.caption("No recommendations available.")
         return
+
     cols = st.columns(min(3, len(rows)))
     for i, (_, r) in enumerate(rows, start=1):
         name = str(r.get("fullName", "Player") or "Player")
         pos = str(r.get("Primary Position", "") or "—")
+        team = str(r.get("Team", "") or r.get("MLB Team", "") or "")
         efv = pd.to_numeric(r.get("Expected Fantasy Value", np.nan), errors="coerce")
         edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
         surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
-        surv_lbl = str(r.get("Survival Label", "") or "")
-        tier = "Top pick" if i == 1 else ("Strong fit" if i <= 3 else "Value option")
-        surv_pct = f"{surv * 100:.0f}% survival at next pick" if pd.notna(surv) else ""
+        scarcity = pd.to_numeric(r.get("Scarcity Score", np.nan), errors="coerce")
+        decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
+        draft_fit = pd.to_numeric(r.get("Draft Fit Score", np.nan), errors="coerce")
+        tier_lbl, tier_css = _rec_tier_badge(i, r)
+        edge_txt, edge_css = _display_edge(edge if pd.notna(edge) else None)
+        action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
+        explanation = _rec_plain_explanation(r, pos)
+        surv_txt = f"{int(round(float(surv) * 100))}% Chance Available Next Round" if pd.notna(surv) else "—"
+        scarcity_txt = f"{int(round(float(scarcity) * 100))}%" if pd.notna(scarcity) else "—"
+        decision_txt = f"{int(round(float(decision) * 100))}" if pd.notna(decision) and float(decision) <= 1.5 else (
+            f"{int(round(float(decision)))}" if pd.notna(decision) else "—"
+        )
+        fit_txt = f"{int(round(float(draft_fit) * 100))}%" if pd.notna(draft_fit) and float(draft_fit) <= 1.5 else (
+            f"{int(round(float(draft_fit)))}" if pd.notna(draft_fit) else "—"
+        )
+
         with cols[(i - 1) % len(cols)]:
             with st.container(border=True):
-                st.markdown(f"**#{i} · {tier}**")
-                st.markdown(f"**{name}**")
-                st.caption(f"{pos} · EFV {_fmt_rate(efv)} · Edge {_fmt_int(edge)}")
-                if surv_pct or surv_lbl:
-                    st.caption(f"{surv_pct}{(' · ' + surv_lbl) if surv_lbl else ''}")
+                st.caption(_rec_rank_label(i))
+                st.markdown(f"## {name}")
+                st.markdown(
+                    f'`{pos}` · '
+                    f'<span style="display:inline-block;padding:3px 10px;border-radius:999px;'
+                    f'font-size:12px;font-weight:700;" class="{tier_css}">{tier_lbl}</span>',
+                    unsafe_allow_html=True,
+                )
+                if team:
+                    st.caption(team)
+                st.markdown(
+                    f'<div style="font-size:28px;line-height:1.1;margin:8px 0 4px 0;" class="{edge_css}">'
+                    f'Fantasy Edge {edge_txt}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"Expected Value: {_display_efv(efv if pd.notna(efv) else None)}")
+                st.markdown(f"**{surv_txt}**")
+                st.caption("Chance Available Next Round")
+                st.markdown(f"Position Scarcity: **{scarcity_txt}**")
+                st.caption(f"Decision Score: {decision_txt} · Draft Fit: {fit_txt}")
+                st.info(explanation)
+                st.markdown(f"**{action}**")
+                with st.expander("Show Details", expanded=False):
+                    detail_cols = [c for c in (
+                        "Model Rank", "Market Rank", "Sleeper Score", "Positional Fit",
+                        "Survival Label", "Trend Signal",
+                    ) if c in rec_df.columns]
+                    for col in detail_cols:
+                        val = r.get(col)
+                        if pd.notna(val):
+                            st.text(f"{col}: {val}")

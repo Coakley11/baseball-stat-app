@@ -22,6 +22,7 @@ _BLOCKED_RERUN_SOURCES = frozenset(
         "shared_draft_room_panel",
         "expired_pick_pending",
         "live_draft_queue",
+        "poll_fragment",
     }
 )
 
@@ -332,6 +333,13 @@ def clear_safe_mode_after_successful_pick(session: dict[str, Any], room: dict[st
 
 
 def timer_should_run(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    try:
+        from live_draft_start_progress import is_live_draft_start_in_flight
+
+        if is_live_draft_start_in_flight(session):
+            return False
+    except ImportError:
+        pass
     diag = session.get(SAFE_MODE_DIAG_KEY) or {}
     if isinstance(diag, dict) and "timer_should_run" in diag:
         return bool(diag.get("timer_should_run"))
@@ -341,6 +349,18 @@ def timer_should_run(session: dict[str, Any], room: dict[str, Any]) -> bool:
 
 def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Central gate for all Live Draft Room st.rerun() calls."""
+    try:
+        from live_draft_start_progress import is_live_draft_start_in_flight
+
+        if is_live_draft_start_in_flight(session) and source in (
+            "poll_fragment",
+            "poll_shared_draft",
+            "timer_fragment",
+            "page_autopick",
+        ):
+            return False, "draft_start_in_flight"
+    except ImportError:
+        pass
     if is_safe_mode_active(session) and source in _BLOCKED_RERUN_SOURCES:
         return False, f"safe_mode_blocks_{source}"
 

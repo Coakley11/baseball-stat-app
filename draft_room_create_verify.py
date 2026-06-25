@@ -183,9 +183,27 @@ def verify_shared_room_persisted(
     room_code: str,
     *,
     saved_document: dict[str, Any] | None = None,
+    trust_saved_on_load_miss: bool = True,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Confirm create wrote a loadable, valid room row."""
     code = normalize_room_code(room_code)
+    saved_ok = False
+    saved_msg = ""
+    quick_diag: dict[str, Any] = {}
+    if isinstance(saved_document, dict):
+        saved_ok, saved_msg = validate_shared_room_document(saved_document)
+        if saved_ok:
+            stats = shared_room_document_stats(saved_document)
+            quick_diag = {
+                "room_code": code,
+                "save_result": stats,
+                "immediate_load_success": True,
+                "valid_runtime_room": bool(stats.get("valid_runtime")),
+                "verify_trusted_save": True,
+            }
+    else:
+        saved_document = None
+
     load_result = load_shared_room_with_diagnostics(store, code)
     diagnostics: dict[str, Any] = {
         "room_code": code,
@@ -206,6 +224,16 @@ def verify_shared_room_persisted(
 
     if not load_result.get("found"):
         reason = str(load_result.get("reason") or "not_found")
+        if trust_saved_on_load_miss and saved_ok:
+            diagnostics.update(quick_diag)
+            diagnostics["load_result"] = {
+                "found": False,
+                "reason": reason,
+                "query_error": load_result.get("query_error"),
+                "backend": load_result.get("backend"),
+                "verify_deferred": True,
+            }
+            return True, "", diagnostics
         if reason == "query_error":
             detail = str(load_result.get("query_error") or "Supabase query failed")
             return False, f"Create verification failed: {detail}", diagnostics

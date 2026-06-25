@@ -14,6 +14,8 @@ from live_draft_timer_logic import (
 )
 
 LIVE_DRAFT_TIMER_DIAG_KEY = "_live_draft_timer_diag"
+TIMER_TICK_COUNT_KEY = "_live_draft_timer_tick_count"
+TIMER_LAST_TICK_TS_KEY = "_live_draft_timer_last_tick_ts"
 from live_draft_expired_pick import EXPIRED_PICK_PENDING_KEY, should_fragment_trigger_full_rerun
 LIVE_DRAFT_GRACE_MARKER_KEY = "_live_draft_grace_marker"
 _AUTOPICK_GRACE_SEC = 2.0
@@ -23,20 +25,35 @@ def record_timer_diagnostics(session: dict[str, Any], room: dict[str, Any], *, s
     cfg = dict(room.get("config") or {})
     started = room.get("timer_started_at")
     remaining = live_draft_display_seconds(room)
+    deadline = room.get("timer_deadline") or live_draft_timer_deadline(room)
     prev = dict(session.get(LIVE_DRAFT_TIMER_DIAG_KEY) or {})
     tick_active = bool(source == "fragment_tick") or bool(prev.get("timer_tick_active"))
+    host_eligible = False
+    try:
+        from live_draft_expired_pick import _multiplayer_autopick_allowed
+
+        host_eligible = bool(_multiplayer_autopick_allowed(session))
+    except ImportError:
+        host_eligible = True
     diag = {
         "timer_start_time": started,
-        "timer_deadline": room.get("timer_deadline") or live_draft_timer_deadline(room),
+        "timer_deadline": deadline,
         "seconds_remaining": remaining,
+        "computed_remaining": remaining,
+        "local_now": time.time(),
         "timer_refresh_source": source or prev.get("timer_refresh_source"),
         "timer_tick_active": tick_active,
+        "timer_fragment_active": tick_active,
+        "timer_last_tick_ts": session.get(TIMER_LAST_TICK_TS_KEY),
+        "timer_tick_count": int(session.get(TIMER_TICK_COUNT_KEY) or 0),
         "autopick_enabled": room.get("status") == "in_progress",
+        "host_auto_pick_eligible": host_eligible,
         "current_pick_index": room.get("current_pick_index"),
         "timer_handled_index": room.get("timer_handled_index"),
         "draft_status": room.get("status"),
         "page_load_grace_active": _page_load_grace_active(session, room),
         "timer_expired_for_pick": live_draft_timer_expired_for_pick(room),
+        "last_auto_pick_attempt": session.get("_live_draft_last_autopick_attempt_ts"),
     }
     if source.endswith("_grace_skip"):
         diag["autopick_skipped_reason"] = "page_load_grace"
@@ -113,6 +130,13 @@ def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -
 
 def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Refresh shared room in multiplayer so timer_deadline and pick index stay aligned."""
+    try:
+        from live_draft_start_progress import should_skip_live_draft_poll
+
+        if should_skip_live_draft_poll(session):
+            return sync_live_draft_timer_state(session, room), False
+    except ImportError:
+        pass
     changed = False
     try:
         from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room, reset_shared_draft_sync_gate
@@ -121,7 +145,7 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
         if is_multiplayer_draft_active(session):
             now = time.time()
             last = float(session.get("_live_draft_timer_poll_ts") or 0)
-            interval = min(1.0, float(shared_draft_poll_interval_sec(session)))
+            interval = min(2.5, float(shared_draft_poll_interval_sec(session)))
             if now - last >= interval:
                 session["_live_draft_timer_poll_ts"] = now
                 reset_shared_draft_sync_gate(session)
@@ -165,11 +189,18 @@ def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any]) -> Non
             "timer_start_time",
             "timer_deadline",
             "seconds_remaining",
+            "computed_remaining",
+            "local_now",
             "timer_refresh_source",
             "timer_tick_active",
+            "timer_fragment_active",
+            "timer_last_tick_ts",
+            "timer_tick_count",
             "page_load_grace_active",
             "timer_expired_for_pick",
             "autopick_enabled",
+            "host_auto_pick_eligible",
+            "last_auto_pick_attempt",
             "autopick_skipped_reason",
             "autopick_triggered",
             "autopick_reason",
@@ -183,6 +214,40 @@ def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any]) -> Non
             st.text(f"{key}: {val if val is not None and val != '' else '—'}")
 
 
+def _render_js_countdown(st: Any, deadline: float, *, pick_index: int) -> None:
+    """Client-side 1 Hz countdown — does not require shared-room poll."""
+    try:
+        import streamlit.components.v1 as components
+    except ImportError:
+        return
+    components.html(
+        f"""
+        <div style="font-family: system-ui, sans-serif;">
+          <div style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#64748b;">
+            Time on clock
+          </div>
+          <div id="ld-timer-{pick_index}" style="font-size:36px;font-weight:900;color:#0f172a;line-height:1.1;">
+            --
+          </div>
+        </div>
+        <script>
+        (function() {{
+          const deadline = {float(deadline)};
+          const el = document.getElementById("ld-timer-{pick_index}");
+          if (!el) return;
+          function tick() {{
+            const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+            el.textContent = rem + "s";
+            if (rem > 0) window.setTimeout(tick, 1000);
+          }}
+          tick();
+        }})();
+        </script>
+        """,
+        height=72,
+    )
+
+
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available."""
     live_room = _resolve_live_room(session, room)
@@ -192,12 +257,20 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         if not timer_should_run(session, live_room):
             remaining = live_draft_display_seconds(live_room)
             record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
-            st.markdown(f"**Time on clock:** {remaining}s")
+            deadline = live_draft_timer_deadline(live_room)
+            if deadline is not None:
+                _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0))
+            else:
+                st.markdown(f"**Time on clock:** {remaining}s")
             return
         record_safe_mode_diagnostics(session, timer_fragment_active=True, timer_should_run=True)
     except ImportError:
         pass
     live_room = sync_live_draft_timer_state(session, live_room)
+    deadline = live_draft_timer_deadline(live_room)
+    pick_idx = int(live_room.get("current_pick_index") or 0)
+    if deadline is not None:
+        _render_js_countdown(st, float(deadline), pick_index=pick_idx)
 
     try:
         fragment = st.fragment
@@ -207,6 +280,8 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
     @fragment(run_every=1)
     def _timer_tick() -> None:
+        session[TIMER_TICK_COUNT_KEY] = int(session.get(TIMER_TICK_COUNT_KEY) or 0) + 1
+        session[TIMER_LAST_TICK_TS_KEY] = time.time()
         tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
         _render_timer_static(st, session, tick_room, source="fragment_tick")
         if poll_changed:
@@ -236,4 +311,11 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any], *, source: str = "static") -> None:
     remaining = live_draft_display_seconds(room)
     record_timer_diagnostics(session, room, source=source)
-    st.markdown(f"**Time on clock:** {remaining}s")
+    try:
+        from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
+
+        record_multiplayer_sync_diagnostics(session, room=room)
+    except ImportError:
+        pass
+    if source != "fragment_tick":
+        st.markdown(f"**Time on clock:** {remaining}s")

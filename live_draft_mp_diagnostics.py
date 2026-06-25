@@ -49,6 +49,12 @@ def record_multiplayer_sync_diagnostics(
         live = session.get("live_draft_room")
     if isinstance(live, dict):
         diag["room_id"] = str(live.get("draft_room_id") or "")
+        try:
+            from draft_room_context import resolve_shared_room_code
+
+            diag["room_code"] = resolve_shared_room_code(session) or None
+        except ImportError:
+            diag["room_code"] = None
         diag["timer_deadline"] = live.get("timer_deadline")
         diag["seconds_remaining"] = live_draft_seconds_remaining(live)
         diag["current_pick_index"] = live.get("current_pick_index")
@@ -71,6 +77,24 @@ def record_multiplayer_sync_diagnostics(
     except ImportError:
         pass
 
+    try:
+        from live_draft_timer_ui import LIVE_DRAFT_TIMER_DIAG_KEY
+
+        timer_diag = session.get(LIVE_DRAFT_TIMER_DIAG_KEY) or {}
+        if isinstance(timer_diag, dict):
+            for key in (
+                "timer_fragment_active",
+                "timer_last_tick_ts",
+                "timer_tick_count",
+                "computed_remaining",
+                "host_auto_pick_eligible",
+                "last_auto_pick_attempt",
+            ):
+                if key in timer_diag:
+                    diag[key] = timer_diag.get(key)
+    except ImportError:
+        pass
+
     session[LIVE_DRAFT_MP_DIAG_KEY] = diag
     return diag
 
@@ -82,12 +106,19 @@ def render_multiplayer_sync_diagnostics(st: Any, session: dict[str, Any], *, dev
     with st.expander("Multiplayer sync diagnostics", expanded=developer_mode):
         for key in (
             "room_id",
+            "room_code",
             "local_revision",
             "remote_revision",
             "last_poll_ts",
             "last_successful_shared_read_ts",
             "timer_deadline",
             "seconds_remaining",
+            "computed_remaining",
+            "timer_fragment_active",
+            "timer_last_tick_ts",
+            "timer_tick_count",
+            "host_auto_pick_eligible",
+            "last_auto_pick_attempt",
             "current_pick_index",
             "on_clock_team",
             "is_host",

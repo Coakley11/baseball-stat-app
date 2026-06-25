@@ -78,20 +78,37 @@ def clear_stale_multiplayer_state(session: dict[str, Any], *, reason: str = "") 
         session["_draft_room_membership_notice"] = reason
 
 
-def is_multiplayer_draft_active(session: dict[str, Any]) -> bool:
+def resolve_shared_room_code(session: dict[str, Any]) -> str:
+    """Best-effort 6-character join code from session keys (survives refresh/poll)."""
     try:
-        from draft_room_create_verify import is_plausible_share_code
+        from draft_room_create_verify import is_plausible_share_code, normalize_room_code
 
-        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-        return bool(code) and is_plausible_share_code(code)
+        meta = session.get(SHARED_ROOM_META_KEY) or {}
+        candidates = (
+            session.get(ACTIVE_SHARED_ROOM_CODE_KEY),
+            session.get("shared_room_code"),
+            meta.get("room_code") if isinstance(meta, dict) else None,
+        )
+        for raw in candidates:
+            code = normalize_room_code(raw)
+            if code and is_plausible_share_code(code):
+                if normalize_room_code(session.get(ACTIVE_SHARED_ROOM_CODE_KEY)) != code:
+                    session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
+                return code
     except ImportError:
-        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip()
-        return bool(code)
+        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        if code:
+            return code
+    return ""
+
+
+def is_multiplayer_draft_active(session: dict[str, Any]) -> bool:
+    return bool(resolve_shared_room_code(session))
 
 
 def get_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     """Structured context for pages, AMI, and recommendation wrappers."""
-    room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    room_code = resolve_shared_room_code(session)
     participant_id = resolve_participant_id(session)
     participant_team = active_participant_team(session) if room_code else ""
     shared_meta = dict(session.get(SHARED_ROOM_META_KEY) or {})
@@ -567,7 +584,15 @@ def create_and_host_shared_room(
         live = session.get("live_draft_room")
         if not isinstance(live, dict):
             live = runtime if isinstance(runtime, dict) else live_room
-        log_live_draft_room_created(live, session=session)
+        try:
+            from live_draft_start_progress import is_live_draft_start_in_flight, queue_live_draft_created_activity
+
+            if is_live_draft_start_in_flight(session):
+                queue_live_draft_created_activity(session)
+            else:
+                log_live_draft_room_created(live, session=session)
+        except ImportError:
+            log_live_draft_room_created(live, session=session)
     except Exception:
         pass
     return saved_code, saved

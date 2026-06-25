@@ -54,6 +54,58 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         self.assertGreaterEqual(remaining, 49)
         self.assertLessEqual(remaining, 50)
 
+    def test_display_recomputes_from_deadline_each_call(self) -> None:
+        import time
+
+        from live_draft_timer_logic import live_draft_display_seconds, live_draft_seconds_remaining
+
+        deadline = time.time() + 30
+        room = {
+            "status": "in_progress",
+            "config": {"timer_seconds": 60},
+            "timer_deadline": deadline,
+            "timer_started_at": time.time() - 999,
+        }
+        r1 = live_draft_display_seconds(room)
+        room["timer_deadline"] = deadline - 5
+        r2 = live_draft_display_seconds(room)
+        self.assertGreater(r1, r2)
+        self.assertEqual(live_draft_seconds_remaining(room), r2)
+
+    def test_timer_diagnostics_record_tick_metadata(self) -> None:
+        import time
+
+        from live_draft_timer_ui import LIVE_DRAFT_TIMER_DIAG_KEY, record_timer_diagnostics
+
+        session: dict = {}
+        room = {
+            "status": "in_progress",
+            "config": {"timer_seconds": 60},
+            "timer_deadline": time.time() + 25,
+            "current_pick_index": 2,
+        }
+        diag = record_timer_diagnostics(session, room, source="fragment_tick")
+        self.assertIn("timer_deadline", diag)
+        self.assertIn("computed_remaining", diag)
+        self.assertTrue(session[LIVE_DRAFT_TIMER_DIAG_KEY]["timer_fragment_active"])
+
+    def test_timer_should_not_run_during_start(self) -> None:
+        from live_draft_safe_mode import timer_should_run
+        from live_draft_start_progress import begin_live_draft_start
+
+        session: dict = {}
+        room = {
+            "status": "in_progress",
+            "config": {"timer_seconds": 60, "num_teams": 2, "picks_per_team": 5},
+            "teams": ["A", "B"],
+            "pick_order": [{"Pick": 1, "Team": "A"}],
+            "draft_board": [],
+            "current_pick_index": 0,
+            "timer_deadline": __import__("time").time() + 60,
+        }
+        begin_live_draft_start(session)
+        self.assertFalse(timer_should_run(session, room))
+
     def test_current_slot_respects_index(self) -> None:
         from live_draft_timer_logic import live_draft_current_slot
 
