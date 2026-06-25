@@ -111,6 +111,42 @@ def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -
     return live_room
 
 
+def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Refresh shared room in multiplayer so timer_deadline and pick index stay aligned."""
+    changed = False
+    try:
+        from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room, reset_shared_draft_sync_gate
+        from suite_egress_policy import shared_draft_poll_interval_sec
+
+        if is_multiplayer_draft_active(session):
+            now = time.time()
+            last = float(session.get("_live_draft_timer_poll_ts") or 0)
+            interval = min(1.0, float(shared_draft_poll_interval_sec(session)))
+            if now - last >= interval:
+                session["_live_draft_timer_poll_ts"] = now
+                reset_shared_draft_sync_gate(session)
+                changed = bool(poll_shared_draft_room(session))
+    except ImportError:
+        pass
+    live_room = sync_live_draft_timer_state(session, room)
+    return live_room, changed
+
+
+def _guest_waiting_for_host_autopick(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """Guests poll when timer hits zero so host auto-picks appear without manual refresh."""
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from live_draft_expired_pick import _multiplayer_autopick_allowed
+
+        if not is_multiplayer_draft_active(session):
+            return False
+        if _multiplayer_autopick_allowed(session):
+            return False
+        return live_draft_timer_expired_for_pick(room)
+    except ImportError:
+        return False
+
+
 def _timer_expired_pending(session: dict[str, Any], room: dict[str, Any]) -> bool:
     live_room = _resolve_live_room(session, room)
     if live_room.get("status") != "in_progress":
@@ -171,8 +207,20 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
     @fragment(run_every=1)
     def _timer_tick() -> None:
-        tick_room = sync_live_draft_timer_state(session, room)
+        tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
         _render_timer_static(st, session, tick_room, source="fragment_tick")
+        if poll_changed:
+            session.pop("_live_draft_rec_cache", None)
+            try:
+                from live_draft_safe_mode import request_live_draft_rerun
+
+                if request_live_draft_rerun(st, session, "poll_fragment", room=tick_room):
+                    return
+            except ImportError:
+                st.rerun()
+                return
+        elif _guest_waiting_for_host_autopick(session, tick_room):
+            st.caption("Waiting for host to auto-pick…")
         if should_fragment_trigger_full_rerun(session, tick_room):
             session[EXPIRED_PICK_PENDING_KEY] = True
             try:

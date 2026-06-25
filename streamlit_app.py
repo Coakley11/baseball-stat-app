@@ -18706,6 +18706,7 @@ if active_page == "Live Draft Room":
                     from draft_commit_diagnostics import render_live_draft_pick_notice
                     from draft_commit_diagnostics_ui import render_draft_commit_diagnostics
                     from live_draft_expired_pick_diagnostics_ui import render_autopick_diagnostics
+                    from live_draft_mp_diagnostics import render_multiplayer_sync_diagnostics
                     from live_draft_poll_ui import render_live_poll_diagnostics
                     from live_draft_safe_mode_diagnostics_ui import render_safe_mode_diagnostics
                     from live_draft_timer_ui import render_live_draft_timer_diagnostics
@@ -18722,6 +18723,7 @@ if active_page == "Live Draft Room":
                     render_autopick_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_safe_mode_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_live_poll_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
+                    render_multiplayer_sync_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_live_draft_timer_diagnostics(st, st.session_state)
                 except ImportError:
                     pass

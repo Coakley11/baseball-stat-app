@@ -138,6 +138,17 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
             return
         changed = _run_shared_poll(session)
         remote_rev = _local_revision(session)
+        try:
+            from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
+
+            record_multiplayer_sync_diagnostics(
+                session,
+                local_revision=local_rev if not changed else remote_rev,
+                remote_revision=remote_rev,
+                poll_applied=changed,
+            )
+        except ImportError:
+            pass
         record_live_poll_diagnostics(
             session,
             local_revision=local_rev,

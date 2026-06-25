@@ -44,6 +44,7 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
             SHARED_ROOM_META_KEY,
             get_shared_room_store,
             publish_shared_room_runtime,
+            shared_document_room_blob,
         )
 
         if not is_multiplayer_draft_active(session):
@@ -140,7 +141,25 @@ def persist_applied_pick(
     except ImportError:
         pass
 
-    write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+    write_canonical_live_draft_state(session, room, reason=source, local_edit=not mp)
+    if mp:
+        try:
+            from live_draft_state import clear_live_draft_local_edit
+
+            clear_live_draft_local_edit(session)
+        except ImportError:
+            pass
+        try:
+            from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
+
+            record_multiplayer_sync_diagnostics(
+                session,
+                room=room,
+                last_pick_source=source,
+                last_shared_write_ok=True,
+            )
+        except ImportError:
+            pass
 
     try:
         from baseball_draft_activity import after_live_draft_pick_committed

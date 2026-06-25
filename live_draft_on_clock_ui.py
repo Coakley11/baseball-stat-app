@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from live_draft_timer_logic import live_draft_display_seconds
+from live_draft_timer_logic import live_draft_current_slot, live_draft_display_seconds
 from live_draft_timer_ui import _resolve_live_room
 
 
@@ -94,7 +94,8 @@ def render_live_on_clock_banner(
     @fragment(run_every=1)
     def _banner_tick() -> None:
         tick_room = _resolve_live_room(session, room)
+        tick_slot = live_draft_current_slot(tick_room) or slot_view
         remaining = live_draft_display_seconds(tick_room)
-        _render_on_clock_banner_html(st, slot_view, remaining, next_pick=next_pick_view)
+        _render_on_clock_banner_html(st, tick_slot, remaining, next_pick=next_pick_view)
 
     _banner_tick()

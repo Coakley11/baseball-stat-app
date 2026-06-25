@@ -340,27 +340,24 @@ def render_live_draft_rec_cards(st: Any, rec_df: Any, *, max_cards: int = 6, fmt
         num = pd.to_numeric(v, errors="coerce")
         return f"{int(num)}" if pd.notna(num) else "—"
 
-    cards = []
-    for i, (_, r) in enumerate(rec_df.head(max_cards).iterrows(), start=1):
-        name = r.get("fullName", "Player")
+    rows = list(rec_df.head(max_cards).iterrows())
+    if not rows:
+        st.caption("No recommendations available.")
+        return
+    cols = st.columns(min(3, len(rows)))
+    for i, (_, r) in enumerate(rows, start=1):
+        name = str(r.get("fullName", "Player") or "Player")
         pos = str(r.get("Primary Position", "") or "—")
         efv = pd.to_numeric(r.get("Expected Fantasy Value", np.nan), errors="coerce")
         edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
         surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
         surv_lbl = str(r.get("Survival Label", "") or "")
-        tier = "tier-top" if pd.notna(surv) and surv >= 0.55 else ("tier-value" if pd.notna(surv) and surv >= 0.30 else "tier-risk")
-        surv_cls = "surv-high" if tier == "tier-top" else ("surv-mid" if tier == "tier-value" else "surv-low")
+        tier = "Top pick" if i == 1 else ("Strong fit" if i <= 3 else "Value option")
         surv_pct = f"{surv * 100:.0f}% survival at next pick" if pd.notna(surv) else ""
-        rec_level = "Top pick" if i == 1 else ("Strong fit" if i <= 3 else "Value option")
-        cards.append(
-            f"""
-            <div class="live-rec-card {tier}">
-                <div class="rec-rank">#{i} · {rec_level}</div>
-                <div class="name">{name}</div>
-                <div><span class="pos-badge">{pos}</span></div>
-                <div class="stats">EFV {_fmt_rate(efv)} · Edge {_fmt_int(edge)}</div>
-                <div class="{surv_cls}">{surv_pct}{(' · ' + surv_lbl) if surv_lbl else ''}</div>
-            </div>
-            """
-        )
-    st.markdown(f'<div class="live-rec-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+        with cols[(i - 1) % len(cols)]:
+            with st.container(border=True):
+                st.markdown(f"**#{i} · {tier}**")
+                st.markdown(f"**{name}**")
+                st.caption(f"{pos} · EFV {_fmt_rate(efv)} · Edge {_fmt_int(edge)}")
+                if surv_pct or surv_lbl:
+                    st.caption(f"{surv_pct}{(' · ' + surv_lbl) if surv_lbl else ''}")

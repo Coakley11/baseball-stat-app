@@ -27,6 +27,7 @@ from draft_room_shared_state import (
     get_shared_room_store,
     load_shared_room,
     publish_shared_room_runtime,
+    shared_document_room_blob,
     shared_room_backend_name,
     shared_room_document,
 )
@@ -304,15 +305,34 @@ def sync_shared_draft_room(
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_live_draft_locally_dirty, live_draft_board_len, runtime_room_ahead_of_blob
 
         runtime = session.get(LIVE_DRAFT_ROOM_KEY)
-        if is_live_draft_locally_dirty(session) and isinstance(runtime, dict):
-            remote_room = document.get("live_room") if isinstance(document.get("live_room"), dict) else document
-            if isinstance(remote_room, dict) and runtime_room_ahead_of_blob(runtime, remote_room):
+        remote_blob = shared_document_room_blob(document)
+        if is_live_draft_locally_dirty(session) and isinstance(runtime, dict) and isinstance(remote_blob, dict):
+            if runtime_room_ahead_of_blob(runtime, remote_blob):
                 return False
     except ImportError:
         pass
     if force or remote_rev > local_rev:
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
+        try:
+            from live_draft_state import clear_live_draft_local_edit
+
+            clear_live_draft_local_edit(session)
+        except ImportError:
+            pass
         load_participant_workflow_into_session(session, room_code)
+        try:
+            from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
+
+            runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+            record_multiplayer_sync_diagnostics(
+                session,
+                room=runtime if isinstance(runtime, dict) else None,
+                local_revision=remote_rev,
+                remote_revision=remote_rev,
+                poll_applied=True,
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_state import check_manual_commit_overwrite
 
@@ -883,6 +903,26 @@ def commit_shared_room_state(
                 realtime_update_received=True,
             )
         return False, conflict_msg, saved
+
+    try:
+        from live_draft_state import clear_live_draft_local_edit
+
+        clear_live_draft_local_edit(session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
+
+        record_multiplayer_sync_diagnostics(
+            session,
+            room=live_room if isinstance(live_room, dict) else None,
+            local_revision=rev_after,
+            remote_revision=rev_after,
+            last_shared_write_ok=True,
+            last_pick_source="shared_room_commit",
+        )
+    except ImportError:
+        pass
 
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     if room_code:

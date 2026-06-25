@@ -144,11 +144,22 @@ def shared_room_document(
     }
 
 
+def shared_document_room_blob(document: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Persisted live-draft room payload inside a shared room document."""
+    if not isinstance(document, dict):
+        return None
+    room = document.get("room")
+    if isinstance(room, dict):
+        return room
+    legacy = document.get("live_room")
+    return legacy if isinstance(legacy, dict) else None
+
+
 def document_to_runtime_room(document: dict[str, Any] | None) -> dict[str, Any] | None:
     """Rebuild runtime ``live_draft_room`` from a shared room document."""
     if not isinstance(document, dict):
         return None
-    room_blob = document.get("room")
+    room_blob = shared_document_room_blob(document)
     if not isinstance(room_blob, dict):
         return None
     runtime = room_from_persist_dict(copy.deepcopy(room_blob))
