@@ -7,6 +7,15 @@ from typing import Any
 
 DRAFT_LAB_PAGE = "Draft Simulation Test Mode"
 
+# Post-draft results tabs (no Trade Simulator — trade ideas stay in exports only).
+DRAFT_LAB_RESULT_TABS: tuple[str, ...] = (
+    "Draft Board",
+    "Team Rosters",
+    "Team Analysis",
+    "Best / Questionable Picks",
+    "Exports",
+)
+
 _LAB_WINDOW_OPTIONS = [3, 4, 5]
 _LAB_FORMAT_OPTIONS = ["5x5 Roto", "Points League"]
 

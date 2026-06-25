@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 import page_state as pg
-from draft_lab_state import DRAFT_LAB_PAGE, ensure_draft_lab_widget_keys, sync_draft_lab_session_before_save
+from draft_lab_state import DRAFT_LAB_PAGE, DRAFT_LAB_RESULT_TABS, ensure_draft_lab_widget_keys, sync_draft_lab_session_before_save
 
 
 class TestDraftLabWidgetSeeding(unittest.TestCase):
@@ -58,6 +59,36 @@ class TestDraftLabWidgetSeeding(unittest.TestCase):
         self.assertIn("draft_lab_projection_style", snap)
         self.assertIn("draft_lab_picks_per_team", snap)
         self.assertIn("draft_lab_roster_team", snap)
+
+
+class TestDraftLabResultTabs(unittest.TestCase):
+    def test_no_trade_simulator_tab(self) -> None:
+        self.assertNotIn("Trade Simulator", DRAFT_LAB_RESULT_TABS)
+
+    def test_draft_analysis_tabs_present(self) -> None:
+        for label in (
+            "Draft Board",
+            "Team Rosters",
+            "Team Analysis",
+            "Best / Questionable Picks",
+            "Exports",
+        ):
+            self.assertIn(label, DRAFT_LAB_RESULT_TABS)
+
+    def test_exports_is_last_tab(self) -> None:
+        self.assertEqual(DRAFT_LAB_RESULT_TABS[-1], "Exports")
+        self.assertEqual(len(DRAFT_LAB_RESULT_TABS), 5)
+
+    def test_trade_helper_still_available_globally(self) -> None:
+        from streamlit_app import suggest_draft_lab_trades
+
+        self.assertTrue(callable(suggest_draft_lab_trades))
+
+    def test_trade_analyzer_page_unchanged(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "streamlit_app.py"
+        source = app_path.read_text(encoding="utf-8")
+        self.assertIn("Trade Analyzer / Roster Move Assistant", source)
+        self.assertNotIn('"Trade Simulator", "Exports"', source)
 
 
 if __name__ == "__main__":

@@ -17407,9 +17407,16 @@ if active_page == "Draft Simulation Test Mode":
             draft_lab_board_display_columns,
             format_snake_draft_caption,
         )
-        from draft_lab_state import draft_lab_roster_view_options
+        from draft_lab_state import DRAFT_LAB_RESULT_TABS, draft_lab_roster_view_options
     except ImportError:
         FANTASY_EDGE_HELP = ""
+        DRAFT_LAB_RESULT_TABS = (
+            "Draft Board",
+            "Team Rosters",
+            "Team Analysis",
+            "Best / Questionable Picks",
+            "Exports",
+        )
         draft_lab_roster_view_options = lambda _s: ["All Teams", "Team A", "Team B", "Team C", "Team D"]
         draft_lab_board_display_columns = lambda: []
         format_snake_draft_caption = lambda _t: ""
@@ -17468,7 +17475,7 @@ if active_page == "Draft Simulation Test Mode":
         else:
             st.info("Actual 2026 stats are not available in the current dataset, so the app is ranking teams using projected fantasy value instead.")
 
-        tabs = st.tabs(["Draft Board", "Team Rosters", "Team Analysis", "Best / Questionable Picks", "Trade Simulator", "Exports"])
+        tabs = st.tabs(list(DRAFT_LAB_RESULT_TABS))
 
         _ctx = analysis_context_from_session(st.session_state, lab_state)
         if lab_analysis_ctx:
@@ -17601,20 +17608,6 @@ if active_page == "Draft Simulation Test Mode":
                     pass
 
         with tabs[4]:
-            st.subheader("Trade Simulator")
-            st.caption("One-for-one trade ideas based on projected value, team weaknesses, position scarcity, and roster needs. These are discussion starters, not forced recommendations.")
-            if is_dataframe_empty(lab_trades):
-                st.info("No clear trade ideas found from this simulated draft. Try rerunning with a different projection style or format.")
-            else:
-                render_output_table(
-                    clean_ui_columns(lab_trades),
-                    key="draft_lab_trade_suggestions",
-                    file_name="draft_simulation_trade_suggestions.csv",
-                    display_rows=30,
-                    style_cols=["Roster Need Improvement", "Projected Value Gain/Loss"],
-                )
-
-        with tabs[5]:
             st.subheader("Export Draft Lab")
             export_frames = build_draft_lab_export_frames(
                 format_draft_lab_table(draft_board.copy(), for_export=True),
