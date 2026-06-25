@@ -365,6 +365,14 @@ def create_and_host_shared_room(
     except ImportError:
         live_room = copy.deepcopy(live_room)
     try:
+        from draft_source_validation import ALLOW_FREE_POOL_KEY
+
+        cfg = dict(live_room.get("config") or {})
+        cfg.setdefault(ALLOW_FREE_POOL_KEY, True)
+        live_room["config"] = cfg
+    except ImportError:
+        pass
+    try:
         import pandas as pd
 
         from draft_scoring_pool import prepare_pool_for_compact_serialization

@@ -72,11 +72,14 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
 
     @patch("draft_actions.draft_action_context", return_value=_live_ctx())
     @patch("live_draft_state.live_draft_get_available", side_effect=RuntimeError("pool load failed"))
-    def test_unavailable_pool_renders_without_crash(self, _avail: MagicMock, _ctx: MagicMock) -> None:
+    def test_unavailable_pool_renders_disabled_button_on_your_turn(self, _avail: MagicMock, _ctx: MagicMock) -> None:
         result = render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=False)
         self.assertFalse(result)
         diag = self.session.get("_live_draft_ui_diag") or {}
         self.assertEqual(diag.get("draft_action_disable_reason"), "pool_unavailable")
+        self.assertTrue(diag.get("draft_button_rendered"))
+        self.assertFalse(diag.get("draft_button_enabled"))
+        self.st.button.assert_called()
 
     @patch("draft_ui.render_draft_button", return_value=False)
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=True)
@@ -106,23 +109,26 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=False)
     @patch("draft_actions.draft_action_context", return_value=_live_ctx())
     @patch("live_draft_state.live_draft_get_available")
-    def test_multiplayer_no_allowed_players_shows_disabled_button(
+    def test_multiplayer_restricted_empty_sources_falls_back_to_full_pool(
         self,
         mock_get_available: MagicMock,
         _ctx: MagicMock,
         _free: MagicMock,
         _allowed: MagicMock,
-        _btn: MagicMock,
+        mock_btn: MagicMock,
     ) -> None:
         mock_get_available.return_value = pd.DataFrame(
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
         )
+        self.st.selectbox.return_value = "Aaron Judge"
         self.session["active_shared_draft_room_code"] = "ABC123"
         render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=True)
-        self.st.button.assert_called()
+        self.st.selectbox.assert_called()
+        mock_btn.assert_called()
         diag = self.session.get("_live_draft_ui_diag") or {}
-        self.assertEqual(diag.get("draft_action_disable_reason"), "no_allowed_players")
-        self.assertTrue(diag.get("multiplayer_mode"))
+        self.assertEqual(diag.get("pool_source"), "full_pool_turn_fallback")
+        self.assertTrue(diag.get("draft_button_rendered"))
+        self.assertEqual(diag.get("candidate_count"), 1)
 
 
 if __name__ == "__main__":

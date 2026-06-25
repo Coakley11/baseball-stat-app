@@ -331,6 +331,65 @@ def on_start_new_live_draft() -> None:
 _LIVE_DRAFT_UI_DIAG_KEY = "_live_draft_ui_diag"
 
 
+def _manual_draft_options_from_pool(available: Any) -> list[str]:
+    """Sort pool rows for Manual Draft selectbox; tolerate compact/missing scoring columns."""
+    if available is None or getattr(available, "empty", True):
+        return []
+    df = available.copy()
+    name_col = "fullName" if "fullName" in df.columns else ("Player" if "Player" in df.columns else "")
+    if not name_col:
+        return []
+    sort_cols = [c for c in ("Expected Fantasy Value", "Model Rank") if c in df.columns]
+    if sort_cols:
+        ascending = [False if c == "Expected Fantasy Value" else True for c in sort_cols]
+        df = df.sort_values(sort_cols, ascending=ascending)
+    return [str(x).strip() for x in df[name_col].dropna().astype(str).tolist() if str(x).strip()]
+
+
+def _render_manual_draft_action_button(
+    st: Any,
+    *,
+    should_render: bool,
+    enabled: bool,
+    disable_reason: str,
+    key: str,
+) -> None:
+    """Always show a Draft Player control when the turn gate passes (acceptance)."""
+    if not should_render:
+        return
+    if enabled:
+        return
+    st.button(
+        "Draft Player",
+        key=key,
+        disabled=True,
+        type="primary",
+        help=str(disable_reason or "Cannot draft right now.")[:200],
+    )
+
+
+def render_live_manual_draft_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    raw = session.get(_LIVE_DRAFT_UI_DIAG_KEY)
+    if not isinstance(raw, dict):
+        return
+    with st.expander("Manual draft diagnostics", expanded=developer_mode and not raw.get("draft_button_enabled")):
+        rows = (
+            ("render_path", raw.get("render_path")),
+            ("pool_source", raw.get("pool_source")),
+            ("available_player_count", raw.get("available_player_count")),
+            ("filtered_player_count", raw.get("filtered_player_count")),
+            ("candidate_count", raw.get("candidate_count")),
+            ("selected_player", raw.get("selected_player")),
+            ("draft_button_should_render", raw.get("draft_button_should_render")),
+            ("draft_button_rendered", raw.get("draft_button_rendered")),
+            ("draft_button_enabled", raw.get("draft_button_enabled")),
+            ("draft_button_disable_reason", raw.get("draft_button_disable_reason") or raw.get("draft_action_disable_reason")),
+            ("manual_draft_panel_skipped", raw.get("manual_draft_panel_skipped")),
+        )
+        for label, value in rows:
+            st.text(f"{label}: {value if value is not None and value != '' else '—'}")
+
+
 def record_live_draft_ui_diagnostics(
     session: dict[str, Any],
     updates: dict[str, Any] | None = None,
@@ -365,114 +424,169 @@ def render_live_manual_draft_panel(
 
     ctx = draft_action_context(session)
     render_path = "live_draft_room"
-    diag_base = {
+    should_render = bool(
+        ctx.get("draft_enabled")
+        and ctx.get("is_your_pick")
+        and str(ctx.get("draft_status") or "") == "in_progress"
+    )
+    diag_base: dict[str, Any] = {
         "render_path": render_path,
-        "draft_button_should_render": bool(
-            ctx.get("draft_enabled")
-            and ctx.get("is_your_pick")
-            and str(ctx.get("draft_status") or "") == "in_progress"
-        ),
+        "draft_button_should_render": should_render,
         "draft_button_rendered": False,
+        "draft_button_enabled": False,
+        "draft_button_disable_reason": "",
         "player_action_panel_rendered": True,
+        "manual_draft_panel_skipped": False,
         "selected_player": "",
         "draft_action_disable_reason": "",
         "multiplayer_mode": multiplayer,
+        "pool_source": "",
+        "available_player_count": 0,
+        "filtered_player_count": 0,
+        "candidate_count": 0,
     }
 
+    pool_load_error = ""
+    available = None
     try:
         from live_draft_state import live_draft_get_available
 
-        try:
-            available = live_draft_get_available(room)
-        except Exception:
-            available = None
-    except ImportError:
+        available = live_draft_get_available(room)
+    except Exception as exc:
+        pool_load_error = str(exc)
         available = None
 
     available_count = int(len(available)) if available is not None and hasattr(available, "__len__") else 0
     diag_base["available_player_count"] = available_count
 
     st.subheader("Manual Draft")
-    if available is None:
-        record_live_draft_ui_diagnostics(
-            session,
-            {
-                **diag_base,
-                "filtered_player_count": 0,
-                "draft_button_rendered": False,
-                "draft_action_disable_reason": "pool_unavailable",
-            },
-        )
-        return False
-    if available_count == 0:
-        record_live_draft_ui_diagnostics(
-            session,
-            {
-                **diag_base,
-                "filtered_player_count": 0,
-                "draft_button_rendered": False,
-                "draft_action_disable_reason": "empty_pool",
-            },
-        )
-        st.warning("No players left in the pool.")
+
+    def _finish(diag: dict[str, Any], *, show_disabled: bool = True) -> bool:
+        record_live_draft_ui_diagnostics(session, diag)
+        render_live_manual_draft_diagnostics(st, session)
+        if show_disabled and should_render and not diag.get("draft_button_rendered"):
+            _render_manual_draft_action_button(
+                st,
+                should_render=True,
+                enabled=False,
+                disable_reason=str(diag.get("draft_button_disable_reason") or diag.get("draft_action_disable_reason") or ""),
+                key=f"live_draft_player_blocked_{diag.get('draft_action_disable_reason') or 'blocked'}",
+            )
+            record_live_draft_ui_diagnostics(session, draft_button_rendered=True)
         return False
 
-    all_player_options = available.sort_values(
-        ["Expected Fantasy Value", "Model Rank"], ascending=[False, True]
-    )["fullName"].astype(str).tolist()
+    if available is None:
+        reason = f"live_draft_pool_unavailable:{pool_load_error or 'pool_load_failed'}"
+        return _finish(
+            {
+                **diag_base,
+                "filtered_player_count": 0,
+                "candidate_count": 0,
+                "draft_action_disable_reason": "pool_unavailable",
+                "draft_button_disable_reason": reason,
+                "pool_source": "unavailable",
+            }
+        )
+
+    if available_count == 0:
+        st.warning("No players left in the pool.")
+        return _finish(
+            {
+                **diag_base,
+                "filtered_player_count": 0,
+                "candidate_count": 0,
+                "draft_action_disable_reason": "empty_pool",
+                "draft_button_disable_reason": "empty_pool",
+                "pool_source": "empty",
+            },
+            show_disabled=True,
+        )
+
+    all_player_options = _manual_draft_options_from_pool(available)
+    if not all_player_options:
+        return _finish(
+            {
+                **diag_base,
+                "filtered_player_count": 0,
+                "candidate_count": 0,
+                "draft_action_disable_reason": "pool_missing_name_column",
+                "draft_button_disable_reason": "pool_missing_name_column",
+                "pool_source": "invalid_pool_shape",
+            }
+        )
+
+    pool_source = "free_pool"
     try:
         from draft_source_validation import allow_free_pool_drafting, allowed_draft_player_names
 
         if allow_free_pool_drafting(session, live_room=room):
             player_options = all_player_options
+            pool_source = "free_pool"
         else:
             player_options = allowed_draft_player_names(
                 session,
                 live_room=room,
                 available_names=all_player_options,
             )
+            pool_source = "queue_watchlist_tracked"
+            if not player_options and should_render:
+                player_options = all_player_options
+                pool_source = "full_pool_turn_fallback"
+                st.caption(
+                    "No players in your Queue, Watchlist, or Tracked list — showing full pool for this pick."
+                )
     except ImportError:
         player_options = all_player_options
+        pool_source = "free_pool"
 
     filtered_count = len(player_options)
-    diag_base["filtered_player_count"] = filtered_count
+    diag_base.update(
+        {
+            "filtered_player_count": filtered_count,
+            "candidate_count": filtered_count,
+            "pool_source": pool_source,
+        }
+    )
     paused = room.get("status") == "paused"
 
     if not player_options:
+        return _finish(
+            {
+                **diag_base,
+                "draft_action_disable_reason": "no_allowed_players",
+                "draft_button_disable_reason": "no_allowed_players",
+            }
+        )
+
+    if not should_render:
         record_live_draft_ui_diagnostics(
             session,
             {
                 **diag_base,
-                "draft_button_rendered": False,
-                "draft_action_disable_reason": "no_allowed_players",
+                "draft_action_disable_reason": "not_your_turn_or_not_in_progress",
+                "draft_button_disable_reason": "not_your_turn_or_not_in_progress",
             },
         )
-        st.info(
-            "Add players to your **Queue**, **Watchlist**, or **Tracked Players** "
-            "to draft — or enable free pool drafting in the shared room panel."
-        )
-        if diag_base["draft_button_should_render"]:
-            st.button(
-                "Draft Player",
-                key="live_draft_player_select_blocked",
-                disabled=True,
-                type="primary",
-                help="No eligible players in your queue, watchlist, or tracked list.",
-            )
-            record_live_draft_ui_diagnostics(session, draft_button_rendered=True)
+        render_live_manual_draft_diagnostics(st, session)
         return False
 
     selected_player = st.selectbox(
         "Draft candidate",
         player_options,
         key="live_draft_player_select",
-        help="Draft from your queue, watchlist, tracked players, or the full pool when enabled.",
+        help="Pick a player from the pool (or your queue/watchlist when commissioner mode is off).",
     )
     diag_base["selected_player"] = str(selected_player or "")
 
     allowed, disable_reason = can_draft_player(session, str(selected_player or ""))
-    if not allowed:
+    button_enabled = bool(allowed and not paused)
+    if paused:
+        disable_reason = disable_reason or "Draft is paused — resume to pick."
+    elif not allowed:
         diag_base["draft_action_disable_reason"] = disable_reason
+
+    diag_base["draft_button_enabled"] = button_enabled
+    diag_base["draft_button_disable_reason"] = "" if button_enabled else (disable_reason or "cannot_draft")
 
     if render_draft_button(
         st,
@@ -482,10 +596,11 @@ def render_live_manual_draft_panel(
         key_suffix="live_manual",
         label="Draft Player",
         button_type="primary",
-        extra_disabled=paused,
-        extra_disabled_reason="Draft is paused — resume to pick.",
+        extra_disabled=paused or not allowed,
+        extra_disabled_reason=disable_reason if (paused or not allowed) else "",
     ):
         record_live_draft_ui_diagnostics(session, {**diag_base, "draft_button_rendered": True})
+        render_live_manual_draft_diagnostics(st, session)
         return True
 
     record_live_draft_ui_diagnostics(
@@ -493,9 +608,9 @@ def render_live_manual_draft_panel(
         {
             **diag_base,
             "draft_button_rendered": True,
-            "draft_action_disable_reason": disable_reason if not allowed else "",
         },
     )
+    render_live_manual_draft_diagnostics(st, session)
     return False
 
 

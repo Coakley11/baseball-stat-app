@@ -148,7 +148,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             )
             is_host = bool(ctx.get("is_room_host"))
             room_cfg = dict((room or {}).get("config") or {}) if isinstance(room, dict) else {}
-            free_pool_default = bool(room_cfg.get(ALLOW_FREE_POOL_KEY, session.get(ALLOW_FREE_POOL_KEY, False)))
+            free_pool_default = bool(room_cfg.get(ALLOW_FREE_POOL_KEY, session.get(ALLOW_FREE_POOL_KEY, True)))
             if is_host:
                 free_pool = st.checkbox(
                     "Allow drafting any available player (commissioner)",

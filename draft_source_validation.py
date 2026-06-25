@@ -12,6 +12,25 @@ def _normalize_name(raw: Any) -> str:
     return str(raw or "").split(" (")[0].strip().lower()
 
 
+def manual_draft_full_pool_on_your_turn(
+    session: dict[str, Any],
+    *,
+    live_room: dict[str, Any] | None = None,
+) -> bool:
+    """On your live-draft pick, Manual Draft must expose the full pool."""
+    try:
+        from draft_actions import draft_action_context
+
+        ctx = draft_action_context(session)
+        return bool(
+            ctx.get("live_draft_active")
+            and ctx.get("is_your_pick")
+            and str(ctx.get("draft_status") or "") == "in_progress"
+        )
+    except ImportError:
+        return False
+
+
 def gather_participant_draft_sources(session: dict[str, Any]) -> dict[str, list[str]]:
     """Private draft candidate lists for the current participant."""
     try:
@@ -31,22 +50,25 @@ def gather_participant_draft_sources(session: dict[str, Any]) -> dict[str, list[
 
 def allow_free_pool_drafting(session: dict[str, Any], *, live_room: dict[str, Any] | None = None) -> bool:
     """True when any available pool player may be drafted (commissioner setting)."""
+    if ALLOW_FREE_POOL_KEY in session:
+        return bool(session.get(ALLOW_FREE_POOL_KEY))
+
+    room = live_room if isinstance(live_room, dict) else session.get("live_draft_room")
+    if isinstance(room, dict):
+        cfg = dict(room.get("config") or {})
+        if ALLOW_FREE_POOL_KEY in cfg:
+            return bool(cfg.get(ALLOW_FREE_POOL_KEY))
+
     try:
         from draft_room_context import is_multiplayer_draft_active
 
         if not is_multiplayer_draft_active(session):
             return True
     except ImportError:
-        pass
+        return True
 
-    if ALLOW_FREE_POOL_KEY in session:
-        return bool(session.get(ALLOW_FREE_POOL_KEY))
-    room = live_room if isinstance(live_room, dict) else session.get("live_draft_room")
-    if isinstance(room, dict):
-        cfg = dict(room.get("config") or {})
-        if ALLOW_FREE_POOL_KEY in cfg:
-            return bool(cfg.get(ALLOW_FREE_POOL_KEY))
-    return False
+    # Multiplayer defaults to full pool unless host explicitly disabled in session/config.
+    return True
 
 
 def match_draft_source(player_name: str, sources: dict[str, list[str]]) -> str | None:
@@ -77,6 +99,8 @@ def is_allowed_draft_source(
     matched = match_draft_source(name, sources)
     if matched:
         return True, "", matched
+    if manual_draft_full_pool_on_your_turn(session, live_room=live_room):
+        return True, "", "full_pool_turn_fallback"
     return (
         False,
         "Draft from your Queue, Watchlist, or Tracked Players — or enable free pool drafting.",
@@ -106,6 +130,8 @@ def allowed_draft_player_names(
     sources = gather_participant_draft_sources(session)
     candidates = list(dict.fromkeys((sources.get("queue") or []) + (sources.get("watchlist") or []) + (sources.get("tracked") or [])))
     candidates = _exclude_drafted_names(session, candidates)
+    if not candidates and available_names and manual_draft_full_pool_on_your_turn(session, live_room=live_room):
+        return _exclude_drafted_names(session, list(available_names))
     if not available_names:
         return candidates
     avail = {_normalize_name(n): n for n in available_names}

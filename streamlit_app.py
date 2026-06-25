@@ -18167,6 +18167,21 @@ if active_page == "Live Draft Room":
 
         with rec_col:
             if slot is None:
+                try:
+                    from draft_ui import record_live_draft_ui_diagnostics
+
+                    record_live_draft_ui_diagnostics(
+                        st.session_state,
+                        render_path="live_draft_room",
+                        draft_button_should_render=False,
+                        draft_button_rendered=False,
+                        draft_button_enabled=False,
+                        manual_draft_panel_skipped=True,
+                        draft_action_disable_reason="no_current_slot",
+                        draft_button_disable_reason="no_current_slot",
+                    )
+                except ImportError:
+                    pass
                 st.success("Draft complete.")
             else:
                 remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
@@ -18247,7 +18262,6 @@ if active_page == "Live Draft Room":
                             key_suffix="live",
                         )
 
-                st.subheader("Manual Draft")
                 from draft_ui import render_live_manual_draft_panel
 
                 if render_live_manual_draft_panel(

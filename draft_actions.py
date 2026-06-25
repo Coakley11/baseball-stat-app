@@ -368,12 +368,17 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
             {
                 "draft_button_should_render": ui_diag.get("draft_button_should_render"),
                 "draft_button_rendered": ui_diag.get("draft_button_rendered"),
+                "draft_button_enabled": ui_diag.get("draft_button_enabled"),
+                "draft_button_disable_reason": ui_diag.get("draft_button_disable_reason"),
                 "player_action_panel_rendered": ui_diag.get("player_action_panel_rendered"),
                 "available_player_count": ui_diag.get("available_player_count"),
                 "filtered_player_count": ui_diag.get("filtered_player_count"),
+                "candidate_count": ui_diag.get("candidate_count"),
                 "selected_player": ui_diag.get("selected_player"),
                 "draft_action_disable_reason": ui_diag.get("draft_action_disable_reason") or out.get("disable_reason"),
                 "render_path": ui_diag.get("render_path"),
+                "pool_source": ui_diag.get("pool_source"),
+                "manual_draft_panel_skipped": ui_diag.get("manual_draft_panel_skipped"),
             }
         )
     return out
