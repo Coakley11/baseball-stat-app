@@ -131,6 +131,17 @@ def queue_manual_draft_pick(
         "queued_at": time.time(),
     }
     session[PENDING_MANUAL_PICK_KEY] = pending
+    if str(candidate_source or "").startswith("rec_card"):
+        try:
+            from live_draft_room_ui import record_rec_card_diagnostics
+
+            record_rec_card_diagnostics(
+                session,
+                rec_card_draft_click_received=True,
+                rec_card_player=name,
+            )
+        except ImportError:
+            pass
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
@@ -210,6 +221,14 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         idx_before = 0
 
     session["_live_draft_manual_pick_in_flight"] = True
+    if str(pending.get("candidate_source") or "").startswith("rec_card"):
+        session["_rec_card_commit_in_flight"] = True
+        try:
+            from live_draft_room_ui import record_rec_card_diagnostics
+
+            record_rec_card_diagnostics(session, rec_card_commit_started=True, rec_card_player=player_name)
+        except ImportError:
+            pass
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
@@ -256,11 +275,22 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
 
     session.pop("_live_draft_manual_pick_in_flight", None)
     session.pop("_live_draft_rec_cache", None)
+    session.pop("_rec_card_commit_in_flight", None)
+
+    should_rerun = False
+    if ok:
+        try:
+            from live_draft_room_ui import record_rec_card_diagnostics
+
+            if str(pending.get("candidate_source") or "").startswith("rec_card"):
+                record_rec_card_diagnostics(session, rec_card_commit_success=True, local_optimistic_update_applied=True)
+        except ImportError:
+            pass
 
     return {
         "processed": True,
         "ok": ok,
-        "should_rerun": ok,
+        "should_rerun": should_rerun,
         "message": msg,
         "error": err,
     }
@@ -520,11 +550,20 @@ def record_start_live_draft_diagnostics(session: dict[str, Any], **fields: Any) 
 
 
 def mark_start_live_draft_clicked(session: dict[str, Any]) -> None:
+    import time
+
+    try:
+        from live_draft_start_progress import begin_live_draft_start
+
+        begin_live_draft_start(session, mode=str(session.get("_start_live_draft_mode") or "new"))
+    except ImportError:
+        pass
     record_start_live_draft_diagnostics(
         session,
         start_live_draft_clicked=True,
         start_live_draft_attempted=True,
         start_live_draft_error="",
+        start_draft_clicked_ts=time.time(),
     )
 
 
@@ -1072,6 +1111,13 @@ def render_start_live_draft_dev_panel(st: Any, session: dict[str, Any], *, devel
         "promote_error",
         "pool_live_count",
         "start_live_draft_mode",
+        "current_start_step",
+        "step_elapsed_sec",
+        "start_draft_clicked_ts",
+        "room_created_ts",
+        "shared_write_ok",
+        "shared_write_error",
+        "timer_deadline_set",
     )
     with st.expander("Start Live Draft trace (Dev Mode)", expanded=True):
         for key in keys:

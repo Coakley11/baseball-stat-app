@@ -225,6 +225,24 @@ def commit_manual_live_pick(
             pass
         return result
 
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        session[LIVE_DRAFT_ROOM_KEY] = room
+        session.pop("_live_draft_rec_cache", None)
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(
+            session,
+            local_optimistic_update_applied=True,
+            board_size_after=len(room.get("draft_board") or []),
+            current_pick_index_after=int(room.get("current_pick_index") or 0),
+        )
+        if str(source).startswith("rec_card") or session.get("_rec_card_commit_in_flight"):
+            record_draft_commit_diagnostics(session, rec_card_commit_started=True)
+    except ImportError:
+        pass
+
     persisted = persist_applied_pick(
         session,
         room,
@@ -235,6 +253,23 @@ def commit_manual_live_pick(
     )
     if persisted.ok:
         persisted.message = msg
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            updates: dict[str, Any] = {}
+            if session.pop("_rec_card_commit_in_flight", None):
+                updates["rec_card_commit_success"] = True
+            if updates:
+                record_draft_commit_diagnostics(session, **updates)
+            try:
+                from live_draft_room_ui import record_rec_card_diagnostics
+
+                if updates.get("rec_card_commit_success"):
+                    record_rec_card_diagnostics(session, rec_card_commit_success=True)
+            except ImportError:
+                pass
+        except ImportError:
+            pass
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 

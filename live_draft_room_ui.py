@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+LIVE_DRAFT_REC_DIAG_KEY = "_live_draft_rec_diag"
+
+
+def record_rec_card_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    diag = dict(session.get(LIVE_DRAFT_REC_DIAG_KEY) or {})
+    diag.update(fields)
+    session[LIVE_DRAFT_REC_DIAG_KEY] = diag
+    return diag
 
 
 def inject_live_draft_room_styles(st: Any) -> None:
@@ -218,6 +228,58 @@ def inject_live_draft_room_styles(st: Any) -> None:
             margin: 0 0 10px 0;
             letter-spacing: -0.01em;
         }
+        .ld-room-header {
+            background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
+            border: 1px solid #c7d2fe;
+            border-radius: 14px;
+            padding: 12px 16px;
+            margin: 0 0 14px 0;
+        }
+        .ld-room-header .ld-rh-title {
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            color: #4338ca;
+            margin-bottom: 6px;
+        }
+        .ld-room-header .ld-rh-code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 24px;
+            font-weight: 900;
+            letter-spacing: 0.2em;
+            color: #1e1b4b;
+        }
+        .ld-room-header .ld-rh-meta {
+            font-size: 13px;
+            line-height: 1.5;
+            color: #334155;
+            margin-top: 8px;
+        }
+        .ld-rec-compact-row {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 8px 10px;
+            margin-bottom: 8px;
+            background: #fff;
+            max-height: 96px;
+            overflow: hidden;
+        }
+        .ld-rec-compact-row .ld-rec-name {
+            font-size: 15px;
+            font-weight: 800;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #0f172a;
+        }
+        .ld-rec-compact-row .ld-rec-stats {
+            font-size: 12px;
+            color: #475569;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         .live-rec-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -364,6 +426,68 @@ def render_live_draft_room_code_header(
             pass
 
 
+def render_live_draft_room_header(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    multiplayer: bool,
+    user_team: str = "",
+    on_clock_team: str = "",
+    pick_label: str = "",
+    status_label: str = "",
+    draft_in_progress: bool = False,
+) -> None:
+    """Always-visible room header: code, role, team, status, teams."""
+    code = ""
+    role = "Single-user"
+    assigned_team = str(user_team or "").strip()
+    try:
+        from draft_room_context import get_global_draft_context, resolve_shared_room_code
+
+        ctx = get_global_draft_context(session)
+        code = resolve_shared_room_code(session)
+        if multiplayer or code:
+            role = "Host" if ctx.get("is_room_host") else "Guest"
+            assigned_team = str(ctx.get("participant_team") or assigned_team or "—").strip() or "—"
+    except ImportError:
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+
+    teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+    teams_txt = ", ".join(teams) if teams else "—"
+    live_badge = " · **Live**" if draft_in_progress else ""
+    status_txt = str(status_label or room.get("status") or "—").replace("_", " ").title()
+
+    code_block = (
+        f'<div class="ld-rh-code">{code}</div>' if code else '<span style="color:#b45309;">Code pending</span>'
+    )
+    st.markdown(
+        f"""
+        <div class="ld-room-header">
+            <div class="ld-rh-title">Live draft room</div>
+            {code_block}
+            <div class="ld-rh-meta">
+                <strong>Role:</strong> {role} ·
+                <strong>Your team:</strong> {assigned_team or "—"} ·
+                <strong>Status:</strong> {status_txt}{live_badge} ·
+                <strong>{pick_label or "Pick"}</strong> ·
+                <strong>On clock:</strong> {on_clock_team or "—"}<br/>
+                <strong>Teams:</strong> {teams_txt}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if code:
+        try:
+            st.code(code, language=None)
+        except TypeError:
+            st.code(code)
+        st.caption("Share this 6-character code so other managers can join. Copy from the box above.")
+    elif multiplayer:
+        st.warning("Room code missing — guests cannot join until the host creates a shared room.")
+
+
 def render_live_draft_status_badges(
     st: Any,
     *,
@@ -474,7 +598,17 @@ def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str
     )
 
 
-def render_live_draft_rec_cards(st: Any, rec_df: Any, *, max_cards: int = 6, fmt_rate_4=None, fmt_int=None) -> None:
+def render_live_draft_rec_cards(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    rec_df: Any,
+    *,
+    max_cards: int = 6,
+    multiplayer: bool = False,
+    fmt_rate_4=None,
+    fmt_int=None,
+) -> None:
     if rec_df is None or getattr(rec_df, "empty", True):
         st.caption("No recommendations available.")
         return
@@ -484,60 +618,126 @@ def render_live_draft_rec_cards(st: Any, rec_df: Any, *, max_cards: int = 6, fmt
         st.caption("No recommendations available.")
         return
 
-    cols = st.columns(min(3, len(rows)))
+    pick_idx = int(room.get("current_pick_index") or 0)
+    record_rec_card_diagnostics(
+        session,
+        recommendation_card_layout_mode="compact_horizontal",
+        recommendation_card_width="full_row",
+        recommendation_card_count=len(rows),
+        rec_card_render_ts=time.time(),
+    )
+
+    gate: dict[str, Any] = {}
+    try:
+        from draft_actions import draft_action_context, resolve_manual_draft_panel_gate
+
+        gate = resolve_manual_draft_panel_gate(
+            session, draft_action_context(session), multiplayer=multiplayer, room=room
+        )
+    except ImportError:
+        gate = {}
+
+    turn_enabled = bool(gate.get("draft_enabled"))
+    draft_complete = bool(gate.get("draft_complete"))
+
     for i, (_, r) in enumerate(rows, start=1):
         name = str(r.get("fullName", "Player") or "Player")
         pos = str(r.get("Primary Position", "") or "—")
-        team = str(r.get("Team", "") or r.get("MLB Team", "") or "")
-        efv = pd.to_numeric(r.get("Expected Fantasy Value", np.nan), errors="coerce")
         edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
         surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
-        scarcity = pd.to_numeric(r.get("Scarcity Score", np.nan), errors="coerce")
-        decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
-        draft_fit = pd.to_numeric(r.get("Draft Fit Score", np.nan), errors="coerce")
-        tier_lbl, tier_css = _rec_tier_badge(i, r)
-        edge_txt, edge_css = _display_edge(edge if pd.notna(edge) else None)
+        tier_lbl, _tier_css = _rec_tier_badge(i, r)
+        edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
         action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
         explanation = _rec_plain_explanation(r, pos)
-        surv_txt = f"{int(round(float(surv) * 100))}% Chance Available Next Round" if pd.notna(surv) else "—"
-        scarcity_txt = f"{int(round(float(scarcity) * 100))}%" if pd.notna(scarcity) else "—"
-        decision_txt = f"{int(round(float(decision) * 100))}" if pd.notna(decision) and float(decision) <= 1.5 else (
-            f"{int(round(float(decision)))}" if pd.notna(decision) else "—"
-        )
-        fit_txt = f"{int(round(float(draft_fit) * 100))}%" if pd.notna(draft_fit) and float(draft_fit) <= 1.5 else (
-            f"{int(round(float(draft_fit)))}" if pd.notna(draft_fit) else "—"
-        )
+        surv_pct = f"{int(round(float(surv) * 100))}% avail next" if pd.notna(surv) else "—"
+        player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
 
-        with cols[(i - 1) % len(cols)]:
-            with st.container(border=True):
-                st.caption(_rec_rank_label(i))
-                st.markdown(f"## {name}")
-                st.markdown(
-                    f'`{pos}` · '
-                    f'<span style="display:inline-block;padding:3px 10px;border-radius:999px;'
-                    f'font-size:12px;font-weight:700;" class="{tier_css}">{tier_lbl}</span>',
-                    unsafe_allow_html=True,
+        player_available = True
+        avail_reason = ""
+        try:
+            from draft_actions import _live_player_available
+
+            player_available, avail_reason = _live_player_available(session, name)
+        except ImportError:
+            pass
+
+        draft_enabled = turn_enabled and player_available and not draft_complete
+        disable_reason = ""
+        if draft_complete:
+            disable_reason = "Draft is complete."
+        elif not turn_enabled:
+            disable_reason = str(gate.get("draft_button_disable_reason") or "Not your turn.")
+        elif not player_available:
+            disable_reason = avail_reason or f"{name} is not available."
+
+        info_col, btn_col, detail_col = st.columns([6.5, 2.2, 1.3])
+        with info_col:
+            st.markdown(
+                f'<div class="ld-rec-compact-row">'
+                f'<div class="ld-rec-name">{name} · {pos} · {tier_lbl}</div>'
+                f'<div class="ld-rec-stats">Fantasy Edge {edge_txt} · {surv_pct} · {action}</div>'
+                f'<div class="ld-rec-stats">Reason: {explanation[:120]}</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with btn_col:
+            btn_label = f"Draft {name.split()[-1]}" if name else "Draft Player"
+            btn_key = f"rec_card_draft_{pick_idx}_{player_id or i}_{name[:24]}"
+
+            def _on_rec_draft_click(
+                _session: dict[str, Any] = session,
+                _name: str = name,
+                _pid: str = player_id,
+            ) -> None:
+                record_rec_card_diagnostics(_session, rec_card_draft_click_received=True, rec_card_player=_name)
+                try:
+                    from draft_ui import queue_manual_draft_pick
+
+                    queue_manual_draft_pick(
+                        _session,
+                        player_name=_name,
+                        player_id=_pid or None,
+                        candidate_source="rec_card",
+                        pool_source="recommendation_card",
+                    )
+                except ImportError:
+                    pass
+
+            if draft_enabled:
+                st.button(
+                    btn_label,
+                    key=btn_key,
+                    type="primary",
+                    use_container_width=True,
+                    on_click=_on_rec_draft_click,
                 )
-                if team:
-                    st.caption(team)
-                st.markdown(
-                    f'<div style="font-size:28px;line-height:1.1;margin:8px 0 4px 0;" class="{edge_css}">'
-                    f'Fantasy Edge {edge_txt}</div>',
-                    unsafe_allow_html=True,
+            else:
+                st.button(
+                    btn_label,
+                    key=btn_key,
+                    disabled=True,
+                    use_container_width=True,
+                    help=disable_reason[:200],
                 )
-                st.caption(f"Expected Value: {_display_efv(efv if pd.notna(efv) else None)}")
-                st.markdown(f"**{surv_txt}**")
-                st.caption("Chance Available Next Round")
-                st.markdown(f"Position Scarcity: **{scarcity_txt}**")
-                st.caption(f"Decision Score: {decision_txt} · Draft Fit: {fit_txt}")
-                st.info(explanation)
-                st.markdown(f"**{action}**")
-                with st.expander("Show Details", expanded=False):
-                    detail_cols = [c for c in (
-                        "Model Rank", "Market Rank", "Sleeper Score", "Positional Fit",
-                        "Survival Label", "Trend Signal",
-                    ) if c in rec_df.columns]
-                    for col in detail_cols:
-                        val = r.get(col)
-                        if pd.notna(val):
-                            st.text(f"{col}: {val}")
+        with detail_col:
+            with st.expander("Details", expanded=False):
+                detail_cols = [
+                    c
+                    for c in (
+                        "Model Rank",
+                        "Market Rank",
+                        "Sleeper Score",
+                        "Positional Fit",
+                        "Scarcity Score",
+                        "Draft Fit Score",
+                        "Decision Score",
+                        "Survival Label",
+                        "Trend Signal",
+                        "Expected Fantasy Value",
+                    )
+                    if c in rec_df.columns
+                ]
+                for col in detail_cols:
+                    val = r.get(col)
+                    if pd.notna(val):
+                        st.text(f"{col}: {val}")

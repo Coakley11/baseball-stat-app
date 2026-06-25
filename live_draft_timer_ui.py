@@ -54,6 +54,8 @@ def record_timer_diagnostics(session: dict[str, Any], room: dict[str, Any], *, s
         "page_load_grace_active": _page_load_grace_active(session, room),
         "timer_expired_for_pick": live_draft_timer_expired_for_pick(room),
         "last_auto_pick_attempt": session.get("_live_draft_last_autopick_attempt_ts"),
+        "timer_component_mounted": prev.get("timer_component_mounted", False),
+        "timer_component_last_render": prev.get("timer_component_last_render"),
     }
     if source.endswith("_grace_skip"):
         diag["autopick_skipped_reason"] = "page_load_grace"
@@ -214,11 +216,41 @@ def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any]) -> Non
             st.text(f"{key}: {val if val is not None and val != '' else '—'}")
 
 
-def _render_js_countdown(st: Any, deadline: float, *, pick_index: int) -> None:
-    """Client-side 1 Hz countdown — does not require shared-room poll."""
+def _mount_js_countdown(
+    st: Any,
+    deadline: float,
+    *,
+    pick_index: int,
+    element_id: str | None = None,
+    height: int = 72,
+    source: str = "timer_bar",
+) -> None:
+    """Client-side 1 Hz countdown — targets inline element or standalone block."""
     try:
         import streamlit.components.v1 as components
     except ImportError:
+        return
+    el_id = element_id or f"ld-timer-{pick_index}"
+    if element_id:
+        components.html(
+            f"""
+            <script>
+            (function() {{
+              const deadline = {float(deadline)};
+              const doc = window.parent.document;
+              function tick() {{
+                const el = doc.getElementById("{el_id}");
+                if (!el) return;
+                const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+                el.textContent = rem + "s";
+                if (rem > 0) window.setTimeout(tick, 1000);
+              }}
+              tick();
+            }})();
+            </script>
+            """,
+            height=height,
+        )
         return
     components.html(
         f"""
@@ -226,14 +258,14 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int) -> None:
           <div style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#64748b;">
             Time on clock
           </div>
-          <div id="ld-timer-{pick_index}" style="font-size:36px;font-weight:900;color:#0f172a;line-height:1.1;">
+          <div id="{el_id}" style="font-size:36px;font-weight:900;color:#0f172a;line-height:1.1;">
             --
           </div>
         </div>
         <script>
         (function() {{
           const deadline = {float(deadline)};
-          const el = document.getElementById("ld-timer-{pick_index}");
+          const el = document.getElementById("{el_id}");
           if (!el) return;
           function tick() {{
             const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
@@ -244,8 +276,19 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int) -> None:
         }})();
         </script>
         """,
-        height=72,
+        height=height,
     )
+
+
+def _render_js_countdown(st: Any, deadline: float, *, pick_index: int, session: dict[str, Any] | None = None) -> None:
+    """Client-side 1 Hz countdown — does not require shared-room poll."""
+    _mount_js_countdown(st, deadline, pick_index=pick_index, source="timer_bar")
+    if isinstance(session, dict):
+        prev = dict(session.get(LIVE_DRAFT_TIMER_DIAG_KEY) or {})
+        prev["timer_component_mounted"] = True
+        prev["timer_component_last_render"] = time.time()
+        prev["timer_deadline"] = deadline
+        session[LIVE_DRAFT_TIMER_DIAG_KEY] = prev
 
 
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
@@ -259,7 +302,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
             record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
             deadline = live_draft_timer_deadline(live_room)
             if deadline is not None:
-                _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0))
+                _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0), session=session)
             else:
                 st.markdown(f"**Time on clock:** {remaining}s")
             return
@@ -270,7 +313,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
     deadline = live_draft_timer_deadline(live_room)
     pick_idx = int(live_room.get("current_pick_index") or 0)
     if deadline is not None:
-        _render_js_countdown(st, float(deadline), pick_index=pick_idx)
+        _render_js_countdown(st, float(deadline), pick_index=pick_idx, session=session)
 
     try:
         fragment = st.fragment

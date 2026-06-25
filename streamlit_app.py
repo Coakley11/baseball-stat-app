@@ -18562,17 +18562,33 @@ if active_page == "Live Draft Room":
         on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
         round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
         pick_label = f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} / {total_picks}"
+        _status_label = str(_derived_status or room.get("status", "")).replace("_", " ").title()
         try:
-            from live_draft_room_ui import render_live_draft_room_code_header
+            from live_draft_room_ui import render_live_draft_room_header
 
-            render_live_draft_room_code_header(st, st.session_state, multiplayer=_multiplayer_draft)
+            render_live_draft_room_header(
+                st,
+                st.session_state,
+                room,
+                multiplayer=_multiplayer_draft,
+                user_team=user_team,
+                on_clock_team=on_clock_team,
+                pick_label=pick_label,
+                status_label=_status_label,
+                draft_in_progress=_draft_in_progress,
+            )
         except ImportError:
-            if _multiplayer_draft:
-                sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
-                if sc:
-                    st.markdown(f"**Room Code:** `{sc}`")
-                else:
-                    st.warning("Room code missing — shared draft may not be joinable.")
+            try:
+                from live_draft_room_ui import render_live_draft_room_code_header
+
+                render_live_draft_room_code_header(st, st.session_state, multiplayer=_multiplayer_draft)
+            except ImportError:
+                if _multiplayer_draft:
+                    sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+                    if sc:
+                        st.markdown(f"**Room Code:** `{sc}`")
+                    else:
+                        st.warning("Room code missing — shared draft may not be joinable.")
         try:
             from live_draft_room_ui import render_live_draft_status_badges
 
@@ -18820,7 +18836,16 @@ if active_page == "Live Draft Room":
                             else []
                         )
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
-                        render_live_draft_rec_cards(st, top_rec, max_cards=6, fmt_rate_4=fmt_rate_4, fmt_int=fmt_int)
+                        render_live_draft_rec_cards(
+                            st,
+                            st.session_state,
+                            room,
+                            top_rec,
+                            max_cards=6,
+                            multiplayer=_multiplayer_draft,
+                            fmt_rate_4=fmt_rate_4,
+                            fmt_int=fmt_int,
+                        )
                 except ImportError:
                     _render_live_draft_rec_cards(top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])

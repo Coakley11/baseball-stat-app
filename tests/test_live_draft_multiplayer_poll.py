@@ -290,13 +290,20 @@ class ReceiverPollApplyTests(unittest.TestCase):
 
 
 class RecCardRenderTests(unittest.TestCase):
-    def test_recommendation_cards_use_native_streamlit_not_raw_html(self) -> None:
+    @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
+    @mock.patch("draft_actions.draft_action_context")
+    @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
+    def test_recommendation_cards_use_compact_horizontal_layout(
+        self, _avail: object, _ctx: object, gate_fn: mock.MagicMock
+    ) -> None:
         from live_draft_room_ui import render_live_draft_rec_cards
 
+        gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
         rec_df = pd.DataFrame(
             [
                 {
                     "fullName": "Aaron Judge",
+                    "playerID": "j1",
                     "Primary Position": "OF",
                     "Expected Fantasy Value": 12.3,
                     "Fantasy Edge": 5,
@@ -306,18 +313,31 @@ class RecCardRenderTests(unittest.TestCase):
             ]
         )
         st = mock.MagicMock()
-        container = mock.MagicMock()
-        st.columns.return_value = [container]
-        st.container.return_value.__enter__ = mock.Mock(return_value=container)
-        st.container.return_value.__exit__ = mock.Mock(return_value=False)
+        session = {"live_draft_room": _sample_live_room_for_rec()}
+        col_info = mock.MagicMock()
+        col_btn = mock.MagicMock()
+        col_detail = mock.MagicMock()
+        st.columns.return_value = [col_info, col_btn, col_detail]
 
-        render_live_draft_rec_cards(st, rec_df, max_cards=1)
+        render_live_draft_rec_cards(st, session, session["live_draft_room"], rec_df, max_cards=1)
 
-        html_calls = [str(c) for c in st.markdown.call_args_list]
-        joined = " ".join(html_calls)
-        self.assertNotIn("live-rec-card", joined)
-        self.assertNotIn("<div class=", joined)
-        st.container.assert_called()
+        diag = session.get("_live_draft_rec_diag") or {}
+        self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
+        html = str(st.markdown.call_args)
+        self.assertIn("ld-rec-compact-row", html)
+        self.assertIn("Aaron Judge", html)
+        st.button.assert_called_once()
+
+
+def _sample_live_room_for_rec() -> dict:
+    return {
+        "status": "in_progress",
+        "current_pick_index": 0,
+        "config": {"num_teams": 2, "your_team": "Team 1"},
+        "teams": ["Team 1", "Team 2"],
+        "pick_order": [{"Pick": 1, "Team": "Team 1"}],
+        "draft_board": [],
+    }
 
 
 if __name__ == "__main__":
