@@ -762,15 +762,21 @@ def _draft_live(
             pass
 
     try:
-        app = _import_baseball_app()
-        slot = app.live_draft_current_slot(room)
-        make_pick = app.live_draft_make_pick
-    except Exception as exc:
-        result["error"] = "live_helpers"
-        result["message"] = str(exc)
-        if set_live_draft_pick_notice is not None:
-            set_live_draft_pick_notice(session, "error", str(exc))
-        return result
+        from live_draft_pick_engine import live_draft_make_pick as make_pick
+        from live_draft_timer_logic import live_draft_current_slot
+
+        slot = live_draft_current_slot(room)
+    except ImportError:
+        try:
+            app = _import_baseball_app()
+            slot = app.live_draft_current_slot(room)
+            make_pick = app.live_draft_make_pick
+        except Exception as exc:
+            result["error"] = "live_helpers"
+            result["message"] = str(exc)
+            if set_live_draft_pick_notice is not None:
+                set_live_draft_pick_notice(session, "error", str(exc))
+            return result
 
     if slot is None:
         result["error"] = "draft_complete"
@@ -815,6 +821,7 @@ def _draft_live(
                     session,
                     validate_shared_pick_commit_result=ok_val,
                     validate_shared_pick_commit_message=val_msg or None,
+                    validation_result=ok_val,
                 )
             if not ok_val:
                 result["error"] = "validation_failed"
@@ -846,7 +853,12 @@ def _draft_live(
                 expected_revision=expected_revision,
             )
             if record_draft_commit_diagnostics is not None:
-                record_draft_commit_diagnostics(session, rerun_after_commit=True)
+                record_draft_commit_diagnostics(
+                    session,
+                    shared_room_commit_called=True,
+                    commit_shared_room_pick_called=True,
+                    rerun_after_commit=True,
+                )
             if not ok_commit:
                 refreshed = session.get(LIVE_DRAFT_ROOM_KEY)
                 if isinstance(refreshed, dict):

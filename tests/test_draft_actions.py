@@ -186,14 +186,9 @@ class TestDraftPlayerLive(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Not your pick", reason)
 
-    @patch("draft_actions._import_baseball_app")
-    def test_live_drafts_when_on_clock(self, mock_import: MagicMock) -> None:
+    @patch("live_draft_pick_engine.live_draft_make_pick")
+    def test_live_drafts_when_on_clock(self, mock_make_pick: MagicMock) -> None:
         session = self._live_session(your_team="Team B", pick_index=1)
-        app = MagicMock()
-
-        def _slot(room):
-            idx = int(room.get("current_pick_index", 0))
-            return room["pick_order"][idx]
 
         def _make_pick(room, player_row, verdict="Manual pick"):
             room["draft_board"].append(player_row)
@@ -201,29 +196,22 @@ class TestDraftPlayerLive(unittest.TestCase):
             room["current_pick_index"] = int(room.get("current_pick_index", 0)) + 1
             return True, f"Drafted {player_row.get('fullName')}."
 
-        app.live_draft_current_slot.side_effect = _slot
-        app.live_draft_make_pick.side_effect = _make_pick
-        app.live_draft_get_available.side_effect = lambda room: room["pool"].copy()
-        mock_import.return_value = app
+        mock_make_pick.side_effect = _make_pick
 
         result = draft_player(session, "Kyle Tucker", source="live_queue")
         self.assertTrue(result["ok"], result.get("message"))
         self.assertEqual(result["on_clock_team"], "Team B")
         self.assertEqual(result["target_pick"], 2)
-        app.live_draft_make_pick.assert_called_once()
+        mock_make_pick.assert_called_once()
 
-    @patch("draft_actions._import_baseball_app")
-    def test_live_validates_on_clock_before_make_pick(self, mock_import: MagicMock) -> None:
+    @patch("live_draft_pick_engine.live_draft_make_pick")
+    def test_live_validates_on_clock_before_make_pick(self, mock_make_pick: MagicMock) -> None:
         session = self._live_session(your_team="Team B", pick_index=0)
-        app = MagicMock()
-        app.live_draft_current_slot.return_value = session["live_draft_room"]["pick_order"][0]
-        app.live_draft_get_available.return_value = session["live_draft_room"]["pool"].copy()
-        mock_import.return_value = app
 
         result = draft_player(session, "Kyle Tucker", source="live_queue")
         self.assertFalse(result["ok"])
-        self.assertIn("Not your pick", result["message"])
-        app.live_draft_make_pick.assert_not_called()
+        self.assertIn("Not your pick", result.get("message", ""))
+        mock_make_pick.assert_not_called()
 
 
 class TestImportFallback(unittest.TestCase):

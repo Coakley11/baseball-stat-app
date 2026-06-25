@@ -811,7 +811,7 @@ def commit_shared_room_state(
             return False, msg, None
 
     if record_draft_commit_diagnostics is not None:
-        record_draft_commit_diagnostics(session, commit_shared_room_pick_called=True)
+        record_draft_commit_diagnostics(session, commit_shared_room_pick_called=True, shared_room_commit_called=True)
 
     ok, saved = commit_shared_room_pick(
         session,

@@ -72,15 +72,32 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
 
     @patch("draft_actions.draft_action_context", return_value=_live_ctx())
     @patch("live_draft_state.live_draft_get_available", side_effect=RuntimeError("pool load failed"))
-    def test_unavailable_pool_renders_disabled_button_on_your_turn(self, _avail: MagicMock, _ctx: MagicMock) -> None:
+    def test_unavailable_pool_renders_without_draft_button(self, _avail: MagicMock, _ctx: MagicMock) -> None:
         result = render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=False)
         self.assertFalse(result)
         diag = self.session.get("_live_draft_ui_diag") or {}
         self.assertEqual(diag.get("draft_action_disable_reason"), "pool_unavailable")
-        self.assertTrue(diag.get("draft_button_rendered"))
-        self.assertFalse(diag.get("draft_button_enabled"))
-        self.st.button.assert_called()
+        self.assertFalse(diag.get("draft_button_rendered"))
 
+    @patch("draft_actions.draft_action_context", return_value=_live_ctx(is_your_pick=False, on_clock_team="Team B", your_team="Team A"))
+    @patch("draft_source_validation.allow_free_pool_drafting", return_value=True)
+    @patch("live_draft_state.live_draft_get_available")
+    def test_not_your_turn_shows_waiting_message_without_button(
+        self,
+        mock_get_available: MagicMock,
+        _free: MagicMock,
+        _ctx: MagicMock,
+    ) -> None:
+        mock_get_available.return_value = pd.DataFrame(
+            [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
+        )
+        render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=False)
+        self.st.info.assert_called()
+        diag = self.session.get("_live_draft_ui_diag") or {}
+        self.assertFalse(diag.get("draft_button_rendered"))
+        self.assertFalse(diag.get("draft_button_should_render"))
+
+    @patch("draft_ui.can_draft_player", return_value=(True, ""))
     @patch("draft_ui.render_draft_button", return_value=False)
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=True)
     @patch("draft_actions.draft_action_context", return_value=_live_ctx())
@@ -91,6 +108,7 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         _ctx: MagicMock,
         _free: MagicMock,
         _btn: MagicMock,
+        _can: MagicMock,
     ) -> None:
         mock_get_available.return_value = pd.DataFrame(
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
@@ -104,6 +122,7 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         self.assertEqual(diag.get("render_path"), "live_draft_room")
         self.assertFalse(diag.get("multiplayer_mode"))
 
+    @patch("draft_ui.can_draft_player", return_value=(True, ""))
     @patch("draft_ui.render_draft_button", return_value=False)
     @patch("draft_source_validation.allowed_draft_player_names", return_value=[])
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=False)
@@ -116,6 +135,7 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         _free: MagicMock,
         _allowed: MagicMock,
         mock_btn: MagicMock,
+        _can: MagicMock,
     ) -> None:
         mock_get_available.return_value = pd.DataFrame(
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]

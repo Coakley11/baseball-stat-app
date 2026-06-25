@@ -9644,33 +9644,9 @@ def replay_simulator_board_on_live_room(room, board_df) -> dict:
 
 
 def live_draft_make_pick(room, player_row, verdict="Manual pick"):
-    slot = live_draft_current_slot(room)
-    if slot is None:
-        return False, "Draft is already complete."
-    team = slot["Team"]
-    pid = str(player_row.get("playerID", ""))
-    if pid in set(room.get("drafted_player_ids", [])):
-        return False, "That player has already been drafted."
-    pick_record = dict(player_row)
-    pick_record.update({
-        "Round": slot["Round"],
-        "Pick": slot["Pick"],
-        "Fantasy Team": team,
-        "Pick Verdict": verdict,
-    })
-    room["draft_board"].append(pick_record)
-    room["rosters"].setdefault(team, []).append(pick_record)
-    room["drafted_player_ids"].append(pid)
-    room["current_pick_index"] = int(room.get("current_pick_index", 0)) + 1
-    live_draft_bump_sync_revision(room, event="pick")
-    if room.get("meta"):
-        room["meta"].setdefault("turn_model", {})["current_pick_index"] = room["current_pick_index"]
-    if room["current_pick_index"] >= len(room.get("pick_order", [])):
-        room["status"] = "complete"
-        room["timer_started_at"] = None
-    else:
-        live_draft_reset_timer(room)
-    return True, f"Drafted {player_row.get('fullName', 'player')} to {team}."
+    from live_draft_pick_engine import live_draft_make_pick as _make_pick
+
+    return _make_pick(room, player_row, verdict=verdict)
 
 
 def live_draft_auto_pick(room):
@@ -18088,13 +18064,15 @@ if active_page == "Live Draft Room":
                 from live_draft_timer_autopick import LIVE_DRAFT_TIMER_EXPIRED_KEY, maybe_timer_autopick
                 from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
 
-                note_live_draft_page_load(st.session_state)
+                note_live_draft_page_load(st.session_state, room)
                 render_live_draft_timer_bar(st, st.session_state, room)
                 if st.session_state.get(LIVE_DRAFT_TIMER_EXPIRED_KEY) or live_draft_seconds_remaining(room) <= 0:
                     ok, msg = maybe_timer_autopick(st.session_state, room, source="page_autopick")
                     if ok:
                         st.success(msg)
                         st.rerun()
+                    elif msg and live_draft_seconds_remaining(room) <= 0:
+                        st.warning(msg)
             except ImportError:
                 idx = int(room.get("current_pick_index", 0))
                 remaining = live_draft_seconds_remaining(room)

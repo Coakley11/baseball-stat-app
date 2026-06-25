@@ -84,6 +84,7 @@ class ResolveManualDraftPanelGateTests(unittest.TestCase):
 
 
 class RenderPanelGateAlignmentTests(unittest.TestCase):
+    @patch("draft_ui.can_draft_player", return_value=(True, ""))
     @patch("draft_ui.render_draft_button", return_value=False)
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=True)
     @patch("live_draft_state.live_draft_get_available")
@@ -94,6 +95,7 @@ class RenderPanelGateAlignmentTests(unittest.TestCase):
         mock_pool: MagicMock,
         _free: object,
         _btn: object,
+        _can: object,
     ) -> None:
         ctx = _live_ctx()
         ctx.pop("draft_enabled", None)

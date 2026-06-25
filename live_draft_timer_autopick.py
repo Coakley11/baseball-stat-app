@@ -5,28 +5,40 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from live_draft_timer_logic import live_draft_current_slot, live_draft_seconds_remaining
+from live_draft_timer_logic import (
+    live_draft_current_slot,
+    live_draft_seconds_remaining,
+    live_draft_timer_expired_for_pick,
+)
+from live_draft_timer_ui import (
+    LIVE_DRAFT_TIMER_DIAG_KEY,
+    LIVE_DRAFT_TIMER_EXPIRED_KEY,
+    _page_load_grace_active,
+    record_timer_diagnostics,
+)
 
-LIVE_DRAFT_TIMER_EXPIRED_KEY = "_live_draft_timer_expired_pending"
 _AUTOPICK_GRACE_SEC = 2.0
 
 
-def _page_load_grace_active(session: dict[str, Any]) -> bool:
-    loaded = float(session.get("_live_draft_page_load_ts") or 0)
-    if loaded <= 0:
-        return False
-    return (time.time() - loaded) < _AUTOPICK_GRACE_SEC
-
-
 def maybe_timer_autopick(session: dict[str, Any], room: dict[str, Any], *, source: str) -> tuple[bool, str]:
-    """Run auto-pick when timer expired; skip during page-load grace."""
-    from live_draft_timer_ui import record_timer_diagnostics
-
+    """Run auto-pick when timer expired; skip grace only while timer still has time left."""
     if room.get("status") != "in_progress":
         session.pop(LIVE_DRAFT_TIMER_EXPIRED_KEY, None)
         return False, ""
-    if _page_load_grace_active(session):
+
+    expired = live_draft_timer_expired_for_pick(room)
+    if _page_load_grace_active(session, room):
         record_timer_diagnostics(session, room, source=f"{source}_grace_skip")
+        return False, ""
+
+    idx = int(room.get("current_pick_index", 0))
+    remaining = live_draft_seconds_remaining(room)
+    record_timer_diagnostics(session, room, source=source)
+    if not expired and remaining > 0:
+        session.pop(LIVE_DRAFT_TIMER_EXPIRED_KEY, None)
+        return False, ""
+    if room.get("timer_handled_index") == idx:
+        session.pop(LIVE_DRAFT_TIMER_EXPIRED_KEY, None)
         return False, ""
 
     try:
@@ -36,13 +48,6 @@ def maybe_timer_autopick(session: dict[str, Any], room: dict[str, Any], *, sourc
             from Streamlit_app import live_draft_auto_pick  # type: ignore[no-redef]
         except ImportError:
             return False, ""
-
-    idx = int(room.get("current_pick_index", 0))
-    remaining = live_draft_seconds_remaining(room)
-    record_timer_diagnostics(session, room, source=source)
-    if remaining > 0 or room.get("timer_handled_index") == idx:
-        session.pop(LIVE_DRAFT_TIMER_EXPIRED_KEY, None)
-        return False, ""
 
     expected_revision: int | None = None
     try:
@@ -62,6 +67,9 @@ def maybe_timer_autopick(session: dict[str, Any], room: dict[str, Any], *, sourc
             meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
             if head_rev > meta_rev and isinstance(shared_doc, dict):
                 publish_shared_room_runtime(session, shared_doc, reason="shared_room_pre_autopick_sync")
+                refreshed = session.get("live_draft_room")
+                if isinstance(refreshed, dict):
+                    room = refreshed
             expected_revision = head_rev
     except ImportError:
         pass
@@ -77,7 +85,10 @@ def maybe_timer_autopick(session: dict[str, Any], room: dict[str, Any], *, sourc
             0,
             int(time.time() - float(room.get("timer_started_at") or time.time())),
         ),
+        "autopick_skipped_reason": None,
     }
+    record_timer_diagnostics(session, room, source=f"{source}_autopick_done")
+    session[LIVE_DRAFT_TIMER_DIAG_KEY] = {**(session.get(LIVE_DRAFT_TIMER_DIAG_KEY) or {}), **diag}
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 

@@ -47,3 +47,30 @@ def live_draft_timer_deadline(room: dict[str, Any]) -> float | None:
         return None
     timer_seconds = int(room.get("config", {}).get("timer_seconds", 60))
     return float(started) + timer_seconds
+
+
+def ensure_live_draft_timer_for_pick(room: dict[str, Any]) -> bool:
+    """Reset timer when a new pick is on the clock but timer state is missing or stale."""
+    if room.get("status") != "in_progress":
+        return False
+    idx = int(room.get("current_pick_index", 0))
+    handled = room.get("timer_handled_index")
+    started = room.get("timer_started_at")
+    if started is None:
+        live_draft_reset_timer(room)
+        return True
+    if handled is not None and int(handled) >= 0 and int(handled) < idx:
+        live_draft_reset_timer(room)
+        return True
+    if live_draft_seconds_remaining(room) <= 0 and handled != idx:
+        return False
+    return False
+
+
+def live_draft_timer_expired_for_pick(room: dict[str, Any]) -> bool:
+    if room.get("status") != "in_progress":
+        return False
+    idx = int(room.get("current_pick_index", 0))
+    if room.get("timer_handled_index") == idx:
+        return False
+    return live_draft_seconds_remaining(room) <= 0

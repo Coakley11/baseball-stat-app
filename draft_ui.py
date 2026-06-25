@@ -128,10 +128,16 @@ def render_draft_button(
             session[flash_key] = msg
             if result.get("ok"):
                 session["_live_draft_pick_flash"] = msg
+                if source == "live_draft_room" and hasattr(st, "toast"):
+                    st.toast(msg, icon="✅")
             elif result.get("error") == "shared_commit_failed":
                 session["_draft_room_conflict_notice"] = msg
+                if source == "live_draft_room":
+                    st.error(msg)
             elif not result.get("ok"):
                 session["_live_draft_pick_flash_error"] = msg
+                if source == "live_draft_room":
+                    st.error(msg)
             return True
         return False
 
@@ -483,7 +489,7 @@ def render_live_manual_draft_panel(
 
     st.subheader("Manual Draft")
 
-    def _finish(diag: dict[str, Any], *, show_disabled: bool = True) -> bool:
+    def _finish(diag: dict[str, Any], *, show_disabled: bool = False) -> bool:
         record_live_draft_ui_diagnostics(session, diag)
         render_live_manual_draft_diagnostics(st, session)
         if show_disabled and should_render and not diag.get("draft_button_rendered"):
@@ -496,6 +502,19 @@ def render_live_manual_draft_panel(
             )
             record_live_draft_ui_diagnostics(session, draft_button_rendered=True)
         return False
+
+    def _waiting_status_message() -> str:
+        if room.get("status") == "paused":
+            return "Draft is paused — resume to pick."
+        draft_status = str(gate.get("draft_status") or room.get("status") or "").strip()
+        if draft_status in ("not_started", "") or gate.get("draft_complete"):
+            return "Draft has not started yet."
+        if draft_status == "complete" or str(room.get("status") or "") == "complete":
+            return "Draft is complete."
+        clock = str(gate.get("on_clock_team") or ctx.get("on_clock_team") or "").strip()
+        if clock:
+            return f"Waiting for **{clock}** to pick."
+        return "Waiting for the next pick."
 
     if available is None:
         reason = f"live_draft_pool_unavailable:{pool_load_error or 'pool_load_failed'}"
@@ -570,6 +589,7 @@ def render_live_manual_draft_panel(
         }
     )
     paused = room.get("status") == "paused"
+    draft_in_progress = str(gate.get("draft_status") or room.get("status") or "") == "in_progress"
 
     if not player_options:
         return _finish(
@@ -580,6 +600,24 @@ def render_live_manual_draft_panel(
             }
         )
 
+    if not should_render or paused or not draft_in_progress:
+        st.info(_waiting_status_message())
+        st.selectbox(
+            "Available players",
+            player_options,
+            key="live_draft_player_view_only",
+            disabled=True,
+        )
+        diag_base.update(
+            {
+                "draft_button_rendered": False,
+                "draft_button_enabled": False,
+                "manual_draft_panel_skipped": not should_render,
+                "draft_action_disable_reason": turn_disable_reason or "not_your_turn",
+            }
+        )
+        return _finish(diag_base)
+
     selected_player = st.selectbox(
         "Draft candidate",
         player_options,
@@ -589,19 +627,17 @@ def render_live_manual_draft_panel(
     diag_base["selected_player"] = str(selected_player or "")
 
     allowed, disable_reason = can_draft_player(session, str(selected_player or ""))
-    button_enabled = bool(should_render and allowed and not paused)
-    panel_disable_reason = turn_disable_reason
-    if paused:
-        panel_disable_reason = panel_disable_reason or "draft_not_in_progress"
-        disable_reason = disable_reason or "Draft is paused — resume to pick."
-    elif not should_render:
-        disable_reason = turn_disable_reason or "not_your_turn"
-    elif not allowed:
+    button_enabled = bool(allowed and not paused)
+    if not allowed:
         diag_base["draft_action_disable_reason"] = disable_reason
-        panel_disable_reason = disable_reason
 
     diag_base["draft_button_enabled"] = button_enabled
-    diag_base["draft_button_disable_reason"] = "" if button_enabled else (panel_disable_reason or "cannot_draft")
+    diag_base["draft_button_disable_reason"] = "" if button_enabled else (disable_reason or "cannot_draft")
+
+    if not button_enabled:
+        st.caption(disable_reason or "Cannot draft this player right now.")
+        diag_base["draft_button_rendered"] = False
+        return _finish(diag_base)
 
     if render_draft_button(
         st,
@@ -611,8 +647,6 @@ def render_live_manual_draft_panel(
         key_suffix="live_manual",
         label="Draft Player",
         button_type="primary",
-        extra_disabled=not button_enabled,
-        extra_disabled_reason=diag_base["draft_button_disable_reason"] if not button_enabled else "",
     ):
         record_live_draft_ui_diagnostics(session, {**diag_base, "draft_button_rendered": True})
         render_live_manual_draft_diagnostics(st, session)

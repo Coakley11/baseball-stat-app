@@ -64,6 +64,21 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         slot = live_draft_current_slot(room)
         self.assertEqual(slot["Team"], "B")
 
+    def test_grace_skipped_when_timer_expired(self) -> None:
+        import time
+
+        from live_draft_timer_ui import _page_load_grace_active
+
+        session = {"_live_draft_page_load_ts": time.time()}
+        room = {
+            "status": "in_progress",
+            "config": {"timer_seconds": 60},
+            "current_pick_index": 4,
+            "timer_handled_index": -1,
+            "timer_started_at": time.time() - 120,
+        }
+        self.assertFalse(_page_load_grace_active(session, room))
+
 
 if __name__ == "__main__":
     unittest.main()
