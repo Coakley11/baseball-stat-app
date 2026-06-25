@@ -17480,6 +17480,17 @@ if active_page == "Live Draft Room":
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
         compact=True,
     )
+    _pending_pick_result: dict = {"processed": False}
+    try:
+        from draft_ui import process_pending_manual_draft_pick
+
+        _pending_pick_result = process_pending_manual_draft_pick(st, st.session_state)
+        if _pending_pick_result.get("processed") and not _pending_pick_result.get("ok"):
+            st.error(str(_pending_pick_result.get("error") or _pending_pick_result.get("message") or "Manual pick failed."))
+        elif _pending_pick_result.get("ok"):
+            st.success(str(_pending_pick_result.get("message") or "Pick saved."))
+    except ImportError:
+        pass
     from live_draft_state import prepare_live_draft_state
 
     prepare_live_draft_state(st.session_state)
@@ -17507,7 +17518,12 @@ if active_page == "Live Draft Room":
             page_entered = _cur_page == "Live Draft Room" and _prev_page != _cur_page
             st.session_state["_shared_draft_poll_active_page"] = _cur_page
             poll_due = page_entered or (_poll_now - _poll_last >= interval)
-            if poll_due:
+            _skip_poll = bool(
+                st.session_state.get("_live_draft_manual_pick_in_flight")
+                or st.session_state.get("_pending_manual_draft_pick")
+                or _pending_pick_result.get("processed")
+            )
+            if poll_due and not _skip_poll:
                 st.session_state["_shared_draft_poll_ts"] = _poll_now
                 _poll_changed = poll_shared_draft_room(st.session_state)
                 if _poll_changed and isinstance(st.session_state.get("live_draft_room"), dict):
@@ -17549,6 +17565,18 @@ if active_page == "Live Draft Room":
             pass
     except ImportError:
         pass
+    if _pending_pick_result.get("should_rerun"):
+        try:
+            from live_draft_safe_mode import request_live_draft_rerun
+
+            request_live_draft_rerun(
+                st,
+                st.session_state,
+                "manual_pick",
+                room=st.session_state.get("live_draft_room"),
+            )
+        except ImportError:
+            st.rerun()
     apply_pending_page_transfer(active_page)
     from draft_ui import on_open_simulator_convert_panel, on_start_new_live_draft
     from live_draft_state import prepare_live_draft_state, render_live_draft_save_diagnostics
@@ -18162,7 +18190,19 @@ if active_page == "Live Draft Room":
             and slot is not None
             and (_reconcile is None or getattr(_reconcile, "timer_should_run", True))
         )
-        if _timer_ok:
+        try:
+            from draft_ui import DISABLE_AUTOPICK_FOR_TESTING_KEY, live_draft_autopick_disabled
+
+            if developer_mode_enabled():
+                st.checkbox(
+                    "Disable auto-pick for manual testing",
+                    key=DISABLE_AUTOPICK_FOR_TESTING_KEY,
+                    help="Stops timer/page auto-pick so manual Draft Player clicks are not raced.",
+                )
+            _autopick_off = live_draft_autopick_disabled(st.session_state)
+        except ImportError:
+            _autopick_off = False
+        if _timer_ok and not _autopick_off:
             try:
                 from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
                 from live_draft_safe_mode import request_live_draft_rerun

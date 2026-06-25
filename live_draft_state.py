@@ -13,6 +13,7 @@ LIVE_DRAFT_STATE_KEY = "live_draft_state"
 LIVE_DRAFT_ROOM_KEY = "live_draft_room"
 LIVE_DRAFT_DIRTY_KEY = "live_draft_state_dirty"
 LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
+MANUAL_PICK_SNAPSHOT_KEY = "_manual_pick_commit_snapshot"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
 LIVE_DRAFT_OWNER_AUTH_KEY = "owner_auth_user_id"
 LIVE_DRAFT_OWNER_EXTERNAL_KEY = "owner_external_id"
@@ -661,8 +662,66 @@ def _apply_derived_draft_status(session: dict[str, Any], room: dict[str, Any] | 
     return room
 
 
+def record_manual_pick_snapshot(session: dict[str, Any], board_size: int, pick_index: int) -> None:
+    session[MANUAL_PICK_SNAPSHOT_KEY] = {
+        "board_size": int(board_size),
+        "current_pick_index": int(pick_index),
+    }
+
+
+def check_manual_commit_overwrite(session: dict[str, Any], *, source: str = "") -> bool:
+    """Detect when a successful manual pick was rolled back by restore/poll/reconcile."""
+    snap = session.get(MANUAL_PICK_SNAPSHOT_KEY)
+    if not isinstance(snap, dict):
+        return False
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not isinstance(room, dict):
+        return False
+    expected_board = int(snap.get("board_size") or 0)
+    expected_idx = int(snap.get("current_pick_index") or 0)
+    actual_board = live_draft_board_len(room)
+    actual_idx = int(room.get("current_pick_index") or 0)
+    if actual_board >= expected_board and actual_idx >= expected_idx:
+        session.pop(MANUAL_PICK_SNAPSHOT_KEY, None)
+        return False
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(
+            session,
+            manual_commit_overwritten_after_success=True,
+            overwrite_source=str(source or "unknown"),
+            board_size_after_manual_pick=actual_board,
+            current_pick_index_after_manual_pick=actual_idx,
+            board_size_before_manual_pick=expected_board,
+            current_pick_index_before_manual_pick=expected_idx,
+        )
+    except ImportError:
+        pass
+    return True
+
+
 def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
     """Hydrate runtime room from canonical blob before Live Draft Room renders."""
+    if session.get("_live_draft_manual_pick_in_flight"):
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if is_runtime_room(room):
+            try:
+                from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+                record_draft_commit_diagnostics(session, runtime_room_preferred=True, canonical_room_preferred=False)
+            except ImportError:
+                pass
+            return _apply_derived_draft_status(session, room)
+    try:
+        from draft_ui import PENDING_MANUAL_PICK_KEY
+
+        if session.get(PENDING_MANUAL_PICK_KEY):
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if is_runtime_room(room):
+                return _apply_derived_draft_status(session, room)
+    except ImportError:
+        pass
     try:
         from draft_room_context import clear_stale_multiplayer_state, is_multiplayer_draft_active
 
@@ -686,11 +745,25 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
             return None
         runtime = room if is_runtime_room(room) else None
         if should_prefer_runtime_live_room(session, runtime, canonical):
+            try:
+                from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+                record_draft_commit_diagnostics(session, runtime_room_preferred=True, canonical_room_preferred=False)
+            except ImportError:
+                pass
             write_canonical_live_draft_state(session, runtime, reason="session_hydrate_prefer_runtime", local_edit=True)
+            check_manual_commit_overwrite(session, source="prepare_live_draft_state_prefer_runtime")
             return _apply_derived_draft_status(session, runtime)
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            record_draft_commit_diagnostics(session, runtime_room_preferred=False, canonical_room_preferred=True)
+        except ImportError:
+            pass
         restored = room_from_persist_dict(canonical)
         if restored:
             session[LIVE_DRAFT_ROOM_KEY] = restored
+            check_manual_commit_overwrite(session, source="prepare_live_draft_state_canonical_restore")
             return _apply_derived_draft_status(session, restored)
     if is_runtime_room(room):
         write_canonical_live_draft_state(session, room, reason="session_hydrate", local_edit=False)

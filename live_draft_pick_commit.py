@@ -153,13 +153,23 @@ def commit_manual_live_pick(
     verdict: str | None = None,
 ) -> PickCommitResult:
     """Apply make_pick then persist — manual draft path."""
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(
+            session,
+            commit_function_entered=True,
+            manual_pick_commit_path="commit_manual_live_pick",
+        )
+    except ImportError:
+        pass
     board_before = len(room.get("draft_board") or [])
     idx_before = int(room.get("current_pick_index") or 0)
     verdict_text = verdict or f"Draft ({source})"
 
     ok, msg = live_draft_make_pick(room, player_row, verdict=verdict_text)
     if not ok:
-        return PickCommitResult(
+        result = PickCommitResult(
             ok=False,
             message=msg,
             error="live_make_pick_failed",
@@ -169,6 +179,13 @@ def commit_manual_live_pick(
             current_pick_index_before=idx_before,
             current_pick_index_after=idx_before,
         )
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            record_draft_commit_diagnostics(session, commit_function_returned=True, manual_pick_success=False, manual_pick_error=msg)
+        except ImportError:
+            pass
+        return result
 
     expected_revision = sync_expected_revision(session)
     refreshed = resolve_live_room(session, room)
@@ -184,6 +201,18 @@ def commit_manual_live_pick(
     )
     if persisted.ok:
         persisted.message = msg
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(
+            session,
+            commit_function_returned=True,
+            manual_pick_success=persisted.ok,
+            manual_pick_error=None if persisted.ok else persisted.message,
+            manual_pick_commit_path=persisted.commit_path,
+        )
+    except ImportError:
+        pass
     return persisted
 
 

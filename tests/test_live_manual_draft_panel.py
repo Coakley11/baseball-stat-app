@@ -112,14 +112,12 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
         )
         self.st.selectbox.return_value = "Aaron Judge"
-        self.st.button.return_value = False
-        result = render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=False)
-        self.assertFalse(result)
+        render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=False)
         self.st.selectbox.assert_called()
-        diag = self.session.get("_live_draft_ui_diag") or {}
-        self.assertTrue(diag.get("draft_button_rendered"))
-        self.assertEqual(diag.get("render_path"), "live_draft_room")
-        self.assertFalse(diag.get("multiplayer_mode"))
+        self.st.button.assert_called()
+        btn_kwargs = self.st.button.call_args.kwargs
+        self.assertIn("on_click", btn_kwargs)
+        self.assertEqual(btn_kwargs.get("key"), "draft_btn_live_draft_room_live_manual")
 
     @patch("draft_ui.can_draft_player", return_value=(True, ""))
     @patch("draft_source_validation.allowed_draft_player_names", return_value=[])
@@ -138,7 +136,6 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
         )
         self.st.selectbox.return_value = "Aaron Judge"
-        self.st.button.return_value = False
         self.session["active_shared_draft_room_code"] = "ABC123"
         render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=True)
         self.st.selectbox.assert_called()

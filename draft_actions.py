@@ -300,7 +300,8 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
         try:
             from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress, prepare_live_draft_state, repair_stale_live_draft_progress
 
-            prepare_live_draft_state(session)
+            if not session.get("_live_draft_manual_pick_in_flight"):
+                prepare_live_draft_state(session)
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if isinstance(room, dict):
                 try:
@@ -772,6 +773,13 @@ def _draft_live(
     session["_live_draft_manual_pick_in_flight"] = True
 
     try:
+        from live_draft_state import is_live_draft_locally_dirty
+
+        local_dirty_before = is_live_draft_locally_dirty(session)
+    except ImportError:
+        local_dirty_before = True
+
+    try:
         from draft_room_context import is_multiplayer_draft_active
 
         mp = is_multiplayer_draft_active(session)
@@ -792,6 +800,7 @@ def _draft_live(
             board_size_before_manual_pick=len(room.get("draft_board") or []),
             current_pick_index_before=int(room.get("current_pick_index") or 0),
             current_pick_index_before_manual_pick=int(room.get("current_pick_index") or 0),
+            local_dirty_before_commit=local_dirty_before,
         )
 
     if clear_autopick_backoff_for_manual is not None:
@@ -896,6 +905,19 @@ def _draft_live(
         source=source,
         verdict=f"Draft ({source})",
     )
+    try:
+        from live_draft_state import check_manual_commit_overwrite, is_live_draft_locally_dirty, record_manual_pick_snapshot
+
+        if commit.ok:
+            record_manual_pick_snapshot(session, commit.board_size_after, commit.current_pick_index_after)
+            check_manual_commit_overwrite(session, source="after_draft_live_commit")
+        if record_draft_commit_diagnostics is not None:
+            record_draft_commit_diagnostics(
+                session,
+                local_dirty_after_commit=is_live_draft_locally_dirty(session),
+            )
+    except ImportError:
+        pass
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(
             session,

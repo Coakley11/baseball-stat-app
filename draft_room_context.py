@@ -309,6 +309,12 @@ def sync_shared_draft_room(
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
         load_participant_workflow_into_session(session, room_code)
         try:
+            from live_draft_state import check_manual_commit_overwrite
+
+            check_manual_commit_overwrite(session, source="shared_room_poll")
+        except ImportError:
+            pass
+        try:
             from draft_commit_diagnostics import record_draft_commit_diagnostics
 
             record_draft_commit_diagnostics(
