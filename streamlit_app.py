@@ -12540,6 +12540,12 @@ def _on_sidebar_page_change() -> None:
     pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
     st.session_state["active_page"] = pick
     try:
+        from draft_lab_resume import cancel_draft_lab_resume_navigation
+
+        cancel_draft_lab_resume_navigation(st, pick)
+    except ImportError:
+        pass
+    try:
         from suite_user_persistence import claim_user_page_ownership
 
         claim_user_page_ownership(st, "baseball", pick)

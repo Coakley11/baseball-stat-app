@@ -12,6 +12,11 @@ PENDING_RESUME_QUERY_KEY = "_suite_pending_resume_query"
 DRAFT_LAB_RESUME_PAGE = "Draft Simulation Test Mode"
 DRAFT_LAB_RESUME_ERROR_KEY = "_draft_lab_resume_error"
 DRAFT_LAB_RESUME_DIAG_KEY = "_draft_lab_resume_last_diag"
+DRAFT_LAB_RESUME_COMPLETED_KEY = "_draft_lab_resume_completed"
+DRAFT_LAB_RESUME_REQUESTED_KEY = "_draft_lab_resume_requested"
+DRAFT_LAB_RESUME_QUERY_KEYS = frozenset(
+    {"suite_resume", "suite_page", "suite_draft_room", "suite_draft_section"}
+)
 
 
 def _qp_get(st: Any, name: str) -> str:
@@ -26,8 +31,91 @@ def _qp_get(st: Any, name: str) -> str:
     return str(raw).strip()
 
 
+def draft_lab_resume_consumed(session: dict[str, Any]) -> bool:
+    return bool(session.get(DRAFT_LAB_RESUME_COMPLETED_KEY))
+
+
+def resume_requested(session: dict[str, Any]) -> bool:
+    return bool(
+        session.get(DRAFT_LAB_RESUME_REQUESTED_KEY)
+        or session.get("_suite_pending_draft_lab_resume")
+    )
+
+
+def forced_page_active(session: dict[str, Any]) -> bool:
+    pending = bool(session.get("_suite_pending_draft_lab_resume"))
+    nav = str(session.get("_navigate_to_page") or "").strip()
+    skip = str(session.get("_skip_page_restore_for") or "").strip()
+    return pending or nav == DRAFT_LAB_RESUME_PAGE or skip == DRAFT_LAB_RESUME_PAGE
+
+
+def _clear_pending_resume_query_draft_lab(session: dict[str, Any]) -> None:
+    pending = session.get(PENDING_RESUME_QUERY_KEY)
+    if not isinstance(pending, dict):
+        return
+    for key in DRAFT_LAB_RESUME_QUERY_KEYS:
+        pending.pop(key, None)
+    if pending:
+        session[PENDING_RESUME_QUERY_KEY] = pending
+    else:
+        session.pop(PENDING_RESUME_QUERY_KEY, None)
+
+
+def clear_resume_query_params(st: Any) -> None:
+    """Remove draft-lab resume params from the URL so refresh does not re-trigger."""
+    try:
+        qp = st.query_params
+        for key in DRAFT_LAB_RESUME_QUERY_KEYS:
+            if key in qp:
+                del qp[key]
+    except Exception:
+        pass
+
+
+def finalize_draft_lab_resume(st: Any, *, applied: bool = True) -> None:
+    """One-shot completion — release navigation locks after resume/hydration."""
+    ss = st.session_state
+    ss[DRAFT_LAB_RESUME_COMPLETED_KEY] = True
+    ss.pop("_suite_pending_draft_lab_resume", None)
+    if str(ss.get("_navigate_to_page") or "").strip() == DRAFT_LAB_RESUME_PAGE:
+        ss.pop("_navigate_to_page", None)
+    if str(ss.get("_skip_page_restore_for") or "").strip() == DRAFT_LAB_RESUME_PAGE:
+        ss.pop("_skip_page_restore_for", None)
+    _clear_pending_resume_query_draft_lab(ss)
+    clear_resume_query_params(st)
+    if applied:
+        ss.pop(DRAFT_LAB_RESUME_ERROR_KEY, None)
+
+
+def cancel_draft_lab_resume_navigation(st: Any, user_page: str) -> None:
+    """User picked a different page — stop forcing Draft Simulation Test Mode."""
+    ss = st.session_state
+    if not resume_requested(ss) and not forced_page_active(ss):
+        return
+    target = str(user_page or "").strip()
+    if target and target != DRAFT_LAB_RESUME_PAGE:
+        finalize_draft_lab_resume(st, applied=draft_lab_resume_consumed(ss))
+
+
+def mark_resume_requested(session: dict[str, Any]) -> None:
+    session[DRAFT_LAB_RESUME_REQUESTED_KEY] = True
+    session["_suite_pending_draft_lab_resume"] = True
+
+
+def _resume_diag_flags(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "resume_requested": resume_requested(session),
+        "resume_applied": bool(session.get(DRAFT_LAB_RESUME_DIAG_KEY)),
+        "resume_completed": draft_lab_resume_consumed(session),
+        "forced_page_active": forced_page_active(session),
+        "final_selected_page": str(session.get("active_page") or ""),
+    }
+
+
 def capture_pending_resume_query(st: Any, app_key: str = "baseball") -> dict[str, str]:
     """Persist deep-link query params through auth reruns when URL params remain."""
+    if draft_lab_resume_consumed(st.session_state):
+        return dict(st.session_state.get(PENDING_RESUME_QUERY_KEY) or {})
     try:
         from suite_cloud_state import list_active_resume_query_params
 
@@ -223,10 +311,12 @@ def schedule_draft_lab_resume_navigation(st: Any, *, page: str, room_id: str = "
     """Force Draft Simulation Test Mode to win over default Historical Explorer restore."""
     target = str(page or DRAFT_LAB_RESUME_PAGE).strip() or DRAFT_LAB_RESUME_PAGE
     ss = st.session_state
+    if draft_lab_resume_consumed(ss) and not resume_requested(ss):
+        return
+    mark_resume_requested(ss)
     ss["_navigate_to_page"] = target
     ss["active_page"] = target
     ss["main_sidebar_page"] = target
-    ss["_suite_pending_draft_lab_resume"] = True
     if room_id:
         ss["_suite_resume_draft_room"] = str(room_id).strip()
     if section:
@@ -254,27 +344,34 @@ def _push_analysis_to_session(room: dict[str, Any]) -> bool:
 def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
     """Rebuild or confirm draft_lab_results for a resume deep link."""
     ss = st.session_state
-    room_id = parse_resume_room_id(st, ss)
-    draft_section = parse_resume_draft_section(st, ss)
-    if room_id and not ss.get("_suite_resume_draft_room"):
-        ss["_suite_resume_draft_room"] = room_id
-    if draft_section:
-        _apply_draft_section_preference(ss, draft_section)
-
     diag: dict[str, Any] = {
-        "room_id": room_id,
-        "draft_section": draft_section,
-        "draft_lab_results_before": _draft_lab_results_nonempty(ss),
-        "draft_lab_results_room_id_before": _draft_lab_results_room_id(ss),
         "draft_lab_results_status": "not_requested",
         "rebuild_attempted": False,
         "rebuild_success": False,
         "room_load_source": "",
     }
+    diag.update(_resume_diag_flags(ss))
+
+    if draft_lab_resume_consumed(ss):
+        diag["draft_lab_results_status"] = "resume_completed"
+        diag["draft_lab_results_after"] = _draft_lab_results_nonempty(ss)
+        ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
+        return diag
+
+    room_id = parse_resume_room_id(st, ss)
+    draft_section = parse_resume_draft_section(st, ss)
+    diag["room_id"] = room_id
+    diag["draft_section"] = draft_section
+    if room_id and not ss.get("_suite_resume_draft_room"):
+        ss["_suite_resume_draft_room"] = room_id
+    if draft_section:
+        _apply_draft_section_preference(ss, draft_section)
+
+    diag["draft_lab_results_before"] = _draft_lab_results_nonempty(ss)
+    diag["draft_lab_results_room_id_before"] = _draft_lab_results_room_id(ss)
 
     pending_resume = bool(ss.get("_suite_pending_draft_lab_resume"))
-    on_draft_lab_page = str(ss.get("active_page") or ss.get("_navigate_to_page") or "") == DRAFT_LAB_RESUME_PAGE
-    if not room_id and not pending_resume and not on_draft_lab_page:
+    if not room_id and not pending_resume:
         ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
         return diag
 
@@ -283,17 +380,20 @@ def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
         diag["draft_lab_results_status"] = "already_in_session"
         diag["rebuild_success"] = True
         diag["draft_lab_results_after"] = True
-        ss.pop(DRAFT_LAB_RESUME_ERROR_KEY, None)
+        finalize_draft_lab_resume(st, applied=True)
+        diag.update(_resume_diag_flags(ss))
         ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
         return diag
 
     if not room_id:
         diag["draft_lab_results_status"] = "missing_room_id"
-        if pending_resume or on_draft_lab_page:
+        if pending_resume:
             ss[DRAFT_LAB_RESUME_ERROR_KEY] = {
                 "room_id": "",
                 "message": "Draft analysis could not be restored — no room id in the resume link.",
             }
+            finalize_draft_lab_resume(st, applied=False)
+            diag.update(_resume_diag_flags(ss))
         ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
         return diag
 
@@ -308,6 +408,8 @@ def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
                 "Open **Live Draft Room** and click **Analyze Completed Draft**, or start from the latest completed draft there."
             ),
         }
+        finalize_draft_lab_resume(st, applied=False)
+        diag.update(_resume_diag_flags(ss))
         ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
         return diag
 
@@ -320,6 +422,8 @@ def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
                 "Finish the live draft, then use **Analyze Completed Draft**."
             ),
         }
+        finalize_draft_lab_resume(st, applied=False)
+        diag.update(_resume_diag_flags(ss))
         ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
         return diag
 
@@ -331,8 +435,7 @@ def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
         diag["draft_lab_results_status"] = "rebuilt_from_room" if ok else "rebuild_failed"
         diag["draft_lab_results_after"] = _draft_lab_results_nonempty(ss)
         if ok:
-            ss.pop(DRAFT_LAB_RESUME_ERROR_KEY, None)
-            ss.pop("_suite_pending_draft_lab_resume", None)
+            finalize_draft_lab_resume(st, applied=True)
         else:
             ss[DRAFT_LAB_RESUME_ERROR_KEY] = {
                 "room_id": room_id,
@@ -341,12 +444,15 @@ def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
                     "Open **Live Draft Room** and click **Analyze Completed Draft**."
                 ),
             }
+            finalize_draft_lab_resume(st, applied=False)
     except Exception as exc:
         diag["draft_lab_results_status"] = f"rebuild_error:{exc}"
         ss[DRAFT_LAB_RESUME_ERROR_KEY] = {
             "room_id": room_id,
             "message": f"Draft analysis restore failed: {exc}",
         }
+        finalize_draft_lab_resume(st, applied=False)
+    diag.update(_resume_diag_flags(ss))
     ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
     return diag
 
@@ -395,9 +501,12 @@ def draft_lab_resume_diagnostics(st: Any) -> dict[str, Any]:
         "auth_preserved_pending_query": bool(pending),
         "last_hydration_diag": dict(ss.get(DRAFT_LAB_RESUME_DIAG_KEY) or {}),
     }
-    hydration = apply_draft_lab_resume(st)
-    out.update(hydration)
+    out.update(_resume_diag_flags(ss))
+    if not draft_lab_resume_consumed(ss):
+        hydration = apply_draft_lab_resume(st)
+        out.update(hydration)
     out["draft_lab_results_after_hydration"] = _draft_lab_results_nonempty(ss)
     out["draft_lab_results_room_id_after"] = _draft_lab_results_room_id(ss)
     out["draft_lab_resume_error"] = ss.get(DRAFT_LAB_RESUME_ERROR_KEY)
+    out.update(_resume_diag_flags(ss))
     return out

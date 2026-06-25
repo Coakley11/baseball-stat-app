@@ -82,10 +82,35 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
         except ImportError:
             pass
     live_resume_qp = bool(resume or page or ami_insight or draft_room)
+    if key == "baseball":
+        try:
+            from draft_lab_resume import draft_lab_resume_consumed
+
+            if draft_lab_resume_consumed(st.session_state):
+                live_resume_qp = bool(
+                    _qp_get(st, "suite_resume")
+                    or _qp_get(st, "suite_page")
+                    or _qp_get(st, "suite_draft_room")
+                    or _qp_get(st, "suite_draft_section")
+                )
+        except ImportError:
+            pass
     if st.session_state.get(flag) and not live_resume_qp:
         return False
 
     if not live_resume_qp:
+        return False
+
+    if st.session_state.get(flag):
+        if key == "baseball":
+            try:
+                from draft_lab_resume import draft_lab_resume_consumed
+
+                if draft_lab_resume_consumed(st.session_state):
+                    return False
+            except ImportError:
+                pass
+        # Launch handlers are one-shot; hydration continues via apply_draft_lab_resume.
         return False
 
     if key == "music":

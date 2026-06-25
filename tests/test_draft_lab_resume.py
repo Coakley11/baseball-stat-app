@@ -11,9 +11,15 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from draft_lab_resume import (
+    DRAFT_LAB_RESUME_COMPLETED_KEY,
     DRAFT_LAB_RESUME_ERROR_KEY,
+    PENDING_RESUME_QUERY_KEY,
     apply_draft_lab_resume,
+    cancel_draft_lab_resume_navigation,
     capture_pending_resume_query,
+    draft_lab_resume_consumed,
+    finalize_draft_lab_resume,
+    forced_page_active,
     load_completed_room_for_resume,
     parse_resume_room_id,
     schedule_draft_lab_resume_navigation,
@@ -92,11 +98,13 @@ class TestDraftLabResume(unittest.TestCase):
 
     def test_pending_query_survives_auth_rerun(self) -> None:
         st = _ST({"suite_page": "Draft Simulation Test Mode", "suite_draft_room": "ROOM-1"})
-        capture_pending_resume_query(st, "baseball")
-        st.query_params = _QP({})
-        st.session_state["_suite_resume_launch_baseball"] = True
         apply_suite_resume_launch(st, "baseball")
         self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
+        capture_pending_resume_query(st, "baseball")
+        st.query_params = _QP({})
+        apply_suite_resume_launch(st, "baseball")
+        self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
+        self.assertTrue(st.session_state.get("_suite_resume_launch_baseball"))
 
     def test_rebuild_from_completed_room_in_session(self) -> None:
         st = _ST()
@@ -191,6 +199,72 @@ class TestDraftLabResume(unittest.TestCase):
         st = _ST()
         schedule_draft_lab_resume_navigation(st, page="Draft Simulation Test Mode", room_id="R1")
         self.assertEqual(st.session_state["_skip_page_restore_for"], "Draft Simulation Test Mode")
+
+    def test_finalize_clears_forced_navigation(self) -> None:
+        st = _ST()
+        st.session_state["_suite_pending_draft_lab_resume"] = True
+        st.session_state["_navigate_to_page"] = "Draft Simulation Test Mode"
+        st.session_state["_skip_page_restore_for"] = "Draft Simulation Test Mode"
+        st.session_state[PENDING_RESUME_QUERY_KEY] = {"suite_page": "Draft Simulation Test Mode"}
+        finalize_draft_lab_resume(st, applied=True)
+        self.assertTrue(draft_lab_resume_consumed(st.session_state))
+        self.assertFalse(forced_page_active(st.session_state))
+        self.assertNotIn("_navigate_to_page", st.session_state)
+
+    def test_user_can_navigate_away_after_resume(self) -> None:
+        st = _ST()
+        schedule_draft_lab_resume_navigation(st, page="Draft Simulation Test Mode", room_id="R1")
+        st.session_state["live_draft_room"] = _completed_room("R1")
+
+        def _push(_room: dict) -> bool:
+            st.session_state["draft_lab_results"] = {
+                "draft": pd.DataFrame([{"Pick": 1}]),
+                "handoff": {"session_id": "R1"},
+            }
+            return True
+
+        with patch("draft_lab_resume._push_analysis_to_session", side_effect=_push):
+            apply_draft_lab_resume(st)
+        self.assertTrue(draft_lab_resume_consumed(st.session_state))
+        cancel_draft_lab_resume_navigation(st, "Live Draft Room")
+        st.session_state["active_page"] = "Live Draft Room"
+        st.session_state["main_sidebar_page"] = "Live Draft Room"
+        self.assertEqual(st.session_state["active_page"], "Live Draft Room")
+        self.assertFalse(forced_page_active(st.session_state))
+
+    def test_suite_resume_launch_does_not_reforce_after_completed(self) -> None:
+        st = _ST(
+            {
+                "suite_page": "Draft Simulation Test Mode",
+                "suite_draft_room": "ROOM-ABC123",
+                "suite_resume": "bb:draft_lab:team:ROOM-ABC123",
+            }
+        )
+        apply_suite_resume_launch(st, "baseball")
+        self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
+        st.session_state[DRAFT_LAB_RESUME_COMPLETED_KEY] = True
+        st.session_state["active_page"] = "Live Draft Room"
+        st.session_state["main_sidebar_page"] = "Live Draft Room"
+        apply_suite_resume_launch(st, "baseball")
+        self.assertEqual(st.session_state.get("active_page"), "Live Draft Room")
+
+    def test_resume_applied_only_once(self) -> None:
+        st = _ST()
+        st.session_state["_suite_resume_draft_room"] = "ROOM-1"
+        st.session_state["_suite_pending_draft_lab_resume"] = True
+        st.session_state["live_draft_room"] = _completed_room("ROOM-1")
+
+        def _push(_room: dict) -> bool:
+            st.session_state["draft_lab_results"] = {
+                "draft": pd.DataFrame([{"Pick": 1}]),
+                "handoff": {"session_id": "ROOM-1"},
+            }
+            return True
+
+        with patch("draft_lab_resume._push_analysis_to_session", side_effect=_push) as push:
+            apply_draft_lab_resume(st)
+            apply_draft_lab_resume(st)
+        self.assertEqual(push.call_count, 1)
 
 
 if __name__ == "__main__":
