@@ -9,46 +9,125 @@ from draft_actions import can_draft_player, draft_action_context, draft_button_d
 
 PENDING_MANUAL_PICK_KEY = "_pending_manual_draft_pick"
 DISABLE_AUTOPICK_FOR_TESTING_KEY = "_live_draft_disable_autopick_for_testing"
+MANUAL_CANDIDATE_SNAPSHOT_KEY = "_live_draft_manual_candidate_snapshot"
+# Legacy key — do not use for new widgets (pick-index keys are authoritative).
 MANUAL_PICK_SELECTBOX_KEY = "live_draft_player_select"
 MANUAL_DRAFT_BUTTON_KEY = "draft_btn_live_draft_room_live_manual"
 
 
-def live_draft_autopick_disabled(session: dict[str, Any]) -> bool:
-    return bool(session.get(DISABLE_AUTOPICK_FOR_TESTING_KEY))
+def manual_draft_candidate_widget_key(room: dict[str, Any]) -> str:
+    """Stable per-pick selectbox key so candidate state cannot bleed across picks."""
+    idx = int(room.get("current_pick_index") or 0)
+    return f"live_draft_manual_candidate_i{idx}"
+
+
+def _record_visible_draft_candidate(
+    session: dict[str, Any],
+    available: Any,
+    widget_key: str,
+    *,
+    fallback_name: str = "",
+    source: str = "render",
+) -> dict[str, str]:
+    """Sync visible dropdown selection into session snapshot + diagnostics."""
+    name = str(session.get(widget_key) or fallback_name or "").strip()
+    player_id = _player_id_from_available(available, name) if name else ""
+    snap = {
+        "name": name,
+        "id": player_id,
+        "widget_key": widget_key,
+        "source": source,
+    }
+    session[MANUAL_CANDIDATE_SNAPSHOT_KEY] = snap
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(
+            session,
+            draft_candidate_widget_key=widget_key,
+            draft_candidate_widget_value=name or None,
+            visible_draft_candidate_name=name or None,
+            visible_draft_candidate_id=player_id or None,
+        )
+    except ImportError:
+        pass
+    return snap
 
 
 def queue_manual_draft_pick(
     session: dict[str, Any],
     *,
+    player_name: str = "",
+    player_id: str | None = None,
     pool_source: str = "",
     candidate_source: str = "manual_panel",
-) -> None:
+    widget_key: str = "",
+) -> bool:
     """Store a manual pick from st.button on_click before any rerun/restore can drop the click."""
-    player_name = str(session.get(MANUAL_PICK_SELECTBOX_KEY) or "").strip()
-    selected_id = ""
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
 
-        room = session.get(LIVE_DRAFT_ROOM_KEY)
-        if isinstance(room, dict):
-            available = live_draft_get_available(room)
-            selected_id = _player_id_from_available(available, player_name)
-    except Exception:
+        record_draft_commit_diagnostics(session, queue_manual_draft_pick_entered=True)
+    except ImportError:
         pass
+
+    snap = session.get(MANUAL_CANDIDATE_SNAPSHOT_KEY)
+    if not isinstance(snap, dict):
+        snap = {}
+
+    wkey = str(widget_key or snap.get("widget_key") or "").strip()
+    name = ""
+    if wkey:
+        name = str(session.get(wkey) or "").strip()
+    if not name:
+        name = str(player_name or snap.get("name") or "").strip()
+
+    selected_id = str(player_id or "").strip()
+    if name and not selected_id:
+        try:
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
+
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(room, dict):
+                available = live_draft_get_available(room)
+                selected_id = _player_id_from_available(available, name)
+        except Exception:
+            pass
+    if name and not selected_id and str(snap.get("name") or "").strip() == name:
+        selected_id = str(snap.get("id") or "").strip()
+
     still_available = False
-    if player_name:
+    if name:
         try:
             from draft_actions import _live_player_available
 
-            still_available, _ = _live_player_available(session, player_name)
+            still_available, _ = _live_player_available(session, name)
         except Exception:
-            still_available = bool(player_name)
+            still_available = bool(name)
+
+    if not name:
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            record_draft_commit_diagnostics(
+                session,
+                draft_button_clicked=True,
+                manual_pick_error="no_player_selected",
+                pending_manual_pick_exists=False,
+            )
+        except ImportError:
+            pass
+        session["_live_draft_pick_flash_error"] = "Select a player first."
+        session.pop(PENDING_MANUAL_PICK_KEY, None)
+        return False
+
     pending = {
-        "player_name": player_name,
+        "player_name": name,
         "selected_player_id": selected_id,
         "pool_source": pool_source,
         "candidate_source": candidate_source,
         "player_still_available_at_click": still_available,
+        "widget_key": wkey,
         "queued_at": time.time(),
     }
     session[PENDING_MANUAL_PICK_KEY] = pending
@@ -58,15 +137,29 @@ def queue_manual_draft_pick(
         record_draft_commit_diagnostics(
             session,
             draft_button_clicked=True,
-            selected_player_at_click=player_name,
-            selected_player_name=player_name,
+            selected_player_at_click=name,
+            selected_player_name=name,
             selected_player_id=selected_id or None,
             candidate_source=candidate_source,
             pool_source=pool_source,
             player_still_available_at_click=still_available,
+            draft_candidate_widget_key=wkey or None,
+            draft_candidate_widget_value=name,
+            visible_draft_candidate_name=name,
+            visible_draft_candidate_id=selected_id or None,
+            queued_manual_pick_player_name=name,
+            queued_manual_pick_player_id=selected_id or None,
+            pending_manual_pick_exists=True,
+            pending_manual_pick_player_name=name,
+            pending_manual_pick_player_id=selected_id or None,
         )
     except ImportError:
         pass
+    return True
+
+
+def live_draft_autopick_disabled(session: dict[str, Any]) -> bool:
+    return bool(session.get(DISABLE_AUTOPICK_FOR_TESTING_KEY))
 
 
 def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[str, Any]:
@@ -75,6 +168,20 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
 
     Returns {processed, ok, should_rerun, message, error}.
     """
+    pending_raw = session.get(PENDING_MANUAL_PICK_KEY)
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(
+            session,
+            process_pending_manual_draft_pick_entered=True,
+            pending_manual_pick_exists=isinstance(pending_raw, dict),
+            pending_manual_pick_player_name=(pending_raw or {}).get("player_name") if isinstance(pending_raw, dict) else None,
+            pending_manual_pick_player_id=(pending_raw or {}).get("selected_player_id") if isinstance(pending_raw, dict) else None,
+        )
+    except ImportError:
+        pass
+
     pending = session.pop(PENDING_MANUAL_PICK_KEY, None)
     if not isinstance(pending, dict):
         return {"processed": False, "ok": False, "should_rerun": False, "message": "", "error": ""}
@@ -578,6 +685,10 @@ def render_live_manual_draft_diagnostics(st: Any, session: dict[str, Any], *, de
             ("candidate_count", raw.get("candidate_count")),
             ("selected_player", raw.get("selected_player")),
             ("selected_player_id", raw.get("selected_player_id")),
+            ("visible_draft_candidate_name", raw.get("visible_draft_candidate_name")),
+            ("visible_draft_candidate_id", raw.get("visible_draft_candidate_id")),
+            ("draft_candidate_widget_key", raw.get("draft_candidate_widget_key")),
+            ("draft_candidate_widget_value", raw.get("draft_candidate_widget_value")),
             ("draft_enabled", raw.get("draft_enabled")),
             ("is_my_turn", raw.get("is_my_turn")),
             ("is_your_pick", raw.get("is_your_pick")),
@@ -861,15 +972,37 @@ def render_live_manual_draft_panel(
         )
         return _finish(diag_base)
 
+    widget_key = manual_draft_candidate_widget_key(room)
+
+    def _on_candidate_change() -> None:
+        _record_visible_draft_candidate(session, available, widget_key, source="on_change")
+
     selected_player = st.selectbox(
         "Draft candidate",
         player_options,
-        key=MANUAL_PICK_SELECTBOX_KEY,
+        key=widget_key,
         help="Pick a player from the pool (or your queue/watchlist when commissioner mode is off).",
+        on_change=_on_candidate_change,
     )
-    diag_base["selected_player"] = str(selected_player or "")
+    visible_name = str(selected_player or session.get(widget_key) or "").strip()
+    if visible_name and visible_name not in player_options:
+        visible_name = str(session.get(widget_key) or "").strip()
+    visible_snap = _record_visible_draft_candidate(
+        session,
+        available,
+        widget_key,
+        fallback_name=visible_name,
+        source="render",
+    )
+    visible_id = visible_snap.get("id") or _player_id_from_available(available, visible_name)
+    diag_base["selected_player"] = visible_name
+    diag_base["selected_player_id"] = visible_id
+    diag_base["visible_draft_candidate_name"] = visible_name
+    diag_base["visible_draft_candidate_id"] = visible_id
+    diag_base["draft_candidate_widget_key"] = widget_key
+    diag_base["draft_candidate_widget_value"] = visible_name
 
-    allowed, disable_reason = can_draft_player(session, str(selected_player or ""))
+    allowed, disable_reason = can_draft_player(session, visible_name)
     button_enabled = bool(allowed and not paused)
     if not allowed:
         diag_base["draft_action_disable_reason"] = disable_reason
@@ -883,15 +1016,14 @@ def render_live_manual_draft_panel(
         return _finish(diag_base)
 
     st.markdown('<div class="live-draft-manual-panel">', unsafe_allow_html=True)
-    selected_id = _player_id_from_available(available, str(selected_player or ""))
-    diag_base["selected_player_id"] = selected_id
     diag_base["candidate_source"] = pool_source
 
     def _on_manual_draft_click() -> None:
         queue_manual_draft_pick(
             session,
             pool_source=str(pool_source or ""),
-            candidate_source="manual_panel_selectbox",
+            candidate_source="manual_panel_selectbox_on_click",
+            widget_key=widget_key,
         )
 
     st.button(

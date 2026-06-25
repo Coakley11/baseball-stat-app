@@ -16,6 +16,17 @@ def render_draft_commit_diagnostics(st: Any, session: dict[str, Any], *, develop
     with st.expander("Pick commit diagnostics", expanded=developer_mode and not raw.get("supabase_commit_success")):
         keys = (
             "draft_button_clicked",
+            "draft_candidate_widget_key",
+            "draft_candidate_widget_value",
+            "visible_draft_candidate_name",
+            "visible_draft_candidate_id",
+            "queued_manual_pick_player_name",
+            "queued_manual_pick_player_id",
+            "pending_manual_pick_exists",
+            "pending_manual_pick_player_name",
+            "pending_manual_pick_player_id",
+            "queue_manual_draft_pick_entered",
+            "process_pending_manual_draft_pick_entered",
             "selected_player_at_click",
             "selected_player_name",
             "selected_player_id",

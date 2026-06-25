@@ -6,8 +6,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from draft_ui import (
-    MANUAL_PICK_SELECTBOX_KEY,
     PENDING_MANUAL_PICK_KEY,
+    manual_draft_candidate_widget_key,
     process_pending_manual_draft_pick,
     queue_manual_draft_pick,
 )
@@ -15,8 +15,9 @@ from draft_ui import (
 
 class PendingManualDraftPickTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.wkey = "live_draft_manual_candidate_i0"
         self.session: dict = {
-            MANUAL_PICK_SELECTBOX_KEY: "Aaron Judge",
+            self.wkey: "Aaron Judge",
             "live_draft_room": {
                 "status": "in_progress",
                 "draft_board": [],
@@ -31,7 +32,9 @@ class PendingManualDraftPickTests(unittest.TestCase):
     @patch("draft_actions._live_player_available", return_value=(True, ""))
     @patch("live_draft_state.live_draft_get_available", return_value=None)
     def test_queue_sets_pending_and_diagnostics(self, _avail: MagicMock, _live: MagicMock) -> None:
-        queue_manual_draft_pick(self.session, pool_source="free_pool", candidate_source="test")
+        wkey = manual_draft_candidate_widget_key(self.session["live_draft_room"])
+        self.session[wkey] = "Aaron Judge"
+        queue_manual_draft_pick(self.session, widget_key=wkey, pool_source="free_pool", candidate_source="test")
         pending = self.session.get(PENDING_MANUAL_PICK_KEY)
         self.assertIsInstance(pending, dict)
         self.assertEqual(pending.get("player_name"), "Aaron Judge")

@@ -18354,9 +18354,20 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         pass
             elif not _draft_is_complete:
-                remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
-                _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
+                try:
+                    from live_draft_on_clock_ui import render_live_on_clock_banner
+
+                    render_live_on_clock_banner(
+                        st,
+                        st.session_state,
+                        room,
+                        slot,
+                        next_pick=next_user_pick,
+                    )
+                except ImportError:
+                    remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
+                    _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 _rec_team = user_team if _multiplayer_draft else None
                 top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
                     room, top_n=6, team=_rec_team
