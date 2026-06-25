@@ -1,11 +1,5 @@
-"""Draft Simulation Test Mode widget state — seed keys before save/on_change.
+"""Draft Simulation Test Mode widget state — seed keys before save/on_change."""
 
-Streamlit ``on_change`` callbacks run at the start of a rerun, before the page
-block executes ``validate_state_option``. If a widget key is not already in
-``session_state`` (e.g. only ``draft_lab_scoring_type`` was restored from the
-cloud blob), ``save_page_state`` snapshots only that key. These helpers ensure
-all registered draft-lab keys exist before any save.
-"""
 from __future__ import annotations
 
 import copy
@@ -15,7 +9,6 @@ DRAFT_LAB_PAGE = "Draft Simulation Test Mode"
 
 _LAB_WINDOW_OPTIONS = [3, 4, 5]
 _LAB_FORMAT_OPTIONS = ["5x5 Roto", "Points League"]
-_LAB_ROSTER_VIEW_OPTIONS = ["All Teams", "Team A", "Team B", "Team C", "Team D"]
 
 DRAFT_LAB_WIDGET_DEFAULTS: dict[str, Any] = {
     "draft_lab_window": 3,
@@ -26,7 +19,6 @@ DRAFT_LAB_WIDGET_DEFAULTS: dict[str, Any] = {
     "draft_lab_roster_team": "All Teams",
 }
 
-# Keys snapshotted for this page (matches page_state.PAGE_STATE_REGISTRY).
 DRAFT_LAB_SNAPSHOT_KEYS = tuple(DRAFT_LAB_WIDGET_DEFAULTS.keys())
 
 
@@ -36,6 +28,60 @@ def _page_snapshot(session: dict[str, Any]) -> dict[str, Any]:
         return {}
     block = pf.get(DRAFT_LAB_PAGE)
     return block if isinstance(block, dict) else {}
+
+
+def _handoff_picks(session: dict[str, Any]) -> int | None:
+    results = session.get("draft_lab_results")
+    if isinstance(results, dict):
+        handoff = results.get("handoff")
+        if isinstance(handoff, dict) and handoff.get("picks_per_team") is not None:
+            try:
+                return int(handoff["picks_per_team"])
+            except (TypeError, ValueError):
+                pass
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        cfg = room.get("config") or {}
+        try:
+            return int(cfg.get("picks_per_team"))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return int(session.get("live_draft_picks_per_team"))
+    except (TypeError, ValueError):
+        return None
+
+
+def draft_lab_roster_view_options(session: dict[str, Any]) -> list[str]:
+    stored = session.get("_draft_lab_team_names")
+    if isinstance(stored, list) and stored:
+        return [str(x) for x in stored]
+    results = session.get("draft_lab_results")
+    if isinstance(results, dict):
+        handoff = results.get("handoff")
+        if isinstance(handoff, dict) and handoff.get("team_names"):
+            try:
+                from draft_lab_analysis import draft_lab_roster_team_options
+
+                return draft_lab_roster_team_options(list(handoff.get("team_names") or []))
+            except ImportError:
+                names = ["All Teams"] + [str(t) for t in handoff.get("team_names") or []]
+                return names
+        draft = results.get("draft")
+        if draft is not None and hasattr(draft, "columns") and "Fantasy Team" in draft.columns:
+            teams = sorted(draft["Fantasy Team"].dropna().astype(str).unique().tolist())
+            try:
+                from draft_lab_analysis import draft_lab_roster_team_options
+
+                return draft_lab_roster_team_options(teams)
+            except ImportError:
+                return ["All Teams"] + teams
+    n = session.get("draft_lab_team_count")
+    try:
+        count = int(n)
+    except (TypeError, ValueError):
+        count = 4
+    return ["All Teams"] + [f"Team {i + 1}" for i in range(max(1, count))]
 
 
 def _coerce_window(val: Any) -> int:
@@ -63,23 +109,38 @@ def _coerce_picks(val: Any) -> int:
         n = int(val)
     except (TypeError, ValueError):
         return DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_picks_per_team"]
-    return max(5, min(25, n))
+    return max(1, min(25, n))
 
 
-def _coerce_roster_view(val: Any) -> str:
+def _coerce_roster_view(val: Any, options: list[str]) -> str:
     s = str(val or "").strip()
-    return s if s in _LAB_ROSTER_VIEW_OPTIONS else DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_roster_team"]
+    if s in options:
+        return s
+    if s and s != "All Teams":
+        return s
+    return options[0] if options else "All Teams"
 
 
 def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
-    """Populate missing draft-lab widget keys from page snapshot, then defaults.
+    """Populate missing draft-lab widget keys from page snapshot, then defaults."""
+    results = session.get("draft_lab_results")
+    if isinstance(results, dict) and str(results.get("source") or "") == "Live Draft Room":
+        handoff = results.get("handoff") if isinstance(results.get("handoff"), dict) else {}
+        for key, handoff_key, coerce in (
+            ("draft_lab_window", "projection_window", _coerce_window),
+            ("draft_lab_scoring_type", "fantasy_format", _coerce_format),
+            ("draft_lab_projection_style", "projection_style", str),
+            ("draft_lab_picks_per_team", "picks_per_team", _coerce_picks),
+        ):
+            raw = handoff.get(handoff_key)
+            if raw is not None and str(raw).strip() != "":
+                session[key] = coerce(raw) if coerce is not str else str(raw)
+        if handoff.get("fantasy_format"):
+            session["draft_lab_format"] = _coerce_format(handoff.get("fantasy_format"))
 
-    Call before ``save_page_state`` inside ``on_change`` (callbacks run before
-    widgets render) and at page entry before widgets draw.
-    """
     snap = _page_snapshot(session)
+    roster_options = draft_lab_roster_view_options(session)
 
-    # Scoring format: prefer canonical room_format when no snapshot value.
     if "draft_lab_scoring_type" not in session:
         if "draft_lab_scoring_type" in snap:
             session["draft_lab_scoring_type"] = _coerce_format(snap["draft_lab_scoring_type"])
@@ -98,7 +159,7 @@ def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
 
     if "draft_lab_window" not in session:
         session["draft_lab_window"] = _coerce_window(
-            snap.get("draft_lab_window", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_window"])
+            snap.get("draft_lab_window", session.get("draft_lab_window", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_window"]))
         )
 
     if "draft_lab_projection_style" not in session:
@@ -112,16 +173,21 @@ def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
             )
 
     if "draft_lab_picks_per_team" not in session:
-        session["draft_lab_picks_per_team"] = _coerce_picks(
-            snap.get("draft_lab_picks_per_team", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_picks_per_team"])
-        )
+        picks = _handoff_picks(session)
+        if picks is None:
+            picks = snap.get("draft_lab_picks_per_team", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_picks_per_team"])
+        session["draft_lab_picks_per_team"] = _coerce_picks(picks)
+    else:
+        session["draft_lab_picks_per_team"] = _coerce_picks(session["draft_lab_picks_per_team"])
 
     if "draft_lab_roster_team" not in session:
         session["draft_lab_roster_team"] = _coerce_roster_view(
-            snap.get("draft_lab_roster_team", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_roster_team"])
+            snap.get("draft_lab_roster_team", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_roster_team"]),
+            roster_options,
         )
+    else:
+        session["draft_lab_roster_team"] = _coerce_roster_view(session["draft_lab_roster_team"], roster_options)
 
 
 def sync_draft_lab_session_before_save(session: dict[str, Any]) -> None:
-    """Ensure all draft-lab keys are in session before disk/cloud snapshot build."""
     ensure_draft_lab_widget_keys(session)

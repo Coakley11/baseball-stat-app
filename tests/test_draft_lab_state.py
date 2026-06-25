@@ -50,10 +50,11 @@ class TestDraftLabWidgetSeeding(unittest.TestCase):
             "draft_lab_window": 5,
         }
         sync_draft_lab_session_before_save(session)
+        self.assertEqual(session["draft_lab_scoring_type"], "Points League")
         pg.save_page_state(session, DRAFT_LAB_PAGE, session["page_filter_state"])
         snap = session["page_filter_state"][DRAFT_LAB_PAGE]
         self.assertEqual(snap["draft_lab_window"], 5)
-        self.assertEqual(snap["draft_lab_scoring_type"], "Points League")
+        self.assertEqual(snap.get("draft_lab_format") or snap.get("draft_lab_scoring_type"), "Points League")
         self.assertIn("draft_lab_projection_style", snap)
         self.assertIn("draft_lab_picks_per_team", snap)
         self.assertIn("draft_lab_roster_team", snap)

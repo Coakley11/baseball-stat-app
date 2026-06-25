@@ -8833,97 +8833,55 @@ def _weighted_rate(df, col):
     return float(np.average(vals[mask], weights=weights[mask])) if mask.any() else float(vals.mean()) if vals.notna().any() else np.nan
 
 
-def analyze_draft_lab_results(draft_df, yearly_source):
-    if draft_df is None or draft_df.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), False
-    team_rows = []
-    strengths_rows = []
-    pick_rows = []
-    gap_rows = []
-    for team, g in draft_df.groupby("Fantasy Team"):
-        totals = {
-            "Fantasy Team": team,
-            "Players": len(g),
-            "Total Projected Fantasy Value": safe_numeric_series(g, "Expected Fantasy Value", 0).sum(),
-            "Projected HR": safe_numeric_series(g, "proj_HR", 0).sum(),
-            "Projected RBI": safe_numeric_series(g, "proj_RBI", 0).sum(),
-            "Projected R": safe_numeric_series(g, "proj_R", 0).sum(),
-            "Projected SB": safe_numeric_series(g, "proj_SB", 0).sum(),
-            "Projected AVG": _weighted_rate(g, "proj_BA"),
-            "Projected OPS": _weighted_rate(g, "proj_OPS"),
-            "Average Fantasy Edge": safe_numeric_series(g, "Fantasy Edge", np.nan).mean(),
-            "Average Scarcity Score": safe_numeric_series(g, "Scarcity Score", np.nan).mean(),
-        }
-        target_counts, gaps = _draft_lab_roster_needs(g)
-        totals["Position Gaps"] = ", ".join(gaps) if gaps else "None"
-        team_rows.append(totals)
-        best = g.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=False).head(3)
-        questionable = g.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[True, True]).head(3)
-        for _, r in best.iterrows():
-            pick_rows.append({
-                "Fantasy Team": team,
-                "Pick Type": "Best Pick",
-                "Player": r.get("fullName"),
-                "Reason": r.get("Why This Pick", f"High decision score anchored by projected value {fmt_score_2(r.get('Expected Fantasy Value'))}."),
-            })
-        for _, r in questionable.iterrows():
-            pick_rows.append({
-                "Fantasy Team": team,
-                "Pick Type": "Questionable Pick",
-                "Player": r.get("fullName"),
-                "Reason": f"Lower decision score on this roster build; projected value {fmt_score_2(r.get('Expected Fantasy Value'))}, model rank {fmt_int(r.get('Model Rank'))}.",
-            })
-        for pos, target in target_counts.items():
-            have = int(g["Primary Position"].astype(str).eq(pos).sum()) if "Primary Position" in g.columns else 0
-            if have < target:
-                gap_rows.append({"Fantasy Team": team, "Position": pos, "Have": have, "Target": target, "Gap": target - have})
-    team_summary = pd.DataFrame(team_rows)
-    if not team_summary.empty:
-        team_summary["Projected Team Rank"] = team_summary["Total Projected Fantasy Value"].rank(ascending=False, method="min")
-        cat_cols = ["Projected HR", "Projected RBI", "Projected R", "Projected SB", "Projected AVG", "Projected OPS"]
-        for _, row in team_summary.iterrows():
-            vals = row[cat_cols].astype(float)
-            top = vals.sort_values(ascending=False).head(2).index.tolist()
-            low = vals.sort_values().head(2).index.tolist()
-            strengths_rows.append({
-                "Fantasy Team": row["Fantasy Team"],
-                "Team Strengths": ", ".join([c.replace("Projected ", "") for c in top]),
-                "Team Weaknesses": ", ".join([c.replace("Projected ", "") for c in low]),
-            })
-        team_summary = team_summary.sort_values("Projected Team Rank")
+def analyze_draft_lab_results(draft_df, yearly_source, *, context=None):
+    from draft_lab_analysis import analyze_draft_lab_results as _analyze_core
 
+    team_summary, strengths, pick_rows, gap_rows, _empty = _analyze_core(
+        draft_df,
+        yearly_source,
+        context=context,
+    )
+    actual_summary = _draft_lab_actual_2026_summary(draft_df, yearly_source)
+    return team_summary, strengths, pick_rows, gap_rows, actual_summary
+
+
+def _draft_lab_actual_2026_summary(draft_df, yearly_source):
+    if draft_df is None or draft_df.empty:
+        return pd.DataFrame()
     actual_available = 2026 in set(safe_numeric_series(yearly_source, "yearID", np.nan).dropna().astype(int))
-    if actual_available:
-        actual_2026 = yearly_source[pd.to_numeric(yearly_source["yearID"], errors="coerce").astype("Int64") == 2026].copy()
-        actual_agg = aggregate_recent_player_totals(actual_2026, ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"))
-        if not actual_agg.empty:
-            actual_agg = actual_agg.rename(columns={"fullName": "_actual_name"})
-            actual_agg["_actual_key"] = actual_agg["_actual_name"].apply(normalize_player_name_for_merge)
-            draft_actual = draft_df.copy()
-            draft_actual["_actual_key"] = draft_actual["fullName"].apply(normalize_player_name_for_merge)
-            draft_actual = draft_actual.merge(actual_agg[["_actual_key", "HR", "RBI", "R", "SB", "BA", "OPS"]], on="_actual_key", how="left", suffixes=("", "_Actual"))
-            actual_rows = []
-            for team, g in draft_actual.groupby("Fantasy Team"):
-                actual_rows.append({
-                    "Fantasy Team": team,
-                    "Actual HR": safe_numeric_series(g, "HR_Actual", np.nan).sum(),
-                    "Actual RBI": safe_numeric_series(g, "RBI_Actual", np.nan).sum(),
-                    "Actual R": safe_numeric_series(g, "R_Actual", np.nan).sum(),
-                    "Actual SB": safe_numeric_series(g, "SB_Actual", np.nan).sum(),
-                    "Actual OPS": safe_numeric_series(g, "OPS_Actual", np.nan).mean(),
-                })
-            actual_summary = pd.DataFrame(actual_rows)
-            if not actual_summary.empty:
-                actual_summary["Actual Draft Score"] = (
-                    normalize_series(actual_summary["Actual HR"]) +
-                    normalize_series(actual_summary["Actual RBI"]) +
-                    normalize_series(actual_summary["Actual R"]) +
-                    normalize_series(actual_summary["Actual SB"]) +
-                    normalize_series(actual_summary["Actual OPS"])
-                ) / 5
-                actual_summary["Actual Rank"] = actual_summary["Actual Draft Score"].rank(ascending=False, method="min")
-                return team_summary, pd.DataFrame(strengths_rows), pd.DataFrame(pick_rows), pd.DataFrame(gap_rows), actual_summary
-    return team_summary, pd.DataFrame(strengths_rows), pd.DataFrame(pick_rows), pd.DataFrame(gap_rows), pd.DataFrame()
+    if not actual_available:
+        return pd.DataFrame()
+    actual_2026 = yearly_source[pd.to_numeric(yearly_source["yearID"], errors="coerce").astype("Int64") == 2026].copy()
+    actual_agg = aggregate_recent_player_totals(actual_2026, ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"))
+    if actual_agg.empty:
+        return pd.DataFrame()
+    actual_agg = actual_agg.rename(columns={"fullName": "_actual_name"})
+    actual_agg["_actual_key"] = actual_agg["_actual_name"].apply(normalize_player_name_for_merge)
+    draft_actual = draft_df.copy()
+    draft_actual["_actual_key"] = draft_actual["fullName"].apply(normalize_player_name_for_merge)
+    draft_actual = draft_actual.merge(actual_agg[["_actual_key", "HR", "RBI", "R", "SB", "BA", "OPS"]], on="_actual_key", how="left", suffixes=("", "_Actual"))
+    actual_rows = []
+    for team, g in draft_actual.groupby("Fantasy Team"):
+        actual_rows.append({
+            "Fantasy Team": team,
+            "Actual HR": safe_numeric_series(g, "HR_Actual", np.nan).sum(),
+            "Actual RBI": safe_numeric_series(g, "RBI_Actual", np.nan).sum(),
+            "Actual R": safe_numeric_series(g, "R_Actual", np.nan).sum(),
+            "Actual SB": safe_numeric_series(g, "SB_Actual", np.nan).sum(),
+            "Actual OPS": safe_numeric_series(g, "OPS_Actual", np.nan).mean(),
+        })
+    actual_summary = pd.DataFrame(actual_rows)
+    if actual_summary.empty:
+        return actual_summary
+    actual_summary["Actual Draft Score"] = (
+        normalize_series(actual_summary["Actual HR"])
+        + normalize_series(actual_summary["Actual RBI"])
+        + normalize_series(actual_summary["Actual R"])
+        + normalize_series(actual_summary["Actual SB"])
+        + normalize_series(actual_summary["Actual OPS"])
+    ) / 5
+    actual_summary["Actual Rank"] = actual_summary["Actual Draft Score"].rank(ascending=False, method="min")
+    return actual_summary
 
 
 def suggest_draft_lab_trades(draft_df, team_summary, max_suggestions=12):
@@ -10043,10 +10001,32 @@ def live_draft_push_analysis_to_session(room):
         handoff_meta = apply_live_draft_handoff_to_session(st.session_state, room)
     except ImportError:
         pass
-    team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(lab_draft, yearly_df)
+    pool = room.get("pool", pd.DataFrame())
+    config = dict(room.get("config") or {})
+    try:
+        from draft_lab_analysis import enrich_lab_draft_metrics
+
+        lab_draft = enrich_lab_draft_metrics(lab_draft, pool, config)
+    except ImportError:
+        pass
+    analysis_ctx = {
+        "config": config,
+        "teams": list(room.get("teams") or []),
+        "pool": pool,
+        "handoff": handoff_meta,
+    }
+    team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(
+        lab_draft, yearly_df, context=analysis_ctx
+    )
     trades = suggest_draft_lab_trades(lab_draft, team_summary, max_suggestions=12)
+    try:
+        from draft_lab_analysis import draft_lab_roster_team_options
+
+        st.session_state["_draft_lab_team_names"] = draft_lab_roster_team_options(list(room.get("teams") or []))
+    except ImportError:
+        pass
     st.session_state["draft_lab_results"] = {
-        "pool": room.get("pool", pd.DataFrame()),
+        "pool": pool,
         "draft": lab_draft,
         "team_summary": team_summary,
         "strengths": strengths,
@@ -10056,6 +10036,7 @@ def live_draft_push_analysis_to_session(room):
         "trades": trades,
         "source": "Live Draft Room",
         "handoff": handoff_meta,
+        "analysis_context": analysis_ctx,
     }
     return True
 
@@ -17280,10 +17261,11 @@ if active_page == "Draft Simulation Test Mode":
                                             key="draft_lab_projection_style",
                                             on_change=_draft_sim_setting_changed)
     with lc4:
-        validate_number_state("draft_lab_picks_per_team", 15, min_value=5, max_value=25)
+        _lab_picks_default = int(st.session_state.get("draft_lab_picks_per_team") or 15)
+        validate_number_state("draft_lab_picks_per_team", _lab_picks_default, min_value=1, max_value=25)
         lab_picks_per_team = st.number_input(
             "Picks per Team",
-            min_value=5,
+            min_value=1,
             max_value=25,
             step=1,
             key="draft_lab_picks_per_team",
@@ -17337,8 +17319,18 @@ if active_page == "Draft Simulation Test Mode":
                 ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
             )
             lab_draft = simulate_draft_lab(lab_pool, teams=("Team A", "Team B", "Team C", "Team D"), picks_per_team=int(lab_picks_per_team))
-            lab_team_summary, lab_strengths, lab_pick_analysis, lab_gaps, lab_actual_summary = analyze_draft_lab_results(lab_draft, yearly_df)
+            sim_teams = ["Team A", "Team B", "Team C", "Team D"]
+            sim_ctx = {"config": {"slots": {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "BN": 5}}, "teams": sim_teams, "pool": lab_pool}
+            lab_team_summary, lab_strengths, lab_pick_analysis, lab_gaps, lab_actual_summary = analyze_draft_lab_results(
+                lab_draft, yearly_df, context=sim_ctx
+            )
             lab_trades = suggest_draft_lab_trades(lab_draft, lab_team_summary, max_suggestions=12)
+            try:
+                from draft_lab_analysis import draft_lab_roster_team_options
+
+                st.session_state["_draft_lab_team_names"] = draft_lab_roster_team_options(sim_teams)
+            except ImportError:
+                pass
             st.session_state["draft_lab_results"] = {
                 "pool": lab_pool,
                 "draft": lab_draft,
@@ -17348,6 +17340,7 @@ if active_page == "Draft Simulation Test Mode":
                 "gaps": lab_gaps,
                 "actual_summary": lab_actual_summary,
                 "trades": lab_trades,
+                "analysis_context": sim_ctx,
             }
         try:
             from page_perf import perf_end
@@ -17382,6 +17375,21 @@ if active_page == "Draft Simulation Test Mode":
     lab_trades = coerce_dataframe(lab_state.get("trades"))
     lab_handoff = lab_state.get("handoff") if isinstance(lab_state.get("handoff"), dict) else {}
     lab_source = str(lab_state.get("source") or "").strip()
+    lab_analysis_ctx = lab_state.get("analysis_context") if isinstance(lab_state.get("analysis_context"), dict) else {}
+    try:
+        from draft_lab_analysis import (
+            FANTASY_EDGE_HELP,
+            analysis_context_from_session,
+            draft_lab_board_display_columns,
+            format_snake_draft_caption,
+        )
+        from draft_lab_state import draft_lab_roster_view_options
+    except ImportError:
+        FANTASY_EDGE_HELP = ""
+        draft_lab_roster_view_options = lambda _s: ["All Teams", "Team A", "Team B", "Team C", "Team D"]
+        draft_lab_board_display_columns = lambda: []
+        format_snake_draft_caption = lambda _t: ""
+        analysis_context_from_session = lambda _s, _l=None: {}
 
     if lab_source == "Live Draft Room" and lab_handoff:
         st.success(
@@ -17438,13 +17446,21 @@ if active_page == "Draft Simulation Test Mode":
 
         tabs = st.tabs(["Draft Board", "Team Rosters", "Team Analysis", "Best / Questionable Picks", "Trade Simulator", "Exports"])
 
-        draft_show_cols = [
-            "Round", "Pick", "Fantasy Team", "fullName", "Primary Position", "Team",
-            "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value", "Projection Confidence",
-            "Best Player Available Score", "Best Value Sleeper Score",
-            "Sleeper Score", "Scarcity Score", "Draft Fit Score", "Decision Score", "Roster Need At Pick",
-            "Why This Pick", "Projection Warning",
-        ]
+        _ctx = analysis_context_from_session(st.session_state, lab_state)
+        if lab_analysis_ctx:
+            _ctx.update(lab_analysis_ctx)
+        _lab_teams = list(_ctx.get("teams") or [])
+        if not _lab_teams and not is_dataframe_empty(lab_draft) and "Fantasy Team" in lab_draft.columns:
+            _lab_teams = sorted(lab_draft["Fantasy Team"].dropna().astype(str).unique().tolist())
+
+        draft_show_cols = draft_lab_board_display_columns() if callable(draft_lab_board_display_columns) else []
+        if not draft_show_cols:
+            draft_show_cols = [
+                "Round", "Pick", "Fantasy Team", "fullName", "Primary Position", "Team",
+                "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value", "Projection Confidence",
+                "Scarcity Score", "Draft Fit Score", "Decision Score", "Roster Need At Pick",
+                "Why This Pick", "Projection Warning",
+            ]
         draft_board = lab_draft[[c for c in draft_show_cols if c in lab_draft.columns]].rename(columns={
             "fullName": "Player",
             "Team": "MLB Team",
@@ -17452,13 +17468,15 @@ if active_page == "Draft Simulation Test Mode":
         })
         with tabs[0]:
             st.subheader("Full Draft Pick Order")
-            st.caption("Snake draft: odd rounds Team A -> Team D, even rounds Team D -> Team A.")
+            st.caption(format_snake_draft_caption(_lab_teams) if _lab_teams else "Snake draft order follows configured teams.")
+            if FANTASY_EDGE_HELP:
+                st.caption(f"**Fantasy Edge:** {FANTASY_EDGE_HELP}")
             render_output_table(
                 clean_ui_columns(draft_board),
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
-                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Sleeper Score", "Scarcity Score", "Draft Fit Score", "Decision Score", "Best Player Available Score", "Best Value Sleeper Score"],
+                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Scarcity Score", "Draft Fit Score", "Decision Score"],
             )
             if developer_mode_enabled():
                 with st.expander("Draft Scoring Breakdown", expanded=False):
@@ -17495,7 +17513,8 @@ if active_page == "Draft Simulation Test Mode":
         })
         with tabs[1]:
             st.subheader("Team Rosters")
-            team_view = st.selectbox("View Team", ["All Teams", "Team A", "Team B", "Team C", "Team D"], key="draft_lab_roster_team")
+            _roster_options = draft_lab_roster_view_options(st.session_state)
+            team_view = st.selectbox("View Team", _roster_options, key="draft_lab_roster_team")
             if team_view == "All Teams" or not has_dataframe_column(roster_view, "Fantasy Team"):
                 roster_filtered = roster_view
             else:
@@ -17522,7 +17541,8 @@ if active_page == "Draft Simulation Test Mode":
                     style_cols=["Total Projected Fantasy Value", "Average Fantasy Edge", "Average Scarcity Score"],
                 )
             if lab_gaps is not None and not lab_gaps.empty:
-                st.subheader("Position Gaps")
+                st.subheader("Roster Needs Analysis")
+                st.caption("All roster positions from league settings — including positions not yet filled.")
                 render_output_table(clean_ui_columns(lab_gaps), key="draft_lab_position_gaps", file_name="draft_simulation_position_gaps.csv", display_rows=40)
             if not is_dataframe_empty(lab_actual_summary):
                 st.subheader("Actual 2026 Results Check")
@@ -17535,13 +17555,26 @@ if active_page == "Draft Simulation Test Mode":
                 )
 
         with tabs[3]:
-            st.subheader("Best Picks and Questionable Picks")
+            st.subheader("Best, Good, and Questionable Picks")
+            st.caption("Each team has exactly one Best Pick. Questionable picks are shown only when supported by reach, value, or roster-fit evidence.")
             render_output_table(
                 clean_ui_columns(lab_pick_analysis),
                 key="draft_lab_pick_analysis",
                 file_name="draft_simulation_pick_analysis.csv",
                 display_rows=40,
             )
+            if developer_mode_enabled() and not is_dataframe_empty(lab_draft) and "fullName" in lab_draft.columns:
+                try:
+                    from draft_lab_analysis import decision_score_debug_row
+
+                    with st.expander("Decision score component debug", expanded=False):
+                        _dbg_opts = [""] + lab_draft["fullName"].astype(str).tolist()
+                        _dbg_player = st.selectbox("Inspect player", _dbg_opts, key="draft_lab_decision_debug_player")
+                        if _dbg_player:
+                            row = lab_draft[lab_draft["fullName"].astype(str) == _dbg_player].iloc[0]
+                            st.json(decision_score_debug_row(row))
+                except ImportError:
+                    pass
 
         with tabs[4]:
             st.subheader("Trade Simulator")

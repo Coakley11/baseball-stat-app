@@ -58,10 +58,7 @@ def extract_live_room_lab_settings(room: dict[str, Any] | None, session: dict[st
     }
 
 
-def live_room_lab_settings_keys(session: dict[str, Any]) -> dict[str, Any]:
-    """Session keys for page transfer Live Draft Room -> Draft Lab."""
-    room = session.get("live_draft_room")
-    extracted = extract_live_room_lab_settings(room if isinstance(room, dict) else None, session)
+def _settings_keys_from_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
     keys: dict[str, Any] = {}
     if extracted.get("draft_lab_window") is not None:
         keys["draft_lab_window"] = int(extracted["draft_lab_window"])
@@ -75,6 +72,13 @@ def live_room_lab_settings_keys(session: dict[str, Any]) -> dict[str, Any]:
     if extracted.get("draft_lab_team_count") is not None:
         keys["draft_lab_team_count"] = int(extracted["draft_lab_team_count"])
     return keys
+
+
+def live_room_lab_settings_keys(session: dict[str, Any]) -> dict[str, Any]:
+    """Session keys for page transfer Live Draft Room -> Draft Lab."""
+    room = session.get("live_draft_room")
+    extracted = extract_live_room_lab_settings(room if isinstance(room, dict) else None, session)
+    return _settings_keys_from_extracted(extracted)
 
 
 def record_draft_lab_handoff_diagnostics(session: dict[str, Any], extracted: dict[str, Any], *, loaded: bool) -> None:
@@ -98,6 +102,12 @@ def record_draft_lab_handoff_diagnostics(session: dict[str, Any], extracted: dic
     }
     session[DRAFT_LAB_HANDOFF_DIAG_KEY] = diag
     try:
+        from draft_lab_analysis import draft_lab_roster_team_options
+
+        session["_draft_lab_team_names"] = draft_lab_roster_team_options(extracted.get("team_names") or [])
+    except ImportError:
+        pass
+    try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
         record_draft_commit_diagnostics(session, **diag)
@@ -108,10 +118,10 @@ def record_draft_lab_handoff_diagnostics(session: dict[str, Any], extracted: dic
 def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
     """Populate Draft Lab widget keys from a completed live draft room."""
     extracted = extract_live_room_lab_settings(room, session)
-    keys = live_room_lab_settings_keys(session)
-    for key, val in keys.items():
+    for key, val in _settings_keys_from_extracted(extracted).items():
         if val is not None and val != "":
             session[key] = val
+    session["live_draft_room"] = room
     try:
         from draft_lab_state import ensure_draft_lab_widget_keys
 
