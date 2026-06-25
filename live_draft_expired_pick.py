@@ -62,6 +62,13 @@ def should_suppress_expired_rerun(session: dict[str, Any], room: dict[str, Any])
 
 def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
     """At most one full rerun per expired pick index before attempt is recorded."""
+    try:
+        from live_draft_safe_mode import is_safe_mode_active, timer_should_run
+
+        if is_safe_mode_active(session) or not timer_should_run(session, room):
+            return False
+    except ImportError:
+        pass
     if not expired_pick_detected(room):
         session.pop(EXPIRED_PICK_PENDING_KEY, None)
         return False
@@ -245,19 +252,28 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *, source: str = "page_autopick") -> ExpiredPickPageResult:
     """Process expired pick on full page render — never loops reruns on failure."""
     room = resolve_live_room(session, room) or room
-    if not expired_pick_detected(room) and not session.get(EXPIRED_PICK_PENDING_KEY):
-        return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     if autopick_failure_backoff_active(session, room):
         err = str(session.get(AUTOPICK_ERROR_KEY) or "Auto-pick failed for this pick.")
         record_autopick_diagnostics(
             session,
-            expired_pick_detected=True,
+            expired_pick_detected=expired_pick_detected(room),
             autopick_failure_backoff_active=True,
             rerun_loop_prevented=True,
             autopick_error=err,
         )
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error=err)
+
+    try:
+        from live_draft_safe_mode import is_safe_mode_active, timer_should_run
+
+        if is_safe_mode_active(session) or not timer_should_run(session, room):
+            return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+    except ImportError:
+        pass
+
+    if not expired_pick_detected(room) and not session.get(EXPIRED_PICK_PENDING_KEY):
+        return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     return run_expired_autopick_once(session, room, source=source)
 

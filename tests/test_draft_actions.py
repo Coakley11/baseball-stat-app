@@ -169,8 +169,8 @@ class TestDraftPlayerLive(unittest.TestCase):
                 {"Round": 1, "Pick": 2, "Team": "Team B"},
             ],
             "config": {"your_team": your_team, "num_teams": 2},
-            "draft_board": [],
-            "drafted_player_ids": [],
+            "draft_board": [{"playerID": "0", "fullName": "Prior Pick"}] if pick_index > 0 else [],
+            "drafted_player_ids": ["0"] if pick_index > 0 else [],
             "rosters": {"Team A": [], "Team B": []},
             "pool": pool,
         }

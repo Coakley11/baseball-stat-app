@@ -118,6 +118,17 @@ def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any]) -> Non
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available."""
     live_room = _resolve_live_room(session, room)
+    try:
+        from live_draft_safe_mode import record_safe_mode_diagnostics, timer_should_run
+
+        if not timer_should_run(session, live_room):
+            remaining = live_draft_display_seconds(live_room)
+            record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
+            st.markdown(f"**Time on clock:** {remaining}s")
+            return
+        record_safe_mode_diagnostics(session, timer_fragment_active=True, timer_should_run=True)
+    except ImportError:
+        pass
     ensure_live_draft_timer_for_pick(live_room)
 
     try:
@@ -133,7 +144,12 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         _render_timer_static(st, session, tick_room, source="fragment_tick")
         if should_fragment_trigger_full_rerun(session, tick_room):
             session[EXPIRED_PICK_PENDING_KEY] = True
-            st.rerun()
+            try:
+                from live_draft_safe_mode import request_live_draft_rerun
+
+                request_live_draft_rerun(st, session, "timer_fragment", room=tick_room)
+            except ImportError:
+                pass
 
     _timer_tick()
 

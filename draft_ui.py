@@ -456,6 +456,26 @@ def render_live_manual_draft_panel(
 
     ctx = draft_action_context(session)
     gate = resolve_manual_draft_panel_gate(session, ctx, multiplayer=multiplayer, room=room)
+    manual_recovery = False
+    try:
+        from live_draft_safe_mode import is_safe_mode_active
+
+        manual_recovery = bool((session.get("_live_draft_safe_mode_diag") or {}).get("manual_recovery_available"))
+        if manual_recovery:
+            try:
+                from live_draft_safe_mode import total_expected_picks
+
+                live = room if isinstance(room, dict) else session.get("live_draft_room")
+                if isinstance(live, dict):
+                    board = len(live.get("draft_board") or [])
+                    total = total_expected_picks(live)
+                    if board < total and gate.get("is_your_pick"):
+                        gate = {**gate, "draft_button_should_render": True, "draft_enabled": True}
+            except ImportError:
+                if gate.get("is_your_pick"):
+                    gate = {**gate, "draft_button_should_render": True, "draft_enabled": True}
+    except ImportError:
+        is_safe_mode_active = lambda _s: False  # noqa: E731
     render_path = "live_draft_room"
     should_render = bool(gate.get("draft_button_should_render"))
     turn_disable_reason = str(gate.get("draft_button_disable_reason") or "").strip()
@@ -488,6 +508,16 @@ def render_live_manual_draft_panel(
     diag_base["available_player_count"] = available_count
 
     st.subheader("Manual Draft")
+
+    try:
+        from live_draft_safe_mode import draft_state_error_reason, is_safe_mode_active
+
+        if is_safe_mode_active(session):
+            err = draft_state_error_reason(session)
+            if err:
+                st.error(f"Draft state error — manual pick recovery enabled. {err}")
+    except ImportError:
+        pass
 
     def _finish(diag: dict[str, Any], *, show_disabled: bool = False) -> bool:
         record_live_draft_ui_diagnostics(session, diag)

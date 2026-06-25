@@ -78,7 +78,8 @@ class AutopickBackoffTests(unittest.TestCase):
         run_expired_autopick_once(session, session["live_draft_room"])
         result2 = handle_expired_pick_on_page(session, session["live_draft_room"])
         self.assertFalse(result2.should_rerun)
-        self.assertIn("No players", result2.error)
+        err = result2.error or str(session.get("_live_draft_autopick_error") or "")
+        self.assertIn("No players", err)
 
 
 class ManualRecoveryTests(unittest.TestCase):

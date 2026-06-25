@@ -1,0 +1,315 @@
+"""Live draft lifecycle reconcile, safe mode, and rerun gating."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from live_draft_state import LIVE_DRAFT_ROOM_KEY, repair_stale_live_draft_progress
+
+SAFE_MODE_DIAG_KEY = "_live_draft_safe_mode_diag"
+RERUN_DIAG_KEY = "_live_draft_rerun_diag"
+SAFE_MODE_ACTIVE_KEY = "_live_draft_safe_mode_active"
+SAFE_MODE_ERROR_KEY = "_live_draft_draft_state_error"
+SAFE_MODE_ERROR_REASON_KEY = "_live_draft_draft_state_error_reason"
+
+# Rerun sources that must never fire when rerun_allowed is false
+_BLOCKED_RERUN_SOURCES = frozenset(
+    {
+        "timer_fragment",
+        "page_autopick",
+        "poll_shared_draft",
+        "shared_draft_room_panel",
+        "expired_pick_pending",
+        "live_draft_queue",
+    }
+)
+
+
+@dataclass
+class ReconcileResult:
+    room: dict[str, Any]
+    board_size: int
+    total_expected_picks: int
+    draft_status_before: str
+    draft_status_after: str
+    stale_draft_status_detected: bool
+    stale_current_pick_index_detected: bool
+    contradictions: list[str] = field(default_factory=list)
+    safe_mode_active: bool = False
+    draft_state_error: bool = False
+    draft_state_error_reason: str = ""
+    manual_recovery_available: bool = False
+    timer_should_run: bool = False
+
+
+def _board_size(room: dict[str, Any]) -> int:
+    board = room.get("draft_board") or []
+    return len(board) if isinstance(board, list) else 0
+
+
+def total_expected_picks(room: dict[str, Any]) -> int:
+    pick_order = room.get("pick_order") or []
+    if pick_order:
+        return len(pick_order)
+    teams = room.get("teams") or []
+    cfg = dict(room.get("config") or {})
+    rounds = int(cfg.get("picks_per_team") or cfg.get("rounds") or 0)
+    if teams and rounds:
+        return len(teams) * rounds
+    return 0
+
+
+def record_safe_mode_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    diag = dict(session.get(SAFE_MODE_DIAG_KEY) or {})
+    diag.update(fields)
+    session[SAFE_MODE_DIAG_KEY] = diag
+    return diag
+
+
+def record_rerun_diagnostics(
+    session: dict[str, Any],
+    *,
+    rerun_source: str,
+    rerun_allowed: bool,
+    rerun_blocked_reason: str | None = None,
+) -> None:
+    session[RERUN_DIAG_KEY] = {
+        "rerun_source": rerun_source,
+        "rerun_allowed": rerun_allowed,
+        "rerun_blocked_reason": rerun_blocked_reason or None,
+        "safe_mode_active": bool(session.get(SAFE_MODE_ACTIVE_KEY)),
+    }
+
+
+def is_safe_mode_active(session: dict[str, Any]) -> bool:
+    return bool(session.get(SAFE_MODE_ACTIVE_KEY))
+
+
+def draft_state_error_reason(session: dict[str, Any]) -> str:
+    return str(session.get(SAFE_MODE_ERROR_REASON_KEY) or session.get(SAFE_MODE_ERROR_KEY) or "").strip()
+
+
+def _detect_contradictions(session: dict[str, Any], room: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    status = str(room.get("status") or "").strip()
+    board = _board_size(room)
+    total = total_expected_picks(room)
+    idx = int(room.get("current_pick_index") or 0)
+
+    if total > 0 and status == "complete" and board < total:
+        reasons.append(f"draft_status=complete but board_size={board} < total_expected_picks={total}")
+    if status == "complete" and room.get("timer_started_at") is not None:
+        reasons.append("draft_status=complete but timer_started_at is set")
+    if total > 0 and board < total and idx != board:
+        reasons.append(f"current_pick_index={idx} != board_size={board} while draft incomplete")
+    if total > 0 and idx > total:
+        reasons.append(f"current_pick_index={idx} > total_expected_picks={total}")
+
+    try:
+        from live_draft_expired_pick import autopick_failure_backoff_active, RERUN_LOOP_PREVENTED_KEY
+
+        if autopick_failure_backoff_active(session, room) and session.get("_live_draft_last_rerun_source") in (
+            "timer_fragment",
+            "page_autopick",
+            "poll_shared_draft",
+        ):
+            reasons.append("autopick_failure_backoff_active but rerun source still firing")
+        if session.get(RERUN_LOOP_PREVENTED_KEY) and session.get("_live_draft_rerun_count", 0) > 3:
+            reasons.append("rerun_loop_prevented but excessive reruns detected")
+    except ImportError:
+        pass
+
+    return reasons
+
+
+def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> ReconcileResult:
+    """Reconcile board/index/status before timer, autopick, or manual pick."""
+    if not isinstance(room, dict):
+        return ReconcileResult(
+            room=room,
+            board_size=0,
+            total_expected_picks=0,
+            draft_status_before="",
+            draft_status_after="",
+            stale_draft_status_detected=False,
+            stale_current_pick_index_detected=False,
+        )
+
+    status_before = str(room.get("status") or "").strip()
+    idx_before = int(room.get("current_pick_index") or 0)
+    board_before = _board_size(room)
+    total = total_expected_picks(room)
+
+    stale_status = bool(total > 0 and status_before == "complete" and board_before < total)
+    stale_idx = bool(idx_before != board_before and board_before < total)
+
+    room = repair_stale_live_draft_progress(dict(room))
+    board = _board_size(room)
+
+    if total > 0 and board < total:
+        if str(room.get("status") or "").strip() == "complete":
+            room["status"] = "in_progress"
+        idx_now = int(room.get("current_pick_index") or 0)
+        if idx_now != board:
+            room["current_pick_index"] = board
+            stale_idx = True
+        if int(room.get("current_pick_index") or 0) > total:
+            room["current_pick_index"] = min(board, total)
+        room["timer_handled_index"] = -1
+        if room.get("timer_started_at") is not None and str(room.get("status") or "") == "complete":
+            room["timer_started_at"] = None
+    elif total > 0 and board >= total:
+        room["status"] = "complete"
+        room["current_pick_index"] = total
+        room["timer_started_at"] = None
+
+    status_after = str(room.get("status") or "").strip()
+    session[LIVE_DRAFT_ROOM_KEY] = room
+
+    contradictions = _detect_contradictions(session, room)
+    safe_mode = bool(contradictions)
+    error_reason = "; ".join(contradictions) if contradictions else ""
+
+    session[SAFE_MODE_ACTIVE_KEY] = safe_mode
+    session[SAFE_MODE_ERROR_KEY] = safe_mode
+    session[SAFE_MODE_ERROR_REASON_KEY] = error_reason
+
+    timer_should = bool(
+        status_after == "in_progress"
+        and not safe_mode
+        and total > 0
+        and board < total
+        and int(room.get("current_pick_index") or 0) < total
+    )
+    try:
+        from live_draft_expired_pick import autopick_failure_backoff_active
+
+        if autopick_failure_backoff_active(session, room):
+            timer_should = False
+    except ImportError:
+        pass
+
+    manual_recovery = bool(total > 0 and board < total)
+
+    record_safe_mode_diagnostics(
+        session,
+        draft_state_error=safe_mode,
+        draft_state_error_reason=error_reason or None,
+        safe_mode_active=safe_mode,
+        manual_recovery_available=manual_recovery,
+        timer_fragment_active=False,
+        timer_should_run=timer_should,
+        stale_draft_status_detected=stale_status,
+        stale_current_pick_index_detected=stale_idx,
+        board_size=board,
+        total_expected_picks=total,
+        current_pick_index=int(room.get("current_pick_index") or 0),
+        draft_status_before=status_before,
+        draft_status_after=status_after,
+    )
+
+    return ReconcileResult(
+        room=room,
+        board_size=board,
+        total_expected_picks=total,
+        draft_status_before=status_before,
+        draft_status_after=status_after,
+        stale_draft_status_detected=stale_status,
+        stale_current_pick_index_detected=stale_idx,
+        contradictions=contradictions,
+        safe_mode_active=safe_mode,
+        draft_state_error=safe_mode,
+        draft_state_error_reason=error_reason,
+        manual_recovery_available=manual_recovery,
+        timer_should_run=timer_should,
+    )
+
+
+def prepare_manual_pick_recovery(session: dict[str, Any]) -> ReconcileResult | None:
+    """Bypass autopick/timer blockers and reconcile state for a manual pick attempt."""
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not isinstance(room, dict):
+        return None
+
+    try:
+        from live_draft_expired_pick import clear_autopick_state_for_pick_advance
+
+        clear_autopick_state_for_pick_advance(session)
+    except ImportError:
+        pass
+
+    session.pop(SAFE_MODE_ACTIVE_KEY, None)
+    session.pop(SAFE_MODE_ERROR_KEY, None)
+    session.pop(SAFE_MODE_ERROR_REASON_KEY, None)
+
+    result = reconcile_live_draft_room(session, room)
+    room = result.room
+    total = result.total_expected_picks
+    if total > 0 and result.board_size < total:
+        room["status"] = "in_progress"
+        if int(room.get("current_pick_index") or 0) < result.board_size:
+            room["current_pick_index"] = result.board_size
+        room["timer_handled_index"] = -1
+        session[LIVE_DRAFT_ROOM_KEY] = room
+        result = reconcile_live_draft_room(session, room)
+
+    record_safe_mode_diagnostics(session, manual_recovery_available=result.manual_recovery_available)
+    return result
+
+
+def clear_safe_mode_after_successful_pick(session: dict[str, Any], room: dict[str, Any]) -> None:
+    session.pop(SAFE_MODE_ACTIVE_KEY, None)
+    session.pop(SAFE_MODE_ERROR_KEY, None)
+    session.pop(SAFE_MODE_ERROR_REASON_KEY, None)
+    try:
+        from live_draft_expired_pick import clear_autopick_state_for_pick_advance
+
+        clear_autopick_state_for_pick_advance(session, int(room.get("current_pick_index") or 0))
+    except ImportError:
+        pass
+    reconcile_live_draft_room(session, room)
+
+
+def timer_should_run(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    diag = session.get(SAFE_MODE_DIAG_KEY) or {}
+    if isinstance(diag, dict) and "timer_should_run" in diag:
+        return bool(diag.get("timer_should_run"))
+    result = reconcile_live_draft_room(session, room)
+    return result.timer_should_run
+
+
+def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Central gate for all Live Draft Room st.rerun() calls."""
+    if is_safe_mode_active(session) and source in _BLOCKED_RERUN_SOURCES:
+        return False, f"safe_mode_blocks_{source}"
+
+    try:
+        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY, autopick_failure_backoff_active
+
+        live = room or session.get(LIVE_DRAFT_ROOM_KEY)
+        if session.get(RERUN_LOOP_PREVENTED_KEY) and source in _BLOCKED_RERUN_SOURCES:
+            return False, "rerun_loop_prevented"
+        if isinstance(live, dict) and autopick_failure_backoff_active(session, live) and source in _BLOCKED_RERUN_SOURCES:
+            return False, "autopick_failure_backoff_active"
+    except ImportError:
+        pass
+
+    count = int(session.get("_live_draft_rerun_count") or 0)
+    if count > 8 and source in _BLOCKED_RERUN_SOURCES:
+        session["_live_draft_rerun_loop_prevented"] = True
+        return False, "excessive_reruns_blocked"
+
+    return True, ""
+
+
+def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, room: dict[str, Any] | None = None) -> bool:
+    """Call instead of st.rerun() on Live Draft Room paths."""
+    allowed, reason = is_rerun_allowed(session, source, room=room)
+    record_rerun_diagnostics(session, rerun_source=source, rerun_allowed=allowed, rerun_blocked_reason=reason or None)
+    if not allowed:
+        return False
+    session["_live_draft_last_rerun_source"] = source
+    session["_live_draft_rerun_count"] = int(session.get("_live_draft_rerun_count") or 0) + 1
+    st.rerun()
+    return True

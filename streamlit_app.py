@@ -17439,6 +17439,17 @@ if active_page == "Live Draft Room":
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
         compact=True,
     )
+    from live_draft_state import prepare_live_draft_state
+
+    prepare_live_draft_state(st.session_state)
+    _early_room = st.session_state.get("live_draft_room")
+    if isinstance(_early_room, dict):
+        try:
+            from live_draft_safe_mode import reconcile_live_draft_room
+
+            reconcile_live_draft_room(st.session_state, _early_room)
+        except ImportError:
+            pass
     try:
         from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room
         from draft_ui_multiplayer import render_shared_draft_room_panel
@@ -17457,10 +17468,38 @@ if active_page == "Live Draft Room":
             poll_due = page_entered or (_poll_now - _poll_last >= interval)
             if poll_due:
                 st.session_state["_shared_draft_poll_ts"] = _poll_now
-                if poll_shared_draft_room(st.session_state):
-                    st.rerun()
+                _poll_changed = poll_shared_draft_room(st.session_state)
+                if _poll_changed and isinstance(st.session_state.get("live_draft_room"), dict):
+                    try:
+                        from live_draft_safe_mode import reconcile_live_draft_room
+
+                        reconcile_live_draft_room(st.session_state, st.session_state["live_draft_room"])
+                    except ImportError:
+                        pass
+                if _poll_changed:
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        request_live_draft_rerun(
+                            st,
+                            st.session_state,
+                            "poll_shared_draft",
+                            room=st.session_state.get("live_draft_room"),
+                        )
+                    except ImportError:
+                        st.rerun()
         if render_shared_draft_room_panel(st, st.session_state):
-            st.rerun()
+            try:
+                from live_draft_safe_mode import request_live_draft_rerun
+
+                request_live_draft_rerun(
+                    st,
+                    st.session_state,
+                    "shared_draft_room_panel",
+                    room=st.session_state.get("live_draft_room"),
+                )
+            except ImportError:
+                st.rerun()
         try:
             from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
 
@@ -17974,8 +18013,22 @@ if active_page == "Live Draft Room":
         st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
     else:
         _render_live_draft_styles()
+        try:
+            from live_draft_safe_mode import reconcile_live_draft_room
+
+            _reconcile = reconcile_live_draft_room(st.session_state, room)
+            room = _reconcile.room
+            if _reconcile.safe_mode_active and _reconcile.draft_state_error_reason:
+                st.error(f"Draft state error: {_reconcile.draft_state_error_reason}")
+        except ImportError:
+            _reconcile = None
         cfg = room.get("config", {})
         slot = live_draft_current_slot(room)
+        if slot is None and _reconcile is not None and _reconcile.manual_recovery_available:
+            picks = room.get("pick_order") or []
+            idx = int(room.get("current_pick_index") or 0)
+            if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
+                slot = picks[idx]
         total_picks = len(room.get("pick_order", []))
         picks_done = len(room.get("draft_board", []))
         team_list = list(room.get("teams", []))
@@ -18059,9 +18112,15 @@ if active_page == "Live Draft Room":
         )
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
-        if room.get("status") == "in_progress" and slot is not None:
+        _timer_ok = bool(
+            room.get("status") == "in_progress"
+            and slot is not None
+            and (_reconcile is None or getattr(_reconcile, "timer_should_run", True))
+        )
+        if _timer_ok:
             try:
                 from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
+                from live_draft_safe_mode import request_live_draft_rerun
                 from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
 
                 note_live_draft_page_load(st.session_state, room)
@@ -18076,11 +18135,14 @@ if active_page == "Live Draft Room":
                 if expired_result.ok and expired_result.message:
                     st.success(expired_result.message)
                 if expired_result.should_rerun:
-                    st.rerun()
+                    request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
             except ImportError:
                 idx = int(room.get("current_pick_index", 0))
                 remaining = live_draft_seconds_remaining(room)
                 st.caption(f"Time on clock: {remaining}s")
+        elif room.get("status") == "in_progress" and slot is not None:
+            remaining = live_draft_seconds_remaining(room)
+            st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
 
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
         with ctrl1:
@@ -18133,7 +18195,12 @@ if active_page == "Live Draft Room":
             from draft_ui import render_live_draft_queue_panel
 
             if render_live_draft_queue_panel(st, st.session_state):
-                st.rerun()
+                try:
+                    from live_draft_safe_mode import request_live_draft_rerun
+
+                    request_live_draft_rerun(st, st.session_state, "live_draft_queue", room=room)
+                except ImportError:
+                    st.rerun()
             st.subheader("Draft Board")
             board_df = live_draft_build_board_df(room)
             if board_df.empty:
@@ -18148,7 +18215,8 @@ if active_page == "Live Draft Room":
                 )
 
         with rec_col:
-            if slot is None:
+            _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
+            if slot is None and not _manual_recovery:
                 try:
                     from draft_ui import record_live_draft_ui_diagnostics
 
@@ -18165,6 +18233,23 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 st.success("Draft complete.")
+            elif slot is None and _manual_recovery:
+                st.error("Draft state mismatch — use Manual Draft below to recover this pick.")
+                from draft_ui import render_live_manual_draft_panel
+
+                if render_live_manual_draft_panel(
+                    st,
+                    st.session_state,
+                    room,
+                    user_team=user_team,
+                    multiplayer=_multiplayer_draft,
+                ):
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
+                    except ImportError:
+                        pass
             else:
                 remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
@@ -18250,6 +18335,7 @@ if active_page == "Live Draft Room":
                     from draft_commit_diagnostics import pop_live_draft_pick_notice
                     from draft_commit_diagnostics_ui import render_draft_commit_diagnostics
                     from live_draft_expired_pick_diagnostics_ui import render_autopick_diagnostics
+                    from live_draft_safe_mode_diagnostics_ui import render_safe_mode_diagnostics
                     from live_draft_timer_ui import render_live_draft_timer_diagnostics
 
                     notice = pop_live_draft_pick_notice(st.session_state)
@@ -18274,6 +18360,7 @@ if active_page == "Live Draft Room":
                         developer_mode=developer_mode_enabled(),
                     )
                     render_autopick_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
+                    render_safe_mode_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_live_draft_timer_diagnostics(st, st.session_state)
                 except ImportError:
                     pass
@@ -18285,7 +18372,12 @@ if active_page == "Live Draft Room":
                     user_team=user_team,
                     multiplayer=_multiplayer_draft,
                 ):
-                    st.rerun()
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
+                    except ImportError:
+                        st.rerun()
 
         if room.get("status") != "complete":
             render_contextual_page_nav(

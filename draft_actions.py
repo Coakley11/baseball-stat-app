@@ -298,11 +298,18 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
 
     if source == ACTIVE_DRAFT_SOURCE_LIVE:
         try:
-            from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress, prepare_live_draft_state
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress, prepare_live_draft_state, repair_stale_live_draft_progress
 
             prepare_live_draft_state(session)
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if isinstance(room, dict):
+                try:
+                    from live_draft_safe_mode import reconcile_live_draft_room
+
+                    room = reconcile_live_draft_room(session, room).room
+                except ImportError:
+                    room = repair_stale_live_draft_progress(dict(room))
+                    session[LIVE_DRAFT_ROOM_KEY] = room
                 progress = analyze_live_draft_progress(room)
                 ctx["draft_status"] = str(progress.get("draft_status") or "")
                 ctx["draft_complete"] = bool(progress.get("draft_complete"))
@@ -491,14 +498,38 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
 
     ctx = draft_action_context(session)
     if ctx.get("draft_complete"):
-        reason_code = str(ctx.get("draft_complete_reason") or "")
-        if reason_code == "not_started":
-            return False, "Draft has not started yet."
-        if reason_code == "missing_pick_order":
-            return False, "Draft pick order is missing."
-        if reason_code == "pick_index_past_end":
-            return False, "Draft pick index is past the final pick."
-        return False, "Draft is complete."
+        if ctx.get("live_draft_active"):
+            room = session.get("live_draft_room")
+            if isinstance(room, dict):
+                board = len(room.get("draft_board") or [])
+                try:
+                    from live_draft_safe_mode import total_expected_picks
+
+                    total = total_expected_picks(room)
+                except ImportError:
+                    total = int(ctx.get("total_picks") or 0)
+                if total > 0 and board < total:
+                    pass
+                else:
+                    reason_code = str(ctx.get("draft_complete_reason") or "")
+                    if reason_code == "not_started":
+                        return False, "Draft has not started yet."
+                    if reason_code == "missing_pick_order":
+                        return False, "Draft pick order is missing."
+                    if reason_code == "pick_index_past_end":
+                        return False, "Draft pick index is past the final pick."
+                    return False, "Draft is complete."
+            else:
+                return False, "Draft is complete."
+        else:
+            reason_code = str(ctx.get("draft_complete_reason") or "")
+            if reason_code == "not_started":
+                return False, "Draft has not started yet."
+            if reason_code == "missing_pick_order":
+                return False, "Draft pick order is missing."
+            if reason_code == "pick_index_past_end":
+                return False, "Draft pick index is past the final pick."
+            return False, "Draft is complete."
     if str(ctx.get("draft_status") or "") == "not_started":
         return False, "Draft has not started yet."
     if ctx.get("board_full") and not ctx.get("live_draft_active"):
@@ -689,11 +720,22 @@ def _draft_live(
     try:
         from live_draft_expired_pick import clear_autopick_backoff_for_manual
         from live_draft_pick_commit import commit_manual_live_pick
+        from live_draft_safe_mode import clear_safe_mode_after_successful_pick, prepare_manual_pick_recovery
         from live_draft_timer_logic import live_draft_current_slot
     except ImportError:
         clear_autopick_backoff_for_manual = None  # type: ignore[assignment,misc]
         commit_manual_live_pick = None  # type: ignore[assignment,misc]
+        prepare_manual_pick_recovery = None  # type: ignore[assignment,misc]
+        clear_safe_mode_after_successful_pick = None  # type: ignore[assignment,misc]
         live_draft_current_slot = None  # type: ignore[assignment,misc]
+
+    if prepare_manual_pick_recovery is not None:
+        prepare_manual_pick_recovery(session)
+        room = session.get("live_draft_room")
+        if not isinstance(room, dict):
+            result["error"] = "no_live_room"
+            result["message"] = "No active live draft."
+            return result
 
     allowed, reason = can_draft_player(session, player_name)
     if not allowed:
@@ -874,6 +916,8 @@ def _draft_live(
     room = session.get(LIVE_DRAFT_ROOM_KEY) or room
     result["ok"] = True
     result["message"] = commit.message if commit.message != "Pick saved." else f"Drafted {player_name}."
+    if clear_safe_mode_after_successful_pick is not None:
+        clear_safe_mode_after_successful_pick(session, room)
     if set_live_draft_pick_notice is not None:
         set_live_draft_pick_notice(session, "success", result["message"])
     if record_draft_commit_diagnostics is not None:

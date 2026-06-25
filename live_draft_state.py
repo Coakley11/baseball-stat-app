@@ -397,6 +397,23 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
         base["draft_complete_reason"] = "missing_pick_order"
         return base
 
+    if board_count < total:
+        base["draft_complete"] = False
+        if idx < board_count:
+            idx = board_count
+            base["current_pick_index"] = idx
+        if idx < len(pick_order):
+            slot = pick_order[idx]
+            base["slot"] = slot
+            try:
+                base["current_pick"] = int(slot.get("Pick"))
+            except (TypeError, ValueError):
+                base["current_pick"] = None
+            base["on_clock_team"] = str(slot.get("Team") or "").strip() or None
+        if status == "not_started" and board_count == 0:
+            base["draft_complete_reason"] = "not_started"
+        return base
+
     if status == "complete":
         base["draft_complete"] = True
         base["draft_complete_reason"] = "status_complete"
@@ -435,6 +452,11 @@ def repair_stale_live_draft_progress(room: dict[str, Any]) -> dict[str, Any]:
     status = str(room.get("status") or "").strip()
     board = room.get("draft_board") or []
     board_count = len(board) if isinstance(board, list) else 0
+
+    if board_count < total and idx != board_count:
+        room["current_pick_index"] = board_count
+        if status == "complete":
+            room["status"] = "in_progress" if board_count > 0 else "not_started"
 
     if status == "complete" and board_count < total:
         room["status"] = "in_progress" if board_count > 0 else "not_started"
