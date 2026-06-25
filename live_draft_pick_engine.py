@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from live_draft_timer_logic import live_draft_current_slot, live_draft_reset_timer
+from live_draft_timer_logic import live_draft_clear_timer, live_draft_current_slot, live_draft_reset_timer
 
 
 def live_draft_bump_sync_revision(room: dict[str, Any], event: str = "pick") -> None:
@@ -43,7 +43,7 @@ def live_draft_make_pick(room: dict[str, Any], player_row: dict[str, Any], verdi
         room["meta"].setdefault("turn_model", {})["current_pick_index"] = room["current_pick_index"]
     if room["current_pick_index"] >= len(room.get("pick_order", [])):
         room["status"] = "complete"
-        room["timer_started_at"] = None
+        live_draft_clear_timer(room)
     else:
         live_draft_reset_timer(room)
     return True, f"Drafted {player_row.get('fullName', 'player')} to {team}."

@@ -27,7 +27,7 @@ def record_timer_diagnostics(session: dict[str, Any], room: dict[str, Any], *, s
     tick_active = bool(source == "fragment_tick") or bool(prev.get("timer_tick_active"))
     diag = {
         "timer_start_time": started,
-        "timer_deadline": live_draft_timer_deadline(room),
+        "timer_deadline": room.get("timer_deadline") or live_draft_timer_deadline(room),
         "seconds_remaining": remaining,
         "timer_refresh_source": source or prev.get("timer_refresh_source"),
         "timer_tick_active": tick_active,

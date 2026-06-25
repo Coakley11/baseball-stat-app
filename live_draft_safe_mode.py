@@ -203,6 +203,7 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
         room["status"] = "complete"
         room["current_pick_index"] = total
         room["timer_started_at"] = None
+        room["timer_deadline"] = None
 
     status_after, completion_source_after = compute_draft_status(room)
     if total > 0:

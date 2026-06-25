@@ -164,7 +164,10 @@ def _mark_autopick_success(session: dict[str, Any], room: dict[str, Any], messag
     try:
         from draft_commit_diagnostics import set_live_draft_pick_notice
 
-        set_live_draft_pick_notice(session, "success", message)
+        board_len = len(room.get("draft_board") or [])
+        player_id = str((room.get("draft_board") or [{}])[-1].get("playerID") or message)
+        set_live_draft_pick_notice(session, "success", message, pick_key=f"{board_len}:{player_id}")
+        session.pop("_live_draft_rec_cache", None)
     except ImportError:
         pass
 

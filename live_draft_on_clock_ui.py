@@ -25,16 +25,17 @@ def _render_on_clock_banner_html(
     team = slot.get("Team", "—")
     rnd = slot.get("Round", "—")
     pick_no = slot.get("Pick", "—")
-    next_txt = f" · Your next pick: #{next_pick}" if next_pick else ""
+    next_txt = f'<div class="ld-next-pick">Your next pick: #{next_pick}</div>' if next_pick else ""
     accent = _team_accent(str(team))
     st.markdown(
         f"""
-        <div class="live-draft-on-clock" style="border-left: 6px solid {accent};">
+        <div class="live-draft-on-clock" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
-            <div class="ld-team"><span class="ld-badge" style="background:{accent};">{team}</span></div>
+            <div class="ld-team-name">{team}</div>
+            {next_txt}
             <div class="ld-meta">
-                Round {rnd} · Pick {pick_no}{next_txt}
-                <span class="live-draft-timer" style="float:right;">{int(remaining)}s</span>
+                <span>Round {rnd} · Pick {pick_no}</span>
+                <span class="live-draft-timer">{int(remaining)}s</span>
             </div>
         </div>
         """,

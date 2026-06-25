@@ -310,9 +310,20 @@ def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = Fa
             out[key] = _json_safe(val)
     out.pop("pool", None)
     out["timer_started_at"] = None
-    out["timer_handled_index"] = -1
-    if room.get("status") == "in_progress":
-        out["_resume_timer_on_load"] = True
+    out["timer_handled_index"] = int(room.get("timer_handled_index") or -1)
+    status = str(room.get("status") or "")
+    if status == "in_progress":
+        deadline = room.get("timer_deadline")
+        if deadline is None:
+            started = room.get("timer_started_at")
+            if started is not None:
+                deadline = float(started) + int(room.get("config", {}).get("timer_seconds", 60))
+        if deadline is not None:
+            out["timer_deadline"] = float(deadline)
+        else:
+            out["_resume_timer_on_load"] = True
+    else:
+        out["timer_deadline"] = None
     out["_persist_schema"] = LIVE_DRAFT_PERSIST_SCHEMA
     out["_persisted_at"] = _utc_now_iso()
     return out
@@ -328,6 +339,7 @@ def room_from_persist_dict(data: dict[str, Any] | None) -> dict[str, Any] | None
     out.pop("_persist_schema", None)
     out.pop("_persisted_at", None)
     resume_timer = bool(out.pop("_resume_timer_on_load", False))
+    persisted_deadline = out.pop("timer_deadline", None)
     out.pop("pool", None)
     if records is not None:
         if records:
@@ -346,10 +358,18 @@ def room_from_persist_dict(data: dict[str, Any] | None) -> dict[str, Any] | None
             out["pool"] = df
     elif isinstance(data.get("pool"), str):
         out["pool"] = pd.DataFrame()
-    if resume_timer and out.get("status") == "in_progress":
-        import time
+    if out.get("status") == "in_progress":
+        if persisted_deadline is not None:
+            deadline = float(persisted_deadline)
+            out["timer_deadline"] = deadline
+            timer_secs = int(out.get("config", {}).get("timer_seconds", 60))
+            out["timer_started_at"] = deadline - timer_secs
+        elif resume_timer:
+            import time
 
-        out["timer_started_at"] = time.time()
+            from live_draft_timer_logic import live_draft_reset_timer
+
+            live_draft_reset_timer(out)
     return out
 
 

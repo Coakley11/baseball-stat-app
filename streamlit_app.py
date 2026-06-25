@@ -9628,6 +9628,7 @@ def live_draft_init_room(config, pool_df):
         "rosters": {t: [] for t in teams},
         "pool": pool_df.copy(),
         "timer_started_at": None,
+        "timer_deadline": None,
         "timer_handled_index": -1,
         "paused_remaining_seconds": None,
         "meta": meta,
@@ -9714,6 +9715,26 @@ def live_draft_recommendations(room, top_n=8, team=None):
     ).head(top_n) if gaps else pd.DataFrame()
     sleepers = balanced.sort_values(["Sleeper Score", "Draft Fit Score"], ascending=[False, False]).head(top_n)
     return top_recommended, best_available, positional, sleepers
+
+
+def cached_live_draft_recommendations(session, room, top_n=8, team=None):
+    """Reuse recommendation tables within the same pick when the board has not changed."""
+    idx = int(room.get("current_pick_index") or 0)
+    board_len = len(room.get("draft_board") or [])
+    team_s = str(team or "")
+    cache_key = (idx, board_len, team_s, int(top_n))
+    entry = session.get("_live_draft_rec_cache")
+    if isinstance(entry, dict) and entry.get("key") == cache_key:
+        return entry["top_rec"], entry["best_avail"], entry["pos_fit"], entry["value_sleep"]
+    top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=top_n, team=team)
+    session["_live_draft_rec_cache"] = {
+        "key": cache_key,
+        "top_rec": top_rec,
+        "best_avail": best_avail,
+        "pos_fit": pos_fit,
+        "value_sleep": value_sleep,
+    }
+    return top_rec, best_avail, pos_fit, value_sleep
 
 
 def live_draft_rosters_df(room):
@@ -9812,29 +9833,101 @@ def _render_live_draft_styles():
         .live-draft-on-clock {
             background: linear-gradient(135deg, #0b3d6e 0%, #1f6feb 55%, #2d8cff 100%);
             color: #fff;
-            padding: 22px 24px;
-            border-radius: 16px;
-            margin-bottom: 16px;
-            box-shadow: 0 8px 24px rgba(15, 60, 120, 0.28);
+            padding: 28px 28px 22px 28px;
+            border-radius: 18px;
+            margin-bottom: 18px;
+            box-shadow: 0 10px 28px rgba(15, 60, 120, 0.32);
         }
-        .live-draft-on-clock .ld-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.88; font-weight: 600; }
-        .live-draft-on-clock .ld-team { font-size: 34px; font-weight: 800; margin: 6px 0 8px 0; line-height: 1.1; }
-        .live-draft-on-clock .ld-badge {
+        .live-draft-on-clock .ld-title {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            opacity: 0.9;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .live-draft-on-clock .ld-team-name {
+            font-size: clamp(2.4rem, 6vw, 3.6rem);
+            font-weight: 900;
+            line-height: 1.05;
+            margin: 4px 0 10px 0;
+            letter-spacing: -0.02em;
+            text-shadow: 0 2px 12px rgba(0,0,0,0.18);
+            color: #ffffff;
+        }
+        .live-draft-on-clock .ld-next-pick {
+            font-size: 14px;
+            opacity: 0.92;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        .live-draft-on-clock .ld-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 16px;
+            opacity: 0.96;
+            line-height: 1.5;
+            flex-wrap: wrap;
+        }
+        .live-draft-timer {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 72px;
+            background: rgba(255,255,255,0.22);
+            border-radius: 12px;
+            padding: 10px 16px;
+            font-weight: 900;
+            font-size: 28px;
+            letter-spacing: -0.02em;
+        }
+        .live-draft-status-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0 14px 0;
+        }
+        .ld-badge-pill {
             display: inline-block;
-            padding: 4px 12px;
+            padding: 6px 12px;
             border-radius: 999px;
             font-size: 13px;
             font-weight: 700;
-            background: rgba(255,255,255,0.18);
+            letter-spacing: 0.01em;
+            border: 1px solid transparent;
         }
-        .live-draft-on-clock .ld-meta { font-size: 15px; opacity: 0.95; line-height: 1.5; }
-        .live-draft-timer {
-            display: inline-block;
-            background: rgba(255,255,255,0.18);
+        .ld-badge-pick { background: #e8f1ff; color: #0b3d6e; border-color: #c5d9f5; }
+        .ld-badge-round { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
+        .ld-badge-team { background: #fff7ed; color: #9a3412; border-color: #fed7aa; }
+        .ld-badge-share { background: #faf5ff; color: #6b21a8; border-color: #e9d5ff; }
+        .ld-badge-backend { background: #f1f5f9; color: #334155; border-color: #e2e8f0; }
+        .live-draft-action-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 8px 0 4px 0;
+        }
+        .live-draft-action-row div[data-testid="stButton"] {
+            flex: 1 1 140px;
+        }
+        .live-draft-action-row div[data-testid="stButton"] > button {
+            width: 100%;
+            min-height: 42px;
             border-radius: 10px;
-            padding: 8px 14px;
-            font-weight: 800;
-            font-size: 22px;
+            font-weight: 700;
+            border: 1px solid #cbd5e1;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        }
+        .live-draft-action-row div[data-testid="stButton"] > button:hover {
+            border-color: #94a3b8;
+            background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+        }
+        .live-draft-action-danger div[data-testid="stButton"] > button {
+            border-color: #fecaca;
+            color: #b91c1c;
+            background: linear-gradient(180deg, #fff5f5 0%, #fee2e2 100%);
         }
         .live-rec-card {
             background: #fff;
@@ -9875,9 +9968,9 @@ def _render_live_draft_styles():
             border-radius: 12px;
         }
         @media (max-width: 768px) {
-            .live-draft-on-clock { padding: 16px 14px; }
-            .live-draft-on-clock .ld-team { font-size: 26px; }
-            .live-draft-timer { font-size: 18px; }
+            .live-draft-on-clock { padding: 18px 16px; }
+            .live-draft-on-clock .ld-team-name { font-size: 2rem; }
+            .live-draft-timer { font-size: 22px; min-width: 60px; padding: 8px 12px; }
         }
         </style>
         """,
@@ -9889,16 +9982,17 @@ def _render_live_draft_on_clock_banner(slot, remaining, next_pick=None):
     team = slot.get("Team", "—")
     rnd = slot.get("Round", "—")
     pick_no = slot.get("Pick", "—")
-    next_txt = f" · Your next pick: #{next_pick}" if next_pick else ""
+    next_txt = f'<div class="ld-next-pick">Your next pick: #{next_pick}</div>' if next_pick else ""
     accent = _live_draft_team_accent(team)
     st.markdown(
         f"""
-        <div class="live-draft-on-clock" style="border-left: 6px solid {accent};">
+        <div class="live-draft-on-clock" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
-            <div class="ld-team"><span class="ld-badge" style="background:{accent};">{team}</span></div>
+            <div class="ld-team-name">{team}</div>
+            {next_txt}
             <div class="ld-meta">
-                Round {rnd} · Pick {pick_no}{next_txt}
-                <span class="live-draft-timer" style="float:right;">{remaining}s</span>
+                <span>Round {rnd} · Pick {pick_no}</span>
+                <span class="live-draft-timer">{remaining}s</span>
             </div>
         </div>
         """,
@@ -17487,8 +17581,6 @@ if active_page == "Live Draft Room":
         _pending_pick_result = process_pending_manual_draft_pick(st, st.session_state)
         if _pending_pick_result.get("processed") and not _pending_pick_result.get("ok"):
             st.error(str(_pending_pick_result.get("error") or _pending_pick_result.get("message") or "Manual pick failed."))
-        elif _pending_pick_result.get("ok"):
-            st.success(str(_pending_pick_result.get("message") or "Pick saved."))
     except ImportError:
         pass
     from live_draft_state import prepare_live_draft_state
@@ -17505,9 +17597,11 @@ if active_page == "Live Draft Room":
     try:
         from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room
         from draft_ui_multiplayer import render_shared_draft_room_panel
+        from live_draft_poll_ui import render_live_draft_poll_fragment
         from suite_egress_policy import shared_draft_poll_interval_sec
 
         if is_multiplayer_draft_active(st.session_state):
+            render_live_draft_poll_fragment(st, st.session_state)
             import time
 
             interval = shared_draft_poll_interval_sec(st.session_state)
@@ -18199,6 +18293,33 @@ if active_page == "Live Draft Room":
             f"Status: **{str(_derived_status or room.get('status', '')).replace('_', ' ').title()}** · "
             f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} of {total_picks}"
         )
+        on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
+        round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
+        share_badge = ""
+        backend_badge = ""
+        if _multiplayer_draft:
+            try:
+                from draft_room_create_verify import is_plausible_share_code
+                from draft_room_shared_state import shared_room_backend_name
+
+                sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+                if sc and is_plausible_share_code(sc):
+                    share_badge = f'<span class="ld-badge-pill ld-badge-share">Share {sc}</span>'
+                backend_badge = f'<span class="ld-badge-pill ld-badge-backend">{shared_room_backend_name()}</span>'
+            except Exception:
+                pass
+        st.markdown(
+            f"""
+            <div class="live-draft-status-badges">
+                <span class="ld-badge-pill ld-badge-pick">Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} / {total_picks}</span>
+                <span class="ld-badge-pill ld-badge-round">Round {round_no}</span>
+                <span class="ld-badge-pill ld-badge-team">On clock: {on_clock_team}</span>
+                {share_badge}
+                {backend_badge}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         _timer_ok = bool(
@@ -18245,36 +18366,44 @@ if active_page == "Live Draft Room":
             remaining = live_draft_seconds_remaining(room)
             st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
 
+        st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
         with ctrl1:
-            if st.button("Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
+            if st.button("⏸ Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
+                from live_draft_timer_logic import live_draft_clear_timer
+
                 room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
                 room["status"] = "paused"
+                live_draft_clear_timer(room)
                 _persist_live_draft_room(room, reason="pause_draft")
         with ctrl2:
-            if st.button("Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume"):
+            if st.button("▶ Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume"):
+                from live_draft_timer_logic import live_draft_resume_timer
+
                 room["status"] = "in_progress"
                 pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
-                room["timer_started_at"] = time.time() - (int(cfg.get("timer_seconds", 60)) - pause_left)
-                room["paused_remaining_seconds"] = None
+                live_draft_resume_timer(room, pause_left)
                 _persist_live_draft_room(room, reason="resume_draft")
         with ctrl3:
-            if st.button("Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
+            if st.button("↻ Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
                 live_draft_reset_timer(room)
                 _persist_live_draft_room(room, reason="reset_timer")
         with ctrl4:
-            if st.button("Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
+            if st.button("⚡ Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
                 if room.get("status") == "paused":
                     room["status"] = "in_progress"
                 ok, msg = live_draft_auto_pick(room)
                 if ok:
+                    st.session_state.pop("_live_draft_rec_cache", None)
                     st.success(msg)
                 else:
                     st.warning(msg)
                 _persist_live_draft_room(room, reason="auto_pick")
+        st.markdown("</div>", unsafe_allow_html=True)
         if room.get("status") in ("in_progress", "paused", "not_started"):
+            st.markdown('<div class="live-draft-action-danger">', unsafe_allow_html=True)
             if st.button(
-                "Delete Live Draft",
+                "🗑 Delete Live Draft",
                 key="live_draft_abandon_btn",
                 help="Abandon this live draft and return ownership to the Draft Room Simulator.",
             ):
@@ -18288,6 +18417,7 @@ if active_page == "Live Draft Room":
                     st.rerun()
                 else:
                     st.error(msg)
+            st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
@@ -18369,8 +18499,8 @@ if active_page == "Live Draft Room":
                     remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 _rec_team = user_team if _multiplayer_draft else None
-                top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
-                    room, top_n=6, team=_rec_team
+                top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                    st.session_state, room, top_n=6, team=_rec_team
                 )
                 try:
                     from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
@@ -18446,25 +18576,14 @@ if active_page == "Live Draft Room":
                 from draft_ui import render_live_manual_draft_panel
 
                 try:
-                    from draft_commit_diagnostics import pop_live_draft_pick_notice
+                    from draft_commit_diagnostics import render_live_draft_pick_notice
                     from draft_commit_diagnostics_ui import render_draft_commit_diagnostics
                     from live_draft_expired_pick_diagnostics_ui import render_autopick_diagnostics
+                    from live_draft_poll_ui import render_live_poll_diagnostics
                     from live_draft_safe_mode_diagnostics_ui import render_safe_mode_diagnostics
                     from live_draft_timer_ui import render_live_draft_timer_diagnostics
 
-                    notice = pop_live_draft_pick_notice(st.session_state)
-                    if notice:
-                        level, text = notice
-                        if level == "success":
-                            st.success(text)
-                        else:
-                            st.error(text)
-                    flash_ok = st.session_state.pop("_live_draft_pick_flash", None)
-                    if flash_ok:
-                        st.success(str(flash_ok))
-                    flash_err = st.session_state.pop("_live_draft_pick_flash_error", None)
-                    if flash_err:
-                        st.error(str(flash_err))
+                    render_live_draft_pick_notice(st, st.session_state)
                     conflict = st.session_state.get("_draft_room_conflict_notice")
                     if conflict:
                         st.warning(str(conflict))
@@ -18475,6 +18594,7 @@ if active_page == "Live Draft Room":
                     )
                     render_autopick_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_safe_mode_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
+                    render_live_poll_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_live_draft_timer_diagnostics(st, st.session_state)
                 except ImportError:
                     pass
@@ -18526,8 +18646,13 @@ if active_page == "Live Draft Room":
         if not totals_df.empty:
             st.markdown('<div class="live-draft-totals-panel">', unsafe_allow_html=True)
             st.subheader("Team Projected Totals")
+            st.caption("Live projected category totals by fantasy team — updates after each pick.")
+            totals_show = [
+                "Fantasy Team", "Players", "Projected Team Rank", "Total Projected Fantasy Value",
+                "Projected HR", "Projected RBI", "Projected R", "Projected SB", "Projected AVG", "Projected OPS",
+            ]
             render_output_table(
-                clean_ui_columns(totals_df),
+                clean_ui_columns(totals_df[[c for c in totals_show if c in totals_df.columns]]),
                 key="live_draft_team_totals",
                 file_name="live_draft_team_totals.csv",
                 display_rows=20,

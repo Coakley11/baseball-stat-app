@@ -986,10 +986,13 @@ def _draft_live(
     result["ok"] = True
     result["message"] = commit.message if commit.message != "Pick saved." else f"Drafted {player_name}."
     session.pop("_live_draft_manual_pick_in_flight", None)
+    session.pop("_live_draft_rec_cache", None)
     if clear_safe_mode_after_successful_pick is not None:
         clear_safe_mode_after_successful_pick(session, room)
     if set_live_draft_pick_notice is not None:
-        set_live_draft_pick_notice(session, "success", result["message"])
+        player_id = str(player_row.get("playerID") or player_row.get("player_id") or player_name).strip()
+        pick_key = f"{commit.board_size_after}:{player_id}"
+        set_live_draft_pick_notice(session, "success", result["message"], pick_key=pick_key)
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(
             session,

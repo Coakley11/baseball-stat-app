@@ -255,11 +255,7 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         pass
 
     session.pop("_live_draft_manual_pick_in_flight", None)
-
-    if ok:
-        session["_live_draft_pick_flash"] = msg
-    else:
-        session["_live_draft_pick_flash_error"] = msg
+    session.pop("_live_draft_rec_cache", None)
 
     return {
         "processed": True,

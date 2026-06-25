@@ -259,6 +259,11 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
 _SHARED_DRAFT_SYNC_RUN_KEY = "_shared_draft_sync_run"
 
 
+def reset_shared_draft_sync_gate(session: dict[str, Any]) -> None:
+    """Allow another shared-room poll in the same Streamlit rerun (e.g. poll fragment)."""
+    session.pop(_SHARED_DRAFT_SYNC_RUN_KEY, None)
+
+
 def sync_shared_draft_room(
     session: dict[str, Any],
     *,
