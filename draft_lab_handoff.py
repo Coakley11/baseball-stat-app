@@ -139,6 +139,7 @@ def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str,
         "team_names": extracted.get("team_names") or [],
         "room_code": extracted.get("room_code"),
         "session_id": extracted.get("session_id"),
+        "draft_room_id": extracted.get("session_id"),
         "board_pick_count": extracted.get("board_pick_count"),
         "expected_pick_count": extracted.get("expected_pick_count"),
     }

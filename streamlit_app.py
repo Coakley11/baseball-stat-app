@@ -10066,7 +10066,7 @@ def _persist_live_draft_room(room, *, reason: str, rerun: bool = True) -> None:
     try:
         from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
 
-        if is_multiplayer_draft_active(st.session_state) and reason not in ("start_draft",):
+        if is_multiplayer_draft_active(st.session_state):
             ok, msg, _ = commit_shared_room_state(st.session_state, room)
             if not ok and msg:
                 st.warning(msg)
@@ -17239,9 +17239,10 @@ if active_page == "Draft Simulation Test Mode":
     apply_pending_page_transfer(active_page)
     try:
         from baseball_draft_activity import render_draft_activity_write_debug
-        from draft_lab_resume import draft_lab_resume_diagnostics
+        from draft_lab_resume import draft_lab_resume_diagnostics, render_draft_lab_resume_error
 
         render_draft_activity_write_debug(st)
+        render_draft_lab_resume_error(st)
         try:
             from suite_workspace import can_show_developer_tools
 
@@ -17442,6 +17443,8 @@ if active_page == "Draft Simulation Test Mode":
         st.success(
             "Analyzing your **completed live draft** — controls below match the settings from that draft."
         )
+        if str(st.session_state.get("draft_lab_preferred_tab") or "") == "Team Analysis":
+            st.info("Opened from **Continue Draft Analysis** — see the **Team Analysis** tab below.")
         if developer_mode_enabled():
             try:
                 from draft_lab_handoff import DRAFT_LAB_HANDOFF_DIAG_KEY

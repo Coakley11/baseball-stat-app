@@ -32,6 +32,9 @@ _TABLE_SETTINGS = "suite_user_settings"
 _SAVED_ITEM_CONFLICT_COLS = "user_id,app,item_type,item_key"
 _FULL_SESSION_KEY = "full_session"
 _READ_CACHE_KEY = "_suite_supabase_get_cache"
+# Shared draft rooms must never be GET-cached — remote PATCHes on other devices
+# do not invalidate this client's session cache.
+_NO_GET_CACHE_TABLES = frozenset({"baseball_shared_draft_rooms"})
 
 
 def _read_cache_bucket() -> dict[tuple[str, str, tuple[tuple[str, str], ...]], tuple[int, Any]]:
@@ -287,7 +290,7 @@ def _request(
         parsed = response.json()
     except json.JSONDecodeError:
         parsed = None
-    if method_u == "GET" and parsed is not None:
+    if method_u == "GET" and parsed is not None and table not in _NO_GET_CACHE_TABLES:
         _read_cache_bucket()[cache_key] = (bytes_in, parsed)
     return parsed
 

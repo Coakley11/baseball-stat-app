@@ -60,6 +60,22 @@ def should_suppress_expired_rerun(session: dict[str, Any], room: dict[str, Any])
     )
 
 
+def _multiplayer_autopick_allowed(session: dict[str, Any]) -> bool:
+    """Only the room host runs timer auto-pick in multiplayer (avoids duplicate commits)."""
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from draft_room_membership import is_room_host
+        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, get_shared_room_store
+
+        if not is_multiplayer_draft_active(session):
+            return True
+        room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        document = get_shared_room_store().load(room_code) if room_code else None
+        return bool(is_room_host(session, document))
+    except ImportError:
+        return True
+
+
 def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
     """At most one full rerun per expired pick index before attempt is recorded."""
     try:
@@ -78,6 +94,8 @@ def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, 
             return False
     except ImportError:
         pass
+    if not _multiplayer_autopick_allowed(session):
+        return False
     if not expired_pick_detected(room):
         session.pop(EXPIRED_PICK_PENDING_KEY, None)
         return False
@@ -198,6 +216,9 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         err = str(session.get(AUTOPICK_ERROR_KEY) or "Auto-pick failed for this pick.")
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error=err)
 
+    if not _multiplayer_autopick_allowed(session):
+        return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+
     if autopick_attempted_for_index(session, room):
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error="")
 
@@ -209,6 +230,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
     board_before = len(room.get("draft_board") or [])
     idx_before = idx
+    expected_revision = sync_expected_revision(session)
 
     try:
         ok_select, select_msg = run_autopick_selection(room)
@@ -221,11 +243,6 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 message="",
                 error=select_msg or "Auto-pick selection failed.",
             )
-
-        expected_revision = sync_expected_revision(session)
-        refreshed = resolve_live_room(session, room)
-        if refreshed is not None:
-            room = refreshed
 
         commit = persist_applied_pick(
             session,

@@ -392,6 +392,50 @@ def load_shared_room(room_code: str, *, store: SharedRoomStore | None = None) ->
     return backend.load(str(room_code or "").strip().upper())
 
 
+def find_shared_room_document_by_draft_room_id(
+    draft_room_id: str,
+    *,
+    store: SharedRoomStore | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Resolve a shared room document from internal draft_room_id (not join code)."""
+    rid = str(draft_room_id or "").strip().upper()
+    if not rid:
+        return None, ""
+    backend = store or get_shared_room_store()
+
+    load_by_id = getattr(backend, "load_by_draft_room_id", None)
+    if callable(load_by_id):
+        doc = load_by_id(rid)
+        if isinstance(doc, dict):
+            doc_rid = str(doc.get("draft_room_id") or "").strip().upper()
+            if doc_rid == rid:
+                return doc, "supabase_draft_room_id"
+
+    if hasattr(backend, "root"):
+        import json
+
+        root = getattr(backend, "root", None)
+        if root is not None:
+            for path in root.glob("*.json"):
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                if str(raw.get("draft_room_id") or "").strip().upper() == rid:
+                    return raw, "local_file_draft_room_id"
+
+    if len(rid) == ROOM_CODE_LEN:
+        doc = backend.load(rid)
+        if isinstance(doc, dict):
+            doc_rid = str(doc.get("draft_room_id") or "").strip().upper()
+            if doc_rid == rid or str(doc.get("room_code") or "").strip().upper() == rid:
+                return doc, "shared_room_code"
+
+    return None, ""
+
+
 def _merge_runtime_pool(existing: dict[str, Any], runtime: dict[str, Any]) -> None:
     """Keep richer scoring columns from the local pool when a compact shared sync is thinner."""
     import pandas as pd

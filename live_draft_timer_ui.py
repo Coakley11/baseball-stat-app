@@ -79,6 +79,38 @@ def _resolve_live_room(session: dict[str, Any], room: dict[str, Any]) -> dict[st
     return room
 
 
+def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
+    """Keep timer deadline authoritative in multiplayer; host publishes repairs."""
+    live_room = _resolve_live_room(session, room)
+    try:
+        from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active, sync_shared_draft_room
+        from draft_room_membership import is_room_host
+        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, get_shared_room_store
+
+        mp = is_multiplayer_draft_active(session)
+    except ImportError:
+        mp = False
+
+    if mp and live_room.get("status") == "in_progress":
+        if live_room.get("timer_deadline") is None and live_room.get("timer_started_at") is None:
+            try:
+                sync_shared_draft_room(session, force=True)
+                live_room = _resolve_live_room(session, room)
+            except Exception:
+                pass
+
+    if ensure_live_draft_timer_for_pick(live_room):
+        if mp:
+            try:
+                room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+                document = get_shared_room_store().load(room_code) if room_code else None
+                if is_room_host(session, document):
+                    commit_shared_room_state(session, live_room)
+            except Exception:
+                pass
+    return live_room
+
+
 def _timer_expired_pending(session: dict[str, Any], room: dict[str, Any]) -> bool:
     live_room = _resolve_live_room(session, room)
     if live_room.get("status") != "in_progress":
@@ -129,7 +161,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         record_safe_mode_diagnostics(session, timer_fragment_active=True, timer_should_run=True)
     except ImportError:
         pass
-    ensure_live_draft_timer_for_pick(live_room)
+    live_room = sync_live_draft_timer_state(session, live_room)
 
     try:
         fragment = st.fragment
@@ -139,8 +171,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
     @fragment(run_every=1)
     def _timer_tick() -> None:
-        tick_room = _resolve_live_room(session, room)
-        ensure_live_draft_timer_for_pick(tick_room)
+        tick_room = sync_live_draft_timer_state(session, room)
         _render_timer_static(st, session, tick_room, source="fragment_tick")
         if should_fragment_trigger_full_rerun(session, tick_room):
             session[EXPIRED_PICK_PENDING_KEY] = True

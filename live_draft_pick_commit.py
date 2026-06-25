@@ -54,6 +54,17 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
         head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
         meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
         if head_rev > meta_rev and isinstance(shared_doc, dict):
+            try:
+                from live_draft_state import LIVE_DRAFT_ROOM_KEY, should_prefer_runtime_live_room
+
+                runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+                remote_room = shared_doc.get("live_room") if isinstance(shared_doc.get("live_room"), dict) else shared_doc
+                if isinstance(runtime, dict) and isinstance(remote_room, dict) and should_prefer_runtime_live_room(
+                    session, runtime, remote_room
+                ):
+                    return head_rev
+            except ImportError:
+                pass
             publish_shared_room_runtime(session, shared_doc, reason="shared_room_pre_pick_sync")
         return head_rev
     except ImportError:
@@ -173,6 +184,7 @@ def commit_manual_live_pick(
     board_before = len(room.get("draft_board") or [])
     idx_before = int(room.get("current_pick_index") or 0)
     verdict_text = verdict or f"Draft ({source})"
+    expected_revision = sync_expected_revision(session)
 
     ok, msg = live_draft_make_pick(room, player_row, verdict=verdict_text)
     if not ok:
@@ -194,10 +206,6 @@ def commit_manual_live_pick(
             pass
         return result
 
-    expected_revision = sync_expected_revision(session)
-    refreshed = resolve_live_room(session, room)
-    if refreshed is not None:
-        room = refreshed
     persisted = persist_applied_pick(
         session,
         room,

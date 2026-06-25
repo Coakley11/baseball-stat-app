@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
 from draft_lab_resume import (
+    DRAFT_LAB_RESUME_ERROR_KEY,
     apply_draft_lab_resume,
     capture_pending_resume_query,
+    load_completed_room_for_resume,
+    parse_resume_room_id,
     schedule_draft_lab_resume_navigation,
 )
+from draft_room_shared_state import LocalFileSharedRoomStore, shared_room_document
 from suite_deep_links import build_resume_action_url
 from suite_resume_launch import _apply_baseball, apply_suite_resume_launch
 
@@ -28,7 +37,39 @@ class _ST:
         self.query_params = _QP(query or {})
 
 
+def _completed_room(room_id: str = "ROOM-1") -> dict:
+    pool = pd.DataFrame(
+        [
+            {"playerID": "p1", "fullName": "Aaron Judge", "Primary Position": "OF"},
+            {"playerID": "p2", "fullName": "Jose Ramirez", "Primary Position": "3B"},
+        ]
+    )
+    return {
+        "draft_room_id": room_id,
+        "status": "complete",
+        "teams": ["Daniel", "Ariel"],
+        "config": {"picks_per_team": 2, "num_teams": 2, "scoring_type": "5x5 Roto"},
+        "pick_order": [
+            {"Pick": 1, "Round": 1, "Team": "Daniel"},
+            {"Pick": 2, "Round": 1, "Team": "Ariel"},
+        ],
+        "draft_board": [
+            {"playerID": "p1", "fullName": "Aaron Judge", "Fantasy Team": "Daniel", "Pick": 1, "Round": 1},
+            {"playerID": "p2", "fullName": "Jose Ramirez", "Fantasy Team": "Ariel", "Pick": 2, "Round": 1},
+        ],
+        "drafted_player_ids": ["p1", "p2"],
+        "pool": pool,
+    }
+
+
 class TestDraftLabResume(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.store = LocalFileSharedRoomStore(root=Path(self._tmpdir.name))
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
     def test_suite_page_query_schedules_draft_lab_not_historical(self) -> None:
         st = _ST(
             {
@@ -57,22 +98,78 @@ class TestDraftLabResume(unittest.TestCase):
         apply_suite_resume_launch(st, "baseball")
         self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
 
-    def test_rebuild_from_completed_room(self) -> None:
+    def test_rebuild_from_completed_room_in_session(self) -> None:
         st = _ST()
         st.session_state["_suite_resume_draft_room"] = "ROOM-1"
         st.session_state["_suite_pending_draft_lab_resume"] = True
-        st.session_state["live_draft_room"] = {
-            "draft_room_id": "ROOM-1",
-            "status": "complete",
-            "teams": ["Daniel", "Ariel"],
-            "config": {"picks_per_team": 2},
-            "draft_board": [{}, {}, {}, {}],
-            "pool": __import__("pandas").DataFrame(),
-        }
-        with patch("streamlit_app.live_draft_push_analysis_to_session", return_value=True):
+        st.session_state["live_draft_room"] = _completed_room("ROOM-1")
+        with patch("draft_lab_resume._push_analysis_to_session", return_value=True) as push:
             diag = apply_draft_lab_resume(st)
+        push.assert_called_once()
         self.assertTrue(diag.get("rebuild_success"))
         self.assertEqual(diag.get("draft_lab_results_status"), "rebuilt_from_room")
+        self.assertEqual(diag.get("room_load_source"), "session_live_draft_room")
+
+    def test_fresh_session_query_params_load_room_from_shared_store(self) -> None:
+        room = _completed_room("DRAFTID1")
+        doc = shared_room_document(room_code="ABC123", host_participant_id="host", live_room=room)
+        self.store.save(doc)
+        session: dict = {}
+        with patch("draft_room_shared_state.get_shared_room_store", return_value=self.store):
+            loaded, source = load_completed_room_for_resume(session, "DRAFTID1")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(source, "local_file_draft_room_id")
+        self.assertEqual(str(loaded.get("draft_room_id") or "").upper(), "DRAFTID1")
+
+    def test_suite_draft_room_query_rebuilds_results(self) -> None:
+        st = _ST({"suite_page": "Draft Simulation Test Mode", "suite_draft_room": "DRAFTID2"})
+        st.session_state["live_draft_room"] = _completed_room("DRAFTID2")
+        st.session_state["_suite_pending_draft_lab_resume"] = True
+
+        def _push(_room: dict) -> bool:
+            st.session_state["draft_lab_results"] = {"draft": pd.DataFrame([{"Pick": 1}]), "handoff": {"session_id": "DRAFTID2"}}
+            return True
+
+        with patch("draft_lab_resume._push_analysis_to_session", side_effect=_push):
+            diag = apply_draft_lab_resume(st)
+        self.assertTrue(diag.get("rebuild_success"))
+        self.assertTrue(diag.get("draft_lab_results_after"))
+
+    def test_bb_draft_lab_team_key_parses_room_id(self) -> None:
+        st = _ST({"suite_resume": "bb:draft_lab:team:MYROOM99"})
+        self.assertEqual(parse_resume_room_id(st, st.session_state), "MYROOM99")
+
+    def test_invalid_room_shows_restore_error(self) -> None:
+        st = _ST({"suite_draft_room": "MISSING99"})
+        st.session_state["_suite_pending_draft_lab_resume"] = True
+        with patch("draft_room_shared_state.get_shared_room_store", return_value=self.store):
+            diag = apply_draft_lab_resume(st)
+        self.assertEqual(diag.get("draft_lab_results_status"), "room_not_found")
+        err = st.session_state.get(DRAFT_LAB_RESUME_ERROR_KEY)
+        self.assertIsInstance(err, dict)
+        self.assertIn("MISSING99", str(err.get("message") or ""))
+
+    def test_missing_results_rebuilt_when_room_exists(self) -> None:
+        st = _ST()
+        st.session_state["_suite_resume_draft_room"] = "ROOM-9"
+        st.session_state["live_draft_room"] = _completed_room("ROOM-9")
+        self.assertNotIn("draft_lab_results", st.session_state)
+
+        def _push(_room: dict) -> bool:
+            st.session_state["draft_lab_results"] = {"draft": pd.DataFrame([{"Pick": 1}]), "handoff": {"session_id": "ROOM-9"}}
+            return True
+
+        with patch("draft_lab_resume._push_analysis_to_session", side_effect=_push):
+            diag = apply_draft_lab_resume(st)
+        self.assertTrue(diag.get("rebuild_attempted"))
+        self.assertTrue(diag.get("draft_lab_results_after"))
+
+    def test_team_analysis_section_preference(self) -> None:
+        st = _ST({"suite_draft_section": "team_analysis", "suite_draft_room": "ROOM-1"})
+        st.session_state["live_draft_room"] = _completed_room("ROOM-1")
+        with patch("draft_lab_resume._push_analysis_to_session", return_value=True):
+            apply_draft_lab_resume(st)
+        self.assertEqual(st.session_state.get("draft_lab_preferred_tab"), "Team Analysis")
 
     def test_command_center_url_includes_draft_lab_params(self) -> None:
         url = build_resume_action_url(

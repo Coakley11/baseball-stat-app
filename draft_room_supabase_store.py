@@ -277,6 +277,28 @@ class SupabaseSharedRoomStore:
         refreshed = self.load(code)
         return False, refreshed
 
+    def load_by_draft_room_id(self, draft_room_id: str) -> dict[str, Any] | None:
+        """Load shared room document when only internal draft_room_id is known."""
+        rid = str(draft_room_id or "").strip().upper()
+        if not rid:
+            return None
+        try:
+            rows = _request(
+                "GET",
+                _TABLE,
+                params={
+                    "select": "room_code,host_user_id,shared_room_json,revision,status,created_at,updated_at",
+                    "shared_room_json->>draft_room_id": f"eq.{rid}",
+                    "limit": "1",
+                },
+                prefer="return=representation",
+            )
+        except RuntimeError:
+            return None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            return None
+        return row_to_document(rows[0])
+
 
 _SUPABASE_STORE: SupabaseSharedRoomStore | None = None
 
