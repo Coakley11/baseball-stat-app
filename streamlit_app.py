@@ -654,7 +654,10 @@ def _draft_lab_column_kind(col):
         return "count"
     if low.startswith("projected "):
         stat = low.replace("projected ", "", 1)
-        if stat in {"hr", "rbi", "r", "sb", "g", "pa", "ab", "bb", "h", "2b", "3b"}:
+        if stat in {
+            "hr", "rbi", "r", "sb", "g", "pa", "ab", "bb", "h", "2b", "3b",
+            "w", "sv", "k", "ip", "era", "whip",
+        }:
             return "count"
         if stat in {"avg", "obp", "slg", "ops"}:
             return "rate"
@@ -688,6 +691,15 @@ def format_draft_lab_table(df, for_export=False):
         else:  # count
             out[col] = vals.apply(fmt_count_1) if for_export else vals.round(1)
     return out
+
+
+def format_team_projected_totals_table(df, *, for_export: bool = True):
+    """Format team projected totals: 1 decimal for counting stats, 4-decimal dot style for AVG/OPS."""
+    return format_draft_lab_table(df, for_export=for_export)
+
+
+def _is_team_projected_totals_table_key(key: str) -> bool:
+    return str(key) in {"live_draft_team_totals", "draft_lab_team_analysis"}
 
 
 def _draft_lab_styler_format(display_df):
@@ -1997,7 +2009,10 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
     """Render a table quickly and add a CSV export button that opens cleanly in Excel."""
     table_df = df.copy()
     export_df = table_df
-    if str(key).startswith("draft_lab"):
+    if _is_team_projected_totals_table_key(key):
+        table_df = format_team_projected_totals_table(table_df, for_export=True)
+        export_df = format_team_projected_totals_table(df.copy(), for_export=True)
+    elif str(key).startswith("draft_lab"):
         table_df = format_draft_lab_table(table_df, for_export=False)
         export_df = format_draft_lab_table(df.copy(), for_export=True)
     if len(table_df) > display_rows:
@@ -9756,13 +9771,16 @@ def live_draft_export_frames(room):
     avail_show = available.copy()
     if "fullName" in avail_show.columns:
         avail_show = avail_show.rename(columns={"fullName": "Player"})
+    totals_df = live_draft_team_totals(room)
     return {
         "draft_configuration": config_rows,
         "roster_settings": slot_cfg,
         "draft_board": live_draft_build_board_df(room),
         "team_rosters": live_draft_rosters_df(room),
         "available_players": avail_show,
-        "team_projected_totals": live_draft_team_totals(room),
+        "team_projected_totals": (
+            format_team_projected_totals_table(totals_df, for_export=True) if not totals_df.empty else totals_df
+        ),
     }
 
 
@@ -17373,7 +17391,7 @@ if active_page == "Draft Simulation Test Mode":
             export_frames = build_draft_lab_export_frames(
                 format_draft_lab_table(draft_board.copy(), for_export=True),
                 format_draft_lab_table(roster_view.copy(), for_export=True),
-                format_draft_lab_table(lab_team_summary.copy(), for_export=True) if not is_dataframe_empty(lab_team_summary) else lab_team_summary,
+                format_team_projected_totals_table(lab_team_summary.copy(), for_export=True) if not is_dataframe_empty(lab_team_summary) else lab_team_summary,
                 format_draft_lab_table(lab_strengths.copy(), for_export=True) if not is_dataframe_empty(lab_strengths) else lab_strengths,
                 format_draft_lab_table(lab_pick_analysis.copy(), for_export=True) if not is_dataframe_empty(lab_pick_analysis) else lab_pick_analysis,
                 format_draft_lab_table(lab_gaps.copy(), for_export=True) if not is_dataframe_empty(lab_gaps) else lab_gaps,
@@ -18406,11 +18424,10 @@ if active_page == "Live Draft Room":
         if not totals_df.empty:
             st.subheader("Team Projected Totals")
             render_output_table(
-                format_draft_lab_table(clean_ui_columns(totals_df)),
+                clean_ui_columns(totals_df),
                 key="live_draft_team_totals",
                 file_name="live_draft_team_totals.csv",
                 display_rows=20,
-                style_cols=["Total Projected Fantasy Value"],
             )
 
         if picks_done >= total_picks and total_picks > 0:
