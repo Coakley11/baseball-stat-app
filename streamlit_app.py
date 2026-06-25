@@ -17230,6 +17230,12 @@ if active_page == "Draft Simulation Test Mode":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    try:
+        from baseball_draft_activity import render_draft_activity_write_debug
+
+        render_draft_activity_write_debug(st)
+    except ImportError:
+        pass
     st.markdown(
         """
         <div class="section-card">

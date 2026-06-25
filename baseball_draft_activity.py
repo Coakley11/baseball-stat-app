@@ -126,10 +126,12 @@ def _record_draft_event(
     resume_key: str,
     resume_title: str,
     resume_subtitle: str = "",
-) -> None:
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    diag: dict[str, Any] = {}
     try:
-        from baseball_activity import last_activity_trace
         from suite_activity_client import last_record_trace, record_activity
+        from suite_activity_namespace import build_activity_write_diagnostics
 
         record_activity(
             "baseball",
@@ -141,11 +143,34 @@ def _record_draft_event(
             resume_title=resume_title,
             resume_subtitle=resume_subtitle,
         )
-        trace = last_record_trace() or last_activity_trace()
+        trace = last_record_trace()
         if trace:
             metrics.setdefault("_activity_recorded", bool(trace.get("recorded")))
-    except Exception:
-        pass
+        diag = build_activity_write_diagnostics(
+            event_type=event,
+            resume_title=resume_title,
+            resume_key=resume_key,
+            page=page,
+            metrics=metrics,
+        )
+    except Exception as exc:
+        try:
+            from suite_activity_namespace import build_activity_write_diagnostics
+
+            diag = build_activity_write_diagnostics(
+                event_type=event,
+                resume_title=resume_title,
+                resume_key=resume_key,
+                page=page,
+                metrics=metrics,
+            )
+            diag["write_success"] = False
+            diag["write_error"] = str(exc)
+        except ImportError:
+            diag = {"write_success": False, "write_error": str(exc)}
+    if isinstance(session, dict):
+        session["_draft_activity_write_debug"] = diag
+    return diag
 
 
 def log_live_draft_room_created(room: dict[str, Any], *, session: dict[str, Any] | None = None) -> None:
@@ -169,6 +194,7 @@ def log_live_draft_room_created(room: dict[str, Any], *, session: dict[str, Any]
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
         resume_title="Open Live Draft Room",
         resume_subtitle=subtitle,
+        session=session,
     )
 
 
@@ -197,6 +223,7 @@ def log_live_draft_pick(room: dict[str, Any], *, session: dict[str, Any] | None 
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
         resume_title="Continue Live Draft Room",
         resume_subtitle=matchup or f"Pick {pick_no}",
+        session=session,
     )
 
 
@@ -220,6 +247,7 @@ def log_completed_live_draft(room: dict[str, Any], *, session: dict[str, Any] | 
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
         resume_title="Review completed draft",
         resume_subtitle=matchup or "Analyze or export results",
+        session=session,
     )
 
 
@@ -266,6 +294,7 @@ def log_draft_analysis_created(
         resume_key=resume_key,
         resume_title=resume_title,
         resume_subtitle=matchup or "Draft Simulation Test Mode",
+        session=session,
     )
 
 
@@ -301,6 +330,7 @@ def log_draft_analysis_attempted(
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
         resume_title="Review completed draft",
         resume_subtitle=matchup or "Retry Analyze Completed Draft",
+        session=session,
     )
     try:
         log_completed_live_draft(room or {}, session=session)
@@ -325,3 +355,25 @@ def after_live_draft_pick_committed(session: dict[str, Any], room: dict[str, Any
         status = str(room.get("status") or "").strip().lower()
         if status == "complete":
             log_completed_live_draft(room, session=session)
+
+
+def render_draft_activity_write_debug(st: Any) -> None:
+    """Temporary dev panel: last draft activity write attempt (after Analyze Completed Draft)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if not can_show_developer_tools(st=st):
+            return
+    except ImportError:
+        return
+    diag = st.session_state.get("_draft_activity_write_debug")
+    if not isinstance(diag, dict) or not diag:
+        return
+    try:
+        from suite_deploy_marker import GIT_COMMIT_SHORT, format_build_label
+    except ImportError:
+        GIT_COMMIT_SHORT = "unknown"
+        format_build_label = lambda: "unknown"  # noqa: E731
+    with st.expander("Dev: Draft activity write (Command Center)", expanded=True):
+        st.caption(f"Build `{format_build_label()}` · commit `{GIT_COMMIT_SHORT}` (need ad97004+)")
+        st.json(diag)

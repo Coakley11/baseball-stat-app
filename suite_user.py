@@ -15,7 +15,17 @@ from suite_storage_config import get_cloud_config, reset_cloud_config_cache
 
 
 def get_external_user_id() -> str:
-    """Stable account key from env or [suite_activity] secrets."""
+    """Stable account key from env or [suite_activity] secrets; prefers signed-in auth when available."""
+    try:
+        import streamlit as st  # noqa: WPS433
+        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
+
+        if is_auth_enabled() and is_authenticated(st.session_state):
+            ext = str(resolve_auth_external_id(st.session_state) or "").strip()
+            if ext:
+                return ext
+    except Exception:
+        pass
     env_id = os.environ.get("SUITE_USER_ID", "").strip()
     if env_id:
         return env_id
