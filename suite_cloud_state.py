@@ -43,7 +43,15 @@ _RESUME_QUERY_KEYS: dict[str, tuple[str, ...]] = {
         "suite_ami_insight",
         "suite_ai_question_id",
     ),
-    "baseball": ("suite_resume", "suite_page", "suite_trend_player", "suite_player_a", "suite_player_b"),
+    "baseball": (
+        "suite_resume",
+        "suite_page",
+        "suite_trend_player",
+        "suite_player_a",
+        "suite_player_b",
+        "suite_draft_room",
+        "suite_draft_section",
+    ),
     "investment": ("suite_page",),
     "nba": ("suite_resume", "suite_page", "suite_team"),
     "future_lens": (
@@ -81,6 +89,12 @@ _WORKSPACE_RESTORE_BLOCKING_QUERY_KEYS: dict[str, tuple[str, ...]] = {
         "suite_page",
         "suite_ami_insight",
         "suite_ai_question_id",
+    ),
+    "baseball": (
+        "suite_resume",
+        "suite_page",
+        "suite_draft_room",
+        "suite_draft_section",
     ),
 }
 

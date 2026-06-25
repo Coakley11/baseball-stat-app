@@ -64,18 +64,29 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
         pass
 
     flag = f"_suite_resume_launch_{app_key}"
-    if st.session_state.get(flag):
-        return False
-
-    resume = _qp_get(st, "suite_resume")
-    page = _qp_get(st, "suite_page")
-    ami_insight = _qp_get(st, "suite_ami_insight")
-    if not resume and not page and not ami_insight:
-        return False
-
     key = str(app_key or "").strip()
     if key == "math":
         key = "applied_intelligence"
+    resume = _qp_get(st, "suite_resume")
+    page = _qp_get(st, "suite_page")
+    ami_insight = _qp_get(st, "suite_ami_insight")
+    draft_room = _qp_get(st, "suite_draft_room")
+    if key == "baseball":
+        try:
+            from draft_lab_resume import pending_resume_query
+
+            pending = pending_resume_query(st)
+            resume = resume or str(pending.get("suite_resume") or "")
+            page = page or str(pending.get("suite_page") or "")
+            draft_room = draft_room or str(pending.get("suite_draft_room") or "")
+        except ImportError:
+            pass
+    live_resume_qp = bool(resume or page or ami_insight or draft_room)
+    if st.session_state.get(flag) and not live_resume_qp:
+        return False
+
+    if not live_resume_qp:
+        return False
 
     if key == "music":
         _apply_music(st, resume, page)
@@ -186,6 +197,12 @@ def _apply_music(st: Any, resume: str, page: str) -> None:
 
 
 def _apply_baseball(st: Any, resume: str, page: str) -> None:
+    try:
+        from draft_lab_resume import capture_pending_resume_query, schedule_draft_lab_resume_navigation
+
+        capture_pending_resume_query(st, "baseball")
+    except ImportError:
+        pass
     pa = _qp_get(st, "suite_player_a")
     pb = _qp_get(st, "suite_player_b")
     if not pa and resume.startswith("compare:"):
@@ -239,14 +256,18 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
             st.session_state["trend_players_multi"] = labels[:3]
     if target_page:
         try:
-            from applied_math_return_insight import _should_apply_ami_return_navigation
+            from draft_lab_resume import schedule_draft_lab_resume_navigation
 
-            if _should_apply_ami_return_navigation(st, "baseball", target_page):
-                st.session_state["_navigate_to_page"] = target_page
-                st.session_state["ami_return_forced_page"] = target_page
-                st.session_state["active_page_source"] = "suite_resume_launch"
-        except Exception:
+            schedule_draft_lab_resume_navigation(
+                st,
+                page=target_page,
+                room_id=str(st.session_state.get("_suite_resume_draft_room") or ""),
+                section=str(st.session_state.get("_suite_resume_draft_section") or ""),
+            )
+        except ImportError:
             st.session_state["_navigate_to_page"] = target_page
+            st.session_state["_suite_page_user_nav"] = True
+            st.session_state["_skip_page_restore_for"] = target_page
 
 
 def _apply_nba(st: Any, resume: str, page: str) -> None:

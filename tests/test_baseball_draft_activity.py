@@ -92,23 +92,27 @@ class TestBaseballDraftActivity(unittest.TestCase):
 
     def test_resume_launch_maps_draft_lab_page(self) -> None:
         class _QP:
+            def __init__(self, mapping: dict[str, str]):
+                self._mapping = mapping
+
             def get(self, key):
-                mapping = {
-                    "suite_resume": "bb:draft_lab:ROOM-ABC123",
-                    "suite_page": "Draft Simulation Test Mode",
-                    "suite_draft_room": "ROOM-ABC123",
-                }
-                return mapping.get(key, "")
+                return self._mapping.get(key, "")
 
         class _ST:
-            session_state: dict = {}
-
-            query_params = _QP()
+            def __init__(self):
+                self.session_state: dict = {}
+                self.query_params = _QP(
+                    {
+                        "suite_resume": "bb:draft_lab:team:ROOM-ABC123",
+                        "suite_page": "Draft Simulation Test Mode",
+                        "suite_draft_room": "ROOM-ABC123",
+                    }
+                )
 
         st = _ST()
-        _apply_baseball(st, "bb:draft_lab:ROOM-ABC123", "Draft Simulation Test Mode")
-        self.assertEqual(st.session_state["_navigate_to_page"], "Draft Simulation Test Mode")
-        self.assertEqual(st.session_state["_suite_resume_draft_room"], "ROOM-ABC123")
+        _apply_baseball(st, "bb:draft_lab:team:ROOM-ABC123", "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("_suite_resume_draft_room"), "ROOM-ABC123")
+        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Simulation Test Mode")
 
 
     @patch("suite_activity_client.record_activity")

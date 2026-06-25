@@ -12641,6 +12641,13 @@ except Exception:
 _consume_scheduled_navigation()
 
 try:
+    from draft_lab_resume import apply_draft_lab_resume
+
+    apply_draft_lab_resume(st)
+except ImportError:
+    pass
+
+try:
     from suite_resume_launch import finalize_ami_return_restore
 
     finalize_ami_return_restore(st, "baseball")
@@ -17232,8 +17239,17 @@ if active_page == "Draft Simulation Test Mode":
     apply_pending_page_transfer(active_page)
     try:
         from baseball_draft_activity import render_draft_activity_write_debug
+        from draft_lab_resume import draft_lab_resume_diagnostics
 
         render_draft_activity_write_debug(st)
+        try:
+            from suite_workspace import can_show_developer_tools
+
+            if can_show_developer_tools(st=st):
+                with st.expander("Dev: Draft lab resume deep link", expanded=False):
+                    st.json(draft_lab_resume_diagnostics(st))
+        except ImportError:
+            pass
     except ImportError:
         pass
     st.markdown(

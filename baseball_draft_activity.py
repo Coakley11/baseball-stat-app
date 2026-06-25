@@ -277,15 +277,9 @@ def log_draft_analysis_created(
         activity_type="draft_analysis_created",
         feature="Draft Simulation Test Mode",
     )
-    if section:
-        metrics["draft_section"] = section
-    resume_key = f"bb:draft_lab:team:{rid}" if section == "team_analysis" and rid else (
-        f"bb:draft_lab:{rid}" if rid else "bb:draft_lab"
-    )
-    if section == "team_analysis":
-        resume_title = "Review Team Analysis"
-    else:
-        resume_title = "Continue Draft Analysis"
+    resume_key = f"bb:draft_lab:team:{rid}" if rid else "bb:draft_lab"
+    metrics["draft_section"] = "team_analysis"
+    resume_title = "Continue Draft Analysis"
     _record_draft_event(
         "draft_analysis_created",
         page="Draft Simulation Test Mode",
