@@ -285,8 +285,8 @@ def commit_manual_live_pick(
     return persisted
 
 
-def run_autopick_selection(room: dict[str, Any]) -> tuple[bool, str]:
+def run_autopick_selection(room: dict[str, Any], session: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Select and apply auto-pick to room (make_pick only — caller persists)."""
     from live_draft_autopick import live_draft_auto_pick
 
-    return live_draft_auto_pick(room)
+    return live_draft_auto_pick(room, session=session)

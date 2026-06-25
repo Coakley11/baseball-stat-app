@@ -681,6 +681,14 @@ def render_live_draft_rec_cards(
 
     turn_enabled = bool(gate.get("draft_enabled"))
     draft_complete = bool(gate.get("draft_complete"))
+    paused = str(room.get("status") or "") == "paused"
+    submitting = False
+    try:
+        from live_draft_pick_timer import is_pick_submitting
+
+        submitting = is_pick_submitting(session)
+    except ImportError:
+        pass
 
     for i, (_, r) in enumerate(rows, start=1):
         name = str(r.get("fullName", "Player") or "Player")
@@ -693,6 +701,7 @@ def render_live_draft_rec_cards(
         explanation = _rec_plain_explanation(r, pos)
         surv_pct = f"{int(round(float(surv) * 100))}% avail next" if pd.notna(surv) else "—"
         player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
+        stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
 
         player_available = True
         avail_reason = ""
@@ -703,96 +712,91 @@ def render_live_draft_rec_cards(
         except ImportError:
             pass
 
-        draft_enabled = turn_enabled and player_available and not draft_complete
+        draft_enabled = turn_enabled and player_available and not draft_complete and not paused and not submitting
         disable_reason = ""
-        if draft_complete:
+        if submitting:
+            disable_reason = "Submitting pick…"
+        elif paused:
+            disable_reason = "Draft is paused — resume to pick."
+        elif draft_complete:
             disable_reason = "Draft is complete."
         elif not turn_enabled:
             disable_reason = str(gate.get("draft_button_disable_reason") or "Not your turn.")
         elif not player_available:
             disable_reason = avail_reason or f"{name} is not available."
 
-        info_col, btn_col, detail_col = st.columns([1, 1, 1]) if layout == "stacked" else st.columns([6.5, 2.2, 1.3])
-        with info_col:
-            if layout == "stacked":
-                st.markdown(
-                    f'<div class="ld-rec-stacked">'
-                    f'<div class="ld-rec-name">{name}</div>'
-                    f'<div class="ld-rec-line">{pos} · {tier_lbl}</div>'
-                    f'<div class="ld-rec-line">Fantasy Edge {edge_txt} · {surv_pct}</div>'
-                    f'<div class="ld-rec-line"><strong>{action}</strong></div>'
-                    f'<div class="ld-rec-line">Reason: {explanation}</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<div class="ld-rec-compact-row">'
-                    f'<div class="ld-rec-name">{name}</div>'
-                    f'<div class="ld-rec-line">{pos} · {tier_lbl}</div>'
-                    f'<div class="ld-rec-line">Fantasy Edge {edge_txt} · {surv_pct} · {action}</div>'
-                    f'<div class="ld-rec-line">Reason: {explanation}</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-        with btn_col:
-            btn_label = f"Draft {name.split()[-1]}" if name else "Draft Player"
-            btn_key = f"rec_card_draft_{pick_idx}_{player_id or i}_{name[:24]}"
+        with st.container(border=True):
+            st.markdown(f"**{name}**")
+            st.caption(f"{pos} · {tier_lbl}")
+            st.caption(f"Fantasy Edge {edge_txt} · {surv_pct} · {action}")
+            st.caption(f"Reason: {explanation}")
+            btn_col, detail_col = st.columns([2, 1])
+            with btn_col:
+                btn_label = f"Draft {name.split()[-1]}" if name else "Draft Player"
+                btn_key = f"rec_card_draft_{pick_idx}_{stable_key}"
 
-            def _on_rec_draft_click(
-                _session: dict[str, Any] = session,
-                _name: str = name,
-                _pid: str = player_id,
-            ) -> None:
-                record_rec_card_diagnostics(_session, rec_card_draft_click_received=True, rec_card_player=_name)
-                try:
-                    from draft_ui import queue_manual_draft_pick
-
-                    queue_manual_draft_pick(
+                def _on_rec_draft_click(
+                    _session: dict[str, Any] = session,
+                    _name: str = name,
+                    _pid: str = player_id,
+                    _stable: str = stable_key,
+                ) -> None:
+                    record_rec_card_diagnostics(
                         _session,
-                        player_name=_name,
-                        player_id=_pid or None,
-                        candidate_source="rec_card",
-                        pool_source="recommendation_card",
+                        rec_card_draft_click_received=True,
+                        rec_card_player=_name,
+                        rec_card_player_id=_pid or None,
+                        rec_card_stable_key=_stable,
                     )
-                except ImportError:
-                    pass
+                    try:
+                        from draft_ui import queue_manual_draft_pick
 
-            if draft_enabled:
-                st.button(
-                    btn_label,
-                    key=btn_key,
-                    type="primary",
-                    use_container_width=True,
-                    on_click=_on_rec_draft_click,
-                )
-            else:
-                st.button(
-                    btn_label,
-                    key=btn_key,
-                    disabled=True,
-                    use_container_width=True,
-                    help=disable_reason[:200],
-                )
-        with detail_col:
-            with st.expander("Details", expanded=False):
-                detail_cols = [
-                    c
-                    for c in (
-                        "Model Rank",
-                        "Market Rank",
-                        "Sleeper Score",
-                        "Positional Fit",
-                        "Scarcity Score",
-                        "Draft Fit Score",
-                        "Decision Score",
-                        "Survival Label",
-                        "Trend Signal",
-                        "Expected Fantasy Value",
+                        queue_manual_draft_pick(
+                            _session,
+                            player_name=_name,
+                            player_id=_pid or None,
+                            candidate_source="rec_card",
+                            pool_source="recommendation_card",
+                            widget_key="",
+                        )
+                    except ImportError:
+                        pass
+
+                if draft_enabled:
+                    st.button(
+                        btn_label,
+                        key=btn_key,
+                        type="primary",
+                        use_container_width=True,
+                        on_click=_on_rec_draft_click,
                     )
-                    if c in rec_df.columns
-                ]
-                for col in detail_cols:
-                    val = r.get(col)
-                    if pd.notna(val):
-                        st.text(f"{col}: {val}")
+                else:
+                    st.button(
+                        btn_label,
+                        key=btn_key,
+                        disabled=True,
+                        use_container_width=True,
+                        help=disable_reason[:200],
+                    )
+            with detail_col:
+                with st.expander("Details", expanded=False):
+                    detail_cols = [
+                        c
+                        for c in (
+                            "Model Rank",
+                            "Market Rank",
+                            "Sleeper Score",
+                            "Positional Fit",
+                            "Scarcity Score",
+                            "Draft Fit Score",
+                            "Decision Score",
+                            "Survival Label",
+                            "Trend Signal",
+                            "Expected Fantasy Value",
+                        )
+                        if c in rec_df.columns
+                    ]
+                    for col in detail_cols:
+                        val = r.get(col)
+                        if pd.notna(val):
+                            st.text(f"{col}: {val}")

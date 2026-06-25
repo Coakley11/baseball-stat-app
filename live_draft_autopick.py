@@ -8,9 +8,9 @@ import pandas as pd
 
 from live_draft_pick_engine import live_draft_make_pick
 from live_draft_pick_scoring import (
-    score_available_for_rule,
     live_draft_pick_verdict,
     live_draft_target_counts,
+    score_available_for_rule,
 )
 from live_draft_state import live_draft_get_available
 from live_draft_timer_logic import live_draft_current_slot
@@ -33,8 +33,15 @@ def _total_expected_picks(room: dict[str, Any]) -> int:
     return 0
 
 
-def live_draft_auto_pick(room: dict[str, Any]) -> tuple[bool, str]:
-    """Select and apply the best auto-pick for the current on-clock slot."""
+def _candidate_names(scored: pd.DataFrame, limit: int = 8) -> list[str]:
+    col = "fullName" if "fullName" in scored.columns else "Player"
+    if col not in scored.columns:
+        return []
+    return [str(x) for x in scored.head(limit)[col].astype(str).tolist() if str(x).strip()]
+
+
+def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Select and apply auto-pick — always the #1 balanced recommendation for on-clock team."""
     slot = live_draft_current_slot(room)
     if slot is None:
         total = _total_expected_picks(room)
@@ -42,6 +49,9 @@ def live_draft_auto_pick(room: dict[str, Any]) -> tuple[bool, str]:
         if total > 0 and board < total:
             return False, "Draft pick index out of sync — use Manual Draft to recover."
         return False, "Draft is already complete."
+
+    if str(room.get("status") or "") == "paused":
+        return False, "Draft is paused — resume before auto-picking."
 
     available = live_draft_get_available(room)
     if available.empty:
@@ -56,8 +66,49 @@ def live_draft_auto_pick(room: dict[str, Any]) -> tuple[bool, str]:
     cfg = dict(room.get("config", {}))
     cfg["current_pick"] = int(slot.get("Pick", 1))
     target_counts = live_draft_target_counts(cfg)
-    rule = cfg.get("auto_pick_rule", "balanced recommendation")
-    scored, gaps = score_available_for_rule(available, roster_df, rule, target_counts, config=cfg)
-    chosen = scored.iloc[0]
-    verdict = live_draft_pick_verdict(chosen, rule, gaps)
-    return live_draft_make_pick(room, chosen.to_dict(), verdict=verdict)
+    configured_rule = str(cfg.get("auto_pick_rule", "balanced recommendation") or "balanced recommendation")
+
+    rec_scored, gaps = score_available_for_rule(
+        available, roster_df, "balanced recommendation", target_counts, config=cfg
+    )
+    if rec_scored.empty:
+        return False, "No eligible recommendation for auto-pick."
+
+    chosen = rec_scored.iloc[0]
+    top_rec_name = str(chosen.get("fullName") or chosen.get("Player") or "").strip()
+    skip_reason = ""
+    rule_pick_name = ""
+
+    if configured_rule.strip().lower() != "balanced recommendation":
+        rule_scored, _ = score_available_for_rule(
+            available, roster_df, configured_rule, target_counts, config=cfg
+        )
+        if not rule_scored.empty:
+            rule_pick_name = str(rule_scored.iloc[0].get("fullName") or rule_scored.iloc[0].get("Player") or "").strip()
+            if rule_pick_name and rule_pick_name != top_rec_name:
+                skip_reason = (
+                    f"Configured rule '{configured_rule}' would pick {rule_pick_name}; "
+                    f"using top recommendation {top_rec_name}."
+                )
+
+    verdict = live_draft_pick_verdict(chosen, "balanced recommendation", gaps)
+    ok, msg = live_draft_make_pick(room, chosen.to_dict(), verdict=verdict)
+
+    if session is not None:
+        try:
+            from live_draft_expired_pick import record_autopick_diagnostics
+
+            record_autopick_diagnostics(
+                session,
+                auto_pick_candidate_list=_candidate_names(rec_scored),
+                top_recommendation_player=top_rec_name,
+                selected_auto_pick_player=top_rec_name if ok else None,
+                selected_auto_pick_reason=verdict if ok else msg,
+                auto_pick_rule_configured=configured_rule,
+                top_recommendation_skipped_reason=skip_reason or None,
+                configured_rule_would_pick=rule_pick_name or None,
+            )
+        except ImportError:
+            pass
+
+    return ok, msg

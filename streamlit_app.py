@@ -9626,10 +9626,11 @@ def live_draft_make_pick(room, player_row, verdict="Manual pick"):
     return _make_pick(room, player_row, verdict=verdict)
 
 
-def live_draft_auto_pick(room):
+def live_draft_auto_pick(room, session=None):
     from live_draft_autopick import live_draft_auto_pick as _auto_pick
 
-    return _auto_pick(room)
+    sess = session if session is not None else st.session_state
+    return _auto_pick(room, session=sess)
 
 
 def live_draft_build_board_df(room):
@@ -18752,6 +18753,12 @@ if active_page == "Live Draft Room":
                 room["status"] = "paused"
                 live_draft_clear_timer(room)
                 _persist_live_draft_room(room, reason="pause_draft")
+                try:
+                    from live_draft_safe_mode import request_live_draft_rerun
+
+                    request_live_draft_rerun(st, st.session_state, "pause_draft", room=room)
+                except ImportError:
+                    st.rerun()
         with ctrl2:
             if st.button("▶ Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume", type="primary"):
                 from live_draft_timer_logic import live_draft_resume_timer
@@ -18760,6 +18767,12 @@ if active_page == "Live Draft Room":
                 pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
                 live_draft_resume_timer(room, pause_left)
                 _persist_live_draft_room(room, reason="resume_draft")
+                try:
+                    from live_draft_safe_mode import request_live_draft_rerun
+
+                    request_live_draft_rerun(st, st.session_state, "resume_draft", room=room)
+                except ImportError:
+                    st.rerun()
         with ctrl3:
             if st.button("↻ Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
                 live_draft_reset_timer(room)
@@ -18768,7 +18781,7 @@ if active_page == "Live Draft Room":
             if st.button("⚡ Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
                 if room.get("status") == "paused":
                     room["status"] = "in_progress"
-                ok, msg = live_draft_auto_pick(room)
+                ok, msg = live_draft_auto_pick(room, st.session_state)
                 if ok:
                     st.session_state.pop("_live_draft_rec_cache", None)
                     st.success(msg)

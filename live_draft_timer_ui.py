@@ -294,6 +294,24 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int, session: 
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available."""
     live_room = _resolve_live_room(session, room)
+    if str(live_room.get("status") or "") == "paused":
+        remaining = live_draft_display_seconds(live_room)
+        st.markdown(f"**Draft paused** · {remaining}s on clock")
+        record_timer_diagnostics(session, live_room, source="paused")
+        return
+    try:
+        from live_draft_pick_timer import frozen_deadline, is_pick_submitting, display_seconds_with_freeze
+
+        if is_pick_submitting(session):
+            remaining = display_seconds_with_freeze(session, live_room)
+            fdl = frozen_deadline(session, live_room)
+            pick_idx = int(live_room.get("current_pick_index") or 0)
+            if fdl is not None:
+                _render_js_countdown(st, float(fdl), pick_index=pick_idx, session=session)
+            st.caption(f"Submitting pick… ({remaining}s frozen)")
+            return
+    except ImportError:
+        pass
     try:
         from live_draft_safe_mode import record_safe_mode_diagnostics, timer_should_run
 
@@ -352,7 +370,14 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
 
 def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any], *, source: str = "static") -> None:
-    remaining = live_draft_display_seconds(room)
+    try:
+        from live_draft_pick_timer import display_seconds_with_freeze, is_pick_submitting
+
+        remaining = display_seconds_with_freeze(session, room)
+        submitting = is_pick_submitting(session)
+    except ImportError:
+        remaining = live_draft_display_seconds(room)
+        submitting = False
     record_timer_diagnostics(session, room, source=source)
     try:
         from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
@@ -361,4 +386,9 @@ def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any],
     except ImportError:
         pass
     if source != "fragment_tick":
-        st.markdown(f"**Time on clock:** {remaining}s")
+        if str(room.get("status") or "") == "paused":
+            st.markdown(f"**Draft paused** · {remaining}s on clock")
+        elif submitting:
+            st.markdown(f"**Submitting pick…** · {remaining}s frozen")
+        else:
+            st.markdown(f"**Time on clock:** {remaining}s")

@@ -71,30 +71,57 @@ def queue_manual_draft_pick(
     except ImportError:
         pass
 
+    source = str(candidate_source or "")
+    from_rec_card = source.startswith("rec_card")
+
     snap = session.get(MANUAL_CANDIDATE_SNAPSHOT_KEY)
     if not isinstance(snap, dict):
         snap = {}
 
-    wkey = str(widget_key or snap.get("widget_key") or "").strip()
-    name = ""
-    if wkey:
-        name = str(session.get(wkey) or "").strip()
-    if not name:
-        name = str(player_name or snap.get("name") or "").strip()
+    if from_rec_card:
+        wkey = ""
+        selected_id = str(player_id or "").strip()
+        name = str(player_name or "").strip()
+        if selected_id and not name:
+            try:
+                from draft_actions import _find_live_player_by_id
 
-    selected_id = str(player_id or "").strip()
-    if name and not selected_id:
-        try:
-            from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
+                row = _find_live_player_by_id(session, selected_id)
+                if row:
+                    name = str(row.get("fullName") or row.get("Player") or "").strip()
+            except ImportError:
+                pass
+        if name and not selected_id:
+            try:
+                from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
 
-            room = session.get(LIVE_DRAFT_ROOM_KEY)
-            if isinstance(room, dict):
-                available = live_draft_get_available(room)
-                selected_id = _player_id_from_available(available, name)
-        except Exception:
-            pass
-    if name and not selected_id and str(snap.get("name") or "").strip() == name:
-        selected_id = str(snap.get("id") or "").strip()
+                room = session.get(LIVE_DRAFT_ROOM_KEY)
+                if isinstance(room, dict):
+                    available = live_draft_get_available(room)
+                    selected_id = _player_id_from_available(available, name)
+            except Exception:
+                pass
+    else:
+        wkey = str(widget_key or snap.get("widget_key") or "").strip()
+        name = ""
+        if wkey:
+            name = str(session.get(wkey) or "").strip()
+        if not name:
+            name = str(player_name or snap.get("name") or "").strip()
+
+        selected_id = str(player_id or "").strip()
+        if name and not selected_id:
+            try:
+                from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
+
+                room = session.get(LIVE_DRAFT_ROOM_KEY)
+                if isinstance(room, dict):
+                    available = live_draft_get_available(room)
+                    selected_id = _player_id_from_available(available, name)
+            except Exception:
+                pass
+        if name and not selected_id and str(snap.get("name") or "").strip() == name:
+            selected_id = str(snap.get("id") or "").strip()
 
     still_available = False
     if name:
@@ -129,8 +156,19 @@ def queue_manual_draft_pick(
         "player_still_available_at_click": still_available,
         "widget_key": wkey,
         "queued_at": time.time(),
+        "rec_card_player_id": selected_id if from_rec_card else "",
+        "rec_card_player_name": name if from_rec_card else "",
     }
     session[PENDING_MANUAL_PICK_KEY] = pending
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+        from live_draft_pick_timer import freeze_timer_for_pick_submit
+
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if isinstance(room, dict):
+            freeze_timer_for_pick_submit(session, room)
+    except ImportError:
+        pass
     if str(candidate_source or "").startswith("rec_card"):
         try:
             from live_draft_room_ui import record_rec_card_diagnostics
@@ -199,6 +237,12 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
 
     player_name = str(pending.get("player_name") or "").strip()
     if not player_name:
+        try:
+            from live_draft_pick_timer import clear_pick_submit_state
+
+            clear_pick_submit_state(session)
+        except ImportError:
+            pass
         return {
             "processed": True,
             "ok": False,
@@ -206,6 +250,45 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
             "message": "",
             "error": "Select a player first.",
         }
+
+    if str(pending.get("candidate_source") or "").startswith("rec_card"):
+        card_name = str(pending.get("rec_card_player_name") or player_name).strip()
+        pid = str(pending.get("selected_player_id") or pending.get("rec_card_player_id") or "").strip()
+        try:
+            from draft_actions import _find_live_player_by_id
+
+            if pid:
+                row = _find_live_player_by_id(session, pid)
+                if not row:
+                    from live_draft_pick_timer import clear_pick_submit_state
+
+                    clear_pick_submit_state(session)
+                    return {
+                        "processed": True,
+                        "ok": False,
+                        "should_rerun": False,
+                        "message": "",
+                        "error": f"Recommended player is no longer available.",
+                    }
+                resolved = str(row.get("fullName") or row.get("Player") or "").strip()
+                if resolved:
+                    player_name = resolved
+        except ImportError:
+            pass
+        if card_name and player_name.lower() != card_name.lower():
+            try:
+                from live_draft_pick_timer import clear_pick_submit_state
+
+                clear_pick_submit_state(session)
+            except ImportError:
+                pass
+            return {
+                "processed": True,
+                "ok": False,
+                "should_rerun": False,
+                "message": "",
+                "error": "Recommendation card player mismatch — pick not submitted.",
+            }
 
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_live_draft_locally_dirty, mark_live_draft_local_edit
@@ -221,14 +304,6 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         idx_before = 0
 
     session["_live_draft_manual_pick_in_flight"] = True
-    if str(pending.get("candidate_source") or "").startswith("rec_card"):
-        session["_rec_card_commit_in_flight"] = True
-        try:
-            from live_draft_room_ui import record_rec_card_diagnostics
-
-            record_rec_card_diagnostics(session, rec_card_commit_started=True, rec_card_player=player_name)
-        except ImportError:
-            pass
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
@@ -249,6 +324,19 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         )
     except ImportError:
         pass
+    if str(pending.get("candidate_source") or "").startswith("rec_card"):
+        session["_rec_card_commit_in_flight"] = True
+        try:
+            from live_draft_room_ui import record_rec_card_diagnostics
+
+            record_rec_card_diagnostics(
+                session,
+                rec_card_commit_started=True,
+                rec_card_player=player_name,
+                rec_card_player_id=pending.get("selected_player_id"),
+            )
+        except ImportError:
+            pass
 
     result = draft_player(session, player_name, source="live_draft_room", st_obj=st)
     ok = bool(result.get("ok"))
@@ -276,6 +364,15 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
     session.pop("_live_draft_manual_pick_in_flight", None)
     session.pop("_live_draft_rec_cache", None)
     session.pop("_rec_card_commit_in_flight", None)
+    try:
+        from live_draft_pick_timer import clear_pick_submit_state
+
+        if ok:
+            clear_pick_submit_state(session)
+        else:
+            clear_pick_submit_state(session)
+    except ImportError:
+        pass
 
     should_rerun = False
     if ok:

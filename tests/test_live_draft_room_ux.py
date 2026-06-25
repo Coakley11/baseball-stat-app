@@ -141,6 +141,11 @@ class TimerCountdownTests(unittest.TestCase):
 class CompactRecCardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.st = mock.MagicMock()
+        self.st.container.return_value.__enter__ = mock.Mock(return_value=mock.MagicMock())
+        self.st.container.return_value.__exit__ = mock.Mock(return_value=False)
+        self.btn_col = mock.MagicMock()
+        self.detail_col = mock.MagicMock()
+        self.st.columns.return_value = [self.btn_col, self.detail_col]
         self.session = {"live_draft_room": _sample_room()}
         self.rec_df = pd.DataFrame(
             [
@@ -170,11 +175,6 @@ class CompactRecCardTests(unittest.TestCase):
                 }
             ]
         )
-        col_info = mock.MagicMock()
-        col_btn = mock.MagicMock()
-        col_detail = mock.MagicMock()
-        self.st.columns.return_value = [col_info, col_btn, col_detail]
-
         render_live_draft_rec_cards(
             self.st,
             self.session,
@@ -185,15 +185,15 @@ class CompactRecCardTests(unittest.TestCase):
         html = str(self.st.markdown.call_args)
         self.assertIn("Shohei Ohtani", html)
         self.assertNotIn("...", html)
-        self.assertIn("DH", html)
-        self.assertIn("Reason:", html)
+        captions = str(self.st.caption.call_args_list)
+        self.assertIn("DH", captions)
+        self.assertIn("Reason:", captions)
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
     @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
     def test_stacked_mobile_layout(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
         gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
-        self.st.columns.return_value = [mock.MagicMock(), mock.MagicMock(), mock.MagicMock()]
         render_live_draft_rec_cards(
             self.st,
             self.session,
@@ -204,9 +204,7 @@ class CompactRecCardTests(unittest.TestCase):
         )
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "stacked")
-        html = str(self.st.markdown.call_args)
-        self.assertIn("ld-rec-stacked", html)
-        self.assertIn("Juan Soto", html)
+        self.assertIn("Juan Soto", str(self.st.markdown.call_args))
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
@@ -217,11 +215,6 @@ class CompactRecCardTests(unittest.TestCase):
             "draft_complete": False,
             "draft_button_disable_reason": None,
         }
-        col_info = mock.MagicMock()
-        col_btn = mock.MagicMock()
-        col_detail = mock.MagicMock()
-        self.st.columns.return_value = [col_info, col_btn, col_detail]
-
         render_live_draft_rec_cards(
             self.st,
             self.session,
@@ -232,10 +225,8 @@ class CompactRecCardTests(unittest.TestCase):
 
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
-        html = str(self.st.markdown.call_args)
-        self.assertIn("ld-rec-compact-row", html)
-        self.assertIn("ld-rec-name", html)
-        self.assertIn("Juan Soto", html)
+        md = str(self.st.markdown.call_args)
+        self.assertIn("Juan Soto", md)
         self.st.button.assert_called_once()
         args, kwargs = self.st.button.call_args
         self.assertIn("Draft Soto", args[0])
@@ -250,11 +241,6 @@ class CompactRecCardTests(unittest.TestCase):
             "draft_complete": False,
             "draft_button_disable_reason": "not_your_turn",
         }
-        col_info = mock.MagicMock()
-        col_btn = mock.MagicMock()
-        col_detail = mock.MagicMock()
-        self.st.columns.return_value = [col_info, col_btn, col_detail]
-
         render_live_draft_rec_cards(
             self.st,
             self.session,
@@ -270,11 +256,6 @@ class CompactRecCardTests(unittest.TestCase):
     @mock.patch("draft_actions._live_player_available", return_value=(False, "already drafted"))
     def test_draft_button_disabled_when_unavailable(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
         gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
-        col_info = mock.MagicMock()
-        col_btn = mock.MagicMock()
-        col_detail = mock.MagicMock()
-        self.st.columns.return_value = [col_info, col_btn, col_detail]
-
         render_live_draft_rec_cards(
             self.st,
             self.session,

@@ -28,6 +28,13 @@ def render_autopick_diagnostics(st: Any, session: dict[str, Any], *, developer_m
             "current_pick_index_after_autopick",
             "autopick_failure_backoff_active",
             "rerun_loop_prevented",
+            "auto_pick_rule_configured",
+            "auto_pick_candidate_list",
+            "top_recommendation_player",
+            "selected_auto_pick_player",
+            "selected_auto_pick_reason",
+            "top_recommendation_skipped_reason",
+            "configured_rule_would_pick",
         )
         for key in keys:
             val = raw.get(key)

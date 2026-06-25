@@ -313,19 +313,17 @@ class RecCardRenderTests(unittest.TestCase):
             ]
         )
         st = mock.MagicMock()
+        st.container.return_value.__enter__ = mock.Mock(return_value=mock.MagicMock())
+        st.container.return_value.__exit__ = mock.Mock(return_value=False)
+        st.columns.return_value = [mock.MagicMock(), mock.MagicMock()]
         session = {"live_draft_room": _sample_live_room_for_rec()}
-        col_info = mock.MagicMock()
-        col_btn = mock.MagicMock()
-        col_detail = mock.MagicMock()
-        st.columns.return_value = [col_info, col_btn, col_detail]
 
         render_live_draft_rec_cards(st, session, session["live_draft_room"], rec_df, max_cards=1)
 
         diag = session.get("_live_draft_rec_diag") or {}
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
-        html = str(st.markdown.call_args)
-        self.assertIn("ld-rec-compact-row", html)
-        self.assertIn("Aaron Judge", html)
+        md = str(st.markdown.call_args)
+        self.assertIn("Aaron Judge", md)
         st.button.assert_called_once()
 
 

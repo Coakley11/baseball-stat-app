@@ -112,10 +112,13 @@ def resolve_manual_draft_panel_gate(
             room_draft_complete = room_total_picks > 0 and board_size >= room_total_picks
 
     draft_enabled = compute_draft_turn_enabled(ctx) and not room_draft_complete
-    should_render = draft_enabled
-
     disable_reason = ""
-    if not should_render:
+    if isinstance(live_room, dict) and str(live_room.get("status") or "") == "paused":
+        draft_enabled = False
+        disable_reason = "draft_paused"
+
+    should_render = draft_enabled
+    if not should_render and not disable_reason:
         if room_draft_complete:
             disable_reason = "draft_complete"
         elif multiplayer and not participant_team:
@@ -566,6 +569,10 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
     if ctx.get("board_full") and not ctx.get("live_draft_active"):
         return False, "Board is full."
 
+    room = session.get("live_draft_room")
+    if isinstance(room, dict) and str(room.get("status") or "") == "paused":
+        return False, "Draft is paused — resume to pick."
+
     if not ctx.get("your_team"):
         return False, "Set your team in Draft Room settings."
 
@@ -630,6 +637,30 @@ def _live_player_available(session: dict[str, Any], player_name: str) -> tuple[b
     if resolved not in names and player_name not in names:
         return False, f"{player_name} is not available."
     return True, ""
+
+
+def _find_live_player_by_id(session: dict[str, Any], player_id: str) -> dict[str, Any] | None:
+    pid = str(player_id or "").strip()
+    if not pid:
+        return None
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_get_available
+
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if not isinstance(room, dict):
+            return None
+        available = live_draft_get_available(room)
+    except Exception:
+        return None
+    if available is None or getattr(available, "empty", True):
+        return None
+    id_col = "playerID" if "playerID" in available.columns else ("player_id" if "player_id" in available.columns else "")
+    if not id_col:
+        return None
+    for _, row in available.iterrows():
+        if str(row.get(id_col) or "").strip() == pid:
+            return row.to_dict()
+    return None
 
 
 def _find_live_player_row(session: dict[str, Any], player_name: str) -> dict[str, Any] | None:

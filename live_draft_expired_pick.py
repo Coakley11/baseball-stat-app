@@ -233,7 +233,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     expected_revision = sync_expected_revision(session)
 
     try:
-        ok_select, select_msg = run_autopick_selection(room)
+        ok_select, select_msg = run_autopick_selection(room, session)
         if not ok_select:
             _mark_autopick_failed(session, room, select_msg or "Auto-pick selection failed.")
             return ExpiredPickPageResult(

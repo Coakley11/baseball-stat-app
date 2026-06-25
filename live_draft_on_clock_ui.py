@@ -80,6 +80,27 @@ def render_live_on_clock_banner(
     slot_view = dict(slot)
     next_pick_view = next_pick
     pick_idx = int(live_room.get("current_pick_index") or 0)
+
+    if str(live_room.get("status") or "") == "paused":
+        remaining = live_draft_display_seconds(live_room)
+        _render_on_clock_banner_html(st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=None)
+        st.caption("Draft paused — timer stopped")
+        return
+
+    try:
+        from live_draft_pick_timer import display_seconds_with_freeze, frozen_deadline, is_pick_submitting
+
+        if is_pick_submitting(session):
+            remaining = display_seconds_with_freeze(session, live_room)
+            deadline = frozen_deadline(session, live_room)
+            _render_on_clock_banner_html(
+                st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=deadline
+            )
+            st.caption("Submitting pick…")
+            return
+    except ImportError:
+        pass
+
     deadline = live_draft_timer_deadline(live_room)
     record_timer_diagnostics(
         session,

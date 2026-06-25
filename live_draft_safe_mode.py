@@ -78,6 +78,8 @@ def compute_draft_status(room: dict[str, Any]) -> tuple[str, str]:
     total = total_expected_picks(room)
     if total <= 0:
         return saved, "saved_status_no_pick_order"
+    if saved == "paused" and board < total:
+        return "paused", "explicitly_paused"
     if board >= total:
         return "complete", "board_full"
     if board > 0:
@@ -193,9 +195,17 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
     board = _board_size(room)
 
     if total > 0 and board < total:
-        room["status"] = "in_progress" if board > 0 else (
-            "not_started" if str(room.get("status") or "").strip() in ("", "not_started") else "in_progress"
-        )
+        status_now = str(room.get("status") or "").strip()
+        if status_now == "paused":
+            room["status"] = "paused"
+        elif board > 0:
+            room["status"] = "in_progress"
+        else:
+            room["status"] = (
+                "not_started"
+                if status_now in ("", "not_started")
+                else ("paused" if status_now == "paused" else "in_progress")
+            )
         idx_now = int(room.get("current_pick_index") or 0)
         if idx_now != board:
             room["current_pick_index"] = board
@@ -211,7 +221,11 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
 
     status_after, completion_source_after = compute_draft_status(room)
     if total > 0:
-        room["status"] = status_after
+        if status_before == "paused" and board < total:
+            room["status"] = "paused"
+            status_after = "paused"
+        else:
+            room["status"] = status_after
 
     status_after = str(room.get("status") or "").strip()
     idx_after = int(room.get("current_pick_index") or 0)
@@ -227,6 +241,7 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
 
     timer_should = bool(
         status_after == "in_progress"
+        and status_after != "paused"
         and not safe_mode
         and total > 0
         and board < total
