@@ -204,6 +204,26 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         target_page = "Comparison Tool"
     if not target_page and resume.startswith("trend:"):
         target_page = "Trend Value"
+    if not target_page and resume.startswith("bb:live_draft:"):
+        target_page = "Live Draft Room"
+    if not target_page and resume.startswith("bb:draft_lab:"):
+        target_page = "Draft Simulation Test Mode"
+    draft_room = _qp_get(st, "suite_draft_room")
+    if not draft_room and resume.startswith("bb:live_draft:"):
+        draft_room = resume.split(":", 2)[-1].strip()
+    if not draft_room and resume.startswith("bb:draft_lab:"):
+        tail = resume.split(":", 2)[-1].strip()
+        if tail.startswith("team:"):
+            draft_room = tail.split(":", 1)[-1].strip()
+        elif tail not in {"team", "team_analysis"}:
+            draft_room = tail
+    if draft_room:
+        st.session_state["_suite_resume_draft_room"] = draft_room
+    draft_section = _qp_get(st, "suite_draft_section")
+    if not draft_section and resume.startswith("bb:draft_lab:team:"):
+        draft_section = "team_analysis"
+    if draft_section:
+        st.session_state["_suite_resume_draft_section"] = draft_section
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()

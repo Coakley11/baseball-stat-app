@@ -8,6 +8,7 @@ Query params (read by suite_resume_launch in each app):
   suite_pick_key, suite_song, suite_display_key, suite_instrument, suite_section_focus — music shortcuts
   suite_holdings_fp — investment portfolio fingerprint
   suite_player_a, suite_player_b — baseball comparison players
+  suite_draft_room, suite_draft_section — live draft / draft lab resume
   suite_team — NBA favorite team
   suite_sim, suite_fl_domain, suite_fl_area, suite_fl_timeline_year, suite_fl_sim_year — Future Lens
 """
@@ -45,6 +46,9 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:draft", "Draft Simulation"),
     ("baseball:draft_prep", "Draft Simulation"),
     ("bb:draft", "Draft Simulation"),
+    ("bb:live_draft:", "Live Draft Room"),
+    ("bb:draft_lab:", "Draft Simulation Test Mode"),
+    ("bb:draft_lab", "Draft Simulation Test Mode"),
     ("baseball:projections", "ML Projections"),
     ("bb:proj", "ML Projections"),
     ("baseball:trade", "Fantasy Lineup Assistant"),
@@ -249,6 +253,20 @@ def build_resume_action_url(
         qid = str(m.get("question_id") or "").strip()
         if qid:
             params["suite_ai_question_id"] = qid[:40]
+        draft_room = str(m.get("draft_room_id") or "").strip()
+        if not draft_room and rk.startswith("bb:live_draft:"):
+            draft_room = rk.split(":", 2)[-1].strip()
+        if not draft_room and rk.startswith("bb:draft_lab:"):
+            tail = rk.split(":", 2)[-1].strip()
+            if tail and tail not in {"team", "team_analysis"}:
+                draft_room = tail.split(":", 1)[-1].strip() if tail.startswith("team:") else tail
+        if draft_room:
+            params["suite_draft_room"] = draft_room[:80]
+        draft_section = str(m.get("draft_section") or "").strip()
+        if not draft_section and rk.startswith("bb:draft_lab:team:"):
+            draft_section = "team_analysis"
+        if draft_section:
+            params["suite_draft_section"] = draft_section[:40]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:
@@ -346,6 +364,16 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             if pb:
                 metrics["player_b"] = pb
             page = "Comparison Tool"
+        elif key.startswith("bb:live_draft:"):
+            metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
+            page = "Live Draft Room"
+        elif key.startswith("bb:draft_lab:team:"):
+            metrics["draft_room_id"] = key.split(":", 3)[-1].strip()
+            metrics["draft_section"] = "team_analysis"
+            page = "Draft Simulation Test Mode"
+        elif key.startswith("bb:draft_lab:"):
+            metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
+            page = "Draft Simulation Test Mode"
         elif "draft" in key.lower():
             page = "Draft Simulation"
         elif "trade" in key.lower():

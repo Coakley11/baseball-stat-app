@@ -10038,6 +10038,12 @@ def live_draft_push_analysis_to_session(room):
         "handoff": handoff_meta,
         "analysis_context": analysis_ctx,
     }
+    try:
+        from baseball_draft_activity import log_draft_analysis_created
+
+        log_draft_analysis_created(room, session=st.session_state, lab_state=st.session_state.get("draft_lab_results"))
+    except Exception:
+        pass
     return True
 
 
@@ -18002,6 +18008,12 @@ if active_page == "Live Draft Room":
                     )
                 st.success(st.session_state["_live_draft_start_feedback"])
                 _persist_live_draft_room(new_room, reason="start_draft")
+                try:
+                    from baseball_draft_activity import log_live_draft_room_created
+
+                    log_live_draft_room_created(new_room, session=st.session_state)
+                except Exception:
+                    pass
         room = st.session_state.get("live_draft_room")
 
     if st.session_state.get("_simulator_to_live_show_confirm"):

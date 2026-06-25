@@ -131,6 +131,13 @@ def persist_applied_pick(
 
     write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
 
+    try:
+        from baseball_draft_activity import after_live_draft_pick_committed
+
+        after_live_draft_pick_committed(session, room)
+    except Exception:
+        pass
+
     return PickCommitResult(
         ok=True,
         message="Pick saved.",

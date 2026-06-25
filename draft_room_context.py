@@ -541,6 +541,15 @@ def create_and_host_shared_room(
         shared_room_code_displayed_to_user=True,
         valid_runtime_room=True,
     )
+    try:
+        from baseball_draft_activity import log_live_draft_room_created
+
+        live = session.get("live_draft_room")
+        if not isinstance(live, dict):
+            live = runtime if isinstance(runtime, dict) else live_room
+        log_live_draft_room_created(live, session=session)
+    except Exception:
+        pass
     return saved_code, saved
 
 
