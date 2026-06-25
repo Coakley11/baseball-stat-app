@@ -893,7 +893,7 @@ def _draft_live(
             from draft_room_membership import validate_participant_may_draft
             from draft_source_validation import validate_shared_pick_commit
 
-            ok_pick, pick_msg = validate_participant_may_draft(session, room)
+            ok_pick, pick_msg = validate_participant_may_draft(session, room, player_name=player_name)
             if record_draft_commit_diagnostics is not None:
                 record_draft_commit_diagnostics(
                     session,

@@ -12,6 +12,240 @@ ERR_MEMBERSHIP_CHANGED = "Your room membership changed. Please refresh."
 ERR_CANNOT_DRAFT_OTHER_TEAM = "You cannot draft for another team."
 
 
+def _normalize_team_label(team: str) -> str:
+    return str(team or "").strip().casefold()
+
+
+def _teams_match(participant_team: str, on_clock_team: str) -> bool:
+    a = _normalize_team_label(participant_team)
+    b = _normalize_team_label(on_clock_team)
+    return bool(a and b and a == b)
+
+
+def _record_validate_participant_diag(session: dict[str, Any], **fields: Any) -> None:
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+        record_draft_commit_diagnostics(session, validate_participant_may_draft_entered=True, **fields)
+    except ImportError:
+        pass
+
+
+def _resolve_on_clock_slot_for_validation(live_room: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve on-clock pick slot without importing streamlit_app."""
+    if not isinstance(live_room, dict):
+        return None
+    try:
+        from live_draft_timer_logic import live_draft_current_slot
+    except ImportError:
+        live_draft_current_slot = None  # type: ignore[assignment,misc]
+
+    room = live_room
+    if live_draft_current_slot is not None:
+        slot = live_draft_current_slot(room)
+        if isinstance(slot, dict):
+            return slot
+
+    try:
+        from live_draft_state import analyze_live_draft_progress, repair_stale_live_draft_progress
+
+        room = repair_stale_live_draft_progress(dict(live_room))
+        if live_draft_current_slot is not None:
+            slot = live_draft_current_slot(room)
+            if isinstance(slot, dict):
+                return slot
+        progress = analyze_live_draft_progress(room)
+        slot = progress.get("slot")
+        if isinstance(slot, dict):
+            return slot
+    except ImportError:
+        room = live_room
+
+    pick_order = list(room.get("pick_order") or [])
+    if not pick_order:
+        return None
+    board = len(room.get("draft_board") or [])
+    idx = int(room.get("current_pick_index") or 0)
+    if idx >= len(pick_order) and board < len(pick_order):
+        idx = board
+    if 0 <= idx < len(pick_order):
+        slot = pick_order[idx]
+        if isinstance(slot, dict):
+            return slot
+    if 0 <= board < len(pick_order):
+        slot = pick_order[board]
+        if isinstance(slot, dict):
+            return slot
+    return None
+
+
+def _validation_context(session: dict[str, Any], live_room: dict[str, Any]) -> dict[str, Any]:
+    board_size = len(live_room.get("draft_board") or []) if isinstance(live_room, dict) else 0
+    total_picks = 0
+    draft_complete = False
+    computed_status = ""
+    completion_source = ""
+    saved_status = str(live_room.get("status") or "").strip() if isinstance(live_room, dict) else ""
+    current_pick_index = int(live_room.get("current_pick_index") or 0) if isinstance(live_room, dict) else 0
+    manual_recovery = False
+    safe_mode_active = False
+    draft_state_error = False
+    is_my_turn = False
+    on_clock_team = ""
+    participant_team = ""
+
+    if isinstance(live_room, dict):
+        try:
+            from live_draft_safe_mode import compute_draft_status, is_draft_truly_complete, total_expected_picks
+
+            total_picks = total_expected_picks(live_room)
+            draft_complete = bool(total_picks > 0 and is_draft_truly_complete(live_room))
+            computed_status, completion_source = compute_draft_status(live_room)
+        except ImportError:
+            total_picks = len(live_room.get("pick_order") or [])
+            draft_complete = total_picks > 0 and board_size >= total_picks
+
+    try:
+        from live_draft_safe_mode import draft_state_error_reason, is_safe_mode_active
+
+        safe_mode_active = is_safe_mode_active(session)
+        draft_state_error = bool(draft_state_error_reason(session))
+        manual_recovery = bool((session.get("_live_draft_safe_mode_diag") or {}).get("manual_recovery_available"))
+    except ImportError:
+        pass
+
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            participant_team = str(active_participant_team(session) or "").strip()
+    except ImportError:
+        participant_team = str(session.get("room_your_team") or "").strip()
+
+    slot = _resolve_on_clock_slot_for_validation(live_room) if isinstance(live_room, dict) else None
+    if isinstance(slot, dict):
+        on_clock_team = str(slot.get("Team") or "").strip()
+    is_my_turn = _teams_match(participant_team, on_clock_team)
+
+    return {
+        "validation_board_size": board_size,
+        "validation_total_picks": total_picks,
+        "validation_current_pick_index": current_pick_index,
+        "validation_saved_status": saved_status,
+        "validation_computed_status": computed_status,
+        "validation_completion_source": completion_source,
+        "validation_draft_complete": draft_complete,
+        "validation_participant_team": participant_team or None,
+        "validation_on_clock_team": on_clock_team or None,
+        "validation_is_my_turn": is_my_turn,
+        "validation_manual_recovery_available": manual_recovery,
+        "validation_safe_mode_active": safe_mode_active,
+        "validation_draft_state_error": draft_state_error,
+    }
+
+
+def _player_available_for_manual_pick(session: dict[str, Any], player_name: str) -> bool | None:
+    name = str(player_name or "").strip()
+    if not name:
+        return None
+    try:
+        from draft_actions import _live_player_available
+
+        ok, _ = _live_player_available(session, name)
+        return bool(ok)
+    except Exception:
+        return None
+
+
+def validate_participant_may_draft(
+    session: dict[str, Any],
+    live_room: dict[str, Any],
+    *,
+    player_name: str = "",
+) -> tuple[bool, str]:
+    """Ensure participant only drafts for their assigned team when on the clock."""
+    ctx = _validation_context(session, live_room)
+    player_available = _player_available_for_manual_pick(session, player_name) if player_name else None
+
+    def _fail(reason: str) -> tuple[bool, str]:
+        _record_validate_participant_diag(
+            session,
+            **ctx,
+            validation_player_available=player_available,
+            validate_participant_may_draft_result=False,
+            validate_participant_may_draft_reason=reason,
+            validate_participant_may_draft_message=reason,
+        )
+        return False, reason
+
+    def _ok() -> tuple[bool, str]:
+        _record_validate_participant_diag(
+            session,
+            **ctx,
+            validation_player_available=player_available,
+            validate_participant_may_draft_result=True,
+            validate_participant_may_draft_reason="ok",
+            validate_participant_may_draft_message=None,
+        )
+        return True, ""
+
+    try:
+        from draft_room_context import active_participant_team, is_multiplayer_draft_active
+    except ImportError:
+        return _ok()
+
+    if not is_multiplayer_draft_active(session):
+        _record_validate_participant_diag(
+            session,
+            **ctx,
+            validation_player_available=player_available,
+            validate_participant_may_draft_reason="not_multiplayer",
+            validate_participant_may_draft_result=True,
+        )
+        return True, ""
+
+    your_team = str(active_participant_team(session) or ctx.get("validation_participant_team") or "").strip()
+    ctx["validation_participant_team"] = your_team or None
+    if not your_team:
+        return _fail(ERR_MEMBERSHIP_CHANGED)
+
+    slot = _resolve_on_clock_slot_for_validation(live_room)
+    if isinstance(slot, dict):
+        on_clock = str(slot.get("Team") or "").strip()
+        ctx["validation_on_clock_team"] = on_clock or None
+        ctx["validation_is_my_turn"] = _teams_match(your_team, on_clock)
+        if on_clock and not _teams_match(your_team, on_clock):
+            pick_n = slot.get("Pick")
+            if pick_n:
+                return _fail(f"Not your pick (Pick {pick_n}: {on_clock}).")
+            return _fail(ERR_CANNOT_DRAFT_OTHER_TEAM)
+
+    draft_complete = bool(ctx.get("validation_draft_complete"))
+    board_size = int(ctx.get("validation_board_size") or 0)
+    total_picks = int(ctx.get("validation_total_picks") or 0)
+    computed_status = str(ctx.get("validation_computed_status") or "").strip()
+    saved_status = str(ctx.get("validation_saved_status") or "").strip()
+
+    if draft_complete and total_picks > 0 and board_size >= total_picks:
+        return _fail("Draft is complete.")
+
+    # Derived in-progress overrides stale saved complete for validation.
+    if computed_status == "in_progress" or (total_picks > 0 and board_size < total_picks):
+        pass
+    elif saved_status == "complete":
+        return _fail("Draft is complete.")
+
+    if slot is None:
+        if total_picks > 0 and board_size < total_picks:
+            return _fail(
+                f"Pick slot unavailable but draft in progress "
+                f"(board={board_size}, total={total_picks}, idx={ctx.get('validation_current_pick_index')})."
+            )
+        return _fail("Draft is complete.")
+
+    return _ok()
+
+
 def shared_room_requires_auth() -> bool:
     """True when shared rooms use Supabase (cross-account multiplayer)."""
     try:
@@ -180,41 +414,6 @@ def sync_membership_from_document(
             pass
     if changed:
         return False, ERR_MEMBERSHIP_CHANGED
-    return True, ""
-
-
-def validate_participant_may_draft(
-    session: dict[str, Any],
-    live_room: dict[str, Any],
-) -> tuple[bool, str]:
-    """Ensure participant only drafts for their assigned team when on the clock."""
-    try:
-        from draft_room_context import active_participant_team, is_multiplayer_draft_active
-    except ImportError:
-        return True, ""
-
-    if not is_multiplayer_draft_active(session):
-        return True, ""
-
-    your_team = active_participant_team(session)
-    if not your_team:
-        return False, ERR_MEMBERSHIP_CHANGED
-
-    try:
-        from draft_actions import _import_baseball_app
-
-        slot = _import_baseball_app().live_draft_current_slot(live_room)
-    except Exception:
-        slot = None
-    if slot is None:
-        return False, "Draft is complete."
-
-    on_clock = str(slot.get("Team") or "").strip()
-    if your_team != on_clock:
-        pick_n = slot.get("Pick")
-        if pick_n:
-            return False, f"Not your pick (Pick {pick_n}: {on_clock})."
-        return False, ERR_CANNOT_DRAFT_OTHER_TEAM
     return True, ""
 
 

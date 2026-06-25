@@ -168,7 +168,7 @@ def validate_shared_pick_commit(
         return False, "Select a player first."
 
     if is_multiplayer_draft_active(session) and validate_participant_may_draft is not None:
-        ok_pick, pick_msg = validate_participant_may_draft(session, live_room)
+        ok_pick, pick_msg = validate_participant_may_draft(session, live_room, player_name=name)
         if not ok_pick:
             return False, pick_msg
 
