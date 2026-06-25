@@ -32,9 +32,13 @@ def _render_on_clock_banner_html(
         <div class="live-draft-on-clock" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
             <div class="ld-team-name">{team}</div>
+            <div class="ld-pick-pills">
+                <span class="ld-pill">Round {rnd}</span>
+                <span class="ld-pill">Pick {pick_no}</span>
+            </div>
             {next_txt}
             <div class="ld-meta">
-                <span>Round {rnd} · Pick {pick_no}</span>
+                <span class="ld-clock-label">Time remaining</span>
                 <span class="live-draft-timer">{int(remaining)}s</span>
             </div>
         </div>

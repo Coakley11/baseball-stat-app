@@ -2007,11 +2007,13 @@ def _df_to_csv_bytes(df):
 
 def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_ROWS, style_cols=None):
     """Render a table quickly and add a CSV export button that opens cleanly in Excel."""
+    from table_display_format import filter_styler_format_map
+
     table_df = df.copy()
     export_df = table_df
     if _is_team_projected_totals_table_key(key):
-        table_df = format_team_projected_totals_table(table_df, for_export=True)
         export_df = format_team_projected_totals_table(df.copy(), for_export=True)
+        table_df = format_team_projected_totals_table(table_df, for_export=False)
     elif str(key).startswith("draft_lab"):
         table_df = format_draft_lab_table(table_df, for_export=False)
         export_df = format_draft_lab_table(df.copy(), for_export=True)
@@ -2050,7 +2052,8 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
             elif col == "Fantasy Edge":
                 fmt[col] = "{:.0f}"
 
-        styled_df = display_df.style.format(fmt)
+        fmt = filter_styler_format_map(display_df, fmt)
+        styled_df = display_df.style.format(fmt) if fmt else display_df.style
 
         red_green_cols = [c for c in style_cols if c in display_df.columns and c != "Draft Fit Score"]
         green_cols = [c for c in style_cols if c in display_df.columns and c == "Draft Fit Score"]
@@ -9989,9 +9992,13 @@ def _render_live_draft_on_clock_banner(slot, remaining, next_pick=None):
         <div class="live-draft-on-clock" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
             <div class="ld-team-name">{team}</div>
+            <div class="ld-pick-pills">
+                <span class="ld-pill">Round {rnd}</span>
+                <span class="ld-pill">Pick {pick_no}</span>
+            </div>
             {next_txt}
             <div class="ld-meta">
-                <span>Round {rnd} · Pick {pick_no}</span>
+                <span class="ld-clock-label">Time remaining</span>
                 <span class="live-draft-timer">{remaining}s</span>
             </div>
         </div>
@@ -10029,6 +10036,13 @@ def live_draft_push_analysis_to_session(room):
     lab_draft = live_draft_to_lab_draft_df(room)
     if is_dataframe_empty(lab_draft):
         return False
+    handoff_meta = {}
+    try:
+        from draft_lab_handoff import apply_live_draft_handoff_to_session
+
+        handoff_meta = apply_live_draft_handoff_to_session(st.session_state, room)
+    except ImportError:
+        pass
     team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(lab_draft, yearly_df)
     trades = suggest_draft_lab_trades(lab_draft, team_summary, max_suggestions=12)
     st.session_state["draft_lab_results"] = {
@@ -10041,6 +10055,7 @@ def live_draft_push_analysis_to_session(room):
         "actual_summary": actual_summary,
         "trades": trades,
         "source": "Live Draft Room",
+        "handoff": handoff_meta,
     }
     return True
 
@@ -17365,23 +17380,48 @@ if active_page == "Draft Simulation Test Mode":
     lab_gaps = coerce_dataframe(lab_state.get("gaps"))
     lab_actual_summary = coerce_dataframe(lab_state.get("actual_summary"))
     lab_trades = coerce_dataframe(lab_state.get("trades"))
+    lab_handoff = lab_state.get("handoff") if isinstance(lab_state.get("handoff"), dict) else {}
+    lab_source = str(lab_state.get("source") or "").strip()
+
+    if lab_source == "Live Draft Room" and lab_handoff:
+        st.success(
+            "Analyzing your **completed live draft** — controls below match the settings from that draft."
+        )
+        if developer_mode_enabled():
+            try:
+                from draft_lab_handoff import DRAFT_LAB_HANDOFF_DIAG_KEY
+
+                diag = st.session_state.get(DRAFT_LAB_HANDOFF_DIAG_KEY)
+                if isinstance(diag, dict):
+                    with st.expander("Draft Lab handoff diagnostics", expanded=False):
+                        for k, v in diag.items():
+                            st.text(f"{k}: {v if v is not None and v != '' else '—'}")
+            except ImportError:
+                pass
 
     if is_dataframe_empty(lab_draft):
-        st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab.")
+        st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab, or analyze a completed live draft from **Live Draft Room**.")
     else:
         rank_col = "Projected Team Rank"
         team_col = "Fantasy Team"
         sorted_summary = safe_sort_dataframe(lab_team_summary, rank_col)
         if not is_dataframe_empty(sorted_summary) and has_dataframe_column(sorted_summary, team_col):
             winner = sorted_summary.iloc[0]
-            w1, w2, w3, w4 = st.columns(4)
+            team_count = lab_handoff.get("team_count")
+            if team_count is None and has_dataframe_column(lab_draft, team_col):
+                team_count = int(lab_draft[team_col].nunique())
+            picks_per_team = lab_handoff.get("picks_per_team")
+            if picks_per_team is None:
+                picks_per_team = st.session_state.get("draft_lab_picks_per_team")
+            w1, w2, w3, w4, w5 = st.columns(5)
             w1.metric("Projected Best Draft", winner[team_col])
             if "Total Projected Fantasy Value" in sorted_summary.columns:
                 w2.metric("Projected Value", fmt_score_2(winner["Total Projected Fantasy Value"]))
             else:
                 w2.metric("Projected Value", "—")
             w3.metric("Total Picks", f"{len(lab_draft):,}")
-            w4.metric("Teams", "4")
+            w4.metric("Teams", str(team_count) if team_count is not None else "—")
+            w5.metric("Picks / Team", str(picks_per_team) if picks_per_team is not None else "—")
         else:
             st.info("Run the draft simulation to generate team rankings.")
 
@@ -18175,7 +18215,12 @@ if active_page == "Live Draft Room":
     if room is None:
         st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
     else:
-        _render_live_draft_styles()
+        try:
+            from live_draft_room_ui import inject_live_draft_room_styles
+
+            inject_live_draft_room_styles(st)
+        except ImportError:
+            _render_live_draft_styles()
         try:
             from live_draft_safe_mode import reconcile_live_draft_room
 
@@ -18279,14 +18324,11 @@ if active_page == "Live Draft Room":
             except Exception:
                 share_code = ""
             if share_code and is_plausible_share_code(share_code):
-                room_label = (
-                    f"Share code **{share_code}** *(join with this)* · "
-                    f"Internal session `{internal_id}` *(do not share for join)*"
-                )
+                room_label = f"Draft Room Code **{share_code}**"
             else:
-                room_label = f"Internal session `{internal_id}` *(not a join code)*"
+                room_label = "Draft room (single session)"
         else:
-            room_label = f"Internal session `{internal_id}` *(single-user — not a share/join code)*"
+            room_label = "Single-user draft"
         st.caption(
             f"**{cfg.get('league_name', 'League')}** · {room_label} · "
             f"Your team: **{user_team}** · "
@@ -18295,33 +18337,32 @@ if active_page == "Live Draft Room":
         )
         on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
         round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
-        share_badge = ""
-        backend_badge = ""
+        pick_label = f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} / {total_picks}"
         if _multiplayer_draft:
             try:
                 from draft_room_create_verify import is_plausible_share_code
-                from draft_room_shared_state import shared_room_backend_name
+                from live_draft_room_ui import render_draft_room_code_panel
 
                 sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
                 if sc and is_plausible_share_code(sc):
-                    share_badge = f'<span class="ld-badge-pill ld-badge-share">Share {sc}</span>'
-                backend_badge = f'<span class="ld-badge-pill ld-badge-backend">{shared_room_backend_name()}</span>'
+                    render_draft_room_code_panel(st, sc)
             except Exception:
                 pass
-        st.markdown(
-            f"""
-            <div class="live-draft-status-badges">
-                <span class="ld-badge-pill ld-badge-pick">Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} / {total_picks}</span>
-                <span class="ld-badge-pill ld-badge-round">Round {round_no}</span>
-                <span class="ld-badge-pill ld-badge-team">On clock: {on_clock_team}</span>
-                {share_badge}
-                {backend_badge}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        try:
+            from live_draft_room_ui import render_live_draft_status_badges
+
+            render_live_draft_status_badges(
+                st,
+                pick_label=pick_label,
+                round_no=round_no,
+                on_clock_team=on_clock_team,
+                live=_draft_in_progress,
+            )
+        except ImportError:
+            pass
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
+        st.markdown('<div class="ld-controls-title">Draft control center</div>', unsafe_allow_html=True)
         _timer_ok = bool(
             _draft_in_progress
             and slot is not None
@@ -18377,7 +18418,7 @@ if active_page == "Live Draft Room":
                 live_draft_clear_timer(room)
                 _persist_live_draft_room(room, reason="pause_draft")
         with ctrl2:
-            if st.button("▶ Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume"):
+            if st.button("▶ Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume", type="primary"):
                 from live_draft_timer_logic import live_draft_resume_timer
 
                 room["status"] = "in_progress"
@@ -18524,7 +18565,12 @@ if active_page == "Live Draft Room":
                 except Exception:
                     pass
                 st.markdown("##### Recommended picks")
-                _render_live_draft_rec_cards(top_rec, max_cards=6)
+                try:
+                    from live_draft_room_ui import render_live_draft_rec_cards
+
+                    render_live_draft_rec_cards(st, top_rec, max_cards=6, fmt_rate_4=fmt_rate_4, fmt_int=fmt_int)
+                except ImportError:
+                    _render_live_draft_rec_cards(top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                 rec_cols = [
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",

@@ -868,6 +868,14 @@ def lab_to_live_keys(session) -> dict:
 
 def live_to_lab_keys(session) -> dict:
     """Live Draft Room -> Draft Simulation Test Mode settings."""
+    try:
+        from draft_lab_handoff import live_room_lab_settings_keys
+
+        keys = live_room_lab_settings_keys(session)
+        if keys:
+            return keys
+    except ImportError:
+        pass
     keys = {}
     scoring = session.get("live_draft_scoring")
     if scoring:

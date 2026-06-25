@@ -113,18 +113,31 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
 
     with st.container(border=True):
         st.markdown("#### Shared Draft Room")
-        render_shared_room_supabase_health(st, session)
+        try:
+            from suite_workspace import can_show_developer_tools
+
+            if can_show_developer_tools(st=st):
+                render_shared_room_supabase_health(st, session)
+        except ImportError:
+            pass
         mode = ctx.get("mode") or "none"
         if mode == "multiplayer":
-            backend = (ctx.get("shared_storage_backend") or "unknown")
             share = str(ctx.get("room_code") or "").strip().upper()
             internal_id = str(ctx.get("draft_room_id") or "").strip()
             st.caption(
-                f"**Multiplayer** · Share code **{share}** *(6 chars — give this to join)* · "
-                f"Internal session `{internal_id}` · "
-                f"Your team: **{ctx.get('participant_team') or '—'}** · "
-                f"Revision {ctx.get('shared_revision') or '—'} · Backend `{backend}`"
+                f"**Multiplayer draft** · Draft Room Code **{share}** · "
+                f"Your team: **{ctx.get('participant_team') or '—'}**"
             )
+            try:
+                from suite_workspace import can_show_developer_tools
+
+                if can_show_developer_tools(st=st):
+                    backend = (ctx.get("shared_storage_backend") or "unknown")
+                    st.caption(
+                        f"Dev: internal session `{internal_id}` · revision {ctx.get('shared_revision') or '—'} · backend `{backend}`"
+                    )
+            except ImportError:
+                pass
         elif mode == "single_user_live":
             st.caption("**Single-user** live draft — create a shared room to invite other managers.")
         else:
@@ -167,11 +180,11 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 st.caption(f"Free pool drafting is **{label}** (host commissioner setting).")
 
             join_code = st.text_input(
-                "Share code (6 characters)",
+                "Draft Room Code",
                 value=str(ctx.get("room_code") or ""),
                 key="shared_draft_room_code_display",
                 disabled=True,
-                help="Other managers enter this code under Join room code — not the internal session ID.",
+                help="Other managers enter this 6-character code to join — not the internal session ID.",
             )
             if st.button("Refresh board now", key="shared_draft_refresh_btn"):
                 sync_shared_draft_room(session, force=True)
@@ -223,7 +236,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 key="shared_draft_create_btn",
                 type="primary",
                 disabled=create_disabled,
-                help="Requires an active live draft. Publishes a 6-character share code to Supabase.",
+                help="Requires an active live draft. Creates a 6-character Draft Room Code for other managers to join.",
             ):
                 if isinstance(room, dict):
                     try:
@@ -262,21 +275,20 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                             else:
                                 _finalize_successful_join(
                                     session,
-                                    f"Shared room created. Share code **{code}** (6 characters) — "
-                                    f"not the internal session ID `{room.get('draft_room_id', '')}`.",
+                                    f"Draft room created. **Draft Room Code: {code}** — share this code so others can join.",
                                 )
                         except ImportError:
                             _finalize_successful_join(
                                 session,
-                                f"Shared room created. Share code **{code}** with other managers.",
+                                f"Draft room created. **Draft Room Code: {code}**",
                             )
                     return True
         with col_join:
             with st.form("shared_draft_join_form", clear_on_submit=False):
                 join_input = st.text_input(
-                    "Join room code",
+                    "Draft Room Code",
                     placeholder="ABC123",
-                    help="6-character share code from the host — not the 8-character internal session ID.",
+                    help="Enter the 6-character Draft Room Code from your host.",
                 )
                 submitted = st.form_submit_button("Join Room by Code", type="primary")
             if submitted:
