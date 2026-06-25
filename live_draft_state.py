@@ -371,12 +371,20 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
 
     pick_order = list(room.get("pick_order") or [])
     idx = int(room.get("current_pick_index") or 0)
-    status = str(room.get("status") or "").strip()
-    total = len(pick_order)
     board = room.get("draft_board") or []
     board_count = len(board) if isinstance(board, list) else 0
     drafted_ids = room.get("drafted_player_ids") or []
     drafted_count = len(drafted_ids) if isinstance(drafted_ids, list) else board_count
+    total = len(pick_order)
+
+    try:
+        from live_draft_safe_mode import compute_draft_status, total_expected_picks as _total_expected
+
+        if not total:
+            total = _total_expected(room)
+        status, _completion_source = compute_draft_status(room)
+    except ImportError:
+        status = str(room.get("status") or "").strip()
 
     base: dict[str, Any] = {
         "draft_status": status,
@@ -607,6 +615,19 @@ def clear_live_draft_state(session: dict[str, Any], *, reason: str = "reset") ->
     write_canonical_live_draft_state(session, None, reason=reason, local_edit=True)
 
 
+def _apply_derived_draft_status(session: dict[str, Any], room: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(room, dict):
+        return room
+    room = repair_stale_live_draft_progress(dict(room))
+    try:
+        from live_draft_safe_mode import reconcile_live_draft_room
+
+        room = reconcile_live_draft_room(session, room).room
+    except ImportError:
+        session[LIVE_DRAFT_ROOM_KEY] = room
+    return room
+
+
 def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
     """Hydrate runtime room from canonical blob before Live Draft Room renders."""
     try:
@@ -616,7 +637,7 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if is_runtime_room(room):
                 write_canonical_live_draft_state(session, room, reason="multiplayer_hydrate", local_edit=False)
-                return room
+                return _apply_derived_draft_status(session, room)
             clear_stale_multiplayer_state(
                 session,
                 reason="Shared room was not loaded — restored your single-user live draft.",
@@ -633,10 +654,10 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
         restored = room_from_persist_dict(canonical)
         if restored:
             session[LIVE_DRAFT_ROOM_KEY] = restored
-            return restored
+            return _apply_derived_draft_status(session, restored)
     if is_runtime_room(room):
         write_canonical_live_draft_state(session, room, reason="session_hydrate", local_edit=False)
-        return room
+        return _apply_derived_draft_status(session, room)
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
         block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
@@ -646,8 +667,9 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
                 restored = room_from_persist_dict(legacy)
                 if restored:
                     write_canonical_live_draft_state(session, restored, reason="page_filter_hydrate", local_edit=False)
-                    return restored
-    return room if isinstance(room, dict) else None
+                    return _apply_derived_draft_status(session, restored)
+    final = room if isinstance(room, dict) else None
+    return _apply_derived_draft_status(session, final)
 
 
 def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:

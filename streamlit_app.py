@@ -9650,23 +9650,9 @@ def live_draft_make_pick(room, player_row, verdict="Manual pick"):
 
 
 def live_draft_auto_pick(room):
-    slot = live_draft_current_slot(room)
-    if slot is None:
-        return False, "Draft is already complete."
-    available = live_draft_get_available(room)
-    if available.empty:
-        room["status"] = "complete"
-        return False, "No players remain in the pool."
-    team = slot["Team"]
-    roster_df = pd.DataFrame(room["rosters"].get(team, []))
-    cfg = dict(room.get("config", {}))
-    cfg["current_pick"] = int(slot.get("Pick", 1))
-    target_counts = _live_draft_target_counts(cfg)
-    rule = cfg.get("auto_pick_rule", "balanced recommendation")
-    scored, gaps = _live_draft_score_available(available, roster_df, rule, target_counts, config=cfg)
-    chosen = scored.iloc[0]
-    verdict = _live_draft_pick_verdict(chosen, rule, gaps)
-    return live_draft_make_pick(room, chosen.to_dict(), verdict=verdict)
+    from live_draft_autopick import live_draft_auto_pick as _auto_pick
+
+    return _auto_pick(room)
 
 
 def live_draft_build_board_df(room):
@@ -18020,6 +18006,10 @@ if active_page == "Live Draft Room":
             room = _reconcile.room
             if _reconcile.safe_mode_active and _reconcile.draft_state_error_reason:
                 st.error(f"Draft state error: {_reconcile.draft_state_error_reason}")
+            elif _reconcile.false_complete_detected:
+                st.warning(
+                    "Draft was incorrectly marked complete. Reopened at next missing pick."
+                )
         except ImportError:
             _reconcile = None
         cfg = room.get("config", {})
@@ -18216,7 +18206,8 @@ if active_page == "Live Draft Room":
 
         with rec_col:
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
-            if slot is None and not _manual_recovery:
+            _draft_truly_complete = bool(total_picks > 0 and picks_done >= total_picks)
+            if slot is None and not _manual_recovery and _draft_truly_complete:
                 try:
                     from draft_ui import record_live_draft_ui_diagnostics
 
@@ -18233,8 +18224,11 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 st.success("Draft complete.")
-            elif slot is None and _manual_recovery:
-                st.error("Draft state mismatch — use Manual Draft below to recover this pick.")
+            elif slot is None and (_manual_recovery or not _draft_truly_complete):
+                if not _draft_truly_complete:
+                    st.warning("Draft was incorrectly marked complete. Reopened at next missing pick.")
+                else:
+                    st.error("Draft state mismatch — use Manual Draft below to recover this pick.")
                 from draft_ui import render_live_manual_draft_panel
 
                 if render_live_manual_draft_panel(
@@ -18379,7 +18373,7 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         st.rerun()
 
-        if room.get("status") != "complete":
+        if room.get("status") != "complete" or picks_done < total_picks:
             render_contextual_page_nav(
                 "Live Draft Room",
                 "after_board",
@@ -18419,7 +18413,7 @@ if active_page == "Live Draft Room":
                 style_cols=["Total Projected Fantasy Value"],
             )
 
-        if room.get("status") == "complete":
+        if picks_done >= total_picks and total_picks > 0:
             st.success("Draft complete. Export results or send to analysis below.")
             export_frames_live = live_draft_export_frames(room)
             ex1, ex2 = st.columns(2)

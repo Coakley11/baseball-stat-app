@@ -120,12 +120,7 @@ def persist_applied_pick(
                 expected_revision=rev,
             )
     else:
-        try:
-            from streamlit_app import _persist_live_draft_room
-
-            _persist_live_draft_room(room, reason=source, rerun=False)
-        except ImportError:
-            write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+        pass
 
     try:
         from draft_room_state import sync_live_draft_room_to_canonical_board
@@ -194,11 +189,6 @@ def commit_manual_live_pick(
 
 def run_autopick_selection(room: dict[str, Any]) -> tuple[bool, str]:
     """Select and apply auto-pick to room (make_pick only — caller persists)."""
-    try:
-        from streamlit_app import live_draft_auto_pick
-    except ImportError:
-        try:
-            from Streamlit_app import live_draft_auto_pick  # type: ignore[no-redef]
-        except ImportError:
-            return False, "Auto-pick engine unavailable."
+    from live_draft_autopick import live_draft_auto_pick
+
     return live_draft_auto_pick(room)

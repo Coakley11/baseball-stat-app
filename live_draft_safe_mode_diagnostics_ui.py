@@ -16,7 +16,9 @@ def render_safe_mode_diagnostics(st: Any, session: dict[str, Any], *, developer_
     if not isinstance(safe, dict) and not isinstance(rerun, dict):
         return
 
-    expanded = developer_mode or bool(isinstance(safe, dict) and safe.get("safe_mode_active"))
+    expanded = developer_mode or bool(
+        isinstance(safe, dict) and (safe.get("safe_mode_active") or safe.get("false_complete_detected"))
+    )
     with st.expander("Draft state / rerun diagnostics", expanded=expanded):
         keys = (
             "draft_state_error",
@@ -25,11 +27,18 @@ def render_safe_mode_diagnostics(st: Any, session: dict[str, Any], *, developer_
             "manual_recovery_available",
             "timer_fragment_active",
             "timer_should_run",
+            "false_complete_detected",
+            "saved_draft_status",
+            "computed_draft_status",
+            "draft_status_source",
+            "completion_source",
             "stale_draft_status_detected",
             "stale_current_pick_index_detected",
             "board_size",
             "total_expected_picks",
             "current_pick_index",
+            "current_pick_index_before_reconcile",
+            "current_pick_index_after_reconcile",
             "draft_status_before",
             "draft_status_after",
             "rerun_source",

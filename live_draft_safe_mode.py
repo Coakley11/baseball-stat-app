@@ -35,6 +35,13 @@ class ReconcileResult:
     draft_status_after: str
     stale_draft_status_detected: bool
     stale_current_pick_index_detected: bool
+    false_complete_detected: bool = False
+    saved_draft_status: str = ""
+    computed_draft_status: str = ""
+    draft_status_source: str = ""
+    completion_source: str = ""
+    current_pick_index_before_reconcile: int = 0
+    current_pick_index_after_reconcile: int = 0
     contradictions: list[str] = field(default_factory=list)
     safe_mode_active: bool = False
     draft_state_error: bool = False
@@ -58,6 +65,29 @@ def total_expected_picks(room: dict[str, Any]) -> int:
     if teams and rounds:
         return len(teams) * rounds
     return 0
+
+
+def compute_draft_status(room: dict[str, Any]) -> tuple[str, str]:
+    """Derive draft status from board length — never trust saved complete alone."""
+    saved = str(room.get("status") or "").strip()
+    board = _board_size(room)
+    total = total_expected_picks(room)
+    if total <= 0:
+        return saved, "saved_status_no_pick_order"
+    if board >= total:
+        return "complete", "board_full"
+    if board > 0:
+        return "in_progress", "board_incomplete"
+    if saved in ("", "not_started"):
+        return "not_started", "board_empty"
+    return "in_progress", "board_empty_reopened"
+
+
+def is_draft_truly_complete(room: dict[str, Any]) -> bool:
+    total = total_expected_picks(room)
+    if total <= 0:
+        return str(room.get("status") or "").strip() == "complete"
+    return _board_size(room) >= total
 
 
 def record_safe_mode_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
@@ -140,6 +170,8 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
     idx_before = int(room.get("current_pick_index") or 0)
     board_before = _board_size(room)
     total = total_expected_picks(room)
+    computed_before, completion_source = compute_draft_status(room)
+    false_complete = bool(total > 0 and status_before == "complete" and board_before < total)
 
     stale_status = bool(total > 0 and status_before == "complete" and board_before < total)
     stale_idx = bool(idx_before != board_before and board_before < total)
@@ -148,8 +180,9 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
     board = _board_size(room)
 
     if total > 0 and board < total:
-        if str(room.get("status") or "").strip() == "complete":
-            room["status"] = "in_progress"
+        room["status"] = "in_progress" if board > 0 else (
+            "not_started" if str(room.get("status") or "").strip() in ("", "not_started") else "in_progress"
+        )
         idx_now = int(room.get("current_pick_index") or 0)
         if idx_now != board:
             room["current_pick_index"] = board
@@ -157,14 +190,17 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
         if int(room.get("current_pick_index") or 0) > total:
             room["current_pick_index"] = min(board, total)
         room["timer_handled_index"] = -1
-        if room.get("timer_started_at") is not None and str(room.get("status") or "") == "complete":
-            room["timer_started_at"] = None
     elif total > 0 and board >= total:
         room["status"] = "complete"
         room["current_pick_index"] = total
         room["timer_started_at"] = None
 
+    status_after, completion_source_after = compute_draft_status(room)
+    if total > 0:
+        room["status"] = status_after
+
     status_after = str(room.get("status") or "").strip()
+    idx_after = int(room.get("current_pick_index") or 0)
     session[LIVE_DRAFT_ROOM_KEY] = room
 
     contradictions = _detect_contradictions(session, room)
@@ -180,7 +216,7 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
         and not safe_mode
         and total > 0
         and board < total
-        and int(room.get("current_pick_index") or 0) < total
+        and idx_after < total
     )
     try:
         from live_draft_expired_pick import autopick_failure_backoff_active
@@ -202,9 +238,16 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
         timer_should_run=timer_should,
         stale_draft_status_detected=stale_status,
         stale_current_pick_index_detected=stale_idx,
+        false_complete_detected=false_complete,
+        saved_draft_status=status_before,
+        computed_draft_status=status_after,
+        draft_status_source="derived_from_board",
+        completion_source=completion_source_after,
         board_size=board,
         total_expected_picks=total,
-        current_pick_index=int(room.get("current_pick_index") or 0),
+        current_pick_index=idx_after,
+        current_pick_index_before_reconcile=idx_before,
+        current_pick_index_after_reconcile=idx_after,
         draft_status_before=status_before,
         draft_status_after=status_after,
     )
@@ -217,6 +260,13 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
         draft_status_after=status_after,
         stale_draft_status_detected=stale_status,
         stale_current_pick_index_detected=stale_idx,
+        false_complete_detected=false_complete,
+        saved_draft_status=status_before,
+        computed_draft_status=status_after,
+        draft_status_source="derived_from_board",
+        completion_source=completion_source_after,
+        current_pick_index_before_reconcile=idx_before,
+        current_pick_index_after_reconcile=idx_after,
         contradictions=contradictions,
         safe_mode_active=safe_mode,
         draft_state_error=safe_mode,
