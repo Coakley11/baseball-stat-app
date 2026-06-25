@@ -17922,7 +17922,9 @@ if active_page == "Live Draft Room":
 
         _start_mode = str(st.session_state.pop("_start_live_draft_mode", "new") or "new")
         _from_simulator = _start_mode == "simulator"
+        _prepare_shared = _start_mode == "prepare_shared"
         mark_start_step = None
+        _skip_pool_build = False
         try:
             from live_draft_start_progress import begin_live_draft_start, finish_live_draft_start, mark_start_step
 
@@ -17930,7 +17932,35 @@ if active_page == "Live Draft Room":
             mark_start_step(st.session_state, "handler_begin", click_received_ts=time.time())
         except ImportError:
             pass
-        try:
+        if _start_mode == "new" and not _from_simulator and not _prepare_shared:
+            try:
+                from live_draft_setup_mode import is_shared_multiplayer_intent, shared_room_code, start_prepared_shared_room
+
+                if is_shared_multiplayer_intent(st.session_state):
+                    if not shared_room_code(st.session_state):
+                        _start_handler_err = (
+                            "Create the shared draft room before starting. "
+                            "A 6-character room code is required."
+                        )
+                        record_start_live_draft_diagnostics(
+                            st.session_state, start_live_draft_error=_start_handler_err
+                        )
+                        st.error(_start_handler_err)
+                        _skip_pool_build = True
+                    else:
+                        prep = start_prepared_shared_room(st.session_state, st)
+                        if prep.get("handled"):
+                            _skip_pool_build = True
+                            _start_handler_ok = bool(prep.get("ok"))
+                            if not prep.get("ok"):
+                                _start_handler_err = str(prep.get("error") or "Could not start shared draft.")
+                                st.error(_start_handler_err)
+                                record_start_live_draft_diagnostics(
+                                    st.session_state, start_live_draft_error=_start_handler_err
+                                )
+            except ImportError:
+                pass
+        if not _skip_pool_build:
             clear_stale_live_draft_for_simulator_start(st.session_state)
             try:
                 from draft_room_state import sync_draft_room_session_before_save
@@ -18039,6 +18069,15 @@ if active_page == "Live Draft Room":
                 user_team = your_team
             else:
                 user_team = str(team_names[0]).strip() or default_teams[0]
+            try:
+                from live_draft_setup_mode import is_shared_multiplayer_intent
+
+                if is_shared_multiplayer_intent(st.session_state):
+                    host_pick = str(st.session_state.get("live_draft_host_team_pick") or "").strip()
+                    if host_pick and host_pick in team_names:
+                        user_team = host_pick
+            except ImportError:
+                pass
             total_picks = int(live_num_teams) * int(live_picks_per_team)
             if pool_live.empty:
                 _start_handler_err = "Could not build a player pool. Check your data files and try again."
@@ -18108,76 +18147,101 @@ if active_page == "Live Draft Room":
                     record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=_start_handler_err)
                     st.error(_start_handler_err)
                 else:
-                    live_draft_start(new_room)
-                    st.session_state["live_draft_room"] = new_room
-                    st.session_state["room_your_team"] = user_team
-                    try:
-                        from draft_actions import draft_action_context
-                        from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta
+                    from live_draft_setup_mode import (
+                        finalize_shared_room_create,
+                        set_live_draft_setup_mode,
+                        stamp_room_setup_mode,
+                        SETUP_MODE_SOLO,
+                    )
 
-                        set_canonical_draft_meta(
-                            st.session_state,
-                            mode=ACTIVE_DRAFT_MODE_LIVE,
-                            source="start_live_draft",
-                            pick_count=len(new_room.get("draft_board") or []),
+                    stamp_room_setup_mode(new_room, st.session_state)
+                    if _prepare_shared:
+                        code, err = finalize_shared_room_create(
+                            st.session_state, new_room, host_team=user_team
                         )
-                        after_ctx = draft_action_context(st.session_state)
-                        record_start_live_draft_diagnostics(
-                            st.session_state,
-                            live_draft_status_after_start=str(new_room.get("status") or ""),
-                            live_user_team_after_start=user_team,
-                            active_draft_source_after_start=after_ctx.get("active_draft_source"),
-                            current_pick_after_start=after_ctx.get("current_pick"),
-                        )
-                    except Exception as exc:
-                        record_start_live_draft_diagnostics(
-                            st.session_state,
-                            start_live_draft_error=f"post_start_meta:{exc}",
-                        )
-                    if _from_simulator:
-                        _sim_summary = build_simulator_to_live_summary(st.session_state)
-                        _promoted = int(promote.get("applied") or 0)
-                        st.session_state["_live_draft_start_feedback"] = format_simulator_to_live_success_message(
-                            _sim_summary,
-                            promoted=_promoted,
-                            user_team=user_team,
-                        )
+                        if not code:
+                            _start_handler_err = err or (
+                                "Could not create shared room. This draft cannot be joined by others."
+                            )
+                            st.error(_start_handler_err)
+                            st.session_state["live_draft_room"] = new_room
+                            record_start_live_draft_diagnostics(
+                                st.session_state, start_live_draft_error=_start_handler_err
+                            )
+                        else:
+                            st.session_state["live_draft_room"] = new_room
+                            st.session_state["_live_draft_start_feedback"] = (
+                                f"Shared draft room ready. Invite players with this room code: **{code}**"
+                            )
+                            st.success(st.session_state["_live_draft_start_feedback"])
+                            _start_handler_ok = True
                     else:
-                        st.session_state["_live_draft_start_feedback"] = (
-                            f"New live draft started — Room ID **{new_room['draft_room_id']}**. "
-                            "No simulator picks were imported."
-                        )
-                    st.success(st.session_state["_live_draft_start_feedback"])
-                    try:
-                        if mark_start_step:
-                            mark_start_step(st.session_state, "local_save_start", local_save_start_ts=_time_mod.time())
-                    except Exception:
-                        pass
-                    _persist_live_draft_room(new_room, reason="start_draft")
-                    try:
-                        if mark_start_step:
-                            mark_start_step(st.session_state, "local_save_end", local_save_end_ts=_time_mod.time())
-                    except Exception:
-                        pass
-                    try:
-                        from live_draft_start_progress import queue_live_draft_created_activity
+                        set_live_draft_setup_mode(st.session_state, SETUP_MODE_SOLO)
+                        live_draft_start(new_room)
+                        st.session_state["live_draft_room"] = new_room
+                        st.session_state["room_your_team"] = user_team
+                        try:
+                            from draft_actions import draft_action_context
+                            from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta
 
-                        queue_live_draft_created_activity(st.session_state)
-                    except ImportError:
-                        pass
-                    _start_handler_ok = True
-            room = st.session_state.get("live_draft_room")
-        except Exception as _start_exc:
-            _start_handler_err = str(_start_exc)
-            record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=_start_handler_err)
-            st.error(f"Live draft start failed: {_start_handler_err}")
-        finally:
-            try:
-                from live_draft_start_progress import finish_live_draft_start
+                            set_canonical_draft_meta(
+                                st.session_state,
+                                mode=ACTIVE_DRAFT_MODE_LIVE,
+                                source="start_live_draft",
+                                pick_count=len(new_room.get("draft_board") or []),
+                            )
+                            after_ctx = draft_action_context(st.session_state)
+                            record_start_live_draft_diagnostics(
+                                st.session_state,
+                                live_draft_status_after_start=str(new_room.get("status") or ""),
+                                live_user_team_after_start=user_team,
+                                active_draft_source_after_start=after_ctx.get("active_draft_source"),
+                                current_pick_after_start=after_ctx.get("current_pick"),
+                            )
+                        except Exception as exc:
+                            record_start_live_draft_diagnostics(
+                                st.session_state,
+                                start_live_draft_error=f"post_start_meta:{exc}",
+                            )
+                        if _from_simulator:
+                            _sim_summary = build_simulator_to_live_summary(st.session_state)
+                            _promoted = int(promote.get("applied") or 0)
+                            st.session_state["_live_draft_start_feedback"] = format_simulator_to_live_success_message(
+                                _sim_summary,
+                                promoted=_promoted,
+                                user_team=user_team,
+                            )
+                        else:
+                            st.session_state["_live_draft_start_feedback"] = (
+                                f"Solo live draft started — you control all teams. "
+                                f"Room ID **{new_room['draft_room_id']}**."
+                            )
+                        st.success(st.session_state["_live_draft_start_feedback"])
+                        try:
+                            if mark_start_step:
+                                mark_start_step(st.session_state, "local_save_start", local_save_start_ts=_time_mod.time())
+                        except Exception:
+                            pass
+                        _persist_live_draft_room(new_room, reason="start_draft")
+                        try:
+                            if mark_start_step:
+                                mark_start_step(st.session_state, "local_save_end", local_save_end_ts=_time_mod.time())
+                        except Exception:
+                            pass
+                        try:
+                            from live_draft_start_progress import queue_live_draft_created_activity
 
-                finish_live_draft_start(st.session_state, ok=_start_handler_ok, error=_start_handler_err)
-            except ImportError:
-                pass
+                            queue_live_draft_created_activity(st.session_state)
+                        except ImportError:
+                            pass
+                        _start_handler_ok = True
+                room = st.session_state.get("live_draft_room")
+        try:
+            from live_draft_start_progress import finish_live_draft_start
+
+            finish_live_draft_start(st.session_state, ok=_start_handler_ok, error=_start_handler_err)
+        except ImportError:
+            pass
 
     market_df_live = load_fantasypros_market_data() if st.session_state.get("live_draft_room") else None
     if market_df_live is not None:
@@ -18297,6 +18361,19 @@ if active_page == "Live Draft Room":
 
     elif room is None or room.get("status") == "not_started":
         with st.expander("Draft Setup / Configuration", expanded=True):
+            try:
+                from live_draft_setup_ui import (
+                    render_guest_join_from_setup,
+                    render_live_draft_mode_selector,
+                    render_shared_multiplayer_setup,
+                    start_button_disabled,
+                )
+
+                _setup_mode = render_live_draft_mode_selector(st, st.session_state)
+                if render_guest_join_from_setup(st, st.session_state):
+                    st.rerun()
+            except ImportError:
+                _setup_mode = "solo"
             st.subheader("League & Draft Settings")
             lc1, lc2, lc3 = st.columns(3)
             _live_scoring_options = ["Roto (5x5)", "Points League"]
@@ -18394,12 +18471,29 @@ if active_page == "Live Draft Room":
                         st.text_input(f"Team {i + 1}", value=default_teams[i], key=f"live_draft_team_name_{i}")
                     )
 
+            try:
+                from live_draft_setup_ui import render_shared_multiplayer_setup, start_button_disabled
+
+                _prep_room = st.session_state.get("live_draft_room")
+                _prep_status = _prep_room.get("status") if isinstance(_prep_room, dict) else None
+                render_shared_multiplayer_setup(
+                    st,
+                    st.session_state,
+                    team_names=team_names,
+                    room_status=_prep_status,
+                )
+                _start_disabled, _start_help = start_button_disabled(st.session_state)
+            except ImportError:
+                _start_disabled, _start_help = False, ""
+
             b_start, b_reset = st.columns(2)
             with b_start:
                 st.button(
                     "Start New Live Draft",
                     type="primary",
                     key="live_draft_start_btn",
+                    disabled=_start_disabled,
+                    help=_start_help or None,
                     on_click=on_start_new_live_draft,
                 )
             with b_reset:

@@ -96,7 +96,11 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
         from draft_room_join_trace import render_join_trace_panel, render_shared_room_auth_diagnostics, trace_join_step
         from draft_room_supabase_health import render_shared_room_supabase_health
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
+        from live_draft_setup_mode import is_solo_draft_mode
     except ImportError:
+        return False
+
+    if is_solo_draft_mode(session) and not is_multiplayer_draft_active(session):
         return False
 
     join_flash = session.pop("_draft_join_flash", None)
@@ -259,11 +263,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     render_shared_room_create_diagnostics(st, session)
                     if not code:
                         err = session.pop("_draft_room_last_error", "Could not create shared room.")
-                        st.error(err)
-                        st.warning(
-                            "Staying in **single-user** live draft mode. "
-                            "Your board and player pool are unchanged — fix the error and try again."
-                        )
+                        st.error(err or "Could not create shared room. This draft cannot be joined by others.")
                         _render_supabase_error_detail(st, session)
                     else:
                         try:

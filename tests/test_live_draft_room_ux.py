@@ -51,17 +51,40 @@ def _sample_room(**overrides) -> dict:
 
 
 class RoomHeaderTests(unittest.TestCase):
-    def test_room_header_shows_code_role_team_status(self) -> None:
+    def test_solo_header_shows_mode_not_room_code(self) -> None:
+        st = mock.MagicMock()
+        session = {
+            "live_draft_setup_mode": "solo",
+            "live_draft_room": _sample_room(status="in_progress"),
+        }
+        render_live_draft_room_header(
+            st,
+            session,
+            session["live_draft_room"],
+            multiplayer=False,
+            user_team="Danny",
+            on_clock_team="Danny",
+            pick_label="Pick 1 / 2",
+            status_label="In Progress",
+            draft_in_progress=True,
+        )
+        joined = " ".join(str(c) for c in st.markdown.call_args_list)
+        self.assertIn("Solo Draft", joined)
+        self.assertIn("You control all teams", joined)
+        st.code.assert_not_called()
+
+    def test_shared_header_shows_code_role_team(self) -> None:
         st = mock.MagicMock()
         session = {
             "active_shared_draft_room_code": "ABC123",
-            "live_draft_room": _sample_room(),
+            "live_draft_setup_mode": "shared_multiplayer",
+            "live_draft_room": _sample_room(status="in_progress", config={"draft_setup_mode": "shared_multiplayer"}),
             "draft_room_participant_id": "host-1",
         }
         with mock.patch("draft_room_context.get_global_draft_context") as ctx:
             ctx.return_value = {
                 "is_room_host": True,
-                "participant_team": "Team 1",
+                "participant_team": "Danny",
                 "room_code": "ABC123",
             }
             render_live_draft_room_header(
@@ -69,16 +92,15 @@ class RoomHeaderTests(unittest.TestCase):
                 session,
                 session["live_draft_room"],
                 multiplayer=True,
-                user_team="Team 1",
-                on_clock_team="Team 1",
+                user_team="Danny",
+                on_clock_team="Danny",
                 pick_label="Pick 1 / 2",
                 status_label="In Progress",
                 draft_in_progress=True,
             )
         joined = " ".join(str(c) for c in st.markdown.call_args_list)
         self.assertIn("ABC123", joined)
-        self.assertIn("Host", joined)
-        self.assertIn("Team 1", joined)
+        self.assertIn("Shared Multiplayer", joined)
         st.code.assert_called()
 
 
@@ -131,6 +153,60 @@ class CompactRecCardTests(unittest.TestCase):
                 }
             ]
         )
+
+    @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
+    @mock.patch("draft_actions.draft_action_context")
+    @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
+    def test_long_player_name_not_truncated(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
+        gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
+        long_df = pd.DataFrame(
+            [
+                {
+                    "fullName": "Shohei Ohtani",
+                    "playerID": "sho1",
+                    "Primary Position": "DH",
+                    "Fantasy Edge": 15,
+                    "Survival Probability": 0.42,
+                }
+            ]
+        )
+        col_info = mock.MagicMock()
+        col_btn = mock.MagicMock()
+        col_detail = mock.MagicMock()
+        self.st.columns.return_value = [col_info, col_btn, col_detail]
+
+        render_live_draft_rec_cards(
+            self.st,
+            self.session,
+            self.session["live_draft_room"],
+            long_df,
+            max_cards=1,
+        )
+        html = str(self.st.markdown.call_args)
+        self.assertIn("Shohei Ohtani", html)
+        self.assertNotIn("...", html)
+        self.assertIn("DH", html)
+        self.assertIn("Reason:", html)
+
+    @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
+    @mock.patch("draft_actions.draft_action_context")
+    @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
+    def test_stacked_mobile_layout(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
+        gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
+        self.st.columns.return_value = [mock.MagicMock(), mock.MagicMock(), mock.MagicMock()]
+        render_live_draft_rec_cards(
+            self.st,
+            self.session,
+            self.session["live_draft_room"],
+            self.rec_df,
+            max_cards=1,
+            layout="stacked",
+        )
+        diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
+        self.assertEqual(diag.get("recommendation_card_layout_mode"), "stacked")
+        html = str(self.st.markdown.call_args)
+        self.assertIn("ld-rec-stacked", html)
+        self.assertIn("Juan Soto", html)
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")

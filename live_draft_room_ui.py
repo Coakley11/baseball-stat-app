@@ -259,26 +259,29 @@ def inject_live_draft_room_styles(st: Any) -> None:
         .ld-rec-compact-row {
             border: 1px solid #e2e8f0;
             border-radius: 10px;
-            padding: 8px 10px;
+            padding: 10px 12px;
             margin-bottom: 8px;
             background: #fff;
-            max-height: 96px;
-            overflow: hidden;
         }
         .ld-rec-compact-row .ld-rec-name {
-            font-size: 15px;
+            font-size: 16px;
             font-weight: 800;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            line-height: 1.25;
             color: #0f172a;
+            word-break: break-word;
         }
-        .ld-rec-compact-row .ld-rec-stats {
-            font-size: 12px;
+        .ld-rec-compact-row .ld-rec-line {
+            font-size: 13px;
             color: #475569;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            line-height: 1.4;
+            margin-top: 4px;
+            word-break: break-word;
+        }
+        .ld-rec-stacked .ld-rec-name {
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1.25;
+            color: #0f172a;
         }
         .live-rec-grid {
             display: grid;
@@ -438,36 +441,73 @@ def render_live_draft_room_header(
     status_label: str = "",
     draft_in_progress: bool = False,
 ) -> None:
-    """Always-visible room header: code, role, team, status, teams."""
+    """Always-visible room header: mode, code (multiplayer only), role, team, status."""
     code = ""
-    role = "Single-user"
+    role = ""
     assigned_team = str(user_team or "").strip()
+    mode_label = "Solo Draft"
+    mode_detail = "You control all teams"
+    solo = True
     try:
-        from draft_room_context import get_global_draft_context, resolve_shared_room_code
+        from live_draft_setup_mode import is_solo_draft_mode, is_shared_multiplayer_intent, shared_room_code
 
-        ctx = get_global_draft_context(session)
-        code = resolve_shared_room_code(session)
-        if multiplayer or code:
+        solo = is_solo_draft_mode(session, room=room)
+        if solo:
+            mode_label = "Solo Draft"
+            teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+            mode_detail = f"You control all teams ({len(teams)} teams)" if len(teams) > 1 else "You control all teams"
+        elif is_shared_multiplayer_intent(session, room=room):
+            mode_label = "Shared Multiplayer"
+            mode_detail = ""
+            from draft_room_context import get_global_draft_context, resolve_shared_room_code
+
+            ctx = get_global_draft_context(session)
+            code = shared_room_code(session) or resolve_shared_room_code(session)
             role = "Host" if ctx.get("is_room_host") else "Guest"
             assigned_team = str(ctx.get("participant_team") or assigned_team or "—").strip() or "—"
     except ImportError:
         code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+        solo = not bool(code) and not multiplayer
+        if multiplayer or code:
+            solo = False
+            mode_label = "Shared Multiplayer"
+            role = "Host"
 
     teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
     teams_txt = ", ".join(teams) if teams else "—"
     live_badge = " · **Live**" if draft_in_progress else ""
     status_txt = str(status_label or room.get("status") or "—").replace("_", " ").title()
 
+    if solo:
+        st.markdown(
+            f"""
+            <div class="ld-room-header">
+                <div class="ld-rh-title">Live draft room</div>
+                <div class="ld-rh-meta">
+                    <strong>Mode:</strong> {mode_label} · {mode_detail}<br/>
+                    <strong>Your team:</strong> {assigned_team or "—"} ·
+                    <strong>Status:</strong> {status_txt}{live_badge} ·
+                    <strong>{pick_label or "Pick"}</strong> ·
+                    <strong>On clock:</strong> {on_clock_team or "—"}<br/>
+                    <strong>Teams:</strong> {teams_txt}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
     code_block = (
-        f'<div class="ld-rh-code">{code}</div>' if code else '<span style="color:#b45309;">Code pending</span>'
+        f'<div class="ld-rh-code">{code}</div>' if code else '<span style="color:#b45309;">Code missing</span>'
     )
+    role_txt = f"<strong>Your role:</strong> {role} · " if role else ""
     st.markdown(
         f"""
         <div class="ld-room-header">
-            <div class="ld-rh-title">Live draft room</div>
+            <div class="ld-rh-title">Live draft room · {mode_label}</div>
             {code_block}
             <div class="ld-rh-meta">
-                <strong>Role:</strong> {role} ·
+                {role_txt}
                 <strong>Your team:</strong> {assigned_team or "—"} ·
                 <strong>Status:</strong> {status_txt}{live_badge} ·
                 <strong>{pick_label or "Pick"}</strong> ·
@@ -483,9 +523,9 @@ def render_live_draft_room_header(
             st.code(code, language=None)
         except TypeError:
             st.code(code)
-        st.caption("Share this 6-character code so other managers can join. Copy from the box above.")
-    elif multiplayer:
-        st.warning("Room code missing — guests cannot join until the host creates a shared room.")
+        st.caption(f"Invite players with this room code: **{code}**")
+    else:
+        st.error("Could not create shared room. This draft cannot be joined by others.")
 
 
 def render_live_draft_status_badges(
@@ -606,6 +646,7 @@ def render_live_draft_rec_cards(
     *,
     max_cards: int = 6,
     multiplayer: bool = False,
+    layout: str = "horizontal",
     fmt_rate_4=None,
     fmt_int=None,
 ) -> None:
@@ -619,10 +660,11 @@ def render_live_draft_rec_cards(
         return
 
     pick_idx = int(room.get("current_pick_index") or 0)
+    layout_mode = "stacked" if layout == "stacked" else "compact_horizontal"
     record_rec_card_diagnostics(
         session,
-        recommendation_card_layout_mode="compact_horizontal",
-        recommendation_card_width="full_row",
+        recommendation_card_layout_mode=layout_mode,
+        recommendation_card_width="full_row" if layout_mode == "compact_horizontal" else "stacked",
         recommendation_card_count=len(rows),
         rec_card_render_ts=time.time(),
     )
@@ -670,16 +712,29 @@ def render_live_draft_rec_cards(
         elif not player_available:
             disable_reason = avail_reason or f"{name} is not available."
 
-        info_col, btn_col, detail_col = st.columns([6.5, 2.2, 1.3])
+        info_col, btn_col, detail_col = st.columns([1, 1, 1]) if layout == "stacked" else st.columns([6.5, 2.2, 1.3])
         with info_col:
-            st.markdown(
-                f'<div class="ld-rec-compact-row">'
-                f'<div class="ld-rec-name">{name} · {pos} · {tier_lbl}</div>'
-                f'<div class="ld-rec-stats">Fantasy Edge {edge_txt} · {surv_pct} · {action}</div>'
-                f'<div class="ld-rec-stats">Reason: {explanation[:120]}</div>'
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+            if layout == "stacked":
+                st.markdown(
+                    f'<div class="ld-rec-stacked">'
+                    f'<div class="ld-rec-name">{name}</div>'
+                    f'<div class="ld-rec-line">{pos} · {tier_lbl}</div>'
+                    f'<div class="ld-rec-line">Fantasy Edge {edge_txt} · {surv_pct}</div>'
+                    f'<div class="ld-rec-line"><strong>{action}</strong></div>'
+                    f'<div class="ld-rec-line">Reason: {explanation}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<div class="ld-rec-compact-row">'
+                    f'<div class="ld-rec-name">{name}</div>'
+                    f'<div class="ld-rec-line">{pos} · {tier_lbl}</div>'
+                    f'<div class="ld-rec-line">Fantasy Edge {edge_txt} · {surv_pct} · {action}</div>'
+                    f'<div class="ld-rec-line">Reason: {explanation}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
         with btn_col:
             btn_label = f"Draft {name.split()[-1]}" if name else "Draft Player"
             btn_key = f"rec_card_draft_{pick_idx}_{player_id or i}_{name[:24]}"

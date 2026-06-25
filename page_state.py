@@ -117,7 +117,7 @@ PAGE_STATE_REGISTRY = {
         "exact": [
             "live_draft_room", "live_draft_league_name", "live_draft_team_count", "live_draft_num_teams",
             "live_draft_picks_per_team", "live_draft_type", "live_draft_scoring", "live_draft_timer",
-            "live_draft_auto_rule", "live_draft_proj_style", "live_draft_proj_window",
+            "live_draft_auto_rule", "live_draft_proj_style", "live_draft_proj_window", "live_draft_setup_mode",
             "live_slot_c", "live_slot_1b", "live_slot_2b", "live_slot_3b", "live_slot_ss",
             "live_slot_of", "live_slot_dh", "live_slot_p", "live_slot_bench",
         ],
