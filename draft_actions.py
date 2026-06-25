@@ -742,25 +742,34 @@ def _draft_live(
         result["error"] = "not_allowed"
         result["message"] = reason
         if record_draft_commit_diagnostics is not None:
-            record_draft_commit_diagnostics(session, draft_player_called=True, supabase_commit_error=reason)
+            record_draft_commit_diagnostics(
+                session,
+                draft_player_called=True,
+                manual_pick_attempted=True,
+                manual_pick_success=False,
+                manual_pick_error=reason,
+                supabase_commit_error=reason,
+            )
         if set_live_draft_pick_notice is not None:
             set_live_draft_pick_notice(session, "error", reason)
         return result
 
     try:
         from draft_room_state import sync_live_draft_room_to_canonical_board
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state, write_canonical_live_draft_state
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, mark_live_draft_local_edit, write_canonical_live_draft_state
     except ImportError as exc:
         result["error"] = "import_failed"
         result["message"] = str(exc)
         return result
 
-    prepare_live_draft_state(session)
     room = session.get(LIVE_DRAFT_ROOM_KEY)
     if not isinstance(room, dict):
         result["error"] = "no_live_room"
         result["message"] = "No active live draft."
         return result
+
+    mark_live_draft_local_edit(session)
+    session["_live_draft_manual_pick_in_flight"] = True
 
     try:
         from draft_room_context import is_multiplayer_draft_active
@@ -774,6 +783,7 @@ def _draft_live(
             session,
             draft_button_clicked=True,
             selected_player_at_click=player_name,
+            selected_player_name=player_name,
             draft_player_called=True,
             manual_pick_attempted=True,
             commit_path="shared_room" if mp else "single_user",
@@ -815,6 +825,7 @@ def _draft_live(
     slot = live_draft_current_slot(room)
 
     if slot is None:
+        session.pop("_live_draft_manual_pick_in_flight", None)
         result["error"] = "draft_complete"
         result["message"] = "Draft is already complete."
         return result
@@ -827,11 +838,16 @@ def _draft_live(
 
     player_row = _find_live_player_row(session, player_name)
     if not player_row:
+        session.pop("_live_draft_manual_pick_in_flight", None)
         result["error"] = "player_not_available"
         result["message"] = f"{player_name} is not available."
         if set_live_draft_pick_notice is not None:
             set_live_draft_pick_notice(session, "error", result["message"])
         return result
+
+    if record_draft_commit_diagnostics is not None:
+        player_id = str(player_row.get("playerID") or player_row.get("player_id") or "").strip()
+        record_draft_commit_diagnostics(session, selected_player_id=player_id or None)
 
     if mp:
         try:
@@ -898,6 +914,7 @@ def _draft_live(
         )
 
     if not commit.ok:
+        session.pop("_live_draft_manual_pick_in_flight", None)
         result["error"] = commit.error or "shared_commit_failed"
         result["message"] = commit.message
         if commit.error == "shared_commit_failed":
@@ -916,6 +933,7 @@ def _draft_live(
     room = session.get(LIVE_DRAFT_ROOM_KEY) or room
     result["ok"] = True
     result["message"] = commit.message if commit.message != "Pick saved." else f"Drafted {player_name}."
+    session.pop("_live_draft_manual_pick_in_flight", None)
     if clear_safe_mode_after_successful_pick is not None:
         clear_safe_mode_after_successful_pick(session, room)
     if set_live_draft_pick_notice is not None:

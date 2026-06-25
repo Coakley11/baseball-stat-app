@@ -17,6 +17,8 @@ def render_draft_commit_diagnostics(st: Any, session: dict[str, Any], *, develop
         keys = (
             "draft_button_clicked",
             "selected_player_at_click",
+            "selected_player_name",
+            "selected_player_id",
             "draft_player_called",
             "manual_pick_attempted",
             "manual_pick_success",

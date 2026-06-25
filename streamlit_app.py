@@ -9798,28 +9798,43 @@ def live_draft_to_lab_draft_df(room):
     return df
 
 
+def _live_draft_team_accent(team: str) -> str:
+    import hashlib
+
+    digest = hashlib.md5(str(team or "team").encode("utf-8")).hexdigest()
+    return f"#{digest[:6]}"
+
+
 def _render_live_draft_styles():
     st.markdown(
         """
         <style>
         .live-draft-on-clock {
-            background: linear-gradient(90deg, #0b3d6e 0%, #1f6feb 100%);
+            background: linear-gradient(135deg, #0b3d6e 0%, #1f6feb 55%, #2d8cff 100%);
             color: #fff;
-            padding: 14px 18px;
-            border-radius: 12px;
-            margin-bottom: 12px;
-            box-shadow: 0 4px 14px rgba(15, 60, 120, 0.25);
+            padding: 22px 24px;
+            border-radius: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 8px 24px rgba(15, 60, 120, 0.28);
         }
-        .live-draft-on-clock .ld-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.9; }
-        .live-draft-on-clock .ld-team { font-size: 26px; font-weight: 800; margin: 4px 0; }
-        .live-draft-on-clock .ld-meta { font-size: 14px; opacity: 0.92; }
+        .live-draft-on-clock .ld-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.88; font-weight: 600; }
+        .live-draft-on-clock .ld-team { font-size: 34px; font-weight: 800; margin: 6px 0 8px 0; line-height: 1.1; }
+        .live-draft-on-clock .ld-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 700;
+            background: rgba(255,255,255,0.18);
+        }
+        .live-draft-on-clock .ld-meta { font-size: 15px; opacity: 0.95; line-height: 1.5; }
         .live-draft-timer {
             display: inline-block;
-            background: rgba(255,255,255,0.15);
-            border-radius: 8px;
-            padding: 6px 12px;
-            font-weight: 700;
-            font-size: 18px;
+            background: rgba(255,255,255,0.18);
+            border-radius: 10px;
+            padding: 8px 14px;
+            font-weight: 800;
+            font-size: 22px;
         }
         .live-rec-card {
             background: #fff;
@@ -9839,9 +9854,30 @@ def _render_live_draft_styles():
             top: 0;
             z-index: 100;
             background: #f7f9fc;
-            padding: 8px 0 12px 0;
+            padding: 10px 0 14px 0;
             border-bottom: 1px solid #e2e8f0;
-            margin-bottom: 12px;
+            margin-bottom: 14px;
+        }
+        .live-draft-board-panel,
+        .live-draft-queue-panel,
+        .live-draft-totals-panel {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+        }
+        .live-draft-manual-panel div[data-testid="stButton"] button[kind="primary"] {
+            min-height: 48px;
+            font-size: 16px;
+            font-weight: 700;
+            border-radius: 12px;
+        }
+        @media (max-width: 768px) {
+            .live-draft-on-clock { padding: 16px 14px; }
+            .live-draft-on-clock .ld-team { font-size: 26px; }
+            .live-draft-timer { font-size: 18px; }
         }
         </style>
         """,
@@ -9854,11 +9890,12 @@ def _render_live_draft_on_clock_banner(slot, remaining, next_pick=None):
     rnd = slot.get("Round", "—")
     pick_no = slot.get("Pick", "—")
     next_txt = f" · Your next pick: #{next_pick}" if next_pick else ""
+    accent = _live_draft_team_accent(team)
     st.markdown(
         f"""
-        <div class="live-draft-on-clock">
+        <div class="live-draft-on-clock" style="border-left: 6px solid {accent};">
             <div class="ld-title">On the clock</div>
-            <div class="ld-team">{team}</div>
+            <div class="ld-team"><span class="ld-badge" style="background:{accent};">{team}</span></div>
             <div class="ld-meta">
                 Round {rnd} · Pick {pick_no}{next_txt}
                 <span class="live-draft-timer" style="float:right;">{remaining}s</span>
@@ -18209,6 +18246,7 @@ if active_page == "Live Draft Room":
                     request_live_draft_rerun(st, st.session_state, "live_draft_queue", room=room)
                 except ImportError:
                     st.rerun()
+            st.markdown('<div class="live-draft-board-panel">', unsafe_allow_html=True)
             st.subheader("Draft Board")
             board_df = live_draft_build_board_df(room)
             if board_df.empty:
@@ -18221,6 +18259,7 @@ if active_page == "Live Draft Room":
                     display_rows=80,
                     style_cols=["Fantasy Edge", "Expected Fantasy Value"],
                 )
+            st.markdown("</div>", unsafe_allow_html=True)
 
         with rec_col:
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
@@ -18422,6 +18461,7 @@ if active_page == "Live Draft Room":
 
         totals_df = live_draft_team_totals(room)
         if not totals_df.empty:
+            st.markdown('<div class="live-draft-totals-panel">', unsafe_allow_html=True)
             st.subheader("Team Projected Totals")
             render_output_table(
                 clean_ui_columns(totals_df),
@@ -18429,6 +18469,7 @@ if active_page == "Live Draft Room":
                 file_name="live_draft_team_totals.csv",
                 display_rows=20,
             )
+            st.markdown("</div>", unsafe_allow_html=True)
 
         if picks_done >= total_picks and total_picks > 0:
             st.success("Draft complete. Export results or send to analysis below.")

@@ -175,8 +175,10 @@ def render_live_draft_queue_panel(st: Any, session: dict[str, Any]) -> bool:
     queue = [str(x).strip() for x in queue if str(x).strip()]
 
     st.subheader("Draft Queue")
+    st.markdown('<div class="live-draft-queue-panel">', unsafe_allow_html=True)
     if not queue:
         st.caption("Empty — add players with **Queue player** in Player Actions.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return False
 
     ctx = draft_action_context(session)
@@ -225,6 +227,7 @@ def render_live_draft_queue_panel(st: Any, session: dict[str, Any]) -> bool:
 
     if len(queue) > 20:
         st.caption(f"+{len(queue) - 20} more in queue")
+    st.markdown("</div>", unsafe_allow_html=True)
     return rerun
 
 
@@ -351,6 +354,24 @@ def on_start_new_live_draft() -> None:
 _LIVE_DRAFT_UI_DIAG_KEY = "_live_draft_ui_diag"
 
 
+def _player_id_from_available(available: Any, player_name: str) -> str:
+    name = str(player_name or "").strip()
+    if not name or available is None:
+        return ""
+    try:
+        if hasattr(available, "columns"):
+            id_col = "playerID" if "playerID" in available.columns else ""
+            name_col = "fullName" if "fullName" in available.columns else ("Player" if "Player" in available.columns else "")
+            if name_col:
+                series = available[name_col].astype(str).str.strip()
+                mask = series.eq(name)
+                if id_col and mask.any():
+                    return str(available.loc[mask, id_col].iloc[0])
+    except Exception:
+        return ""
+    return ""
+
+
 def _manual_draft_options_from_pool(available: Any) -> list[str]:
     """Sort pool rows for Manual Draft selectbox; tolerate compact/missing scoring columns."""
     if available is None or getattr(available, "empty", True):
@@ -400,6 +421,7 @@ def render_live_manual_draft_diagnostics(st: Any, session: dict[str, Any], *, de
             ("filtered_player_count", raw.get("filtered_player_count")),
             ("candidate_count", raw.get("candidate_count")),
             ("selected_player", raw.get("selected_player")),
+            ("selected_player_id", raw.get("selected_player_id")),
             ("draft_enabled", raw.get("draft_enabled")),
             ("is_my_turn", raw.get("is_my_turn")),
             ("is_your_pick", raw.get("is_your_pick")),
@@ -619,7 +641,18 @@ def render_live_manual_draft_panel(
         }
     )
     paused = room.get("status") == "paused"
-    draft_in_progress = str(gate.get("draft_status") or room.get("status") or "") == "in_progress"
+    room_status = str(room.get("status") or "").strip()
+    gate_status = str(gate.get("draft_status") or "").strip()
+    draft_in_progress = room_status == "in_progress" or gate_status == "in_progress"
+    if manual_recovery and not draft_in_progress:
+        try:
+            from live_draft_safe_mode import total_expected_picks
+
+            board = len(room.get("draft_board") or [])
+            total = total_expected_picks(room)
+            draft_in_progress = bool(total > 0 and board < total)
+        except ImportError:
+            pass
 
     if not player_options:
         return _finish(
@@ -669,19 +702,46 @@ def render_live_manual_draft_panel(
         diag_base["draft_button_rendered"] = False
         return _finish(diag_base)
 
-    if render_draft_button(
-        st,
-        session,
-        selected_player,
-        source="live_draft_room",
-        key_suffix="live_manual",
-        label="Draft Player",
-        button_type="primary",
+    st.markdown('<div class="live-draft-manual-panel">', unsafe_allow_html=True)
+    selected_id = _player_id_from_available(available, str(selected_player or ""))
+    diag_base["selected_player_id"] = selected_id
+
+    if st.button(
+        "Draft Player",
+        key="draft_btn_live_draft_room_live_manual",
+        type="primary",
+        use_container_width=True,
     ):
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            record_draft_commit_diagnostics(
+                session,
+                draft_button_clicked=True,
+                selected_player_at_click=str(selected_player or ""),
+                selected_player_name=str(selected_player or ""),
+                selected_player_id=selected_id or None,
+            )
+        except ImportError:
+            pass
+        result = draft_player(session, str(selected_player), source="live_draft_room", st_obj=st)
+        msg = str(result.get("message") or result.get("error") or "Drafted.")
+        if result.get("ok"):
+            session["_live_draft_pick_flash"] = msg
+            if hasattr(st, "toast"):
+                st.toast(msg, icon="✅")
+        elif result.get("error") == "shared_commit_failed":
+            session["_draft_room_conflict_notice"] = msg
+            st.error(msg)
+        else:
+            session["_live_draft_pick_flash_error"] = msg
+            st.error(msg)
         record_live_draft_ui_diagnostics(session, {**diag_base, "draft_button_rendered": True})
         render_live_manual_draft_diagnostics(st, session)
+        st.markdown("</div>", unsafe_allow_html=True)
         return True
 
+    st.markdown("</div>", unsafe_allow_html=True)
     record_live_draft_ui_diagnostics(
         session,
         {

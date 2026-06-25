@@ -98,7 +98,6 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         self.assertFalse(diag.get("draft_button_should_render"))
 
     @patch("draft_ui.can_draft_player", return_value=(True, ""))
-    @patch("draft_ui.render_draft_button", return_value=False)
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=True)
     @patch("draft_actions.draft_action_context", return_value=_live_ctx())
     @patch("live_draft_state.live_draft_get_available")
@@ -107,13 +106,13 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         mock_get_available: MagicMock,
         _ctx: MagicMock,
         _free: MagicMock,
-        _btn: MagicMock,
         _can: MagicMock,
     ) -> None:
         mock_get_available.return_value = pd.DataFrame(
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
         )
         self.st.selectbox.return_value = "Aaron Judge"
+        self.st.button.return_value = False
         result = render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=False)
         self.assertFalse(result)
         self.st.selectbox.assert_called()
@@ -123,7 +122,6 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         self.assertFalse(diag.get("multiplayer_mode"))
 
     @patch("draft_ui.can_draft_player", return_value=(True, ""))
-    @patch("draft_ui.render_draft_button", return_value=False)
     @patch("draft_source_validation.allowed_draft_player_names", return_value=[])
     @patch("draft_source_validation.allow_free_pool_drafting", return_value=False)
     @patch("draft_actions.draft_action_context", return_value=_live_ctx())
@@ -134,17 +132,17 @@ class RenderLiveManualDraftPanelTests(unittest.TestCase):
         _ctx: MagicMock,
         _free: MagicMock,
         _allowed: MagicMock,
-        mock_btn: MagicMock,
         _can: MagicMock,
     ) -> None:
         mock_get_available.return_value = pd.DataFrame(
             [{"fullName": "Aaron Judge", "Expected Fantasy Value": 1.0, "Model Rank": 1}]
         )
         self.st.selectbox.return_value = "Aaron Judge"
+        self.st.button.return_value = False
         self.session["active_shared_draft_room_code"] = "ABC123"
         render_live_manual_draft_panel(self.st, self.session, _room(), multiplayer=True)
         self.st.selectbox.assert_called()
-        mock_btn.assert_called()
+        self.st.button.assert_called()
         diag = self.session.get("_live_draft_ui_diag") or {}
         self.assertEqual(diag.get("pool_source"), "full_pool_turn_fallback")
         self.assertTrue(diag.get("draft_button_rendered"))

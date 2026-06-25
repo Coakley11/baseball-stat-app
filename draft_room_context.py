@@ -293,6 +293,18 @@ def sync_shared_draft_room(
     if not isinstance(document, dict):
         return False
     remote_rev = int(document.get("revision") or 0)
+    if session.get("_live_draft_manual_pick_in_flight"):
+        return False
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_live_draft_locally_dirty, live_draft_board_len, runtime_room_ahead_of_blob
+
+        runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+        if is_live_draft_locally_dirty(session) and isinstance(runtime, dict):
+            remote_room = document.get("live_room") if isinstance(document.get("live_room"), dict) else document
+            if isinstance(remote_room, dict) and runtime_room_ahead_of_blob(runtime, remote_room):
+                return False
+    except ImportError:
+        pass
     if force or remote_rev > local_rev:
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
         load_participant_workflow_into_session(session, room_code)

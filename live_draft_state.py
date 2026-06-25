@@ -551,6 +551,39 @@ def is_live_draft_locally_dirty(session: dict[str, Any]) -> bool:
     return bool(session.get(LIVE_DRAFT_DIRTY_KEY))
 
 
+def live_draft_board_len(payload: dict[str, Any] | None) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    board = payload.get("draft_board") or []
+    return len(board) if isinstance(board, list) else 0
+
+
+def runtime_room_ahead_of_blob(runtime: dict[str, Any], blob: dict[str, Any]) -> bool:
+    rb = live_draft_board_len(runtime)
+    cb = live_draft_board_len(blob)
+    if rb > cb:
+        return True
+    if rb < cb:
+        return False
+    return int(runtime.get("current_pick_index") or 0) > int(blob.get("current_pick_index") or 0)
+
+
+def should_prefer_runtime_live_room(
+    session: dict[str, Any],
+    runtime: dict[str, Any] | None,
+    canonical: dict[str, Any] | None,
+) -> bool:
+    if not is_runtime_room(runtime) or not isinstance(canonical, dict):
+        return False
+    if runtime_room_ahead_of_blob(runtime, canonical):
+        return True
+    if is_live_draft_locally_dirty(session):
+        rb = live_draft_board_len(runtime)
+        cb = live_draft_board_len(canonical)
+        return rb >= cb
+    return False
+
+
 def mark_live_draft_local_edit(session: dict[str, Any]) -> None:
     session[LIVE_DRAFT_DIRTY_KEY] = True
     session[LIVE_DRAFT_LOCAL_EDIT_TS_KEY] = _utc_now_iso()
@@ -651,6 +684,10 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
         if not allowed:
             clear_foreign_live_draft_state(session, reason=block_reason)
             return None
+        runtime = room if is_runtime_room(room) else None
+        if should_prefer_runtime_live_room(session, runtime, canonical):
+            write_canonical_live_draft_state(session, runtime, reason="session_hydrate_prefer_runtime", local_edit=True)
+            return _apply_derived_draft_status(session, runtime)
         restored = room_from_persist_dict(canonical)
         if restored:
             session[LIVE_DRAFT_ROOM_KEY] = restored
