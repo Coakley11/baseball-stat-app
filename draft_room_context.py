@@ -296,6 +296,17 @@ def sync_shared_draft_room(
     if force or remote_rev > local_rev:
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
         load_participant_workflow_into_session(session, room_code)
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            record_draft_commit_diagnostics(
+                session,
+                poll_refresh_detected=True,
+                realtime_update_received=True,
+                room_revision_after=remote_rev,
+            )
+        except ImportError:
+            pass
         return True
     return False
 
@@ -697,37 +708,110 @@ def join_shared_draft_room(
     return True, f"Joined room {code} as {assigned}.", document
 
 
+def _on_clock_team_from_room(live_room: dict[str, Any] | None) -> str:
+    if not isinstance(live_room, dict):
+        return ""
+    picks = list(live_room.get("pick_order") or [])
+    idx = int(live_room.get("current_pick_index") or 0)
+    if idx >= len(picks):
+        return ""
+    slot = picks[idx]
+    if isinstance(slot, dict):
+        return str(slot.get("Team") or "").strip()
+    return ""
+
+
 def commit_shared_room_state(
     session: dict[str, Any],
     live_room: dict[str, Any],
     *,
     expected_revision: int | None = None,
     player_name: str | None = None,
+    pick_already_applied: bool = False,
     store: SharedRoomStore | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """Validate (optional pick) and persist shared room document."""
     from draft_room_shared_state import commit_shared_room_pick
 
-    if player_name:
+    try:
+        from draft_commit_diagnostics import record_draft_commit_diagnostics
+    except ImportError:
+        record_draft_commit_diagnostics = None  # type: ignore[assignment,misc]
+
+    room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    backend = store or get_shared_room_store()
+    shared_doc = backend.load(room_code) if room_code else None
+    head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
+    meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+    if expected_revision is None:
+        expected_revision = head_rev
+
+    board_before = len(live_room.get("draft_board") or []) if isinstance(live_room, dict) else 0
+    idx_before = int(live_room.get("current_pick_index") or 0) if isinstance(live_room, dict) else 0
+    on_clock_before = _on_clock_team_from_room(live_room if isinstance(live_room, dict) else None)
+
+    if record_draft_commit_diagnostics is not None:
+        record_draft_commit_diagnostics(
+            session,
+            commit_path="shared_room",
+            commit_shared_room_pick_called=False,
+            supabase_revision_before=head_rev,
+            board_size_before=board_before,
+            current_pick_index_before=idx_before,
+            on_clock_team_before=on_clock_before or None,
+            room_revision_before=head_rev,
+        )
+
+    validate_result = None
+    validate_msg = ""
+    if player_name and not pick_already_applied:
         from draft_source_validation import validate_shared_pick_commit
 
-        room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-        shared_doc = None
-        if room_code:
-            from draft_room_shared_state import document_to_runtime_room, load_shared_room
+        try:
+            from draft_room_membership import validate_participant_may_draft
 
-            shared_doc = load_shared_room(room_code, store=store)
-        remote_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
-        exp_rev = int(expected_revision or 0)
-        if isinstance(shared_doc, dict) and remote_rev == exp_rev:
-            validation_room = document_to_runtime_room(shared_doc) or live_room
-            ok, msg = validate_shared_pick_commit(session, validation_room, player_name)
-            if not ok:
+            ok_pick, pick_msg = validate_participant_may_draft(session, live_room)
+            validate_result = ok_pick
+            if record_draft_commit_diagnostics is not None:
+                record_draft_commit_diagnostics(
+                    session,
+                    validate_participant_may_draft_result=ok_pick,
+                    validate_participant_may_draft_message=pick_msg or None,
+                )
+            if not ok_pick:
                 sync_shared_draft_room(session, force=True, store=store)
-                return False, msg, None
+                if record_draft_commit_diagnostics is not None:
+                    record_draft_commit_diagnostics(
+                        session,
+                        validate_shared_pick_commit_result=False,
+                        supabase_commit_success=False,
+                        supabase_commit_error=pick_msg,
+                    )
+                return False, pick_msg, None
+        except ImportError:
+            pass
 
-    if expected_revision is None:
-        expected_revision = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+        ok, msg = validate_shared_pick_commit(session, live_room, player_name)
+        validate_result = ok
+        validate_msg = msg
+        if record_draft_commit_diagnostics is not None:
+            record_draft_commit_diagnostics(
+                session,
+                validate_shared_pick_commit_result=ok,
+                validate_shared_pick_commit_message=msg or None,
+            )
+        if not ok:
+            sync_shared_draft_room(session, force=True, store=store)
+            if record_draft_commit_diagnostics is not None:
+                record_draft_commit_diagnostics(
+                    session,
+                    supabase_commit_success=False,
+                    supabase_commit_error=msg,
+                )
+            return False, msg, None
+
+    if record_draft_commit_diagnostics is not None:
+        record_draft_commit_diagnostics(session, commit_shared_room_pick_called=True)
 
     ok, saved = commit_shared_room_pick(
         session,
@@ -735,10 +819,37 @@ def commit_shared_room_state(
         expected_revision=expected_revision,
         store=store,
     )
+    board_after = len(live_room.get("draft_board") or []) if isinstance(live_room, dict) else 0
+    idx_after = int(live_room.get("current_pick_index") or 0) if isinstance(live_room, dict) else 0
+    on_clock_after = _on_clock_team_from_room(live_room if isinstance(live_room, dict) else None)
+    rev_after = int(saved.get("revision") or 0) if isinstance(saved, dict) else None
+
+    if record_draft_commit_diagnostics is not None:
+        record_draft_commit_diagnostics(
+            session,
+            pick_saved_to_room=ok,
+            supabase_commit_success=ok,
+            supabase_commit_error=None if ok else "revision_conflict",
+            board_size_after=board_after,
+            current_pick_index_after=idx_after,
+            on_clock_team_after=on_clock_after or None,
+            room_revision_after=rev_after,
+            current_pick_after=idx_after + 1 if idx_after > idx_before else live_room.get("current_pick"),
+            next_team_resolved=on_clock_after or None,
+            poll_refresh_detected=bool(ok),
+            realtime_update_sent=bool(ok),
+        )
+
     if not ok:
         sync_shared_draft_room(session, force=True, store=store)
-        conflict_msg = "Another participant updated the room. Board refreshed."
+        conflict_msg = "Another participant updated the room. Board refreshed — try your pick again."
         session["_draft_room_conflict_notice"] = conflict_msg
+        if record_draft_commit_diagnostics is not None:
+            record_draft_commit_diagnostics(
+                session,
+                supabase_commit_error=conflict_msg,
+                realtime_update_received=True,
+            )
         return False, conflict_msg, saved
 
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
@@ -750,7 +861,7 @@ def commit_shared_room_state(
         sync_live_draft_room_to_canonical_board(session, live_room)
     except ImportError:
         pass
-    return True, "", saved
+    return True, validate_msg if validate_result is False else "", saved
 
 
 def leave_shared_draft_room(session: dict[str, Any]) -> None:

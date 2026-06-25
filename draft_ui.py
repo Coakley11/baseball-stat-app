@@ -113,11 +113,25 @@ def render_draft_button(
     allowed, reason = can_draft_player(session, name)
     if allowed:
         if container.button(label, key=btn_key, use_container_width=True, type=button_type):
+            try:
+                from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+                record_draft_commit_diagnostics(
+                    session,
+                    draft_button_clicked=True,
+                    selected_player_at_click=name,
+                )
+            except ImportError:
+                pass
             result = draft_player(session, name, source=source, st_obj=st)
             msg = str(result.get("message") or result.get("error") or "Drafted.")
             session[flash_key] = msg
-            if not result.get("ok") and result.get("error") == "shared_commit_failed":
+            if result.get("ok"):
+                session["_live_draft_pick_flash"] = msg
+            elif result.get("error") == "shared_commit_failed":
                 session["_draft_room_conflict_notice"] = msg
+            elif not result.get("ok"):
+                session["_live_draft_pick_flash_error"] = msg
             return True
         return False
 

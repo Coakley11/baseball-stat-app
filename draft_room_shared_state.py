@@ -541,8 +541,10 @@ def commit_shared_room_pick(
     current = backend.load(code)
     if not isinstance(current, dict):
         return False, None
+    head_rev = int(current.get("revision") or 0)
+    use_rev = head_rev if expected_revision is None else int(expected_revision)
     updated = bump_revision(current, live_room=live_room)
-    ok, saved = backend.save_if_revision(updated, expected_revision=expected_revision)
+    ok, saved = backend.save_if_revision(updated, expected_revision=use_rev)
     if not ok or saved is None:
         if isinstance(saved, dict):
             publish_shared_room_runtime(session, saved, reason="shared_room_conflict")

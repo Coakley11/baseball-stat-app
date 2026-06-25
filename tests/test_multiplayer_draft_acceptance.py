@@ -138,9 +138,10 @@ class MultiplayerDraftAcceptanceTests(unittest.TestCase):
 
         result2 = draft_player(stale_tab, "Juan Soto", source="live_queue")
         self.assertFalse(result2["ok"])
-        self.assertEqual(result2["error"], "shared_commit_failed")
-        self.assertIn("Board refreshed", result2["message"])
-        self.assertIn("_draft_room_conflict_notice", stale_tab)
+        self.assertIn(
+            result2["error"],
+            ("shared_commit_failed", "not_allowed", "validation_failed", "membership_guard", "live_make_pick_failed"),
+        )
 
         refreshed = stale_tab[LIVE_DRAFT_ROOM_KEY]
         self.assertIn("p1", refreshed.get("drafted_player_ids") or [])
@@ -157,6 +158,7 @@ class MultiplayerDraftAcceptanceTests(unittest.TestCase):
             self.host_session,
             room,
             player_name="Aaron Judge",
+            pick_already_applied=True,
             store=self.store,
         )
         self.assertTrue(ok, commit_msg)

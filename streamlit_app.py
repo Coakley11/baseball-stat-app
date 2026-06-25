@@ -18089,16 +18089,15 @@ if active_page == "Live Draft Room":
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         if room.get("status") == "in_progress" and slot is not None:
-            idx = int(room.get("current_pick_index", 0))
-            remaining = live_draft_seconds_remaining(room)
-            if remaining <= 0 and room.get("timer_handled_index") != idx:
-                ok, msg = live_draft_auto_pick(room)
-                room["timer_handled_index"] = idx
-                if ok:
-                    st.toast(msg)
-                else:
-                    st.warning(msg)
-                _persist_live_draft_room(room, reason="timer_auto_pick")
+            try:
+                from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
+
+                note_live_draft_page_load(st.session_state)
+                render_live_draft_timer_bar(st, st.session_state, room)
+            except ImportError:
+                idx = int(room.get("current_pick_index", 0))
+                remaining = live_draft_seconds_remaining(room)
+                st.caption(f"Time on clock: {remaining}s")
 
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
         with ctrl1:
@@ -18263,6 +18262,36 @@ if active_page == "Live Draft Room":
                         )
 
                 from draft_ui import render_live_manual_draft_panel
+
+                try:
+                    from draft_commit_diagnostics import pop_live_draft_pick_notice
+                    from draft_commit_diagnostics_ui import render_draft_commit_diagnostics
+                    from live_draft_timer_ui import render_live_draft_timer_diagnostics
+
+                    notice = pop_live_draft_pick_notice(st.session_state)
+                    if notice:
+                        level, text = notice
+                        if level == "success":
+                            st.success(text)
+                        else:
+                            st.error(text)
+                    flash_ok = st.session_state.pop("_live_draft_pick_flash", None)
+                    if flash_ok:
+                        st.success(str(flash_ok))
+                    flash_err = st.session_state.pop("_live_draft_pick_flash_error", None)
+                    if flash_err:
+                        st.error(str(flash_err))
+                    conflict = st.session_state.get("_draft_room_conflict_notice")
+                    if conflict:
+                        st.warning(str(conflict))
+                    render_draft_commit_diagnostics(
+                        st,
+                        st.session_state,
+                        developer_mode=developer_mode_enabled(),
+                    )
+                    render_live_draft_timer_diagnostics(st, st.session_state)
+                except ImportError:
+                    pass
 
                 if render_live_manual_draft_panel(
                     st,
