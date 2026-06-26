@@ -13423,6 +13423,11 @@ if active_page == "Historical Explorer":
         team_col_for_display: "Team"
     })
     hist_display = badge_hof_players_for_table(hist_display, hist, name_col="Player")
+    from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
+
+    render_stat_filter_summary(st, st.session_state, mode="historical")
+    if developer_mode_enabled():
+        render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
@@ -13775,6 +13780,11 @@ if active_page == "Career Totals":
         "fullName": "Player", "bats": "Bats", "displayPosition": "Primary Position", "displayTeam": "Team"
     })
     career_display = badge_hof_players_for_table(career_display, career_totals, name_col="Player")
+    from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
+
+    render_stat_filter_summary(st, st.session_state, mode="career")
+    if developer_mode_enabled():
+        render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="career")
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
