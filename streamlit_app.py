@@ -3328,14 +3328,9 @@ def _format_equation_number(value):
     return f"{value:.4f}"
 
 
-def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"):
+def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results", prepare_plot_df=None):
     """Interactive scatterplot for the current filtered result set."""
     if plot_df is None or plot_df.empty:
-        return
-
-    plot_df = _ensure_hof_scatter_columns(plot_df.copy())
-    numeric_cols = _numeric_plot_columns(plot_df)
-    if len(numeric_cols) < 2:
         return
 
     st.subheader(title)
@@ -3347,6 +3342,17 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     )
     if not show_scatter:
         st.caption("Turn this on to render the interactive chart for the current filtered rows.")
+        return
+
+    if prepare_plot_df is not None:
+        plot_df = prepare_plot_df()
+        if plot_df is None or plot_df.empty:
+            st.caption("No rows available for the scatterplot.")
+            return
+    else:
+        plot_df = _ensure_hof_scatter_columns(plot_df.copy())
+    numeric_cols = _numeric_plot_columns(plot_df)
+    if len(numeric_cols) < 2:
         return
 
     default_x = "HR" if "HR" in numeric_cols else numeric_cols[0]
@@ -11130,14 +11136,20 @@ except ImportError:
     merge_hof_flag = None  # type: ignore[misc, assignment]
     HOF_CACHE_KEY = 0.0
 
+@st.cache_data(show_spinner=False)
+def _cached_hof_player_ids(_hof_cache_key: float):
+    """Cache HOF player IDs; bust cache when HallOfFame.csv mtime changes."""
+    if load_hall_of_fame_player_ids is None:
+        return frozenset()
+    return load_hall_of_fame_player_ids(BASE_DIR)
+
+_DATA_LOAD_START = time.perf_counter()
 batting_df, yearly_df, people_df = load_data(HOF_CACHE_KEY)
-if load_hall_of_fame_player_ids is not None and attach_hof_flag is not None:
-    HOF_PLAYER_IDS = load_hall_of_fame_player_ids(BASE_DIR)
-    batting_df = attach_hof_flag(batting_df, HOF_PLAYER_IDS)
-    yearly_df = attach_hof_flag(yearly_df, HOF_PLAYER_IDS)
-    people_df = attach_hof_flag(people_df, HOF_PLAYER_IDS)
+if load_hall_of_fame_player_ids is not None:
+    HOF_PLAYER_IDS = _cached_hof_player_ids(HOF_CACHE_KEY)
 else:
     HOF_PLAYER_IDS = frozenset()
+st.session_state["_perf_data_load_sec"] = round(time.perf_counter() - _DATA_LOAD_START, 4)
 
 
 def get_clean_player_label_map_yearly(yl_df):
@@ -13484,11 +13496,15 @@ if active_page == "Historical Explorer":
         render_historical_state_debug(st, st.session_state)
     render_page_filters_debug(active_page)
     st.divider()
-    hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display, HOF_CACHE_KEY)
     render_relationship_finder_section(
-        hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
+        hist, key_prefix="hist", row_context="filtered player-season rows"
     )
-    render_scatterplot_section(hist_plot_df, key_prefix="hist", title="Visualize Historical Results")
+    render_scatterplot_section(
+        hist,
+        key_prefix="hist",
+        title="Visualize Historical Results",
+        prepare_plot_df=lambda: _prepare_historical_scatter_data(hist, team_col_for_display, HOF_CACHE_KEY),
+    )
     # Save AFTER scatter/RF render so that chart configuration keys (hist_scatter_*,
     # hist_rf_*) are present in session_state and captured in the page snapshot.
     # force_save uses reason="historical_edit" which is in the autosave bypass list,
@@ -13940,11 +13956,15 @@ if active_page == "Career Totals":
         render_career_totals_state_debug(st, st.session_state)
     render_page_filters_debug(active_page)
     st.divider()
-    career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career, HOF_CACHE_KEY)
     render_relationship_finder_section(
-        career_plot_df, key_prefix="career", row_context="filtered career rows"
+        career_totals, key_prefix="career", row_context="filtered career rows"
     )
-    render_scatterplot_section(career_plot_df, key_prefix="career", title="Visualize Career Results")
+    render_scatterplot_section(
+        career_totals,
+        key_prefix="career",
+        title="Visualize Career Results",
+        prepare_plot_df=lambda: _prepare_career_scatter_data(career_totals, filtered_career, HOF_CACHE_KEY),
+    )
     # Save AFTER scatter/RF render so that chart configuration keys (career_scatter_*,
     # career_rf_*) are present in session_state and captured in the page snapshot.
     # force_save uses reason="career_edit" which is in the autosave bypass list.
@@ -14034,6 +14054,11 @@ def fantasy_filter_changed():
 
 
 if active_page == "Leaderboards":
+    from leaderboard_aggregation import (
+        aggregate_leaderboard_career_totals,
+        build_leaderboard_aggregation_diagnostics,
+        filter_yearly_for_leaderboards,
+    )
     from leaderboards_state import (
         flush_leaderboards_filter_edits,
         prepare_leaderboards_filters,
@@ -14109,8 +14134,10 @@ if active_page == "Leaderboards":
                     on_change=leaderboards_filter_changed,
                 )
 
-    filtered_leaders = yearly_df[(yearly_df["yearID"] >= range_leaders[0]) & (yearly_df["yearID"] <= range_leaders[1])].copy()
-    leaderboard = filtered_leaders.groupby(["fullName", "bats"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
+    _lb_agg_start = time.perf_counter()
+    filtered_leaders = filter_yearly_for_leaderboards(yearly_df, range_leaders)
+    leaderboard = aggregate_leaderboard_career_totals(filtered_leaders)
+    st.session_state["_perf_leaderboard_agg_sec"] = round(time.perf_counter() - _lb_agg_start, 4)
     leaderboard = add_rate_stats(leaderboard)
     leaderboard = apply_stat_min_filters(leaderboard, "leaders", on_change=leaderboards_filter_changed)
     leaderboard = safe_round_rate_stats(leaderboard)
@@ -14149,6 +14176,14 @@ if active_page == "Leaderboards":
     flush_leaderboards_filter_edits(st.session_state, st, reason="leaderboards_page_save")
     if developer_mode_enabled():
         render_leaderboards_state_debug(st, st.session_state)
+        with st.expander("Leaderboard aggregation diagnostics", expanded=True):
+            st.json(
+                build_leaderboard_aggregation_diagnostics(
+                    filtered_leaders,
+                    leaderboard,
+                    year_range=range_leaders,
+                )
+            )
     save_page_state(active_page)
     render_page_filters_debug(active_page)
 
@@ -21424,6 +21459,20 @@ if developer_mode_enabled():
     with st.sidebar.expander("Performance Debug", expanded=False):
         st.caption(f"Current page: **{page_option_label(active_page)}**")
         st.caption(f"Rerun render time: **{elapsed_ms:,.0f} ms**")
+        data_load_sec = st.session_state.get("_perf_data_load_sec")
+        if data_load_sec is not None:
+            st.caption(f"Data load: **{float(data_load_sec) * 1000:,.0f} ms**")
+        lb_agg_sec = st.session_state.get("_perf_leaderboard_agg_sec")
+        if lb_agg_sec is not None and active_page == "Leaderboards":
+            st.caption(f"Leaderboard aggregation: **{float(lb_agg_sec) * 1000:,.0f} ms**")
+        persist = {
+            "last_save_reason": st.session_state.get("_suite_persist_last_save_reason"),
+            "last_save_disk": st.session_state.get("_suite_persist_last_save_disk"),
+            "last_save_cloud": st.session_state.get("_suite_persist_last_save_cloud"),
+            "cloud_blocked": st.session_state.get("_suite_autosave_cloud_blocked_reason"),
+        }
+        if any(v is not None for v in persist.values()):
+            st.caption(f"Persistence: {persist}")
         st.caption("Cached: CSV load, processed Lahman data, market data, trend slopes, recent-window totals, latest-player context, ML helpers, draft/lineup scoring, uploads, and MLB API stats.")
         st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
 

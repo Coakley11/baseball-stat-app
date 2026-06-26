@@ -1436,6 +1436,9 @@ def force_autosave(
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
+        fp_key = f"_suite_autosave_fp::{app_id}"
+        if st.session_state.get(fp_key) == fp:
+            return False
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
         cloud_block = _egress_cloud_autosave_block(st, app_id, state, save_reason=reason or "force_autosave")
