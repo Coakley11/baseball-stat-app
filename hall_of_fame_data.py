@@ -6,9 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 HOF_STAR = "⭐"
+HOF_SCATTER_COLOR_COL = "Hall of Fame"
+HOF_SCATTER_HOF_LABEL = "Hall of Famer"
+HOF_SCATTER_NON_HOF_LABEL = "Non-Hall of Famer"
 HOF_FILTER_ALL = "All Players"
 HOF_FILTER_ONLY = "Hall of Famers Only"
 HOF_FILTER_NON = "Non-Hall of Famers Only"
@@ -216,6 +220,31 @@ def attach_hof_flag(df: pd.DataFrame, hof_ids: frozenset[str], *, id_col: str = 
 def merge_hof_flag(df: pd.DataFrame, hof_ids: frozenset[str], *, id_col: str = "playerID") -> pd.DataFrame:
     """Attach HOF flag on aggregated page results (always keyed on ``playerID``)."""
     return attach_hof_flag(df, hof_ids, id_col=id_col)
+
+
+def hof_scatter_color_available(df: pd.DataFrame | None) -> bool:
+    if df is None or df.empty:
+        return False
+    return HOF_SCATTER_COLOR_COL in df.columns or "isHallOfFamer" in df.columns
+
+
+def ensure_hof_scatter_columns(
+    df: pd.DataFrame | None,
+    hof_ids: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    """Ensure scatter plot data has ``isHallOfFamer`` and categorical ``Hall of Fame`` columns."""
+    if df is None or df.empty:
+        return df
+    out = attach_hof_flag(df, hof_ids, id_col="playerID") if hof_ids and "playerID" in df.columns else df.copy()
+    if "isHallOfFamer" not in out.columns:
+        return out
+    hof_mask = out["isHallOfFamer"].fillna(False).astype(bool)
+    out[HOF_SCATTER_COLOR_COL] = np.where(
+        hof_mask,
+        HOF_SCATTER_HOF_LABEL,
+        HOF_SCATTER_NON_HOF_LABEL,
+    )
+    return out
 
 
 def apply_hof_membership_filter(

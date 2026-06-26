@@ -2176,11 +2176,29 @@ def _numeric_plot_columns(df):
 
 def _categorical_plot_columns(df):
     """Color-by options should stay consistent across Historical and Career scatterplots."""
+    try:
+        from hall_of_fame_data import HOF_SCATTER_COLOR_COL, hof_scatter_color_available
+    except ImportError:
+        HOF_SCATTER_COLOR_COL = "Hall of Fame"
+        hof_scatter_color_available = lambda _df: False  # type: ignore[assignment]
+
     options = []
     for col in ["Primary Position", "Bats", "Team", "League"]:
         if col in df.columns:
             options.append(col)
+    if hof_scatter_color_available(df) and HOF_SCATTER_COLOR_COL not in options:
+        options.append(HOF_SCATTER_COLOR_COL)
     return options
+
+
+def _ensure_hof_scatter_columns(plot_df):
+    """Attach HOF flag + categorical color column for scatterplots."""
+    try:
+        from hall_of_fame_data import ensure_hof_scatter_columns
+    except ImportError:
+        return plot_df
+    hof_ids = globals().get("HOF_PLAYER_IDS")
+    return ensure_hof_scatter_columns(plot_df, hof_ids if isinstance(hof_ids, frozenset) else None)
 
 
 # Current-franchise helpers for scatterplot labels and colors
@@ -2306,7 +2324,7 @@ def _add_scatter_context_columns(plot_df):
 
 
 @st.cache_data(show_spinner=False)
-def _prepare_historical_scatter_data(hist_df, team_col):
+def _prepare_historical_scatter_data(hist_df, team_col, _hof_cache_key: float = 0.0):
     """Build plot-ready data for Historical Explorer.
 
     The visible table stays clean, but the scatterplot can use internal fields such as
@@ -2326,10 +2344,11 @@ def _prepare_historical_scatter_data(hist_df, team_col):
     # Keep games labeled as G only. Do not create a duplicate "Games" field.
     if "G" in plot_df.columns:
         plot_df["G"] = pd.to_numeric(plot_df["G"], errors="coerce")
+    plot_df = _ensure_hof_scatter_columns(plot_df)
     return plot_df
 
 @st.cache_data(show_spinner=False)
-def _prepare_career_scatter_data(career_df, filtered_source_df=None):
+def _prepare_career_scatter_data(career_df, filtered_source_df=None, _hof_cache_key: float = 0.0):
     """Build plot-ready data for Career Totals.
 
     Career age is less natural than season age, so this adds Debut Age, Final Age,
@@ -2372,6 +2391,7 @@ def _prepare_career_scatter_data(career_df, filtered_source_df=None):
                     **{"Debut Age": "min", "Final Age": "max", "Average Age": "mean"}
                 ).reset_index()
             plot_df = plot_df.merge(age_summary, on="playerID", how="left")
+    plot_df = _ensure_hof_scatter_columns(plot_df)
     return plot_df
 
 def _year_axis_domain(series):
@@ -2601,6 +2621,27 @@ def _scatter_color_encoding(chart_df, color_col):
             title="Team",
             scale=alt.Scale(domain=teams, range=colors),
             legend=alt.Legend(title="Team")
+        )
+
+    if color_col == "Hall of Fame":
+        chart_df[color_col] = (
+            chart_df[color_col]
+            .replace({"": "Non-Hall of Famer", None: "Non-Hall of Famer"})
+            .fillna("Non-Hall of Famer")
+        )
+        try:
+            from hall_of_fame_data import HOF_SCATTER_HOF_LABEL, HOF_SCATTER_NON_HOF_LABEL
+        except ImportError:
+            HOF_SCATTER_HOF_LABEL = "Hall of Famer"
+            HOF_SCATTER_NON_HOF_LABEL = "Non-Hall of Famer"
+        return alt.Color(
+            f"{color_col}:N",
+            title="Hall of Fame",
+            scale=alt.Scale(
+                domain=[HOF_SCATTER_HOF_LABEL, HOF_SCATTER_NON_HOF_LABEL],
+                range=["#f1c40f", "#111111"],
+            ),
+            legend=alt.Legend(title="Hall of Fame"),
         )
 
     return alt.Color(f"{color_col}:N", title=color_col, legend=alt.Legend(title=color_col))
@@ -3292,7 +3333,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
     if plot_df is None or plot_df.empty:
         return
 
-    plot_df = plot_df.copy()
+    plot_df = _ensure_hof_scatter_columns(plot_df.copy())
     numeric_cols = _numeric_plot_columns(plot_df)
     if len(numeric_cols) < 2:
         return
@@ -3318,8 +3359,11 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
         with p2:
             y_col = st.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(default_y), key=f"{key_prefix}_scatter_y")
         cat_options = ["None"] + _categorical_plot_columns(plot_df)
+        color_key = f"{key_prefix}_scatter_color"
+        if color_key in st.session_state and st.session_state[color_key] not in cat_options:
+            st.session_state.pop(color_key, None)
         with p3:
-            color_col = st.selectbox("Color by", cat_options, index=0, key=f"{key_prefix}_scatter_color")
+            color_col = st.selectbox("Color by", cat_options, index=0, key=color_key)
         size_options = ["None"] + numeric_cols
         with p4:
             size_col = st.selectbox("Size by", size_options, index=0, key=f"{key_prefix}_scatter_size")
@@ -13436,7 +13480,7 @@ if active_page == "Historical Explorer":
         render_historical_state_debug(st, st.session_state)
     render_page_filters_debug(active_page)
     st.divider()
-    hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display)
+    hist_plot_df = _prepare_historical_scatter_data(hist, team_col_for_display, HOF_CACHE_KEY)
     render_relationship_finder_section(
         hist_plot_df, key_prefix="hist", row_context="filtered player-season rows"
     )
@@ -13888,7 +13932,7 @@ if active_page == "Career Totals":
         render_career_totals_state_debug(st, st.session_state)
     render_page_filters_debug(active_page)
     st.divider()
-    career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career)
+    career_plot_df = _prepare_career_scatter_data(career_totals, filtered_career, HOF_CACHE_KEY)
     render_relationship_finder_section(
         career_plot_df, key_prefix="career", row_context="filtered career rows"
     )

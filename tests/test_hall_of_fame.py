@@ -22,6 +22,8 @@ from hall_of_fame_data import (
     build_hof_runtime_diagnostics,
     decorate_player_column,
     decorate_player_name,
+    ensure_hof_scatter_columns,
+    hof_scatter_color_available,
     hall_of_fame_csv_path,
     badge_hof_players_for_table,
     hof_case_ami_guidance,
@@ -211,6 +213,26 @@ class HallOfFameDataTests(unittest.TestCase):
             self.assertEqual(diag["first_5_hof_player_ids"], ["ruthbabe01"])
             self.assertTrue(diag["known_ids_present"]["ruthba01"] is False)
             self.assertIn("csv_modified_utc", diag)
+
+    def test_ensure_hof_scatter_columns(self) -> None:
+        from hall_of_fame_data import (
+            HOF_SCATTER_COLOR_COL,
+            HOF_SCATTER_HOF_LABEL,
+            ensure_hof_scatter_columns,
+            hof_scatter_color_available,
+        )
+
+        df = pd.DataFrame(
+            [
+                {"playerID": "ruthbabe01", "HR": 714},
+                {"playerID": "troutmi01", "HR": 310},
+            ]
+        )
+        self.assertFalse(hof_scatter_color_available(df))
+        out = ensure_hof_scatter_columns(df, frozenset({"ruthbabe01"}))
+        self.assertTrue(hof_scatter_color_available(out))
+        self.assertIn(HOF_SCATTER_COLOR_COL, out.columns)
+        self.assertEqual(out.iloc[0][HOF_SCATTER_COLOR_COL], HOF_SCATTER_HOF_LABEL)
 
 
 class HofRuntimeSmokeTests(unittest.TestCase):
