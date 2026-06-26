@@ -102,12 +102,31 @@ def _num(val: Any) -> float | None:
     return float(n)
 
 
+SLEEPER_MIN_PLAYER_GRADE_DEFAULT = 10.0
+
+
 def fmt_player_grade(val: Any) -> str:
     """Format raw EFV (0–1) as Player Grade display."""
     n = _num(val)
     if n is None:
         return ""
     return f"{n * 100:.2f}"
+
+
+def coerce_sleeper_min_player_grade(value: Any, *, default: float = SLEEPER_MIN_PLAYER_GRADE_DEFAULT) -> float:
+    """Normalize stored minimum Player Grade slider value to 0–100 display scale."""
+    n = _num(value)
+    if n is None:
+        return default
+    # Legacy slider stored internal EFV scale (0–1).
+    if 0 < n <= 1.0:
+        n = n * 100.0
+    return max(0.0, min(100.0, float(n)))
+
+
+def sleeper_min_player_grade_to_internal(display_grade: Any) -> float:
+    """Convert 0–100 Player Grade threshold to internal 0–1 projection score."""
+    return coerce_sleeper_min_player_grade(display_grade, default=0.0) / 100.0
 
 
 def fmt_pick_score(val: Any) -> str:

@@ -190,8 +190,17 @@ def _normalize_filter_value(key: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return value
+    if key == "sleeper_min_expected_value":
+        try:
+            from draft_score_display import coerce_sleeper_min_player_grade
+
+            return coerce_sleeper_min_player_grade(value)
+        except ImportError:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return value
     if key in (
-        "sleeper_min_expected_value",
         "fantasy_pts_r",
         "fantasy_pts_rbi",
         "fantasy_pts_hr",

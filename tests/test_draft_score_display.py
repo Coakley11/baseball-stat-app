@@ -12,6 +12,7 @@ from draft_score_display import (
     DISPLAY_RELATIVE_GRADE,
     DISPLAY_ROSTER_FIT,
     FORBIDDEN_USER_SCORE_TERMS,
+    coerce_sleeper_min_player_grade,
     compact_context_row_for_display,
     fmt_pick_score,
     fmt_player_grade,
@@ -19,6 +20,7 @@ from draft_score_display import (
     fmt_roster_fit_score,
     prepare_draft_scores_for_display,
     sanitize_draft_terminology_text,
+    sleeper_min_player_grade_to_internal,
     style_cols_for_display,
 )
 
@@ -27,6 +29,18 @@ class DraftScoreDisplayTests(unittest.TestCase):
     def test_player_grade_scales_to_100(self) -> None:
         self.assertEqual(fmt_player_grade(0.9012), "90.12")
         self.assertEqual(fmt_player_grade(0.7834), "78.34")
+
+    def test_sleeper_min_player_grade_migrates_legacy_efv_scale(self) -> None:
+        self.assertEqual(coerce_sleeper_min_player_grade(0.10), 10.0)
+        self.assertEqual(coerce_sleeper_min_player_grade(50), 50.0)
+        self.assertEqual(sleeper_min_player_grade_to_internal(50), 0.5)
+        self.assertEqual(sleeper_min_player_grade_to_internal(0.10), 0.1)
+
+    def test_sleeper_min_player_grade_filters_internal_scores(self) -> None:
+        scores = pd.Series([0.45, 0.55, 0.72])
+        threshold = sleeper_min_player_grade_to_internal(60)
+        kept = scores[scores >= threshold]
+        self.assertEqual(kept.tolist(), [0.72])
 
     def test_pick_score_scales_to_100(self) -> None:
         self.assertEqual(fmt_pick_score(0.9123), "91.23")

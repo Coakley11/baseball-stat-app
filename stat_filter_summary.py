@@ -76,6 +76,20 @@ def build_stat_filter_summary_lines(
     return [format_stat_min_line(stat, val) for stat, val in gather_active_stat_min_filters(session, prefix=prefix)]
 
 
+def build_stat_filter_summary_text(
+    session: dict[str, Any],
+    *,
+    prefix: str,
+) -> str | None:
+    """Plain title + criteria text for display above results tables."""
+    lines = build_stat_filter_summary_lines(session, prefix=prefix)
+    if not lines:
+        return None
+    heading = PAGE_HEADINGS[prefix]
+    criteria = " • ".join(lines)
+    return f"{heading}\n\n{criteria}"
+
+
 def snapshot_stat_min_widget_values(session: dict[str, Any], *, prefix: str) -> dict[str, Any]:
     """All ``{prefix}_{stat}_min`` widget values (including zeros)."""
     return {_stat_min_key(prefix, stat): session.get(_stat_min_key(prefix, stat)) for stat in STAT_MIN_COLUMNS}
@@ -96,6 +110,7 @@ def build_stat_filter_summary_diagnostics(
         "active_filter_count": len(active),
         "active_widget_keys": {_stat_min_key(prefix, stat): val for stat, val in active},
         "summary_lines": build_stat_filter_summary_lines(session, prefix=prefix),
+        "summary_text": build_stat_filter_summary_text(session, prefix=prefix),
         "all_widget_values": snapshot_stat_min_widget_values(session, prefix=prefix),
     }
     try:
@@ -126,12 +141,12 @@ def render_stat_filter_summary(
 ) -> None:
     """Show active stat minimum filters above results tables (V1: stat mins only)."""
     prefix = "career" if mode == "career" else "hist"
-    lines = build_stat_filter_summary_lines(session, prefix=prefix)
+    summary_text = build_stat_filter_summary_text(session, prefix=prefix)
     session[f"_filter_summary_called_{mode}"] = True
-    session[f"_filter_summary_displayed_{mode}"] = bool(lines)
-    session[f"_filter_summary_line_count_{mode}"] = len(lines)
-    if not lines:
+    session[f"_filter_summary_displayed_{mode}"] = summary_text is not None
+    session[f"_filter_summary_line_count_{mode}"] = len(
+        build_stat_filter_summary_lines(session, prefix=prefix)
+    )
+    if not summary_text:
         return
-    heading = PAGE_HEADINGS[prefix]
-    bullets = "\n".join(f"- {line}" for line in lines)
-    st.info(f"**Filter summary**\n\n{heading}\n\n{bullets}")
+    st.markdown(summary_text)

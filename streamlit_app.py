@@ -13428,7 +13428,6 @@ if active_page == "Historical Explorer":
     render_stat_filter_summary(st, st.session_state, mode="historical")
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
-    st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
     try:
@@ -13785,7 +13784,6 @@ if active_page == "Career Totals":
     render_stat_filter_summary(st, st.session_state, mode="career")
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="career")
-    st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
 
@@ -15844,12 +15842,33 @@ if active_page == "Fantasy Sleepers & Busts":
                     on_change=fantasy_filter_changed,
                 )
             with sf4:
-                init_state_once("sleeper_min_expected_value", 0.10)
+                try:
+                    from draft_score_display import (
+                        SLEEPER_MIN_PLAYER_GRADE_DEFAULT,
+                        coerce_sleeper_min_player_grade,
+                    )
+                except ImportError:
+                    SLEEPER_MIN_PLAYER_GRADE_DEFAULT = 10.0
+
+                    def coerce_sleeper_min_player_grade(value, *, default=10.0):  # type: ignore[misc]
+                        try:
+                            n = float(value)
+                        except (TypeError, ValueError):
+                            return default
+                        if 0 < n <= 1.0:
+                            n = n * 100.0
+                        return max(0.0, min(100.0, n))
+
+                st.session_state["sleeper_min_expected_value"] = coerce_sleeper_min_player_grade(
+                    st.session_state.get("sleeper_min_expected_value"),
+                    default=SLEEPER_MIN_PLAYER_GRADE_DEFAULT,
+                )
+                init_state_once("sleeper_min_expected_value", SLEEPER_MIN_PLAYER_GRADE_DEFAULT)
                 st.slider(
                     "Minimum Player Grade",
-                    min_value=0.00,
-                    max_value=1.00,
-                    step=0.01,
+                    min_value=0,
+                    max_value=100,
+                    step=1,
                     key="sleeper_min_expected_value",
                     on_change=fantasy_filter_changed,
                 )
@@ -15881,7 +15900,23 @@ if active_page == "Fantasy Sleepers & Busts":
     sleeper_max_market_rank = st.session_state.get("sleeper_max_market_rank", 350)
     sleeper_max_model_rank = st.session_state.get("sleeper_max_model_rank", 350)
     sleeper_min_proj_hr = st.session_state.get("sleeper_min_proj_hr", 0)
-    sleeper_min_expected_value = st.session_state.get("sleeper_min_expected_value", 0.10)
+    try:
+        from draft_score_display import (
+            SLEEPER_MIN_PLAYER_GRADE_DEFAULT,
+            coerce_sleeper_min_player_grade,
+            sleeper_min_player_grade_to_internal,
+        )
+
+        sleeper_min_player_grade = coerce_sleeper_min_player_grade(
+            st.session_state.get("sleeper_min_expected_value"),
+            default=SLEEPER_MIN_PLAYER_GRADE_DEFAULT,
+        )
+        sleeper_min_projection_score = sleeper_min_player_grade_to_internal(sleeper_min_player_grade)
+    except ImportError:
+        sleeper_min_player_grade = float(st.session_state.get("sleeper_min_expected_value", 10))
+        if 0 < sleeper_min_player_grade <= 1.0:
+            sleeper_min_player_grade *= 100.0
+        sleeper_min_projection_score = sleeper_min_player_grade / 100.0
     fantasy_top_n = int(st.session_state.get("fantasy_market_top_n", 15))
 
     if sleeper_sync_enabled:
@@ -16081,7 +16116,8 @@ if active_page == "Fantasy Sleepers & Busts":
         ].copy()
     if "Projected Production Score" in fantasy_df.columns:
         fantasy_df = fantasy_df[
-            pd.to_numeric(fantasy_df["Projected Production Score"], errors="coerce").fillna(0) >= sleeper_min_expected_value
+            pd.to_numeric(fantasy_df["Projected Production Score"], errors="coerce").fillna(0)
+            >= sleeper_min_projection_score
         ].copy()
 
     if sleeper_sync_enabled:
@@ -16366,7 +16402,10 @@ if active_page == "Fantasy Sleepers & Busts":
         except Exception:
             pass
 
-        st.caption("Sleepers and bust risks are filtered by market rank, model rank, projected HR, and expected fantasy value so the output focuses on draftable players rather than fringe names.")
+        st.caption(
+            "Sleepers and bust risks are filtered by market rank, model rank, projected HR, "
+            "and minimum Player Grade so the output focuses on draftable players rather than fringe names."
+        )
 
         c8, c9 = st.columns(2)
         with c8:

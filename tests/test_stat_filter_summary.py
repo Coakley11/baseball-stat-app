@@ -7,6 +7,7 @@ import unittest
 from stat_filter_summary import (
     build_stat_filter_summary_diagnostics,
     build_stat_filter_summary_lines,
+    build_stat_filter_summary_text,
     gather_active_stat_min_filters,
     format_stat_min_line,
     render_stat_filter_summary,
@@ -45,6 +46,18 @@ class StatFilterSummaryTests(unittest.TestCase):
     def test_rate_stat_formatting(self) -> None:
         self.assertEqual(format_stat_min_line("OPS", 0.85), "OPS ≥ 0.850")
         self.assertEqual(format_stat_min_line("H", 3000), "Hits ≥ 3,000")
+
+    def test_summary_text_uses_bullet_separators(self) -> None:
+        session = {
+            "career_H_min": 3000,
+            "career_HR_min": 500,
+            "career_2B_min": 600,
+        }
+        text = build_stat_filter_summary_text(session, prefix="career")
+        self.assertIsNotNone(text)
+        assert text is not None
+        self.assertIn("Players with Career Totals of:", text)
+        self.assertIn("Hits ≥ 3,000 • Doubles ≥ 600 • Home Runs ≥ 500", text)
 
     def test_empty_when_no_active_mins(self) -> None:
         self.assertEqual(build_stat_filter_summary_lines({}, prefix="career"), [])
