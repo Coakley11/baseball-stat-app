@@ -179,7 +179,7 @@ def draft_strategy_line(
     if len(sentences) < 2 and not np.isnan(drop) and md is not None and not np.isnan(md) and md > 0:
         if drop >= md * 1.12:
             sentences.append(
-                f"Among undrafted {pos}, top blended EFV vs replacement sits about {_fmt_drop(drop)} above replacement "
+                f"Among undrafted {pos}, top blended Player Grade vs replacement sits about {_fmt_drop(drop)} above replacement "
                 f"({avail} bodies); that gap is wider than the median position on the board ({_fmt_drop(md)})."
             )
 
@@ -287,5 +287,5 @@ def draft_strategy_line(
     if len(text) > 420:
         text = text[:417].rsplit(".", 1)[0] + "."
     if not text:
-        return "No extra strategy tension vs current filters — Draft Fit and Team fit already summarize value and roster fit."
+        return "No extra strategy tension vs current filters — Roster Fit Score and Team fit already summarize value and roster fit."
     return text

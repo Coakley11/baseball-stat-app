@@ -80,8 +80,19 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
             page = page or str(pending.get("suite_page") or "")
             draft_room = draft_room or str(pending.get("suite_draft_room") or "")
         except ImportError:
-            pass
+            pending = {}
+    else:
+        pending = {}
     live_resume_qp = bool(resume or page or ami_insight or draft_room)
+    pending_resume_qp = bool(
+        isinstance(pending, dict)
+        and (
+            pending.get("suite_resume")
+            or pending.get("suite_page")
+            or pending.get("suite_draft_room")
+            or pending.get("suite_draft_section")
+        )
+    )
     if key == "baseball":
         try:
             from draft_lab_resume import draft_lab_resume_consumed
@@ -92,6 +103,7 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
                     or _qp_get(st, "suite_page")
                     or _qp_get(st, "suite_draft_room")
                     or _qp_get(st, "suite_draft_section")
+                    or pending_resume_qp
                 )
         except ImportError:
             pass
@@ -104,10 +116,12 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
     if st.session_state.get(flag):
         if key == "baseball":
             try:
-                from draft_lab_resume import draft_lab_resume_consumed
+                from draft_lab_resume import draft_lab_resume_consumed, reapply_pending_baseball_resume
 
-                if draft_lab_resume_consumed(st.session_state):
+                if draft_lab_resume_consumed(st.session_state) and not pending_resume_qp:
                     return False
+                if pending_resume_qp:
+                    reapply_pending_baseball_resume(st)
             except ImportError:
                 pass
         # Launch handlers are one-shot; hydration continues via apply_draft_lab_resume.

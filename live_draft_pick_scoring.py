@@ -161,7 +161,7 @@ def _live_draft_pick_verdict(row, rule, gaps):
         parts.append("likely could have waited")
     dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
     if pd.notna(dfs) and dfs >= 0.72:
-        parts.append("strong draft fit")
+        parts.append("strong roster fit")
     efv = pd.to_numeric(row.get("Expected Fantasy Value", np.nan), errors="coerce")
     if pd.notna(efv) and efv >= 0.75:
         parts.append("elite projected value")

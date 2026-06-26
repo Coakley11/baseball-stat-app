@@ -14,6 +14,7 @@ from draft_lab_resume import (
     DRAFT_LAB_RESUME_COMPLETED_KEY,
     DRAFT_LAB_RESUME_ERROR_KEY,
     PENDING_RESUME_QUERY_KEY,
+    apply_baseball_suite_resume,
     apply_draft_lab_resume,
     cancel_draft_lab_resume_navigation,
     capture_pending_resume_query,
@@ -22,6 +23,7 @@ from draft_lab_resume import (
     forced_page_active,
     load_completed_room_for_resume,
     parse_resume_room_id,
+    reapply_pending_baseball_resume,
     schedule_draft_lab_resume_navigation,
 )
 from draft_room_shared_state import LocalFileSharedRoomStore, shared_room_document
@@ -265,6 +267,48 @@ class TestDraftLabResume(unittest.TestCase):
             apply_draft_lab_resume(st)
             apply_draft_lab_resume(st)
         self.assertEqual(push.call_count, 1)
+
+    def test_bb_live_draft_resume_opens_live_draft_room(self) -> None:
+        st = _ST({"suite_resume": "bb:live_draft:ROOM-LIVE", "suite_page": "Live Draft Room"})
+        _apply_baseball(st, "bb:live_draft:ROOM-LIVE", "Live Draft Room")
+        self.assertEqual(st.session_state.get("_navigate_to_page"), "Live Draft Room")
+        self.assertEqual(st.session_state.get("_suite_resume_draft_room"), "ROOM-LIVE")
+
+    def test_reapply_pending_after_auth_clears_url(self) -> None:
+        st = _ST()
+        st.session_state[PENDING_RESUME_QUERY_KEY] = {
+            "suite_page": "Draft Simulation Test Mode",
+            "suite_draft_room": "ROOM-9",
+            "suite_resume": "bb:draft_lab:team:ROOM-9",
+        }
+        self.assertTrue(reapply_pending_baseball_resume(st))
+        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Simulation Test Mode")
+
+    def test_apply_baseball_suite_resume_hydrates_room(self) -> None:
+        st = _ST()
+        st.session_state["_suite_resume_draft_room"] = "ROOM-1"
+        st.session_state["live_draft_room"] = _completed_room("ROOM-1")
+        diag = apply_baseball_suite_resume(st)
+        self.assertTrue(diag.get("room_hydrated"))
+
+    def test_consumed_resume_rebuilds_when_results_missing(self) -> None:
+        st = _ST()
+        st.session_state[DRAFT_LAB_RESUME_COMPLETED_KEY] = True
+        st.session_state["_suite_resume_draft_room"] = "ROOM-1"
+        st.session_state["_suite_pending_draft_lab_resume"] = True
+        st.session_state["live_draft_room"] = _completed_room("ROOM-1")
+
+        def _push(_room: dict) -> bool:
+            st.session_state["draft_lab_results"] = {
+                "draft": pd.DataFrame([{"Pick": 1}]),
+                "handoff": {"session_id": "ROOM-1"},
+            }
+            return True
+
+        with patch("draft_lab_resume._push_analysis_to_session", side_effect=_push) as push:
+            diag = apply_draft_lab_resume(st)
+        push.assert_called_once()
+        self.assertTrue(diag.get("rebuild_success"))
 
 
 if __name__ == "__main__":

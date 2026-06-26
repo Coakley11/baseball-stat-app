@@ -146,13 +146,15 @@ def apply_force_sync_on_return(session: dict[str, Any]) -> bool:
     return synced
 
 
-def render_return_to_draft_sidebar(st: Any, session: dict[str, Any]) -> None:
+def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_page: str = "") -> None:
     """Prominent sidebar card to return to active live draft, completed draft, or simulator."""
     ctx = get_draft_return_context(session)
     if not ctx:
         return
 
     kind = str(ctx.get("kind") or "")
+    if active_page == "Live Draft Room" and kind == "live_complete":
+        return
     with st.sidebar.container(border=True):
         st.markdown(f"**{ctx.get('title')}**")
         if ctx.get("team_label"):
@@ -181,7 +183,6 @@ def render_return_to_draft_sidebar(st: Any, session: dict[str, Any]) -> None:
                 args=(session,),
             )
         elif kind == "live_complete":
-            st.caption(str(ctx.get("picks_label") or ""))
             st.button(
                 "Open Live Draft Room",
                 key="sidebar_open_completed_draft_btn",

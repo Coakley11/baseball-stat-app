@@ -209,13 +209,25 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
 })
 
 
-def _global_snapshot_excluded_keys() -> frozenset[str]:
+def _global_snapshot_excluded_keys(session=None) -> frozenset[str]:
     try:
         from global_fantasy_settings_state import global_settings_snapshot_excluded_keys
 
-        return global_settings_snapshot_excluded_keys()
+        keys = set(global_settings_snapshot_excluded_keys())
     except ImportError:
-        return frozenset()
+        keys = set()
+    if session is not None:
+        try:
+            from shared_draft_context import (
+                has_active_draft_context,
+                shared_draft_context_snapshot_excluded_keys,
+            )
+
+            if has_active_draft_context(session):
+                keys.update(shared_draft_context_snapshot_excluded_keys())
+        except ImportError:
+            pass
+    return frozenset(keys)
 
 
 def _collect_keys_for_page(session, page_name: str) -> list:
@@ -227,7 +239,7 @@ def _collect_keys_for_page(session, page_name: str) -> list:
                 if k not in _PAGE_STATE_SKIP_KEYS:
                     keys.add(k)
     keys -= _PAGE_STATE_SKIP_KEYS
-    keys -= _global_snapshot_excluded_keys()
+    keys -= _global_snapshot_excluded_keys(session)
     return sorted(k for k in keys if not _is_ephemeral_widget_key(k))
 
 
@@ -279,7 +291,7 @@ def restore_page_state(session, page_name: str, store: dict):
     snapshot = store.get(page_name)
     if not snapshot:
         return False
-    excluded = _global_snapshot_excluded_keys()
+    excluded = _global_snapshot_excluded_keys(session)
     for key, value in snapshot.items():
         if key in excluded:
             continue

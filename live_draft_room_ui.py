@@ -667,16 +667,17 @@ def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
 def render_live_draft_complete_banner(
     st: Any,
     *,
-    team_label: str,
+    team_label: str = "",
     picks_done: int,
     total_picks: int,
 ) -> None:
     picks_txt = f"{picks_done} of {total_picks} picks completed" if total_picks else f"{picks_done} picks completed"
+    team_line = f"<br/><span>{team_label}</span>" if str(team_label or "").strip() else ""
     st.markdown(
         f"""
         <div class="ld-draft-complete-banner">
             <div class="ld-dc-title">Draft Completed</div>
-            <div class="ld-dc-sub"><strong>{team_label}</strong><br/>{picks_txt}</div>
+            <div class="ld-dc-sub">{picks_txt}{team_line}</div>
         </div>
         """,
         unsafe_allow_html=True,

@@ -82,6 +82,15 @@ def finalize_draft_lab_resume(st: Any, *, applied: bool = True) -> None:
     """One-shot completion — release navigation locks after resume/hydration."""
     ss = st.session_state
     ss[DRAFT_LAB_RESUME_COMPLETED_KEY] = True
+    pending = dict(ss.get(PENDING_RESUME_QUERY_KEY) or {})
+    resume_key = str(pending.get("suite_resume") or "").strip()
+    if resume_key:
+        try:
+            from shared_draft_context import mark_resume_key_consumed
+
+            mark_resume_key_consumed(ss, resume_key)
+        except ImportError:
+            ss["_suite_last_consumed_resume_key"] = resume_key
     ss.pop("_suite_pending_draft_lab_resume", None)
     if str(ss.get("_navigate_to_page") or "").strip() == DRAFT_LAB_RESUME_PAGE:
         ss.pop("_navigate_to_page", None)
@@ -314,10 +323,23 @@ def _apply_draft_section_preference(session: dict[str, Any], section: str) -> No
 
 
 def schedule_draft_lab_resume_navigation(st: Any, *, page: str, room_id: str = "", section: str = "") -> None:
-    """Force Draft Simulation Test Mode to win over default Historical Explorer restore."""
+    """Force target draft page to win over default Historical Explorer restore."""
     target = str(page or DRAFT_LAB_RESUME_PAGE).strip() or DRAFT_LAB_RESUME_PAGE
     ss = st.session_state
-    if draft_lab_resume_consumed(ss) and not resume_requested(ss):
+    pending = pending_resume_query(st)
+    resume_key = str(pending.get("suite_resume") or "").strip()
+    if not resume_key and room_id:
+        if target == "Live Draft Room":
+            resume_key = f"bb:live_draft:{room_id}"
+        else:
+            resume_key = f"bb:draft_lab:{room_id}"
+    try:
+        from shared_draft_context import is_fresh_resume_request
+
+        fresh = is_fresh_resume_request(ss, resume_key)
+    except ImportError:
+        fresh = bool(resume_key)
+    if draft_lab_resume_consumed(ss) and not resume_requested(ss) and not fresh:
         return
     mark_resume_requested(ss)
     ss["_navigate_to_page"] = target
@@ -350,6 +372,24 @@ def _push_analysis_to_session(room: dict[str, Any]) -> bool:
 def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
     """Rebuild or confirm draft_lab_results for a resume deep link."""
     ss = st.session_state
+    try:
+        from live_draft_start_progress import is_live_draft_start_in_flight
+
+        if is_live_draft_start_in_flight(ss):
+            diag = {"draft_lab_results_status": "skipped_live_draft_start_in_flight"}
+            diag.update(_resume_diag_flags(ss))
+            ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
+            return diag
+        from live_draft_state import has_active_live_draft
+
+        live = ss.get("live_draft_room")
+        if has_active_live_draft(ss) and isinstance(live, dict) and str(live.get("status") or "") in ("in_progress", "paused"):
+            diag = {"draft_lab_results_status": "skipped_active_live_draft"}
+            diag.update(_resume_diag_flags(ss))
+            ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
+            return diag
+    except ImportError:
+        pass
     diag: dict[str, Any] = {
         "draft_lab_results_status": "not_requested",
         "rebuild_attempted": False,
@@ -358,13 +398,19 @@ def apply_draft_lab_resume(st: Any) -> dict[str, Any]:
     }
     diag.update(_resume_diag_flags(ss))
 
-    if draft_lab_resume_consumed(ss):
-        diag["draft_lab_results_status"] = "resume_completed"
-        diag["draft_lab_results_after"] = _draft_lab_results_nonempty(ss)
-        ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
-        return diag
-
     room_id = parse_resume_room_id(st, ss)
+    if draft_lab_resume_consumed(ss):
+        if _draft_lab_results_nonempty(ss):
+            diag["draft_lab_results_status"] = "resume_completed"
+            diag["draft_lab_results_after"] = True
+            ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
+            return diag
+        pending_resume = bool(ss.get("_suite_pending_draft_lab_resume"))
+        if not room_id and not pending_resume:
+            diag["draft_lab_results_status"] = "resume_completed_empty"
+            ss[DRAFT_LAB_RESUME_DIAG_KEY] = diag
+            return diag
+
     draft_section = parse_resume_draft_section(st, ss)
     diag["room_id"] = room_id
     diag["draft_section"] = draft_section
@@ -514,3 +560,48 @@ def draft_lab_resume_diagnostics(st: Any) -> dict[str, Any]:
     out["draft_lab_resume_error"] = ss.get(DRAFT_LAB_RESUME_ERROR_KEY)
     out.update(_resume_diag_flags(ss))
     return out
+
+
+def reapply_pending_baseball_resume(st: Any) -> bool:
+    """Re-schedule navigation from pending query after auth reruns clear URL params."""
+    ss = st.session_state
+    pending = pending_resume_query(st)
+    if not pending:
+        return False
+    page = str(pending.get("suite_page") or "").strip()
+    resume = str(pending.get("suite_resume") or "").strip()
+    room_id = str(pending.get("suite_draft_room") or "").strip()
+    section = str(pending.get("suite_draft_section") or "").strip().lower()
+    if not page and resume.startswith("bb:live_draft:"):
+        page = "Live Draft Room"
+    if not page and resume.startswith("bb:draft_lab:"):
+        page = DRAFT_LAB_RESUME_PAGE
+    if not page:
+        return False
+    current = str(ss.get("active_page") or "").strip()
+    if draft_lab_resume_consumed(ss) and current and current != page:
+        return False
+    if current == page and not ss.get("_suite_pending_draft_lab_resume"):
+        return False
+    schedule_draft_lab_resume_navigation(st, page=page, room_id=room_id, section=section)
+    return True
+
+
+def apply_baseball_suite_resume(st: Any) -> dict[str, Any]:
+    """Hydrate live draft room for Command Center deep links (any target page)."""
+    ss = st.session_state
+    diag: dict[str, Any] = {"room_hydrated": False, "room_load_source": ""}
+    room_id = parse_resume_room_id(st, ss)
+    if not room_id:
+        return diag
+    existing = ss.get("live_draft_room")
+    if isinstance(existing, dict) and str(existing.get("draft_room_id") or "").strip().upper() == room_id.upper():
+        diag["room_hydrated"] = True
+        diag["room_load_source"] = "session_live_draft_room"
+        return diag
+    room, load_source = load_completed_room_for_resume(ss, room_id, st=st)
+    if isinstance(room, dict):
+        ss["live_draft_room"] = room
+        diag["room_hydrated"] = True
+        diag["room_load_source"] = load_source
+    return diag

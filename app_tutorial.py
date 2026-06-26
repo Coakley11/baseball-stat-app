@@ -303,8 +303,8 @@ def get_tutorial_steps() -> tuple[dict[str, Any], ...]:
             "tip": "Draft Fit is plain English for 'does this guy help my team today?'",
             "advanced": {
                 "bullets": [
-                    "Expected Fantasy Value: projected overall value.",
-                    "Draft Fit Score: fit for your roster right now.",
+                    "Player Grade: projected overall value.",
+                    "Roster Fit Score: fit for your roster right now.",
                     "Scarcity: fewer good players left at that position.",
                 ],
             },

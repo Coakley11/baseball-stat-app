@@ -7976,17 +7976,19 @@ def get_cached_unified_projection_pool(
 
 def _draft_projection_session_kwargs() -> dict:
     """Read draft projection settings from session (same keys as Draft Assistant / Draft Room)."""
+    window = st.session_state.get("room_window")
+    if window is None:
+        window = st.session_state.get("draft_window", st.session_state.get("draft_lab_window", 3))
+    style = st.session_state.get(
+        "fantasy_draft_projection_style",
+        st.session_state.get("live_draft_proj_style", st.session_state.get("draft_lab_projection_style", "Balanced")),
+    )
     return {
-        "draft_window": int(st.session_state.get("draft_window", st.session_state.get("draft_lab_window", 3))),
+        "draft_window": int(window),
         "fantasy_format": str(
             st.session_state.get("draft_format", st.session_state.get("draft_lab_format", "5x5 Roto"))
         ),
-        "projection_style": str(
-            st.session_state.get(
-                "fantasy_draft_projection_style",
-                st.session_state.get("draft_lab_projection_style", "Balanced"),
-            )
-        ),
+        "projection_style": str(style),
         "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", True)),
         "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12)),
         "ml_min_games_for_signal": int(st.session_state.get("draft_ml_min_games_signal", 50)),
@@ -8734,7 +8736,7 @@ def render_shared_scoring_consistency_check(yearly_source, market_df, key_suffix
     with st.expander("Shared Scoring Consistency Check", expanded=False):
         st.caption(
             "Validates canonical pool metrics and `apply_draft_pick_scoring()` using the session's draft settings. "
-            "Pool stats should match across pages; Draft Fit / Decision may differ when pick # or roster context differs."
+            "Pool stats should match across pages; Roster Fit Score / Pick Score may differ when pick # or roster context differs."
         )
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -8879,7 +8881,7 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
         if pd.to_numeric(chosen.get("Sleeper Score", 0), errors="coerce") >= 0.70:
             why.append("small sleeper/value boost")
         if pd.to_numeric(chosen.get("Draft Fit Score", 0), errors="coerce") >= 0.72:
-            why.append("strong draft fit for roster")
+            why.append("strong roster fit for roster")
         chosen["Why This Pick"] = "Selected because he had " + ", ".join(why[:4]) + "." if why else "Selected as the best balanced option by projected value and model rank."
         draft_rows.append(chosen.to_dict())
         rosters[team].append(chosen.to_dict())
@@ -9240,7 +9242,7 @@ def _live_draft_pick_verdict(row, rule, gaps):
         parts.append("likely could have waited")
     dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
     if pd.notna(dfs) and dfs >= 0.72:
-        parts.append("strong draft fit")
+        parts.append("strong roster fit")
     efv = pd.to_numeric(row.get("Expected Fantasy Value", np.nan), errors="coerce")
     if pd.notna(efv) and efv >= 0.75:
         parts.append("elite projected value")
@@ -9511,7 +9513,7 @@ def render_draft_scoring_breakdown(scored_df, player_name=None, key_suffix=""):
         view = view.sort_values(sort_col, ascending=False).head(5)
 
     breakdown_map = [
-        ("Player Value Component", "Expected Fantasy Value"),
+        ("Player Value Component", "Player Grade"),
         ("Market Edge Component", "Fantasy Edge"),
         ("Scarcity Component", "Scarcity (replacement-level)"),
         ("Sleeper Fit Component", "Sleeper"),
@@ -9521,8 +9523,8 @@ def render_draft_scoring_breakdown(scored_df, player_name=None, key_suffix=""):
         ("ML Projection Component", "ML projection boost"),
         ("Confidence Component", "Projection confidence"),
         ("Risk Component", "Risk penalty (subtracted)"),
-        ("Draft Fit Score", "Final Draft Fit Score"),
-        ("Decision Score", "Final Decision Score"),
+        ("Draft Fit Score", "Final Roster Fit Score"),
+        ("Decision Score", "Final Pick Score"),
     ]
     rows = []
     for _, r in view.iterrows():
@@ -12755,6 +12757,16 @@ try:
     sync_active_fantasy_team_to_canonical(st.session_state)
 except ImportError:
     pass
+try:
+    from shared_draft_context import prepare_shared_draft_context
+
+    prepare_shared_draft_context(
+        st.session_state,
+        active_page=_active_page_for_prep,
+        force_mirror=bool(st.session_state.get("_global_settings_force_mirror")),
+    )
+except ImportError:
+    pass
 _record_sidebar_nav_trace("after_prepare_workspace")
 try:
     from suite_user_persistence import show_persistence_messages
@@ -12765,8 +12777,9 @@ except Exception:
 _consume_scheduled_navigation()
 
 try:
-    from draft_lab_resume import apply_draft_lab_resume
+    from draft_lab_resume import apply_baseball_suite_resume, apply_draft_lab_resume
 
+    apply_baseball_suite_resume(st)
     apply_draft_lab_resume(st)
 except ImportError:
     pass
@@ -12798,6 +12811,12 @@ _selected_page = st.sidebar.radio(
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
 render_global_app_chrome(active_page)
+try:
+    from shared_draft_context import render_research_draft_context_banner
+
+    render_research_draft_context_banner(st, st.session_state, active_page)
+except ImportError:
+    pass
 _record_sidebar_nav_trace(
     "after_sidebar_radio",
     rerun_source="sidebar_render",
@@ -12807,7 +12826,7 @@ _record_sidebar_nav_trace(
 try:
     from live_draft_navigation import render_return_to_draft_sidebar
 
-    render_return_to_draft_sidebar(st, st.session_state)
+    render_return_to_draft_sidebar(st, st.session_state, active_page=active_page)
 except Exception:
     try:
         from live_draft_state import has_active_live_draft
@@ -15258,7 +15277,7 @@ if active_page == "Fantasy Sleepers & Busts":
     with st.expander("Column glossary", expanded=False):
         st.markdown(
             "**Fantasy Edge** = Market Rank − Model Rank (positive = sleeper, negative = bust risk). "
-            "**Expected Fantasy Value** = projection score; **Current Production** = recent actual stats."
+            "**Player Grade** = projection score; **Current Production** = recent actual stats."
         )
 
     _fantasy_window_options = [3, 4, 5]
@@ -15348,7 +15367,7 @@ if active_page == "Fantasy Sleepers & Busts":
             with sf4:
                 init_state_once("sleeper_min_expected_value", 0.10)
                 st.slider(
-                    "Minimum Expected Fantasy Value",
+                    "Minimum Player Grade",
                     min_value=0.00,
                     max_value=1.00,
                     step=0.01,
@@ -16001,6 +16020,19 @@ if active_page == "Draft Assistant Simulator":
         def _draft_assistant_settings_changed():
             # Persist Draft Assistant Simulator settings on change so a refresh /
             # navigation away-and-back restores them rather than reverting to defaults.
+            try:
+                from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
+
+                on_alias_lookback_changed(
+                    st.session_state, "draft_window", source_page="Draft Assistant Simulator"
+                )
+                on_alias_projection_style_changed(
+                    st.session_state,
+                    "fantasy_draft_projection_style",
+                    source_page="Draft Assistant Simulator",
+                )
+            except ImportError:
+                pass
             save_page_state("Draft Assistant Simulator")
             force_save_baseball_state(st, reason="draft_assistant_settings_changed")
             _record_settings_onchange("Draft Assistant Simulator", "_draft_assistant_settings_changed", "draft_assistant_settings_changed")
@@ -16172,6 +16204,14 @@ if active_page == "Draft Assistant Simulator":
                 with st.expander("Live draft handoff diagnostics", expanded=False):
                     for key, val in handoff_diag.items():
                         st.text(f"{key}: {val}")
+                try:
+                    from shared_draft_context import shared_draft_context_diagnostics
+
+                    with st.expander("Shared draft context diagnostics", expanded=False):
+                        for key, val in shared_draft_context_diagnostics(st.session_state).items():
+                            st.text(f"{key}: {val}")
+                except ImportError:
+                    pass
 
             with st.expander("Adjust pick number (advanced)", expanded=False):
                 st.number_input(
@@ -16775,6 +16815,19 @@ if active_page == "Draft Room Simulator":
                     reason="draft_room_settings_changed",
                 )
             except Exception:
+                pass
+            try:
+                from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
+
+                on_alias_lookback_changed(
+                    st.session_state, "room_window", source_page="Draft Room Simulator"
+                )
+                on_alias_projection_style_changed(
+                    st.session_state,
+                    "fantasy_draft_projection_style",
+                    source_page="Draft Room Simulator",
+                )
+            except ImportError:
                 pass
             # Persist to page_filter_state AND force cloud save so that a browser
             # refresh restores the user's settings rather than reverting to defaults.
@@ -17507,7 +17560,7 @@ if active_page == "Draft Simulation Test Mode":
     with st.expander("How the Draft Model Works", expanded=False):
         st.markdown(
             """
-            **Decision Score is anchored to player quality first.** The simulator separates **Best Player Available**
+            **Pick Score is anchored to player quality first.** The simulator separates **Best Player Available**
             from **Best Value / Sleeper Pick** so sleepers do not jump elite players just because they are underpriced.
 
             **Final pick weights:**
@@ -17724,7 +17777,7 @@ if active_page == "Draft Simulation Test Mode":
             except ImportError:
                 pass
             render_output_table(
-                clean_ui_columns(draft_board),
+                format_draft_lab_table(clean_ui_columns(draft_board)),
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
@@ -18540,6 +18593,17 @@ if active_page == "Live Draft Room":
                         on_live_draft_scoring_changed(st.session_state)
                 except ImportError:
                     pass
+                try:
+                    from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
+
+                    on_alias_lookback_changed(
+                        st.session_state, "live_draft_proj_window", source_page="Live Draft Room"
+                    )
+                    on_alias_projection_style_changed(
+                        st.session_state, "live_draft_proj_style", source_page="Live Draft Room"
+                    )
+                except ImportError:
+                    pass
                 # Persist to page_filter_state AND force cloud save so that a browser
                 # refresh restores the user's settings rather than reverting to defaults.
                 save_page_state("Live Draft Room")
@@ -19095,36 +19159,7 @@ if active_page == "Live Draft Room":
 
         with rec_col:
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
-            if _draft_is_complete and not _pending_manual_pick:
-                try:
-                    from live_draft_room_ui import render_live_draft_complete_banner
-
-                    teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
-                    team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
-                    render_live_draft_complete_banner(
-                        st,
-                        team_label=team_label,
-                        picks_done=picks_done,
-                        total_picks=total_picks,
-                    )
-                except ImportError:
-                    st.success("Draft complete.")
-                try:
-                    from draft_ui import record_live_draft_ui_diagnostics
-
-                    record_live_draft_ui_diagnostics(
-                        st.session_state,
-                        render_path="live_draft_room",
-                        draft_button_should_render=False,
-                        draft_button_rendered=False,
-                        draft_button_enabled=False,
-                        manual_draft_panel_skipped=True,
-                        draft_action_disable_reason="draft_complete",
-                        draft_button_disable_reason="draft_complete",
-                    )
-                except ImportError:
-                    pass
-            elif not _draft_is_complete and slot is None:
+            if not _draft_is_complete and slot is None:
                 if picks_done < total_picks:
                     st.warning("Pick slot unavailable — use Manual Draft below to continue this pick.")
                 from draft_ui import render_live_manual_draft_panel
@@ -19268,35 +19303,43 @@ if active_page == "Live Draft Room":
                     "Sleeper Score", "Scarcity Score", "Positional Fit", "Draft Fit Score", "Decision Score",
                 ]
                 with rec_tabs[0]:
+                    _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
                     render_output_table(
-                        clean_ui_columns(top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})),
+                        format_fantasy_table(clean_ui_columns(_top_show)),
                         key="live_draft_rec_top",
                         file_name="live_draft_top_recommendations.csv",
                         display_rows=10,
+                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
                     )
                 with rec_tabs[1]:
+                    _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
                     render_output_table(
-                        clean_ui_columns(best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})),
+                        format_fantasy_table(clean_ui_columns(_bpa_show)),
                         key="live_draft_rec_bpa",
                         file_name="live_draft_best_available.csv",
                         display_rows=10,
+                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
                     )
                 with rec_tabs[2]:
                     if pos_fit.empty:
                         st.caption("No specific positional need flagged — take best value.")
                     else:
+                        _pos_show = pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})
                         render_output_table(
-                            clean_ui_columns(pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})),
+                            format_fantasy_table(clean_ui_columns(_pos_show)),
                             key="live_draft_rec_pos",
                             file_name="live_draft_positional_fits.csv",
                             display_rows=10,
+                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
                         )
                 with rec_tabs[3]:
+                    _val_show = value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})
                     render_output_table(
-                        clean_ui_columns(value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})),
+                        format_fantasy_table(clean_ui_columns(_val_show)),
                         key="live_draft_rec_value",
                         file_name="live_draft_value_sleepers.csv",
                         display_rows=10,
+                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
                     )
                 if developer_mode_enabled():
                     with st.expander("Draft Scoring Breakdown", expanded=False):
@@ -19398,7 +19441,56 @@ if active_page == "Live Draft Room":
             st.markdown("</div>", unsafe_allow_html=True)
 
         if _draft_is_complete and not _pending_manual_pick:
-            st.success("Draft complete. Export results or analyze below.")
+            try:
+                from live_draft_room_ui import render_live_draft_complete_banner
+
+                teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+                team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
+                render_live_draft_complete_banner(
+                    st,
+                    team_label=team_label,
+                    picks_done=picks_done,
+                    total_picks=total_picks,
+                )
+            except ImportError:
+                st.markdown("### Draft Completed")
+                picks_txt = (
+                    f"{picks_done} of {total_picks} picks completed"
+                    if total_picks
+                    else f"{picks_done} picks completed"
+                )
+                st.caption(picks_txt)
+            try:
+                from draft_ui import record_live_draft_ui_diagnostics
+
+                record_live_draft_ui_diagnostics(
+                    st.session_state,
+                    render_path="live_draft_room",
+                    draft_button_should_render=False,
+                    draft_button_rendered=False,
+                    draft_button_enabled=False,
+                    manual_draft_panel_skipped=True,
+                    draft_action_disable_reason="draft_complete",
+                    draft_button_disable_reason="draft_complete",
+                )
+            except ImportError:
+                pass
+            act1, act2 = st.columns(2)
+            with act1:
+                if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
+                    _analyze_payload = pg_xfer.build_transfer(st.session_state, "live_to_draft_lab", {})
+                    request_contextual_page(
+                        "Draft Simulation Test Mode",
+                        _analyze_payload,
+                        source_page="Live Draft Room",
+                    )
+            with act2:
+                if st.button("View Results", key="live_draft_view_results_btn"):
+                    st.session_state["_navigate_to_page"] = "Draft Room Simulator"
+                    st.session_state["active_page"] = "Draft Room Simulator"
+                    st.session_state["main_sidebar_page"] = "Draft Room Simulator"
+                    st.session_state["_suite_page_user_nav"] = True
+                    st.rerun()
             export_frames_live = live_draft_export_frames(room)
             ex1, ex2 = st.columns(2)
             with ex1:
@@ -19420,14 +19512,6 @@ if active_page == "Live Draft Room":
                     )
                 except Exception as e:
                     st.caption(f"Excel export unavailable ({e}).")
-
-            if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
-                _analyze_payload = pg_xfer.build_transfer(st.session_state, "live_to_draft_lab", {})
-                request_contextual_page(
-                    "Draft Simulation Test Mode",
-                    _analyze_payload,
-                    source_page="Live Draft Room",
-                )
             render_contextual_page_nav(
                 "Live Draft Room",
                 "draft_workflow",
