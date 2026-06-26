@@ -150,6 +150,9 @@ _PUBLIC_CONTEXT_KEYS = (
     "ami_guidance",
     "projection",
     "watchlist",
+    "hof_case_summary",
+    "cohort_selectivity",
+    "primary_position",
 )
 
 _CONTEXT_LABELS = {
@@ -204,6 +207,9 @@ _CONTEXT_LABELS = {
     "rebalance_recommendation": "Rebalance recommendation",
     "total_drift": "Total drift",
     "historical_comparison": "Historical comparison",
+    "hof_case_summary": "Hall of Fame case",
+    "cohort_selectivity": "Cohort selectivity",
+    "primary_position": "Primary position",
 }
 
 
@@ -613,6 +619,11 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
 
 
 def _format_context_value(key: str, val: Any) -> str:
+    if key == "cohort_selectivity" and isinstance(val, dict):
+        notes = val.get("threshold_notes") if isinstance(val.get("threshold_notes"), list) else []
+        if notes:
+            return "; ".join(str(n) for n in notes[:4])
+        return str(val.get("selectivity") or "")
     if key == "trend_summary" and isinstance(val, dict):
         parts = []
         for sub, label in (
@@ -832,6 +843,16 @@ def _recent_duplicate_send(
     return age < _SEND_COOLDOWN_SECONDS
 
 
+def _is_hof_case_submission(
+    quant_area: str,
+    context: dict[str, Any] | None,
+) -> bool:
+    if str(quant_area or "").strip() == "hall_of_fame_case":
+        return True
+    ctx = context if isinstance(context, dict) else {}
+    return ctx.get("routing_hint") == "hof_case_analysis" or ctx.get("intent") == "hof_case_analysis"
+
+
 def submit_analytical_question(
     *,
     source_app: str,
@@ -855,36 +876,43 @@ def submit_analytical_question(
     )
     action_url = build_applied_math_resume_url(payload)
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
+    hof_case = _is_hof_case_submission(quant_area, context)
     if not duplicate:
         metrics = metrics_for_applied_math_resume(payload)
         metrics["source_app"] = normalize_source_app_id(
             str(payload.get("source_app") or ""),
             dict(payload.get("context") or {}),
         )
-        if metrics["source_app"] == "music":
-            summary = f"Asked Music Coach: {payload['question'][:80]}"
-        else:
-            summary = f"Asked Applied Math: {payload['question'][:80]}"
-        try:
-            from suite_activity_client import record_activity
+        if not hof_case:
+            if metrics["source_app"] == "music":
+                summary = f"Asked Music Coach: {payload['question'][:80]}"
+            else:
+                summary = f"Asked Applied Math: {payload['question'][:80]}"
+            try:
+                from suite_activity_client import record_activity
 
-            record_activity(
-                payload["source_app"],
-                "analytical_question",
-                page=payload["source_page"],
-                metrics=metrics,
-                summary=summary,
-            )
-        except Exception as exc:
-            log.warning("record_activity failed for analytical_question: %s", exc)
-    _upsert_applied_intelligence_resume(payload, action_url=action_url)
+                record_activity(
+                    payload["source_app"],
+                    "analytical_question",
+                    page=payload["source_page"],
+                    metrics=metrics,
+                    summary=summary,
+                )
+            except Exception as exc:
+                log.warning("record_activity failed for analytical_question: %s", exc)
+    if hof_case:
+        # Hall of Fame cases use baseball_hof_activity for Command Center Continue.
+        # Store context blob for Recent AMI Questions; skip duplicate AMI Continue card.
+        _store_question_context_blob(payload)
+    else:
+        _upsert_applied_intelligence_resume(payload, action_url=action_url)
     ss = payload.get("source_state")
     refresh_blob = not duplicate or (
         str(payload.get("source_app") or "").strip().lower() == "investment"
         and isinstance(ss, dict)
         and bool(ss.get("entity_params"))
     )
-    if refresh_blob:
+    if refresh_blob and not hof_case:
         _store_question_context_blob(payload)
     if session_state is not None:
         session_state["_ami_last_send"] = {

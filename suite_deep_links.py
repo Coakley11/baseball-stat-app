@@ -49,6 +49,7 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("bb:live_draft:", "Live Draft Room"),
     ("bb:draft_lab:", "Draft Simulation Test Mode"),
     ("bb:draft_lab", "Draft Simulation Test Mode"),
+    ("bb:hof_case:", "Career Totals"),
     ("baseball:projections", "ML Projections"),
     ("bb:proj", "ML Projections"),
     ("baseball:trade", "Fantasy Lineup Assistant"),
@@ -267,6 +268,13 @@ def build_resume_action_url(
             draft_section = "team_analysis"
         if draft_section:
             params["suite_draft_section"] = draft_section[:40]
+        hof_target = str(m.get("target_player") or m.get("hof_case_target") or "").strip()
+        if not hof_target and rk.startswith("bb:hof_case:"):
+            hof_target = rk.split(":", 2)[-1].strip()
+        if hof_target:
+            params["suite_hof_target"] = hof_target[:120]
+        if rk.startswith("bb:hof_case:") or m.get("hof_case_mode"):
+            params["suite_hof_case"] = "1"
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:
@@ -374,6 +382,13 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("bb:draft_lab:"):
             metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
             page = "Draft Simulation Test Mode"
+        elif key.startswith("bb:hof_case:"):
+            slug = key.split(":", 2)[-1].strip()
+            metrics["hof_case_mode"] = True
+            metrics["hof_case_target_slug"] = slug
+            if subtitle and subtitle != "Career Totals":
+                metrics["target_player"] = subtitle
+            page = "Career Totals"
         elif "draft" in key.lower():
             page = "Draft Simulation"
         elif "trade" in key.lower():

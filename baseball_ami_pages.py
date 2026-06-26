@@ -809,6 +809,12 @@ def finalize_career_context_for_send(ctx: dict[str, Any], session_state: dict[st
         ctx["hof_case_packet"] = copy.deepcopy(hof_packet)
         if hof_packet.get("target_player"):
             ctx["player"] = str(hof_packet["target_player"])
+        if hof_packet.get("hof_case_summary"):
+            ctx["hof_case_summary"] = hof_packet["hof_case_summary"]
+        if hof_packet.get("primary_position"):
+            ctx["primary_position"] = hof_packet["primary_position"]
+        if hof_packet.get("cohort_selectivity"):
+            ctx["cohort_selectivity"] = hof_packet["cohort_selectivity"]
         ctx["routing_hint"] = "hof_case_analysis"
         ctx["intent"] = "hof_case_analysis"
         if hof_case_ami_guidance is not None:

@@ -578,6 +578,22 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         active = resume_page
         overwrite_source = "draft_lab_resume_preserved"
         ss["_suite_page_overwrite_source"] = overwrite_source
+    elif (
+        ss.get("_suite_pending_hof_case_resume")
+        and resume_page
+        and not ss.get("_hof_case_resume_completed")
+    ):
+        active = resume_page
+        overwrite_source = "hof_case_resume_preserved"
+        ss["_suite_page_overwrite_source"] = overwrite_source
+    elif (
+        str(ss.get("_skip_page_restore_for") or "").strip() == "Career Totals"
+        and resume_page == "Career Totals"
+        and not ss.get("_hof_case_resume_completed")
+    ):
+        active = resume_page
+        overwrite_source = "hof_case_skip_restore_preserved"
+        ss["_suite_page_overwrite_source"] = overwrite_source
     if active:
         # Only clear widget keys and restore from snapshot when navigating to a
         # different page (or on fresh-session startup where pre_restore_session_page

@@ -1165,6 +1165,28 @@ def build_source_state(page: str, session_state: dict[str, Any]) -> dict[str, An
             for fk, val in session_state.items():
                 if str(fk).startswith("career_") and str(fk).endswith("_min"):
                     filter_params[str(fk)] = _copy_widget_value(val)
+        try:
+            from hall_of_fame_data import (
+                CAREER_HOF_CASE_MODE_KEY,
+                CAREER_HOF_CASE_TARGET_KEY,
+                HOF_CASE_PACKET_KEY,
+            )
+        except ImportError:
+            CAREER_HOF_CASE_MODE_KEY = "career_hof_case_mode"
+            CAREER_HOF_CASE_TARGET_KEY = "career_hof_case_target_player"
+            HOF_CASE_PACKET_KEY = "_hof_case_packet"
+        if session_state.get(CAREER_HOF_CASE_MODE_KEY):
+            entity_params["hof_case_mode"] = True
+        hof_target = session_state.get(CAREER_HOF_CASE_TARGET_KEY)
+        if hof_target:
+            entity_params["hof_case_target"] = str(hof_target).strip()
+            entity_params["target_player"] = str(hof_target).strip()
+        hof_packet = session_state.get(HOF_CASE_PACKET_KEY)
+        if isinstance(hof_packet, dict) and hof_packet.get("mode") == "hall_of_fame_case":
+            entity_params["hof_case_packet"] = _copy_widget_value(hof_packet)
+        career_snap = session_state.get("_ami_career_snapshot")
+        if isinstance(career_snap, dict) and career_snap:
+            chart_params["career_snapshot"] = _copy_widget_value(career_snap)
 
     elif p == "Valuation":
         try:
@@ -2323,6 +2345,12 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
             ctx["hof_case_packet"] = hof_packet
             if hof_packet.get("target_player"):
                 ctx["player"] = _player_name(hof_packet["target_player"])
+            if hof_packet.get("hof_case_summary"):
+                ctx["hof_case_summary"] = hof_packet["hof_case_summary"]
+            if hof_packet.get("primary_position"):
+                ctx["primary_position"] = hof_packet["primary_position"]
+            if hof_packet.get("cohort_selectivity"):
+                ctx["cohort_selectivity"] = hof_packet["cohort_selectivity"]
             ctx["routing_hint"] = "hof_case_analysis"
             ctx["intent"] = "hof_case_analysis"
             if hof_case_ami_guidance is not None:

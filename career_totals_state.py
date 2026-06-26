@@ -659,9 +659,11 @@ def apply_cloud_career_state_if_allowed(session: dict[str, Any], state: dict[str
 
 
 def apply_career_source_state_from_ami(session: dict[str, Any], source_state: dict[str, Any]) -> None:
-    """Restore Career Totals filters from Applied Math return."""
+    """Restore Career Totals filters and Hall of Fame Case Mode from Applied Math return."""
     wp = dict(source_state.get("widget_params") or {})
     filt = dict(source_state.get("filter_params") or {})
+    ent = dict(source_state.get("entity_params") or {})
+    chart = dict(source_state.get("chart_params") or {})
     merged = {**wp, **filt}
     filters = {
         k: _normalize_filter_value(k, copy.deepcopy(merged[k]))
@@ -670,6 +672,27 @@ def apply_career_source_state_from_ami(session: dict[str, Any], source_state: di
     }
     write_canonical_career_state(session, filters=filters, reason="ami_return", local_edit=False)
     clear_career_local_edit(session)
+
+    try:
+        from hall_of_fame_data import (
+            CAREER_HOF_CASE_MODE_KEY,
+            CAREER_HOF_CASE_TARGET_KEY,
+            HOF_CASE_PACKET_KEY,
+        )
+    except ImportError:
+        return
+
+    if ent.get("hof_case_mode"):
+        session[CAREER_HOF_CASE_MODE_KEY] = True
+    target = ent.get("hof_case_target") or ent.get("target_player")
+    if target:
+        session[CAREER_HOF_CASE_TARGET_KEY] = str(target).strip()
+    packet = ent.get("hof_case_packet")
+    if isinstance(packet, dict) and packet.get("mode") == "hall_of_fame_case":
+        session[HOF_CASE_PACKET_KEY] = copy.deepcopy(packet)
+    snap = chart.get("career_snapshot")
+    if isinstance(snap, dict) and snap:
+        session["_ami_career_snapshot"] = copy.deepcopy(snap)
 
 
 def render_career_totals_state_debug(st: Any, session: dict[str, Any]) -> None:

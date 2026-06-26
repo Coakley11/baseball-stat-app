@@ -21,7 +21,16 @@ DRAFT_LAB_RESUME_DIAG_KEY = "_draft_lab_resume_last_diag"
 DRAFT_LAB_RESUME_COMPLETED_KEY = "_draft_lab_resume_completed"
 DRAFT_LAB_RESUME_REQUESTED_KEY = "_draft_lab_resume_requested"
 DRAFT_LAB_RESUME_QUERY_KEYS = frozenset(
-    {"suite_resume", "suite_page", "suite_draft_room", "suite_draft_section"}
+    {
+        "suite_resume",
+        "suite_page",
+        "suite_draft_room",
+        "suite_draft_section",
+        "suite_hof_target",
+        "suite_hof_case",
+        "suite_ai_question_id",
+        "suite_ami_insight",
+    }
 )
 
 
