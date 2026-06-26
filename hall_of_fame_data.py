@@ -26,6 +26,16 @@ HOF_CASE_PACKET_KEY = "_hof_case_packet"
 
 CASE_SCORE_LABEL = "Hall of Fame Statistical Case Score"
 CASE_SCORE_BUCKETS = ("Weak", "Borderline", "Solid", "Strong", "Very Strong")
+HOF_CASE_MODE_EXPLANATION = (
+    "Hall of Fame Case Mode lets you evaluate whether a player belongs to a statistical cohort "
+    "that historically contains many Hall of Famers. Choose a player, create a career-stat comparison "
+    "group using the filters, then send the cohort to AMI for a Hall of Fame statistical case analysis."
+)
+HOF_CASE_MODE_INSTRUCTIONS = (
+    "Select a player, then use the Career Totals filters above to create a comparison group. "
+    "The selected player must appear in the filtered results before a Hall of Fame case can be analyzed."
+)
+HOF_CASE_ANALYZE_BUTTON_LABEL = "Analyze Hall of Fame Statistical Case with AMI"
 HOF_DATA_FILENAME = "HallOfFame.csv"
 HOF_PLAYER_CATEGORY = "Player"
 KNOWN_HOF_PLAYER_IDS = ("ruthba01", "aaronha01", "mayswi01")
@@ -119,6 +129,36 @@ def count_hof_true(df: pd.DataFrame | None, *, hof_col: str = "isHallOfFamer") -
     if df is None or df.empty or hof_col not in df.columns:
         return 0
     return int(df[hof_col].fillna(False).astype(bool).sum())
+
+
+def build_hof_cohort_summary_text(
+    results_df: pd.DataFrame | None,
+    *,
+    hof_data_loaded: bool = True,
+    hof_col: str = "isHallOfFamer",
+) -> str | None:
+    """Plain-text Hall of Fame cohort line for display above Career Totals table."""
+    if results_df is None or results_df.empty:
+        return None
+    total = int(len(results_df))
+    if not hof_data_loaded:
+        return (
+            "Hall of Fame Cohort:\n"
+            "Hall of Fame data unavailable — add HallOfFame.csv to calculate cohort rate."
+        )
+    if hof_col not in results_df.columns:
+        return (
+            "Hall of Fame Cohort:\n"
+            "Hall of Fame flags are not available for this result set."
+        )
+    hof_count = count_hof_true(results_df, hof_col=hof_col)
+    rate = round(100.0 * hof_count / total, 1) if total else 0.0
+    return f"Hall of Fame Cohort:\n{hof_count} of {total} players are Hall of Famers ({rate}%)"
+
+
+def render_hof_cohort_summary(st: Any, summary_text: str | None) -> None:
+    if summary_text:
+        st.markdown(summary_text)
 
 
 def build_hof_runtime_diagnostics(

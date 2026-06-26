@@ -19,6 +19,7 @@ from hall_of_fame_data import (
     attach_hof_flag,
     build_hof_case_packet,
     build_hof_case_question,
+    build_hof_cohort_summary_text,
     build_hof_runtime_diagnostics,
     decorate_player_column,
     decorate_player_name,
@@ -135,6 +136,23 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertTrue(str(badged.iloc[0]["Player"]).startswith("⭐"))
         self.assertFalse(str(badged.iloc[1]["Player"]).startswith("⭐"))
         self.assertNotIn("isHallOfFamer", badged.columns)
+
+    def test_hof_cohort_summary_text(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"fullName": "Babe Ruth", "isHallOfFamer": True},
+                {"fullName": "Mike Trout", "isHallOfFamer": False},
+            ]
+        )
+        text = build_hof_cohort_summary_text(df, hof_data_loaded=True)
+        self.assertIsNotNone(text)
+        assert text is not None
+        self.assertIn("Hall of Fame Cohort:", text)
+        self.assertIn("1 of 2 players are Hall of Famers (50.0%)", text)
+        missing = build_hof_cohort_summary_text(df, hof_data_loaded=False)
+        assert missing is not None
+        self.assertIn("Hall of Fame data unavailable", missing)
+        self.assertIsNone(build_hof_cohort_summary_text(pd.DataFrame(), hof_data_loaded=True))
 
     def test_hof_case_packet_required_fields(self) -> None:
         df = pd.DataFrame(

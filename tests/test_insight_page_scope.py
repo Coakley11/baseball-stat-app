@@ -22,6 +22,15 @@ class TestInsightPageScope(unittest.TestCase):
         self.assertTrue(should_render_insight_on_page("baseball", "Trend Value", insight))
         self.assertFalse(should_render_insight_on_page("baseball", "Comparison Tool", insight))
 
+    def test_career_totals_hof_case_insight_renders_on_career_page(self) -> None:
+        insight = {
+            "source_app": "baseball",
+            "source_page": "Career Totals",
+            "conclusion": "Hall of Fame Statistical Case Score queued for Mike Trout.",
+        }
+        self.assertTrue(should_render_insight_on_page("baseball", "Career Totals", insight))
+        self.assertFalse(should_render_insight_on_page("baseball", "Leaderboards", insight))
+
     def test_chart_snapshot_page_used_when_source_page_missing(self) -> None:
         insight = {
             "source_app": "baseball",

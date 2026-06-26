@@ -41,6 +41,7 @@ INSIGHT_ELIGIBLE_PAGES: dict[str, frozenset[str]] = {
         "Comparison Tool",
         "Trend Value",
         "Historical Explorer",
+        "Career Totals",
         "Draft Assistant Simulator",
         "Live Draft Room",
         "Draft Room Simulator",

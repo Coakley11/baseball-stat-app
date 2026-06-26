@@ -13546,6 +13546,9 @@ if active_page == "Career Totals":
         CAREER_HOF_CASE_TARGET_KEY,
         CAREER_HOF_FILTER_KEY,
         CASE_SCORE_LABEL,
+        HOF_CASE_ANALYZE_BUTTON_LABEL,
+        HOF_CASE_MODE_EXPLANATION,
+        HOF_CASE_MODE_INSTRUCTIONS,
         HOF_CASE_PACKET_KEY,
         HOF_FILTER_ALL,
         HOF_FILTER_OPTIONS,
@@ -13553,7 +13556,9 @@ if active_page == "Career Totals":
         badge_hof_players_for_table,
         build_hof_case_packet,
         build_hof_case_question,
+        build_hof_cohort_summary_text,
         player_in_results,
+        render_hof_cohort_summary,
         summarize_career_filters,
     )
 
@@ -13564,8 +13569,9 @@ if active_page == "Career Totals":
     hof_case_mode = st.checkbox(
         "Hall of Fame Case Mode",
         key=CAREER_HOF_CASE_MODE_KEY,
-        help="Run one Career Totals search, then compare a target player to Hall of Fame prevalence in that cohort.",
+        help="Compare a target player to Hall of Fame prevalence in your filtered career cohort.",
     )
+    st.caption(HOF_CASE_MODE_EXPLANATION)
     if hof_case_mode:
         default_target = career_player_options[0] if career_player_options else ""
         init_state_once(CAREER_HOF_CASE_TARGET_KEY, default_target)
@@ -13577,6 +13583,7 @@ if active_page == "Career Totals":
             key=CAREER_HOF_CASE_TARGET_KEY,
             help="This player must appear in the filtered Career Totals results before analysis.",
         )
+        st.caption(HOF_CASE_MODE_INSTRUCTIONS)
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
     cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
@@ -13762,18 +13769,6 @@ if active_page == "Career Totals":
     hof_target_in_results = False
     if hof_case_mode:
         hof_target_player = str(st.session_state.get(CAREER_HOF_CASE_TARGET_KEY) or "").strip()
-        hof_target_in_results = player_in_results(hof_target_player, career_totals)
-        if hof_target_player and not hof_target_in_results:
-            st.warning(
-                "Selected player is not included in this search result. Adjust filters and try again."
-            )
-        elif hof_target_player and hof_target_in_results:
-            hof_count_preview = int(career_totals["isHallOfFamer"].fillna(False).astype(bool).sum()) if "isHallOfFamer" in career_totals.columns else 0
-            hof_rate_preview = round(100.0 * hof_count_preview / len(career_totals), 1) if len(career_totals) else 0.0
-            st.caption(
-                f"Search returned {len(career_totals)} players · Hall of Famers: {hof_count_preview} · "
-                f"Hall of Fame rate: {hof_rate_preview}% · Target: {hof_target_player}"
-            )
 
     top_bar_chart(career_totals, "fullName", sort_stat_career, f"Top 10 Career Totals by {sort_stat_career}")
 
@@ -13798,120 +13793,131 @@ if active_page == "Career Totals":
     from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
 
     render_stat_filter_summary(st, st.session_state, mode="career")
+    if hof_case_mode and len(career_totals) > 0:
+        try:
+            from hall_of_fame_data import hof_data_available
+
+            hof_data_loaded = hof_data_available(BASE_DIR)
+        except ImportError:
+            hof_data_loaded = bool(HOF_PLAYER_IDS)
+        render_hof_cohort_summary(
+            st,
+            build_hof_cohort_summary_text(career_totals, hof_data_loaded=hof_data_loaded),
+        )
+    if hof_case_mode:
+        hof_target_in_results = bool(hof_target_player) and player_in_results(hof_target_player, career_totals)
+        if hof_target_player and not hof_target_in_results:
+            st.warning(
+                "Selected player is not included in this search result. Adjust filters and try again."
+            )
+        elif hof_target_player and hof_target_in_results:
+            if st.button(HOF_CASE_ANALYZE_BUTTON_LABEL, type="primary", key="career_hof_case_analyze_btn"):
+                filters_summary = summarize_career_filters(st.session_state)
+                hof_packet = build_hof_case_packet(
+                    hof_target_player,
+                    career_totals,
+                    filters_summary=filters_summary,
+                    sort_stat=sort_stat_career,
+                )
+                st.session_state[HOF_CASE_PACKET_KEY] = hof_packet
+                hof_question = build_hof_case_question(hof_target_player, hof_packet)
+                try:
+                    from applied_math_context import cache_page_context
+
+                    top_rows = []
+                    for _, row in career_totals.sort_values(sort_stat_career, ascending=False).head(5).iterrows():
+                        entry: dict = {"player": str(row.get("fullName") or "").strip()}
+                        if sort_stat_career in row.index:
+                            entry[str(sort_stat_career)] = row.get(sort_stat_career)
+                        if entry.get("player"):
+                            top_rows.append(entry)
+                    career_snap = {
+                        "sort_stat": str(sort_stat_career),
+                        "year_range": f"{range_career[0]}–{range_career[1]}",
+                        "row_count": int(len(career_totals)),
+                        "top_players": [r["player"] for r in top_rows],
+                        "top_rows": top_rows,
+                        "hof_case_mode": True,
+                        "hof_case_target": hof_target_player,
+                    }
+                    st.session_state["_ami_career_snapshot"] = career_snap
+                    cache_page_context(
+                        st.session_state,
+                        "Career Totals",
+                        {
+                            "career_snapshot": career_snap,
+                            "hof_case_packet": hof_packet,
+                            "metrics": [str(sort_stat_career)],
+                        },
+                    )
+                except Exception:
+                    pass
+                try:
+                    from suite_analytical_question import build_submit_context, submit_analytical_question
+
+                    submit_ctx = build_submit_context(
+                        "baseball",
+                        "Career Totals",
+                        st.session_state,
+                    )
+                    submit_source_state = (
+                        build_source_state("Career Totals", st.session_state)
+                        if build_source_state
+                        else None
+                    )
+                    ami_result = submit_analytical_question(
+                        source_app="baseball",
+                        source_page="Career Totals",
+                        question=hof_question,
+                        context=submit_ctx,
+                        context_summary=f"{CASE_SCORE_LABEL} — {hof_target_player}",
+                        quant_area="hall_of_fame_case",
+                        source_state=submit_source_state,
+                        session_state=st.session_state,
+                    )
+                    try:
+                        from baseball_hof_activity import log_hof_case_analysis_submitted
+
+                        log_hof_case_analysis_submitted(
+                            st.session_state,
+                            target_player=hof_target_player,
+                            packet=hof_packet,
+                            question_id=str(ami_result.get("question_id") or ""),
+                        )
+                    except ImportError:
+                        pass
+                    try:
+                        from applied_math_return_insight import build_submit_fallback_insight, stage_pending_insight
+
+                        insight = build_submit_fallback_insight(
+                            question=hof_question,
+                            source_app="baseball",
+                            source_page="Career Totals",
+                            question_id=str(ami_result.get("question_id") or ""),
+                            full_analysis_url=str(ami_result.get("action_url") or ""),
+                            resume_key=f"bb:hof_case:{hof_target_player}",
+                        )
+                        insight.conclusion = (
+                            f"{CASE_SCORE_LABEL} queued for {hof_target_player}. "
+                            "Open full analysis for the statistical case — not induction odds."
+                        )
+                        insight.method = CASE_SCORE_LABEL
+                        stage_pending_insight(st, insight)
+                    except Exception:
+                        pass
+                    st.session_state["_ami_submit_render_insight_this_run"] = True
+                    st.session_state["_ami_last_submit_source_page"] = "Career Totals"
+                    st.success(
+                        f"Hall of Fame statistical case saved for {hof_target_player}. "
+                        "Review the Baseball Insight card below or open Command Center for the full analysis."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not submit Hall of Fame statistical case ({exc}).")
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="career")
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
-
-    if hof_case_mode and hof_target_player and hof_target_in_results:
-        if st.button("Analyze Hall of Fame Case", type="primary", key="career_hof_case_analyze_btn"):
-            filters_summary = summarize_career_filters(st.session_state)
-            hof_packet = build_hof_case_packet(
-                hof_target_player,
-                career_totals,
-                filters_summary=filters_summary,
-                sort_stat=sort_stat_career,
-            )
-            st.session_state[HOF_CASE_PACKET_KEY] = hof_packet
-            hof_question = build_hof_case_question(hof_target_player, hof_packet)
-            try:
-                from applied_math_context import cache_page_context
-
-                top_rows = []
-                for _, row in career_totals.sort_values(sort_stat_career, ascending=False).head(5).iterrows():
-                    entry: dict = {"player": str(row.get("fullName") or "").strip()}
-                    if sort_stat_career in row.index:
-                        entry[str(sort_stat_career)] = row.get(sort_stat_career)
-                    if entry.get("player"):
-                        top_rows.append(entry)
-                career_snap = {
-                    "sort_stat": str(sort_stat_career),
-                    "year_range": f"{range_career[0]}–{range_career[1]}",
-                    "row_count": int(len(career_totals)),
-                    "top_players": [r["player"] for r in top_rows],
-                    "top_rows": top_rows,
-                    "hof_case_mode": True,
-                    "hof_case_target": hof_target_player,
-                }
-                st.session_state["_ami_career_snapshot"] = career_snap
-                cache_page_context(
-                    st.session_state,
-                    "Career Totals",
-                    {
-                        "career_snapshot": career_snap,
-                        "hof_case_packet": hof_packet,
-                        "metrics": [str(sort_stat_career)],
-                    },
-                )
-            except Exception:
-                pass
-            try:
-                from suite_analytical_question import build_submit_context, submit_analytical_question
-
-                submit_ctx = build_submit_context(
-                    "baseball",
-                    "Career Totals",
-                    st.session_state,
-                )
-                submit_source_state = (
-                    build_source_state("Career Totals", st.session_state)
-                    if build_source_state
-                    else None
-                )
-                ami_result = submit_analytical_question(
-                    source_app="baseball",
-                    source_page="Career Totals",
-                    question=hof_question,
-                    context=submit_ctx,
-                    context_summary=f"{CASE_SCORE_LABEL} — {hof_target_player}",
-                    quant_area="hall_of_fame_case",
-                    source_state=submit_source_state,
-                    session_state=st.session_state,
-                )
-                try:
-                    from baseball_hof_activity import log_hof_case_analysis_submitted
-
-                    log_hof_case_analysis_submitted(
-                        st.session_state,
-                        target_player=hof_target_player,
-                        packet=hof_packet,
-                        question_id=str(ami_result.get("question_id") or ""),
-                    )
-                except ImportError:
-                    pass
-                try:
-                    from applied_math_return_insight import build_submit_fallback_insight, stage_pending_insight
-
-                    insight = build_submit_fallback_insight(
-                        question=hof_question,
-                        source_app="baseball",
-                        source_page="Career Totals",
-                        question_id=str(ami_result.get("question_id") or ""),
-                        full_analysis_url=str(ami_result.get("action_url") or ""),
-                        resume_key=f"bb:hof_case:{hof_target_player}",
-                    )
-                    insight.conclusion = (
-                        f"{CASE_SCORE_LABEL} queued for {hof_target_player}. "
-                        "Open full analysis for the statistical case — not induction odds."
-                    )
-                    insight.method = CASE_SCORE_LABEL
-                    stage_pending_insight(st, insight)
-                except Exception:
-                    pass
-                st.success(
-                    f"Hall of Fame case saved for {hof_target_player}. "
-                    "Open Command Center or the Baseball Insight card for the full analysis."
-                )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not submit Hall of Fame case analysis ({exc}).")
-    elif hof_case_mode and hof_target_player:
-        st.button(
-            "Analyze Hall of Fame Case",
-            type="primary",
-            key="career_hof_case_analyze_btn_disabled",
-            disabled=True,
-        )
 
     try:
         from applied_math_context import cache_page_context
@@ -14057,6 +14063,7 @@ if active_page == "Leaderboards":
     from leaderboard_aggregation import (
         aggregate_leaderboard_career_totals,
         build_leaderboard_aggregation_diagnostics,
+        build_leaderboard_summary,
         filter_yearly_for_leaderboards,
     )
     from leaderboards_state import (
@@ -14148,14 +14155,20 @@ if active_page == "Leaderboards":
 
     top_bar_chart(leaderboard, "fullName", sort_stat_leaders, f"Top 10 by {sort_stat_leaders}")
 
-    c12, c13, c14 = st.columns(3)
-    c12.metric("Top HR", fmt_int(leaderboard["HR"].max() if not leaderboard.empty else 0))
-    c13.metric("Top OPS", fmt_rate_3(leaderboard["OPS"].max() if not leaderboard.empty else 0))
-    c14.metric("Average OPS", fmt_rate_3(leaderboard["OPS"].mean() if not leaderboard.empty else 0))
-
-    leaderboard_display = leaderboard[[
+    leaderboard_sorted = leaderboard.sort_values(sort_stat_leaders, ascending=False, na_position="last")
+    leaderboard_display = leaderboard_sorted.head(top_n_leaders)[[
         "fullName", "bats", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS", "score"
-    ]].sort_values(sort_stat_leaders, ascending=False).head(top_n_leaders).rename(columns={"fullName": "Player", "bats": "Bats", "score": "Score"})
+    ]].rename(columns={"fullName": "Player", "bats": "Bats", "score": "Score"})
+    lb_summary = build_leaderboard_summary(
+        leaderboard,
+        sort_stat=sort_stat_leaders,
+        displayed_count=len(leaderboard_display),
+    )
+
+    c12, c13, c14 = st.columns(3)
+    c12.metric("Highest Score", lb_summary["highest_score"])
+    c13.metric(lb_summary["category_leader_label"], lb_summary["category_leader"])
+    c14.metric("Players Displayed", lb_summary["players_displayed"])
 
     st.divider()
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])

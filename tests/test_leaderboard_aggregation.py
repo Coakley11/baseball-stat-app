@@ -9,6 +9,7 @@ import pandas as pd
 from leaderboard_aggregation import (
     aggregate_leaderboard_career_totals,
     build_leaderboard_aggregation_diagnostics,
+    build_leaderboard_summary,
     filter_yearly_for_leaderboards,
 )
 
@@ -64,6 +65,19 @@ class LeaderboardAggregationTests(unittest.TestCase):
         self.assertEqual(diag["ambiguous_fullName_bats_groups"], 1)
         self.assertEqual(diag["leaderboard_rows"], 2)
         self.assertEqual(diag["distinct_player_ids_in_source"], 2)
+
+    def test_leaderboard_summary_tracks_sort_category(self) -> None:
+        leaderboard = pd.DataFrame(
+            [
+                {"fullName": "Player A", "HR": 500, "score": 88.5},
+                {"fullName": "Player B", "HR": 762, "score": 94.2},
+            ]
+        )
+        summary = build_leaderboard_summary(leaderboard, sort_stat="HR", displayed_count=2)
+        self.assertEqual(summary["highest_score"], "Player B — 94.2")
+        self.assertEqual(summary["category_leader_label"], "Home Run Leader")
+        self.assertEqual(summary["category_leader"], "Player B — 762")
+        self.assertEqual(summary["players_displayed"], "2")
 
 
 if __name__ == "__main__":
