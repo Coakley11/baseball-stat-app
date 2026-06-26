@@ -972,8 +972,13 @@ def _canonical_draft_board_df():
 def _session_draft_board_df():
     """Coerce session draft_room_table to DataFrame (safe after cloud/disk blob restore)."""
     try:
-        from draft_room_state import ensure_runtime_draft_board, prepare_draft_room_state
+        from draft_room_state import (
+            ensure_live_draft_synced_to_canonical_board,
+            ensure_runtime_draft_board,
+            prepare_draft_room_state,
+        )
 
+        ensure_live_draft_synced_to_canonical_board(st.session_state, reason="session_draft_board_df")
         prepare_draft_room_state(st.session_state)
         return ensure_runtime_draft_board(st.session_state)
     except Exception:
@@ -12720,7 +12725,11 @@ _DRAFT_BOARD_PAGES = frozenset({
 _needs_live_prep = _active_page_for_prep == "Live Draft Room"
 if not _needs_live_prep:
     _ld_room = st.session_state.get("live_draft_room")
-    if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in ("in_progress", "paused"):
+    if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in (
+        "in_progress",
+        "paused",
+        "complete",
+    ):
         _needs_live_prep = True
 if _needs_live_prep:
     try:
@@ -12731,8 +12740,12 @@ if _needs_live_prep:
         pass
 if _active_page_for_prep in _DRAFT_BOARD_PAGES:
     try:
-        from draft_room_state import prepare_draft_room_state
+        from draft_room_state import ensure_live_draft_synced_to_canonical_board, prepare_draft_room_state
 
+        ensure_live_draft_synced_to_canonical_board(
+            st.session_state,
+            reason=f"draft_board_page:{_active_page_for_prep}",
+        )
         prepare_draft_room_state(st.session_state)
     except Exception:
         pass
@@ -16067,7 +16080,16 @@ if active_page == "Draft Assistant Simulator":
                 "Synced from your Draft Room board. Your active fantasy team is set in Draft Room Simulator or Live Draft Room.",
             )
 
-            from draft_room_state import draft_board_summary_for_team, get_canonical_draft_board
+            from draft_room_state import (
+                draft_board_summary_for_team,
+                draft_handoff_diagnostics,
+                get_canonical_draft_board,
+                live_draft_handoff_pick_count,
+            )
+            try:
+                from live_draft_state import LIVE_DRAFT_ROOM_KEY
+            except ImportError:
+                LIVE_DRAFT_ROOM_KEY = "live_draft_room"
             try:
                 from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
             except ImportError:
@@ -16075,13 +16097,27 @@ if active_page == "Draft Assistant Simulator":
                 active_fantasy_team_label = lambda s: str(s.get("room_your_team") or "—")  # type: ignore[assignment,misc]
 
             draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
+            handoff_diag = draft_handoff_diagnostics(st.session_state)
             board_has_players = (
                 not draft_room_table_for_assistant.empty
                 and "Player" in draft_room_table_for_assistant.columns
+                and draft_room_table_for_assistant["Player"].astype(str).str.strip().ne("").any()
+            )
+            live_room = st.session_state.get(LIVE_DRAFT_ROOM_KEY)
+            live_pick_count = (
+                live_draft_handoff_pick_count(live_room) if isinstance(live_room, dict) else 0
             )
 
             if not board_has_players:
-                st.warning("No Draft Room picks yet. Add picks in Draft Room Simulator, then return here.")
+                if live_pick_count > 0:
+                    st.warning(
+                        "Live Draft Room has picks but they did not sync to the Draft Room board. "
+                        "Open Live Draft Room once or check developer diagnostics below."
+                    )
+                    if handoff_diag.get("last_sync_error"):
+                        st.caption(f"Sync error: {handoff_diag['last_sync_error']}")
+                else:
+                    st.warning("No Draft Room picks yet. Add picks in Draft Room Simulator or Live Draft Room, then return here.")
                 drafted_players = []
                 my_roster = []
                 assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
@@ -16131,6 +16167,11 @@ if active_page == "Draft Assistant Simulator":
             my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
             drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
             drafted_or_owned_players = set(drafted_players).union(set(my_roster))
+
+            if developer_mode_enabled():
+                with st.expander("Live draft handoff diagnostics", expanded=False):
+                    for key, val in handoff_diag.items():
+                        st.text(f"{key}: {val}")
 
             with st.expander("Adjust pick number (advanced)", expanded=False):
                 st.number_input(

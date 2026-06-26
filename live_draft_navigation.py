@@ -126,16 +126,24 @@ def apply_force_sync_on_return(session: dict[str, Any]) -> bool:
     """Fetch latest shared draft state when user returns to Live Draft Room."""
     if not session.pop(FORCE_SYNC_ON_RETURN_KEY, None):
         return False
+    synced = False
     try:
         from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room, sync_shared_draft_room
 
         if is_multiplayer_draft_active(session):
             sync_shared_draft_room(session, force=True)
             poll_shared_draft_room(session)
-            return True
+            synced = True
     except ImportError:
         pass
-    return False
+    try:
+        from draft_room_state import ensure_live_draft_synced_to_canonical_board
+
+        ensure_live_draft_synced_to_canonical_board(session, reason="force_sync_on_return")
+        synced = True
+    except ImportError:
+        pass
+    return synced
 
 
 def render_return_to_draft_sidebar(st: Any, session: dict[str, Any]) -> None:

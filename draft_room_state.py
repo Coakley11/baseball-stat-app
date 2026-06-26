@@ -55,6 +55,148 @@ def is_live_draft_runtime_active(session: dict[str, Any]) -> bool:
         return False
 
 
+LIVE_HANDOFF_SYNC_DIAG_KEY = "_draft_live_handoff_sync_diag"
+
+
+def live_draft_handoff_pick_count(room: Any) -> int:
+    """Filled picks on live_draft_room.draft_board (handoff source of truth)."""
+    if not isinstance(room, dict):
+        return 0
+    count = 0
+    for rec in room.get("draft_board") or []:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("fullName") or rec.get("Player") or "").strip():
+            count += 1
+    return count
+
+
+def ensure_live_draft_synced_to_canonical_board(
+    session: dict[str, Any],
+    *,
+    reason: str = "ensure_sync",
+) -> dict[str, Any]:
+    """Push live_draft_room picks into canonical draft_room_table when live has picks."""
+    diag: dict[str, Any] = {
+        "reason": reason,
+        "ok": False,
+        "skipped": False,
+        "live_draft_room_exists": False,
+        "live_draft_status": None,
+        "live_draft_pick_count": 0,
+        "canonical_pick_count_before": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "canonical_pick_count_after": 0,
+        "draft_assistant_roster_count": 0,
+        "assistant_roster_source": "empty",
+        "last_sync_ts": session.get("_canonical_draft_last_live_sync"),
+        "last_sync_reason": session.get("_canonical_draft_last_sync_reason"),
+        "last_sync_error": None,
+    }
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+
+        prepare_live_draft_state(session)
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+    except Exception as exc:
+        diag["last_sync_error"] = f"prepare_live_draft_state: {exc}"
+        room = session.get("live_draft_room")
+
+    if not isinstance(room, dict):
+        after = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        diag["canonical_pick_count_after"] = after
+        diag["assistant_roster_source"] = "canonical_draft_board" if after > 0 else "empty"
+        session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+        return diag
+
+    diag["live_draft_room_exists"] = True
+    diag["live_draft_status"] = str(room.get("status") or "")
+    live_picks = live_draft_handoff_pick_count(room)
+    diag["live_draft_pick_count"] = live_picks
+
+    if live_picks <= 0:
+        diag["skipped"] = True
+        after = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        diag["canonical_pick_count_after"] = after
+        diag["assistant_roster_source"] = "canonical_draft_board" if after > 0 else "empty"
+        session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+        return diag
+
+    try:
+        out = sync_live_draft_room_to_canonical_board(session, room)
+        diag["ok"] = True
+        diag["canonical_pick_count_after"] = table_pick_count(out)
+        diag["last_sync_ts"] = session.get("_canonical_draft_last_live_sync")
+        diag["last_sync_reason"] = reason
+        session["_canonical_draft_last_sync_reason"] = reason
+        if diag["canonical_pick_count_after"] >= live_picks:
+            diag["assistant_roster_source"] = "live_draft_room"
+        else:
+            diag["assistant_roster_source"] = "canonical_draft_board"
+    except Exception as exc:
+        diag["last_sync_error"] = str(exc)
+        diag["canonical_pick_count_after"] = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        diag["assistant_roster_source"] = (
+            "canonical_draft_board" if diag["canonical_pick_count_after"] > 0 else "sync_failed"
+        )
+
+    session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+    return diag
+
+
+def draft_handoff_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Developer diagnostics: live draft → canonical board → Draft Assistant source."""
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, live_draft_restore_stats
+
+        live_stats = live_draft_restore_stats(session)
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+    except ImportError:
+        live_stats = {"pick_count": 0, "has_live_draft_state": False}
+        room = session.get("live_draft_room")
+
+    room_stats = draft_room_restore_stats(session)
+    sync_diag = dict(session.get(LIVE_HANDOFF_SYNC_DIAG_KEY) or {})
+    board = draft_board_diagnostics(session)
+
+    assistant_team = str(session.get("room_your_team") or session.get("draft_room_participant_team") or "")
+    roster_count = 0
+    try:
+        canonical = ensure_runtime_draft_board(session)
+        if assistant_team and "Team" in canonical.columns and "Player" in canonical.columns:
+            roster_count = int(
+                canonical[canonical["Team"].astype(str) == assistant_team]["Player"]
+                .astype(str)
+                .str.strip()
+                .ne("")
+                .sum()
+            )
+        else:
+            roster_count = table_pick_count(canonical)
+    except Exception:
+        roster_count = 0
+
+    source = sync_diag.get("assistant_roster_source") or board.get("draft_board_source_key") or "empty"
+    if room_stats.get("pick_count", 0) > 0 and source == "empty":
+        source = "canonical_draft_board"
+
+    return {
+        "live_draft_room_exists": isinstance(room, dict),
+        "live_draft_status": str(room.get("status") or "") if isinstance(room, dict) else None,
+        "live_draft_pick_count": live_draft_handoff_pick_count(room) if isinstance(room, dict) else live_stats.get("pick_count", 0),
+        "canonical_draft_board_pick_count": room_stats.get("pick_count", 0),
+        "draft_room_simulator_pick_count": table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
+        "draft_assistant_roster_count": roster_count,
+        "assistant_roster_source": source,
+        "last_sync_ts": sync_diag.get("last_sync_ts") or session.get("_canonical_draft_last_live_sync"),
+        "last_sync_reason": sync_diag.get("reason") or session.get("_canonical_draft_last_sync_reason"),
+        "last_sync_error": sync_diag.get("last_sync_error"),
+        "sync_ok": sync_diag.get("ok"),
+        "sync_skipped": sync_diag.get("skipped"),
+        "active_draft_mode": board.get("active_draft_mode"),
+        "draft_board_source_key": board.get("draft_board_source_key"),
+    }
+
+
 def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
     """True when draft buttons and validation should use live_draft_room progress."""
     if is_live_draft_runtime_active(session):
@@ -66,6 +208,8 @@ def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if not is_runtime_room(room) or not list(room.get("pick_order") or []):
             return False
+        if live_draft_handoff_pick_count(room) > 0:
+            return True
         if is_multiplayer_draft_active(session):
             return True
         if str(room.get("status") or "") == "not_started" and not open_pick_row_options(
@@ -596,6 +740,7 @@ def build_snake_board(team_names: list[str], *, rounds: int) -> pd.DataFrame:
 
 def get_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
     """Single board every draft tool should read."""
+    ensure_live_draft_synced_to_canonical_board(session, reason="get_canonical_draft_board")
     prepare_draft_room_state(session)
     return ensure_runtime_draft_board(session).copy()
 
@@ -3519,6 +3664,10 @@ def render_draft_board_diagnostics(st: Any) -> None:
             st.markdown("**Board editor wiring**")
             for key, val in editor_diag.items():
                 st.text(f"{key}: {val}")
+        handoff = draft_handoff_diagnostics(ss)
+        st.markdown("**Live draft → simulator handoff**")
+        for key, val in handoff.items():
+            st.text(f"{key}: {val}")
         st.text(f"local_has_draft_room_board: {draft_room_restore_stats(ss).get('has_draft_board')}")
         st.text(f"cloud_has_draft_room: {ss.get('cloud_has_draft_room_board')}")
 
