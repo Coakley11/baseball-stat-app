@@ -13228,6 +13228,25 @@ def historical_filter_changed():
         pass
 
 
+def _resolve_build_hof_cohort_display_text():
+    """Resolve cohort display helper; fall back when deploy has stale hall_of_fame_data."""
+    try:
+        from hall_of_fame_data import build_hof_cohort_display_text
+
+        return build_hof_cohort_display_text
+    except ImportError:
+        from hall_of_fame_data import build_hof_cohort_summary_text
+
+        def _fallback(session, results_df, *, mode="career", hof_data_loaded=True, hof_col="isHallOfFamer"):
+            return build_hof_cohort_summary_text(
+                results_df,
+                hof_data_loaded=hof_data_loaded,
+                hof_col=hof_col,
+            )
+
+        return _fallback
+
+
 if active_page == "Historical Explorer":
     from historical_state import (
         flush_historical_filter_edits,
@@ -13244,13 +13263,13 @@ if active_page == "Historical Explorer":
         HOF_FILTER_ALL,
         apply_hof_membership_filter,
         badge_hof_players_for_table,
-        build_hof_cohort_display_text,
         ensure_hof_case_scope_ui_state,
         HOF_CASE_MODE_HISTORICAL_NOTICE,
         render_hof_case_scope_controls,
         render_hof_cohort_summary,
         render_hof_page_runtime_diag,
     )
+    build_hof_cohort_display_text = _resolve_build_hof_cohort_display_text()
 
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
     hist_hof_filter = HOF_FILTER_ALL
@@ -13639,7 +13658,6 @@ if active_page == "Career Totals":
         build_hof_ami_payload,
         build_hof_case_packet,
         build_hof_case_question,
-        build_hof_cohort_display_text,
         ensure_hof_case_scope_ui_state,
         hof_case_target_player_options,
         hof_case_target_slug,
@@ -13651,6 +13669,7 @@ if active_page == "Career Totals":
         summarize_career_filters,
         target_player_is_hall_of_famer,
     )
+    build_hof_cohort_display_text = _resolve_build_hof_cohort_display_text()
 
     render_section_header(
         "📚 Career Totals",

@@ -255,7 +255,7 @@ class HallOfFameDataTests(unittest.TestCase):
         session = {"career_HR_min": 250}
         plain = build_hof_cohort_display_text(session, df, mode="career", hof_data_loaded=True)
         assert plain is not None
-        self.assertIn("Players with career totals of HR ≥ 250", plain)
+        self.assertIn("Players with career totals of HR >= 250", plain)
         self.assertIn("Hall of Fame cohort:", plain)
         self.assertIn("1 of 3 players are Hall of Famers (33.3%)", plain)
         no_filters = build_hof_cohort_display_text({}, df, mode="career", hof_data_loaded=True)

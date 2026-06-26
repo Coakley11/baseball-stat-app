@@ -401,11 +401,11 @@ def _compact_stat_min_criteria(session: dict[str, Any], *, prefix: str) -> str:
     parts: list[str] = []
     for stat, val in gather_active_stat_min_filters(session, prefix=prefix):
         if stat in RATE_STAT_COLUMNS:
-            parts.append(f"{stat} ≥ {val:.3f}")
+            parts.append(f"{stat} >= {val:.3f}")
         elif abs(val - round(val)) < 1e-9:
-            parts.append(f"{stat} ≥ {int(round(val)):,}")
+            parts.append(f"{stat} >= {int(round(val)):,}")
         else:
-            parts.append(f"{stat} ≥ {val:g}")
+            parts.append(f"{stat} >= {val:g}")
     return ", ".join(parts)
 
 

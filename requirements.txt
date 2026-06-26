@@ -1,4 +1,4 @@
-# deploy-bump: 2026-06-23-mp-draft-v1 (forces Streamlit Cloud full redeploy)
+# deploy-bump: 2026-06-26-hof-import-hotfix (forces Streamlit Cloud full redeploy)
 streamlit
 pandas
 numpy
