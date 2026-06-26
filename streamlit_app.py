@@ -5675,7 +5675,7 @@ def add_primary_team_for_career(grouped_df, source_df):
     )
 
 @st.cache_data(show_spinner=False)
-def load_data():
+def load_data(_hof_cache_key: float = 0.0):
     people = read_required_csv("People.csv")
     batting = read_required_csv("Batting.csv")
     fielding = read_required_csv("Fielding.csv")
@@ -11069,7 +11069,31 @@ def sync_draft_room_to_assistant_from_table(draft_room_table, my_team_name):
 
 
 _APP_RENDER_START = time.perf_counter()
-batting_df, yearly_df, people_df = load_data()
+try:
+    from hall_of_fame_data import (
+        attach_hof_flag,
+        hof_file_cache_key,
+        hof_load_diagnostics,
+        load_hall_of_fame_player_ids,
+        merge_hof_flag,
+    )
+
+    HOF_CACHE_KEY = hof_file_cache_key(BASE_DIR)
+except ImportError:
+    attach_hof_flag = None  # type: ignore[misc, assignment]
+    hof_load_diagnostics = None  # type: ignore[misc, assignment]
+    load_hall_of_fame_player_ids = None  # type: ignore[misc, assignment]
+    merge_hof_flag = None  # type: ignore[misc, assignment]
+    HOF_CACHE_KEY = 0.0
+
+batting_df, yearly_df, people_df = load_data(HOF_CACHE_KEY)
+if load_hall_of_fame_player_ids is not None and attach_hof_flag is not None:
+    HOF_PLAYER_IDS = load_hall_of_fame_player_ids(BASE_DIR)
+    batting_df = attach_hof_flag(batting_df, HOF_PLAYER_IDS)
+    yearly_df = attach_hof_flag(yearly_df, HOF_PLAYER_IDS)
+    people_df = attach_hof_flag(people_df, HOF_PLAYER_IDS)
+else:
+    HOF_PLAYER_IDS = frozenset()
 
 
 def get_clean_player_label_map_yearly(yl_df):
@@ -13184,6 +13208,10 @@ if active_page == "Historical Explorer":
 
         if not hof_data_available(BASE_DIR):
             st.caption(hof_data_setup_message())
+        elif developer_mode_enabled() and hof_load_diagnostics is not None:
+            with st.expander("HOF data diagnostics", expanded=False):
+                st.json(hof_load_diagnostics(BASE_DIR))
+                st.caption(f"batting_df HOF count: {int(batting_df['isHallOfFamer'].sum()) if 'isHallOfFamer' in batting_df.columns else 0}")
 
     hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
     if hist_bats:
@@ -13241,9 +13269,8 @@ if active_page == "Historical Explorer":
         decorate_player_column,
     )
 
-    if "isHallOfFamer" not in hist.columns and "playerID" in hist.columns and "isHallOfFamer" in batting_df.columns:
-        hof_map = batting_df[["playerID", "isHallOfFamer"]].drop_duplicates("playerID")
-        hist = hist.merge(hof_map, on="playerID", how="left")
+    if merge_hof_flag is not None and "playerID" in hist.columns:
+        hist = merge_hof_flag(hist, HOF_PLAYER_IDS)
     hist = apply_hof_membership_filter(hist, st.session_state.get(HISTORICAL_HOF_FILTER_KEY) or HOF_FILTER_ALL)
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
@@ -13506,6 +13533,10 @@ if active_page == "Career Totals":
 
         if not hof_data_available(BASE_DIR):
             st.caption(hof_data_setup_message())
+        elif developer_mode_enabled() and hof_load_diagnostics is not None:
+            with st.expander("HOF data diagnostics", expanded=False):
+                st.json(hof_load_diagnostics(BASE_DIR))
+                st.caption(f"batting_df HOF count: {int(batting_df['isHallOfFamer'].sum()) if 'isHallOfFamer' in batting_df.columns else 0}")
 
     flush_career_filter_edits(st.session_state, st, reason="career_filter_flush")
 
@@ -13570,9 +13601,8 @@ if active_page == "Career Totals":
 
     career_totals = add_rate_stats(career_totals)
     career_totals = apply_stat_min_filters(career_totals, "career", on_change=career_filter_changed)
-    if "isHallOfFamer" not in career_totals.columns and "playerID" in career_totals.columns and "isHallOfFamer" in batting_df.columns:
-        hof_map = batting_df[["playerID", "isHallOfFamer"]].drop_duplicates("playerID")
-        career_totals = career_totals.merge(hof_map, on="playerID", how="left")
+    if merge_hof_flag is not None and "playerID" in career_totals.columns:
+        career_totals = merge_hof_flag(career_totals, HOF_PLAYER_IDS)
     career_totals = apply_hof_membership_filter(
         career_totals,
         st.session_state.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL,

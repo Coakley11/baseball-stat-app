@@ -22,6 +22,8 @@ HOF_CASE_PACKET_KEY = "_hof_case_packet"
 CASE_SCORE_LABEL = "Hall of Fame Statistical Case Score"
 CASE_SCORE_BUCKETS = ("Weak", "Borderline", "Solid", "Strong", "Very Strong")
 HOF_DATA_FILENAME = "HallOfFame.csv"
+HOF_PLAYER_CATEGORY = "Player"
+KNOWN_HOF_PLAYER_IDS = ("ruthba01", "aaronha01", "mayswi01")
 
 
 def hall_of_fame_csv_path(base_dir: Path | str) -> Path:
@@ -30,8 +32,105 @@ def hall_of_fame_csv_path(base_dir: Path | str) -> Path:
 
 
 def hof_data_available(base_dir: Path | str) -> bool:
-    """True when inducted-member HOF data can be loaded from disk."""
-    return bool(load_hall_of_fame_player_ids(base_dir))
+    """True when inducted player HOF data can be loaded from disk."""
+    return len(load_hall_of_fame_player_ids(base_dir)) > 0
+
+
+def hof_file_cache_key(base_dir: Path | str) -> float:
+    """Change when ``HallOfFame.csv`` is added or updated (for Streamlit cache busting)."""
+    path = hall_of_fame_csv_path(base_dir)
+    try:
+        return float(path.stat().st_mtime) if path.exists() else 0.0
+    except OSError:
+        return 0.0
+
+
+def _column_lookup(df: pd.DataFrame, *names: str) -> str | None:
+    lower = {str(c).lower(): str(c) for c in df.columns}
+    for name in names:
+        hit = lower.get(name.lower())
+        if hit:
+            return hit
+    return None
+
+
+def _parse_hof_dataframe(hof: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Lahman HallOfFame column names and inducted/category values."""
+    if hof is None or hof.empty:
+        return pd.DataFrame(columns=["playerID", "inducted", "category"])
+    out = hof.copy()
+    rename: dict[str, str] = {}
+    pid_col = _column_lookup(out, "playerID", "playerid")
+    inducted_col = _column_lookup(out, "inducted")
+    category_col = _column_lookup(out, "category")
+    if pid_col and pid_col != "playerID":
+        rename[pid_col] = "playerID"
+    if inducted_col and inducted_col != "inducted":
+        rename[inducted_col] = "inducted"
+    if category_col and category_col != "category":
+        rename[category_col] = "category"
+    if rename:
+        out = out.rename(columns=rename)
+    if "playerID" not in out.columns:
+        return pd.DataFrame(columns=["playerID", "inducted", "category"])
+    out["playerID"] = out["playerID"].astype(str).str.strip()
+    out = out[out["playerID"].ne("") & out["playerID"].ne("nan")]
+    if "inducted" in out.columns:
+        out["inducted"] = out["inducted"].astype(str).str.strip().str.upper()
+        out = out[out["inducted"].eq("Y")]
+    if "category" in out.columns:
+        out["category"] = out["category"].astype(str).str.strip()
+        out = out[out["category"].str.casefold().eq(HOF_PLAYER_CATEGORY.casefold())]
+    return out.drop_duplicates(subset=["playerID"], keep="first")
+
+
+def load_hall_of_fame_player_ids(base_dir: Path | str) -> frozenset[str]:
+    """Inducted player-category playerIDs from Lahman ``HallOfFame.csv``."""
+    path = hall_of_fame_csv_path(base_dir)
+    if not path.exists():
+        return frozenset()
+    try:
+        hof = pd.read_csv(path, low_memory=False)
+    except Exception:
+        return frozenset()
+    parsed = _parse_hof_dataframe(hof)
+    if parsed.empty or "playerID" not in parsed.columns:
+        return frozenset()
+    return frozenset(parsed["playerID"].astype(str).tolist())
+
+
+def hof_load_diagnostics(base_dir: Path | str) -> dict[str, Any]:
+    """Runtime diagnostics for HOF CSV path, parse, and known-ID checks."""
+    path = hall_of_fame_csv_path(base_dir)
+    diag: dict[str, Any] = {
+        "csv_path": str(path),
+        "csv_exists": path.exists(),
+        "csv_filename": HOF_DATA_FILENAME,
+        "hof_data_available": False,
+        "inducted_player_count": 0,
+        "sample_player_ids": [],
+        "known_ids_present": {},
+        "columns": [],
+    }
+    if not path.exists():
+        return diag
+    try:
+        raw = pd.read_csv(path, low_memory=False, nrows=0)
+        diag["columns"] = [str(c) for c in raw.columns]
+    except Exception as exc:
+        diag["read_error"] = str(exc)
+        return diag
+    ids = load_hall_of_fame_player_ids(base_dir)
+    sample = sorted(ids)[:10]
+    diag.update(
+        {
+            "hof_data_available": bool(ids),
+            "inducted_player_count": len(ids),
+            "sample_player_ids": sample,
+            "known_ids_present": {pid: pid in ids for pid in KNOWN_HOF_PLAYER_IDS},
+        }
+    )
+    return diag
 
 
 def hof_data_setup_message() -> str:
@@ -44,30 +143,21 @@ def hof_data_setup_message() -> str:
     )
 
 
-def load_hall_of_fame_player_ids(base_dir: Path | str) -> frozenset[str]:
-    """Inducted playerIDs from Lahman ``HallOfFame.csv`` (``inducted == Y``)."""
-    path = hall_of_fame_csv_path(base_dir)
-    if not path.exists():
-        return frozenset()
-    try:
-        hof = pd.read_csv(path, low_memory=False)
-    except Exception:
-        return frozenset()
-    if "playerID" not in hof.columns:
-        return frozenset()
-    if "inducted" in hof.columns:
-        mask = hof["inducted"].astype(str).str.strip().str.upper().eq("Y")
-        return frozenset(hof.loc[mask, "playerID"].astype(str).tolist())
-    return frozenset(hof["playerID"].astype(str).tolist())
-
-
 def attach_hof_flag(df: pd.DataFrame, hof_ids: frozenset[str], *, id_col: str = "playerID") -> pd.DataFrame:
-    """Add ``isHallOfFamer`` boolean column."""
+    """Add or refresh ``isHallOfFamer`` via ``playerID`` membership (never player name)."""
     if df is None or df.empty or id_col not in df.columns:
         return df
     out = df.copy()
-    out["isHallOfFamer"] = out[id_col].astype(str).isin(hof_ids)
+    if "isHallOfFamer" in out.columns:
+        out = out.drop(columns=["isHallOfFamer"])
+    pid = out[id_col].astype(str).str.strip()
+    out["isHallOfFamer"] = pid.isin(hof_ids)
     return out
+
+
+def merge_hof_flag(df: pd.DataFrame, hof_ids: frozenset[str], *, id_col: str = "playerID") -> pd.DataFrame:
+    """Attach HOF flag on aggregated page results (always keyed on ``playerID``)."""
+    return attach_hof_flag(df, hof_ids, id_col=id_col)
 
 
 def apply_hof_membership_filter(
@@ -129,10 +219,6 @@ def _json_safe_row(row: pd.Series) -> dict[str, Any]:
 
 
 def _num(val: Any) -> float | None:
-    n = pd.to_numeric(val, errors="coerce")
-    if pd.isna(n):
-        return None
-    return float(n)
     n = pd.to_numeric(val, errors="coerce")
     if pd.isna(n):
         return None

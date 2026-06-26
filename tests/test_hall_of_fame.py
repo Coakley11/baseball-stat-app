@@ -14,6 +14,7 @@ from hall_of_fame_data import (
     HOF_FILTER_ALL,
     HOF_FILTER_NON,
     HOF_FILTER_ONLY,
+    KNOWN_HOF_PLAYER_IDS,
     apply_hof_membership_filter,
     attach_hof_flag,
     build_hof_case_packet,
@@ -23,8 +24,10 @@ from hall_of_fame_data import (
     hall_of_fame_csv_path,
     hof_case_ami_guidance,
     hof_data_available,
+    hof_load_diagnostics,
     hof_data_setup_message,
     load_hall_of_fame_player_ids,
+    merge_hof_flag,
     player_in_results,
 )
 
@@ -34,10 +37,11 @@ class HallOfFameDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "HallOfFame.csv"
             path.write_text(
-                "playerID,yearID,inducted\n"
-                "ruthbabe01,1936,Y\n"
-                "bondsba01,2022,N\n"
-                "mayswi01,1979,Y\n",
+                "playerID,yearid,votedBy,ballots,needed,votes,inducted,category\n"
+                "ruthbabe01,1936,BBWAA,1,1,1,Y,Player\n"
+                "bondsba01,2022,BBWAA,1,1,1,N,Player\n"
+                "mayswi01,1979,BBWAA,1,1,1,Y,Player\n"
+                "mackco01,1937,Veterans,1,1,1,Y,Manager\n",
                 encoding="utf-8",
             )
             ids = load_hall_of_fame_player_ids(tmp)
@@ -159,6 +163,42 @@ class HallOfFameDataTests(unittest.TestCase):
         guidance = hof_case_ami_guidance()
         self.assertIn(CASE_SCORE_LABEL, guidance)
         self.assertIn("Never present the score as true induction probability", guidance)
+
+
+class HofRuntimeSmokeTests(unittest.TestCase):
+    """Smoke test against repo ``HallOfFame.csv`` when present."""
+
+    def test_runtime_hof_smoke_when_csv_present(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        if not hall_of_fame_csv_path(root).exists():
+            self.skipTest("HallOfFame.csv not in repo root")
+        diag = hof_load_diagnostics(root)
+        self.assertTrue(diag["csv_exists"])
+        self.assertTrue(diag["hof_data_available"])
+        self.assertGreater(diag["inducted_player_count"], 100)
+        for pid in KNOWN_HOF_PLAYER_IDS:
+            self.assertTrue(diag["known_ids_present"].get(pid), pid)
+
+        batting = pd.read_csv(root / "Batting.csv", low_memory=False, usecols=["playerID", "yearID", "HR"])
+        ids = load_hall_of_fame_player_ids(root)
+        batting = attach_hof_flag(batting, ids)
+        self.assertGreater(int(batting["isHallOfFamer"].sum()), 0)
+        for pid in KNOWN_HOF_PLAYER_IDS:
+            self.assertTrue(bool(batting.loc[batting["playerID"] == pid, "isHallOfFamer"].any()))
+
+        career = (
+            batting.groupby("playerID", as_index=False)["HR"]
+            .sum()
+            .merge(batting[["playerID"]].drop_duplicates(), on="playerID")
+        )
+        career = merge_hof_flag(career, ids)
+        hof_only = apply_hof_membership_filter(career, HOF_FILTER_ONLY)
+        self.assertGreater(len(hof_only), 50)
+
+        hist = batting[batting["HR"] >= 50].copy()
+        hist = merge_hof_flag(hist, ids)
+        hist_hof = apply_hof_membership_filter(hist, HOF_FILTER_ONLY)
+        self.assertGreater(len(hist_hof), 10)
 
 
 class HofCaseAmiIntegrationTests(unittest.TestCase):
