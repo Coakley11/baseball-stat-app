@@ -1245,6 +1245,13 @@ def draft_board_summary_for_team(
 def render_active_draft_banner(st: Any, session: dict[str, Any]) -> None:
     """Global banner when a draft is active — visible on every page."""
     try:
+        from live_draft_navigation import get_draft_return_context
+
+        if get_draft_return_context(session):
+            return
+    except ImportError:
+        pass
+    try:
         from live_draft_state import has_active_live_draft
 
         if has_active_live_draft(session):

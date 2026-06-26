@@ -12732,17 +12732,22 @@ _record_sidebar_nav_trace(
 )
 
 try:
-    from live_draft_state import has_active_live_draft
+    from live_draft_navigation import render_return_to_draft_sidebar
 
-    if has_active_live_draft(st.session_state) and active_page != "Live Draft Room":
-        st.sidebar.info("Live draft in progress — your picks are saved automatically.")
-        st.sidebar.button(
-            "Resume Live Draft",
-            key="resume_live_draft_sidebar",
-            on_click=_on_resume_live_draft_sidebar,
-        )
+    render_return_to_draft_sidebar(st, st.session_state)
 except Exception:
-    pass
+    try:
+        from live_draft_state import has_active_live_draft
+
+        if has_active_live_draft(st.session_state) and active_page != "Live Draft Room":
+            st.sidebar.info("Live draft in progress — your picks are saved automatically.")
+            st.sidebar.button(
+                "Resume Live Draft",
+                key="resume_live_draft_sidebar",
+                on_click=_on_resume_live_draft_sidebar,
+            )
+    except Exception:
+        pass
 
 st.session_state.pop("_suite_cloud_target_page", None)
 st.session_state.pop("_suite_page_enforce_rerun", None)
@@ -18550,6 +18555,13 @@ if active_page == "Live Draft Room":
         except ImportError:
             _reconcile = None
         try:
+            from live_draft_navigation import apply_force_sync_on_return
+
+            if apply_force_sync_on_return(st.session_state):
+                room = st.session_state.get("live_draft_room") or room
+        except ImportError:
+            pass
+        try:
             from live_draft_setup_mode import is_shared_lobby, is_shared_multiplayer_intent, setup_is_read_only
             from live_draft_setup_ui import (
                 _is_room_host,
@@ -18791,6 +18803,13 @@ if active_page == "Live Draft Room":
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         st.markdown('<div class="ld-controls-title">Draft control center</div>', unsafe_allow_html=True)
+        if _draft_in_progress and not _draft_is_complete:
+            try:
+                from live_draft_navigation import render_leave_draft_button
+
+                render_leave_draft_button(st, st.session_state)
+            except ImportError:
+                pass
         _timer_ok = bool(
             _draft_in_progress
             and slot is not None
@@ -18932,6 +18951,19 @@ if active_page == "Live Draft Room":
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
             if _draft_is_complete and not _pending_manual_pick:
                 try:
+                    from live_draft_room_ui import render_live_draft_complete_banner
+
+                    teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+                    team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
+                    render_live_draft_complete_banner(
+                        st,
+                        team_label=team_label,
+                        picks_done=picks_done,
+                        total_picks=total_picks,
+                    )
+                except ImportError:
+                    st.success("Draft complete.")
+                try:
                     from draft_ui import record_live_draft_ui_diagnostics
 
                     record_live_draft_ui_diagnostics(
@@ -19022,18 +19054,42 @@ if active_page == "Live Draft Room":
                 except Exception:
                     pass
                 st.markdown("##### Recommended picks")
+                _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
+                _gaps: list[str] = []
+                _category_needs: list[str] = []
+                if _tracker_team and _tracker_team != "—":
+                    try:
+                        from live_draft_category_outlook import compute_category_outlook
+                        from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
+                        from live_draft_room_ui import render_category_outlook_panel, render_roster_tracker_panel
+
+                        _tracker = build_team_roster_tracker(room, _tracker_team)
+                        _roster_df = roster_df_for_team(room, _tracker_team)
+                        _outlook = compute_category_outlook(
+                            _roster_df,
+                            live_draft_get_available(room),
+                            config=cfg,
+                            roster_gaps=_tracker.get("open_positions"),
+                        )
+                        render_roster_tracker_panel(st, _tracker)
+                        render_category_outlook_panel(st, _outlook)
+                        _gaps = list(_tracker.get("gaps") or [])
+                        _category_needs = list(_outlook.get("needs_attention") or [])
+                    except ImportError:
+                        pass
                 try:
                     from live_draft_room_ui import render_live_draft_rec_cards, render_live_draft_rec_summary_banner
 
                     if _defer_recs:
                         st.caption("Loading recommendations…")
                     else:
-                        _gaps = (
-                            pos_fit["Primary Position"].astype(str).dropna().unique().tolist()
-                            if pos_fit is not None and not getattr(pos_fit, "empty", True)
-                            and "Primary Position" in pos_fit.columns
-                            else []
-                        )
+                        if not _gaps:
+                            _gaps = (
+                                pos_fit["Primary Position"].astype(str).dropna().unique().tolist()
+                                if pos_fit is not None and not getattr(pos_fit, "empty", True)
+                                and "Primary Position" in pos_fit.columns
+                                else []
+                            )
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
                         render_live_draft_rec_cards(
                             st,
@@ -19044,6 +19100,8 @@ if active_page == "Live Draft Room":
                             multiplayer=_multiplayer_draft,
                             fmt_rate_4=fmt_rate_4,
                             fmt_int=fmt_int,
+                            gaps=_gaps,
+                            category_needs=_category_needs,
                         )
                 except ImportError:
                     _render_live_draft_rec_cards(top_rec, max_cards=6)
@@ -19184,7 +19242,7 @@ if active_page == "Live Draft Room":
             st.markdown("</div>", unsafe_allow_html=True)
 
         if _draft_is_complete and not _pending_manual_pick:
-            st.success("Draft complete. Export results or send to analysis below.")
+            st.success("Draft complete. Export results or analyze below.")
             export_frames_live = live_draft_export_frames(room)
             ex1, ex2 = st.columns(2)
             with ex1:

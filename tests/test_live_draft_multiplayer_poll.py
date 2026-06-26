@@ -322,7 +322,7 @@ class RecCardRenderTests(unittest.TestCase):
 
         diag = session.get("_live_draft_rec_diag") or {}
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
-        md = str(st.markdown.call_args)
+        md = str(st.markdown.call_args_list)
         self.assertIn("Aaron Judge", md)
         st.button.assert_called_once()
 

@@ -348,6 +348,58 @@ def inject_live_draft_room_styles(st: Any) -> None:
         .ld-rec-edge-pos { color: #16a34a; font-weight: 900; }
         .ld-rec-edge-neu { color: #2563eb; font-weight: 900; }
         .ld-rec-edge-neg { color: #dc2626; font-weight: 900; }
+        .ld-roster-tracker-panel,
+        .ld-category-outlook-panel {
+            background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+            border: 1px solid #bfdbfe;
+            border-radius: 14px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }
+        .ld-roster-tracker-panel .ld-panel-title,
+        .ld-category-outlook-panel .ld-panel-title {
+            font-size: 14px;
+            font-weight: 800;
+            color: #1e3a8a;
+            margin-bottom: 8px;
+        }
+        .ld-roster-line { font-size: 14px; line-height: 1.55; color: #0f172a; font-family: ui-monospace, monospace; }
+        .ld-roster-line.open { color: #b45309; font-weight: 700; }
+        .ld-roster-progress { font-size: 12px; color: #64748b; margin-top: 6px; }
+        .ld-cat-bar-row { font-size: 13px; line-height: 1.5; color: #1e293b; margin: 2px 0; font-family: ui-monospace, monospace; }
+        .ld-cat-insight { font-size: 12px; color: #475569; margin-top: 8px; line-height: 1.45; }
+        .ld-rec-badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px 0; }
+        .ld-rec-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 800;
+            background: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #93c5fd;
+        }
+        .ld-rec-badge.gold { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+        .ld-rec-badge.need { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
+        .ld-rec-badge.fire { background: #ffedd5; color: #c2410c; border-color: #fdba74; }
+        .ld-draft-complete-banner {
+            background: linear-gradient(135deg, #ecfdf5 0%, #dbeafe 100%);
+            border: 2px solid #22c55e;
+            border-radius: 16px;
+            padding: 22px 24px;
+            margin: 0 0 18px 0;
+        }
+        .ld-draft-complete-banner .ld-dc-title {
+            font-size: 1.6rem;
+            font-weight: 900;
+            color: #14532d;
+            margin-bottom: 6px;
+        }
+        .ld-draft-complete-banner .ld-dc-sub {
+            font-size: 15px;
+            color: #334155;
+            margin-bottom: 12px;
+        }
         .live-draft-manual-panel div[data-testid="stButton"] button[kind="primary"] {
             min-height: 50px;
             font-size: 16px;
@@ -561,6 +613,141 @@ def render_live_draft_status_badges(
     )
 
 
+def render_roster_tracker_panel(st: Any, tracker: dict[str, Any]) -> None:
+    """Checklist-style roster needs for the user's team."""
+    lines = tracker.get("lines") or []
+    if not lines:
+        st.caption("No roster slots configured.")
+        return
+    filled = int(tracker.get("filled") or 0)
+    target = int(tracker.get("target") or 0)
+    html_lines = []
+    for ln in lines:
+        mark = "✓" if ln.get("filled") else "✗"
+        label = str(ln.get("label") or "")
+        css = "" if ln.get("filled") else " open"
+        html_lines.append(f'<div class="ld-roster-line{css}">{mark} {label}</div>')
+    progress = f"Roster complete: {filled} / {target}" if target else ""
+    st.markdown(
+        f'<div class="ld-roster-tracker-panel">'
+        f'<div class="ld-panel-title">Your Roster</div>'
+        f'{"".join(html_lines)}'
+        f'<div class="ld-roster-progress">{progress}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
+    bars = outlook.get("bars") or []
+    if not bars:
+        return
+    bar_html = "".join(
+        f'<div class="ld-cat-bar-row">{b.get("category", "")}  {b.get("bar", "")}  {b.get("level", "")}</div>'
+        for b in bars
+    )
+    needs = outlook.get("needs_attention") or []
+    strengths = outlook.get("strengths") or []
+    insight_parts = []
+    if needs:
+        insight_parts.append("<strong>Needs attention:</strong> " + ", ".join(needs))
+    if strengths:
+        insight_parts.append("<strong>Strengths:</strong> " + ", ".join(strengths))
+    insight = "<br/>".join(insight_parts)
+    st.markdown(
+        f'<div class="ld-category-outlook-panel">'
+        f'<div class="ld-panel-title">Team Category Outlook</div>'
+        f"{bar_html}"
+        f'<div class="ld-cat-insight">{insight}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_live_draft_complete_banner(
+    st: Any,
+    *,
+    team_label: str,
+    picks_done: int,
+    total_picks: int,
+) -> None:
+    picks_txt = f"{picks_done} of {total_picks} picks completed" if total_picks else f"{picks_done} picks completed"
+    st.markdown(
+        f"""
+        <div class="ld-draft-complete-banner">
+            <div class="ld-dc-title">Draft Completed</div>
+            <div class="ld-dc-sub"><strong>{team_label}</strong><br/>{picks_txt}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _format_detail_value(col: str, val: Any) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    if col in ("Model Rank", "Market Rank"):
+        try:
+            return str(int(round(float(val))))
+        except (TypeError, ValueError):
+            return str(val)
+    if col == "Fantasy Edge":
+        try:
+            n = float(val)
+            sign = "+" if n > 0 else ""
+            return f"{sign}{int(round(n))}"
+        except (TypeError, ValueError):
+            return str(val)
+    if col in ("Draft Fit Score", "Decision Score"):
+        try:
+            return f"{float(val):.2f}"
+        except (TypeError, ValueError):
+            return str(val)
+    return str(val)
+
+
+def _rec_card_badges(
+    rank: int,
+    row: Any,
+    rec_df: Any,
+    *,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Return (label, css_class) badge tuples for a recommendation card."""
+    badges: list[tuple[str, str]] = []
+    rank_labels = {1: "🏆 Best Overall", 2: "🥈 Second Best", 3: "🥉 Third Best"}
+    if rank in rank_labels:
+        badges.append((rank_labels[rank], "gold"))
+
+    if rec_df is not None and not getattr(rec_df, "empty", True) and "Fantasy Edge" in rec_df.columns:
+        edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+        top_edge = pd.to_numeric(rec_df["Fantasy Edge"], errors="coerce").max()
+        if pd.notna(edge) and pd.notna(top_edge) and float(edge) >= float(top_edge):
+            badges.append(("🔥 Best Value", "fire"))
+
+    pos = str(row.get("Primary Position") or "")
+    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+    if gaps and pos in gaps and pd.notna(fit) and float(fit) >= 0.5:
+        badges.append(("📈 Position Need", "need"))
+
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.6:
+        if rec_df is not None and "Scarcity Score" in getattr(rec_df, "columns", []):
+            if float(scarcity) >= float(pd.to_numeric(rec_df["Scarcity Score"], errors="coerce").max() or 0):
+                badges.append(("⚡ Best Scarcity Pick", "need"))
+
+    cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
+    if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
+        badges.append(("🎯 Best Category Fit", "need"))
+
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    if pd.notna(edge) and float(edge) >= 10 and not any("Best Value" in b[0] for b in badges):
+        badges.append(("Highest Fantasy Edge", "fire"))
+
+    return badges[:4]
+
+
 def _rec_rank_label(rank: int) -> str:
     labels = {1: "🥇 Best Pick", 2: "🥈 Second Best Option", 3: "🥉 Third Best Option"}
     return labels.get(rank, f"Rank #{rank}")
@@ -595,15 +782,31 @@ def _rec_action_guidance(surv: float | None, rank: int) -> str:
     return "Strong Consideration"
 
 
-def _rec_plain_explanation(row: Any, pos: str) -> str:
+def _rec_plain_explanation(
+    row: Any,
+    pos: str,
+    *,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    strengths: list[str] | None = None,
+) -> str:
     fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
     edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
     sleeper = pd.to_numeric(row.get("Sleeper Score", np.nan), errors="coerce")
-    if pd.notna(fit) and float(fit) >= 0.65:
-        return f"Fills your {pos} need with strong projection."
+    boost = f" and boosts {'/'.join(strengths)}" if strengths else ""
+    if gaps and str(pos) in gaps and pd.notna(fit) and float(fit) >= 0.5:
+        open_of = sum(1 for g in gaps if g == "OF")
+        if str(pos) == "OF" and open_of >= 2:
+            return f"Fills OF need — you still need {open_of} OF spots{boost}."
+        return f"Fills your {pos} need{boost}."
+    if category_needs and pd.notna(row.get("Category Need Bonus", np.nan)):
+        weak = category_needs[0] if category_needs else "a weak category"
+        if strengths:
+            return f"Improves your {weak} outlook and boosts {'/'.join(strengths)}."
+        return f"Improves your {weak} outlook."
     if pd.notna(scarcity) and float(scarcity) >= 0.6:
-        return "Scarce position with few alternatives left."
+        return f"Few quality {pos} remain — scarcity pick."
     if pd.notna(sleeper) and float(sleeper) >= 0.55:
         return "Undervalued upside compared to market rank."
     if pd.notna(edge) and float(edge) >= 8:
@@ -660,6 +863,8 @@ def render_live_draft_rec_cards(
     layout: str = "horizontal",
     fmt_rate_4=None,
     fmt_int=None,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
 ) -> None:
     if rec_df is None or getattr(rec_df, "empty", True):
         st.caption("No recommendations available.")
@@ -709,7 +914,21 @@ def render_live_draft_rec_cards(
         tier_lbl, _tier_css = _rec_tier_badge(i, r)
         edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
         action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
-        explanation = _rec_plain_explanation(r, pos)
+        pool_df = room.get("pool")
+        cfg = dict(room.get("config") or {})
+        try:
+            from live_draft_category_outlook import player_top_category_strengths
+
+            strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
+        except ImportError:
+            strengths = []
+        explanation = _rec_plain_explanation(
+            r, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
+        )
+        badges = _rec_card_badges(i, r, rec_df, gaps=gaps, category_needs=category_needs)
+        badge_html = "".join(
+            f'<span class="ld-rec-badge {css}">{label}</span>' for label, css in badges
+        )
         surv_pct = f"{int(round(float(surv) * 100))}% avail next" if pd.notna(surv) else "—"
         player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
         stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
@@ -739,6 +958,8 @@ def render_live_draft_rec_cards(
         with st.container(border=True):
             st.markdown(f"**{name}**")
             st.caption(f"{pos} · {tier_lbl}")
+            if badge_html:
+                st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
             st.caption(f"Fantasy Edge {edge_txt} · {surv_pct} · {action}")
             st.caption(f"Reason: {explanation}")
             btn_col, detail_col = st.columns([2, 1])
@@ -791,23 +1012,12 @@ def render_live_draft_rec_cards(
                     )
             with detail_col:
                 with st.expander("Details", expanded=False):
-                    detail_cols = [
-                        c
-                        for c in (
-                            "Model Rank",
-                            "Market Rank",
-                            "Sleeper Score",
-                            "Positional Fit",
-                            "Scarcity Score",
-                            "Draft Fit Score",
-                            "Decision Score",
-                            "Survival Label",
-                            "Trend Signal",
-                            "Expected Fantasy Value",
-                        )
-                        if c in rec_df.columns
-                    ]
-                    for col in detail_cols:
+                    for col in ("Model Rank", "Market Rank", "Fantasy Edge", "Draft Fit Score", "Decision Score"):
+                        if col not in rec_df.columns:
+                            continue
                         val = r.get(col)
                         if pd.notna(val):
-                            st.text(f"{col}: {val}")
+                            short = col.replace("Draft Fit Score", "Draft Fit").replace("Decision Score", "Decision Score")
+                            st.text(f"{short}: {_format_detail_value(col, val)}")
+                    if strengths:
+                        st.text(f"Top Category Strengths: {', '.join(strengths)}")

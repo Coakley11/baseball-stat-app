@@ -182,7 +182,7 @@ class CompactRecCardTests(unittest.TestCase):
             long_df,
             max_cards=1,
         )
-        html = str(self.st.markdown.call_args)
+        html = str(self.st.markdown.call_args_list)
         self.assertIn("Shohei Ohtani", html)
         self.assertNotIn("...", html)
         captions = str(self.st.caption.call_args_list)
@@ -204,7 +204,7 @@ class CompactRecCardTests(unittest.TestCase):
         )
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "stacked")
-        self.assertIn("Juan Soto", str(self.st.markdown.call_args))
+        self.assertIn("Juan Soto", str(self.st.markdown.call_args_list))
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
@@ -225,7 +225,7 @@ class CompactRecCardTests(unittest.TestCase):
 
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
-        md = str(self.st.markdown.call_args)
+        md = str(self.st.markdown.call_args_list)
         self.assertIn("Juan Soto", md)
         self.st.button.assert_called_once()
         args, kwargs = self.st.button.call_args

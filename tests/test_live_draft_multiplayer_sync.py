@@ -148,7 +148,7 @@ class HostOnlyAutopickTests(unittest.TestCase):
     def test_guest_does_not_run_timer_autopick(self, _auth: object) -> None:
         room = _sample_live_room(timer_deadline=time.time() - 5)
         code, _ = create_and_host_shared_room(self.host, room, store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         expired_room = self.guest[LIVE_DRAFT_ROOM_KEY]
         expired_room["timer_deadline"] = time.time() - 5
