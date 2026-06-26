@@ -106,7 +106,12 @@ def compact_recommendation_rows(df_or_rows: Any, *, limit: int = 8) -> list[dict
                     else:
                         entry[col] = val
             rows.append(entry)
-        return rows
+        try:
+            from draft_score_display import compact_context_row_for_display
+
+            return [compact_context_row_for_display(e) for e in rows]
+        except ImportError:
+            return rows
     if isinstance(df_or_rows, list):
         for item in df_or_rows[:limit]:
             if isinstance(item, dict):
@@ -115,7 +120,12 @@ def compact_recommendation_rows(df_or_rows: Any, *, limit: int = 8) -> list[dict
                     rows.append({"player": name, **{k: v for k, v in item.items() if k in AMI_REC_COLUMNS}})
             elif item:
                 rows.append({"player": str(item).strip()})
-    return rows
+    try:
+        from draft_score_display import compact_context_row_for_display
+
+        return [compact_context_row_for_display(e) for e in rows]
+    except ImportError:
+        return rows
 
 
 def _normalize_player_name(raw: Any) -> str:
@@ -470,6 +480,12 @@ def compact_fantasy_market_rows(df_or_rows: Any, *, limit: int = 12) -> list[dic
                     else:
                         entry[col] = val
             rows.append(entry)
+        try:
+            from draft_score_display import compact_context_row_for_display
+
+            return [compact_context_row_for_display(e) for e in rows]
+        except ImportError:
+            return rows
     return rows
 
 
@@ -1252,6 +1268,10 @@ def build_draft_assistant_ami_cache_from_board(
 
 def draft_ami_guidance(page: str) -> str:
     """Solver framing for draft acceptance questions."""
+    terminology = (
+        " Use user-facing score names only: Player Grade (never EFV, ESV, or Expected Fantasy Value), "
+        "Pick Score (never Decision Score or Drafted Score), Roster Fit Score (never Draft Fit Score)."
+    )
     p = str(page or "").strip()
     if p == "Fantasy Sleepers & Busts":
         return (
@@ -1259,6 +1279,7 @@ def draft_ami_guidance(page: str) -> str:
             "Lead with direct sleeper/bust recommendation, roster fit, Fantasy Edge, drafted_exclusions. "
             "Questions: Should I take this sleeper? Which fits my roster? Highest upside? Safest? "
             "Structure: direct answer → why → scarcity → risk/upside → alternatives → what-if strategies."
+            + terminology
         )
     if p == "Live Draft Room":
         return (
@@ -1266,6 +1287,7 @@ def draft_ami_guidance(page: str) -> str:
             "Reference current round, current pick, my_next_pick, on_clock_team, latest_picks, queue, watchlist. "
             "Questions: On the clock — who to take? Reach or wait? Safest vs highest-upside pick? "
             "Structure: direct answer → roster fit → scarcity → risk/upside → alternatives → what-if."
+            + terminology
         )
     if p == "Draft Assistant Simulator":
         return (
@@ -1273,22 +1295,26 @@ def draft_ami_guidance(page: str) -> str:
             "Reference drafted players, available pool, queue, watchlist, tracked players, needs, scarcity, recs. "
             "Questions: Who next? Roster needs? Best values? Risk? Power/speed/pitching priority shifts? "
             "Structure: direct answer → why → scarcity → risk/upside → alternatives → what-if."
+            + terminology
         )
     if p == "Trend Value":
         return (
             "Use trend_summary, metrics, and draft_status for the focused player. "
             "Tie slope/R²/delta to draft timing and valuation — not generic trend commentary. "
             "Questions: Over/undervalued? Right time to draft? Risk profile?"
+            + terminology
         )
     if p == "Valuation":
         return (
             "Use valuation_snapshot and draft_status. Compare Valuation Score, trend component, and market rank. "
             "Questions: Over/undervalued? Right time to draft? Risk profile?"
+            + terminology
         )
     return (
         "Answer using draft_snapshot and draft_projection: drafted players, canonical draft board, "
         "queue, top recommendations, roster/team needs, scarcity, and best available. "
         "Never give generic advice — use the structured context only."
+        + terminology
     )
 
 

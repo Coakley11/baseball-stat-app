@@ -221,7 +221,7 @@ def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
                     st.text(f"{player}: not in pool")
                     continue
                 bits = [
-                    f"EFV={fields.get('Expected Fantasy Value')}",
+                    f"Player Grade={fields.get('Expected Fantasy Value')}",
                     f"Model={fields.get('Model Rank')}",
                     f"Market={fields.get('Market Rank')}",
                     f"Edge={fields.get('Fantasy Edge')}",

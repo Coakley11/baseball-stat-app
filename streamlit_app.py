@@ -3785,10 +3785,11 @@ def _fmt_insight_num(v, *, rate=False):
 def make_draft_recommendation_insight(row):
     """Plain-language selected-player explanation from Draft Assistant outputs."""
     try:
-        from draft_score_display import fmt_player_grade, fmt_roster_fit_score
+        from draft_score_display import fmt_player_grade, fmt_roster_fit_score, sanitize_draft_terminology_text
     except ImportError:
         fmt_player_grade = lambda v: fmt_rate_4(v)  # type: ignore[assignment,misc]
         fmt_roster_fit_score = lambda v: fmt_rate_4(v)  # type: ignore[assignment,misc]
+        sanitize_draft_terminology_text = lambda t: t  # type: ignore[assignment,misc]
 
     name = row.get("fullName", row.get("Player", "This player"))
     pos = row.get("Primary Position", "")
@@ -3804,7 +3805,7 @@ def make_draft_recommendation_insight(row):
     if market or model:
         parts.append(f"Market rank **{market or 'N/A'}**, model rank **{model or 'N/A'}**, fantasy edge **{edge or 'N/A'}**.")
     for col in ["Reason", "Team fit", "Strategy"]:
-        val = str(row.get(col, "")).strip()
+        val = sanitize_draft_terminology_text(str(row.get(col, "")).strip())
         if val:
             parts.append(val)
     return " ".join(parts)
@@ -10589,12 +10590,17 @@ def _render_projection_breakdown_dialog(bundle: dict):
             f"Fantasy edge **{fmt_int(fe) if fe is not None and not np.isnan(fe) else 'n/a'}**"
         )
 
-    efv = snapshot.get("expected_fantasy_value")
+    efv = snapshot.get("player_grade")
+    if efv is None:
+        legacy = snapshot.get("expected_fantasy_value")
+        if legacy is not None and not np.isnan(legacy):
+            ev = float(legacy)
+            efv = ev * 100.0 if 0 < ev <= 1.5 else ev
     rbase = snapshot.get("realistic_base")
     ml_adj = snapshot.get("ml_adjustment")
     if efv is not None and not np.isnan(efv):
         st.caption(
-            f"Expected fantasy value **{fmt_rate_4(efv)}**"
+            f"Player Grade **{float(efv):.2f}**"
             + (f" (base **{fmt_rate_4(rbase)}**)" if rbase is not None and not np.isnan(rbase) else "")
             + (f" · ML adj **{float(ml_adj):+.4f}**" if ml_adj is not None and not np.isnan(ml_adj) else "")
         )
@@ -12811,12 +12817,6 @@ _selected_page = st.sidebar.radio(
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
 render_global_app_chrome(active_page)
-try:
-    from shared_draft_context import render_research_draft_context_banner
-
-    render_research_draft_context_banner(st, st.session_state, active_page)
-except ImportError:
-    pass
 _record_sidebar_nav_trace(
     "after_sidebar_radio",
     rerun_source="sidebar_render",
@@ -13557,6 +13557,14 @@ def fantasy_filter_changed():
             if alias_key in st.session_state:
                 on_alias_format_changed(st.session_state, alias_key)
                 break
+    except Exception:
+        pass
+    try:
+        from shared_draft_context import on_alias_lookback_changed
+
+        on_alias_lookback_changed(
+            st.session_state, "fantasy_market_window", source_page="Fantasy Sleepers & Busts"
+        )
     except Exception:
         pass
 
@@ -17527,6 +17535,19 @@ if active_page == "Draft Simulation Test Mode":
                 from global_fantasy_settings_state import on_alias_format_changed
 
                 on_alias_format_changed(st.session_state, "draft_lab_scoring_type")
+            except ImportError:
+                pass
+            try:
+                from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
+
+                on_alias_lookback_changed(
+                    st.session_state, "draft_lab_window", source_page="Draft Simulation Test Mode"
+                )
+                on_alias_projection_style_changed(
+                    st.session_state,
+                    "draft_lab_projection_style",
+                    source_page="Draft Simulation Test Mode",
+                )
             except ImportError:
                 pass
             save_page_state("Draft Simulation Test Mode")

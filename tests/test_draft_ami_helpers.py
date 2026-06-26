@@ -14,6 +14,7 @@ from draft_ami_helpers import (
     draft_ami_guidance,
     roster_for_team_from_board,
 )
+from draft_score_display import DISPLAY_PLAYER_GRADE, DISPLAY_PICK_SCORE, DISPLAY_ROSTER_FIT
 
 
 class TestDraftAmiHelpers(unittest.TestCase):
@@ -24,6 +25,9 @@ class TestDraftAmiHelpers(unittest.TestCase):
                     "fullName": "Corbin Carroll",
                     "Primary Position": "OF",
                     "Model Rank": 10,
+                    "Expected Fantasy Value": 0.91,
+                    "Decision Score": 0.87,
+                    "Draft Fit Score": 1.35,
                     "Reason": "Strong fit",
                 }
             ]
@@ -32,6 +36,10 @@ class TestDraftAmiHelpers(unittest.TestCase):
         self.assertEqual(rows[0]["player"], "Corbin Carroll")
         self.assertEqual(rows[0]["Primary Position"], "OF")
         self.assertEqual(rows[0]["reason"], "Strong fit")
+        self.assertIn(DISPLAY_PLAYER_GRADE, rows[0])
+        self.assertIn(DISPLAY_PICK_SCORE, rows[0])
+        self.assertIn(DISPLAY_ROSTER_FIT, rows[0])
+        self.assertNotIn("Expected Fantasy Value", rows[0])
 
     def test_compact_fantasy_market_rows(self) -> None:
         df = pd.DataFrame(
@@ -39,6 +47,7 @@ class TestDraftAmiHelpers(unittest.TestCase):
                 {
                     "fullName": "Junior Caminero",
                     "Fantasy Edge": 40,
+                    "Expected Fantasy Value": 0.82,
                     "Reason": "Undervalued",
                 }
             ]
@@ -46,6 +55,22 @@ class TestDraftAmiHelpers(unittest.TestCase):
         rows = compact_fantasy_market_rows(df)
         self.assertEqual(rows[0]["player"], "Junior Caminero")
         self.assertEqual(rows[0]["Fantasy Edge"], 40)
+        self.assertIn(DISPLAY_PLAYER_GRADE, rows[0])
+
+    def test_draft_ami_guidance_uses_display_score_names(self) -> None:
+        for page in (
+            "Fantasy Sleepers & Busts",
+            "Live Draft Room",
+            "Draft Assistant Simulator",
+            "Trend Value",
+            "Valuation",
+            "Other",
+        ):
+            text = draft_ami_guidance(page)
+            self.assertIn("Player Grade", text)
+            self.assertIn("never EFV", text)
+            self.assertIn("never Decision Score", text)
+            self.assertIn("never Draft Fit Score", text)
 
     def test_draft_ami_guidance_per_page(self) -> None:
         self.assertIn("sleeper", draft_ami_guidance("Fantasy Sleepers & Busts").lower())

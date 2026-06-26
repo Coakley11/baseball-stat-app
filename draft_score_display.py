@@ -6,6 +6,7 @@ are unchanged. Call ``prepare_draft_scores_for_display`` only at display/export 
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -181,6 +182,80 @@ def draft_score_column_config(st: Any, columns: list[str]) -> dict[str, Any]:
         if help_text:
             cfg[col] = st.column_config.NumberColumn(col, help=help_text, format="%.2f")
     return cfg
+
+
+# Legacy terms that must not appear in user-facing generated text or AMI context keys.
+FORBIDDEN_USER_SCORE_TERMS: frozenset[str] = frozenset(
+    {
+        "EFV",
+        "ESV",
+        "Expected Fantasy Value",
+        "Decision Score",
+        "Draft Fit Score",
+        "Drafted Score",
+    }
+)
+
+_LEGACY_TEXT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("Expected Fantasy Value", DISPLAY_PLAYER_GRADE),
+    ("Decision Score", DISPLAY_PICK_SCORE),
+    ("Draft Fit Score", DISPLAY_ROSTER_FIT),
+    ("Drafted Score", DISPLAY_PICK_SCORE),
+    ("Average Expected Fantasy Value", "Average Player Grade"),
+    ("Total Expected Fantasy Value", "Total Player Grade"),
+    ("Average Draft Fit Score", "Average Roster Fit Score"),
+)
+
+
+def sanitize_draft_terminology_text(text: str) -> str:
+    """Replace legacy score names in prose (Reason, Strategy, AMI commentary)."""
+    if not text or not isinstance(text, str):
+        return text
+    out = text
+    for old, new in _LEGACY_TEXT_REPLACEMENTS:
+        out = out.replace(old, new)
+    out = re.sub(r"\bEFV\b", DISPLAY_PLAYER_GRADE, out)
+    out = re.sub(r"\bESV\b", DISPLAY_PLAYER_GRADE, out)
+    out = re.sub(r"\bexpected fantasy value\b", DISPLAY_PLAYER_GRADE, out, flags=re.IGNORECASE)
+    out = re.sub(r"\bdecision score\b", DISPLAY_PICK_SCORE, out, flags=re.IGNORECASE)
+    out = re.sub(r"\bdraft fit score\b", DISPLAY_ROSTER_FIT, out, flags=re.IGNORECASE)
+    out = re.sub(r"\bdrafted score\b", DISPLAY_PICK_SCORE, out, flags=re.IGNORECASE)
+    return out
+
+
+def _context_value_for_display(internal_col: str, val: Any) -> Any:
+    if internal_col in SCALE_TO_DISPLAY_100:
+        n = _num(val)
+        if n is not None:
+            return round(n * 100.0, 2)
+    if internal_col == COL_ROSTER_FIT:
+        n = _num(val)
+        if n is not None:
+            return round(n, 2)
+    return val
+
+
+def compact_context_row_for_display(row: dict[str, Any]) -> dict[str, Any]:
+    """Rename score keys and sanitize text fields for AMI / insight payloads."""
+    out: dict[str, Any] = {}
+    for key, val in row.items():
+        if key == "player":
+            out["player"] = val
+            continue
+        if key in ("Reason", "reason", "Strategy", "strategy", "Team fit", "team_fit"):
+            norm_key = key.lower() if key in ("Reason", "Strategy", "Team fit") else key
+            out[norm_key] = sanitize_draft_terminology_text(str(val))[:300] if val else val
+            continue
+        display_key = COLUMN_RENAME_MAP.get(key, key)
+        if key in COLUMN_RENAME_MAP or key in SCALE_TO_DISPLAY_100 or key == COL_ROSTER_FIT:
+            out[display_key] = _context_value_for_display(key, val)
+        else:
+            out[key] = val
+    return out
+
+
+def compact_context_records_for_display(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [compact_context_row_for_display(dict(r)) for r in records if isinstance(r, dict)]
 
 
 def format_detail_line(internal_col: str, val: Any) -> tuple[str, str]:

@@ -1796,7 +1796,13 @@ def gather_sleepers_ami_snapshot(session_state: dict[str, Any]) -> dict[str, Any
         snap["drafted_exclusions"] = get_all_drafted_player_names(session_state)[:48]
         if board is not None and hasattr(board, "head"):
             filled = board[board["Player"].astype(str).str.strip().ne("")] if "Player" in board.columns else board
-            snap["canonical_draft_board"] = filled.head(24).to_dict(orient="records")
+            board_records = filled.head(24).to_dict(orient="records")
+            try:
+                from draft_score_display import compact_context_records_for_display
+
+                snap["canonical_draft_board"] = compact_context_records_for_display(board_records)
+            except ImportError:
+                snap["canonical_draft_board"] = board_records
             team = session_state.get("sleeper_sync_team") or session_state.get("room_your_team")
             if team and "Team" in board.columns:
                 snap["synced_roster"] = (
@@ -2200,7 +2206,13 @@ def _attach_canonical_draft_fields(ctx: dict[str, Any], session_state: dict[str,
         board = get_canonical_draft_board(session_state)
         if board is not None and hasattr(board, "head"):
             filled = board[board["Player"].astype(str).str.strip().ne("")] if "Player" in board.columns else board
-            ctx["canonical_draft_board"] = filled.head(24).to_dict(orient="records")
+            board_records = filled.head(24).to_dict(orient="records")
+            try:
+                from draft_score_display import compact_context_records_for_display
+
+                ctx["canonical_draft_board"] = compact_context_records_for_display(board_records)
+            except ImportError:
+                ctx["canonical_draft_board"] = board_records
 
 
 def _is_num(val: Any) -> bool:

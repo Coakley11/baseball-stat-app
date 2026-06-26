@@ -11,11 +11,14 @@ from draft_score_display import (
     DISPLAY_PLAYER_GRADE,
     DISPLAY_RELATIVE_GRADE,
     DISPLAY_ROSTER_FIT,
+    FORBIDDEN_USER_SCORE_TERMS,
+    compact_context_row_for_display,
     fmt_pick_score,
     fmt_player_grade,
     fmt_relative_draft_grade,
     fmt_roster_fit_score,
     prepare_draft_scores_for_display,
+    sanitize_draft_terminology_text,
     style_cols_for_display,
 )
 
@@ -61,6 +64,33 @@ class DraftScoreDisplayTests(unittest.TestCase):
     def test_style_cols_map_to_display_names(self) -> None:
         mapped = style_cols_for_display(["Fantasy Edge", "Draft Fit Score", "Expected Fantasy Value"])
         self.assertEqual(mapped, ["Fantasy Edge", DISPLAY_ROSTER_FIT, DISPLAY_PLAYER_GRADE])
+
+    def test_sanitize_legacy_score_terms_in_prose(self) -> None:
+        raw = "Decision Score 0.91 beats Draft Fit Score; EFV is high vs Expected Fantasy Value."
+        cleaned = sanitize_draft_terminology_text(raw)
+        for term in FORBIDDEN_USER_SCORE_TERMS:
+            self.assertNotIn(term, cleaned)
+        self.assertIn(DISPLAY_PICK_SCORE, cleaned)
+        self.assertIn(DISPLAY_ROSTER_FIT, cleaned)
+        self.assertIn(DISPLAY_PLAYER_GRADE, cleaned)
+
+    def test_compact_context_row_renames_ami_keys(self) -> None:
+        row = compact_context_row_for_display(
+            {
+                "player": "Aaron Judge",
+                "Expected Fantasy Value": 0.91,
+                "Decision Score": 0.88,
+                "Draft Fit Score": 1.42,
+                "reason": "Strong Decision Score with elite EFV.",
+            }
+        )
+        self.assertIn(DISPLAY_PLAYER_GRADE, row)
+        self.assertIn(DISPLAY_PICK_SCORE, row)
+        self.assertIn(DISPLAY_ROSTER_FIT, row)
+        self.assertEqual(row[DISPLAY_PLAYER_GRADE], 91.0)
+        self.assertEqual(row[DISPLAY_PICK_SCORE], 88.0)
+        self.assertNotIn("Decision Score", row["reason"])
+        self.assertNotIn("EFV", row["reason"])
 
 
 if __name__ == "__main__":

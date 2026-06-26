@@ -218,13 +218,9 @@ def _global_snapshot_excluded_keys(session=None) -> frozenset[str]:
         keys = set()
     if session is not None:
         try:
-            from shared_draft_context import (
-                has_active_draft_context,
-                shared_draft_context_snapshot_excluded_keys,
-            )
+            from shared_draft_context import shared_draft_context_snapshot_excluded_keys
 
-            if has_active_draft_context(session):
-                keys.update(shared_draft_context_snapshot_excluded_keys())
+            keys.update(shared_draft_context_snapshot_excluded_keys())
         except ImportError:
             pass
     return frozenset(keys)

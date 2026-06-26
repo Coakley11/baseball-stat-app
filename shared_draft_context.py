@@ -1,4 +1,4 @@
-"""Shared draft settings (lookback, format, projection style) while a draft is active."""
+"""Shared draft settings (lookback, format, projection style) across draft pages."""
 
 from __future__ import annotations
 
@@ -33,31 +33,21 @@ DRAFT_SYNC_PAGES: frozenset[str] = frozenset(
     }
 )
 
-RESEARCH_PAGES: frozenset[str] = frozenset(
-    {
-        "Historical Explorer",
-        "Career Totals",
-        "Leaderboards",
-        "Comparison Tool",
-        "Trend Value",
-        "Valuation",
-        "Scatterplots",
-        "Hall of Fame Predictor",
-        "Hall of Fame Explorer",
-        "ML Predictions",
-    }
-)
-
 _SHARED_CONTEXT_DIAG_KEY = "_shared_draft_context_diag"
 _LAST_RESUME_KEY = "_suite_last_consumed_resume_key"
 
 
+def is_draft_sync_page(active_page: str) -> bool:
+    return str(active_page or "").strip() in DRAFT_SYNC_PAGES
+
+
 def shared_draft_context_snapshot_excluded_keys() -> frozenset[str]:
+    """Keep lookback/projection canonical + aliases out of per-page snapshots."""
     return frozenset({GLOBAL_WINDOW_KEY, GLOBAL_PROJECTION_STYLE_KEY, *_ALL_ALIASES.keys()})
 
 
 def has_active_draft_context(session: dict[str, Any]) -> bool:
-    """True when live or simulator draft should drive shared settings."""
+    """True when a live or simulator draft exists (diagnostics only)."""
     try:
         from draft_room_state import get_active_draft_status, table_pick_count, DRAFT_ROOM_TABLE_KEY
 
@@ -105,6 +95,21 @@ def _mirror_aliases(session: dict[str, Any]) -> None:
     }
 
 
+def _resolve_canonical_from_aliases(session: dict[str, Any]) -> None:
+    if session.get(GLOBAL_WINDOW_KEY) is None:
+        for alias in WINDOW_ALIASES:
+            if session.get(alias) is not None:
+                session[GLOBAL_WINDOW_KEY] = int(session[alias])
+                break
+    if session.get(GLOBAL_PROJECTION_STYLE_KEY) is None:
+        for alias in PROJECTION_STYLE_ALIASES:
+            if session.get(alias) is not None:
+                session[GLOBAL_PROJECTION_STYLE_KEY] = str(session[alias])
+                break
+        if session.get(GLOBAL_PROJECTION_STYLE_KEY) is None and session.get(GLOBAL_PROJECTION_STYLE_KEY) is None:
+            direct = session.get(GLOBAL_PROJECTION_STYLE_KEY)
+
+
 def write_shared_draft_context(
     session: dict[str, Any],
     *,
@@ -120,7 +125,6 @@ def write_shared_draft_context(
     _mirror_aliases(session)
     session["_shared_draft_context_source_page"] = str(source_page or "").strip() or None
     session["_shared_draft_context_last_update_reason"] = reason or None
-    session["_shared_draft_context_inherited"] = False
     _record_diag(session, step=f"write:{reason or 'unspecified'}")
 
 
@@ -130,22 +134,21 @@ def prepare_shared_draft_context(
     active_page: str = "",
     force_mirror: bool = False,
 ) -> None:
-    """Mirror canonical lookback + projection style into draft page aliases when a draft is active."""
-    if not has_active_draft_context(session):
-        _record_diag(session, step="inactive")
+    """Mirror canonical lookback + projection style into draft-page aliases."""
+    if not is_draft_sync_page(active_page):
         return
-    window = session.get(GLOBAL_WINDOW_KEY)
-    style = session.get(GLOBAL_PROJECTION_STYLE_KEY)
-    if window is None:
+
+    if session.get(GLOBAL_WINDOW_KEY) is None:
         for alias in WINDOW_ALIASES:
             if session.get(alias) is not None:
                 session[GLOBAL_WINDOW_KEY] = int(session[alias])
                 break
-    if style is None:
+    if session.get(GLOBAL_PROJECTION_STYLE_KEY) is None:
         for alias in PROJECTION_STYLE_ALIASES:
             if session.get(alias) is not None:
                 session[GLOBAL_PROJECTION_STYLE_KEY] = str(session[alias])
                 break
+
     window = session.get(GLOBAL_WINDOW_KEY)
     style = session.get(GLOBAL_PROJECTION_STYLE_KEY)
     last = session.get("_shared_draft_context_last_propagated") or {}
@@ -155,11 +158,9 @@ def prepare_shared_draft_context(
             continue
         if alias not in session:
             session[alias] = canonical_val
-            session["_shared_draft_context_inherited"] = True
         elif session[alias] != canonical_val:
             if force_mirror or (isinstance(last, dict) and last.get(alias) == session[alias]):
                 session[alias] = canonical_val
-                session["_shared_draft_context_inherited"] = True
     _mirror_aliases(session)
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
@@ -167,12 +168,10 @@ def prepare_shared_draft_context(
         prepare_global_fantasy_settings(session, force_mirror=force_mirror)
     except ImportError:
         pass
-    _record_diag(session, step=f"prepare:{active_page or 'global'}")
+    _record_diag(session, step=f"prepare:{active_page or 'draft'}")
 
 
 def on_alias_lookback_changed(session: dict[str, Any], alias_key: str, *, source_page: str = "") -> None:
-    if not has_active_draft_context(session):
-        return
     val = session.get(alias_key)
     if val is not None:
         write_shared_draft_context(
@@ -184,8 +183,6 @@ def on_alias_lookback_changed(session: dict[str, Any], alias_key: str, *, source
 
 
 def on_alias_projection_style_changed(session: dict[str, Any], alias_key: str, *, source_page: str = "") -> None:
-    if not has_active_draft_context(session):
-        return
     val = session.get(alias_key)
     if val is not None:
         write_shared_draft_context(
@@ -198,14 +195,13 @@ def on_alias_projection_style_changed(session: dict[str, Any], alias_key: str, *
 
 def shared_draft_context_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     return {
-        "shared_draft_context_exists": has_active_draft_context(session),
+        "draft_sync_page": is_draft_sync_page(str(session.get("active_page") or "")),
+        "live_draft_active": has_active_draft_context(session),
         "source_page": session.get("_shared_draft_context_source_page"),
         "lookback_window": session.get(GLOBAL_WINDOW_KEY),
         "fantasy_format": session.get("room_format"),
         "projection_style": session.get(GLOBAL_PROJECTION_STYLE_KEY),
-        "last_update_page": session.get("_shared_draft_context_source_page"),
         "last_update_reason": session.get("_shared_draft_context_last_update_reason"),
-        "inherited_from_shared_context": bool(session.get("_shared_draft_context_inherited")),
         "window_aliases": {a: session.get(a) for a in WINDOW_ALIASES},
         "projection_aliases": {a: session.get(a) for a in PROJECTION_STYLE_ALIASES},
     }
@@ -227,28 +223,3 @@ def is_fresh_resume_request(session: dict[str, Any], resume_key: str) -> bool:
     if not key:
         return False
     return key != str(session.get(_LAST_RESUME_KEY) or "").strip()
-
-
-def render_research_draft_context_banner(st: Any, session: dict[str, Any], active_page: str) -> None:
-    """Optional banner on research pages when a draft context exists."""
-    if active_page in DRAFT_SYNC_PAGES or active_page not in RESEARCH_PAGES:
-        return
-    if not has_active_draft_context(session):
-        return
-
-    def _apply() -> None:
-        prepare_shared_draft_context(session, active_page=active_page, force_mirror=True)
-        session["_shared_draft_context_inherited"] = True
-
-    with st.container(border=True):
-        st.markdown("**Active Draft Context Available**")
-        st.caption(
-            f"Lookback {session.get(GLOBAL_WINDOW_KEY, '—')} yr · "
-            f"{session.get('room_format', '—')} · "
-            f"{session.get(GLOBAL_PROJECTION_STYLE_KEY, '—')}"
-        )
-        st.button(
-            "Apply Draft Settings",
-            key=f"apply_draft_settings_{active_page.replace(' ', '_')}",
-            on_click=_apply,
-        )

@@ -371,6 +371,12 @@ def build_projection_snapshot(row) -> dict[str, Any]:
     if isinstance(warning, float) and np.isnan(warning):
         warning = ""
 
+    efv_raw = _num(row, "Expected Fantasy Value")
+    player_grade = None
+    if efv_raw is not None and not (isinstance(efv_raw, float) and np.isnan(efv_raw)):
+        ev = float(efv_raw)
+        player_grade = round(ev * 100.0, 2) if 0 < ev <= 1.5 else round(ev, 2)
+
     return {
         "projections": projections,
         "confidence_label": str(conf).strip() if conf is not None and str(conf).strip() else None,
@@ -382,7 +388,7 @@ def build_projection_snapshot(row) -> dict[str, Any]:
         "star_protected": bool(row.get("Star Protected")) if hasattr(row, "get") else False,
         "very_limited_data": bool(row.get("Very Limited Data")) if hasattr(row, "get") else False,
         "volatility_score": _num(row, "Volatility Score"),
-        "expected_fantasy_value": _num(row, "Expected Fantasy Value"),
+        "player_grade": player_grade,
         "realistic_base": _num(row, "Realistic Base Projection Score"),
         "ml_adjustment": _num(row, "ML Adjustment"),
         "ml_projection_score": _num(row, "ML Projection Score"),

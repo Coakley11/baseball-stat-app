@@ -582,17 +582,34 @@ def _compact_player_rows(df_or_rows: Any, *, limit: int = 10) -> list[dict[str, 
                 "Market Rank",
                 "Sleeper Score",
                 "Draft Fit Score",
+                "Decision Score",
             ):
                 if col in row.index and pd.notna(row[col]):
                     entry[col] = row[col]
-            rows.append(entry)
-        return rows
+            try:
+                from draft_score_display import compact_context_row_for_display
+
+                rows.append(compact_context_row_for_display(entry))
+            except ImportError:
+                rows.append(entry)
+        try:
+            from draft_score_display import compact_context_row_for_display
+
+            return [compact_context_row_for_display(e) for e in rows]
+        except ImportError:
+            return rows
     if isinstance(df_or_rows, list):
         for item in df_or_rows[:limit]:
             if isinstance(item, dict):
                 name = str(item.get("Player") or item.get("fullName") or item.get("player") or "").strip()
                 if name:
-                    rows.append({"player": name, **{k: v for k, v in item.items() if k in ("Primary Position", "Expected Fantasy Value")}})
+                    entry = {"player": name, **{k: v for k, v in item.items() if k in ("Primary Position", "Expected Fantasy Value", "Draft Fit Score", "Decision Score")}}
+                    try:
+                        from draft_score_display import compact_context_row_for_display
+
+                        rows.append(compact_context_row_for_display(entry))
+                    except ImportError:
+                        rows.append(entry)
             elif item:
                 rows.append({"player": str(item).strip()})
     return rows
