@@ -13646,16 +13646,14 @@ if active_page == "Career Totals":
         target_player_is_hall_of_famer,
     )
 
-    hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
-    render_hof_page_runtime_diag(
-        st,
-        st.session_state,
-        page_name="Career Totals",
-        hof_case_mode=hof_case_mode,
-        hof_dropdown_render_path_active=hof_case_mode,
-    )
-
     render_section_header(
+        "📚 Career Totals",
+        "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team.",
+    )
+    render_page_guide(active_page)
+    apply_pending_page_transfer(active_page)
+
+    career_player_options = hof_case_target_player_options(batting_df)
     init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
     st.checkbox(
         "Hall of Fame Case Mode",
@@ -13664,6 +13662,13 @@ if active_page == "Career Totals":
         on_change=career_hof_case_mode_changed,
     )
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
+    render_hof_page_runtime_diag(
+        st,
+        st.session_state,
+        page_name="Career Totals",
+        hof_case_mode=hof_case_mode,
+        hof_dropdown_render_path_active=hof_case_mode,
+    )
     st.caption(HOF_CASE_MODE_EXPLANATION)
     if hof_case_mode:
         default_target = career_player_options[0] if career_player_options else ""
