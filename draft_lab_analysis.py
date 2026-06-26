@@ -43,6 +43,15 @@ def _fmt_score(val: Any) -> str:
     return f"{n:.2f}" if pd.notna(n) else "—"
 
 
+def _fmt_pick_score_display(val: Any) -> str:
+    try:
+        from draft_score_display import fmt_pick_score
+
+        return fmt_pick_score(val)
+    except ImportError:
+        return _fmt_score(val)
+
+
 def analysis_context_from_session(session: dict[str, Any] | None, lab_state: dict[str, Any] | None = None) -> dict[str, Any]:
     session = session or {}
     lab_state = lab_state if isinstance(lab_state, dict) else {}
@@ -236,10 +245,10 @@ def _explain_best_pick(row: pd.Series, gaps_before: list[str]) -> str:
         parts.append(f"Fantasy Edge +{_fmt_int(edge)}")
     dec = _num_or_nan(row.get("Decision Score"))
     if pd.notna(dec):
-        parts.append(f"Decision Score {_fmt_score(dec)} led this roster")
+        parts.append(f"Pick Score {_fmt_pick_score_display(dec)} led this roster")
     fit = _num_or_nan(row.get("Draft Fit Score"))
     if pd.notna(fit) and fit >= 0.6:
-        parts.append("strong draft fit")
+        parts.append("strong roster fit")
     if not parts:
         parts.append("highest composite value score on this roster")
     text = ", ".join(parts[:4])
@@ -262,7 +271,10 @@ def _questionable_reasons(
         reasons.append(f"Negative Fantasy Edge ({_fmt_int(edge)})")
     dec = _num_or_nan(row.get("Decision Score"))
     if pd.notna(dec) and pd.notna(team_median_decision) and dec < team_median_decision - 0.10:
-        reasons.append(f"Decision Score {_fmt_score(dec)} trailed team median {_fmt_score(team_median_decision)}")
+        reasons.append(
+            f"Pick Score {_fmt_pick_score_display(dec)} trailed team median "
+            f"{_fmt_pick_score_display(team_median_decision)}"
+        )
     pos = str(row.get("Primary Position") or "")
     bucket = _position_bucket(pos)
     if gaps_before and bucket not in gaps_before and pos not in gaps_before and len(gaps_before) >= 2:
@@ -273,7 +285,7 @@ def _questionable_reasons(
         reasons.append(f"{better_alternatives} higher-rated players were still available at this pick")
     fit = _num_or_nan(row.get("Draft Fit Score"))
     if pd.notna(fit) and fit < 0.35 and gaps_before:
-        reasons.append("Low draft fit relative to open roster needs")
+        reasons.append("Low Roster Fit Score relative to open roster needs")
     return reasons
 
 
@@ -293,7 +305,7 @@ def _explain_good_pick(row: pd.Series, gaps_before: list[str]) -> str:
         parts.append(f"positive Fantasy Edge (+{_fmt_int(edge)})")
     dec = _num_or_nan(row.get("Decision Score"))
     if pd.notna(dec):
-        parts.append(f"Decision Score {_fmt_score(dec)}")
+        parts.append(f"Pick Score {_fmt_pick_score_display(dec)}")
     if not parts:
         parts.append("solid contribution without major reach or roster-fit concerns")
     text = ", ".join(parts[:3])

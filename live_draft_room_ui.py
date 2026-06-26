@@ -684,6 +684,13 @@ def render_live_draft_complete_banner(
 
 
 def _format_detail_value(col: str, val: Any) -> str:
+    try:
+        from draft_score_display import format_detail_line
+
+        _label, formatted = format_detail_line(col, val)
+        return formatted
+    except ImportError:
+        pass
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return "—"
     if col in ("Model Rank", "Market Rank"):
@@ -698,12 +705,27 @@ def _format_detail_value(col: str, val: Any) -> str:
             return f"{sign}{int(round(n))}"
         except (TypeError, ValueError):
             return str(val)
-    if col in ("Draft Fit Score", "Decision Score"):
+    if col in ("Draft Fit Score", "Decision Score", "Expected Fantasy Value"):
         try:
             return f"{float(val):.2f}"
         except (TypeError, ValueError):
             return str(val)
     return str(val)
+
+
+def _detail_display_label(col: str) -> str:
+    try:
+        from draft_score_display import format_detail_line
+
+        label, _ = format_detail_line(col, 0)
+        return label
+    except ImportError:
+        mapping = {
+            "Draft Fit Score": "Roster Fit Score",
+            "Decision Score": "Pick Score",
+            "Expected Fantasy Value": "Player Grade",
+        }
+        return mapping.get(col, col.replace("Draft Fit Score", "Roster Fit").replace("Decision Score", "Pick Score"))
 
 
 def _rec_card_badges(
@@ -1012,12 +1034,21 @@ def render_live_draft_rec_cards(
                     )
             with detail_col:
                 with st.expander("Details", expanded=False):
-                    for col in ("Model Rank", "Market Rank", "Fantasy Edge", "Draft Fit Score", "Decision Score"):
-                        if col not in rec_df.columns:
+                    detail_cols = (
+                        ("Model Rank", "Model Rank"),
+                        ("Market Rank", "Market Rank"),
+                        ("Fantasy Edge", "Fantasy Edge"),
+                        ("Expected Fantasy Value", "Expected Fantasy Value"),
+                        ("Draft Fit Score", "Draft Fit Score"),
+                        ("Decision Score", "Decision Score"),
+                    )
+                    for internal_col, _ in detail_cols:
+                        if internal_col not in rec_df.columns and internal_col not in r.index:
                             continue
-                        val = r.get(col)
-                        if pd.notna(val):
-                            short = col.replace("Draft Fit Score", "Draft Fit").replace("Decision Score", "Decision Score")
-                            st.text(f"{short}: {_format_detail_value(col, val)}")
+                        val = r.get(internal_col)
+                        if pd.isna(val):
+                            continue
+                        label = _detail_display_label(internal_col)
+                        st.text(f"{label}: {_format_detail_value(internal_col, val)}")
                     if strengths:
                         st.text(f"Top Category Strengths: {', '.join(strengths)}")

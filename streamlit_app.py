@@ -603,6 +603,24 @@ def fmt_fantasy_edge(x):
     return f"{x:+.1f}"
 
 
+def fmt_player_grade_display(x):
+    try:
+        from draft_score_display import fmt_player_grade
+
+        return fmt_player_grade(x)
+    except ImportError:
+        return fmt_rate_4(x)
+
+
+def fmt_pick_score_display(x):
+    try:
+        from draft_score_display import fmt_pick_score
+
+        return fmt_pick_score(x)
+    except ImportError:
+        return fmt_score_2(x)
+
+
 def fmt_rate_dot(x):
     """Rate stat for display: four decimals, leading dot when below 1.000."""
     x = pd.to_numeric(x, errors="coerce")
@@ -638,6 +656,8 @@ def _draft_lab_column_kind(col):
     if low.endswith("probability") or "percent" in low or low.endswith(" pct") or name == "Projection Confidence Score":
         return "percent"
     if name in {
+        "Player Grade", "Pick Score", "Total Player Grade", "Average Player Grade",
+        "Relative Draft Grade",
         "Expected Fantasy Value", "Total Projected Fantasy Value", "Decision Score", "Draft Fit Score",
         "Positional Fit", "Recommendation Score", "Sleeper Score",
         "Scarcity Score", "Best Player Available Score", "Best Value Sleeper Score", "Blended Projection Score",
@@ -672,6 +692,12 @@ def format_draft_lab_table(df, for_export=False):
     """Polished numeric formatting for Draft Simulation Test Mode tables and exports."""
     if df is None or df.empty:
         return df
+    try:
+        from draft_score_display import prepare_draft_scores_for_display
+
+        df = prepare_draft_scores_for_display(df)
+    except ImportError:
+        pass
     out = df.copy()
     for col in out.columns:
         kind = _draft_lab_column_kind(col)
@@ -1682,14 +1708,26 @@ def format_trend_arrow_value(x, is_rate=False):
 
 def format_fantasy_table(df):
     """Fantasy/Draft display formatting. Ranks and Fantasy Edge are integers; score/rate fields are clean."""
+    try:
+        from draft_score_display import prepare_draft_scores_for_display
+
+        df = prepare_draft_scores_for_display(df)
+    except ImportError:
+        df = df.copy()
+    if df is None or getattr(df, "empty", True):
+        return df if df is not None else pd.DataFrame()
     df = df.copy()
-    rank_cols = ["Market Rank", "Model Rank", "Current Rank", "FantasyPros Rank", "ADP Rank", "Recommendation Rank", "Draft Fit Rank", "RK", "BEST", "WORST"]
+    rank_cols = [
+        "Market Rank", "Model Rank", "Current Rank", "FantasyPros Rank", "ADP Rank",
+        "Recommendation Rank", "Draft Fit Rank", "Roster Fit Rank", "Draft Rank", "RK", "BEST", "WORST",
+    ]
     score_cols = [
-        "Expected Fantasy Value", "Expected Fantasy Value",
-        "Recommendation Score", "Draft Fit Score", "Sleeper Score", "Bust Risk Score",
+        "Player Grade", "Pick Score", "Roster Fit Score", "Relative Draft Grade",
+        "Average Player Grade", "Total Player Grade",
+        "Recommendation Score", "Sleeper Score", "Bust Risk Score",
         "Player Value Component", "Market Edge Component", "Roster Need Component",
         "Scarcity Component", "Category Fit Component", "Availability Urgency Component",
-        "Risk Component", "ML Projection Score", "Blended Projection Score"
+        "Risk Component", "ML Projection Score", "Blended Projection Score",
     ]
     edge_cols = ["Fantasy Edge"]
     rate_cols = ["BA", "OBP", "SLG", "OPS", "Projected BA", "Projected OBP", "Projected SLG", "Projected OPS"]
@@ -2047,16 +2085,18 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
                 fmt[col] = "{:.1f}"
             elif col == "Valuation Score":
                 fmt[col] = "{:.4f}"
-            elif col == "Draft Fit Score":
-                fmt[col] = "{:.4f}"
+            elif col in ("Roster Fit Score", "Draft Fit Score"):
+                fmt[col] = "{:.2f}"
+            elif col in ("Player Grade", "Pick Score", "Relative Draft Grade"):
+                fmt[col] = "{:.2f}"
             elif col == "Fantasy Edge":
                 fmt[col] = "{:.0f}"
 
         fmt = filter_styler_format_map(display_df, fmt)
         styled_df = display_df.style.format(fmt) if fmt else display_df.style
 
-        red_green_cols = [c for c in style_cols if c in display_df.columns and c != "Draft Fit Score"]
-        green_cols = [c for c in style_cols if c in display_df.columns and c == "Draft Fit Score"]
+        red_green_cols = [c for c in style_cols if c in display_df.columns and c != "Roster Fit Score" and c != "Draft Fit Score"]
+        green_cols = [c for c in style_cols if c in display_df.columns and c in ("Roster Fit Score", "Draft Fit Score")]
 
         if red_green_cols:
             styled_df = styled_df.map(color_trend, subset=red_green_cols)
@@ -3739,17 +3779,23 @@ def _fmt_insight_num(v, *, rate=False):
 
 def make_draft_recommendation_insight(row):
     """Plain-language selected-player explanation from Draft Assistant outputs."""
+    try:
+        from draft_score_display import fmt_player_grade, fmt_roster_fit_score
+    except ImportError:
+        fmt_player_grade = lambda v: fmt_rate_4(v)  # type: ignore[assignment,misc]
+        fmt_roster_fit_score = lambda v: fmt_rate_4(v)  # type: ignore[assignment,misc]
+
     name = row.get("fullName", row.get("Player", "This player"))
     pos = row.get("Primary Position", "")
     market = fmt_int(row.get("Market Rank"))
     model = fmt_int(row.get("Model Rank"))
     edge = fmt_int(row.get("Fantasy Edge"))
-    fit = fmt_rate_4(row.get("Draft Fit Score"))
-    efv = fmt_rate_4(row.get("Expected Fantasy Value"))
+    fit = fmt_roster_fit_score(row.get("Draft Fit Score"))
+    grade = fmt_player_grade(row.get("Expected Fantasy Value"))
     parts = [f"**{name}**"]
     if pos:
         parts.append(f"({pos})")
-    parts.append(f"has Draft Fit **{fit}** and expected fantasy value **{efv}**.")
+    parts.append(f"has Roster Fit Score **{fit}** and Player Grade **{grade}**.")
     if market or model:
         parts.append(f"Market rank **{market or 'N/A'}**, model rank **{model or 'N/A'}**, fantasy edge **{edge or 'N/A'}**.")
     for col in ["Reason", "Team fit", "Strategy"]:
@@ -6195,7 +6241,12 @@ def normalize_uploaded_stat_columns(df):
 @st.cache_data(show_spinner=False)
 def format_post_draft_roster_grades(df):
     """Format Draft Room post-draft roster grades cleanly."""
-    out = df.copy()
+    try:
+        from draft_score_display import prepare_draft_scores_for_display
+
+        out = prepare_draft_scores_for_display(df)
+    except ImportError:
+        out = df.copy()
 
     def fmt_trim(v, decimals):
         try:
@@ -6226,8 +6277,17 @@ def format_post_draft_roster_grades(df):
     if "Average Fantasy Edge" in out.columns:
         out["Average Fantasy Edge"] = out["Average Fantasy Edge"].apply(lambda v: fmt_trim(v, 2))
 
-    # Overall score and rank as integers.
-    for c in ["Overall Draft Grade Score", "Draft Room Rank", "Players Drafted"]:
+    if "Average Roster Fit Score" in out.columns:
+        out["Average Roster Fit Score"] = out["Average Roster Fit Score"].apply(lambda v: fmt_trim(v, 2))
+    elif "Average Draft Fit Score" in out.columns:
+        out["Average Draft Fit Score"] = out["Average Draft Fit Score"].apply(lambda v: fmt_trim(v, 2))
+
+    # Relative draft grade: 2 decimals on 0–100 scale (never round to 0/1).
+    if "Relative Draft Grade" in out.columns:
+        out["Relative Draft Grade"] = out["Relative Draft Grade"].apply(lambda v: fmt_trim(v, 2))
+
+    # Draft rank and player count as integers.
+    for c in ["Draft Rank", "Draft Room Rank", "Players Drafted"]:
         if c in out.columns:
             try:
                 out[c] = pd.to_numeric(out[c], errors="coerce").round(0).astype("Int64")
@@ -9983,7 +10043,7 @@ def _render_live_draft_rec_cards(rec_df, max_cards=6):
             f"""
             <div class="live-rec-card">
                 <div class="name">{name}</div>
-                <div class="pos">{pos} · EFV {fmt_rate_4(efv)} · Edge {fmt_int(edge)}</div>
+                <div class="pos">{pos} · Player Grade {fmt_player_grade_display(efv)} · Edge {fmt_int(edge)}</div>
                 <div class="{surv_cls}">{surv_pct} — {surv_lbl}</div>
             </div>
             """,
@@ -15972,7 +16032,7 @@ if active_page == "Draft Assistant Simulator":
             with mlb1:
                 init_state_once("draft_use_ml_blend", True)
                 use_ml_in_draft = st.checkbox(
-                    "Blend ML projection signal into Draft Fit Score",
+                    "Blend ML projection signal into Roster Fit Score",
                     key="draft_use_ml_blend",
                     help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score."
                 )
@@ -16473,7 +16533,7 @@ if active_page == "Draft Assistant Simulator":
                 alt = not best_fit.empty and best_fit.iloc[0]["fullName"] != bv["fullName"]
                 if alt:
                     st.info(
-                        f"**Highest raw value:** {bv['fullName']} — EFV {fmt_rate_4(bv.get('Expected Fantasy Value'))} "
+                        f"**Highest raw value:** {bv['fullName']} — Player Grade {fmt_player_grade_display(bv.get('Expected Fantasy Value'))} "
                         f"(before roster-fit bonuses)."
                     )
                 else:
@@ -16482,8 +16542,23 @@ if active_page == "Draft Assistant Simulator":
         rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Team fit", "Strategy", "Reason"]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
-        st.caption("Recommendation table with roster fit, strategy context, and CSV export.")
-        render_output_table(recs_display, key="draft_assistant_recommendations", file_name="draft_assistant_recommendations.csv", style_cols=["Fantasy Edge", "Draft Fit Score"])
+        st.caption(
+            "Recommendation table with roster fit, strategy context, and CSV export. "
+            "**Player Grade** = overall player quality (0–100). "
+            "**Roster Fit Score** = fit for your roster right now."
+        )
+        try:
+            from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
+
+            st.caption(ROSTER_FIT_CONTEXT_NOTES["draft_assistant"])
+        except ImportError:
+            pass
+        render_output_table(
+            recs_display,
+            key="draft_assistant_recommendations",
+            file_name="draft_assistant_recommendations.csv",
+            style_cols=["Fantasy Edge", "Roster Fit Score", "Player Grade"],
+        )
         if developer_mode_enabled():
             with st.expander("Draft Scoring Breakdown", expanded=False):
                 st.caption("Per-component contributions from the draft scoring engine.")
@@ -17134,18 +17209,28 @@ if active_page == "Draft Room Simulator":
 
         draft_results = edited_draft.merge(pick_info, on="Player", how="left")
         with st.expander("Pick log with model scores (export)", expanded=False):
-            st.caption("Same picks as the board, with market/model columns attached. Open when you need CSV export or a read-only review.")
-            result_cols = [
+            st.caption(
+                "Same picks as the board, with market/model columns attached. "
+                "**Player Grade** is comparable across all draft pages. "
+                "See note on Roster Fit Score below."
+            )
+            try:
+                from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
+
+                st.caption(ROSTER_FIT_CONTEXT_NOTES["draft_room_simulator"])
+            except ImportError:
+                pass
+            _result_internal = [
                 "Round", "Pick", "Team", "Player", "Primary Position", "MLB Team",
                 "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score",
-                "ML Projection Score", "Expected Fantasy Value"
+                "ML Projection Score", "Expected Fantasy Value",
             ]
             render_output_table(
-                format_fantasy_table(clean_ui_columns(draft_results[[c for c in result_cols if c in draft_results.columns]])),
+                format_fantasy_table(clean_ui_columns(draft_results[[c for c in _result_internal if c in draft_results.columns]])),
                 key="draft_room_results",
                 file_name="draft_room_results.csv",
                 display_rows=200,
-                style_cols=["Fantasy Edge", "Draft Fit Score"]
+                style_cols=["Fantasy Edge", "Roster Fit Score", "Player Grade"],
             )
 
     with dr_tab_rosters:
@@ -17185,7 +17270,7 @@ if active_page == "Draft Room Simulator":
                             key=f"draft_room_roster_view_{_team_name}".replace(" ", "_").replace("/", "_"),
                             file_name=f"draft_room_roster_view_{_team_name}.csv".replace(" ", "_").replace("/", "_"),
                             display_rows=100,
-                            style_cols=["Fantasy Edge", "Draft Fit Score"]
+                            style_cols=["Fantasy Edge", "Roster Fit Score", "Player Grade"]
                         )
             else:
                 roster_view = build_draft_room_roster_view(draft_results, roster_team_to_view)
@@ -17198,7 +17283,7 @@ if active_page == "Draft Room Simulator":
                         key="draft_room_selected_roster_view",
                         file_name="draft_room_selected_roster_view.csv",
                         display_rows=100,
-                        style_cols=["Fantasy Edge", "Draft Fit Score"]
+                        style_cols=["Fantasy Edge", "Roster Fit Score", "Player Grade"]
                     )
 
                     summary = {}
@@ -17221,6 +17306,11 @@ if active_page == "Draft Room Simulator":
                         )
 
         st.subheader("Post-draft roster grades")
+        st.caption(
+            "**Relative Draft Grade** (0–100) compares teams within this draft room only. "
+            "**Draft Rank** shows placement (#1 of N). "
+            "**Player Grade** and **Roster Fit Score** are per-player metrics."
+        )
         completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
         if completed_picks.empty:
             st.info("Enter draft picks on the Board tab to generate team grades.")
@@ -17257,14 +17347,18 @@ if active_page == "Draft Room Simulator":
                 key="draft_room_roster_grades",
                 file_name="draft_room_roster_grades.csv",
                 display_rows=30,
-                style_cols=["Average Fantasy Edge", "Overall Draft Grade Score"]
+                style_cols=["Average Fantasy Edge", "Relative Draft Grade"],
             )
 
             if your_team in grades_df["Fantasy Team"].values:
                 your_row = grades_df[grades_df["Fantasy Team"] == your_team].iloc[0]
+                from draft_score_display import COL_DRAFT_RANK, COL_RELATIVE_GRADE, fmt_draft_rank, fmt_relative_draft_grade
+
                 st.info(
-                    f"{your_team} is currently ranked #{fmt_int(your_row['Draft Room Rank'])} out of {len(grades_df)} teams "
-                    f"with an Overall Draft Grade Score of {fmt_rate_4(your_row['Overall Draft Grade Score'])}."
+                    f"{your_team}: **Relative Draft Grade** "
+                    f"{fmt_relative_draft_grade(your_row[COL_RELATIVE_GRADE])} · "
+                    f"**Draft Rank** {fmt_draft_rank(your_row[COL_DRAFT_RANK], len(grades_df))} "
+                    f"(compared with other teams in this draft room)."
                 )
 
     if developer_mode_enabled():
@@ -17530,7 +17624,7 @@ if active_page == "Draft Simulation Test Mode":
             w1, w2, w3, w4, w5 = st.columns(5)
             w1.metric("Projected Best Draft", winner[team_col])
             if "Total Projected Fantasy Value" in sorted_summary.columns:
-                w2.metric("Projected Value", fmt_score_2(winner["Total Projected Fantasy Value"]))
+                w2.metric("Total Player Grade", fmt_score_2(float(winner["Total Projected Fantasy Value"]) * 100))
             else:
                 w2.metric("Projected Value", "—")
             w3.metric("Total Picks", f"{len(lab_draft):,}")
@@ -17577,12 +17671,23 @@ if active_page == "Draft Simulation Test Mode":
             st.caption(format_snake_draft_caption(_lab_teams) if _lab_teams else "Snake draft order follows configured teams.")
             if FANTASY_EDGE_HELP:
                 st.caption(f"**Fantasy Edge:** {FANTASY_EDGE_HELP}")
+            try:
+                from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
+
+                st.caption(
+                    "**Player Grade** (0–100) = overall player quality. "
+                    "**Pick Score** (0–100) = recommendation strength at that pick. "
+                    "**Roster Fit Score** = roster fit at that pick."
+                )
+                st.caption(ROSTER_FIT_CONTEXT_NOTES["draft_sim_test"])
+            except ImportError:
+                pass
             render_output_table(
                 clean_ui_columns(draft_board),
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
-                style_cols=["Fantasy Edge", "Expected Fantasy Value", "Scarcity Score", "Draft Fit Score", "Decision Score"],
+                style_cols=["Fantasy Edge", "Player Grade", "Scarcity Score", "Roster Fit Score", "Pick Score"],
             )
             if developer_mode_enabled():
                 with st.expander("Draft Scoring Breakdown", expanded=False):
@@ -17630,7 +17735,7 @@ if active_page == "Draft Simulation Test Mode":
                 key="draft_lab_rosters",
                 file_name="draft_simulation_rosters.csv",
                 display_rows=80,
-                style_cols=["Expected Fantasy Value", "Fantasy Edge"],
+                style_cols=["Player Grade", "Fantasy Edge"],
             )
 
         with tabs[2]:
@@ -17644,7 +17749,7 @@ if active_page == "Draft Simulation Test Mode":
                     key="draft_lab_team_analysis",
                     file_name="draft_simulation_team_analysis.csv",
                     display_rows=20,
-                    style_cols=["Total Projected Fantasy Value", "Average Fantasy Edge", "Average Scarcity Score"],
+                    style_cols=["Total Player Grade", "Average Fantasy Edge", "Average Scarcity Score"],
                 )
             if lab_gaps is not None and not lab_gaps.empty:
                 st.subheader("Roster Needs Analysis")
@@ -18943,7 +19048,7 @@ if active_page == "Live Draft Room":
                     key="live_draft_board",
                     file_name="live_draft_board.csv",
                     display_rows=80,
-                    style_cols=["Fantasy Edge", "Expected Fantasy Value"],
+                    style_cols=["Fantasy Edge", "Player Grade"],
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -19090,6 +19195,16 @@ if active_page == "Live Draft Room":
                                 and "Primary Position" in pos_fit.columns
                                 else []
                             )
+                        st.caption(
+                            "**Fantasy Edge** on cards = value vs market. Open **Details** for "
+                            "**Player Grade** (0–100), **Roster Fit Score**, and **Pick Score** (0–100)."
+                        )
+                        try:
+                            from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
+
+                            st.caption(ROSTER_FIT_CONTEXT_NOTES["live_draft"])
+                        except ImportError:
+                            pass
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
                         render_live_draft_rec_cards(
                             st,
