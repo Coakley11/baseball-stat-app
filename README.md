@@ -63,3 +63,16 @@ This app is an evolving AI-assisted baseball analytics project. It is designed a
 Streamlit Cloud: branch **`dev`**, main file **`streamlit_app.py`** (lowercase — see `.streamlit/config.toml`).
 
 **Analyze with Applied Math** appears in the sidebar right after page navigation (under Command Center). If your Cloud app tracks **`main`**, merge `dev` → `main` to ship cross-app features.
+
+### Lahman data files
+
+Place these CSVs in the **same directory as `streamlit_app.py`** (repo / deploy root):
+
+| File | Required |
+|------|----------|
+| `People.csv` | Yes |
+| `Batting.csv` | Yes |
+| `Fielding.csv` | Yes |
+| `HallOfFame.csv` | Optional — **required for Hall of Fame badges, filters, and Case Mode** |
+
+`HallOfFame.csv` comes from the [Lahman database](https://sabr.org/lahman-database/). The app uses rows where `inducted == Y`. If this file is missing, Career Totals and Historical Explorer still run, but no ⭐ badges or HOF cohort statistics are available until you add it.

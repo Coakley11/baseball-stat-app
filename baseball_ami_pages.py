@@ -798,6 +798,22 @@ def build_historical_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
 
 def finalize_career_context_for_send(ctx: dict[str, Any], session_state: dict[str, Any]) -> None:
     """Promote Career Explorer filters and top rows into send payload."""
+    try:
+        from hall_of_fame_data import HOF_CASE_PACKET_KEY, hof_case_ami_guidance
+    except ImportError:
+        HOF_CASE_PACKET_KEY = "_hof_case_packet"
+        hof_case_ami_guidance = None  # type: ignore[assignment]
+
+    hof_packet = session_state.get(HOF_CASE_PACKET_KEY)
+    if isinstance(hof_packet, dict) and hof_packet.get("mode") == "hall_of_fame_case":
+        ctx["hof_case_packet"] = copy.deepcopy(hof_packet)
+        if hof_packet.get("target_player"):
+            ctx["player"] = str(hof_packet["target_player"])
+        ctx["routing_hint"] = "hof_case_analysis"
+        ctx["intent"] = "hof_case_analysis"
+        if hof_case_ami_guidance is not None:
+            ctx["ami_guidance"] = hof_case_ami_guidance()
+
     snap = session_state.get("_ami_career_snapshot") or session_state.get("_ami_career_totals_snapshot")
     if isinstance(snap, dict) and snap:
         ctx.setdefault("career_snapshot", copy.deepcopy(snap))
@@ -817,20 +833,24 @@ def finalize_career_context_for_send(ctx: dict[str, Any], session_state: dict[st
     if team:
         ctx.setdefault("team_filter", str(team))
 
-    ctx["routing_hint"] = "career_analysis"
-    ctx["intent"] = "career_analysis"
+    if ctx.get("routing_hint") != "hof_case_analysis":
+        ctx["routing_hint"] = "career_analysis"
+        ctx["intent"] = "career_analysis"
     ctx.pop("player_a", None)
     ctx.pop("player_b", None)
 
 
 def build_career_send_diagnostics(ctx: dict[str, Any]) -> dict[str, Any]:
     snap = ctx.get("career_snapshot") if isinstance(ctx.get("career_snapshot"), dict) else {}
+    hof_packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
     return {
         "career_snapshot_present": bool(snap),
+        "hof_case_packet_present": bool(hof_packet),
         "year_range": str(ctx.get("year_range") or ""),
         "metrics": ctx.get("metrics") or [],
         "routing_hint": str(ctx.get("routing_hint") or ""),
         "team_filter": str(ctx.get("team_filter") or ""),
+        "target_player": str(hof_packet.get("target_player") or ctx.get("player") or ""),
     }
 
 

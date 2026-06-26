@@ -11,6 +11,7 @@ PAGE_STATE_REGISTRY = {
             "historical_year_range_filter", "historical_sort_stat_filter", "historical_sort_order_filter",
             "historical_batting_hand_filter", "historical_position_filter_mode", "historical_position_filter",
             "historical_team_filter", "historical_combine_split_seasons_filter",
+            "historical_hof_membership_filter",
             "hist_year", "hist_sort_stat", "hist_sort_order", "hist_bats", "hist_position_filter_mode",
             "hist_pos", "hist_team", "hist_combine_split_seasons",
         ],
@@ -20,7 +21,8 @@ PAGE_STATE_REGISTRY = {
         "exact": [
             "career_year_range_filter", "career_sort_stat_filter", "career_batting_hand_filter",
             "career_position_filter_mode", "career_position_filter", "career_team_filter",
-            "career_by_team_toggle_filter",
+            "career_by_team_toggle_filter", "career_hof_membership_filter",
+            "career_hof_case_mode", "career_hof_case_target_player",
             "career_year", "career_sort", "career_bats", "career_position_filter_mode",
             "career_pos", "career_team", "career_by_team_toggle",
         ],

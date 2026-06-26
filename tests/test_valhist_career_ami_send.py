@@ -136,6 +136,24 @@ class TestFinalizeCareerContext(unittest.TestCase):
         self.assertEqual(ctx.get("routing_hint"), "career_analysis")
         self.assertIn("career_send_diagnostics", ctx)
 
+    def test_hof_case_packet_routes_hof_analysis(self) -> None:
+        session = {
+            "career_sort_stat_filter": "HR",
+            "_hof_case_packet": {
+                "mode": "hall_of_fame_case",
+                "target_player": "Mike Trout",
+                "total_players_returned": 30,
+                "hall_of_famers_returned": 24,
+            },
+        }
+        ctx: dict = {}
+        finalize_career_context_for_send(ctx, session)
+        self.assertEqual(ctx.get("routing_hint"), "hof_case_analysis")
+        self.assertEqual(ctx.get("player"), "Mike Trout")
+        self.assertIn("hof_case_packet", ctx)
+        diag = build_career_send_diagnostics(ctx)
+        self.assertTrue(diag.get("hof_case_packet_present"))
+
 
 if __name__ == "__main__":
     unittest.main()

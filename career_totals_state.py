@@ -23,6 +23,7 @@ CAREER_FILTER_KEYS = (
     "career_position_filter",
     "career_team_filter",
     "career_by_team_toggle_filter",
+    "career_hof_membership_filter",
 )
 
 CAREER_STAT_MIN_KEYS = tuple(f"career_{col}_min" for col in CAREER_STAT_COLUMNS)

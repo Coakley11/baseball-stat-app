@@ -26,6 +26,7 @@ HISTORICAL_FILTER_KEYS = (
     "historical_position_filter",
     "historical_team_filter",
     "historical_combine_split_seasons_filter",
+    "historical_hof_membership_filter",
 )
 
 HISTORICAL_STAT_MIN_KEYS = tuple(f"hist_{col}_min" for col in HISTORICAL_STAT_COLUMNS)

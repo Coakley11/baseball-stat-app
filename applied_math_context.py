@@ -2301,6 +2301,33 @@ def build_baseball_applied_math_context(page: str, session_state: dict[str, Any]
             pass
         ctx["chart_snapshot"] = build_source_state(p, session_state).get("chart_params", {}).get("chart_snapshot")
 
+    elif p == "Career Totals":
+        yr = session_state.get("career_year_range_filter")
+        if isinstance(yr, (list, tuple)) and len(yr) >= 2:
+            ctx["filters_applied"] = f"Years {yr[0]}–{yr[1]}"
+        sort_stat = session_state.get("career_sort_stat_filter")
+        if sort_stat:
+            ctx["metrics"] = [str(sort_stat)]
+        snap = session_state.get("_ami_career_snapshot")
+        if isinstance(snap, dict) and snap:
+            ctx["career_snapshot"] = snap
+            if snap.get("top_players") and not ctx.get("players"):
+                ctx["players"] = snap["top_players"][:5]
+        try:
+            from hall_of_fame_data import HOF_CASE_PACKET_KEY, hof_case_ami_guidance
+        except ImportError:
+            HOF_CASE_PACKET_KEY = "_hof_case_packet"
+            hof_case_ami_guidance = None  # type: ignore[assignment]
+        hof_packet = session_state.get(HOF_CASE_PACKET_KEY)
+        if isinstance(hof_packet, dict) and hof_packet.get("mode") == "hall_of_fame_case":
+            ctx["hof_case_packet"] = hof_packet
+            if hof_packet.get("target_player"):
+                ctx["player"] = _player_name(hof_packet["target_player"])
+            ctx["routing_hint"] = "hof_case_analysis"
+            ctx["intent"] = "hof_case_analysis"
+            if hof_case_ami_guidance is not None:
+                ctx["ami_guidance"] = hof_case_ami_guidance()
+
     elif p == "Valuation":
         sel = session_state.get("valuation_selected_player")
         snap = session_state.get("_ami_valuation_snapshot")
