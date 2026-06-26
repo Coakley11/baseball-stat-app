@@ -192,7 +192,7 @@ class HofCaseResumeHydrationTestsContinued(unittest.TestCase):
 
 
     def test_apply_career_source_state_restores_hof_case(self) -> None:
-        from career_totals_state import apply_career_source_state_from_ami
+        from career_totals_state import apply_career_source_state_from_ami, apply_pending_career_filter_restore
         from hall_of_fame_data import (
             CAREER_HOF_CASE_MODE_KEY,
             CAREER_HOF_CASE_TARGET_KEY,
@@ -211,6 +211,7 @@ class HofCaseResumeHydrationTestsContinued(unittest.TestCase):
             },
         }
         apply_career_source_state_from_ami(session, source_state)
+        apply_pending_career_filter_restore(session)
         self.assertTrue(session.get(CAREER_HOF_CASE_MODE_KEY))
         self.assertEqual(session.get(CAREER_HOF_CASE_TARGET_KEY), "Mike Trout")
         self.assertEqual(session.get(HOF_CASE_PACKET_KEY), packet)

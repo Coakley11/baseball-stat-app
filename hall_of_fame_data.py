@@ -370,23 +370,64 @@ def build_hof_cohort_summary_text(
     hof_data_loaded: bool = True,
     hof_col: str = "isHallOfFamer",
 ) -> str | None:
-    """Plain-text Hall of Fame cohort line for display above Career Totals table."""
+    """Plain Hall of Fame cohort core (count/rate only). Prefer build_hof_cohort_display_text for UI."""
+    line = _hof_cohort_core_line(results_df, hof_data_loaded=hof_data_loaded, hof_col=hof_col)
+    return f"Hall of Fame cohort: {line}" if line else None
+
+
+def _hof_cohort_core_line(
+    results_df: pd.DataFrame | None,
+    *,
+    hof_data_loaded: bool = True,
+    hof_col: str = "isHallOfFamer",
+) -> str | None:
     if results_df is None or results_df.empty:
         return None
     total = int(len(results_df))
     if not hof_data_loaded:
-        return (
-            "Hall of Fame Cohort:\n"
-            "Hall of Fame data unavailable — add HallOfFame.csv to calculate cohort rate."
-        )
+        return "Hall of Fame data unavailable — add HallOfFame.csv to calculate cohort rate."
     if hof_col not in results_df.columns:
-        return (
-            "Hall of Fame Cohort:\n"
-            "Hall of Fame flags are not available for this result set."
-        )
+        return "Hall of Fame flags are not available for this result set."
     hof_count = count_hof_true(results_df, hof_col=hof_col)
     rate = round(100.0 * hof_count / total, 1) if total else 0.0
-    return f"Hall of Fame Cohort:\n{hof_count} of {total} players are Hall of Famers ({rate}%)"
+    return f"{hof_count} of {total} players are Hall of Famers ({rate}%)"
+
+
+def _compact_stat_min_criteria(session: dict[str, Any], *, prefix: str) -> str:
+    try:
+        from stat_filter_summary import RATE_STAT_COLUMNS, gather_active_stat_min_filters
+    except ImportError:
+        return ""
+    parts: list[str] = []
+    for stat, val in gather_active_stat_min_filters(session, prefix=prefix):
+        if stat in RATE_STAT_COLUMNS:
+            parts.append(f"{stat} ≥ {val:.3f}")
+        elif abs(val - round(val)) < 1e-9:
+            parts.append(f"{stat} ≥ {int(round(val)):,}")
+        else:
+            parts.append(f"{stat} ≥ {val:g}")
+    return ", ".join(parts)
+
+
+def build_hof_cohort_display_text(
+    session: dict[str, Any],
+    results_df: pd.DataFrame | None,
+    *,
+    mode: str = "career",
+    hof_data_loaded: bool = True,
+    hof_col: str = "isHallOfFamer",
+) -> str | None:
+    """Single-line HOF cohort message; optional stat-min prefix when filters are active."""
+    core = _hof_cohort_core_line(results_df, hof_data_loaded=hof_data_loaded, hof_col=hof_col)
+    if not core:
+        return None
+    prefix_key = "career" if str(mode).strip().lower() != "historical" else "hist"
+    criteria = _compact_stat_min_criteria(session, prefix=prefix_key)
+    cohort_part = f"Hall of Fame cohort: {core}"
+    if criteria:
+        totals_label = "career totals" if prefix_key == "career" else "single-season totals"
+        return f"Players with {totals_label} of {criteria} — {cohort_part}"
+    return cohort_part
 
 
 def render_hof_cohort_summary(st: Any, summary_text: str | None) -> None:

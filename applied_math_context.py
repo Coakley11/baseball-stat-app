@@ -1388,9 +1388,13 @@ def apply_source_state_to_session(
 
     if page == "Career Totals":
         try:
-            from career_totals_state import apply_career_source_state_from_ami
+            from career_totals_state import (
+                apply_career_source_state_from_ami,
+                apply_pending_career_filter_restore,
+            )
 
             apply_career_source_state_from_ami(session_state, source_state)
+            apply_pending_career_filter_restore(session_state)
         except ImportError:
             for key, val in {**wp, **filt}.items():
                 if val is not None and val != "":

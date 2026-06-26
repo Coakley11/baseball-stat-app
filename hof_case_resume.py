@@ -595,16 +595,24 @@ def apply_pending_hof_case_overlay(st: Any) -> dict[str, Any]:
             apply_source_state_to_session(ss, source_state, schedule_navigation=False)
         except ImportError:
             try:
-                from career_totals_state import apply_career_source_state_from_ami
+                from career_totals_state import (
+                    apply_career_source_state_from_ami,
+                    apply_pending_career_filter_restore,
+                )
 
                 apply_career_source_state_from_ami(ss, source_state)
+                apply_pending_career_filter_restore(ss)
             except ImportError:
                 pass
     elif source_state and workspace_restored:
         try:
-            from career_totals_state import apply_career_source_state_from_ami
+            from career_totals_state import (
+                apply_career_source_state_from_ami,
+                apply_pending_career_filter_restore,
+            )
 
             apply_career_source_state_from_ami(ss, source_state)
+            apply_pending_career_filter_restore(ss)
         except ImportError:
             pass
 

@@ -23,6 +23,7 @@ from hall_of_fame_data import (
     badge_hof_players_for_table,
     build_hof_case_packet,
     build_hof_case_question,
+    build_hof_cohort_display_text,
     build_hof_cohort_summary_text,
     build_hof_runtime_diagnostics,
     clear_career_hof_case_scope_state,
@@ -236,12 +237,30 @@ class HallOfFameDataTests(unittest.TestCase):
         text = build_hof_cohort_summary_text(df, hof_data_loaded=True)
         self.assertIsNotNone(text)
         assert text is not None
-        self.assertIn("Hall of Fame Cohort:", text)
+        self.assertIn("Hall of Fame cohort:", text)
         self.assertIn("1 of 2 players are Hall of Famers (50.0%)", text)
         missing = build_hof_cohort_summary_text(df, hof_data_loaded=False)
         assert missing is not None
         self.assertIn("Hall of Fame data unavailable", missing)
         self.assertIsNone(build_hof_cohort_summary_text(pd.DataFrame(), hof_data_loaded=True))
+
+    def test_hof_cohort_display_text_with_filter_prefix(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"fullName": "Babe Ruth", "isHallOfFamer": True},
+                {"fullName": "Mike Trout", "isHallOfFamer": False},
+                {"fullName": "Barry Bonds", "isHallOfFamer": False},
+            ]
+        )
+        session = {"career_HR_min": 250}
+        plain = build_hof_cohort_display_text(session, df, mode="career", hof_data_loaded=True)
+        assert plain is not None
+        self.assertIn("Players with career totals of HR ≥ 250", plain)
+        self.assertIn("Hall of Fame cohort:", plain)
+        self.assertIn("1 of 3 players are Hall of Famers (33.3%)", plain)
+        no_filters = build_hof_cohort_display_text({}, df, mode="career", hof_data_loaded=True)
+        assert no_filters is not None
+        self.assertNotIn("Players with career totals", no_filters)
 
     def test_hof_case_packet_required_fields(self) -> None:
         df = pd.DataFrame(

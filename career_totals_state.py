@@ -497,8 +497,42 @@ def prepare_career_totals_page(session: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+CAREER_PENDING_FILTER_RESTORE_KEY = "_career_pending_filter_restore"
+
+
+def apply_pending_career_filter_restore(session: dict[str, Any]) -> None:
+    """Apply staged career filter values before widgets render (never after)."""
+    pending = session.pop(CAREER_PENDING_FILTER_RESTORE_KEY, None)
+    if not isinstance(pending, dict) or not pending:
+        return
+    for key, val in pending.items():
+        if not is_career_state_key(str(key)):
+            continue
+        session[str(key)] = _normalize_filter_value(str(key), val)
+        record_career_field_write(session, str(key), "pending_filter_restore", new=val)
+
+
+def stage_career_filter_restore(session: dict[str, Any], filters: dict[str, Any]) -> None:
+    """Stage widget values for next pre-render apply; updates canonical without touching widgets."""
+    filt = {
+        k: _normalize_filter_value(k, v)
+        for k, v in filters.items()
+        if is_career_state_key(k)
+    }
+    filt = _strip_hof_scope_unless_case_mode(session, filt)
+    write_canonical_career_state(
+        session,
+        filters=filt,
+        reason="stage_filter_restore",
+        local_edit=False,
+        sync_widget_keys=False,
+    )
+    session[CAREER_PENDING_FILTER_RESTORE_KEY] = copy.deepcopy(filt)
+
+
 def prepare_career_totals_filters(session: dict[str, Any]) -> None:
     """Seed filter widget keys from canonical career_state when not locally dirty."""
+    apply_pending_career_filter_restore(session)
     try:
         from hall_of_fame_data import (
             CAREER_HOF_FILTER_KEY,
@@ -742,7 +776,7 @@ def apply_career_source_state_from_ami(session: dict[str, Any], source_state: di
         if is_career_state_key(k) or k == CAREER_HOF_FILTER_KEY
     }
     filters = _strip_hof_scope_unless_case_mode(session, filters)
-    write_canonical_career_state(session, filters=filters, reason="ami_return", local_edit=False, sync_widget_keys=True)
+    stage_career_filter_restore(session, filters)
     clear_career_local_edit(session)
 
     try:

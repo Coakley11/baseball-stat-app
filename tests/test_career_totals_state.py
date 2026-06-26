@@ -13,6 +13,7 @@ from career_totals_state import (
     CAREER_STAT_MIN_KEYS,
     CAREER_SYNC_TRACE_KEY,
     apply_career_source_state_from_ami,
+    apply_pending_career_filter_restore,
     apply_cloud_career_state_if_allowed,
     classify_career_sync_failure,
     commit_career_filters_from_session,
@@ -147,6 +148,7 @@ class TestCareerTotalsState(unittest.TestCase):
             "filter_params": dict(_SAMPLE_FILTERS),
         }
         apply_career_source_state_from_ami(session, source)
+        apply_pending_career_filter_restore(session)
         self.assertEqual(session["career_sort_stat_filter"], "OPS")
         self.assertEqual(session["career_by_team_toggle_filter"], True)
         self.assertFalse(session.get(CAREER_DIRTY_KEY))

@@ -13244,7 +13244,7 @@ if active_page == "Historical Explorer":
         HOF_FILTER_ALL,
         apply_hof_membership_filter,
         badge_hof_players_for_table,
-        build_hof_cohort_summary_text,
+        build_hof_cohort_display_text,
         ensure_hof_case_scope_ui_state,
         HOF_CASE_MODE_HISTORICAL_NOTICE,
         render_hof_case_scope_controls,
@@ -13479,7 +13479,6 @@ if active_page == "Historical Explorer":
         hist_display = badge_hof_players_for_table(hist_display, hist, name_col="Player")
     from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
 
-    render_stat_filter_summary(st, st.session_state, mode="historical")
     if hof_case_mode and len(hist) > 0:
         try:
             from hall_of_fame_data import hof_data_available
@@ -13489,8 +13488,15 @@ if active_page == "Historical Explorer":
             hof_data_loaded = bool(HOF_PLAYER_IDS)
         render_hof_cohort_summary(
             st,
-            build_hof_cohort_summary_text(hist, hof_data_loaded=hof_data_loaded),
+            build_hof_cohort_display_text(
+                st.session_state,
+                hist,
+                mode="historical",
+                hof_data_loaded=hof_data_loaded,
+            ),
         )
+    elif not hof_case_mode:
+        render_stat_filter_summary(st, st.session_state, mode="historical")
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
@@ -13633,7 +13639,7 @@ if active_page == "Career Totals":
         build_hof_ami_payload,
         build_hof_case_packet,
         build_hof_case_question,
-        build_hof_cohort_summary_text,
+        build_hof_cohort_display_text,
         ensure_hof_case_scope_ui_state,
         hof_case_target_player_options,
         hof_case_target_slug,
@@ -13883,7 +13889,6 @@ if active_page == "Career Totals":
         career_display = badge_hof_players_for_table(career_display, career_totals, name_col="Player")
     from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
 
-    render_stat_filter_summary(st, st.session_state, mode="career")
     if hof_case_mode and len(career_totals) > 0:
         try:
             from hall_of_fame_data import hof_data_available
@@ -13893,42 +13898,15 @@ if active_page == "Career Totals":
             hof_data_loaded = bool(HOF_PLAYER_IDS)
         render_hof_cohort_summary(
             st,
-            build_hof_cohort_summary_text(career_totals, hof_data_loaded=hof_data_loaded),
+            build_hof_cohort_display_text(
+                st.session_state,
+                career_totals,
+                mode="career",
+                hof_data_loaded=hof_data_loaded,
+            ),
         )
-        try:
-            from awards_players_data import (
-                awards_data_available,
-                build_hof_case_awards_context,
-                format_cohort_awards_summary_text,
-                format_target_awards_summary_text,
-            )
-
-            if awards_data_available(BASE_DIR):
-                awards_ctx = build_hof_case_awards_context(
-                    hof_target_player,
-                    career_totals,
-                    AWARDS_PLAYERS_DF,
-                    fallback_df=batting_df,
-                )
-                target_awards_text = format_target_awards_summary_text(
-                    awards_ctx.get("target_awards_summary") or {},
-                    player_name=hof_target_player,
-                )
-                cohort_awards_text = format_cohort_awards_summary_text(
-                    awards_ctx.get("cohort_awards_summary") or {},
-                    awards_ctx.get("cohort_award_comparison") or {},
-                    awards_ctx.get("target_award_rank") or {},
-                )
-                if target_awards_text and hof_target_player:
-                    st.markdown(target_awards_text)
-                if cohort_awards_text:
-                    st.markdown(cohort_awards_text)
-            else:
-                st.caption(
-                    "Awards data unavailable — add AwardsPlayers.csv to the app root for award context."
-                )
-        except ImportError:
-            pass
+    elif not hof_case_mode:
+        render_stat_filter_summary(st, st.session_state, mode="career")
     if hof_case_mode:
         hof_target_in_results = bool(hof_target_player) and player_in_results(hof_target_player, career_totals)
         if hof_target_player and target_player_is_hall_of_famer(hof_target_player, career_totals):
@@ -13994,14 +13972,9 @@ if active_page == "Career Totals":
 
                     flush_career_filter_edits(st.session_state, st, reason="hof_case_submit")
                     try:
-                        from career_totals_state import gather_career_filters, write_canonical_career_state
+                        from career_totals_state import commit_career_filters_from_session
 
-                        write_canonical_career_state(
-                            st.session_state,
-                            filters=gather_career_filters(st.session_state),
-                            reason="hof_case_submit",
-                            sync_widget_keys=True,
-                        )
+                        commit_career_filters_from_session(st.session_state, reason="hof_case_submit")
                     except ImportError:
                         pass
                     submit_ctx = build_submit_context(
