@@ -448,6 +448,7 @@ def _store_question_context_blob(payload: dict[str, Any]) -> None:
         "quant_area": payload.get("quant_area"),
         "context": dict(payload.get("context") or {}),
         "source_state": dict(payload.get("source_state") or {}),
+        "action_url": str(payload.get("action_url") or "").strip(),
     }
     try:
         from suite_account import remember_saved_item
@@ -903,7 +904,7 @@ def submit_analytical_question(
     if hof_case:
         # Hall of Fame cases use baseball_hof_activity for Command Center Continue.
         # Store context blob for Recent AMI Questions; skip duplicate AMI Continue card.
-        _store_question_context_blob(payload)
+        _store_question_context_blob({**payload, "action_url": action_url})
     else:
         _upsert_applied_intelligence_resume(payload, action_url=action_url)
     ss = payload.get("source_state")

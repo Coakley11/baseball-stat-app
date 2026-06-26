@@ -3,10 +3,14 @@ Resume Hall of Fame Case Mode on Career Totals from Command Center deep links.
 
 Handles ``bb:hof_case:{slug}`` resume keys — restores filters, HOF mode, target player,
 and stages the related Baseball Insight when a question_id is present.
+
+Workspace restore runs first; HOF overlay applies on Career Totals without clobbering
+unrelated state (e.g. active live draft).
 """
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 try:
@@ -35,6 +39,11 @@ HOF_CASE_RESUME_REQUESTED_KEY = "_hof_case_resume_requested"
 HOF_CASE_RESUME_COMPLETED_KEY = "_hof_case_resume_completed"
 HOF_CASE_RESUME_PENDING_KEY = "_suite_pending_hof_case_resume"
 HOF_CASE_RESUME_DIAG_KEY = "_hof_case_resume_last_diag"
+HOF_PENDING_OVERLAY_KEY = "_hof_case_pending_overlay"
+HOF_PROTECTED_SNAPSHOT_KEY = "_hof_case_protected_workspace_snapshot"
+HOF_LAST_SUBMIT_SOURCE_STATE_KEY = "_hof_case_last_submit_source_state"
+HOF_INSIGHT_STAGED_KEY = "_hof_case_insight_staged_for_resume"
+
 HOF_CASE_RESUME_QUERY_KEYS = frozenset(
     {
         "suite_resume",
@@ -47,11 +56,33 @@ HOF_CASE_RESUME_QUERY_KEYS = frozenset(
     }
 )
 
+# Unrelated workspace keys preserved across HOF resume overlay.
+HOF_RESUME_PROTECTED_KEYS = frozenset(
+    {
+        "live_draft_room",
+        "live_draft_state",
+        "draft_room_state",
+        "draft_room_table",
+        "draft_queue",
+        "draft_assistant_focus_players",
+        "workflow_favorite_targets",
+        "draft_shared_settings",
+        "room_your_team",
+        "room_format",
+        "room_team_count",
+        "room_rounds",
+        "room_window",
+        "fantasy_draft_projection_style",
+        "allow_free_pool_drafting",
+    }
+)
+
 
 def hof_case_resume_requested(session: dict[str, Any]) -> bool:
     return bool(
         session.get(HOF_CASE_RESUME_REQUESTED_KEY)
         or session.get(HOF_CASE_RESUME_PENDING_KEY)
+        or isinstance(session.get(HOF_PENDING_OVERLAY_KEY), dict)
     )
 
 
@@ -70,6 +101,25 @@ def forced_hof_case_page_active(session: dict[str, Any]) -> bool:
         or skip == HOF_CASE_RESUME_PAGE
         or (hof_case_resume_requested(session) and active == HOF_CASE_RESUME_PAGE)
     )
+
+
+def snapshot_protected_workspace(session: dict[str, Any]) -> dict[str, Any]:
+    snap: dict[str, Any] = {}
+    for key in HOF_RESUME_PROTECTED_KEYS:
+        if key not in session:
+            continue
+        try:
+            snap[key] = copy.deepcopy(session[key])
+        except Exception:
+            snap[key] = session[key]
+    return snap
+
+
+def restore_protected_workspace(session: dict[str, Any], snap: dict[str, Any] | None) -> None:
+    if not isinstance(snap, dict) or not snap:
+        return
+    for key, val in snap.items():
+        session[key] = copy.deepcopy(val)
 
 
 def _resume_key_from_pending(st: Any) -> str:
@@ -106,6 +156,24 @@ def _target_from_pending(st: Any) -> str:
 def _question_id_from_pending(st: Any) -> str:
     pending = pending_resume_query(st)
     return str(pending.get("suite_ai_question_id") or _qp_get(st, "suite_ai_question_id") or "").strip()
+
+
+def _load_hof_source_state(st: Any, *, question_id: str) -> dict[str, Any]:
+    source_state: dict[str, Any] = {}
+    if question_id:
+        try:
+            from suite_analytical_question import load_analytical_question_source_state
+
+            loaded = load_analytical_question_source_state(question_id)
+            if isinstance(loaded, dict) and loaded:
+                source_state = loaded
+        except ImportError:
+            pass
+    if not source_state:
+        stored = st.session_state.get(HOF_LAST_SUBMIT_SOURCE_STATE_KEY)
+        if isinstance(stored, dict):
+            source_state = copy.deepcopy(stored)
+    return source_state
 
 
 def schedule_hof_case_resume_navigation(
@@ -178,6 +246,8 @@ def finalize_hof_case_resume(st: Any, *, applied: bool = True) -> None:
         except ImportError:
             ss["_suite_last_consumed_resume_key"] = resume_key
     ss.pop(HOF_CASE_RESUME_PENDING_KEY, None)
+    ss.pop(HOF_PENDING_OVERLAY_KEY, None)
+    ss.pop(HOF_PROTECTED_SNAPSHOT_KEY, None)
     if str(ss.get("_navigate_to_page") or "").strip() == HOF_CASE_RESUME_PAGE:
         ss.pop("_navigate_to_page", None)
     if str(ss.get("_skip_page_restore_for") or "").strip() == HOF_CASE_RESUME_PAGE:
@@ -198,9 +268,24 @@ def cancel_hof_case_resume_navigation(st: Any, user_page: str) -> None:
         finalize_hof_case_resume(st, applied=hof_case_resume_consumed(ss))
 
 
-def _stage_hof_case_insight(st: Any, *, question_id: str, target_player: str, resume_key: str) -> None:
+def record_hof_case_submit_snapshot(session: dict[str, Any], source_state: dict[str, Any] | None) -> None:
+    """Persist last HOF submit source_state for diagnostics and resume fallback."""
+    if isinstance(source_state, dict) and source_state:
+        session[HOF_LAST_SUBMIT_SOURCE_STATE_KEY] = copy.deepcopy(source_state)
+
+
+def _stage_hof_case_insight_once(
+    st: Any,
+    *,
+    question_id: str,
+    target_player: str,
+    resume_key: str,
+    source_state: dict[str, Any] | None,
+) -> bool:
     if not question_id:
-        return
+        return False
+    if st.session_state.get(HOF_INSIGHT_STAGED_KEY) == question_id:
+        return False
     try:
         from applied_math_return_insight import (
             SESSION_PENDING_KEY,
@@ -211,12 +296,12 @@ def _stage_hof_case_insight(st: Any, *, question_id: str, target_player: str, re
         from hall_of_fame_data import CASE_SCORE_LABEL
         from suite_analytical_question import load_analytical_question_payload
     except ImportError:
-        return
+        return False
     if insight_return_query_id(st):
-        return
+        return False
     payload = load_analytical_question_payload(question_id)
     if not isinstance(payload, dict):
-        return
+        return False
     question = str(payload.get("question") or "").strip()
     action_url = str(payload.get("action_url") or "").strip()
     insight = build_submit_fallback_insight(
@@ -228,17 +313,29 @@ def _stage_hof_case_insight(st: Any, *, question_id: str, target_player: str, re
         resume_key=resume_key,
     )
     target = str(target_player or "").strip()
+    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
+    if packet.get("hof_case_summary"):
+        insight.short_answer = str(packet["hof_case_summary"])
     if target:
-        insight.conclusion = f"{CASE_SCORE_LABEL} queued for {target}."
+        rate = packet.get("hall_of_fame_rate_pct")
+        total = packet.get("total_players_returned")
+        hof_n = packet.get("hall_of_famers_returned")
+        cohort = f" Cohort: {hof_n}/{total} HOF ({rate}%)." if total is not None else ""
+        insight.conclusion = f"{CASE_SCORE_LABEL} for {target}.{cohort}"
     insight.method = CASE_SCORE_LABEL
-    source_state = payload.get("source_state") if isinstance(payload.get("source_state"), dict) else {}
-    stage_pending_insight(st, insight, return_context=source_state if source_state else None)
+    ent_state = source_state if isinstance(source_state, dict) else (
+        payload.get("source_state") if isinstance(payload.get("source_state"), dict) else None
+    )
+    stage_pending_insight(st, insight, return_context=ent_state if ent_state else None)
     st.session_state[SESSION_PENDING_KEY] = insight.to_dict()
     st.session_state["_ami_force_insight_render"] = True
+    st.session_state[HOF_INSIGHT_STAGED_KEY] = question_id
+    return True
 
 
 def apply_hof_case_resume(st: Any) -> dict[str, Any]:
-    """Hydrate Hall of Fame Case Mode session state from a resume deep link."""
+    """Schedule HOF resume navigation and queue overlay for after workspace restore."""
     resume = _resume_key_from_pending(st)
     diag: dict[str, Any] = {
         "hof_case_resume_status": "not_requested",
@@ -246,7 +343,8 @@ def apply_hof_case_resume(st: Any) -> dict[str, Any]:
         "target_player": "",
         "question_id": "",
         "parsed_query": dict(pending_resume_query(st)),
-        "final_page_before": str(st.session_state.get("active_page") or ""),
+        "active_page_before": str(st.session_state.get("active_page") or ""),
+        "draft_room_status_before": _draft_status_summary(st.session_state),
     }
     if not resume.startswith("bb:hof_case:"):
         st.session_state[HOF_CASE_RESUME_DIAG_KEY] = diag
@@ -263,7 +361,71 @@ def apply_hof_case_resume(st: Any) -> dict[str, Any]:
     diag["target_player"] = target
     diag["question_id"] = qid
 
+    ss = st.session_state
+    ss[HOF_PROTECTED_SNAPSHOT_KEY] = snapshot_protected_workspace(ss)
+    source_state = _load_hof_source_state(st, question_id=qid)
+    ss[HOF_PENDING_OVERLAY_KEY] = {
+        "source_state": copy.deepcopy(source_state) if source_state else {},
+        "target_player": target,
+        "question_id": qid,
+        "resume_key": resume,
+    }
+
     schedule_hof_case_resume_navigation(st, target_player=target, question_id=qid)
+
+    try:
+        from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY, CAREER_HOF_CASE_TARGET_KEY
+
+        ss[CAREER_HOF_CASE_MODE_KEY] = True
+        if target:
+            ss[CAREER_HOF_CASE_TARGET_KEY] = target
+    except ImportError:
+        ss["career_hof_case_mode"] = True
+        if target:
+            ss["career_hof_case_target_player"] = target
+
+    diag["hof_case_resume_status"] = "overlay_queued"
+    diag["overlay_has_source_state"] = bool(source_state)
+    diag["active_page_after_schedule"] = str(ss.get("active_page") or "")
+    ss[HOF_CASE_RESUME_DIAG_KEY] = diag
+    return diag
+
+
+def apply_pending_hof_case_overlay(st: Any) -> dict[str, Any]:
+    """Apply queued HOF overlay on Career Totals after page filters reconcile."""
+    ss = st.session_state
+    pending = ss.get(HOF_PENDING_OVERLAY_KEY)
+    diag: dict[str, Any] = {
+        "overlay_applied": False,
+        "active_page": str(ss.get("active_page") or ""),
+        "draft_room_status_before": _draft_status_summary(ss),
+    }
+    if not isinstance(pending, dict):
+        return diag
+
+    protected = ss.get(HOF_PROTECTED_SNAPSHOT_KEY)
+    if not isinstance(protected, dict):
+        protected = snapshot_protected_workspace(ss)
+
+    source_state = pending.get("source_state") if isinstance(pending.get("source_state"), dict) else {}
+    target = str(pending.get("target_player") or "").strip()
+    qid = str(pending.get("question_id") or "").strip()
+    resume_key = str(pending.get("resume_key") or "").strip()
+
+    if source_state:
+        try:
+            from applied_math_context import apply_source_state_to_session
+
+            apply_source_state_to_session(ss, source_state, schedule_navigation=False)
+        except ImportError:
+            try:
+                from career_totals_state import apply_career_source_state_from_ami
+
+                apply_career_source_state_from_ami(ss, source_state)
+            except ImportError:
+                pass
+
+    restore_protected_workspace(ss, protected if isinstance(protected, dict) else None)
 
     try:
         from hall_of_fame_data import (
@@ -276,48 +438,45 @@ def apply_hof_case_resume(st: Any) -> dict[str, Any]:
         CAREER_HOF_CASE_TARGET_KEY = "career_hof_case_target_player"
         HOF_CASE_PACKET_KEY = "_hof_case_packet"
 
-    ss = st.session_state
     ss[CAREER_HOF_CASE_MODE_KEY] = True
     if target:
         ss[CAREER_HOF_CASE_TARGET_KEY] = target
+    ent = source_state.get("entity_params") if isinstance(source_state.get("entity_params"), dict) else {}
+    packet = ent.get("hof_case_packet")
+    if isinstance(packet, dict):
+        ss[HOF_CASE_PACKET_KEY] = copy.deepcopy(packet)
 
-    source_state: dict[str, Any] = {}
-    if qid:
-        try:
-            from suite_analytical_question import load_analytical_question_source_state
+    insight_staged = _stage_hof_case_insight_once(
+        st,
+        question_id=qid,
+        target_player=target,
+        resume_key=resume_key,
+        source_state=source_state,
+    )
 
-            loaded = load_analytical_question_source_state(qid)
-            if isinstance(loaded, dict):
-                source_state = loaded
-        except ImportError:
-            pass
-
-    if source_state:
-        try:
-            from career_totals_state import apply_career_source_state_from_ami
-
-            apply_career_source_state_from_ami(ss, source_state)
-        except ImportError:
-            try:
-                from applied_math_context import apply_source_state_to_session
-
-                apply_source_state_to_session(ss, source_state, schedule_navigation=False)
-            except ImportError:
-                pass
-        ent = source_state.get("entity_params") if isinstance(source_state.get("entity_params"), dict) else {}
-        packet = ent.get("hof_case_packet")
-        if isinstance(packet, dict):
-            ss[HOF_CASE_PACKET_KEY] = packet
-        if ent.get("hof_case_target"):
-            ss[CAREER_HOF_CASE_TARGET_KEY] = str(ent["hof_case_target"])
-        if ent.get("hof_case_mode"):
-            ss[CAREER_HOF_CASE_MODE_KEY] = True
-
-    _stage_hof_case_insight(st, question_id=qid, target_player=target, resume_key=resume)
-    diag["hof_case_resume_status"] = "applied"
-    diag["final_page_after"] = str(ss.get("active_page") or "")
-    ss[HOF_CASE_RESUME_DIAG_KEY] = diag
+    ss.pop(HOF_PENDING_OVERLAY_KEY, None)
+    diag["overlay_applied"] = True
+    diag["insight_staged"] = insight_staged
+    diag["draft_room_status_after"] = _draft_status_summary(ss)
+    diag["career_year_range"] = ss.get("career_year_range_filter")
+    diag["career_hr_min"] = ss.get("career_HR_min")
+    prev = dict(ss.get(HOF_CASE_RESUME_DIAG_KEY) or {})
+    prev.update(diag)
+    prev["hof_case_resume_status"] = "overlay_applied"
+    ss[HOF_CASE_RESUME_DIAG_KEY] = prev
     return diag
+
+
+def _draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return {"has_room": False}
+    return {
+        "has_room": True,
+        "status": str(room.get("status") or ""),
+        "draft_room_id": str(room.get("draft_room_id") or ""),
+        "picks": len(room.get("draft_board") or []),
+    }
 
 
 def enforce_hof_case_page_after_workspace(st: Any) -> bool:
@@ -335,22 +494,27 @@ def enforce_hof_case_page_after_workspace(st: Any) -> bool:
             target_player=_target_from_pending(st),
             question_id=_question_id_from_pending(st),
         )
-        ss[HOF_CASE_RESUME_DIAG_KEY] = {
-            **dict(ss.get(HOF_CASE_RESUME_DIAG_KEY) or {}),
-            "page_reforced_after_workspace": True,
-            "page_before_enforce": current,
-        }
+        prev = dict(ss.get(HOF_CASE_RESUME_DIAG_KEY) or {})
+        prev.update(
+            {
+                "page_reforced_after_workspace": True,
+                "page_before_enforce": current,
+            }
+        )
+        ss[HOF_CASE_RESUME_DIAG_KEY] = prev
         return True
     return False
 
 
 def finalize_hof_case_resume_if_ready(st: Any) -> bool:
-    """Mark resume complete once Career Totals is the active page."""
+    """Mark resume complete once Career Totals is active and overlay has been applied."""
     ss = st.session_state
     resume = _resume_key_from_pending(st)
     if not resume.startswith("bb:hof_case:") and not hof_case_resume_requested(ss):
         return False
     if hof_case_resume_consumed(ss):
+        return False
+    if isinstance(ss.get(HOF_PENDING_OVERLAY_KEY), dict):
         return False
     active = str(ss.get("active_page") or "").strip()
     if active == HOF_CASE_RESUME_PAGE:
@@ -385,6 +549,15 @@ def render_hof_case_resume_debug(st: Any) -> None:
     diag = dict(ss.get(HOF_CASE_RESUME_DIAG_KEY) or {})
     if not diag and not hof_case_resume_requested(ss):
         return
+    qid = str(diag.get("question_id") or _question_id_from_pending(st) or "").strip()
+    blob_found = False
+    if qid:
+        try:
+            from suite_analytical_question import load_analytical_question_payload
+
+            blob_found = bool(load_analytical_question_payload(qid))
+        except ImportError:
+            pass
     with st.expander("Developer: Hall of Fame Case resume", expanded=False):
         st.json(
             {
@@ -395,9 +568,15 @@ def render_hof_case_resume_debug(st: Any) -> None:
                 "pending_query": pending_resume_query(st),
                 "hof_case_mode": ss.get("career_hof_case_mode"),
                 "hof_case_target": ss.get("career_hof_case_target_player"),
+                "career_year_range": ss.get("career_year_range_filter"),
+                "career_hr_min": ss.get("career_HR_min"),
                 "packet_target": (ss.get("_hof_case_packet") or {}).get("target_player")
                 if isinstance(ss.get("_hof_case_packet"), dict)
                 else None,
+                "ami_question_id": qid,
+                "ami_blob_found": blob_found,
+                "insight_cards_rendered": ss.get("_hof_insight_render_count"),
+                "last_submit_source_state": bool(ss.get(HOF_LAST_SUBMIT_SOURCE_STATE_KEY)),
                 "last_diag": diag,
             }
         )

@@ -411,18 +411,25 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
     meta = {"position": "—", "team": "—"}
     if not name:
         return meta
+    target = name.lower()
 
     def _from_row(row: dict[str, Any]) -> dict[str, str]:
         pos = str(
-            row.get("Primary Position")
+            row.get("eligible_positions")
+            or row.get("Eligible Positions")
+            or row.get("Primary Position")
             or row.get("primaryPos")
             or row.get("displayPosition")
             or row.get("position")
+            or row.get("Position")
             or "—"
         ).strip() or "—"
         team = str(
             row.get("Team")
+            or row.get("team")
+            or row.get("teamAbbrev")
             or row.get("teamName")
+            or row.get("displayTeam")
             or row.get("primaryTeamName")
             or row.get("Franchise")
             or "—"
@@ -435,12 +442,38 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
         col = "fullName" if "fullName" in pool.columns else "Player"
         if col not in pool.columns:
             return None
-        target = name.lower()
         for _, row in pool.iterrows():
             full = str(row.get(col) or "").strip()
             if full.lower() == target or full == name:
                 return _from_row(row.to_dict())
         return None
+
+    lookup = session.get("_ami_undrafted_pool_lookup")
+    if isinstance(lookup, dict):
+        row = lookup.get(target) or lookup.get(name)
+        if isinstance(row, dict):
+            return _from_row(row)
+
+    try:
+        from draft_ami_helpers import build_player_position_index_from_session
+
+        pos_index = build_player_position_index_from_session(session)
+        pos = pos_index.get(target) or pos_index.get(name.lower())
+        if pos:
+            meta["position"] = pos
+    except Exception:
+        pass
+
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        board = get_canonical_draft_board(session)
+        if board is not None and not getattr(board, "empty", True):
+            hit = _match_pool(board)
+            if hit:
+                return hit
+    except Exception:
+        pass
 
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
@@ -460,6 +493,8 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
         if hit:
             return hit
 
+    if meta["position"] != "—" or meta["team"] != "—":
+        return meta
     return meta
 
 

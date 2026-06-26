@@ -11501,18 +11501,10 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     if not watch:
         st.sidebar.caption("Empty — use **Add to Watchlist** from Player Actions.")
     else:
-        try:
-            from draft_actions import player_list_status_hint
-        except ImportError:
-            player_list_status_hint = None  # type: ignore[assignment,misc]
         for idx, pname in enumerate(list(reversed(watch[-12:]))):
             label = str(pname).strip()
             w_name, w_draft = st.sidebar.columns([0.68, 0.32])
             w_name.caption(label[:38] + ("…" if len(label) > 38 else ""))
-            if player_list_status_hint:
-                hint = player_list_status_hint(st.session_state, label)
-                if hint:
-                    w_name.caption(hint)
             if render_draft_button and render_draft_button(
                 st,
                 st.session_state,
@@ -11533,18 +11525,10 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     if not rv:
         st.sidebar.caption("Recently viewed players appear here after you analyze or compare.")
     else:
-        try:
-            from draft_actions import player_list_status_hint
-        except ImportError:
-            player_list_status_hint = None  # type: ignore[assignment,misc]
         for idx, pname in enumerate(list(reversed(rv[-8:]))):
             label = str(pname).strip()
             t_name, t_draft = st.sidebar.columns([0.68, 0.32])
             t_name.caption("• " + label[:36] + ("…" if len(label) > 36 else ""))
-            if player_list_status_hint:
-                hint = player_list_status_hint(st.session_state, label)
-                if hint:
-                    t_name.caption(hint)
             if render_draft_button and render_draft_button(
                 st,
                 st.session_state,
@@ -13569,6 +13553,13 @@ if active_page == "Career Totals":
 
     prepare_career_totals_page(st.session_state)
     prepare_career_totals_filters(st.session_state)
+    try:
+        from hof_case_resume import apply_pending_hof_case_overlay, finalize_hof_case_resume_if_ready
+
+        apply_pending_hof_case_overlay(st)
+        finalize_hof_case_resume_if_ready(st)
+    except ImportError:
+        pass
 
     render_section_header(
         "📚 Career Totals",
@@ -13953,7 +13944,9 @@ if active_page == "Career Totals":
                     )
                     try:
                         from baseball_hof_activity import log_hof_case_analysis_submitted
+                        from hof_case_resume import HOF_INSIGHT_STAGED_KEY, record_hof_case_submit_snapshot
 
+                        record_hof_case_submit_snapshot(st.session_state, submit_source_state)
                         log_hof_case_analysis_submitted(
                             st.session_state,
                             target_player=hof_target_player,
@@ -13965,6 +13958,7 @@ if active_page == "Career Totals":
                         pass
                     try:
                         from applied_math_return_insight import build_submit_fallback_insight, stage_pending_insight
+                        from hof_case_resume import HOF_INSIGHT_STAGED_KEY
 
                         insight = build_submit_fallback_insight(
                             question=hof_question,
@@ -13984,6 +13978,7 @@ if active_page == "Career Totals":
                             insight,
                             return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
                         )
+                        st.session_state[HOF_INSIGHT_STAGED_KEY] = str(ami_result.get("question_id") or "")
                     except Exception:
                         pass
                     st.session_state["_ami_submit_render_insight_this_run"] = True
@@ -14001,16 +13996,6 @@ if active_page == "Career Totals":
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not submit Hall of Fame statistical case ({exc}).")
-        try:
-            from applied_math_return_insight import render_suite_applied_math_insight_for_page
-
-            render_suite_applied_math_insight_for_page(
-                st,
-                source_app="baseball",
-                source_page="Career Totals",
-            )
-        except Exception:
-            pass
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="career")
         try:

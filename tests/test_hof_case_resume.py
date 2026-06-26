@@ -101,12 +101,51 @@ class HofCaseResumeHydrationTests(unittest.TestCase):
             }
         )
         diag = apply_hof_case_resume(st)
-        self.assertEqual(diag.get("hof_case_resume_status"), "applied")
+        self.assertEqual(diag.get("hof_case_resume_status"), "overlay_queued")
         self.assertTrue(st.session_state.get("career_hof_case_mode"))
         self.assertEqual(st.session_state.get("career_hof_case_target_player"), "Mike Trout")
         self.assertEqual(st.session_state.get("active_page"), "Career Totals")
+        self.assertIsInstance(st.session_state.get("_hof_case_pending_overlay"), dict)
+
+    def test_apply_pending_overlay_restores_filters(self) -> None:
+        from hof_case_resume import (
+            apply_hof_case_resume,
+            apply_pending_hof_case_overlay,
+            finalize_hof_case_resume_if_ready,
+        )
+
+        st = _ST(
+            {
+                "suite_resume": "bb:hof_case:mike-trout",
+                "suite_page": "Career Totals",
+                "suite_hof_target": "Mike Trout",
+            }
+        )
+        st.session_state["live_draft_room"] = {"status": "in_progress", "draft_room_id": "r1", "draft_board": [1, 2]}
+        apply_hof_case_resume(st)
+        st.session_state["career_HR_min"] = 0
+        overlay_diag = apply_pending_hof_case_overlay(st)
+        self.assertTrue(overlay_diag.get("overlay_applied"))
+        self.assertEqual(st.session_state.get("live_draft_room", {}).get("draft_room_id"), "r1")
         finalize_hof_case_resume_if_ready(st)
         self.assertTrue(st.session_state.get("_hof_case_resume_completed"))
+
+
+class HofCaseResumeHydrationTestsContinued(unittest.TestCase):
+    def test_finalize_waits_for_overlay(self) -> None:
+        from hof_case_resume import apply_hof_case_resume, finalize_hof_case_resume_if_ready
+
+        st = _ST(
+            {
+                "suite_resume": "bb:hof_case:mike-trout",
+                "suite_page": "Career Totals",
+                "suite_hof_target": "Mike Trout",
+            }
+        )
+        apply_hof_case_resume(st)
+        st.session_state["active_page"] = "Career Totals"
+        self.assertFalse(finalize_hof_case_resume_if_ready(st))
+        self.assertFalse(st.session_state.get("_hof_case_resume_completed"))
 
 
     def test_apply_career_source_state_restores_hof_case(self) -> None:

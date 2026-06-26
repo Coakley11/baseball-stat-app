@@ -486,6 +486,39 @@ def save_cloud_full_session(
         return False
 
 
+def save_cloud_full_session_with_result(
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    page: str = "",
+    summary: str = "",
+    min_draft_pick_count: int | None = None,
+) -> tuple[bool, str]:
+    """Persist full_session to cloud; return (success, error_message)."""
+    try:
+        ok = save_cloud_full_session(app_id, state, page=page, summary=summary)
+        if not ok:
+            return False, "cloud_save_failed"
+        if min_draft_pick_count is not None and int(min_draft_pick_count) > 0:
+            cloud_after, _ = load_cloud_full_session(app_id)
+            readback = 0
+            try:
+                from draft_room_state import draft_room_restore_stats
+
+                readback = int(draft_room_restore_stats(cloud_after or {}).get("pick_count") or 0)
+            except ImportError:
+                pass
+            expected = int(min_draft_pick_count)
+            if readback < expected:
+                return (
+                    False,
+                    f"readback_pick_mismatch:expected={expected} got={readback}",
+                )
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def clear_cloud_full_session(app_id: str) -> None:
     """Remove persisted full_session blob from cloud (reset flows)."""
     try:
