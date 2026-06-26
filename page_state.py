@@ -304,6 +304,13 @@ def restore_page_state(session, page_name: str, store: dict):
         mirror_canonical_to_all_aliases(session)
     except ImportError:
         pass
+    try:
+        from shared_draft_context import apply_draft_shared_settings_to_widgets
+
+        apply_draft_shared_settings_to_widgets(session, active_page=page_name)
+        session["_draft_shared_page_restore_blocked"] = True
+    except ImportError:
+        pass
     return True
 
 

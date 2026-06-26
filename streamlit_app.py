@@ -12816,6 +12816,17 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
+try:
+    from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
+
+    if is_draft_sync_page(active_page):
+        prepare_shared_draft_context(
+            st.session_state,
+            active_page=active_page,
+            force_mirror=True,
+        )
+except ImportError:
+    pass
 render_global_app_chrome(active_page)
 _record_sidebar_nav_trace(
     "after_sidebar_radio",
@@ -12922,6 +12933,17 @@ pg_state.handle_sidebar_page_state(
     normalize_page_key,
     st.session_state.get("_pending_page_transfer"),
 )
+try:
+    from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
+
+    if is_draft_sync_page(active_page):
+        prepare_shared_draft_context(
+            st.session_state,
+            active_page=active_page,
+            force_mirror=True,
+        )
+except ImportError:
+    pass
 try:
     from global_fantasy_settings_state import mirror_canonical_to_all_aliases
 
@@ -13532,6 +13554,32 @@ def leaderboards_filter_changed():
         pass
 
 
+def _prepare_and_show_draft_shared_settings(
+    page: str,
+    *,
+    lookback_key: str | None = None,
+    style_key: str | None = None,
+    format_key: str | None = None,
+) -> None:
+    try:
+        from shared_draft_context import (
+            prepare_shared_draft_context,
+            render_draft_shared_settings_diagnostics,
+        )
+
+        prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
+        render_draft_shared_settings_diagnostics(
+            st,
+            st.session_state,
+            active_page=page,
+            widget_lookback_key=lookback_key,
+            widget_style_key=style_key,
+            widget_format_key=format_key,
+        )
+    except ImportError:
+        pass
+
+
 def fantasy_filter_changed():
     try:
         from fantasy_state import mark_fantasy_filter_pending_sync, section_for_page
@@ -13565,6 +13613,10 @@ def fantasy_filter_changed():
         on_alias_lookback_changed(
             st.session_state, "fantasy_market_window", source_page="Fantasy Sleepers & Busts"
         )
+    except Exception:
+        pass
+    try:
+        force_save_baseball_state(st, reason="fantasy_filter_changed")
     except Exception:
         pass
 
@@ -15274,6 +15326,11 @@ if active_page == "Fantasy Sleepers & Busts":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        lookback_key="fantasy_market_window",
+        format_key="fantasy_market_format",
+    )
 
     market_df = load_fantasypros_market_data()
     if market_df.empty:
@@ -16008,6 +16065,12 @@ if active_page == "Draft Assistant Simulator":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        lookback_key="draft_window",
+        style_key="fantasy_draft_projection_style",
+        format_key="draft_format",
+    )
     pp.instructional_caption(
         st,
         "Log picks in Draft Room Simulator first — this page excludes drafted players automatically.",
@@ -16026,18 +16089,15 @@ if active_page == "Draft Assistant Simulator":
         _draft_format_options = ["5x5 Roto", "Points League"]
 
         def _draft_assistant_settings_changed():
-            # Persist Draft Assistant Simulator settings on change so a refresh /
-            # navigation away-and-back restores them rather than reverting to defaults.
             try:
-                from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
+                from shared_draft_context import on_draft_settings_changed
 
-                on_alias_lookback_changed(
-                    st.session_state, "draft_window", source_page="Draft Assistant Simulator"
-                )
-                on_alias_projection_style_changed(
+                on_draft_settings_changed(
                     st.session_state,
-                    "fantasy_draft_projection_style",
                     source_page="Draft Assistant Simulator",
+                    lookback_key="draft_window",
+                    style_key="fantasy_draft_projection_style",
+                    format_key="draft_format",
                 )
             except ImportError:
                 pass
@@ -16053,13 +16113,7 @@ if active_page == "Draft Assistant Simulator":
         with d2:
             validate_state_option("draft_format", _draft_format_options, "5x5 Roto")
             def _draft_format_changed():
-                try:
-                    from global_fantasy_settings_state import on_alias_format_changed
-                    on_alias_format_changed(st.session_state, "draft_format")
-                except Exception:
-                    pass
-                save_page_state("Draft Assistant Simulator")
-                force_save_baseball_state(st, reason="global_settings_changed")
+                _draft_assistant_settings_changed()
             draft_format = st.selectbox("League Format", _draft_format_options, key="draft_format",
                                         on_change=_draft_format_changed)
         with d3:
@@ -16799,6 +16853,12 @@ if active_page == "Draft Room Simulator":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        lookback_key="room_window",
+        style_key="fantasy_draft_projection_style",
+        format_key="room_format",
+    )
     st.caption("Use **League setup** first, then **Board** to log picks. **Draft Assistant** reads this board automatically.")
 
     market_df = load_fantasypros_market_data()
@@ -16819,21 +16879,19 @@ if active_page == "Draft Room Simulator":
                 write_canonical_global_fantasy_settings(
                     st.session_state,
                     team=st.session_state.get("room_your_team"),
-                    format_=st.session_state.get("room_format"),
                     reason="draft_room_settings_changed",
                 )
             except Exception:
                 pass
             try:
-                from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
+                from shared_draft_context import on_draft_settings_changed
 
-                on_alias_lookback_changed(
-                    st.session_state, "room_window", source_page="Draft Room Simulator"
-                )
-                on_alias_projection_style_changed(
+                on_draft_settings_changed(
                     st.session_state,
-                    "fantasy_draft_projection_style",
                     source_page="Draft Room Simulator",
+                    lookback_key="room_window",
+                    style_key="fantasy_draft_projection_style",
+                    format_key="room_format",
                 )
             except ImportError:
                 pass
@@ -17483,6 +17541,12 @@ if active_page == "Draft Simulation Test Mode":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        lookback_key="draft_lab_window",
+        style_key="draft_lab_projection_style",
+        format_key="draft_lab_scoring_type",
+    )
     try:
         from baseball_draft_activity import render_draft_activity_write_debug
         from draft_lab_resume import draft_lab_resume_diagnostics, render_draft_lab_resume_error
@@ -17532,21 +17596,14 @@ if active_page == "Draft Simulation Test Mode":
             except ImportError:
                 pass
             try:
-                from global_fantasy_settings_state import on_alias_format_changed
+                from shared_draft_context import on_draft_settings_changed
 
-                on_alias_format_changed(st.session_state, "draft_lab_scoring_type")
-            except ImportError:
-                pass
-            try:
-                from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
-
-                on_alias_lookback_changed(
-                    st.session_state, "draft_lab_window", source_page="Draft Simulation Test Mode"
-                )
-                on_alias_projection_style_changed(
+                on_draft_settings_changed(
                     st.session_state,
-                    "draft_lab_projection_style",
                     source_page="Draft Simulation Test Mode",
+                    lookback_key="draft_lab_window",
+                    style_key="draft_lab_projection_style",
+                    format_key="draft_lab_scoring_type",
                 )
             except ImportError:
                 pass
@@ -17958,6 +18015,12 @@ if active_page == "Live Draft Room":
         "📡 Live Draft Room",
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
         compact=True,
+    )
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        lookback_key="live_draft_proj_window",
+        style_key="live_draft_proj_style",
+        format_key="live_draft_scoring",
     )
     _pending_pick_result: dict = {"processed": False}
     try:
@@ -18608,25 +18671,17 @@ if active_page == "Live Draft Room":
 
             def _live_draft_setting_changed():
                 try:
-                    from global_fantasy_settings_state import on_live_draft_scoring_changed
+                    from shared_draft_context import on_draft_settings_changed
 
-                    if "live_draft_scoring" in st.session_state:
-                        on_live_draft_scoring_changed(st.session_state)
-                except ImportError:
-                    pass
-                try:
-                    from shared_draft_context import on_alias_lookback_changed, on_alias_projection_style_changed
-
-                    on_alias_lookback_changed(
-                        st.session_state, "live_draft_proj_window", source_page="Live Draft Room"
-                    )
-                    on_alias_projection_style_changed(
-                        st.session_state, "live_draft_proj_style", source_page="Live Draft Room"
+                    on_draft_settings_changed(
+                        st.session_state,
+                        source_page="Live Draft Room",
+                        lookback_key="live_draft_proj_window",
+                        style_key="live_draft_proj_style",
+                        format_key="live_draft_scoring",
                     )
                 except ImportError:
                     pass
-                # Persist to page_filter_state AND force cloud save so that a browser
-                # refresh restores the user's settings rather than reverting to defaults.
                 save_page_state("Live Draft Room")
                 force_save_baseball_state(st, reason="live_draft_setting_changed")
                 _record_settings_onchange("Live Draft Room", "_live_draft_setting_changed", "live_draft_setting_changed")
@@ -19578,13 +19633,22 @@ if active_page == "Fantasy Standings Tracker":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        format_key="standings_scoring_format",
+    )
 
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
     def _standings_format_changed():
         try:
-            from global_fantasy_settings_state import on_alias_format_changed
-            on_alias_format_changed(st.session_state, "standings_scoring_format")
+            from shared_draft_context import on_draft_settings_changed
+
+            on_draft_settings_changed(
+                st.session_state,
+                source_page="Fantasy Standings Tracker",
+                format_key="standings_scoring_format",
+            )
         except Exception:
             pass
         fantasy_filter_changed()
@@ -19789,6 +19853,10 @@ if active_page == "Fantasy Lineup Assistant":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    _prepare_and_show_draft_shared_settings(
+        active_page,
+        format_key="lineup_format",
+    )
     _xfer_cats = st.session_state.pop("lineup_context_category_needs", None)
     if _xfer_cats:
         st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}** — prioritize starters who help these areas.")

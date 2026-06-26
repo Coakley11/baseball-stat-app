@@ -25,7 +25,15 @@ _DEFAULT_PAGE = "Historical Explorer"
 _DEFAULT_SIDEBAR_PAGE = "Historical Explorer"
 
 _DRAFT_ROOM_SETTINGS_GLOBALS = frozenset(
-    {"room_format", "room_team_count", "room_rounds", "room_your_team", "room_window"}
+    {
+        "room_format",
+        "room_team_count",
+        "room_rounds",
+        "room_your_team",
+        "room_window",
+        "fantasy_draft_projection_style",
+        "draft_shared_settings",
+    }
 )
 
 _MULTIPLAYER_SCOPED_GLOBALS = frozenset(
@@ -59,6 +67,9 @@ _GLOBAL_KEYS = (
     "room_team_count",
     "room_rounds",
     "room_format",
+    "room_window",
+    "fantasy_draft_projection_style",
+    "draft_shared_settings",
     "active_shared_draft_room_code",
     "draft_room_participant_state",
     "draft_room_participant_id",
@@ -451,6 +462,8 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             "room_team_count",
             "room_rounds",
             "room_window",
+            "fantasy_draft_projection_style",
+            "draft_shared_settings",
             "allow_free_pool_drafting",
             "live_draft_state",
             "live_draft_room",
@@ -664,6 +677,18 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             from global_fantasy_settings_state import mirror_canonical_to_all_aliases
 
             mirror_canonical_to_all_aliases(ss)
+        except ImportError:
+            pass
+        try:
+            from shared_draft_context import (
+                apply_draft_shared_settings_to_widgets,
+                hydrate_canonical_draft_settings_from_session,
+                record_cloud_draft_settings_snapshot,
+            )
+
+            record_cloud_draft_settings_snapshot(ss, state)
+            hydrate_canonical_draft_settings_from_session(ss)
+            apply_draft_shared_settings_to_widgets(ss)
         except ImportError:
             pass
         try:

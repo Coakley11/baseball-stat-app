@@ -89,6 +89,42 @@ PAGE_TO_SECTION = {
 }
 
 
+def _draft_shared_filter_keys() -> frozenset[str]:
+    try:
+        from shared_draft_context import DRAFT_SHARED_WIDGET_KEYS
+
+        return frozenset(
+            k
+            for k in DRAFT_SHARED_WIDGET_KEYS
+            if k
+            in {
+                "fantasy_market_window",
+                "fantasy_market_format",
+                "standings_scoring_format",
+                "draft_window",
+                "draft_lab_window",
+                "draft_lab_scoring_type",
+                "live_draft_proj_window",
+                "live_draft_proj_style",
+                "draft_lab_projection_style",
+                "live_draft_scoring",
+            }
+        )
+    except ImportError:
+        return frozenset(
+            {
+                "fantasy_market_window",
+                "fantasy_market_format",
+                "standings_scoring_format",
+            }
+        )
+
+
+def _strip_draft_shared_from_filters(filt: dict[str, Any]) -> dict[str, Any]:
+    shared = _draft_shared_filter_keys()
+    return {k: v for k, v in filt.items() if k not in shared}
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -431,6 +467,7 @@ def write_canonical_fantasy_section(
 ) -> dict[str, Any]:
     raw = dict(filters) if isinstance(filters, dict) else _extract_section_from_session(session, section)
     filt, auto_selected = _split_section_flat(raw, section)
+    filt = _strip_draft_shared_from_filters(filt)
     sp = selected_player if selected_player is not None else auto_selected
     meta = _ensure_meta(session)
     block = _section_block(meta, section)
@@ -440,7 +477,10 @@ def write_canonical_fantasy_section(
     meta["last_write_reason"] = reason or None
     session["fantasy_state"] = meta
     if sync_widget_keys:
+        shared = _draft_shared_filter_keys()
         for key, val in filt.items():
+            if key in shared:
+                continue
             session[key] = _normalize_filter_value(key, val)
         if section == "sleepers" and sp is not None:
             session["fantasy_market_selected_player"] = sp
@@ -517,11 +557,25 @@ def prepare_fantasy_section_filters(session: dict[str, Any], section: str) -> No
     if not isinstance(page_block, dict):
         page_block = {}
     merged = {**_filters_from_page_block(page_block, section), **{k: v for k, v in filters.items() if _is_key_in_section(k, section)}}
+    merged = _strip_draft_shared_from_filters(merged)
     for key in SECTION_KEYS.get(section, ()):
+        if key in _draft_shared_filter_keys():
+            continue
         if key in session:
             continue
         if key in merged:
             session[key] = _normalize_filter_value(key, merged[key])
+    try:
+        from shared_draft_context import apply_draft_shared_settings_to_widgets
+
+        page = {
+            "sleepers": FANTASY_SLEEPERS_PAGE,
+            "standings": FANTASY_STANDINGS_PAGE,
+            "lineup": FANTASY_LINEUP_PAGE,
+        }.get(section, "")
+        apply_draft_shared_settings_to_widgets(session, active_page=page)
+    except ImportError:
+        pass
 
 
 def prepare_fantasy_sleepers_page(session: dict[str, Any]) -> dict[str, Any]:
@@ -611,6 +665,14 @@ def restore_fantasy_page_filters(session: dict[str, Any], store: dict[str, Any],
             continue
         if not _is_key_in_section(key, section):
             continue
+        try:
+            from shared_draft_context import is_draft_shared_session_key
+
+            if is_draft_shared_session_key(key):
+                continue
+        except ImportError:
+            if key in _draft_shared_filter_keys():
+                continue
         session[key] = _normalize_filter_value(key, value)
     flat = _filters_from_page_block(snapshot, section)
     if flat:
@@ -624,6 +686,12 @@ def restore_fantasy_page_filters(session: dict[str, Any], store: dict[str, Any],
             local_edit=False,
             sync_widget_keys=False,
         )
+    try:
+        from shared_draft_context import apply_draft_shared_settings_to_widgets
+
+        apply_draft_shared_settings_to_widgets(session, active_page=page_name)
+    except ImportError:
+        pass
     return True
 
 
@@ -652,6 +720,18 @@ def apply_cloud_fantasy_state_if_allowed(session: dict[str, Any], state: dict[st
             s: _section_filters_from_blob(state, s) for s in ("sleepers", "standings", "lineup")
         }
         session["_fantasy_restore_source"] = session.get("_suite_persist_last_restore_source", "cloud")
+    try:
+        from shared_draft_context import (
+            apply_draft_shared_settings_to_widgets,
+            hydrate_canonical_draft_settings_from_session,
+            record_cloud_draft_settings_snapshot,
+        )
+
+        record_cloud_draft_settings_snapshot(session, state)
+        hydrate_canonical_draft_settings_from_session(session)
+        apply_draft_shared_settings_to_widgets(session)
+    except ImportError:
+        pass
     return applied
 
 
@@ -678,6 +758,21 @@ def apply_fantasy_source_state_from_ami(session: dict[str, Any], source_state: d
         reason="ami_return",
         local_edit=False,
     )
+    try:
+        from shared_draft_context import apply_draft_shared_settings_to_widgets, write_canonical_draft_settings
+
+        kwargs: dict[str, Any] = {"source_page": page, "reason": "ami_return"}
+        if "fantasy_market_window" in filters:
+            kwargs["lookback_window"] = int(filters["fantasy_market_window"])
+        if "fantasy_market_format" in filters:
+            kwargs["fantasy_format"] = str(filters["fantasy_market_format"])
+        if "standings_scoring_format" in filters:
+            kwargs["fantasy_format"] = str(filters["standings_scoring_format"])
+        if len(kwargs) > 2:
+            write_canonical_draft_settings(session, **kwargs)
+            apply_draft_shared_settings_to_widgets(session, active_page=page)
+    except ImportError:
+        pass
     clear_fantasy_local_edit(session)
 
 
