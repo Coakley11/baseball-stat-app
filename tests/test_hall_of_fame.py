@@ -23,6 +23,7 @@ from hall_of_fame_data import (
     decorate_player_column,
     decorate_player_name,
     hall_of_fame_csv_path,
+    badge_hof_players_for_table,
     hof_case_ami_guidance,
     hof_data_available,
     hof_load_diagnostics,
@@ -119,6 +120,19 @@ class HallOfFameDataTests(unittest.TestCase):
         out = decorate_player_column(df)
         self.assertTrue(str(out.iloc[0]["fullName"]).startswith("⭐"))
         self.assertFalse(str(out.iloc[1]["fullName"]).startswith("⭐"))
+
+    def test_badge_hof_players_for_table_uses_source_flags(self) -> None:
+        source = pd.DataFrame(
+            [
+                {"fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714},
+                {"fullName": "Mike Trout", "isHallOfFamer": False, "HR": 310},
+            ]
+        )
+        table = source[["fullName", "HR"]].rename(columns={"fullName": "Player"})
+        badged = badge_hof_players_for_table(table, source, name_col="Player")
+        self.assertTrue(str(badged.iloc[0]["Player"]).startswith("⭐"))
+        self.assertFalse(str(badged.iloc[1]["Player"]).startswith("⭐"))
+        self.assertNotIn("isHallOfFamer", badged.columns)
 
     def test_hof_case_packet_required_fields(self) -> None:
         df = pd.DataFrame(

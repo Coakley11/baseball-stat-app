@@ -255,6 +255,45 @@ def decorate_player_column(df: pd.DataFrame, *, name_col: str = "fullName", hof_
     return out
 
 
+def _resolve_display_name_column(df: pd.DataFrame, name_col: str | None = None) -> str | None:
+    if name_col and name_col in df.columns:
+        return name_col
+    for candidate in ("Player", "fullName", "Name", "player_name", "full_name"):
+        if candidate in df.columns:
+            return candidate
+    return None
+
+
+def badge_hof_players_for_table(
+    table_df: pd.DataFrame,
+    source_df: pd.DataFrame | None = None,
+    *,
+    name_col: str | None = None,
+    hof_col: str = "isHallOfFamer",
+) -> pd.DataFrame:
+    """Apply ⭐ to the exact player-name column shown in the rendered table."""
+    if table_df is None or table_df.empty:
+        return table_df
+    out = table_df.copy()
+    col = _resolve_display_name_column(out, name_col)
+    if not col:
+        return out.drop(columns=[hof_col], errors="ignore")
+    flags = None
+    if hof_col in out.columns:
+        flags = out[hof_col]
+    elif source_df is not None and hof_col in source_df.columns:
+        if out.index.equals(source_df.index):
+            flags = source_df[hof_col]
+        else:
+            flags = source_df.reindex(out.index)[hof_col]
+    if flags is None:
+        return out.drop(columns=[hof_col], errors="ignore")
+    out[col] = [
+        decorate_player_name(n, h) for n, h in zip(out[col], flags, strict=False)
+    ]
+    return out.drop(columns=[hof_col], errors="ignore")
+
+
 def _json_safe_value(val: Any) -> Any:
     if val is None or (not isinstance(val, (list, dict, tuple)) and pd.isna(val)):
         return None

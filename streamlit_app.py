@@ -13342,7 +13342,7 @@ if active_page == "Historical Explorer":
         HISTORICAL_HOF_FILTER_KEY,
         HOF_FILTER_ALL,
         apply_hof_membership_filter,
-        decorate_player_column,
+        badge_hof_players_for_table,
     )
 
     if merge_hof_flag is not None and "playerID" in hist.columns:
@@ -13363,7 +13363,6 @@ if active_page == "Historical Explorer":
     ]
     display_cols_hist = [c for c in display_cols_hist if c in hist.columns]
     hist_display_raw = hist[display_cols_hist].copy()
-    hist_display_raw = decorate_player_column(hist_display_raw)
     if hist_sort_stat in hist_display_raw.columns:
         hist_display_raw = hist_display_raw.sort_values(by=hist_sort_stat, ascending=(hist_sort_order == "Ascending"), na_position="last")
 
@@ -13379,6 +13378,7 @@ if active_page == "Historical Explorer":
         "yearID": "Year", "fullName": "Player", "bats": "Bats", "displayPosition": "Primary Position",
         team_col_for_display: "Team"
     })
+    hist_display = badge_hof_players_for_table(hist_display, hist, name_col="Player")
     st.divider()
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
@@ -13486,9 +13486,9 @@ if active_page == "Career Totals":
         HOF_FILTER_ALL,
         HOF_FILTER_OPTIONS,
         apply_hof_membership_filter,
+        badge_hof_players_for_table,
         build_hof_case_packet,
         build_hof_case_question,
-        decorate_player_column,
         player_in_results,
         summarize_career_filters,
     )
@@ -13725,12 +13725,12 @@ if active_page == "Career Totals":
     ]
     career_display_cols = [c for c in career_display_cols if c in career_totals.columns]
     career_display = career_totals[career_display_cols].copy()
-    career_display = decorate_player_column(career_display)
     if sort_stat_career in career_display.columns:
         career_display = career_display.sort_values(sort_stat_career, ascending=False)
     career_display = career_display.rename(columns={
         "fullName": "Player", "bats": "Bats", "displayPosition": "Primary Position", "displayTeam": "Team"
     })
+    career_display = badge_hof_players_for_table(career_display, career_totals, name_col="Player")
     st.divider()
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
