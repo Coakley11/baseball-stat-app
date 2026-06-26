@@ -437,6 +437,48 @@ def clear_draft_queue(session: dict[str, Any], *, reason: str = "clear_queue") -
     sync_draft_queue(session, [], reason=reason)
 
 
+def move_queue_item(
+    session: dict[str, Any],
+    index: int,
+    *,
+    direction: str,
+) -> tuple[list[str], bool]:
+    """Reorder draft queue — up, down, or top. Returns (queue, changed)."""
+    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        return q, False
+    if idx < 0 or idx >= len(q):
+        return q, False
+    direction = str(direction or "").strip().lower()
+    new_q = list(q)
+    if direction == "up" and idx > 0:
+        new_q[idx - 1], new_q[idx] = new_q[idx], new_q[idx - 1]
+    elif direction == "down" and idx < len(new_q) - 1:
+        new_q[idx + 1], new_q[idx] = new_q[idx], new_q[idx + 1]
+    elif direction == "top" and idx > 0:
+        item = new_q.pop(idx)
+        new_q.insert(0, item)
+    else:
+        return q, False
+    sync_draft_queue(session, new_q, reason=f"reorder_queue_{direction}")
+    mark_draft_pending_sync(session)
+    return new_q, True
+
+
+def move_queue_item_up(session: dict[str, Any], index: int) -> tuple[list[str], bool]:
+    return move_queue_item(session, index, direction="up")
+
+
+def move_queue_item_down(session: dict[str, Any], index: int) -> tuple[list[str], bool]:
+    return move_queue_item(session, index, direction="down")
+
+
+def move_queue_item_to_top(session: dict[str, Any], index: int) -> tuple[list[str], bool]:
+    return move_queue_item(session, index, direction="top")
+
+
 def clear_watchlist(session: dict[str, Any], *, reason: str = "clear_watchlist") -> None:
     sync_watchlist(session, watchlist_focus=[], watchlist_favorites=[], reason=reason)
 

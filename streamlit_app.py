@@ -11445,9 +11445,15 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
 
     try:
         from draft_actions import draft_action_context
-        from draft_ui import render_active_draft_ownership_dev_panel, render_draft_button
+        from draft_ui import (
+            render_active_draft_ownership_dev_panel,
+            render_draft_button,
+            render_draft_queue_panel,
+            render_draft_sidebar_status,
+        )
 
         draft_ctx = draft_action_context(st.session_state)
+        render_draft_sidebar_status(st, st.session_state)
         render_active_draft_ownership_dev_panel(
             st,
             st.session_state,
@@ -11462,68 +11468,51 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     st.sidebar.markdown("### Draft from lists")
     if draft_ctx.get("active_draft_source"):
         st.sidebar.caption(f"Active draft source: **{draft_ctx['active_draft_source']}**")
-    if draft_ctx.get("is_your_pick") and draft_ctx.get("current_pick"):
-        st.sidebar.caption(
-            f"Draft buttons are active — **Pick {draft_ctx['current_pick']}** is yours."
-        )
-    elif draft_ctx.get("on_clock_team"):
-        pick_n = draft_ctx.get("current_pick")
-        clock = draft_ctx["on_clock_team"]
-        if pick_n:
-            st.sidebar.caption(f"On the clock: Pick {pick_n} ({clock}). Draft buttons show **Not your pick** until your turn.")
-        else:
-            st.sidebar.caption(f"On the clock: {clock}. Draft buttons show **Not your pick** until your turn.")
-    else:
-        st.sidebar.caption(
-            "Draft from queue, watchlist, or tracked players when it is **your pick** on the board."
-        )
 
     st.sidebar.markdown("**Draft queue**")
-    if not dq:
-        st.sidebar.caption("Empty — add players with **Queue player** in Player Actions.")
-    else:
-        top_name = str(dq[0]).strip()
-        top_label = top_name[:36] + ("…" if len(top_name) > 36 else "")
-        if render_draft_button and render_draft_button(
+    try:
+        if render_draft_queue_panel(
             st,
             st.session_state,
-            top_name,
-            source="queue",
-            key_suffix="top",
+            key_prefix="sidebar_queue",
             use_sidebar=True,
-            label=f"Draft top: {top_label}",
-            button_type="primary",
+            max_rows=12,
+            show_subheader=False,
+            compact=True,
         ):
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="draft_edit")
+            except Exception:
+                pass
             st.rerun()
-        for idx, pname in enumerate(dq[:12]):
-            label = str(pname).strip()
-            c_rank, c_name, c_draft = st.sidebar.columns([0.12, 0.58, 0.30])
-            c_rank.caption(f"{idx + 1}.")
-            c_name.caption(label[:36] + ("…" if len(label) > 36 else ""))
-            if render_draft_button and render_draft_button(
-                st,
-                st.session_state,
-                label,
-                source="queue",
-                key_suffix=f"q_{idx}",
-                column=c_draft,
-                show_disabled_reason=idx == 0,
-            ):
-                st.rerun()
-        if len(dq) > 12:
-            st.sidebar.caption(f"+{len(dq) - 12} more in queue")
-        if st.sidebar.button("Clear Draft Queue", key="sidebar_clear_draft_queue", disabled=not bool(dq)):
-            _clear_workflow_list("draft_queue")
-            st.rerun()
+    except NameError:
+        pass
+    if st.sidebar.button(
+        "Clear Draft Queue",
+        key="sidebar_clear_draft_queue",
+        disabled=not bool(st.session_state.get("draft_queue")),
+    ):
+        _clear_workflow_list("draft_queue")
+        st.rerun()
 
     st.sidebar.markdown("**Watchlist**")
     if not watch:
         st.sidebar.caption("Empty — use **Add to Watchlist** from Player Actions.")
     else:
+        try:
+            from draft_actions import player_list_status_hint
+        except ImportError:
+            player_list_status_hint = None  # type: ignore[assignment,misc]
         for idx, pname in enumerate(list(reversed(watch[-12:]))):
             label = str(pname).strip()
             w_name, w_draft = st.sidebar.columns([0.68, 0.32])
             w_name.caption(label[:38] + ("…" if len(label) > 38 else ""))
+            if player_list_status_hint:
+                hint = player_list_status_hint(st.session_state, label)
+                if hint:
+                    w_name.caption(hint)
             if render_draft_button and render_draft_button(
                 st,
                 st.session_state,
@@ -11544,10 +11533,18 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     if not rv:
         st.sidebar.caption("Recently viewed players appear here after you analyze or compare.")
     else:
+        try:
+            from draft_actions import player_list_status_hint
+        except ImportError:
+            player_list_status_hint = None  # type: ignore[assignment,misc]
         for idx, pname in enumerate(list(reversed(rv[-8:]))):
             label = str(pname).strip()
             t_name, t_draft = st.sidebar.columns([0.68, 0.32])
             t_name.caption("• " + label[:36] + ("…" if len(label) > 36 else ""))
+            if player_list_status_hint:
+                hint = player_list_status_hint(st.session_state, label)
+                if hint:
+                    t_name.caption(hint)
             if render_draft_button and render_draft_button(
                 st,
                 st.session_state,
@@ -12853,6 +12850,12 @@ def _on_sidebar_page_change() -> None:
     except ImportError:
         pass
     try:
+        from hof_case_resume import cancel_hof_case_resume_navigation
+
+        cancel_hof_case_resume_navigation(st, pick)
+    except ImportError:
+        pass
+    try:
         from suite_user_persistence import claim_user_page_ownership
 
         claim_user_page_ownership(st, "baseball", pick)
@@ -12969,6 +12972,13 @@ try:
     show_persistence_messages(st)
 except Exception:
     pass
+try:
+    from hof_case_resume import apply_hof_case_resume, enforce_hof_case_page_after_workspace
+
+    apply_hof_case_resume(st)
+    enforce_hof_case_page_after_workspace(st)
+except ImportError:
+    pass
 _consume_scheduled_navigation()
 
 try:
@@ -13005,6 +13015,12 @@ _selected_page = st.sidebar.radio(
 )
 st.session_state["active_page"] = normalize_page_key(_selected_page)
 active_page = st.session_state["active_page"]
+try:
+    from hof_case_resume import finalize_hof_case_resume_if_ready
+
+    finalize_hof_case_resume_if_ready(st)
+except ImportError:
+    pass
 try:
     from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
 
@@ -13569,6 +13585,7 @@ if active_page == "Career Totals":
         HOF_CASE_MODE_EXPLANATION,
         HOF_CASE_MODE_INSTRUCTIONS,
         HOF_CASE_PACKET_KEY,
+        HOF_CASE_TARGET_ALREADY_IN_HOF_MSG,
         HOF_FILTER_ALL,
         HOF_FILTER_OPTIONS,
         apply_hof_membership_filter,
@@ -13576,14 +13593,15 @@ if active_page == "Career Totals":
         build_hof_case_packet,
         build_hof_case_question,
         build_hof_cohort_summary_text,
+        hof_case_target_player_options,
+        hof_case_target_slug,
         player_in_results,
         render_hof_cohort_summary,
         summarize_career_filters,
+        target_player_is_hall_of_famer,
     )
 
-    career_player_options = sorted(
-        [str(x).strip() for x in batting_df["fullName"].dropna().unique() if str(x).strip()]
-    )
+    career_player_options = hof_case_target_player_options(batting_df)
     init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
     hof_case_mode = st.checkbox(
         "Hall of Fame Case Mode",
@@ -13859,7 +13877,9 @@ if active_page == "Career Totals":
             pass
     if hof_case_mode:
         hof_target_in_results = bool(hof_target_player) and player_in_results(hof_target_player, career_totals)
-        if hof_target_player and not hof_target_in_results:
+        if hof_target_player and target_player_is_hall_of_famer(hof_target_player, career_totals):
+            st.info(HOF_CASE_TARGET_ALREADY_IN_HOF_MSG)
+        elif hof_target_player and not hof_target_in_results:
             st.warning(
                 "Selected player is not included in this search result. Adjust filters and try again."
             )
@@ -13873,6 +13893,7 @@ if active_page == "Career Totals":
                     sort_stat=sort_stat_career,
                     awards_df=AWARDS_PLAYERS_DF,
                     awards_fallback_df=batting_df,
+                    position_universe_df=batting_df,
                 )
                 st.session_state[HOF_CASE_PACKET_KEY] = hof_packet
                 hof_question = build_hof_case_question(hof_target_player, hof_packet)
@@ -13938,6 +13959,7 @@ if active_page == "Career Totals":
                             target_player=hof_target_player,
                             packet=hof_packet,
                             question_id=str(ami_result.get("question_id") or ""),
+                            source_state=submit_source_state,
                         )
                     except ImportError:
                         pass
@@ -13950,18 +13972,28 @@ if active_page == "Career Totals":
                             source_page="Career Totals",
                             question_id=str(ami_result.get("question_id") or ""),
                             full_analysis_url=str(ami_result.get("action_url") or ""),
-                            resume_key=f"bb:hof_case:{hof_target_player}",
+                            resume_key=f"bb:hof_case:{hof_case_target_slug(hof_target_player)}",
                         )
                         insight.conclusion = (
                             f"{CASE_SCORE_LABEL} queued for {hof_target_player}. "
                             "Open full analysis for the statistical case — not induction odds."
                         )
                         insight.method = CASE_SCORE_LABEL
-                        stage_pending_insight(st, insight)
+                        stage_pending_insight(
+                            st,
+                            insight,
+                            return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
+                        )
                     except Exception:
                         pass
                     st.session_state["_ami_submit_render_insight_this_run"] = True
                     st.session_state["_ami_last_submit_source_page"] = "Career Totals"
+                    try:
+                        from baseball_persistent_state import force_save_baseball_state
+
+                        force_save_baseball_state(st, reason="hof_case_submit")
+                    except Exception:
+                        pass
                     st.success(
                         f"Hall of Fame statistical case saved for {hof_target_player}. "
                         "Review the Baseball Insight card below or open Command Center for the full analysis."
@@ -13969,8 +14001,27 @@ if active_page == "Career Totals":
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not submit Hall of Fame statistical case ({exc}).")
+        try:
+            from applied_math_return_insight import render_suite_applied_math_insight_for_page
+
+            render_suite_applied_math_insight_for_page(
+                st,
+                source_app="baseball",
+                source_page="Career Totals",
+            )
+        except Exception:
+            pass
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="career")
+        try:
+            from hof_case_resume import render_hof_case_resume_debug
+
+            render_hof_case_resume_debug(st)
+        except ImportError:
+            pass
+        if hof_case_mode and isinstance(st.session_state.get(HOF_CASE_PACKET_KEY), dict):
+            with st.expander("Developer: last Hall of Fame case packet", expanded=False):
+                st.json(st.session_state.get(HOF_CASE_PACKET_KEY))
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
 
@@ -17680,7 +17731,38 @@ if active_page == "Draft Room Simulator":
         except Exception:
             pass
 
-        reset_col, delete_live_col, _sp = st.columns([1, 1, 2])
+        reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
+        with undo_col:
+            try:
+                from draft_room_state import undo_last_simulator_pick
+
+                if st.button(
+                    "Undo Last Pick",
+                    key="draft_room_undo_last_pick_btn",
+                    help="Remove the most recent simulator pick and restore the previous on-clock team.",
+                ):
+                    result = undo_last_simulator_pick(st.session_state)
+                    if result.get("ok"):
+                        from draft_room_state import persist_draft_board_to_storage
+
+                        persist_draft_board_to_storage(
+                            st,
+                            st.session_state,
+                            st.session_state.get("draft_room_table"),
+                            reason="undo_last_pick",
+                        )
+                        try:
+                            from baseball_persistent_state import force_save_baseball_state
+
+                            force_save_baseball_state(st, reason="undo_last_pick")
+                        except Exception:
+                            pass
+                        st.success(str(result.get("message") or "Undid last pick."))
+                        st.rerun()
+                    else:
+                        st.warning(str(result.get("message") or "Could not undo pick."))
+            except ImportError:
+                pass
         with reset_col:
             if st.button(
                 "Reset Draft Room Simulator",
@@ -17711,6 +17793,27 @@ if active_page == "Draft Room Simulator":
                 commit_live_draft_room(st, st.session_state, None, reason="delete_live_draft_simulator")
                 st.success("Live Draft Room draft deleted. Simulator board unchanged.")
                 st.rerun()
+
+        try:
+            from draft_ui import render_draft_queue_panel
+
+            if render_draft_queue_panel(
+                st,
+                st.session_state,
+                key_prefix="sim_queue",
+                max_rows=15,
+                show_subheader=True,
+                compact=False,
+            ):
+                try:
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    force_save_baseball_state(st, reason="draft_edit")
+                except Exception:
+                    pass
+                st.rerun()
+        except ImportError:
+            pass
 
         edited_draft = _session_draft_board_df()
         try:

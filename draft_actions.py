@@ -398,8 +398,10 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
     except ImportError:
         pass
     if name:
-        allowed, reason = can_draft_player(session, name)
-        disable_reason = "" if allowed else _classify_disable_reason(reason)
+        gate = resolve_player_draft_gate(session, name)
+        allowed = bool(gate.get("allowed"))
+        reason = "" if allowed else str(gate.get("disable_message") or "")
+        disable_reason = "" if allowed else str(gate.get("disable_reason") or "")
         try:
             from draft_source_validation import is_allowed_draft_source
 
@@ -410,9 +412,10 @@ def draft_button_diagnostics(session: dict[str, Any], player_name: str = "") -> 
             )
             player_source_valid = src_ok
             if not src_ok and not disable_reason:
-                disable_reason = _classify_disable_reason(src_reason)
+                disable_reason = "other_validation_failure"
+                reason = src_reason or reason
         except ImportError:
-            pass
+            player_source_valid = None
     else:
         if str(ctx.get("draft_status") or "") == "not_started":
             reason = "Draft has not started yet."
@@ -513,11 +516,124 @@ def _classify_disable_reason(reason: str) -> str:
     return "multiplayer_membership_guard" if "membership" in text else text[:48].replace(" ", "_")
 
 
-def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, str]:
-    """Return (allowed, human-readable reason). Never allows out-of-turn drafting."""
+DISABLE_REASON_PRIORITY: tuple[str, ...] = (
+    "already_drafted",
+    "player_not_available",
+    "draft_complete",
+    "draft_not_started",
+    "missing_team_assignment",
+    "not_your_turn",
+    "other_validation_failure",
+)
+
+
+def _draft_round_for_pick(session: dict[str, Any], pick_n: int | None) -> int | None:
+    if pick_n is None:
+        return None
+    team_count = 0
+    try:
+        team_count = int(session.get("room_team_count") or 0)
+    except (TypeError, ValueError):
+        team_count = 0
+    if team_count < 1:
+        room = session.get("live_draft_room")
+        if isinstance(room, dict):
+            cfg = dict(room.get("config") or {})
+            try:
+                team_count = int(cfg.get("team_count") or 0)
+            except (TypeError, ValueError):
+                team_count = 0
+            if team_count < 1:
+                names = cfg.get("team_names") or cfg.get("teams") or []
+                if isinstance(names, list):
+                    team_count = len(names)
+    if team_count < 1:
+        return None
+    return ((int(pick_n) - 1) // team_count) + 1
+
+
+def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
+    """Sidebar-friendly round/pick/on-clock/timer snapshot for active drafts."""
+    ctx = draft_action_context(session)
+    pick = ctx.get("current_pick")
+    try:
+        pick_n = int(pick) if pick is not None else None
+    except (TypeError, ValueError):
+        pick_n = None
+    on_clock = str(ctx.get("on_clock_team") or "").strip()
+    if not on_clock and pick_n is not None and not ctx.get("draft_complete"):
+        try:
+            from draft_room_state import get_canonical_draft_board
+
+            board = get_canonical_draft_board(session)
+            if hasattr(board, "columns") and "Pick" in board.columns and "Team" in board.columns:
+                match = board[board["Pick"].astype(int) == pick_n]
+                if not match.empty:
+                    on_clock = str(match.iloc[0].get("Team") or "").strip()
+        except Exception:
+            pass
+    timer_seconds: int | None = None
+    if ctx.get("live_draft_active"):
+        room = session.get("live_draft_room")
+        if isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
+            try:
+                from live_draft_timer_logic import ensure_live_draft_timer_for_pick, live_draft_seconds_remaining
+
+                ensure_live_draft_timer_for_pick(room)
+                timer_seconds = int(live_draft_seconds_remaining(room))
+            except ImportError:
+                timer_seconds = None
+    return {
+        **ctx,
+        "round": _draft_round_for_pick(session, pick_n),
+        "pick": pick_n,
+        "on_clock_team": on_clock or None,
+        "is_my_turn": bool(ctx.get("is_your_pick")),
+        "timer_seconds": timer_seconds,
+        "has_active_draft": bool(
+            not ctx.get("draft_complete")
+            and (pick_n is not None or on_clock or str(ctx.get("draft_status") or "") == "in_progress")
+        ),
+    }
+
+
+def resolve_player_draft_gate(
+    session: dict[str, Any],
+    player_name: str = "",
+    *,
+    source: str = "",
+) -> dict[str, Any]:
+    """
+    Unified draft permission for buttons — returns disable_reason using priority order.
+    """
     name = str(player_name or "").strip()
-    if not name:
-        return False, "Select a player first."
+    ctx = draft_action_context(session)
+    gate: dict[str, Any] = {
+        "allowed": False,
+        "disable_reason": "",
+        "disable_message": "",
+        "is_my_turn": bool(ctx.get("is_your_pick")),
+        "is_your_pick": bool(ctx.get("is_your_pick")),
+        "on_clock_team": ctx.get("on_clock_team") or "",
+        "your_team": ctx.get("your_team") or "",
+        "current_pick": ctx.get("current_pick"),
+        "draft_status": ctx.get("draft_status") or "",
+        "draft_complete": bool(ctx.get("draft_complete")),
+        "active_draft_source": ctx.get("active_draft_source"),
+    }
+
+    if name:
+        try:
+            from draft_room_state import lookup_drafted_player_info
+
+            drafted = lookup_drafted_player_info(session, name)
+        except ImportError:
+            drafted = None
+        if drafted:
+            team = str(drafted.get("drafted_by_team") or "").strip()
+            gate["disable_reason"] = "already_drafted"
+            gate["disable_message"] = f"Already drafted by {team}" if team else "Already drafted"
+            return gate
 
     live_room = session.get("live_draft_room")
     if isinstance(live_room, dict):
@@ -526,92 +642,99 @@ def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, s
 
             total = total_expected_picks(live_room)
             if total > 0 and is_draft_truly_complete(live_room):
-                return False, "Draft is complete."
+                gate["disable_reason"] = "draft_complete"
+                gate["disable_message"] = "Draft is complete."
+                return gate
         except ImportError:
             pass
 
-    ctx = draft_action_context(session)
     if ctx.get("draft_complete"):
-        if ctx.get("live_draft_active"):
-            room = session.get("live_draft_room")
-            if isinstance(room, dict):
-                board = len(room.get("draft_board") or [])
-                try:
-                    from live_draft_safe_mode import total_expected_picks
+        reason_code = str(ctx.get("draft_complete_reason") or "")
+        if reason_code == "not_started":
+            gate["disable_reason"] = "draft_not_started"
+            gate["disable_message"] = "Draft has not started yet."
+            return gate
+        gate["disable_reason"] = "draft_complete"
+        gate["disable_message"] = "Draft is complete."
+        return gate
 
-                    total = total_expected_picks(room)
-                except ImportError:
-                    total = int(ctx.get("total_picks") or 0)
-                if total > 0 and board < total:
-                    pass
-                else:
-                    reason_code = str(ctx.get("draft_complete_reason") or "")
-                    if reason_code == "not_started":
-                        return False, "Draft has not started yet."
-                    if reason_code == "missing_pick_order":
-                        return False, "Draft pick order is missing."
-                    if reason_code == "pick_index_past_end":
-                        return False, "Draft pick index is past the final pick."
-                    return False, "Draft is complete."
-            else:
-                return False, "Draft is complete."
-        else:
-            reason_code = str(ctx.get("draft_complete_reason") or "")
-            if reason_code == "not_started":
-                return False, "Draft has not started yet."
-            if reason_code == "missing_pick_order":
-                return False, "Draft pick order is missing."
-            if reason_code == "pick_index_past_end":
-                return False, "Draft pick index is past the final pick."
-            return False, "Draft is complete."
     if str(ctx.get("draft_status") or "") == "not_started":
-        return False, "Draft has not started yet."
-    if ctx.get("board_full") and not ctx.get("live_draft_active"):
-        return False, "Board is full."
+        gate["disable_reason"] = "draft_not_started"
+        gate["disable_message"] = "Draft has not started yet."
+        return gate
 
-    room = session.get("live_draft_room")
-    if isinstance(room, dict) and str(room.get("status") or "") == "paused":
-        return False, "Draft is paused — resume to pick."
+    if isinstance(live_room, dict) and str(live_room.get("status") or "") == "paused":
+        gate["disable_reason"] = "other_validation_failure"
+        gate["disable_message"] = "Draft is paused — resume to pick."
+        return gate
+
+    if ctx.get("board_full") and not ctx.get("live_draft_active"):
+        gate["disable_reason"] = "draft_complete"
+        gate["disable_message"] = "Board is full."
+        return gate
 
     if not ctx.get("your_team"):
-        return False, "Set your team in Draft Room settings."
+        gate["disable_reason"] = "missing_team_assignment"
+        gate["disable_message"] = "Set your team in Draft Room settings."
+        return gate
 
-    if not ctx.get("is_your_pick"):
-        on_clock = ctx.get("on_clock_team") or "another team"
-        pick_n = ctx.get("current_pick")
-        if pick_n:
-            return False, f"Not your pick (Pick {pick_n}: {on_clock})."
-        return False, f"Not your pick ({on_clock} is on the clock)."
-
-    try:
-        from draft_room_state import get_all_drafted_player_names
-    except ImportError:
-        return False, "Draft board module unavailable."
-
-    drafted = get_all_drafted_player_names(session)
-    resolved = _resolve_player_name(name, drafted)
-    if resolved in drafted or name in drafted:
-        return False, f"{name} is already drafted."
-
-    if ctx.get("live_draft_active"):
+    if name and ctx.get("live_draft_active"):
         ok, reason = _live_player_available(session, name)
         if not ok:
-            return False, reason
+            gate["disable_reason"] = "player_not_available"
+            gate["disable_message"] = reason or "Player is not available."
+            return gate
 
-    try:
-        from draft_source_validation import is_allowed_draft_source
+    if not ctx.get("is_your_pick"):
+        on_clock = str(ctx.get("on_clock_team") or "").strip() or "another team"
+        pick_n = ctx.get("current_pick")
+        gate["disable_reason"] = "not_your_turn"
+        if pick_n:
+            gate["disable_message"] = f"Waiting for {on_clock} (Pick {pick_n})"
+        else:
+            gate["disable_message"] = f"Waiting for {on_clock}"
+        return gate
 
-        src_ok, src_reason, _ = is_allowed_draft_source(
-            session,
-            name,
-            live_room=session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None,
-        )
-        if not src_ok:
-            return False, src_reason
-    except ImportError:
-        pass
+    if name:
+        try:
+            from draft_source_validation import is_allowed_draft_source
 
-    return True, ""
+            src_ok, src_reason, _ = is_allowed_draft_source(
+                session,
+                name,
+                live_room=live_room if isinstance(live_room, dict) else None,
+            )
+            if not src_ok:
+                gate["disable_reason"] = "other_validation_failure"
+                gate["disable_message"] = src_reason or "Cannot draft from this list."
+                return gate
+        except ImportError:
+            pass
+
+    gate["allowed"] = True
+    gate["disable_reason"] = ""
+    gate["disable_message"] = ""
+    return gate
+
+
+def player_list_status_hint(session: dict[str, Any], player_name: str) -> str:
+    """Short status for watchlist/tracked rows (drafted players stay visible)."""
+    gate = resolve_player_draft_gate(session, player_name)
+    if gate.get("disable_reason") == "already_drafted":
+        return str(gate.get("disable_message") or "Already drafted")
+    if gate.get("allowed"):
+        return ""
+    if gate.get("disable_reason") == "not_your_turn":
+        return str(gate.get("disable_message") or "Not your turn")
+    return str(gate.get("disable_message") or "")
+
+
+def can_draft_player(session: dict[str, Any], player_name: str) -> tuple[bool, str]:
+    """Return (allowed, human-readable reason). Never allows out-of-turn drafting."""
+    gate = resolve_player_draft_gate(session, player_name)
+    if gate.get("allowed"):
+        return True, ""
+    return False, str(gate.get("disable_message") or "Cannot draft.")
 
 
 def _live_player_available(session: dict[str, Any], player_name: str) -> tuple[bool, str]:

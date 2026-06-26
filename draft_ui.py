@@ -396,6 +396,10 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
 def draft_disabled_hint(reason: str) -> str:
     """Short user-facing hint when draft is not allowed."""
     text = str(reason or "").strip()
+    if text.startswith("Waiting for"):
+        return text
+    if text.startswith("Already drafted"):
+        return text
     if text.startswith("Not your pick"):
         return "Not your pick"
     return text[:80] if text else "Cannot draft"
@@ -497,6 +501,15 @@ def render_draft_button(
         return False
 
     allowed, reason = can_draft_player(session, name)
+    gate_message = reason
+    try:
+        from draft_actions import resolve_player_draft_gate
+
+        gate = resolve_player_draft_gate(session, name, source=source)
+        allowed = bool(gate.get("allowed"))
+        gate_message = str(gate.get("disable_message") or reason or "")
+    except ImportError:
+        pass
     if allowed:
         if container.button(label, key=btn_key, use_container_width=True, type=button_type):
             try:
@@ -536,46 +549,161 @@ def render_draft_button(
     )
     if show_disabled_reason:
         try:
-            from draft_actions import draft_button_diagnostics
+            from draft_actions import resolve_player_draft_gate
 
-            diag = draft_button_diagnostics(session, name)
-            code = str(diag.get("disable_reason") or "").strip()
-            if code:
-                container.caption(f"Disabled: {code}")
-            elif reason:
-                container.caption(draft_disabled_hint(reason))
+            gate = resolve_player_draft_gate(session, name, source=source)
+            msg = str(gate.get("disable_message") or gate_message or "").strip()
+            if msg:
+                container.caption(msg)
+            else:
+                diag = draft_button_diagnostics(session, name)
+                code = str(diag.get("disable_reason") or "").strip()
+                if code:
+                    container.caption(f"Disabled: {code}")
+                elif gate_message:
+                    container.caption(draft_disabled_hint(gate_message))
         except ImportError:
-            container.caption(draft_disabled_hint(reason))
+            container.caption(draft_disabled_hint(gate_message))
     return False
 
 
-def render_live_draft_queue_panel(st: Any, session: dict[str, Any]) -> bool:
-    """
-    Queue table on Live Draft Room — order, player, position, team, draft button.
+def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, Any]:
+    """Always show round, pick, and on-clock team in the workflow sidebar."""
+    from draft_actions import draft_status_summary
 
-    Returns True if caller should rerun.
-    """
-    queue = session.get("draft_queue") or []
-    if not isinstance(queue, list):
-        queue = []
-    queue = [str(x).strip() for x in queue if str(x).strip()]
+    summary = draft_status_summary(session)
+    if summary.get("draft_complete"):
+        st.sidebar.caption("Draft complete")
+        return summary
+    if summary.get("has_active_draft"):
+        round_n = summary.get("round")
+        pick_n = summary.get("pick")
+        line_parts: list[str] = []
+        if round_n is not None:
+            line_parts.append(f"Round {round_n}")
+        if pick_n is not None:
+            line_parts.append(f"Pick {pick_n}")
+        if line_parts:
+            st.sidebar.markdown(f"**{' · '.join(line_parts)}**")
+        on_clock = str(summary.get("on_clock_team") or "").strip() or "—"
+        st.sidebar.caption(f"On Clock: **{on_clock}**")
+        if summary.get("live_draft_active"):
+            render_draft_sidebar_timer(st, session, summary=summary)
+    return summary
 
-    st.subheader("Draft Queue")
-    st.markdown('<div class="live-draft-queue-panel">', unsafe_allow_html=True)
+
+def render_draft_sidebar_timer(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    """Live Draft countdown in sidebar — matches live draft room timer."""
+    from draft_actions import draft_status_summary
+
+    summary = summary or draft_status_summary(session)
+    if not summary.get("live_draft_active"):
+        return
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict) or str(room.get("status") or "") != "in_progress":
+        remaining = summary.get("timer_seconds")
+        if remaining is not None:
+            st.sidebar.caption(f"Time Left: **{remaining}s**")
+        return
+
+    fragment = getattr(st, "fragment", None)
+    if fragment is None:
+        remaining = summary.get("timer_seconds")
+        if remaining is not None:
+            st.sidebar.caption(f"Time Left: **{remaining}s**")
+        return
+
+    @fragment(run_every=1)
+    def _sidebar_timer_tick() -> None:
+        from live_draft_timer_logic import (
+            ensure_live_draft_timer_for_pick,
+            live_draft_seconds_remaining,
+            live_draft_timer_deadline,
+        )
+        from live_draft_timer_ui import sync_live_draft_timer_state
+
+        live_room = session.get("live_draft_room")
+        if not isinstance(live_room, dict):
+            return
+        live_room = sync_live_draft_timer_state(session, live_room)
+        session["live_draft_room"] = live_room
+        if str(live_room.get("status") or "") != "in_progress":
+            paused_remaining = live_room.get("paused_remaining_seconds")
+            if paused_remaining is not None:
+                st.sidebar.caption(f"Time Left: **{int(paused_remaining)}s** (paused)")
+            return
+        ensure_live_draft_timer_for_pick(live_room)
+        remaining = max(0, int(live_draft_seconds_remaining(live_room)))
+        st.sidebar.caption(f"Time Left: **{remaining}s**")
+        deadline = live_draft_timer_deadline(live_room)
+        if deadline:
+            try:
+                from live_draft_timer_ui import _mount_js_countdown
+
+                pick_idx = int(live_room.get("current_pick_index") or 0)
+                _mount_js_countdown(
+                    st,
+                    float(deadline),
+                    pick_index=pick_idx,
+                    element_id=f"sidebar-ld-timer-{pick_idx}",
+                    height=0,
+                )
+            except Exception:
+                pass
+
+    _sidebar_timer_tick()
+
+
+def render_draft_queue_panel(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    key_prefix: str = "queue",
+    use_sidebar: bool = False,
+    max_rows: int = 20,
+    show_subheader: bool = True,
+    compact: bool = False,
+) -> bool:
+    """
+    Shared draft queue — reorder controls and draft buttons.
+
+    Returns True when caller should st.rerun().
+    """
+    from draft_actions import _prune_drafted_from_queue, draft_action_context
+    from draft_state import (
+        move_queue_item_down,
+        move_queue_item_to_top,
+        move_queue_item_up,
+        remove_player_from_draft_queue,
+    )
+
+    container = st.sidebar if use_sidebar else st
+    _prune_drafted_from_queue(session)
+    queue = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+
+    if show_subheader and not use_sidebar:
+        container.subheader("Draft Queue")
+        container.markdown('<div class="live-draft-queue-panel">', unsafe_allow_html=True)
+
     if not queue:
-        st.caption("Empty — add players with **Queue player** in Player Actions.")
-        st.markdown("</div>", unsafe_allow_html=True)
+        container.caption("Empty — add players with **Queue player** in Player Actions.")
+        if show_subheader and not use_sidebar:
+            container.markdown("</div>", unsafe_allow_html=True)
         return False
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):
-        st.caption(f"Your pick · Pick {ctx['current_pick']}")
+        container.caption(f"Your pick · Pick {ctx['current_pick']}")
     elif ctx.get("on_clock_team"):
         pick_n = ctx.get("current_pick")
         clock = f"Pick {pick_n}: {ctx['on_clock_team']}" if pick_n else str(ctx["on_clock_team"])
-        st.caption(f"On the clock — {clock}")
+        container.caption(f"On the clock — {clock}")
 
-    rerun = False
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
@@ -584,37 +712,96 @@ def render_live_draft_queue_panel(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         paused = False
 
-    header = st.columns([0.08, 0.34, 0.14, 0.22, 0.22])
-    header[0].caption("**#**")
-    header[1].caption("**Player**")
-    header[2].caption("**Pos**")
-    header[3].caption("**Team**")
-    header[4].caption("**Draft**")
+    if not compact and not use_sidebar:
+        header = container.columns([0.08, 0.34, 0.14, 0.22, 0.22])
+        header[0].caption("**#**")
+        header[1].caption("**Player**")
+        header[2].caption("**Pos**")
+        header[3].caption("**Team**")
+        header[4].caption("**Draft**")
 
-    for idx, pname in enumerate(queue[:20]):
+    rerun = False
+    for idx, pname in enumerate(queue[:max_rows]):
         meta = lookup_player_draft_meta(session, pname)
-        cols = st.columns([0.08, 0.34, 0.14, 0.22, 0.22])
-        cols[0].write(f"{idx + 1}")
-        cols[1].write(pname[:40] + ("…" if len(pname) > 40 else ""))
-        cols[2].write(meta["position"])
-        cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
-        if render_draft_button(
-            st,
-            session,
-            pname,
-            source="live_queue",
-            key_suffix=f"live_queue_{idx}",
-            column=cols[4],
-            show_disabled_reason=idx == 0,
-            extra_disabled=paused,
-            extra_disabled_reason="Draft is paused — resume to pick.",
-        ):
-            rerun = True
+        if compact or use_sidebar:
+            c_ctrl, c_name, c_draft = container.columns([0.38, 0.42, 0.20])
+            u, d, t, r = c_ctrl.columns(4)
+            if u.button("↑", key=f"{key_prefix}_up_{idx}", disabled=idx == 0):
+                move_queue_item_up(session, idx)
+                rerun = True
+            if d.button("↓", key=f"{key_prefix}_dn_{idx}", disabled=idx >= len(queue) - 1):
+                move_queue_item_down(session, idx)
+                rerun = True
+            if t.button("⤒", key=f"{key_prefix}_top_{idx}", disabled=idx == 0):
+                move_queue_item_to_top(session, idx)
+                rerun = True
+            if r.button("✕", key=f"{key_prefix}_rm_{idx}"):
+                remove_player_from_draft_queue(session, pname)
+                rerun = True
+            c_name.caption(f"{idx + 1}. {pname[:32]}" + ("…" if len(pname) > 32 else ""))
+            if render_draft_button(
+                st,
+                session,
+                pname,
+                source="queue" if not key_prefix.startswith("live") else "live_queue",
+                key_suffix=f"{key_prefix}_{idx}",
+                column=c_draft,
+                show_disabled_reason=idx == 0,
+                extra_disabled=paused,
+                extra_disabled_reason="Draft is paused — resume to pick.",
+            ):
+                rerun = True
+        else:
+            cols = container.columns([0.08, 0.34, 0.14, 0.22, 0.22])
+            cols[0].write(f"{idx + 1}")
+            cols[1].write(pname[:40] + ("…" if len(pname) > 40 else ""))
+            cols[2].write(meta["position"])
+            cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
+            ctrl = container.columns([0.5, 0.5])
+            with ctrl[0]:
+                b1, b2, b3, b4 = st.columns(4)
+                if b1.button("Up", key=f"{key_prefix}_up_{idx}", disabled=idx == 0):
+                    move_queue_item_up(session, idx)
+                    rerun = True
+                if b2.button("Down", key=f"{key_prefix}_dn_{idx}", disabled=idx >= len(queue) - 1):
+                    move_queue_item_down(session, idx)
+                    rerun = True
+                if b3.button("Top", key=f"{key_prefix}_top_{idx}", disabled=idx == 0):
+                    move_queue_item_to_top(session, idx)
+                    rerun = True
+                if b4.button("Remove", key=f"{key_prefix}_rm_{idx}"):
+                    remove_player_from_draft_queue(session, pname)
+                    rerun = True
+            if render_draft_button(
+                st,
+                session,
+                pname,
+                source="live_queue" if key_prefix.startswith("live") else "queue",
+                key_suffix=f"{key_prefix}_{idx}",
+                column=cols[4],
+                show_disabled_reason=idx == 0,
+                extra_disabled=paused,
+                extra_disabled_reason="Draft is paused — resume to pick.",
+            ):
+                rerun = True
 
-    if len(queue) > 20:
-        st.caption(f"+{len(queue) - 20} more in queue")
-    st.markdown("</div>", unsafe_allow_html=True)
+    if len(queue) > max_rows:
+        container.caption(f"+{len(queue) - max_rows} more in queue")
+    if show_subheader and not use_sidebar:
+        container.markdown("</div>", unsafe_allow_html=True)
     return rerun
+
+
+def render_live_draft_queue_panel(st: Any, session: dict[str, Any]) -> bool:
+    """Queue table on Live Draft Room — uses shared queue panel."""
+    return render_draft_queue_panel(
+        st,
+        session,
+        key_prefix="live_queue",
+        max_rows=20,
+        show_subheader=True,
+        compact=False,
+    )
 
 
 def render_active_draft_ownership_dev_panel(

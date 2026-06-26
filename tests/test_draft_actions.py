@@ -80,7 +80,7 @@ class TestCanDraftPlayer(unittest.TestCase):
         }
         ok, reason = can_draft_player(session, "Kyle Tucker")
         self.assertFalse(ok)
-        self.assertIn("Not your pick", reason)
+        self.assertIn("Waiting for", reason)
 
     def test_blocks_already_drafted(self) -> None:
         board = _four_team_board(filled_through_pick=1)
@@ -90,7 +90,7 @@ class TestCanDraftPlayer(unittest.TestCase):
         }
         ok, reason = can_draft_player(session, "Player 1")
         self.assertFalse(ok)
-        self.assertIn("already drafted", reason.lower())
+        self.assertIn("Already drafted", reason)
 
 
 class TestDraftPlayerSimulator(unittest.TestCase):
@@ -104,7 +104,7 @@ class TestDraftPlayerSimulator(unittest.TestCase):
         }
         result = draft_player(session, "Kyle Tucker", source="queue")
         self.assertFalse(result["ok"])
-        self.assertIn("Not your pick", result["message"])
+        self.assertIn("Waiting for", result["message"])
 
     def test_user_on_clock_writes_correct_pick_row(self) -> None:
         board = _four_team_board(filled_through_pick=4)
@@ -184,7 +184,7 @@ class TestDraftPlayerLive(unittest.TestCase):
         session = self._live_session(your_team="Team B", pick_index=0)
         ok, reason = can_draft_player(session, "Kyle Tucker")
         self.assertFalse(ok)
-        self.assertIn("Not your pick", reason)
+        self.assertIn("Waiting for", reason)
 
     @patch("live_draft_pick_commit.commit_manual_live_pick")
     def test_live_drafts_when_on_clock(self, mock_commit: MagicMock) -> None:
@@ -214,8 +214,51 @@ class TestDraftPlayerLive(unittest.TestCase):
 
         result = draft_player(session, "Kyle Tucker", source="live_queue")
         self.assertFalse(result["ok"])
-        self.assertIn("Not your pick", result.get("message", ""))
+        self.assertIn("Waiting for", result.get("message", ""))
         mock_commit.assert_not_called()
+
+
+class TestDraftQueueAndUndo(unittest.TestCase):
+    def test_queue_reorder_moves_top(self) -> None:
+        from draft_state import add_player_to_draft_queue, move_queue_item_to_top, move_queue_item_up
+
+        session: dict = {}
+        add_player_to_draft_queue(session, "A")
+        add_player_to_draft_queue(session, "B")
+        add_player_to_draft_queue(session, "C")
+        move_queue_item_up(session, 2)
+        self.assertEqual(session["draft_queue"], ["A", "C", "B"])
+        move_queue_item_to_top(session, 2)
+        self.assertEqual(session["draft_queue"], ["B", "A", "C"])
+
+    def test_already_drafted_before_not_your_turn(self) -> None:
+        from draft_actions import resolve_player_draft_gate
+
+        board = _four_team_board(filled_through_pick=4)
+        session = {
+            "room_your_team": "Team A",
+            "draft_room_table": board.copy(),
+        }
+        gate = resolve_player_draft_gate(session, "Player 1")
+        self.assertEqual(gate["disable_reason"], "already_drafted")
+        gate2 = resolve_player_draft_gate(session, "Kyle Tucker")
+        self.assertEqual(gate2["disable_reason"], "not_your_turn")
+
+    def test_undo_last_simulator_pick(self) -> None:
+        from draft_room_state import get_canonical_draft_board, undo_last_simulator_pick
+
+        board = _four_team_board(filled_through_pick=3)
+        session = {
+            "room_your_team": "Team B",
+            "draft_room_table": board.copy(),
+            "draft_room_board_editor_cache": board.copy(),
+        }
+        result = undo_last_simulator_pick(session)
+        self.assertTrue(result["ok"], result.get("message"))
+        self.assertEqual(result["pick"], 3)
+        updated = get_canonical_draft_board(session)
+        row = updated[updated["Pick"] == 3].iloc[0]
+        self.assertEqual(str(row["Player"]).strip(), "")
 
 
 class TestImportFallback(unittest.TestCase):

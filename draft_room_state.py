@@ -751,6 +751,142 @@ def get_all_drafted_player_names(session: dict[str, Any]) -> list[str]:
     return _drafted_players_from_table(table)
 
 
+def lookup_drafted_player_info(session: dict[str, Any], player_name: str) -> dict[str, Any] | None:
+    """Return draft metadata when a player is already drafted (simulator board or live draft)."""
+    name = str(player_name or "").strip()
+    if not name:
+        return None
+    target = name.lower()
+
+    def _match_cell(val: Any) -> bool:
+        cell = str(val or "").strip()
+        return bool(cell) and cell.lower() == target
+
+    table = get_canonical_draft_board(session)
+    if is_runtime_table(table) and not table.empty and "Player" in table.columns:
+        work = table.copy()
+        if "Pick" in work.columns:
+            work = work.sort_values("Pick", kind="stable")
+        for _, row in work.iterrows():
+            if _match_cell(row.get("Player")):
+                team = str(row.get("Team") or "").strip()
+                pick_val = row.get("Pick")
+                try:
+                    pick_n = int(pick_val)
+                except (TypeError, ValueError):
+                    pick_n = None
+                round_n = row.get("Round")
+                try:
+                    round_n = int(round_n) if round_n is not None else None
+                except (TypeError, ValueError):
+                    round_n = None
+                return {
+                    "player": str(row.get("Player") or name).strip(),
+                    "drafted_by_team": team or None,
+                    "pick": pick_n,
+                    "round": round_n,
+                }
+
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        board = room.get("draft_board") or []
+        if isinstance(board, list):
+            for entry in board:
+                if not isinstance(entry, dict):
+                    continue
+                full = str(entry.get("fullName") or entry.get("Player") or "").strip()
+                if not full or full.lower() != target:
+                    continue
+                team = str(entry.get("Fantasy Team") or entry.get("Team") or "").strip()
+                pick_val = entry.get("Pick")
+                try:
+                    pick_n = int(pick_val)
+                except (TypeError, ValueError):
+                    pick_n = None
+                round_n = entry.get("Round")
+                try:
+                    round_n = int(round_n) if round_n is not None else None
+                except (TypeError, ValueError):
+                    round_n = None
+                return {
+                    "player": full,
+                    "drafted_by_team": team or None,
+                    "pick": pick_n,
+                    "round": round_n,
+                }
+    return None
+
+
+def undo_last_simulator_pick(session: dict[str, Any]) -> dict[str, Any]:
+    """Remove the most recent simulator board pick and restore the previous on-clock slot."""
+    result: dict[str, Any] = {
+        "ok": False,
+        "player": "",
+        "pick": None,
+        "team": "",
+        "message": "",
+        "error": "",
+    }
+    if resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE:
+        result["error"] = "live_active"
+        result["message"] = "Undo is only available in Draft Room Simulator."
+        return result
+
+    table = get_canonical_draft_board(session)
+    if not is_runtime_table(table) or table.empty or "Player" not in table.columns:
+        result["error"] = "empty_board"
+        result["message"] = "No draft board to undo."
+        return result
+
+    filled: list[tuple[int, int, Any]] = []
+    work = table.copy()
+    if "Pick" in work.columns:
+        work = work.sort_values("Pick", kind="stable")
+    for idx, row in work.iterrows():
+        if not _player_cell_filled(row.get("Player")):
+            continue
+        pick_val = row.get("Pick", idx)
+        try:
+            pick_n = int(pick_val)
+        except (TypeError, ValueError):
+            pick_n = int(idx)
+        filled.append((pick_n, int(idx), row))
+    if not filled:
+        result["error"] = "no_picks"
+        result["message"] = "No picks to undo."
+        return result
+
+    pick_n, row_idx, row = max(filled, key=lambda item: item[0])
+    player = str(row.get("Player") or "").strip()
+    team = str(row.get("Team") or "").strip()
+    updated = table.copy()
+    updated.at[row_idx, "Player"] = ""
+    apply_programmatic_board_update(session, updated, reason="undo_last_pick")
+    pick_count = table_pick_count(updated)
+    set_canonical_draft_meta(
+        session,
+        mode=ACTIVE_DRAFT_MODE_MANUAL,
+        source="undo_last_pick",
+        pick_count=pick_count,
+    )
+    try:
+        from draft_actions import _clear_ami_draft_cache
+
+        _clear_ami_draft_cache(session)
+    except ImportError:
+        pass
+    result.update(
+        {
+            "ok": True,
+            "player": player,
+            "pick": pick_n,
+            "team": team,
+            "message": f"Undid pick {pick_n}: removed {player} from {team or 'the board'}.",
+        }
+    )
+    return result
+
+
 def _next_open_row_index(table: pd.DataFrame) -> int | None:
     if not is_runtime_table(table) or table.empty or "Player" not in table.columns:
         return None
