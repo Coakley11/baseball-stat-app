@@ -847,6 +847,15 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
         _sync_investment_insight_tab_keys(st, key, insight=pending)
         return True
 
+    # Do not replace an in-session pending insight with an older cloud card.
+    raw_pending = ss.get(SESSION_PENDING_KEY)
+    if isinstance(raw_pending, dict) and (raw_pending.get("conclusion") or raw_pending.get("question")):
+        raw_id = str(raw_pending.get("insight_id") or "").strip()
+        if raw_id and not _insight_is_dismissed(st, raw_id):
+            ss["_ami_insight_hydrate_success"] = True
+            ss["_ami_insight_hydrate_source"] = "session_raw"
+            return True
+
     dismissed = _get_dismissed_insight_ids(st)
     latest = load_latest_applied_math_insight_for_app(key, exclude_ids=dismissed)
     if latest:
@@ -1919,6 +1928,21 @@ def clear_pending_insight(st: Any) -> None:
     st.session_state.pop(SESSION_PENDING_KEY, None)
     st.session_state.pop(SESSION_RETURN_PAGE_KEY, None)
     st.session_state.pop(SESSION_RETURN_CONTEXT_KEY, None)
+    st.session_state.pop("_hof_case_insight_staged_for_resume", None)
+    st.session_state.pop("_ami_force_insight_render", None)
+    st.session_state.pop("_ami_submit_render_insight_this_run", None)
+
+
+def prepare_fresh_submit_insight(st: Any, *, question_id: str = "") -> None:
+    """Drop stale insight/session keys before staging a new submit insight."""
+    qid = str(question_id or "").strip()
+    staged = str(st.session_state.get("_hof_case_insight_staged_for_resume") or "").strip()
+    if staged and qid and staged != qid:
+        st.session_state.pop("_hof_case_insight_staged_for_resume", None)
+    st.session_state.pop("_ami_hydrated_insight_id", None)
+    st.session_state.pop("_ami_insight_active_id", None)
+    st.session_state.pop("_ami_force_insight_render", None)
+    clear_pending_insight(st)
 
 
 def render_applied_math_insight_panel(

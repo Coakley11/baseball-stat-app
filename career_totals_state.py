@@ -23,8 +23,10 @@ CAREER_FILTER_KEYS = (
     "career_position_filter",
     "career_team_filter",
     "career_by_team_toggle_filter",
-    "career_hof_membership_filter",
 )
+
+# HOF player-scope is Case Mode only — not part of canonical career filter sync.
+CAREER_HOF_SCOPE_FILTER_KEY = "career_hof_membership_filter"
 
 CAREER_STAT_MIN_KEYS = tuple(f"career_{col}_min" for col in CAREER_STAT_COLUMNS)
 
@@ -365,6 +367,24 @@ def _sync_page_filter_career_block(
                 block[key] = _normalize_filter_value(key, val)
 
 
+def _strip_hof_scope_unless_case_mode(session: dict[str, Any], filt: dict[str, Any]) -> dict[str, Any]:
+    """HOF player-scope belongs to Case Mode only — never persist it in normal Career Totals."""
+    try:
+        from hall_of_fame_data import (
+            CAREER_HOF_FILTER_KEY,
+            career_hof_case_mode_active,
+            clear_career_hof_case_scope_state,
+        )
+    except ImportError:
+        return filt
+    if career_hof_case_mode_active(session):
+        return filt
+    out = dict(filt)
+    out.pop(CAREER_HOF_FILTER_KEY, None)
+    clear_career_hof_case_scope_state(session)
+    return out
+
+
 def write_canonical_career_state(
     session: dict[str, Any],
     *,
@@ -376,6 +396,7 @@ def write_canonical_career_state(
     """Write canonical career_state; optionally mirror filter widget keys (pre-render only)."""
     raw = dict(filters) if isinstance(filters, dict) else _extract_filters_from_session(session)
     filt = {k: _normalize_filter_value(k, v) for k, v in raw.items() if is_career_state_key(k)}
+    filt = _strip_hof_scope_unless_case_mode(session, filt)
     meta = session.get("career_state")
     if not isinstance(meta, dict):
         meta = {}
@@ -428,6 +449,19 @@ def gather_career_filters(session: dict[str, Any]) -> dict[str, Any]:
 def prepare_career_totals_page(session: dict[str, Any]) -> dict[str, Any]:
     """Reconcile Career Totals filters before widgets render."""
     _migrate_legacy_career_keys(session)
+    if session.pop("_hof_case_skip_prepare_reconcile", None) or session.get("_hof_case_workspace_restored"):
+        widget = _extract_filters_from_session(session)
+        if widget:
+            meta = write_canonical_career_state(
+                session,
+                filters=widget,
+                reason="hof_workspace_restore",
+                local_edit=False,
+                sync_widget_keys=False,
+            )
+            record_career_sync_trace(session, "prepare_career_totals_page", branch="hof_workspace_restore")
+            return meta
+        return session.get("career_state") if isinstance(session.get("career_state"), dict) else {}
     widget = _extract_filters_from_session(session)
     canonical = canonical_career_filters(session) or {}
     drift = _career_widget_drift(session) or bool(session.get(CAREER_PENDING_SYNC_KEY))
@@ -465,6 +499,26 @@ def prepare_career_totals_page(session: dict[str, Any]) -> dict[str, Any]:
 
 def prepare_career_totals_filters(session: dict[str, Any]) -> None:
     """Seed filter widget keys from canonical career_state when not locally dirty."""
+    try:
+        from hall_of_fame_data import (
+            CAREER_HOF_FILTER_KEY,
+            HOF_FILTER_ALL,
+            career_hof_case_mode_active,
+            clear_career_hof_case_scope_state,
+            normalize_hof_filter_value,
+        )
+    except ImportError:
+        career_hof_case_mode_active = lambda _s: False  # type: ignore[assignment,misc]
+        clear_career_hof_case_scope_state = lambda _s: None  # type: ignore[assignment,misc]
+        CAREER_HOF_FILTER_KEY = CAREER_HOF_SCOPE_FILTER_KEY
+        HOF_FILTER_ALL = "All Players"
+
+        def normalize_hof_filter_value(value: Any) -> str:  # type: ignore[misc]
+            return str(value or HOF_FILTER_ALL)
+
+    if not career_hof_case_mode_active(session):
+        clear_career_hof_case_scope_state(session)
+
     if is_career_locally_dirty(session):
         return
     meta = session.get("career_state")
@@ -483,6 +537,18 @@ def prepare_career_totals_filters(session: dict[str, Any]) -> None:
         if key in merged:
             session[key] = _normalize_filter_value(key, merged[key])
             record_career_field_write(session, key, "career_state.filters", new=merged[key])
+
+    if career_hof_case_mode_active(session) and CAREER_HOF_FILTER_KEY not in session:
+        for source in (merged, block_filters, block, filters):
+            if not isinstance(source, dict):
+                continue
+            val = source.get(CAREER_HOF_FILTER_KEY)
+            if val is not None:
+                session[CAREER_HOF_FILTER_KEY] = normalize_hof_filter_value(val)
+                record_career_field_write(session, CAREER_HOF_FILTER_KEY, "career_state.filters", new=val)
+                break
+        else:
+            session[CAREER_HOF_FILTER_KEY] = HOF_FILTER_ALL
 
 
 def restore_career_totals_page_filters(session: dict[str, Any], store: dict[str, Any]) -> bool:
@@ -665,12 +731,18 @@ def apply_career_source_state_from_ami(session: dict[str, Any], source_state: di
     ent = dict(source_state.get("entity_params") or {})
     chart = dict(source_state.get("chart_params") or {})
     merged = {**wp, **filt}
+    try:
+        from hall_of_fame_data import CAREER_HOF_FILTER_KEY
+    except ImportError:
+        CAREER_HOF_FILTER_KEY = CAREER_HOF_SCOPE_FILTER_KEY
+
     filters = {
         k: _normalize_filter_value(k, copy.deepcopy(merged[k]))
         for k in merged
-        if is_career_state_key(k)
+        if is_career_state_key(k) or k == CAREER_HOF_FILTER_KEY
     }
-    write_canonical_career_state(session, filters=filters, reason="ami_return", local_edit=False)
+    filters = _strip_hof_scope_unless_case_mode(session, filters)
+    write_canonical_career_state(session, filters=filters, reason="ami_return", local_edit=False, sync_widget_keys=True)
     clear_career_local_edit(session)
 
     try:

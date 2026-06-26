@@ -2174,7 +2174,7 @@ def _numeric_plot_columns(df):
                 cols.append(c)
     return cols
 
-def _categorical_plot_columns(df):
+def _categorical_plot_columns(df, *, include_hof: bool = True):
     """Color-by options should stay consistent across Historical and Career scatterplots."""
     try:
         from hall_of_fame_data import HOF_SCATTER_COLOR_COL, hof_scatter_color_available
@@ -2186,7 +2186,7 @@ def _categorical_plot_columns(df):
     for col in ["Primary Position", "Bats", "Team", "League"]:
         if col in df.columns:
             options.append(col)
-    if hof_scatter_color_available(df) and HOF_SCATTER_COLOR_COL not in options:
+    if include_hof and hof_scatter_color_available(df) and HOF_SCATTER_COLOR_COL not in options:
         options.append(HOF_SCATTER_COLOR_COL)
     return options
 
@@ -2324,7 +2324,7 @@ def _add_scatter_context_columns(plot_df):
 
 
 @st.cache_data(show_spinner=False)
-def _prepare_historical_scatter_data(hist_df, team_col, _hof_cache_key: float = 0.0):
+def _prepare_historical_scatter_data(hist_df, team_col, _hof_cache_key: float = 0.0, *, include_hof: bool = True):
     """Build plot-ready data for Historical Explorer.
 
     The visible table stays clean, but the scatterplot can use internal fields such as
@@ -2344,11 +2344,12 @@ def _prepare_historical_scatter_data(hist_df, team_col, _hof_cache_key: float = 
     # Keep games labeled as G only. Do not create a duplicate "Games" field.
     if "G" in plot_df.columns:
         plot_df["G"] = pd.to_numeric(plot_df["G"], errors="coerce")
-    plot_df = _ensure_hof_scatter_columns(plot_df)
+    if include_hof:
+        plot_df = _ensure_hof_scatter_columns(plot_df)
     return plot_df
 
 @st.cache_data(show_spinner=False)
-def _prepare_career_scatter_data(career_df, filtered_source_df=None, _hof_cache_key: float = 0.0):
+def _prepare_career_scatter_data(career_df, filtered_source_df=None, _hof_cache_key: float = 0.0, *, include_hof: bool = True):
     """Build plot-ready data for Career Totals.
 
     Career age is less natural than season age, so this adds Debut Age, Final Age,
@@ -2391,7 +2392,8 @@ def _prepare_career_scatter_data(career_df, filtered_source_df=None, _hof_cache_
                     **{"Debut Age": "min", "Final Age": "max", "Average Age": "mean"}
                 ).reset_index()
             plot_df = plot_df.merge(age_summary, on="playerID", how="left")
-    plot_df = _ensure_hof_scatter_columns(plot_df)
+    if include_hof:
+        plot_df = _ensure_hof_scatter_columns(plot_df)
     return plot_df
 
 def _year_axis_domain(series):
@@ -3328,7 +3330,14 @@ def _format_equation_number(value):
     return f"{value:.4f}"
 
 
-def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results", prepare_plot_df=None):
+def render_scatterplot_section(
+    plot_df,
+    *,
+    key_prefix,
+    title="Visualize Results",
+    prepare_plot_df=None,
+    include_hof_color: bool = True,
+):
     """Interactive scatterplot for the current filtered result set."""
     if plot_df is None or plot_df.empty:
         return
@@ -3350,7 +3359,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
             st.caption("No rows available for the scatterplot.")
             return
     else:
-        plot_df = _ensure_hof_scatter_columns(plot_df.copy())
+        plot_df = _ensure_hof_scatter_columns(plot_df.copy()) if include_hof_color else plot_df.copy()
     numeric_cols = _numeric_plot_columns(plot_df)
     if len(numeric_cols) < 2:
         return
@@ -3364,7 +3373,7 @@ def render_scatterplot_section(plot_df, *, key_prefix, title="Visualize Results"
             x_col = st.selectbox("X-axis", numeric_cols, index=numeric_cols.index(default_x), key=f"{key_prefix}_scatter_x")
         with p2:
             y_col = st.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(default_y), key=f"{key_prefix}_scatter_y")
-        cat_options = ["None"] + _categorical_plot_columns(plot_df)
+        cat_options = ["None"] + _categorical_plot_columns(plot_df, include_hof=include_hof_color)
         color_key = f"{key_prefix}_scatter_color"
         if color_key in st.session_state and st.session_state[color_key] not in cat_options:
             st.session_state.pop(color_key, None)
@@ -13231,6 +13240,27 @@ if active_page == "Historical Explorer":
 
     prepare_historical_explorer_page(st.session_state)
     prepare_historical_explorer_filters(st.session_state)
+    from hall_of_fame_data import (
+        HOF_FILTER_ALL,
+        apply_hof_membership_filter,
+        badge_hof_players_for_table,
+        build_hof_cohort_summary_text,
+        ensure_hof_case_scope_ui_state,
+        HOF_CASE_MODE_HISTORICAL_NOTICE,
+        render_hof_case_scope_controls,
+        render_hof_cohort_summary,
+        render_hof_page_runtime_diag,
+    )
+
+    hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
+    hist_hof_filter = HOF_FILTER_ALL
+    render_hof_page_runtime_diag(
+        st,
+        st.session_state,
+        page_name="Historical Explorer",
+        hof_case_mode=hof_case_mode,
+        hof_dropdown_render_path_active=hof_case_mode,
+    )
 
     render_section_header(
         "🔎 Historical Explorer",
@@ -13279,6 +13309,17 @@ if active_page == "Historical Explorer":
             key="historical_sort_order_filter",
             on_change=historical_filter_changed,
         )
+
+    if hof_case_mode:
+        st.info(HOF_CASE_MODE_HISTORICAL_NOTICE)
+        with st.container():
+            st.markdown("**Hall of Fame Case Mode**")
+            hist_hof_filter = render_hof_case_scope_controls(
+                st,
+                st.session_state,
+                on_change=historical_filter_changed,
+                base_dir=BASE_DIR,
+            )
 
     with st.expander("Advanced filters", expanded=False):
         c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
@@ -13349,20 +13390,8 @@ if active_page == "Historical Explorer":
             help="OFF = one row per player/year/team. ON = one row per player/year, with Team assigned to the team where he had the most games/AB in that season.",
             on_change=historical_filter_changed,
         )
-        from hall_of_fame_data import HISTORICAL_HOF_FILTER_KEY, HOF_FILTER_ALL, HOF_FILTER_OPTIONS
 
-        init_state_once(HISTORICAL_HOF_FILTER_KEY, HOF_FILTER_ALL)
-        validate_state_option(HISTORICAL_HOF_FILTER_KEY, list(HOF_FILTER_OPTIONS), HOF_FILTER_ALL)
-        st.selectbox(
-            "Hall of Fame",
-            list(HOF_FILTER_OPTIONS),
-            key=HISTORICAL_HOF_FILTER_KEY,
-            on_change=historical_filter_changed,
-        )
-        from hall_of_fame_data import hof_data_available, hof_data_setup_message
-
-        if not hof_data_available(BASE_DIR):
-            st.caption(hof_data_setup_message())
+    flush_historical_filter_edits(st.session_state, st, reason="historical_filter_flush")
 
     hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
     if hist_bats:
@@ -13413,21 +13442,14 @@ if active_page == "Historical Explorer":
         hist["displayPosition"] = ""
 
     hist = apply_stat_min_filters(hist, "hist", on_change=historical_filter_changed)
-    from hall_of_fame_data import (
-        HISTORICAL_HOF_FILTER_KEY,
-        HOF_FILTER_ALL,
-        apply_hof_membership_filter,
-        badge_hof_players_for_table,
-    )
-
-    if merge_hof_flag is not None and "playerID" in hist.columns:
+    if hof_case_mode and merge_hof_flag is not None and "playerID" in hist.columns:
         hist = merge_hof_flag(hist, HOF_PLAYER_IDS)
-    hist = apply_hof_membership_filter(hist, st.session_state.get(HISTORICAL_HOF_FILTER_KEY) or HOF_FILTER_ALL)
+        hist = apply_hof_membership_filter(hist, hist_hof_filter)
     render_hof_developer_diagnostics(
         hist,
         page_key="historical",
         page_label="Historical Explorer",
-        hof_filter_value=st.session_state.get(HISTORICAL_HOF_FILTER_KEY) or HOF_FILTER_ALL,
+        hof_filter_value=hist_hof_filter if hof_case_mode else HOF_FILTER_ALL,
     )
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
@@ -13453,10 +13475,22 @@ if active_page == "Historical Explorer":
         "yearID": "Year", "fullName": "Player", "bats": "Bats", "displayPosition": "Primary Position",
         team_col_for_display: "Team"
     })
-    hist_display = badge_hof_players_for_table(hist_display, hist, name_col="Player")
+    if hof_case_mode:
+        hist_display = badge_hof_players_for_table(hist_display, hist, name_col="Player")
     from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
 
     render_stat_filter_summary(st, st.session_state, mode="historical")
+    if hof_case_mode and len(hist) > 0:
+        try:
+            from hall_of_fame_data import hof_data_available
+
+            hof_data_loaded = hof_data_available(BASE_DIR)
+        except ImportError:
+            hof_data_loaded = bool(HOF_PLAYER_IDS)
+        render_hof_cohort_summary(
+            st,
+            build_hof_cohort_summary_text(hist, hof_data_loaded=hof_data_loaded),
+        )
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
@@ -13522,7 +13556,10 @@ if active_page == "Historical Explorer":
         hist,
         key_prefix="hist",
         title="Visualize Historical Results",
-        prepare_plot_df=lambda: _prepare_historical_scatter_data(hist, team_col_for_display, HOF_CACHE_KEY),
+        prepare_plot_df=lambda: _prepare_historical_scatter_data(
+            hist, team_col_for_display, HOF_CACHE_KEY, include_hof=hof_case_mode
+        ),
+        include_hof_color=hof_case_mode,
     )
     # Save AFTER scatter/RF render so that chart configuration keys (hist_scatter_*,
     # hist_rf_*) are present in session_state and captured in the page snapshot.
@@ -13540,6 +13577,20 @@ def career_filter_changed():
     except Exception:
         pass
 
+
+def career_hof_case_mode_changed():
+    try:
+        from hall_of_fame_data import (
+            CAREER_HOF_CASE_MODE_KEY,
+            clear_career_hof_case_scope_state,
+        )
+
+        if not st.session_state.get(CAREER_HOF_CASE_MODE_KEY):
+            clear_career_hof_case_scope_state(st.session_state)
+    except Exception:
+        pass
+    career_filter_changed()
+
 if active_page == "Career Totals":
     from career_totals_state import (
         flush_career_filter_edits,
@@ -13551,26 +13602,25 @@ if active_page == "Career Totals":
         render_career_totals_sync_trace,
     )
 
-    prepare_career_totals_page(st.session_state)
-    prepare_career_totals_filters(st.session_state)
     try:
         from hof_case_resume import apply_pending_hof_case_overlay, finalize_hof_case_resume_if_ready
 
         apply_pending_hof_case_overlay(st)
+    except ImportError:
+        pass
+
+    prepare_career_totals_page(st.session_state)
+    prepare_career_totals_filters(st.session_state)
+    try:
+        from hof_case_resume import finalize_hof_case_resume_if_ready
+
         finalize_hof_case_resume_if_ready(st)
     except ImportError:
         pass
 
-    render_section_header(
-        "📚 Career Totals",
-        "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team."
-    )
-    render_page_guide(active_page)
-    apply_pending_page_transfer(active_page)
     from hall_of_fame_data import (
         CAREER_HOF_CASE_MODE_KEY,
         CAREER_HOF_CASE_TARGET_KEY,
-        CAREER_HOF_FILTER_KEY,
         CASE_SCORE_LABEL,
         HOF_CASE_ANALYZE_BUTTON_LABEL,
         HOF_CASE_MODE_EXPLANATION,
@@ -13578,27 +13628,42 @@ if active_page == "Career Totals":
         HOF_CASE_PACKET_KEY,
         HOF_CASE_TARGET_ALREADY_IN_HOF_MSG,
         HOF_FILTER_ALL,
-        HOF_FILTER_OPTIONS,
         apply_hof_membership_filter,
         badge_hof_players_for_table,
+        build_hof_ami_payload,
         build_hof_case_packet,
         build_hof_case_question,
         build_hof_cohort_summary_text,
+        ensure_hof_case_scope_ui_state,
         hof_case_target_player_options,
         hof_case_target_slug,
         player_in_results,
+        render_hof_ami_blob_diagnostics,
+        render_hof_case_scope_controls,
         render_hof_cohort_summary,
+        render_hof_page_runtime_diag,
         summarize_career_filters,
         target_player_is_hall_of_famer,
     )
 
-    career_player_options = hof_case_target_player_options(batting_df)
+    hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
+    render_hof_page_runtime_diag(
+        st,
+        st.session_state,
+        page_name="Career Totals",
+        hof_case_mode=hof_case_mode,
+        hof_dropdown_render_path_active=hof_case_mode,
+    )
+
+    render_section_header(
     init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
-    hof_case_mode = st.checkbox(
+    st.checkbox(
         "Hall of Fame Case Mode",
         key=CAREER_HOF_CASE_MODE_KEY,
         help="Compare a target player to Hall of Fame prevalence in your filtered career cohort.",
+        on_change=career_hof_case_mode_changed,
     )
+    hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
     st.caption(HOF_CASE_MODE_EXPLANATION)
     if hof_case_mode:
         default_target = career_player_options[0] if career_player_options else ""
@@ -13612,6 +13677,14 @@ if active_page == "Career Totals":
             help="This player must appear in the filtered Career Totals results before analysis.",
         )
         st.caption(HOF_CASE_MODE_INSTRUCTIONS)
+        career_hof_filter = render_hof_case_scope_controls(
+            st,
+            st.session_state,
+            on_change=career_filter_changed,
+            base_dir=BASE_DIR,
+        )
+    else:
+        career_hof_filter = HOF_FILTER_ALL
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
     cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
@@ -13702,19 +13775,6 @@ if active_page == "Career Totals":
             help="OFF = one row per player with a Primary Team. ON = one row per player/team, and stat minimums are applied to each team row separately.",
             on_change=career_filter_changed,
         )
-        init_state_once(CAREER_HOF_FILTER_KEY, HOF_FILTER_ALL)
-        validate_state_option(CAREER_HOF_FILTER_KEY, list(HOF_FILTER_OPTIONS), HOF_FILTER_ALL)
-        st.selectbox(
-            "Hall of Fame",
-            list(HOF_FILTER_OPTIONS),
-            key=CAREER_HOF_FILTER_KEY,
-            on_change=career_filter_changed,
-        )
-        from hall_of_fame_data import hof_data_available, hof_data_setup_message
-
-        if not hof_data_available(BASE_DIR):
-            st.caption(hof_data_setup_message())
-
     flush_career_filter_edits(st.session_state, st, reason="career_filter_flush")
 
     filtered_career = batting_df[(batting_df["yearID"] >= range_career[0]) & (batting_df["yearID"] <= range_career[1])].copy()
@@ -13778,17 +13838,14 @@ if active_page == "Career Totals":
 
     career_totals = add_rate_stats(career_totals)
     career_totals = apply_stat_min_filters(career_totals, "career", on_change=career_filter_changed)
-    if merge_hof_flag is not None and "playerID" in career_totals.columns:
+    if hof_case_mode and merge_hof_flag is not None and "playerID" in career_totals.columns:
         career_totals = merge_hof_flag(career_totals, HOF_PLAYER_IDS)
-    career_totals = apply_hof_membership_filter(
-        career_totals,
-        st.session_state.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL,
-    )
+        career_totals = apply_hof_membership_filter(career_totals, career_hof_filter)
     render_hof_developer_diagnostics(
         career_totals,
         page_key="career",
         page_label="Career Totals",
-        hof_filter_value=st.session_state.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL,
+        hof_filter_value=career_hof_filter if hof_case_mode else HOF_FILTER_ALL,
     )
     career_totals = safe_round_rate_stats(career_totals)
     st.caption(career_mode_note)
@@ -13817,7 +13874,8 @@ if active_page == "Career Totals":
     career_display = career_display.rename(columns={
         "fullName": "Player", "bats": "Bats", "displayPosition": "Primary Position", "displayTeam": "Team"
     })
-    career_display = badge_hof_players_for_table(career_display, career_totals, name_col="Player")
+    if hof_case_mode:
+        career_display = badge_hof_players_for_table(career_display, career_totals, name_col="Player")
     from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
 
     render_stat_filter_summary(st, st.session_state, mode="career")
@@ -13885,6 +13943,7 @@ if active_page == "Career Totals":
                     awards_df=AWARDS_PLAYERS_DF,
                     awards_fallback_df=batting_df,
                     position_universe_df=batting_df,
+                    source_df=batting_df,
                 )
                 st.session_state[HOF_CASE_PACKET_KEY] = hof_packet
                 hof_question = build_hof_case_question(hof_target_player, hof_packet)
@@ -13920,13 +13979,49 @@ if active_page == "Career Totals":
                 except Exception:
                     pass
                 try:
-                    from suite_analytical_question import build_submit_context, submit_analytical_question
+                    from applied_math_context import build_source_state
+                    from baseball_ami_pages import promote_page_ami_context_at_send
+                    from suite_analytical_question import (
+                        build_submit_context,
+                        persist_question_context_blob,
+                        submit_analytical_question,
+                    )
 
+                    flush_career_filter_edits(st.session_state, st, reason="hof_case_submit")
+                    try:
+                        from career_totals_state import gather_career_filters, write_canonical_career_state
+
+                        write_canonical_career_state(
+                            st.session_state,
+                            filters=gather_career_filters(st.session_state),
+                            reason="hof_case_submit",
+                            sync_widget_keys=True,
+                        )
+                    except ImportError:
+                        pass
                     submit_ctx = build_submit_context(
                         "baseball",
                         "Career Totals",
                         st.session_state,
+                        context_extra={
+                            "question": hof_question,
+                            "hof_case_packet": hof_packet,
+                            "player": hof_target_player,
+                            "app_context_type": "baseball_hof_case",
+                        },
                     )
+                    promote_page_ami_context_at_send(
+                        submit_ctx,
+                        st.session_state,
+                        source_page="Career Totals",
+                        question=hof_question,
+                    )
+                    if isinstance(hof_packet, dict):
+                        submit_ctx["hof_case_packet"] = hof_packet
+                        submit_ctx.setdefault("player", hof_target_player)
+                        submit_ctx["routing_hint"] = "hof_case_analysis"
+                        submit_ctx["intent"] = "hof_case_analysis"
+                        submit_ctx["app_context_type"] = "baseball_hof_case"
                     submit_source_state = (
                         build_source_state("Career Totals", st.session_state)
                         if build_source_state
@@ -13943,28 +14038,20 @@ if active_page == "Career Totals":
                         session_state=st.session_state,
                     )
                     try:
-                        from baseball_hof_activity import log_hof_case_analysis_submitted
+                        from applied_math_return_insight import (
+                            build_submit_fallback_insight,
+                            prepare_fresh_submit_insight,
+                            stage_pending_insight,
+                        )
                         from hof_case_resume import HOF_INSIGHT_STAGED_KEY, record_hof_case_submit_snapshot
 
-                        record_hof_case_submit_snapshot(st.session_state, submit_source_state)
-                        log_hof_case_analysis_submitted(
-                            st.session_state,
-                            target_player=hof_target_player,
-                            packet=hof_packet,
-                            question_id=str(ami_result.get("question_id") or ""),
-                            source_state=submit_source_state,
-                        )
-                    except ImportError:
-                        pass
-                    try:
-                        from applied_math_return_insight import build_submit_fallback_insight, stage_pending_insight
-                        from hof_case_resume import HOF_INSIGHT_STAGED_KEY
-
+                        qid = str(ami_result.get("question_id") or "")
+                        prepare_fresh_submit_insight(st, question_id=qid)
                         insight = build_submit_fallback_insight(
                             question=hof_question,
                             source_app="baseball",
                             source_page="Career Totals",
-                            question_id=str(ami_result.get("question_id") or ""),
+                            question_id=qid,
                             full_analysis_url=str(ami_result.get("action_url") or ""),
                             resume_key=f"bb:hof_case:{hof_case_target_slug(hof_target_player)}",
                         )
@@ -13978,8 +14065,63 @@ if active_page == "Career Totals":
                             insight,
                             return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
                         )
-                        st.session_state[HOF_INSIGHT_STAGED_KEY] = str(ami_result.get("question_id") or "")
+                        st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
+                        st.session_state["_ami_force_insight_render"] = True
+                        st.session_state["_ami_hydrated_insight_id"] = insight.insight_id
+                        insight_dict = insight.to_dict()
                     except Exception:
+                        insight_dict = {}
+                    try:
+                        from baseball_hof_activity import build_hof_case_resume_bundle, log_hof_case_analysis_submitted
+
+                        resume_bundle = build_hof_case_resume_bundle(
+                            st,
+                            target_player=hof_target_player,
+                            packet=hof_packet,
+                            source_state=submit_source_state,
+                            question_id=str(ami_result.get("question_id") or ""),
+                            action_url=str(ami_result.get("action_url") or ""),
+                            insight=insight_dict,
+                        )
+                        resume_key = f"bb:hof_case:{hof_case_target_slug(hof_target_player)}"
+                        hof_ami_blob = build_hof_ami_payload(
+                            packet=hof_packet,
+                            question=hof_question,
+                            question_id=str(ami_result.get("question_id") or ""),
+                            action_url=str(ami_result.get("action_url") or ""),
+                            context=submit_ctx,
+                            insight=insight_dict,
+                            workspace_snapshot=resume_bundle.get("workspace_snapshot"),
+                            source_state=submit_source_state,
+                            resume_key=resume_key,
+                        )
+                        record_hof_case_submit_snapshot(
+                            st.session_state,
+                            submit_source_state,
+                            resume_bundle=resume_bundle,
+                        )
+                        log_hof_case_analysis_submitted(
+                            st.session_state,
+                            target_player=hof_target_player,
+                            packet=hof_packet,
+                            question_id=str(ami_result.get("question_id") or ""),
+                            source_state=submit_source_state,
+                            resume_bundle=resume_bundle,
+                        )
+                        persist_question_context_blob(hof_ami_blob)
+                        st.session_state["_hof_case_last_submit_diag"] = {
+                            "question_id": str(ami_result.get("question_id") or ""),
+                            "action_url": str(ami_result.get("action_url") or ""),
+                            "target_player": hof_target_player,
+                            "blob_type": "baseball_hof_case",
+                            "context_type": hof_ami_blob.get("context_type"),
+                            "context_keys": sorted(submit_ctx.keys()),
+                            "hof_packet_present": isinstance(hof_packet, dict),
+                            "routing_hint": submit_ctx.get("routing_hint"),
+                            "hof_ami_audit": hof_ami_blob.get("hof_ami_audit"),
+                        }
+                        st.session_state["_hof_case_last_ami_blob"] = hof_ami_blob
+                    except ImportError:
                         pass
                     st.session_state["_ami_submit_render_insight_this_run"] = True
                     st.session_state["_ami_last_submit_source_page"] = "Career Totals"
@@ -14007,6 +14149,8 @@ if active_page == "Career Totals":
         if hof_case_mode and isinstance(st.session_state.get(HOF_CASE_PACKET_KEY), dict):
             with st.expander("Developer: last Hall of Fame case packet", expanded=False):
                 st.json(st.session_state.get(HOF_CASE_PACKET_KEY))
+        if hof_case_mode and isinstance(st.session_state.get("_hof_case_last_ami_blob"), dict):
+            render_hof_ami_blob_diagnostics(st, st.session_state.get("_hof_case_last_ami_blob"))
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
 
@@ -14060,7 +14204,10 @@ if active_page == "Career Totals":
         career_totals,
         key_prefix="career",
         title="Visualize Career Results",
-        prepare_plot_df=lambda: _prepare_career_scatter_data(career_totals, filtered_career, HOF_CACHE_KEY),
+        prepare_plot_df=lambda: _prepare_career_scatter_data(
+            career_totals, filtered_career, HOF_CACHE_KEY, include_hof=hof_case_mode
+        ),
+        include_hof_color=hof_case_mode,
     )
     # Save AFTER scatter/RF render so that chart configuration keys (career_scatter_*,
     # career_rf_*) are present in session_state and captured in the page snapshot.

@@ -405,6 +405,21 @@ class TestCareerTotalsState(unittest.TestCase):
         state = {"career_state": {"filters": dict(_SAMPLE_FILTERS)}}
         self.assertIsNone(_cloud_autosave_blocked_reason(st, "baseball", state, save_reason="career_edit"))
 
+    def test_hof_scope_filter_not_in_career_filter_keys(self) -> None:
+        self.assertNotIn("career_hof_membership_filter", CAREER_FILTER_KEYS)
+
+    def test_prepare_career_totals_filters_clears_hof_scope_when_case_mode_off(self) -> None:
+        from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY, CAREER_HOF_FILTER_KEY, HOF_FILTER_ALL, HOF_FILTER_ONLY
+
+        session = {
+            CAREER_HOF_CASE_MODE_KEY: False,
+            CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY,
+            "career_state": {"filters": {**_SAMPLE_FILTERS, CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY}},
+        }
+        prepare_career_totals_filters(session)
+        self.assertNotIn(CAREER_HOF_FILTER_KEY, session)
+        self.assertNotIn(CAREER_HOF_FILTER_KEY, session["career_state"]["filters"])
+
 
 if __name__ == "__main__":
     unittest.main()

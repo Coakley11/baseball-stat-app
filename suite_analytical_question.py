@@ -435,21 +435,66 @@ def _parse_context_from_resume_subtitle(subtitle: str) -> dict[str, Any]:
         return {}
 
 
+def _hof_case_player_name(payload: dict[str, Any]) -> str:
+    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
+    if not isinstance(packet, dict) or not packet:
+        top = payload.get("hof_case_packet")
+        packet = top if isinstance(top, dict) else {}
+    for candidate in (payload.get("player"), payload.get("target_player"), ctx.get("player"), packet.get("target_player")):
+        name = str(candidate or "").strip()
+        if name:
+            return name
+    return ""
+
+
 def _store_question_context_blob(payload: dict[str, Any]) -> None:
     """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
         return
+    ctx = dict(payload.get("context") or {})
+    hof_case = _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx)
     blob = {
         "question": payload.get("question"),
         "question_id": qid,
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "quant_area": payload.get("quant_area"),
-        "context": dict(payload.get("context") or {}),
+        "context": ctx,
         "source_state": dict(payload.get("source_state") or {}),
         "action_url": str(payload.get("action_url") or "").strip(),
+        "blob_type": "baseball_hof_case" if hof_case else "analytical_question",
+        "app_context_type": str(payload.get("app_context_type") or ("baseball_hof_case" if hof_case else "")).strip(),
     }
+    if hof_case:
+        player = _hof_case_player_name(payload)
+        if player:
+            blob["player"] = player
+        packet = ctx.get("hof_case_packet")
+        if not isinstance(packet, dict) or not packet:
+            packet = payload.get("hof_case_packet")
+        if isinstance(packet, dict) and packet:
+            blob["hof_case_packet"] = copy.deepcopy(packet)
+        for extra_key in (
+            "context_type",
+            "ami_source_app",
+            "ami_source_page",
+            "hof_ami_audit",
+            "target_player",
+            "target_player_name",
+            "player_id",
+            "resume_key",
+            "workspace_snapshot_present",
+            "workspace_snapshot_ref",
+            "verdict_context",
+        ):
+            if extra_key in payload and payload[extra_key] not in (None, "", {}):
+                blob[extra_key] = copy.deepcopy(payload[extra_key])
+    if isinstance(payload.get("workspace_snapshot"), dict) and payload.get("workspace_snapshot"):
+        blob["workspace_snapshot"] = dict(payload["workspace_snapshot"])
+    if isinstance(payload.get("insight"), dict) and payload.get("insight"):
+        blob["insight"] = dict(payload["insight"])
     try:
         from suite_account import remember_saved_item
 
@@ -557,6 +602,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     ctx: dict[str, Any] = {}
     source_state: dict[str, Any] = {}
     hydrate_source = "none"
+    blob_payload: dict[str, Any] = {}
 
     # Blob-first: full context by question_id before metrics/URL (avoids truncated deep links).
     if qid:
@@ -617,6 +663,21 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     if source_state:
         ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
     ss["_suite_ai_hydrate_source"] = hydrate_source
+    ss["_suite_ai_hydrate_diag"] = {
+        "question_id": qid,
+        "hydrate_source": hydrate_source,
+        "quant_area": area,
+        "source_page": source_page,
+        "source_app": source_app,
+        "page": page,
+        "blob_found": bool(blob_payload) if qid else False,
+        "blob_keys": sorted(blob_payload.keys()) if isinstance(blob_payload, dict) else [],
+        "context_keys": sorted(ctx.keys()) if isinstance(ctx, dict) else [],
+        "hof_case_packet_present": isinstance((ctx or {}).get("hof_case_packet"), dict),
+        "routing_hint": str((ctx or {}).get("routing_hint") or ""),
+        "app_context_type": str(blob_payload.get("app_context_type") or (ctx or {}).get("app_context_type") or ""),
+        "player": str((ctx or {}).get("player") or blob_payload.get("player") or ""),
+    }
 
 
 def _format_context_value(key: str, val: Any) -> str:
@@ -670,6 +731,10 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
     ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     app = normalize_source_app_id(str(payload.get("source_app") or ""), ctx)
     question = str(payload.get("question") or "").strip()
+    if _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
+        player = _hof_case_player_name(payload)
+        title = f"Hall of Fame case — {player}" if player else "Hall of Fame case"
+        return (title, question, "Open full analysis →")
     title = source_question_card_title(app, ctx)
     if app == "music":
         return (title, question, "Continue with Music Coach →")
@@ -902,9 +967,40 @@ def submit_analytical_question(
             except Exception as exc:
                 log.warning("record_activity failed for analytical_question: %s", exc)
     if hof_case:
-        # Hall of Fame cases use baseball_hof_activity for Command Center Continue.
-        # Store context blob for Recent AMI Questions; skip duplicate AMI Continue card.
-        _store_question_context_blob({**payload, "action_url": action_url})
+        player = _hof_case_player_name(payload)
+        hof_payload = {
+            **payload,
+            "action_url": action_url,
+            "app_context_type": "baseball_hof_case",
+        }
+        _store_question_context_blob(hof_payload)
+        _upsert_applied_intelligence_resume(hof_payload, action_url=action_url)
+        if not duplicate:
+            metrics = metrics_for_applied_math_resume(hof_payload)
+            metrics["source_app"] = normalize_source_app_id(
+                str(hof_payload.get("source_app") or ""),
+                dict(hof_payload.get("context") or {}),
+            )
+            metrics["app_context_type"] = "baseball_hof_case"
+            if player:
+                metrics["hof_case_target"] = player
+                metrics["target_player"] = player
+            try:
+                from suite_activity_client import record_activity
+
+                record_activity(
+                    "applied_intelligence",
+                    "analytical_question",
+                    page=str(hof_payload.get("source_page") or "Career Totals"),
+                    metrics=metrics,
+                    summary=f"Hall of Fame case — {player}" if player else "Hall of Fame case analysis",
+                    resume_key=str(hof_payload.get("resume_key") or ""),
+                    resume_title=f"Hall of Fame case — {player}" if player else "Hall of Fame case",
+                    resume_subtitle=analytical_question_storage_subtitle(hof_payload),
+                    action_url=action_url,
+                )
+            except Exception as exc:
+                log.warning("record_activity failed for HOF analytical_question: %s", exc)
     else:
         _upsert_applied_intelligence_resume(payload, action_url=action_url)
     ss = payload.get("source_state")
@@ -953,6 +1049,29 @@ def build_submit_context(
         extra = context_extra
     if extra:
         ctx = merge_analytical_context(ctx, extra)
+    if str(source_app or "").strip().lower() == "baseball":
+        try:
+            from baseball_ami_pages import promote_page_ami_context_at_send
+
+            question = ""
+            if context_extra and isinstance(context_extra.get("question"), str):
+                question = context_extra["question"]
+            promote_page_ami_context_at_send(
+                ctx,
+                session_state,
+                source_page=source_page,
+                question=question,
+            )
+        except ImportError:
+            try:
+                from applied_math_context import build_baseball_applied_math_context
+
+                ctx = merge_analytical_context(
+                    ctx,
+                    build_baseball_applied_math_context(source_page, session_state),
+                )
+            except ImportError:
+                pass
     return ctx
 
 

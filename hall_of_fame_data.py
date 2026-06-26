@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,15 +16,192 @@ HOF_SCATTER_COLOR_COL = "Hall of Fame"
 HOF_SCATTER_HOF_LABEL = "Hall of Famer"
 HOF_SCATTER_NON_HOF_LABEL = "Non-Hall of Famer"
 HOF_FILTER_ALL = "All Players"
-HOF_FILTER_ONLY = "Hall of Famers Only"
-HOF_FILTER_NON = "Non-Hall of Famers Only"
+HOF_FILTER_ONLY = "Hall of Famers only"
+HOF_FILTER_NON = "Non-Hall of Famers only"
 HOF_FILTER_OPTIONS = (HOF_FILTER_ALL, HOF_FILTER_ONLY, HOF_FILTER_NON)
+_LEGACY_HOF_FILTER_LABELS = {
+    "Hall of Famers Only": HOF_FILTER_ONLY,
+    "Non-Hall of Famers Only": HOF_FILTER_NON,
+}
+
+
+def normalize_hof_filter_value(filter_value: str | None) -> str:
+    """Map saved/legacy labels to current HOF player-scope filter options."""
+    mode = str(filter_value or HOF_FILTER_ALL).strip()
+    return _LEGACY_HOF_FILTER_LABELS.get(mode, mode)
 
 CAREER_HOF_FILTER_KEY = "career_hof_membership_filter"
 HISTORICAL_HOF_FILTER_KEY = "historical_hof_membership_filter"
 CAREER_HOF_CASE_MODE_KEY = "career_hof_case_mode"
 CAREER_HOF_CASE_TARGET_KEY = "career_hof_case_target_player"
 HOF_CASE_PACKET_KEY = "_hof_case_packet"
+
+
+def career_hof_case_mode_active(session: dict[str, Any]) -> bool:
+    """True when Career Totals Hall of Fame Case Mode is enabled."""
+    return bool(session.get(CAREER_HOF_CASE_MODE_KEY))
+
+
+def migrate_legacy_historical_hof_filter(session: dict[str, Any]) -> None:
+    """Use one shared player-scope key; drop legacy Historical-only filter."""
+    legacy = session.pop(HISTORICAL_HOF_FILTER_KEY, None)
+    if legacy is None:
+        return
+    current = normalize_hof_filter_value(session.get(CAREER_HOF_FILTER_KEY))
+    if current == HOF_FILTER_ALL:
+        session[CAREER_HOF_FILTER_KEY] = normalize_hof_filter_value(legacy)
+
+
+def resolve_shared_hof_membership_filter(session: dict[str, Any]) -> str:
+    """Shared HOF player-scope value when Case Mode is on; otherwise All Players."""
+    migrate_legacy_historical_hof_filter(session)
+    if not career_hof_case_mode_active(session):
+        return HOF_FILTER_ALL
+    return normalize_hof_filter_value(session.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL)
+
+
+def clear_career_hof_case_scope_state(session: dict[str, Any]) -> None:
+    """Reset HOF player-scope UI state when Case Mode is off (no filter, badges, or scatter color)."""
+    session.pop(CAREER_HOF_FILTER_KEY, None)
+    session.pop(HISTORICAL_HOF_FILTER_KEY, None)
+
+    meta = session.get("career_state")
+    if isinstance(meta, dict) and isinstance(meta.get("filters"), dict):
+        meta["filters"].pop(CAREER_HOF_FILTER_KEY, None)
+
+    pf = session.get("page_filter_state")
+    if isinstance(pf, dict):
+        for page_name in ("Career Totals", "Historical Explorer"):
+            block = pf.get(page_name)
+            if not isinstance(block, dict):
+                continue
+            block.pop(CAREER_HOF_FILTER_KEY, None)
+            block.pop(HISTORICAL_HOF_FILTER_KEY, None)
+            inner = block.get("career_state")
+            if isinstance(inner, dict) and isinstance(inner.get("filters"), dict):
+                inner["filters"].pop(CAREER_HOF_FILTER_KEY, None)
+
+    hist_meta = session.get("historical_state")
+    if isinstance(hist_meta, dict) and isinstance(hist_meta.get("filters"), dict):
+        hist_meta["filters"].pop(HISTORICAL_HOF_FILTER_KEY, None)
+        hist_meta["filters"].pop(CAREER_HOF_FILTER_KEY, None)
+
+    for color_key in ("career_scatter_color", "hist_scatter_color"):
+        if session.get(color_key) == HOF_SCATTER_COLOR_COL:
+            session.pop(color_key, None)
+
+
+def ensure_hof_case_scope_ui_state(session: dict[str, Any]) -> bool:
+    """When Case Mode is off, strip HOF scope keys from session and page snapshots. Returns active mode."""
+    active = career_hof_case_mode_active(session)
+    if not active:
+        clear_career_hof_case_scope_state(session)
+    return active
+
+
+def render_hof_case_scope_controls(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    on_change: Any = None,
+    base_dir: str | Path | None = None,
+) -> str:
+    """Hall of Fame player-scope dropdown — only valid when Case Mode is already ON."""
+    session[CAREER_HOF_FILTER_KEY] = normalize_hof_filter_value(
+        session.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL
+    )
+    st.selectbox(
+        "Hall of Fame player scope",
+        list(HOF_FILTER_OPTIONS),
+        key=CAREER_HOF_FILTER_KEY,
+        on_change=on_change,
+    )
+    if base_dir is not None and not hof_data_available(str(base_dir)):
+        st.caption(hof_data_setup_message())
+    return resolve_shared_hof_membership_filter(session)
+
+
+def build_hof_page_runtime_diag(
+    session: dict[str, Any],
+    *,
+    page_name: str,
+    hof_case_mode: bool,
+    hof_dropdown_render_path_active: bool,
+) -> dict[str, Any]:
+    """Snapshot for temporary HOF deploy/runtime verification."""
+    try:
+        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT
+    except ImportError:
+        GIT_COMMIT_SHORT = "unknown"
+        GIT_BRANCH = "unknown"
+    hof_keys = sorted(
+        k
+        for k in session.keys()
+        if isinstance(k, str)
+        and (
+            "hof" in k.lower()
+            or k in (CAREER_HOF_FILTER_KEY, HISTORICAL_HOF_FILTER_KEY, CAREER_HOF_CASE_MODE_KEY)
+        )
+    )
+    pending = session.get("_ami_pending_insight")
+    pending_id = ""
+    pending_qid = ""
+    if isinstance(pending, dict):
+        pending_id = str(pending.get("insight_id") or "")
+        pending_qid = str(pending.get("question_id") or "")
+    dismissed = session.get("_ami_dismissed_insight_ids")
+    scatter_opts: list[str] = []
+    for prefix in ("career", "hist"):
+        color_key = f"{prefix}_scatter_color"
+        if color_key in session:
+            scatter_opts.append(f"{color_key}={session.get(color_key)!r}")
+    return {
+        "git_commit": GIT_COMMIT_SHORT,
+        "git_branch": GIT_BRANCH,
+        "page": page_name,
+        "hof_case_mode_active": bool(hof_case_mode),
+        "hof_dropdown_render_path_active": bool(hof_dropdown_render_path_active),
+        "hof_related_session_keys": {k: session.get(k) for k in hof_keys},
+        "scatter_color_session": scatter_opts,
+        "insight_pending_id": pending_id,
+        "insight_pending_question_id": pending_qid,
+        "insight_staged_key": session.get("_hof_case_insight_staged_for_resume"),
+        "insight_force_render": bool(session.get("_ami_force_insight_render")),
+        "insight_submit_render_this_run": bool(session.get("_ami_submit_render_insight_this_run")),
+        "insight_dismissed_ids": list(dismissed) if isinstance(dismissed, (list, tuple)) else sorted(dismissed or []),
+        "insight_hydrated_id": session.get("_ami_hydrated_insight_id"),
+        "workspace_snapshot_restored": bool(session.get("_hof_case_workspace_restored")),
+        "career_year_range_filter": session.get("career_year_range_filter"),
+        "historical_year_range_filter": session.get("historical_year_range_filter"),
+        "career_hof_membership_filter": session.get(CAREER_HOF_FILTER_KEY),
+        "historical_hof_membership_filter": session.get(HISTORICAL_HOF_FILTER_KEY),
+        "career_hof_case_target_player": session.get(CAREER_HOF_CASE_TARGET_KEY),
+        "hof_pending_overlay": bool(session.get("_hof_case_pending_overlay")),
+    }
+
+
+def render_hof_page_runtime_diag(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    page_name: str,
+    hof_case_mode: bool,
+    hof_dropdown_render_path_active: bool,
+) -> None:
+    """Temporary deploy audit — top of Career Totals / Historical Explorer."""
+    audit = build_hof_page_runtime_diag(
+        session,
+        page_name=page_name,
+        hof_case_mode=hof_case_mode,
+        hof_dropdown_render_path_active=hof_dropdown_render_path_active,
+    )
+    with st.expander("Deploy runtime audit (HOF)", expanded=True):
+        st.caption(
+            f"Commit `{audit.get('git_commit')}` on `{audit.get('git_branch')}`. "
+            "If HOF dropdown appears while `hof_case_mode_active` is false, the deployed build is stale."
+        )
+        st.json(audit)
+
 
 CASE_SCORE_LABEL = "Hall of Fame Statistical Case Score"
 CASE_SCORE_BUCKETS = ("Weak", "Borderline", "Solid", "Strong", "Very Strong")
@@ -35,6 +213,9 @@ HOF_CASE_MODE_EXPLANATION = (
 HOF_CASE_MODE_INSTRUCTIONS = (
     "Select a player, then use the Career Totals filters above to create a comparison group. "
     "The selected player must appear in the filtered results before a Hall of Fame case can be analyzed."
+)
+HOF_CASE_MODE_HISTORICAL_NOTICE = (
+    "Hall of Fame Case Mode is ON. To turn it off, unselect Hall of Fame Case Mode on the Career Totals page."
 )
 HOF_CASE_ANALYZE_BUTTON_LABEL = "Analyze Hall of Fame Statistical Case with AMI"
 HOF_CASE_TARGET_ALREADY_IN_HOF_MSG = (
@@ -347,7 +528,7 @@ def apply_hof_membership_filter(
 ) -> pd.DataFrame:
     if df is None or df.empty or hof_col not in df.columns:
         return df
-    mode = str(filter_value or HOF_FILTER_ALL).strip()
+    mode = normalize_hof_filter_value(filter_value)
     if mode == HOF_FILTER_ONLY:
         return df[df[hof_col].fillna(False).astype(bool)].copy()
     if mode == HOF_FILTER_NON:
@@ -459,6 +640,50 @@ HOF_CASE_STAT_KEYS = (
     "SLG",
     "OPS",
 )
+
+# Optional Lahman / derived columns included when present on the target or cohort rows.
+HOF_OPTIONAL_ADVANCED_STAT_KEYS = (
+    "W",
+    "L",
+    "SO",
+    "IPouts",
+    "ERA",
+    "SH",
+    "SF",
+    "HBP",
+    "proj_WAR",
+    "WAR",
+    "JAWS",
+    "OPS_plus",
+    "OPS+",
+    "wRC_plus",
+    "wRC+",
+    "ERA_plus",
+    "ERA+",
+)
+
+HOF_CAREER_MILESTONES: tuple[tuple[str, float, str], ...] = (
+    ("HR", 500, "500 home runs"),
+    ("HR", 400, "400 home runs"),
+    ("H", 3000, "3,000 hits"),
+    ("H", 2500, "2,500 hits"),
+    ("RBI", 1500, "1,500 RBI"),
+    ("RBI", 1000, "1,000 RBI"),
+    ("R", 2000, "2,000 runs"),
+    ("SB", 500, "500 stolen bases"),
+    ("SB", 300, "300 stolen bases"),
+    ("2B", 600, "600 doubles"),
+    ("BB", 1500, "1,500 walks"),
+    ("W", 300, "300 wins"),
+    ("SO", 3000, "3,000 strikeouts"),
+    ("G", 2000, "2,000 games"),
+)
+
+HOF_AMI_CONTEXT_TYPE = "baseball_hof_case"
+HOF_AMI_SOURCE_APP = "baseball_analytics"
+HOF_AMI_SOURCE_PAGE = "career_totals"
+HOF_COHORT_TABLE_ROW_LIMIT = 50
+HOF_COMPARABLE_PLAYER_LIMIT = 5
 
 
 def _resolve_primary_position(row: pd.Series | dict[str, Any]) -> str:
@@ -734,7 +959,7 @@ def summarize_career_filters(session: dict[str, Any]) -> dict[str, Any]:
         k = str(key)
         if k.startswith("career_") and k.endswith("_min") and val is not None:
             stat_mins[k.replace("career_", "").replace("_min", "")] = val
-    return {
+    summary: dict[str, Any] = {
         "year_range": year_range,
         "sort_stat": session.get("career_sort_stat_filter"),
         "batting_hand": session.get("career_batting_hand_filter"),
@@ -742,9 +967,441 @@ def summarize_career_filters(session: dict[str, Any]) -> dict[str, Any]:
         "position": session.get("career_position_filter"),
         "team_filter": session.get("career_team_filter"),
         "by_team": bool(session.get("career_by_team_toggle_filter")),
-        "hof_membership_filter": session.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL,
         "stat_minimums": stat_mins,
     }
+    if session.get(CAREER_HOF_CASE_MODE_KEY):
+        summary["hof_membership_filter"] = normalize_hof_filter_value(
+            session.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL
+        )
+    return summary
+
+
+def _export_columns_for_df(df: pd.DataFrame) -> list[str]:
+    if df is None or df.empty:
+        return []
+    preferred = [
+        "playerID",
+        "fullName",
+        "displayPosition",
+        "displayTeam",
+        "primaryHistoricalTeamName",
+        "teamHistoricalName",
+        "teamName",
+        "careerPrimaryPos",
+        "primaryPos",
+        "bats",
+        "isHallOfFamer",
+        *HOF_CASE_STAT_KEYS,
+        *HOF_OPTIONAL_ADVANCED_STAT_KEYS,
+    ]
+    cols: list[str] = []
+    for col in preferred:
+        if col in df.columns and col not in cols:
+            cols.append(col)
+    return cols
+
+
+def _row_to_player_record(
+    row: pd.Series,
+    *,
+    player_col: str = "fullName",
+    hof_col: str = "isHallOfFamer",
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {}
+    for col in row.index:
+        val = row.get(col)
+        if pd.isna(val):
+            continue
+        if col == player_col:
+            entry["player"] = decorate_player_name(val, row.get(hof_col))
+            entry["fullName"] = str(val).strip()
+        elif col == hof_col:
+            entry["hall_of_famer"] = bool(val)
+            entry["isHallOfFamer"] = bool(val)
+        elif col == "playerID":
+            entry["playerID"] = str(val).strip()
+        else:
+            n = _num(val)
+            entry[str(col)] = n if n is not None else _json_safe_value(val)
+    return entry
+
+
+def _build_cohort_table_rows(
+    working: pd.DataFrame,
+    *,
+    player_col: str = "fullName",
+    hof_col: str = "isHallOfFamer",
+    sort_stat: str = "HR",
+    limit: int = HOF_COHORT_TABLE_ROW_LIMIT,
+) -> list[dict[str, Any]]:
+    if working is None or working.empty:
+        return []
+    cols = _export_columns_for_df(working)
+    ranked = working.copy()
+    if sort_stat in ranked.columns:
+        ranked = ranked.sort_values(sort_stat, ascending=False, na_position="last")
+    rows: list[dict[str, Any]] = []
+    for _, row in ranked.head(limit).iterrows():
+        rows.append(_row_to_player_record(row, player_col=player_col, hof_col=hof_col))
+    return rows
+
+
+def _build_cohort_breakdown(
+    working: pd.DataFrame,
+    *,
+    hof_col: str = "isHallOfFamer",
+) -> dict[str, Any]:
+    total = int(len(working)) if working is not None else 0
+    if total == 0 or hof_col not in working.columns:
+        return {
+            "total_players": total,
+            "hall_of_famers": 0,
+            "non_hall_of_famers": total,
+            "hall_of_fame_rate_pct": 0.0,
+        }
+    hof_mask = working[hof_col].fillna(False).astype(bool)
+    hof_count = int(hof_mask.sum())
+    non_hof = total - hof_count
+    rate = round(100.0 * hof_count / total, 1) if total else 0.0
+    return {
+        "total_players": total,
+        "hall_of_famers": hof_count,
+        "non_hall_of_famers": non_hof,
+        "hall_of_fame_rate_pct": rate,
+    }
+
+
+def _build_career_milestones(target_row: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not target_row:
+        return []
+    hits: list[dict[str, Any]] = []
+    for stat, threshold, label in HOF_CAREER_MILESTONES:
+        val = _num(target_row.get(stat))
+        if val is None:
+            continue
+        if val >= threshold:
+            hits.append(
+                {
+                    "stat": stat,
+                    "threshold": threshold,
+                    "value": val,
+                    "label": label,
+                    "met": True,
+                }
+            )
+    return hits
+
+
+def _extract_career_stats_block(target_row: dict[str, Any] | None) -> dict[str, Any]:
+    if not target_row:
+        return {}
+    block: dict[str, Any] = {}
+    for key in (*HOF_CASE_STAT_KEYS, *HOF_OPTIONAL_ADVANCED_STAT_KEYS):
+        if key in target_row:
+            block[key] = target_row[key]
+    for key in (
+        "playerID",
+        "fullName",
+        "displayPosition",
+        "displayTeam",
+        "primaryHistoricalTeamName",
+        "teamHistoricalName",
+        "teamName",
+        "careerPrimaryPos",
+        "primaryPos",
+        "bats",
+        "isHallOfFamer",
+    ):
+        if key in target_row and target_row[key] is not None:
+            block[key] = target_row[key]
+    return block
+
+
+def _build_target_identity(
+    target: str,
+    target_row: dict[str, Any] | None,
+    working: pd.DataFrame,
+    source_df: pd.DataFrame | None,
+    *,
+    player_col: str = "fullName",
+    hof_col: str = "isHallOfFamer",
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "target_player": target,
+        "player_id": None,
+        "primary_position": _resolve_primary_position(target_row or {}),
+        "teams": [],
+        "career_span": None,
+        "filter_year_range": None,
+        "hall_of_fame_member": False,
+        "bats": None,
+    }
+    if target_row:
+        pid = target_row.get("playerID")
+        if pid is not None and str(pid).strip():
+            identity["player_id"] = str(pid).strip()
+        identity["hall_of_fame_member"] = bool(target_row.get(hof_col))
+        identity["bats"] = target_row.get("bats")
+        for team_col in ("displayTeam", "primaryHistoricalTeamName", "teamHistoricalName", "teamName"):
+            team = str(target_row.get(team_col) or "").strip()
+            if team and team not in identity["teams"]:
+                identity["teams"].append(team)
+
+    pid = identity.get("player_id")
+    src = source_df if source_df is not None and not source_df.empty else working
+    if pid and src is not None and not src.empty and "playerID" in src.columns:
+        player_seasons = src[src["playerID"].astype(str).str.strip() == str(pid)]
+        if not player_seasons.empty and "yearID" in player_seasons.columns:
+            years = pd.to_numeric(player_seasons["yearID"], errors="coerce").dropna()
+            if not years.empty:
+                identity["career_span"] = {
+                    "debut_year": int(years.min()),
+                    "final_year": int(years.max()),
+                    "seasons": int(years.nunique()),
+                }
+        if "teamHistoricalName" in player_seasons.columns:
+            teams = sorted(
+                {
+                    str(x).strip()
+                    for x in player_seasons["teamHistoricalName"].dropna().unique()
+                    if str(x).strip()
+                }
+            )
+            if teams:
+                identity["teams"] = teams[:12]
+        elif "teamName" in player_seasons.columns:
+            teams = sorted({str(x).strip() for x in player_seasons["teamName"].dropna().unique() if str(x).strip()})
+            if teams:
+                identity["teams"] = teams[:12]
+    elif target_row and src is not None and player_col in src.columns:
+        player_seasons = src[src[player_col].astype(str).str.strip() == target]
+        if not player_seasons.empty and "yearID" in player_seasons.columns:
+            years = pd.to_numeric(player_seasons["yearID"], errors="coerce").dropna()
+            if not years.empty:
+                identity["career_span"] = {
+                    "debut_year": int(years.min()),
+                    "final_year": int(years.max()),
+                    "seasons": int(years.nunique()),
+                }
+    return identity
+
+
+def _comparable_distance(
+    target_vec: dict[str, float],
+    row: pd.Series,
+    stats: list[str],
+    scales: dict[str, float],
+) -> float | None:
+    dist_sq = 0.0
+    used = 0
+    for stat in stats:
+        t_val = target_vec.get(stat)
+        r_val = _num(row.get(stat))
+        scale = scales.get(stat) or 1.0
+        if t_val is None or r_val is None or scale <= 0:
+            continue
+        diff = (t_val - r_val) / scale
+        dist_sq += diff * diff
+        used += 1
+    if used == 0:
+        return None
+    return float(dist_sq ** 0.5)
+
+
+def _find_comparable_players(
+    working: pd.DataFrame,
+    target: str,
+    sort_stat: str,
+    *,
+    player_col: str = "fullName",
+    hof_col: str = "isHallOfFamer",
+    limit: int = HOF_COMPARABLE_PLAYER_LIMIT,
+) -> dict[str, list[dict[str, Any]]]:
+    empty = {"overall": [], "hall_of_famers": [], "non_hall_of_famers": []}
+    if working is None or working.empty or player_col not in working.columns:
+        return empty
+    stats = _stat_columns_present(working)
+    if sort_stat in working.columns and sort_stat not in stats:
+        stats = [sort_stat] + stats
+    names = working[player_col].astype(str).str.strip()
+    target_rows = working[names.eq(target)]
+    if target_rows.empty:
+        return empty
+    target_row = target_rows.iloc[0]
+    target_vec = {s: _num(target_row.get(s)) for s in stats}
+    target_vec = {k: v for k, v in target_vec.items() if v is not None}
+    if not target_vec:
+        return empty
+    scales: dict[str, float] = {}
+    for stat in target_vec:
+        series = pd.to_numeric(working[stat], errors="coerce").dropna()
+        if series.empty:
+            scales[stat] = 1.0
+        else:
+            scales[stat] = max(float(series.max()), 1.0)
+
+    scored: list[tuple[float, pd.Series]] = []
+    for _, row in working.iterrows():
+        name = str(row.get(player_col) or "").strip()
+        if name == target:
+            continue
+        dist = _comparable_distance(target_vec, row, list(target_vec.keys()), scales)
+        if dist is None:
+            continue
+        scored.append((dist, row))
+    scored.sort(key=lambda item: item[0])
+
+    def _pack(limit_rows: list[tuple[float, pd.Series]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for dist, row in limit_rows[:limit]:
+            rec = _row_to_player_record(row, player_col=player_col, hof_col=hof_col)
+            rec["comparable_distance"] = round(dist, 4)
+            out.append(rec)
+        return out
+
+    overall = _pack(scored)
+    hof_scored = [(d, r) for d, r in scored if hof_col in r.index and bool(r.get(hof_col))]
+    non_scored = [(d, r) for d, r in scored if hof_col not in r.index or not bool(r.get(hof_col))]
+    return {
+        "overall": overall,
+        "hall_of_famers": _pack(hof_scored),
+        "non_hall_of_famers": _pack(non_scored),
+    }
+
+
+def build_hof_ami_payload(
+    *,
+    packet: dict[str, Any],
+    question: str,
+    question_id: str,
+    action_url: str,
+    context: dict[str, Any] | None = None,
+    insight: dict[str, Any] | None = None,
+    workspace_snapshot: dict[str, Any] | None = None,
+    source_state: dict[str, Any] | None = None,
+    resume_key: str = "",
+) -> dict[str, Any]:
+    """Full persisted blob for HOF Case AMI / Open full analysis."""
+    ctx = dict(context or {})
+    ctx.setdefault("hof_case_packet", copy.deepcopy(packet))
+    ctx.setdefault("player", packet.get("target_player"))
+    ctx.setdefault("routing_hint", "hof_case_analysis")
+    ctx.setdefault("intent", "hof_case_analysis")
+    ctx.setdefault("app_context_type", HOF_AMI_CONTEXT_TYPE)
+    identity = packet.get("target_identity") if isinstance(packet.get("target_identity"), dict) else {}
+    target = str(packet.get("target_player") or identity.get("target_player") or ctx.get("player") or "").strip()
+    payload: dict[str, Any] = {
+        "question": question,
+        "question_id": str(question_id or "").strip(),
+        "source_app": "baseball",
+        "source_page": "Career Totals",
+        "quant_area": "hall_of_fame_case",
+        "context_type": HOF_AMI_CONTEXT_TYPE,
+        "app_context_type": HOF_AMI_CONTEXT_TYPE,
+        "ami_source_app": HOF_AMI_SOURCE_APP,
+        "ami_source_page": HOF_AMI_SOURCE_PAGE,
+        "context": ctx,
+        "hof_case_packet": copy.deepcopy(packet),
+        "action_url": str(action_url or "").strip(),
+        "player": target,
+        "target_player": target,
+    }
+    if target:
+        payload["target_player_name"] = target
+    if identity.get("player_id"):
+        payload["player_id"] = identity["player_id"]
+    if insight:
+        payload["insight"] = copy.deepcopy(insight)
+        ctx["insight_summary"] = {
+            "conclusion": insight.get("conclusion"),
+            "method": insight.get("method"),
+            "short_answer": insight.get("short_answer"),
+            "supporting_points": insight.get("supporting_points") or insight.get("bullets"),
+            "confidence": insight.get("confidence"),
+            "score": insight.get("score"),
+        }
+    verdict: dict[str, Any] = {
+        "hof_case_summary": packet.get("hof_case_summary"),
+        "score_label": packet.get("score_label"),
+        "score_buckets": packet.get("score_buckets"),
+        "recommendation": (insight or {}).get("conclusion") or (insight or {}).get("short_answer"),
+        "supporting_points": (insight or {}).get("supporting_points") or (insight or {}).get("bullets"),
+        "confidence": (insight or {}).get("confidence"),
+        "score": (insight or {}).get("score"),
+    }
+    payload["verdict_context"] = {k: v for k, v in verdict.items() if v not in (None, "", [], {})}
+    if workspace_snapshot:
+        payload["workspace_snapshot"] = copy.deepcopy(workspace_snapshot)
+        payload["workspace_snapshot_present"] = True
+        if resume_key:
+            payload["workspace_snapshot_ref"] = str(resume_key).strip()
+    if source_state:
+        payload["source_state"] = copy.deepcopy(source_state)
+    if resume_key:
+        payload["resume_key"] = str(resume_key).strip()
+    payload["hof_ami_audit"] = audit_hof_ami_blob(payload)
+    return payload
+
+
+def audit_hof_ami_blob(blob: dict[str, Any] | None) -> dict[str, Any]:
+    """Summarize HOF AMI blob completeness for developer diagnostics."""
+    if not isinstance(blob, dict):
+        return {"valid": False, "blob_keys": [], "counts": {}}
+    packet = blob.get("hof_case_packet")
+    if not isinstance(packet, dict):
+        packet = (blob.get("context") or {}).get("hof_case_packet") if isinstance(blob.get("context"), dict) else {}
+    if not isinstance(packet, dict):
+        packet = {}
+    insight = blob.get("insight") if isinstance(blob.get("insight"), dict) else {}
+    ctx = blob.get("context") if isinstance(blob.get("context"), dict) else {}
+    cohort_rows = packet.get("cohort_table_rows") or packet.get("result_sample") or []
+    comparables = packet.get("comparable_players") if isinstance(packet.get("comparable_players"), dict) else {}
+    awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    position_ctx = packet.get("position_context") if isinstance(packet.get("position_context"), dict) else {}
+    counts = {
+        "cohort_rows": len(cohort_rows) if isinstance(cohort_rows, list) else 0,
+        "comparable_overall": len(comparables.get("overall") or []),
+        "comparable_hof": len(comparables.get("hall_of_famers") or []),
+        "comparable_non_hof": len(comparables.get("non_hall_of_famers") or []),
+        "position_rank_stats": len(position_ctx.get("position_stat_ranks") or {}),
+        "cohort_rank_stats": len(packet.get("target_cohort_ranks") or {}),
+        "milestone_flags": len(packet.get("career_milestones") or []),
+        "awards_entries": int(awards.get("total_award_count") or 0) if awards.get("data_available") else 0,
+        "insight_fields": len([k for k, v in insight.items() if v not in (None, "", [], {})]),
+        "workspace_snapshot_keys": len(blob.get("workspace_snapshot") or {}),
+    }
+    return {
+        "valid": True,
+        "blob_keys": sorted(blob.keys()),
+        "context_keys": sorted(ctx.keys()) if isinstance(ctx, dict) else [],
+        "packet_keys": sorted(packet.keys()) if isinstance(packet, dict) else [],
+        "counts": counts,
+        "has_target_player_stats": bool(
+            packet.get("career_stats_full") or packet.get("target_career_stats") or packet.get("target_player_row")
+        ),
+        "has_cohort_rows": counts["cohort_rows"] > 0,
+        "has_position_ranks": counts["position_rank_stats"] > 0,
+        "has_comparable_players": (
+            counts["comparable_overall"] > 0
+            or counts["comparable_hof"] > 0
+            or counts["comparable_non_hof"] > 0
+        ),
+        "has_awards": awards.get("data_available") is True,
+        "has_insight": bool(insight),
+        "has_action_url": bool(str(blob.get("action_url") or "").strip()),
+        "has_workspace_snapshot": bool(blob.get("workspace_snapshot")),
+        "question_id": str(blob.get("question_id") or ""),
+        "context_type": str(blob.get("context_type") or blob.get("app_context_type") or ""),
+        "target_player": str(blob.get("target_player") or packet.get("target_player") or ""),
+        "player_id": (packet.get("target_identity") or {}).get("player_id") if isinstance(packet.get("target_identity"), dict) else None,
+    }
+
+
+def render_hof_ami_blob_diagnostics(st: Any, blob: dict[str, Any] | None, *, expanded: bool = False) -> None:
+    """Developer panel: HOF AMI blob keys and completeness checks."""
+    audit = audit_hof_ami_blob(blob)
+    with st.expander("Developer: HOF AMI blob audit", expanded=expanded):
+        st.json(audit)
 
 
 def build_hof_case_packet(
@@ -758,6 +1415,7 @@ def build_hof_case_packet(
     awards_df: pd.DataFrame | None = None,
     awards_fallback_df: pd.DataFrame | None = None,
     position_universe_df: pd.DataFrame | None = None,
+    source_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Build cohort packet for Baseball AMI Hall of Fame Case Mode."""
     target = str(target_player or "").strip()
@@ -848,6 +1506,30 @@ def build_hof_case_packet(
         player_col=player_col,
     )
     primary_position = position_context.get("primary_position") or _resolve_primary_position(target_row or {})
+    career_stats_full = _extract_career_stats_block(target_row)
+    career_milestones = _build_career_milestones(target_row)
+    cohort_table_rows = _build_cohort_table_rows(
+        working,
+        player_col=player_col,
+        hof_col=hof_col,
+        sort_stat=str(sort_stat or "HR"),
+    )
+    cohort_breakdown = _build_cohort_breakdown(working, hof_col=hof_col)
+    comparable_players = _find_comparable_players(
+        working,
+        target,
+        str(sort_stat or "HR"),
+        player_col=player_col,
+        hof_col=hof_col,
+    )
+    target_identity = _build_target_identity(
+        target,
+        target_row,
+        working,
+        source_df,
+        player_col=player_col,
+        hof_col=hof_col,
+    )
 
     packet = {
         "mode": "hall_of_fame_case",
@@ -859,17 +1541,23 @@ def build_hof_case_packet(
             "Do not present a guaranteed probability of induction."
         ),
         "target_player": target,
+        "target_identity": target_identity,
         "primary_position": primary_position,
         "target_in_results": rank is not None,
         "target_rank": rank,
         "total_players_returned": total,
         "hall_of_famers_returned": hof_count,
         "hall_of_fame_rate_pct": hof_rate,
+        "cohort_breakdown": cohort_breakdown,
         "sort_stat": str(sort_stat or ""),
         "filters_used": filters_summary,
         "target_player_row": target_row,
         "target_career_stats": target_row,
+        "career_stats_full": career_stats_full,
+        "career_milestones": career_milestones,
         "result_sample": sample,
+        "cohort_table_rows": cohort_table_rows,
+        "comparable_players": comparable_players,
         "cohort_stat_summaries": cohort_stats.get("cohort_stat_summaries"),
         "target_cohort_ranks": cohort_stats.get("target_cohort_ranks"),
         "cohort_strength_stats": cohort_stats.get("cohort_strength_stats"),
@@ -920,19 +1608,22 @@ def hof_case_ami_guidance() -> str:
         "This is a statistical case — not true induction odds or a guaranteed probability.\n\n"
         "Required output sections (use these headings):\n"
         "1. Summary Judgment — one paragraph on the statistical case.\n"
-        "2. Statistical Cohort Strength — interpret hall_of_fame_rate_pct, cohort_selectivity, "
-        "and filters_used thresholds (e.g., 500+ HR, 3,000 hits).\n"
-        "3. Target Player's Standing in the Cohort — use target_player_row / target_career_stats, "
-        "target_cohort_ranks, cohort_strength_stats, and cohort_weakness_stats. "
-        "Explain where the target ranks on HR, hits, RBI, OPS, etc.\n"
-        "4. Position-Based Hall of Fame Case — use primary_position, position_stat_ranks, "
-        "position_percentiles, and position_rarity_findings. "
+        "2. Statistical Cohort Strength — interpret cohort_breakdown, hall_of_fame_rate_pct, "
+        "cohort_selectivity, filters_used thresholds (e.g., 500+ HR, 3,000 hits), and cohort_table_rows.\n"
+        "3. Target Player's Standing in the Cohort — use target_identity, career_stats_full, "
+        "target_player_row, target_cohort_ranks, cohort_strength_stats, cohort_weakness_stats, "
+        "and career_milestones. Explain where the target ranks on HR, hits, RBI, OPS, etc.\n"
+        "4. Comparable Players — use comparable_players (overall, hall_of_famers, non_hall_of_famers) "
+        "to contrast the target with statistically similar peers.\n"
+        "5. Position-Based Hall of Fame Case — use primary_position, position_context, "
+        "position_stat_ranks, position_percentiles, and position_rarity_findings. "
         "Explain whether the totals are exceptional for that position.\n"
-        "5. Awards / Accolades Context — use target_awards_summary, cohort_awards_summary, "
+        "6. Awards / Accolades Context — use target_awards_summary, cohort_awards_summary, "
         "target_award_rank, and cohort_award_comparison as supporting evidence only.\n"
-        "6. Reasons the Case Is Strong — bullet points grounded in stats and cohort position.\n"
-        "7. Reasons for Caution — limitations, broad cohorts, below-average awards, position norms.\n"
-        f"8. {CASE_SCORE_LABEL} — final bucket with brief justification.\n\n"
+        "7. Reasons the Case Is Strong — bullet points grounded in stats, milestones, and cohort position.\n"
+        "8. Reasons for Caution — limitations, broad cohorts, below-average awards, position norms.\n"
+        f"9. {CASE_SCORE_LABEL} — final bucket with brief justification.\n\n"
+        "Also use insight / verdict_context when present for page-generated summary and recommendation bullets. "
         "Interpret the baseball statistics themselves — not just the cohort HOF percentage. "
         "Never say '90% chance of making the Hall of Fame', 'true induction odds', or 'guaranteed probability'. "
         "Use terms like 'statistical case', 'cohort strength', and 'supporting awards evidence'."

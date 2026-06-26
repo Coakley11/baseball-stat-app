@@ -109,6 +109,7 @@ class HofCaseResumeHydrationTests(unittest.TestCase):
 
     def test_apply_pending_overlay_restores_filters(self) -> None:
         from hof_case_resume import (
+            HOF_LAST_SUBMIT_BUNDLE_KEY,
             apply_hof_case_resume,
             apply_pending_hof_case_overlay,
             finalize_hof_case_resume_if_ready,
@@ -121,14 +122,56 @@ class HofCaseResumeHydrationTests(unittest.TestCase):
                 "suite_hof_target": "Mike Trout",
             }
         )
-        st.session_state["live_draft_room"] = {"status": "in_progress", "draft_room_id": "r1", "draft_board": [1, 2]}
+        workspace = {
+            "active_page": "Career Totals",
+            "career_state": {
+                "filters": {
+                    "career_year_range_filter": [2000, 2024],
+                    "career_HR_min": 500,
+                    "career_hof_case_mode": True,
+                    "career_hof_case_target_player": "Mike Trout",
+                }
+            },
+            "draft_state": {"queue": ["Aaron Judge"], "watchlist_focus": [], "watchlist_favorites": []},
+            "live_draft_room": {"status": "in_progress", "draft_room_id": "r1", "draft_board": [1, 2]},
+        }
+        bundle = {
+            "resume_key": "bb:hof_case:mike-trout",
+            "target_player": "Mike Trout",
+            "workspace_snapshot": workspace,
+            "session_supplement": {"workflow_recently_viewed": ["Mike Trout"]},
+            "source_state": {
+                "source_page": "Career Totals",
+                "filter_params": {"career_HR_min": 500},
+            },
+            "insight": {"insight_id": "hof-test", "question_id": "q1", "source_page": "Career Totals"},
+        }
+        st.session_state[HOF_LAST_SUBMIT_BUNDLE_KEY] = bundle
         apply_hof_case_resume(st)
         st.session_state["career_HR_min"] = 0
         overlay_diag = apply_pending_hof_case_overlay(st)
         self.assertTrue(overlay_diag.get("overlay_applied"))
-        self.assertEqual(st.session_state.get("live_draft_room", {}).get("draft_room_id"), "r1")
+        self.assertEqual(st.session_state.get("career_HR_min"), 500)
+        self.assertEqual(st.session_state.get("draft_queue"), ["Aaron Judge"])
+        self.assertEqual(st.session_state.get("workflow_recently_viewed"), ["Mike Trout"])
         finalize_hof_case_resume_if_ready(st)
         self.assertTrue(st.session_state.get("_hof_case_resume_completed"))
+
+
+class HofCaseResumeBundleTests(unittest.TestCase):
+    def test_persist_and_load_resume_bundle(self) -> None:
+        from baseball_hof_activity import load_hof_case_resume_bundle, persist_hof_case_resume_bundle
+
+        bundle = {
+            "resume_key": "bb:hof_case:miguel-cabrera",
+            "target_player": "Miguel Cabrera",
+            "workspace_snapshot": {"active_page": "Career Totals"},
+            "insight": {"insight_id": "x"},
+        }
+        persist_hof_case_resume_bundle(bundle)
+        loaded = load_hof_case_resume_bundle("bb:hof_case:miguel-cabrera")
+        self.assertEqual(loaded.get("target_player"), "Miguel Cabrera")
+        self.assertTrue(loaded.get("workspace_snapshot"))
 
 
 class HofCaseResumeHydrationTestsContinued(unittest.TestCase):

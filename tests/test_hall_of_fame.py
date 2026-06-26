@@ -10,29 +10,34 @@ import pandas as pd
 
 from hall_of_fame_data import (
     CASE_SCORE_LABEL,
+    CAREER_HOF_CASE_MODE_KEY,
+    CAREER_HOF_FILTER_KEY,
     HOF_DATA_FILENAME,
     HOF_FILTER_ALL,
     HOF_FILTER_NON,
     HOF_FILTER_ONLY,
+    HOF_SCATTER_COLOR_COL,
     KNOWN_HOF_PLAYER_IDS,
     apply_hof_membership_filter,
     attach_hof_flag,
+    badge_hof_players_for_table,
     build_hof_case_packet,
     build_hof_case_question,
     build_hof_cohort_summary_text,
     build_hof_runtime_diagnostics,
+    clear_career_hof_case_scope_state,
     decorate_player_column,
     decorate_player_name,
     ensure_hof_scatter_columns,
     hof_scatter_color_available,
     hall_of_fame_csv_path,
-    badge_hof_players_for_table,
     hof_case_ami_guidance,
     hof_data_available,
     hof_load_diagnostics,
     hof_data_setup_message,
     load_hall_of_fame_player_ids,
     merge_hof_flag,
+    normalize_hof_filter_value,
     player_in_results,
 )
 
@@ -88,6 +93,12 @@ class HallOfFameDataTests(unittest.TestCase):
         q = build_hof_case_question("Mike Trout", packet)
         self.assertIn("Hall of Fame Statistical Case Score", q)
         self.assertIn("do not present this as true hall of fame induction odds", q.lower())
+        self.assertIn("target_identity", packet)
+        self.assertIn("cohort_table_rows", packet)
+        self.assertIn("comparable_players", packet)
+        self.assertIn("career_milestones", packet)
+        self.assertIn("cohort_breakdown", packet)
+        self.assertEqual(packet["cohort_breakdown"]["total_players"], 3)
 
     def test_attach_hof_flag(self) -> None:
         df = pd.DataFrame([{"playerID": "a1", "fullName": "A"}])
@@ -112,6 +123,84 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertEqual(len(apply_hof_membership_filter(df, HOF_FILTER_ALL)), 3)
         self.assertEqual(len(apply_hof_membership_filter(df, HOF_FILTER_ONLY)), 2)
         self.assertEqual(len(apply_hof_membership_filter(df, HOF_FILTER_NON)), 1)
+
+    def test_normalize_legacy_hof_filter_labels(self) -> None:
+        self.assertEqual(normalize_hof_filter_value("Hall of Famers Only"), HOF_FILTER_ONLY)
+        self.assertEqual(normalize_hof_filter_value("Non-Hall of Famers Only"), HOF_FILTER_NON)
+        df = pd.DataFrame([{"fullName": "A", "isHallOfFamer": True}, {"fullName": "B", "isHallOfFamer": False}])
+        self.assertEqual(len(apply_hof_membership_filter(df, "Hall of Famers Only")), 1)
+
+    def test_clear_career_hof_case_scope_state_resets_filter_and_scatter(self) -> None:
+        session = {
+            CAREER_HOF_CASE_MODE_KEY: False,
+            CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY,
+            "historical_hof_membership_filter": HOF_FILTER_ONLY,
+            "career_scatter_color": HOF_SCATTER_COLOR_COL,
+            "hist_scatter_color": HOF_SCATTER_COLOR_COL,
+            "career_state": {"filters": {CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY}},
+            "page_filter_state": {
+                "Career Totals": {
+                    CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY,
+                    "career_state": {"filters": {CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY}},
+                },
+                "Historical Explorer": {
+                    "historical_hof_membership_filter": HOF_FILTER_ONLY,
+                },
+            },
+        }
+        clear_career_hof_case_scope_state(session)
+        self.assertNotIn(CAREER_HOF_FILTER_KEY, session)
+        self.assertNotIn("historical_hof_membership_filter", session)
+        self.assertNotIn("career_scatter_color", session)
+        self.assertNotIn("hist_scatter_color", session)
+        self.assertNotIn(CAREER_HOF_FILTER_KEY, session["career_state"]["filters"])
+        self.assertNotIn(
+            CAREER_HOF_FILTER_KEY,
+            session["page_filter_state"]["Career Totals"],
+        )
+        self.assertNotIn(
+            "historical_hof_membership_filter",
+            session["page_filter_state"]["Historical Explorer"],
+        )
+
+    def test_ensure_hof_case_scope_ui_state_clears_when_off(self) -> None:
+        from hall_of_fame_data import ensure_hof_case_scope_ui_state
+
+        session = {CAREER_HOF_CASE_MODE_KEY: False, CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY}
+        self.assertFalse(ensure_hof_case_scope_ui_state(session))
+        self.assertNotIn(CAREER_HOF_FILTER_KEY, session)
+
+    def test_streamlit_advanced_filters_have_no_legacy_hof_dropdown(self) -> None:
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "streamlit_app.py"
+        text = src.read_text(encoding="utf-8")
+        self.assertNotIn('key=HISTORICAL_HOF_FILTER_KEY', text)
+        self.assertNotIn('"Hall of Fame",\n            list(HOF_FILTER_OPTIONS)', text)
+        adv_hist = text.split('with st.expander("Advanced filters", expanded=False):')[1]
+        adv_career = text.split('with st.expander("Advanced filters", expanded=False):')[2]
+        self.assertNotIn("HOF_FILTER_OPTIONS", adv_hist.split("flush_historical_filter_edits")[0])
+        self.assertNotIn("HOF_FILTER_OPTIONS", adv_career.split("flush_career_filter_edits")[0])
+
+    def test_shared_hof_filter_uses_career_case_mode(self) -> None:
+        from hall_of_fame_data import (
+            career_hof_case_mode_active,
+            resolve_shared_hof_membership_filter,
+        )
+
+        off = {CAREER_HOF_CASE_MODE_KEY: False, CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY}
+        self.assertFalse(career_hof_case_mode_active(off))
+        self.assertEqual(resolve_shared_hof_membership_filter(off), HOF_FILTER_ALL)
+
+        on = {CAREER_HOF_CASE_MODE_KEY: True, CAREER_HOF_FILTER_KEY: HOF_FILTER_ONLY}
+        self.assertEqual(resolve_shared_hof_membership_filter(on), HOF_FILTER_ONLY)
+
+        legacy = {
+            CAREER_HOF_CASE_MODE_KEY: True,
+            "historical_hof_membership_filter": HOF_FILTER_NON,
+        }
+        self.assertEqual(resolve_shared_hof_membership_filter(legacy), HOF_FILTER_NON)
+        self.assertNotIn("historical_hof_membership_filter", legacy)
 
     def test_decorate_player_column_stars(self) -> None:
         df = pd.DataFrame(
@@ -372,9 +461,12 @@ class HofCaseAmiIntegrationTests(unittest.TestCase):
 
         self.assertTrue(result.get("question_id"))
         self.assertTrue(str(result.get("action_url") or "").strip())
+        self.assertIn("suite_ai_question_id", str(result.get("action_url") or ""))
         self.assertIn(CASE_SCORE_LABEL, question)
-        activity_events = [args[1] for args, _kwargs in recorded if len(args) > 1]
-        self.assertNotIn("analytical_question", activity_events)
+        activity_events = [(args[0], args[1]) for args, _kwargs in recorded if len(args) > 1]
+        self.assertIn(("applied_intelligence", "analytical_question"), activity_events)
+        baseball_events = [args[1] for args, _kwargs in recorded if len(args) > 1 and args[0] == "baseball"]
+        self.assertNotIn("analytical_question", baseball_events)
 
 
 if __name__ == "__main__":

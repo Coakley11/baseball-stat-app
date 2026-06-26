@@ -26,7 +26,6 @@ HISTORICAL_FILTER_KEYS = (
     "historical_position_filter",
     "historical_team_filter",
     "historical_combine_split_seasons_filter",
-    "historical_hof_membership_filter",
 )
 
 HISTORICAL_STAT_MIN_KEYS = tuple(f"hist_{col}_min" for col in HISTORICAL_STAT_COLUMNS)
@@ -314,6 +313,12 @@ def prepare_historical_explorer_page(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_historical_explorer_filters(session: dict[str, Any]) -> None:
+    try:
+        from hall_of_fame_data import ensure_hof_case_scope_ui_state
+
+        ensure_hof_case_scope_ui_state(session)
+    except ImportError:
+        pass
     if is_historical_locally_dirty(session):
         return
     meta = session.get("historical_state")
