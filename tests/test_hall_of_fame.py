@@ -157,8 +157,8 @@ class HallOfFameDataTests(unittest.TestCase):
     def test_hof_case_packet_required_fields(self) -> None:
         df = pd.DataFrame(
             [
-                {"fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714, "H": 2873},
-                {"fullName": "Mike Trout", "isHallOfFamer": False, "HR": 310, "H": 1200},
+                {"playerID": "ruthba01", "fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714, "H": 2873},
+                {"playerID": "troutmi01", "fullName": "Mike Trout", "isHallOfFamer": False, "HR": 310, "H": 1200},
             ]
         )
         filters = {"year_range": [2000, 2024], "stat_minimums": {"HR": 300}}
@@ -178,6 +178,8 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertIsInstance(packet["result_sample"], list)
         self.assertGreater(len(packet["result_sample"]), 0)
         self.assertEqual(packet["score_label"], CASE_SCORE_LABEL)
+        self.assertIn("target_awards_summary", packet)
+        self.assertIn("cohort_awards_summary", packet)
 
     def test_player_not_in_results_blocks_packet_rank(self) -> None:
         df = pd.DataFrame([{"fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714}])
@@ -197,6 +199,7 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertIn(CASE_SCORE_LABEL, q)
         guidance = hof_case_ami_guidance()
         self.assertIn(CASE_SCORE_LABEL, guidance)
+        self.assertIn("supporting evidence", guidance)
         self.assertIn("Never present the score as true induction probability", guidance)
 
 

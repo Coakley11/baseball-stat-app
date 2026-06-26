@@ -423,6 +423,8 @@ def build_hof_case_packet(
     sort_stat: str,
     player_col: str = "fullName",
     hof_col: str = "isHallOfFamer",
+    awards_df: pd.DataFrame | None = None,
+    awards_fallback_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Build cohort packet for Baseball AMI Hall of Fame Case Mode."""
     target = str(target_player or "").strip()
@@ -464,13 +466,29 @@ def build_hof_case_packet(
                     entry[col] = n if n is not None else val
             sample.append(entry)
 
+    awards_context: dict[str, Any] = {
+        "target_awards_summary": {"data_available": False, "message": "Awards data unavailable."},
+        "cohort_awards_summary": {"data_available": False, "message": "Awards data unavailable."},
+        "target_award_rank": {"data_available": False},
+        "cohort_award_comparison": {"data_available": False, "message": "Awards data unavailable."},
+    }
+    try:
+        from awards_players_data import build_hof_case_awards_context
+
+        awards_context = build_hof_case_awards_context(
+            target, working, awards_df, fallback_df=awards_fallback_df
+        )
+    except ImportError:
+        pass
+
     return {
         "mode": "hall_of_fame_case",
         "score_label": CASE_SCORE_LABEL,
         "score_buckets": list(CASE_SCORE_BUCKETS),
         "disclaimer": (
-            "Statistical comparison only — not true Hall of Fame induction odds. "
-            "Excludes awards, MVPs, All-Stars, postseason, narrative, voting, and reputation."
+            "Statistical Hall of Fame case analysis only — not true Hall of Fame induction odds. "
+            "Career totals and cohort Hall of Fame prevalence are primary evidence. "
+            "Awards in target_awards_summary and cohort_awards_summary are supporting evidence only."
         ),
         "target_player": target,
         "target_in_results": rank is not None,
@@ -482,6 +500,10 @@ def build_hof_case_packet(
         "filters_used": filters_summary,
         "target_player_row": target_row,
         "result_sample": sample,
+        "target_awards_summary": awards_context.get("target_awards_summary"),
+        "cohort_awards_summary": awards_context.get("cohort_awards_summary"),
+        "target_award_rank": awards_context.get("target_award_rank"),
+        "cohort_award_comparison": awards_context.get("cohort_award_comparison"),
     }
 
 
@@ -492,10 +514,19 @@ def build_hof_case_question(target_player: str, packet: dict[str, Any]) -> str:
     rate = packet.get("hall_of_fame_rate_pct", 0)
     rank = packet.get("target_rank")
     rank_line = f" Target ranks #{rank} in this cohort by {packet.get('sort_stat', 'sort stat')}." if rank else ""
+    awards_line = ""
+    comparison = packet.get("cohort_award_comparison") if isinstance(packet.get("cohort_award_comparison"), dict) else {}
+    target_awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    if comparison.get("data_available") and target_awards.get("data_available"):
+        awards_line = (
+            f" Target has {comparison.get('target_total_awards', 0)} total awards "
+            f"({comparison.get('target_major_awards', 0)} major); "
+            f"{comparison.get('players_with_more_total_awards', 0)} cohort players have more total awards."
+        )
     return (
         f"Hall of Fame Case Mode — assign a {CASE_SCORE_LABEL} for {target}. "
-        f"The Career Totals search returned {total} players with {hof_n} Hall of Famers ({rate}% HOF rate).{rank_line} "
-        f"Use only the statistical cohort in hof_case_packet. "
+        f"The Career Totals search returned {total} players with {hof_n} Hall of Famers ({rate}% HOF rate).{rank_line}{awards_line} "
+        f"Use the statistical cohort and awards summaries in hof_case_packet as supporting evidence. "
         f"Respond with one of: {', '.join(CASE_SCORE_BUCKETS)}. "
         f"Do NOT present this as true Hall of Fame induction odds."
     )
@@ -505,9 +536,12 @@ def hof_case_ami_guidance() -> str:
     return (
         "Hall of Fame Case Mode: read hof_case_packet only. "
         f"Output a {CASE_SCORE_LABEL} using labels {', '.join(CASE_SCORE_BUCKETS)}. "
-        "Explain using the filtered cohort's Hall of Fame prevalence and the target's standing. "
-        "Never cite awards, MVPs, All-Stars, postseason, narrative, voting history, or reputation. "
-        "Never present the score as true induction probability."
+        "Explain using the filtered cohort's Hall of Fame prevalence and the target's standing in career totals. "
+        "Use target_awards_summary, cohort_awards_summary, target_award_rank, and cohort_award_comparison "
+        "as supporting evidence only — not the sole basis for the score. "
+        "Example: a strong HOF cohort plus above-average major awards strengthens the case; "
+        "a strong cohort with below-average awards means the case depends more on career totals. "
+        "Never present the score as true induction probability or guaranteed induction odds."
     )
 
 
