@@ -11623,6 +11623,86 @@ def developer_mode_enabled() -> bool:
         return False
 
 
+def _deploy_git_commit_short() -> str:
+    try:
+        from suite_deploy_marker import GIT_COMMIT_SHORT
+
+        commit = str(GIT_COMMIT_SHORT or "").strip()
+        if commit:
+            return commit
+    except ImportError:
+        pass
+    try:
+        import subprocess
+
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(BASE_DIR),
+                text=True,
+                timeout=3,
+            )
+            .strip()
+        )
+    except Exception:
+        return "unknown"
+
+
+def render_hof_developer_diagnostics(
+    results_df: pd.DataFrame,
+    *,
+    page_key: str,
+    page_label: str,
+    hof_filter_value: str,
+) -> None:
+    """Visible HOF diagnostics + cache clear (developer mode only)."""
+    if not developer_mode_enabled():
+        return
+    try:
+        from hall_of_fame_data import (
+            HOF_FILTER_ALL,
+            build_hof_runtime_diagnostics,
+            hof_data_available,
+            hof_data_setup_message,
+        )
+    except ImportError:
+        return
+
+    if not hof_data_available(BASE_DIR):
+        st.warning(hof_data_setup_message())
+
+    with st.expander("Hall of Fame developer diagnostics", expanded=True):
+        payload = build_hof_runtime_diagnostics(
+            BASE_DIR,
+            results_df=results_df,
+            batting_df=batting_df,
+            hof_player_ids=HOF_PLAYER_IDS,
+            hof_cache_key=HOF_CACHE_KEY,
+            git_commit=_deploy_git_commit_short(),
+            hof_filter_value=str(hof_filter_value or HOF_FILTER_ALL),
+            page_label=page_label,
+        )
+        st.json(payload)
+        if not payload.get("csv_exists"):
+            st.error(
+                f"`{payload.get('csv_filename')}` was not found at `{payload.get('csv_path_resolved')}`. "
+                "Upload it to the same folder as `streamlit_app.py` on Streamlit Cloud, then clear cache below."
+            )
+        elif not payload.get("hof_data_available"):
+            st.error("HallOfFame.csv exists but no inducted Player rows were parsed. Check columns `playerID`, `inducted`, `category`.")
+        elif int(payload.get("results_df_isHallOfFamer_true_count") or 0) == 0 and str(hof_filter_value) == HOF_FILTER_ALL:
+            st.warning("HOF IDs loaded but this results table has zero `isHallOfFamer=True` rows — check playerID merge.")
+
+        if st.button(
+            "Clear HOF/Data Cache",
+            key=f"hof_clear_data_cache_{page_key}",
+            type="secondary",
+            help="Clears all st.cache_data (including load_data) and reruns the app.",
+        ):
+            st.cache_data.clear()
+            st.rerun()
+
+
 def _page_perf_start(page: str) -> None:
     try:
         from page_perf import perf_page_start
@@ -13208,10 +13288,6 @@ if active_page == "Historical Explorer":
 
         if not hof_data_available(BASE_DIR):
             st.caption(hof_data_setup_message())
-        elif developer_mode_enabled() and hof_load_diagnostics is not None:
-            with st.expander("HOF data diagnostics", expanded=False):
-                st.json(hof_load_diagnostics(BASE_DIR))
-                st.caption(f"batting_df HOF count: {int(batting_df['isHallOfFamer'].sum()) if 'isHallOfFamer' in batting_df.columns else 0}")
 
     hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
     if hist_bats:
@@ -13272,6 +13348,12 @@ if active_page == "Historical Explorer":
     if merge_hof_flag is not None and "playerID" in hist.columns:
         hist = merge_hof_flag(hist, HOF_PLAYER_IDS)
     hist = apply_hof_membership_filter(hist, st.session_state.get(HISTORICAL_HOF_FILTER_KEY) or HOF_FILTER_ALL)
+    render_hof_developer_diagnostics(
+        hist,
+        page_key="historical",
+        page_label="Historical Explorer",
+        hof_filter_value=st.session_state.get(HISTORICAL_HOF_FILTER_KEY) or HOF_FILTER_ALL,
+    )
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
 
@@ -13533,10 +13615,6 @@ if active_page == "Career Totals":
 
         if not hof_data_available(BASE_DIR):
             st.caption(hof_data_setup_message())
-        elif developer_mode_enabled() and hof_load_diagnostics is not None:
-            with st.expander("HOF data diagnostics", expanded=False):
-                st.json(hof_load_diagnostics(BASE_DIR))
-                st.caption(f"batting_df HOF count: {int(batting_df['isHallOfFamer'].sum()) if 'isHallOfFamer' in batting_df.columns else 0}")
 
     flush_career_filter_edits(st.session_state, st, reason="career_filter_flush")
 
@@ -13606,6 +13684,12 @@ if active_page == "Career Totals":
     career_totals = apply_hof_membership_filter(
         career_totals,
         st.session_state.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL,
+    )
+    render_hof_developer_diagnostics(
+        career_totals,
+        page_key="career",
+        page_label="Career Totals",
+        hof_filter_value=st.session_state.get(CAREER_HOF_FILTER_KEY) or HOF_FILTER_ALL,
     )
     career_totals = safe_round_rate_stats(career_totals)
     st.caption(career_mode_note)

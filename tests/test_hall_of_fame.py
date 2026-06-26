@@ -19,6 +19,7 @@ from hall_of_fame_data import (
     attach_hof_flag,
     build_hof_case_packet,
     build_hof_case_question,
+    build_hof_runtime_diagnostics,
     decorate_player_column,
     decorate_player_name,
     hall_of_fame_csv_path,
@@ -163,6 +164,39 @@ class HallOfFameDataTests(unittest.TestCase):
         guidance = hof_case_ami_guidance()
         self.assertIn(CASE_SCORE_LABEL, guidance)
         self.assertIn("Never present the score as true induction probability", guidance)
+
+
+    def test_build_hof_runtime_diagnostics_fields(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"playerID": "ruthbabe01", "fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714},
+                {"playerID": "troutmi01", "fullName": "Mike Trout", "isHallOfFamer": False, "HR": 310},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "HallOfFame.csv"
+            path.write_text(
+                "playerID,yearid,inducted,category\nruthbabe01,1936,Y,Player\n",
+                encoding="utf-8",
+            )
+            ids = load_hall_of_fame_player_ids(tmp)
+            diag = build_hof_runtime_diagnostics(
+                tmp,
+                results_df=df,
+                batting_df=df,
+                hof_player_ids=ids,
+                hof_cache_key=1.0,
+                git_commit="abc1234",
+                hof_filter_value=HOF_FILTER_ALL,
+                page_label="Career Totals",
+            )
+            self.assertEqual(diag["git_commit"], "abc1234")
+            self.assertTrue(diag["csv_exists"])
+            self.assertEqual(diag["results_df_row_count"], 2)
+            self.assertEqual(diag["results_df_isHallOfFamer_true_count"], 1)
+            self.assertEqual(diag["first_5_hof_player_ids"], ["ruthbabe01"])
+            self.assertTrue(diag["known_ids_present"]["ruthba01"] is False)
+            self.assertIn("csv_modified_utc", diag)
 
 
 class HofRuntimeSmokeTests(unittest.TestCase):

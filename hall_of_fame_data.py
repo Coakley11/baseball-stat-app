@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -99,18 +100,75 @@ def load_hall_of_fame_player_ids(base_dir: Path | str) -> frozenset[str]:
     return frozenset(parsed["playerID"].astype(str).tolist())
 
 
+def hof_csv_modified_time(base_dir: Path | str) -> str | None:
+    path = hall_of_fame_csv_path(base_dir)
+    try:
+        if not path.exists():
+            return None
+        ts = path.stat().st_mtime
+        return datetime.fromtimestamp(ts, tz=timezone.utc).replace(microsecond=0).isoformat()
+    except OSError:
+        return None
+
+
+def count_hof_true(df: pd.DataFrame | None, *, hof_col: str = "isHallOfFamer") -> int:
+    if df is None or df.empty or hof_col not in df.columns:
+        return 0
+    return int(df[hof_col].fillna(False).astype(bool).sum())
+
+
+def build_hof_runtime_diagnostics(
+    base_dir: Path | str,
+    *,
+    results_df: pd.DataFrame | None = None,
+    batting_df: pd.DataFrame | None = None,
+    hof_player_ids: frozenset[str] | None = None,
+    hof_cache_key: float | None = None,
+    git_commit: str = "",
+    hof_filter_value: str = "",
+    page_label: str = "",
+) -> dict[str, Any]:
+    """Full runtime diagnostic bundle for developer panels."""
+    path = hall_of_fame_csv_path(base_dir)
+    base = Path(base_dir)
+    ids = hof_player_ids if hof_player_ids is not None else load_hall_of_fame_player_ids(base_dir)
+    first_five = sorted(ids)[:5]
+    diag = hof_load_diagnostics(base_dir)
+    diag.update(
+        {
+            "page": page_label,
+            "git_commit": git_commit or "unknown",
+            "app_base_dir": str(base.resolve()),
+            "csv_path_resolved": str(path.resolve()),
+            "csv_modified_utc": hof_csv_modified_time(base_dir),
+            "hof_cache_key": hof_cache_key,
+            "hof_filter_active": str(hof_filter_value or HOF_FILTER_ALL),
+            "loaded_hof_player_id_count": len(ids),
+            "first_5_hof_player_ids": first_five,
+            "batting_df_row_count": int(len(batting_df)) if batting_df is not None else 0,
+            "batting_df_isHallOfFamer_true_count": count_hof_true(batting_df),
+            "results_df_row_count": int(len(results_df)) if results_df is not None else 0,
+            "results_df_isHallOfFamer_true_count": count_hof_true(results_df),
+            "root_csv_files": sorted(p.name for p in base.glob("*.csv")),
+        }
+    )
+    diag["sample_player_ids"] = first_five
+    return diag
+
+
 def hof_load_diagnostics(base_dir: Path | str) -> dict[str, Any]:
     """Runtime diagnostics for HOF CSV path, parse, and known-ID checks."""
     path = hall_of_fame_csv_path(base_dir)
     diag: dict[str, Any] = {
-        "csv_path": str(path),
+        "csv_path": str(path.resolve()),
         "csv_exists": path.exists(),
         "csv_filename": HOF_DATA_FILENAME,
         "hof_data_available": False,
         "inducted_player_count": 0,
         "sample_player_ids": [],
-        "known_ids_present": {},
+        "known_ids_present": {pid: False for pid in KNOWN_HOF_PLAYER_IDS},
         "columns": [],
+        "csv_modified_utc": hof_csv_modified_time(base_dir),
     }
     if not path.exists():
         return diag
