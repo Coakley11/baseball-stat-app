@@ -10,6 +10,8 @@ from applied_math_return_insight import (
     SESSION_PENDING_KEY,
     _pending_insight_valid,
     dismiss_applied_math_insight,
+    ensure_baseball_pending_insight_for_render,
+    resolve_pending_insight_for_render,
 )
 from baseball_persistent_state import apply_baseball_disk_state
 from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY, CAREER_HOF_CASE_TARGET_KEY
@@ -72,6 +74,54 @@ class TestInsightDismiss(unittest.TestCase):
             },
         )
         self.assertNotIn(SESSION_PENDING_KEY, st.session_state)
+
+    def test_ensure_baseball_does_not_restore_dismissed_submit_snapshot(self) -> None:
+        st = _FakeSt()
+        dismissed = {
+            "insight_id": "hof-dismissed",
+            "question_id": "q-dismissed",
+            "conclusion": "HOF summary line",
+            "short_answer": "HOF summary line",
+            "source_app": "baseball",
+        }
+        st.session_state["_ami_dismissed_insight_ids"] = ["hof-dismissed"]
+        st.session_state["_ami_dismissed_question_ids"] = ["q-dismissed"]
+        st.session_state["_hof_case_submit_pending_insight"] = dismissed
+        st.session_state["_hof_case_last_submit_bundle"] = {"insight": dismissed}
+        st.session_state["_ami_force_insight_render"] = True
+        restored = ensure_baseball_pending_insight_for_render(st)
+        self.assertFalse(restored)
+        self.assertIsNone(st.session_state.get(SESSION_PENDING_KEY))
+
+    def test_resolve_pending_insight_respects_dismiss_after_hydrate(self) -> None:
+        st = _FakeSt()
+        dismissed = {
+            "insight_id": "hof-dismissed",
+            "question_id": "q-dismissed",
+            "conclusion": "Should stay hidden",
+            "source_app": "baseball",
+        }
+        st.session_state["_ami_dismissed_question_ids"] = ["q-dismissed"]
+        st.session_state["_ami_dismissed_insight_ids"] = ["hof-dismissed"]
+        st.session_state["_hof_case_last_ami_blob"] = {"insight": dismissed}
+        st.session_state["_ami_force_insight_render"] = True
+        insight = resolve_pending_insight_for_render(st, app="baseball")
+        self.assertFalse(insight)
+
+    def test_new_hof_case_allowed_after_dismiss(self) -> None:
+        st = _FakeSt()
+        st.session_state["_ami_dismissed_insight_ids"] = ["old-id"]
+        st.session_state["_ami_dismissed_question_ids"] = ["old-qid"]
+        new_insight = {
+            "insight_id": "new-id",
+            "question_id": "new-qid",
+            "conclusion": "New HOF case summary",
+            "source_app": "baseball",
+        }
+        st.session_state["_hof_case_submit_pending_insight"] = new_insight
+        restored = ensure_baseball_pending_insight_for_render(st)
+        self.assertTrue(restored)
+        self.assertEqual(st.session_state.get(SESSION_PENDING_KEY, {}).get("insight_id"), "new-id")
 
 
 if __name__ == "__main__":

@@ -102,6 +102,7 @@ _INSIGHT_KEYS = (
     "_ami_return_context",
     "_ami_dismissed_insight_ids",
     "_ami_dismissed_insight_at",
+    "_ami_dismissed_question_ids",
 )
 
 _WORKSPACE_KEYS = (
@@ -552,6 +553,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         val = state[key]
         if key == "_ami_pending_insight" and isinstance(val, dict):
             iid = str(val.get("insight_id") or "").strip()
+            qid = str(val.get("question_id") or "").strip()
             session_dismissed = ss.get("_ami_dismissed_insight_ids")
             blob_dismissed = state.get("_ami_dismissed_insight_ids")
             dismissed_raw = session_dismissed if session_dismissed is not None else blob_dismissed
@@ -559,6 +561,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 dismissed_raw = []
             dismissed_ids = {str(x).strip() for x in dismissed_raw if str(x).strip()}
             if iid and iid in dismissed_ids:
+                continue
+            session_q_dismissed = ss.get("_ami_dismissed_question_ids")
+            blob_q_dismissed = state.get("_ami_dismissed_question_ids")
+            q_dismissed_raw = session_q_dismissed if session_q_dismissed is not None else blob_q_dismissed
+            if not isinstance(q_dismissed_raw, (list, tuple, set)):
+                q_dismissed_raw = []
+            dismissed_qids = {str(x).strip() for x in q_dismissed_raw if str(x).strip()}
+            if qid and qid in dismissed_qids:
                 continue
         if key == "_ami_dismissed_insight_ids":
             existing = ss.get("_ami_dismissed_insight_ids")
@@ -577,6 +587,21 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             merged_at.update(existing)
             ss[key] = merged_at
             continue
+        if key == "_ami_dismissed_question_ids":
+            existing = ss.get("_ami_dismissed_question_ids")
+            blob_ids = val if isinstance(val, (list, tuple, set)) else []
+            merged = {str(x).strip() for x in blob_ids if str(x).strip()}
+            if isinstance(existing, (list, tuple, set)):
+                merged.update(str(x).strip() for x in existing if str(x).strip())
+            ss[key] = sorted(merged)
+            continue
+        if key == "_hof_case_submit_pending_insight" and isinstance(val, dict):
+            qid = str(val.get("question_id") or "").strip()
+            iid = str(val.get("insight_id") or "").strip()
+            dismissed_q = {str(x).strip() for x in (ss.get("_ami_dismissed_question_ids") or state.get("_ami_dismissed_question_ids") or []) if str(x).strip()}
+            dismissed_i = {str(x).strip() for x in (ss.get("_ami_dismissed_insight_ids") or state.get("_ami_dismissed_insight_ids") or []) if str(x).strip()}
+            if (qid and qid in dismissed_q) or (iid and iid in dismissed_i):
+                continue
         if key == "page_filter_state" and isinstance(val, dict):
             continue
         try:

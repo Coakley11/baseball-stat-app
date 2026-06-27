@@ -730,6 +730,12 @@ def _insight_payload_is_dismissed(st: Any, insight: dict[str, Any] | None) -> bo
     return _insight_is_dismissed(st, iid) or _question_is_dismissed(st, qid)
 
 
+def _candidate_insight_allowed(st: Any, insight: dict[str, Any] | None) -> bool:
+    if not _insight_payload_has_card_body(insight if isinstance(insight, dict) else None):
+        return False
+    return not _insight_payload_is_dismissed(st, insight if isinstance(insight, dict) else None)
+
+
 def load_dismissed_insight_ids_from_cloud(source_app: str) -> dict[str, str]:
     """Cross-device dismissals: {insight_id: dismissed_at_iso}."""
     app = str(source_app or "").strip().lower()
@@ -776,7 +782,13 @@ def sync_dismissed_insights_from_cloud(st: Any, app_key: str) -> None:
             clear_pending_insight(st)
 
 
-def persist_insight_dismissal_to_cloud(app_key: str, insight_id: str, *, dismissed_at: str | None = None) -> None:
+def persist_insight_dismissal_to_cloud(
+    app_key: str,
+    insight_id: str,
+    *,
+    dismissed_at: str | None = None,
+    question_id: str = "",
+) -> None:
     """Write dismissal to cloud saved items for cross-device hide on refresh."""
     iid = str(insight_id or "").strip()
     app = str(app_key or "").strip().lower()
@@ -784,6 +796,9 @@ def persist_insight_dismissal_to_cloud(app_key: str, insight_id: str, *, dismiss
         return
     ts = dismissed_at or datetime.now(timezone.utc).isoformat()
     payload = {"insight_id": iid, "dismissed_at": ts, "source_app": app}
+    qid = str(question_id or "").strip()
+    if qid:
+        payload["question_id"] = qid
     try:
         from suite_account import remember_saved_item
 
@@ -843,11 +858,13 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
             return True
         if key == "baseball":
             restored = ensure_baseball_pending_insight_for_render(st)
-            if _insight_payload_has_card_body(restored):
+            if _insight_payload_has_card_body(restored) and not _insight_payload_is_dismissed(st, restored):
                 ss["_ami_insight_return_preserve"] = True
                 ss["_ami_insight_hydrate_success"] = True
                 ss["_ami_insight_hydrate_source"] = "hof_submit_snapshot"
                 return True
+            ss.pop("_ami_force_insight_render", None)
+            ss.pop("_ami_submit_render_insight_this_run", None)
 
     sync_dismissed_insights_from_cloud(st, key)
 
@@ -1993,6 +2010,8 @@ def ensure_baseball_pending_insight_for_render(st: Any) -> dict[str, Any]:
 
     for insight in candidates:
         data = dict(insight)
+        if not _candidate_insight_allowed(st, data):
+            continue
         ss[SESSION_PENDING_KEY] = copy.deepcopy(data)
         try:
             from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
@@ -2044,7 +2063,7 @@ def resolve_pending_insight_for_render(st: Any, *, app: str) -> dict[str, Any]:
 
     if app_key == "baseball" and not _insight_payload_has_card_body(insight):
         restored = ensure_baseball_pending_insight_for_render(st)
-        if _insight_payload_has_card_body(restored):
+        if _insight_payload_has_card_body(restored) and not _insight_payload_is_dismissed(st, restored):
             clear_stale_baseball_insight_render_skip(st)
             insight = _pending_insight_valid(st) or dict(restored)
 
@@ -2204,7 +2223,7 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
     st.session_state.pop("_ami_force_insight_render", None)
     st.session_state.pop("_ami_submit_render_insight_this_run", None)
     if iid:
-        persist_insight_dismissal_to_cloud(source_app, iid, dismissed_at=dismissed_at)
+        persist_insight_dismissal_to_cloud(source_app, iid, dismissed_at=dismissed_at, question_id=qid)
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
     if hof_mode_snapshot:
         try:
