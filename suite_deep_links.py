@@ -332,6 +332,15 @@ def build_resume_action_url(
         area = str(m.get("quant_area") or m.get("area") or "").strip()
         if area:
             params["suite_ai_area"] = area[:40]
+        if (
+            area == "hall_of_fame_case"
+            or str(m.get("app_context_type") or "").strip() == "baseball_hof_case"
+            or m.get("hof_case_mode")
+        ):
+            params["suite_hof_case"] = "1"
+            target = str(m.get("hof_case_target") or m.get("target_player") or "").strip()
+            if target:
+                params["suite_hof_target"] = target[:80]
         ctx = str(m.get("context_summary") or "").strip()
         ctx_json = str(m.get("context_json") or "").strip()
         if qid:

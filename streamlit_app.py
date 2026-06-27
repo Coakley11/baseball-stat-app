@@ -3359,7 +3359,9 @@ def render_scatterplot_section(
             st.caption("No rows available for the scatterplot.")
             return
     else:
-        plot_df = _ensure_hof_scatter_columns(plot_df.copy()) if include_hof_color else plot_df.copy()
+        plot_df = plot_df.copy()
+    if include_hof_color:
+        plot_df = _ensure_hof_scatter_columns(plot_df)
     numeric_cols = _numeric_plot_columns(plot_df)
     if len(numeric_cols) < 2:
         return
@@ -14034,6 +14036,21 @@ if active_page == "Career Totals":
                         source_state=submit_source_state,
                         session_state=st.session_state,
                     )
+                    action_url = str(ami_result.get("action_url") or "").strip()
+                    if not action_url:
+                        try:
+                            from suite_analytical_question import build_applied_math_resume_url
+
+                            action_url = build_applied_math_resume_url(
+                                {
+                                    **ami_result,
+                                    "context": submit_ctx,
+                                    "quant_area": "hall_of_fame_case",
+                                    "app_context_type": "baseball_hof_case",
+                                }
+                            ).strip()
+                        except Exception:
+                            action_url = ""
                     try:
                         from applied_math_return_insight import (
                             build_submit_fallback_insight,
@@ -14049,12 +14066,13 @@ if active_page == "Career Totals":
                             source_app="baseball",
                             source_page="Career Totals",
                             question_id=qid,
-                            full_analysis_url=str(ami_result.get("action_url") or ""),
+                            full_analysis_url=action_url,
                             resume_key=f"bb:hof_case:{hof_case_target_slug(hof_target_player)}",
                         )
+                        summary_line = str(hof_packet.get("hof_case_summary") or "").strip()
                         insight.conclusion = (
-                            f"{CASE_SCORE_LABEL} queued for {hof_target_player}. "
-                            "Open full analysis for the statistical case — not induction odds."
+                            summary_line
+                            or f"{CASE_SCORE_LABEL} saved for {hof_target_player}."
                         )
                         insight.method = CASE_SCORE_LABEL
                         stage_pending_insight(
@@ -14077,7 +14095,7 @@ if active_page == "Career Totals":
                             packet=hof_packet,
                             source_state=submit_source_state,
                             question_id=str(ami_result.get("question_id") or ""),
-                            action_url=str(ami_result.get("action_url") or ""),
+                            action_url=action_url,
                             insight=insight_dict,
                         )
                         resume_key = f"bb:hof_case:{hof_case_target_slug(hof_target_player)}"
@@ -14085,7 +14103,7 @@ if active_page == "Career Totals":
                             packet=hof_packet,
                             question=hof_question,
                             question_id=str(ami_result.get("question_id") or ""),
-                            action_url=str(ami_result.get("action_url") or ""),
+                            action_url=action_url,
                             context=submit_ctx,
                             insight=insight_dict,
                             workspace_snapshot=resume_bundle.get("workspace_snapshot"),
@@ -14108,7 +14126,7 @@ if active_page == "Career Totals":
                         persist_question_context_blob(hof_ami_blob)
                         st.session_state["_hof_case_last_submit_diag"] = {
                             "question_id": str(ami_result.get("question_id") or ""),
-                            "action_url": str(ami_result.get("action_url") or ""),
+                            "action_url": action_url,
                             "target_player": hof_target_player,
                             "blob_type": "baseball_hof_case",
                             "context_type": hof_ami_blob.get("context_type"),
@@ -14129,8 +14147,8 @@ if active_page == "Career Totals":
                     except Exception:
                         pass
                     st.success(
-                        f"Hall of Fame statistical case saved for {hof_target_player}. "
-                        "Review the Baseball Insight card below or open Command Center for the full analysis."
+                        f"Hall of Fame case saved for {hof_target_player}. "
+                        "Use the Baseball Insight card below or Command Center to continue."
                     )
                     st.rerun()
                 except Exception as exc:

@@ -235,10 +235,10 @@ def log_hof_case_analysis_submitted(
         HOF_CASE_ACTIVITY_EVENT,
         page="Career Totals",
         metrics=metrics,
-        summary=f"Hall of Fame case analysis — {target}",
+        summary=f"Review Hall of Fame case — {target}",
         resume_key=resume_key,
-        resume_title="Review Hall of Fame Case",
-        resume_subtitle=target,
+        resume_title=f"Review Hall of Fame case — {target}",
+        resume_subtitle=str(packet.get("hof_case_summary") or target).strip(),
         action_url=str(bundle.get("action_url") or metrics.get("continue_url") or ""),
     )
     if isinstance(session, dict) and bundle:

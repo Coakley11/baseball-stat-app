@@ -614,6 +614,14 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         blob_ss = blob_payload.get("source_state") if isinstance(blob_payload.get("source_state"), dict) else {}
         if blob_ss:
             source_state = copy.deepcopy(blob_ss)
+        if not area:
+            area = str(blob_payload.get("quant_area") or "").strip()
+        if not question:
+            question = str(blob_payload.get("question") or "").strip()
+        if not source_app:
+            source_app = str(blob_payload.get("source_app") or "").strip()
+        if not source_page:
+            source_page = str(blob_payload.get("source_page") or "").strip()
 
     metrics_ctx: dict[str, Any] = {}
     if isinstance(m.get("context"), dict):
@@ -726,6 +734,20 @@ def format_context_lines(context: dict[str, Any] | None) -> list[str]:
     return lines[:16]
 
 
+def _hof_case_card_subtitle(payload: dict[str, Any]) -> str:
+    """Short cohort summary for Command Center cards — not the full model prompt."""
+    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
+    if not packet:
+        top = payload.get("hof_case_packet")
+        packet = top if isinstance(top, dict) else {}
+    summary = str(packet.get("hof_case_summary") or payload.get("context_summary") or "").strip()
+    if summary:
+        return summary
+    player = _hof_case_player_name(payload)
+    return f"Statistical case — {player}" if player else "Statistical case"
+
+
 def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str, str]:
     """Return (title, subtitle, button_label) for Command Center Continue cards."""
     ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
@@ -733,8 +755,8 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
     question = str(payload.get("question") or "").strip()
     if _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
         player = _hof_case_player_name(payload)
-        title = f"Hall of Fame case — {player}" if player else "Hall of Fame case"
-        return (title, question, "Open full analysis →")
+        title = f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis"
+        return (title, _hof_case_card_subtitle(payload), "Open analysis →")
     title = source_question_card_title(app, ctx)
     if app == "music":
         return (title, question, "Continue with Music Coach →")
@@ -743,6 +765,8 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
 
 def analytical_question_storage_subtitle(payload: dict[str, Any]) -> str:
     """Resume-item subtitle for storage/rebuild — question only on CC cards; context stays in metrics/URL."""
+    if _is_hof_case_submission(str(payload.get("quant_area") or ""), dict(payload.get("context") or {})):
+        return _hof_case_card_subtitle(payload)
     question = str(payload.get("question") or "").strip()
     ctx = dict(payload.get("context") or {})
     ctx_json = json.dumps(ctx, ensure_ascii=False) if ctx else ""
@@ -769,6 +793,17 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
         "saved_item_type": _CONTEXT_ITEM_TYPE,
         "saved_item_key": payload.get("question_id"),
     }
+    app_context_type = str(payload.get("app_context_type") or ctx.get("app_context_type") or "").strip()
+    if app_context_type:
+        metrics["app_context_type"] = app_context_type
+    if _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
+        metrics["hof_case_mode"] = True
+        metrics["activity_kind"] = "hof_case"
+        metrics["exclude_from_recent_ami"] = True
+        player = _hof_case_player_name(payload)
+        if player:
+            metrics["hof_case_target"] = player
+            metrics["target_player"] = player
     try:
         from suite_workspace import get_active_workspace_id
 
@@ -987,20 +1022,21 @@ def submit_analytical_question(
                 metrics["target_player"] = player
             try:
                 from suite_activity_client import record_activity
+                from baseball_hof_activity import HOF_CASE_ACTIVITY_EVENT
 
                 record_activity(
                     "applied_intelligence",
-                    "analytical_question",
+                    HOF_CASE_ACTIVITY_EVENT,
                     page=str(hof_payload.get("source_page") or "Career Totals"),
                     metrics=metrics,
-                    summary=f"Hall of Fame case — {player}" if player else "Hall of Fame case analysis",
+                    summary=f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis",
                     resume_key=str(hof_payload.get("resume_key") or ""),
-                    resume_title=f"Hall of Fame case — {player}" if player else "Hall of Fame case",
-                    resume_subtitle=analytical_question_storage_subtitle(hof_payload),
+                    resume_title=f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis",
+                    resume_subtitle=_hof_case_card_subtitle(hof_payload),
                     action_url=action_url,
                 )
             except Exception as exc:
-                log.warning("record_activity failed for HOF analytical_question: %s", exc)
+                log.warning("record_activity failed for HOF case analysis: %s", exc)
     else:
         _upsert_applied_intelligence_resume(payload, action_url=action_url)
     ss = payload.get("source_state")

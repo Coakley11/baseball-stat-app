@@ -437,6 +437,12 @@ def _stage_hof_case_insight_once(
     if st.session_state.get(HOF_INSIGHT_STAGED_KEY) == question_id:
         return False
     try:
+        from applied_math_return_insight import _question_is_dismissed
+    except ImportError:
+        _question_is_dismissed = lambda _st, _qid: False  # type: ignore[assignment,misc]
+    if _question_is_dismissed(st, question_id):
+        return False
+    try:
         from applied_math_return_insight import (
             SESSION_PENDING_KEY,
             build_submit_fallback_insight,
@@ -454,6 +460,13 @@ def _stage_hof_case_insight_once(
         return False
     question = str(payload.get("question") or "").strip()
     blob_action_url = str(payload.get("action_url") or action_url or "").strip()
+    if not blob_action_url:
+        try:
+            from suite_analytical_question import build_applied_math_resume_url
+
+            blob_action_url = build_applied_math_resume_url(payload)
+        except ImportError:
+            blob_action_url = str(action_url or "").strip()
     insight = build_submit_fallback_insight(
         question=question,
         source_app="baseball",

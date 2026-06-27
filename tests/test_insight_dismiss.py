@@ -24,16 +24,20 @@ class TestInsightDismiss(unittest.TestCase):
         st = _FakeSt()
         st.session_state[SESSION_PENDING_KEY] = {
             "insight_id": "abc123",
+            "question_id": "qid-456",
             "conclusion": "Test conclusion",
             "question": "Why draft now?",
             "source_app": "baseball",
         }
+        st.session_state["_hof_case_insight_staged_for_resume"] = "qid-456"
         with patch("applied_math_return_insight.persist_insight_dismissal_to_cloud"), patch(
             "baseball_persistent_state.force_save_baseball_state", return_value=True
         ):
             dismiss_applied_math_insight(st)
         self.assertIsNone(st.session_state.get(SESSION_PENDING_KEY))
         self.assertIn("abc123", st.session_state.get(SESSION_DISMISSED_KEY) or [])
+        self.assertIn("qid-456", st.session_state.get("_ami_dismissed_question_ids") or [])
+        self.assertEqual(st.session_state.get("_hof_case_insight_staged_for_resume"), "qid-456")
         self.assertFalse(_pending_insight_valid(st))
 
     def test_disk_restore_skips_dismissed_pending(self) -> None:

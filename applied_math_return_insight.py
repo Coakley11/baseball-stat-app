@@ -19,6 +19,7 @@ SESSION_RETURN_CONTEXT_KEY = "_ami_return_context"
 INSIGHT_DISMISSAL_ITEM_TYPE = "applied_math_insight_dismissal"
 SESSION_DISMISSED_KEY = "_ami_dismissed_insight_ids"
 SESSION_DISMISSED_AT_KEY = "_ami_dismissed_insight_at"
+SESSION_DISMISSED_QUESTION_IDS_KEY = "_ami_dismissed_question_ids"
 SESSION_PERSIST_INSIGHT_DIRTY = "_suite_persist_insight_dirty"
 SESSION_INSIGHT_SOURCE_TAB_KEY = "insight_source_tab"
 SESSION_SOURCE_INVESTMENT_TAB_KEY = "source_investment_tab"
@@ -708,6 +709,26 @@ def _insight_is_dismissed(st: Any, insight_id: str) -> bool:
     return bool(iid and iid in _get_dismissed_insight_ids(st))
 
 
+def _get_dismissed_question_ids(st: Any) -> set[str]:
+    raw = st.session_state.get(SESSION_DISMISSED_QUESTION_IDS_KEY)
+    if isinstance(raw, (list, tuple, set)):
+        return {str(x).strip() for x in raw if str(x).strip()}
+    return set()
+
+
+def _question_is_dismissed(st: Any, question_id: str) -> bool:
+    qid = str(question_id or "").strip()
+    return bool(qid and qid in _get_dismissed_question_ids(st))
+
+
+def _insight_payload_is_dismissed(st: Any, insight: dict[str, Any] | None) -> bool:
+    if not isinstance(insight, dict):
+        return False
+    iid = str(insight.get("insight_id") or "").strip()
+    qid = str(insight.get("question_id") or "").strip()
+    return _insight_is_dismissed(st, iid) or _question_is_dismissed(st, qid)
+
+
 def load_dismissed_insight_ids_from_cloud(source_app: str) -> dict[str, str]:
     """Cross-device dismissals: {insight_id: dismissed_at_iso}."""
     app = str(source_app or "").strip().lower()
@@ -788,8 +809,8 @@ def _pending_insight_valid(st: Any) -> dict[str, Any]:
     pending = st.session_state.get(SESSION_PENDING_KEY)
     if not isinstance(pending, dict):
         return {}
-    iid = str(pending.get("insight_id") or "").strip()
-    if iid and _insight_is_dismissed(st, iid):
+    if _insight_payload_is_dismissed(st, pending):
+        st.session_state.pop(SESSION_PENDING_KEY, None)
         return {}
     if pending.get("conclusion") or pending.get("question"):
         return pending
@@ -1890,8 +1911,10 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
     """Dismiss insight locally and persist dismissal for cross-device sync."""
     pending = st.session_state.get(SESSION_PENDING_KEY)
     iid = ""
+    qid = ""
     if isinstance(pending, dict):
         iid = str(pending.get("insight_id") or "").strip()
+        qid = str(pending.get("question_id") or "").strip()
     source_app = str(
         app_key
         or (pending.get("source_app") if isinstance(pending, dict) else "")
@@ -1908,10 +1931,18 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
             meta = {}
         meta[iid] = dismissed_at
         st.session_state[SESSION_DISMISSED_AT_KEY] = meta
-    clear_pending_insight(st)
+    if qid:
+        dismissed_q = _get_dismissed_question_ids(st)
+        dismissed_q.add(qid)
+        st.session_state[SESSION_DISMISSED_QUESTION_IDS_KEY] = sorted(dismissed_q)
+    staged_qid = str(st.session_state.get("_hof_case_insight_staged_for_resume") or "").strip()
+    clear_pending_insight(st, preserve_hof_staged=True)
+    if staged_qid:
+        st.session_state["_hof_case_insight_staged_for_resume"] = staged_qid
     st.session_state.pop("_ami_hydrated_insight_id", None)
     st.session_state.pop("_ami_insight_active_id", None)
     st.session_state.pop("_ami_force_insight_render", None)
+    st.session_state.pop("_ami_submit_render_insight_this_run", None)
     if iid:
         persist_insight_dismissal_to_cloud(source_app, iid, dismissed_at=dismissed_at)
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
@@ -1924,11 +1955,16 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
 
 
 
-def clear_pending_insight(st: Any) -> None:
+def clear_pending_insight(st: Any, *, preserve_hof_staged: bool = False) -> None:
+    staged = str(st.session_state.get("_hof_case_insight_staged_for_resume") or "").strip() if preserve_hof_staged else ""
     st.session_state.pop(SESSION_PENDING_KEY, None)
     st.session_state.pop(SESSION_RETURN_PAGE_KEY, None)
     st.session_state.pop(SESSION_RETURN_CONTEXT_KEY, None)
-    st.session_state.pop("_hof_case_insight_staged_for_resume", None)
+    if preserve_hof_staged:
+        if staged:
+            st.session_state["_hof_case_insight_staged_for_resume"] = staged
+    else:
+        st.session_state.pop("_hof_case_insight_staged_for_resume", None)
     st.session_state.pop("_ami_force_insight_render", None)
     st.session_state.pop("_ami_submit_render_insight_this_run", None)
 
@@ -1954,6 +1990,8 @@ def render_applied_math_insight_panel(
     """Display-only insight card on source app pages. Returns True if rendered."""
     data = insight if isinstance(insight, dict) else st.session_state.get(SESSION_PENDING_KEY)
     if not isinstance(data, dict) or not data.get("conclusion"):
+        return False
+    if _insight_payload_is_dismissed(st, data):
         return False
     app = str(source_app or data.get("source_app") or "").strip().lower()
 
@@ -2029,7 +2067,7 @@ def render_suite_applied_math_insight_for_page(
     if app == "investment":
         hydrate_applied_math_insight_for_session(st, app)
 
-    insight = st.session_state.get(SESSION_PENDING_KEY)
+    insight = _pending_insight_valid(st)
     pending_exists = isinstance(insight, dict) and bool(insight.get("conclusion") or insight.get("question"))
     cloud_exists = insight_exists_in_cloud(app) if app == "investment" else False
     scope = (
@@ -2084,7 +2122,7 @@ def render_suite_applied_math_insight_for_page(
                 and insight.get("conclusion")
             )
         )
-        if force_render and isinstance(insight, dict) and insight.get("conclusion"):
+        if force_render and isinstance(insight, dict) and insight.get("conclusion") and not _insight_payload_is_dismissed(st, insight):
             should_render = True
             skip_reason = ""
         else:

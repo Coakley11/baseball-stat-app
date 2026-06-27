@@ -483,7 +483,7 @@ class HofCaseAmiIntegrationTests(unittest.TestCase):
         self.assertIn("suite_ai_question_id", str(result.get("action_url") or ""))
         self.assertIn(CASE_SCORE_LABEL, question)
         activity_events = [(args[0], args[1]) for args, _kwargs in recorded if len(args) > 1]
-        self.assertIn(("applied_intelligence", "analytical_question"), activity_events)
+        self.assertIn(("applied_intelligence", "hof_case_analysis_submitted"), activity_events)
         baseball_events = [args[1] for args, _kwargs in recorded if len(args) > 1 and args[0] == "baseball"]
         self.assertNotIn("analytical_question", baseball_events)
 
