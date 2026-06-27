@@ -2311,6 +2311,17 @@ def render_applied_math_insight_panel(
     insight: dict[str, Any] | None = None,
 ) -> bool:
     """Display-only insight card on source app pages. Returns True if rendered."""
+    app_key = str(source_app or "").strip().lower()
+    if app_key != "baseball":
+        try:
+            from suite_analytical_question import should_prefer_hof_full_memo_renderer
+
+            if should_prefer_hof_full_memo_renderer(st):
+                from suite_analytical_question import render_applied_intelligence_solve_problem_content
+
+                return render_applied_intelligence_solve_problem_content(st)
+        except ImportError:
+            pass
     raw = insight if isinstance(insight, dict) else st.session_state.get(SESSION_PENDING_KEY)
     data = _insight_panel_data_for_render(raw if isinstance(raw, dict) else None)
     if data is None:
