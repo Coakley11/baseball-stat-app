@@ -13240,6 +13240,13 @@ if developer_mode_enabled():
         render_insight_sync_debug(st)
     except Exception:
         pass
+    if str(active_page or "").strip() == "Career Totals":
+        try:
+            from hof_case_pipeline import render_hof_pipeline_debug
+
+            render_hof_pipeline_debug(st, st.session_state, developer_mode=True)
+        except ImportError:
+            pass
 render_page_state_debug(active_page)
 app_tutorial.maybe_open_tutorial_dialog()
 try:
@@ -14132,6 +14139,31 @@ if active_page == "Career Totals":
                             action_url = ""
                     resume_key = f"bb:hof_case:{hof_case_target_slug(hof_target_player)}"
                     insight_dict: dict = {}
+                    from hof_case_pipeline import (
+                        init_hof_pipeline_run,
+                        persist_question_context_blob_traced,
+                        record_hof_pipeline_exception,
+                        record_hof_pipeline_step,
+                    )
+
+                    init_hof_pipeline_run(st.session_state, target_player=hof_target_player)
+                    record_hof_pipeline_step(
+                        st.session_state,
+                        "hof_packet_built",
+                        ok=isinstance(hof_packet, dict) and bool(hof_packet.get("target_player")),
+                        detail={"target": hof_target_player},
+                    )
+                    try:
+                        from hof_case_analysis import resolve_hof_case_analysis
+
+                        analysis_probe = resolve_hof_case_analysis(hof_packet)
+                        record_hof_pipeline_step(
+                            st.session_state,
+                            "hof_case_analysis_resolved",
+                            ok=bool(analysis_probe.get("thesis") or analysis_probe.get("case_memo")),
+                        )
+                    except Exception as exc:
+                        record_hof_pipeline_exception(st.session_state, "hof_case_analysis_resolved", exc)
                     try:
                         from applied_math_return_insight import (
                             prepare_fresh_submit_insight,
@@ -14150,16 +14182,48 @@ if active_page == "Career Totals":
                             full_analysis_url=action_url,
                             resume_key=resume_key,
                         )
+                        record_hof_pipeline_step(
+                            st.session_state,
+                            "compact_insight_built",
+                            ok=bool(str(insight_dict.get("conclusion") or "").strip()),
+                            detail={
+                                "insight_id": insight_dict.get("insight_id"),
+                                "conclusion_len": len(str(insight_dict.get("conclusion") or "")),
+                            },
+                        )
                         stage_pending_insight(
                             st,
                             insight_dict,
                             return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
                         )
-                        store_applied_math_insight(
+                        record_hof_pipeline_step(
+                            st.session_state,
+                            "baseball_card_staged",
+                            ok=bool(st.session_state.get("_ami_pending_insight")),
+                        )
+                        stored_iid = store_applied_math_insight(
                             insight_dict,
                             return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
                             source_state=submit_source_state if isinstance(submit_source_state, dict) else None,
                             st=st,
+                        )
+                        store_trace = st.session_state.get("_ami_insight_store_trace")
+                        store_ok = bool(
+                            stored_iid
+                            and isinstance(store_trace, dict)
+                            and store_trace.get("store_blob_written_success")
+                        )
+                        record_hof_pipeline_step(
+                            st.session_state,
+                            "store_applied_math_insight",
+                            ok=store_ok,
+                            detail={
+                                "insight_id": stored_iid,
+                                "store_trace": store_trace if isinstance(store_trace, dict) else {},
+                            },
+                            error=str((store_trace or {}).get("store_exception") or "")
+                            if not store_ok
+                            else "",
                         )
                         st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
                         st.session_state["_ami_force_insight_render"] = True
@@ -14167,10 +14231,17 @@ if active_page == "Career Totals":
                         st.session_state["_ami_insight_return_preserve"] = True
                         st.session_state["_skip_page_restore_for"] = "Career Totals"
                         st.session_state["_suite_persist_insight_dirty"] = True
+                        record_hof_pipeline_step(
+                            st.session_state,
+                            "render_flags_set",
+                            ok=True,
+                            detail={
+                                "force_insight_render": True,
+                                "submit_render_this_run_pending": True,
+                            },
+                        )
                     except Exception as exc:
-                        import logging
-
-                        logging.getLogger(__name__).warning("HOF insight staging failed: %s", exc)
+                        record_hof_pipeline_exception(st.session_state, "insight_stage_or_store", exc)
                         insight_dict = {}
                     try:
                         from baseball_hof_activity import build_hof_case_resume_bundle, log_hof_case_analysis_submitted
@@ -14196,6 +14267,7 @@ if active_page == "Career Totals":
                             source_state=submit_source_state,
                             resume_key=resume_key,
                         )
+                        blob_trace = persist_question_context_blob_traced(st.session_state, hof_ami_blob)
                         record_hof_case_submit_snapshot(
                             st.session_state,
                             submit_source_state,
@@ -14208,8 +14280,17 @@ if active_page == "Career Totals":
                             question_id=str(ami_result.get("question_id") or ""),
                             source_state=submit_source_state,
                             resume_bundle=resume_bundle,
+                            ami_insight_id=str(insight_dict.get("insight_id") or ""),
                         )
-                        persist_question_context_blob(hof_ami_blob)
+                        record_hof_pipeline_step(
+                            st.session_state,
+                            "command_center_activity_logged",
+                            ok=True,
+                            detail={
+                                "question_id": str(ami_result.get("question_id") or ""),
+                                "resume_key": resume_key,
+                            },
+                        )
                         st.session_state["_hof_case_last_submit_diag"] = {
                             "question_id": str(ami_result.get("question_id") or ""),
                             "action_url": action_url,
@@ -14220,20 +14301,40 @@ if active_page == "Career Totals":
                             "hof_packet_present": isinstance(hof_packet, dict),
                             "routing_hint": submit_ctx.get("routing_hint"),
                             "hof_ami_audit": hof_ami_blob.get("hof_ami_audit"),
+                            "blob_persist_trace": blob_trace,
+                            "insight_id": str(insight_dict.get("insight_id") or ""),
                         }
                         st.session_state["_hof_case_last_ami_blob"] = hof_ami_blob
                     except Exception as exc:
-                        import logging
-
-                        logging.getLogger(__name__).warning("HOF AMI blob publish failed: %s", exc)
+                        record_hof_pipeline_exception(st.session_state, "ami_blob_or_activity", exc)
                     st.session_state["_ami_submit_render_insight_this_run"] = True
                     st.session_state["_ami_last_submit_source_page"] = "Career Totals"
+                    save_ok = False
                     try:
                         from baseball_persistent_state import force_save_baseball_state
 
-                        force_save_baseball_state(st, reason="hof_case_submit")
-                    except Exception:
-                        pass
+                        save_ok = bool(force_save_baseball_state(st, reason="hof_case_submit"))
+                    except Exception as exc:
+                        record_hof_pipeline_exception(st.session_state, "force_save_baseball_state", exc)
+                    record_hof_pipeline_step(
+                        st.session_state,
+                        "session_persist_after_submit",
+                        ok=save_ok,
+                        detail={
+                            "last_deferred_save_reason": st.session_state.get("_suite_last_deferred_save_reason"),
+                        },
+                    )
+                    try:
+                        render_suite_applied_math_insight(st, source_app="baseball", source_page="Career Totals")
+                    except Exception as exc:
+                        record_hof_pipeline_exception(st.session_state, "inline_insight_render", exc)
+                    if developer_mode_enabled():
+                        try:
+                            from hof_case_pipeline import render_hof_pipeline_debug
+
+                            render_hof_pipeline_debug(st, st.session_state, developer_mode=True)
+                        except Exception:
+                            pass
                     st.success(
                         f"Hall of Fame case saved for {hof_target_player}. "
                         "See the Baseball Insight above, or open Command Center for the full analysis."
@@ -14243,6 +14344,12 @@ if active_page == "Career Totals":
                     st.error(f"Could not submit Hall of Fame statistical case ({exc}).")
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="career")
+        try:
+            from hof_case_pipeline import render_hof_pipeline_debug
+
+            render_hof_pipeline_debug(st, st.session_state, developer_mode=True)
+        except ImportError:
+            pass
         try:
             from hof_case_resume import render_hof_case_resume_debug
 

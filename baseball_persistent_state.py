@@ -82,6 +82,20 @@ _GLOBAL_KEYS = (
     "allow_free_pool_drafting",
 )
 
+_HOF_HANDOFF_KEYS = (
+    "_hof_case_insight_staged_for_resume",
+    "_ami_force_insight_render",
+    "_ami_last_submit_source_page",
+    "_ami_submit_render_insight_this_run",
+    "_ami_hydrated_insight_id",
+    "_ami_insight_return_preserve",
+    "_skip_page_restore_for",
+    "_hof_case_last_submit_diag",
+    "_hof_case_pipeline_status",
+    "_hof_case_pipeline_errors",
+    "_hof_case_last_blob_persist_trace",
+)
+
 _INSIGHT_KEYS = (
     "_ami_pending_insight",
     "_ami_return_context",
@@ -384,7 +398,7 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     store = ss.get("page_filter_state")
     if isinstance(store, dict) and store:
         state["page_filter_state"] = copy.deepcopy(store)
-    for key in _INSIGHT_KEYS + _WORKSPACE_KEYS:
+    for key in _INSIGHT_KEYS + _HOF_HANDOFF_KEYS + _WORKSPACE_KEYS:
         if key in ss:
             try:
                 state[key] = copy.deepcopy(ss[key])
@@ -512,7 +526,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     # draft-room blob. When the user edits settings, draft_room_state_dirty is set
     # (via mark_draft_room_local_edit on_change) and we must not let the cloud blob
     # overwrite their live edits on the very next rerun.
-    for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS + _WORKFLOW_KEYS:
+    for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _HOF_HANDOFF_KEYS + _WORKSPACE_KEYS + _WORKFLOW_KEYS:
         if key not in state:
             continue
         if foreign_blob and key in _FOREIGN_GLOBAL_KEYS:
@@ -523,7 +537,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             continue
         if skip_draft_room and key in _DRAFT_ROOM_SETTINGS_GLOBALS:
             continue
-        if preserve_insight and key in _INSIGHT_KEYS:
+        if preserve_insight and key in _INSIGHT_KEYS + _HOF_HANDOFF_KEYS:
             continue
         val = state[key]
         if key == "_ami_pending_insight" and isinstance(val, dict):
@@ -1008,10 +1022,18 @@ def autosave_baseball_state(st: Any) -> None:
 
 
 def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
-    defer = str(st.session_state.pop("_suite_defer_baseball_save_reason", "") or "").strip()
-    if defer.startswith("ami_send"):
+    defer = str(st.session_state.get("_suite_defer_baseball_save_reason") or "").strip()
+    bypass_defer = reason in (
+        "hof_case_submit",
+        "insight_hydrate",
+        "insight_persist",
+    ) or bool(st.session_state.get("_suite_persist_insight_dirty"))
+    if defer.startswith("ami_send") and not bypass_defer:
+        st.session_state.pop("_suite_defer_baseball_save_reason", None)
         st.session_state["_suite_last_deferred_save_reason"] = defer
         return False
+    if bypass_defer:
+        st.session_state.pop("_suite_defer_baseball_save_reason", None)
     if reason:
         st.session_state["_suite_pending_save_reason"] = reason
     saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
