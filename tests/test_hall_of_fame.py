@@ -371,7 +371,7 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertIn("Statistical case", md)
         self.assertIn("Evidence that strengthens the case", md)
         self.assertIn("Cohort context only", md)
-        self.assertIn("switch", md.lower())
+        self.assertIn("batting-hand", md.lower())
         self.assertIn("not true Hall of Fame induction odds", md)
 
     def test_player_not_in_results_blocks_packet_rank(self) -> None:
@@ -502,6 +502,70 @@ class HallOfFameDataTests(unittest.TestCase):
             joined.strip(),
             str(packet.get("hof_case_summary") or "").strip(),
         )
+
+    def test_compose_hof_case_suppresses_trivial_stat_minimums(self) -> None:
+        from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
+
+        df = pd.DataFrame(
+            [
+                {
+                    "fullName": "Jason Giambi",
+                    "isHallOfFamer": False,
+                    "careerPrimaryPos": "1B",
+                    "HR": 440,
+                    "H": 2010,
+                    "RBI": 1441,
+                    "R": 1227,
+                    "BB": 1310,
+                    "OBP": 0.411,
+                    "OPS": 0.916,
+                    "BA": 0.277,
+                    "3B": 9,
+                    "AB": 7267,
+                },
+                {
+                    "fullName": "Frank Thomas",
+                    "isHallOfFamer": True,
+                    "careerPrimaryPos": "1B",
+                    "HR": 521,
+                    "H": 2468,
+                    "RBI": 1704,
+                    "OBP": 0.419,
+                    "OPS": 0.996,
+                },
+            ]
+        )
+        packet = build_hof_case_packet(
+            "Jason Giambi",
+            df,
+            filters_summary={
+                "sort_stat": "HR",
+                "stat_minimums": {
+                    "R": 0,
+                    "OPS": 0.0,
+                    "OBP": 0.0,
+                    "BA": 0.0,
+                    "3B": 0,
+                    "RBI": 0,
+                    "AB": 0,
+                    "HR": 300,
+                },
+            },
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        analysis = compose_hof_statistical_case(packet)
+        md = format_hof_case_memo_markdown(analysis)
+        md_lower = md.lower()
+        self.assertNotIn("runs ≥ 0", md_lower)
+        self.assertNotIn("ops ≥ 0", md_lower)
+        self.assertNotIn("batting average ≥ 0", md_lower)
+        self.assertNotIn("triples ≥ 0", md_lower)
+        self.assertIn("Verdict:", md)
+        memo = analysis.get("case_memo") or {}
+        position_text = " ".join(memo.get("position_era_context") or [])
+        self.assertNotIn("Primary position: 1B.", position_text)
+        self.assertIn("1B", position_text)
 
     def test_compose_hof_case_tolerates_malformed_award_fields(self) -> None:
         from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
