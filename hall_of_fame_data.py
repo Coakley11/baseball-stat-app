@@ -1379,7 +1379,7 @@ def build_hof_case_insight_record(
     resume_key: str = "",
 ) -> dict[str, Any]:
     """Compact Baseball insight card + Command Center publish payload for a HOF case."""
-    from applied_math_return_insight import build_submit_fallback_insight
+    from applied_math_return_insight import build_submit_fallback_insight, fresh_submit_insight_id
     from hof_case_analysis import resolve_hof_case_analysis
 
     analysis = resolve_hof_case_analysis(packet if isinstance(packet, dict) else {})
@@ -1395,6 +1395,10 @@ def build_hof_case_insight_record(
     summary = str((packet or {}).get("hof_case_summary") or "").strip()
     conclusion = thesis or summary or "Hall of Fame case ready — open full analysis for details."
     data = insight.to_dict()
+    data["insight_id"] = fresh_submit_insight_id(
+        question_id=str(question_id or "").strip(),
+        conclusion=conclusion,
+    )
     data["conclusion"] = conclusion
     data["short_answer"] = conclusion
     data["method"] = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"

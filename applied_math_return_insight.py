@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import logging
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -727,13 +728,55 @@ def _insight_payload_is_dismissed(st: Any, insight: dict[str, Any] | None) -> bo
         return False
     iid = str(insight.get("insight_id") or "").strip()
     qid = str(insight.get("question_id") or "").strip()
-    return _insight_is_dismissed(st, iid) or _question_is_dismissed(st, qid)
+    if iid and _insight_is_dismissed(st, iid):
+        return True
+    # question_id-only dismissal applies to legacy payloads without insight_id
+    if qid and not iid and _question_is_dismissed(st, qid):
+        return True
+    return False
+
+
+def clear_insight_dismiss_markers(
+    st: Any,
+    *,
+    insight_id: str = "",
+    question_id: str = "",
+) -> None:
+    """Remove exact dismiss markers so a fresh submit can stage a new card."""
+    iid = str(insight_id or "").strip()
+    qid = str(question_id or "").strip()
+    if iid:
+        dismissed = _get_dismissed_insight_ids(st)
+        if iid in dismissed:
+            dismissed.discard(iid)
+            st.session_state[SESSION_DISMISSED_KEY] = sorted(dismissed)
+        meta = dict(st.session_state.get(SESSION_DISMISSED_AT_KEY) or {})
+        if isinstance(meta, dict) and iid in meta:
+            meta.pop(iid, None)
+            st.session_state[SESSION_DISMISSED_AT_KEY] = meta
+    if qid:
+        dismissed_q = _get_dismissed_question_ids(st)
+        if qid in dismissed_q:
+            dismissed_q.discard(qid)
+            st.session_state[SESSION_DISMISSED_QUESTION_IDS_KEY] = sorted(dismissed_q)
+
+
+def _candidate_insight_block_reason(st: Any, insight: dict[str, Any] | None) -> str:
+    if not _insight_payload_has_card_body(insight if isinstance(insight, dict) else None):
+        return "missing_card_body"
+    if not isinstance(insight, dict):
+        return "missing_insight_dict"
+    iid = str(insight.get("insight_id") or "").strip()
+    qid = str(insight.get("question_id") or "").strip()
+    if iid and _insight_is_dismissed(st, iid):
+        return f"insight_id_dismissed:{iid}"
+    if qid and not iid and _question_is_dismissed(st, qid):
+        return f"question_id_dismissed:{qid}"
+    return ""
 
 
 def _candidate_insight_allowed(st: Any, insight: dict[str, Any] | None) -> bool:
-    if not _insight_payload_has_card_body(insight if isinstance(insight, dict) else None):
-        return False
-    return not _insight_payload_is_dismissed(st, insight if isinstance(insight, dict) else None)
+    return not _candidate_insight_block_reason(st, insight)
 
 
 def load_dismissed_insight_ids_from_cloud(source_app: str) -> dict[str, str]:
@@ -863,8 +906,13 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
                 ss["_ami_insight_hydrate_success"] = True
                 ss["_ami_insight_hydrate_source"] = "hof_submit_snapshot"
                 return True
-            ss.pop("_ami_force_insight_render", None)
-            ss.pop("_ami_submit_render_insight_this_run", None)
+            active_submit = bool(
+                ss.get("_ami_submit_render_insight_this_run")
+                and _hof_submit_pending_snapshot(ss)
+            )
+            if not active_submit:
+                ss.pop("_ami_force_insight_render", None)
+                ss.pop("_ami_submit_render_insight_this_run", None)
 
     sync_dismissed_insights_from_cloud(st, key)
 
@@ -975,6 +1023,13 @@ def _confidence_word(pct: int | None) -> str:
 def _insight_id(question_id: str, conclusion: str) -> str:
     blob = f"{question_id}|{conclusion}".encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def fresh_submit_insight_id(*, question_id: str = "", conclusion: str = "") -> str:
+    """Unique insight id per submit — avoids stale cloud/session dismiss blocking re-runs."""
+    nonce = uuid.uuid4().hex[:8]
+    seed = f"{question_id}:{nonce}" if question_id else nonce
+    return _insight_id(seed, conclusion)
 
 
 def build_return_insight_payload(
@@ -1874,6 +1929,11 @@ def stage_hof_submit_pending_insight(
 ) -> None:
     """Stage HOF compact insight for card render and keep a submit snapshot until render succeeds."""
     data = insight.to_dict() if isinstance(insight, AppliedMathInsight) else dict(insight)
+    clear_insight_dismiss_markers(
+        st,
+        insight_id=str(data.get("insight_id") or ""),
+        question_id=str(data.get("question_id") or ""),
+    )
     stage_pending_insight(st, data, return_context=return_context)
     try:
         from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
@@ -2010,8 +2070,20 @@ def ensure_baseball_pending_insight_for_render(st: Any) -> dict[str, Any]:
 
     for insight in candidates:
         data = dict(insight)
-        if not _candidate_insight_allowed(st, data):
+        block_reason = _candidate_insight_block_reason(st, data)
+        ss["_ami_insight_candidate_diag"] = {
+            "pending_present": bool(_insight_payload_has_card_body(_pending_insight_valid(st))),
+            "candidate_insight_id": str(data.get("insight_id") or ""),
+            "candidate_question_id": str(data.get("question_id") or ""),
+            "dismissed_insight_ids": sorted(_get_dismissed_insight_ids(st)),
+            "dismissed_question_ids": sorted(_get_dismissed_question_ids(st)),
+            "candidate_allowed": not bool(block_reason),
+            "blocked_reason": block_reason or "",
+        }
+        if block_reason:
+            ss["_ami_insight_last_candidate_block_reason"] = block_reason
             continue
+        ss.pop("_ami_insight_last_candidate_block_reason", None)
         ss[SESSION_PENDING_KEY] = copy.deepcopy(data)
         try:
             from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
@@ -2085,20 +2157,60 @@ def render_pending_insight_pre_render_debug(st: Any, *, developer_mode: bool = F
     except ImportError:
         pass
     with st.expander("Developer: insight card pre-render", expanded=False):
+        candidate = ss.get("_ami_insight_candidate_diag") if isinstance(ss.get("_ami_insight_candidate_diag"), dict) else {}
         st.json(
             {
                 "session_key_read": SESSION_PENDING_KEY,
                 "pending_object_exists": isinstance(raw, dict),
+                "pending_insight_present": _insight_payload_has_card_body(raw if isinstance(raw, dict) else None),
                 "submit_snapshot_exists": bool(snap),
                 "conclusion_len": len(str((raw or {}).get("conclusion") or "")) if isinstance(raw, dict) else 0,
                 "short_answer_len": len(str((raw or {}).get("short_answer") or "")) if isinstance(raw, dict) else 0,
                 "method": str((raw or {}).get("method") or "")[:160] if isinstance(raw, dict) else "",
                 "source_page": str((raw or {}).get("source_page") or "") if isinstance(raw, dict) else "",
                 "insight_id": str((raw or {}).get("insight_id") or "") if isinstance(raw, dict) else "",
+                "question_id": str((raw or {}).get("question_id") or "") if isinstance(raw, dict) else "",
                 "snapshot_conclusion_len": len(str(snap.get("conclusion") or "")) if snap else 0,
                 "force_insight_render": bool(ss.get("_ami_force_insight_render")),
                 "submit_render_this_run": bool(ss.get("_ami_submit_render_insight_this_run")),
                 "last_submit_diag_insight_id": str((ss.get("_hof_case_last_submit_diag") or {}).get("insight_id") or ""),
+                "candidate_insight_id": candidate.get("candidate_insight_id", ""),
+                "candidate_question_id": candidate.get("candidate_question_id", ""),
+                "dismissed_insight_ids": candidate.get("dismissed_insight_ids") or sorted(_get_dismissed_insight_ids(st)),
+                "dismissed_question_ids": candidate.get("dismissed_question_ids") or sorted(_get_dismissed_question_ids(st)),
+                "candidate_allowed": candidate.get("candidate_allowed"),
+                "blocked_reason": candidate.get("blocked_reason") or ss.get("_ami_insight_last_candidate_block_reason") or "",
+            }
+        )
+
+
+def render_insight_sync_debug(st: Any) -> None:
+    """Developer Mode sidebar trace for insight dismiss/staging."""
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if not can_show_developer_tools(st=st):
+            return
+    except ImportError:
+        return
+    ss = st.session_state
+    pending = ss.get(SESSION_PENDING_KEY)
+    snap = _hof_submit_pending_snapshot(ss)
+    with st.sidebar.expander("Developer: insight dismiss/staging", expanded=False):
+        st.json(
+            {
+                "pending_insight_present": _insight_payload_has_card_body(pending if isinstance(pending, dict) else None),
+                "pending_insight_id": str((pending or {}).get("insight_id") or "") if isinstance(pending, dict) else "",
+                "pending_question_id": str((pending or {}).get("question_id") or "") if isinstance(pending, dict) else "",
+                "submit_snapshot_present": bool(snap),
+                "dismissed_insight_ids": sorted(_get_dismissed_insight_ids(st)),
+                "dismissed_question_ids": sorted(_get_dismissed_question_ids(st)),
+                "force_insight_render": bool(ss.get("_ami_force_insight_render")),
+                "submit_render_this_run": bool(ss.get("_ami_submit_render_insight_this_run")),
+                "hydrate_source": ss.get("_ami_insight_hydrate_source"),
+                "render_skipped_reason": ss.get("_ami_insight_render_skipped_reason"),
+                "last_candidate_block_reason": ss.get("_ami_insight_last_candidate_block_reason"),
+                "candidate_diag": ss.get("_ami_insight_candidate_diag"),
             }
         )
 
@@ -2272,9 +2384,15 @@ def clear_pending_insight(st: Any, *, preserve_hof_staged: bool = False) -> None
 def prepare_fresh_submit_insight(st: Any, *, question_id: str = "") -> None:
     """Drop stale insight/session keys before staging a new submit insight."""
     qid = str(question_id or "").strip()
-    staged = str(st.session_state.get("_hof_case_insight_staged_for_resume") or "").strip()
-    if staged and qid and staged != qid:
-        st.session_state.pop("_hof_case_insight_staged_for_resume", None)
+    if qid:
+        clear_insight_dismiss_markers(st, question_id=qid)
+    st.session_state.pop("_hof_case_insight_staged_for_resume", None)
+    try:
+        from hof_case_resume import HOF_INSIGHT_STAGED_KEY
+
+        st.session_state.pop(HOF_INSIGHT_STAGED_KEY, None)
+    except ImportError:
+        pass
     st.session_state.pop("_ami_hydrated_insight_id", None)
     st.session_state.pop("_ami_insight_active_id", None)
     st.session_state.pop("_ami_force_insight_render", None)

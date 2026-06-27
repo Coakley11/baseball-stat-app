@@ -560,15 +560,15 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             if not isinstance(dismissed_raw, (list, tuple, set)):
                 dismissed_raw = []
             dismissed_ids = {str(x).strip() for x in dismissed_raw if str(x).strip()}
-            if iid and iid in dismissed_ids:
-                continue
             session_q_dismissed = ss.get("_ami_dismissed_question_ids")
             blob_q_dismissed = state.get("_ami_dismissed_question_ids")
             q_dismissed_raw = session_q_dismissed if session_q_dismissed is not None else blob_q_dismissed
             if not isinstance(q_dismissed_raw, (list, tuple, set)):
                 q_dismissed_raw = []
             dismissed_qids = {str(x).strip() for x in q_dismissed_raw if str(x).strip()}
-            if qid and qid in dismissed_qids:
+            if iid and iid in dismissed_ids:
+                continue
+            if qid and not iid and qid in dismissed_qids:
                 continue
         if key == "_ami_dismissed_insight_ids":
             existing = ss.get("_ami_dismissed_insight_ids")
@@ -600,7 +600,9 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             iid = str(val.get("insight_id") or "").strip()
             dismissed_q = {str(x).strip() for x in (ss.get("_ami_dismissed_question_ids") or state.get("_ami_dismissed_question_ids") or []) if str(x).strip()}
             dismissed_i = {str(x).strip() for x in (ss.get("_ami_dismissed_insight_ids") or state.get("_ami_dismissed_insight_ids") or []) if str(x).strip()}
-            if (qid and qid in dismissed_q) or (iid and iid in dismissed_i):
+            if iid and iid in dismissed_i:
+                continue
+            if qid and not iid and qid in dismissed_q:
                 continue
         if key == "page_filter_state" and isinstance(val, dict):
             continue
