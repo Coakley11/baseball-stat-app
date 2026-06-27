@@ -1988,5 +1988,7 @@ def render_suite_applied_math_insight(
             source_app=source_app,
             source_page=source_page,
         )
-    except Exception:
+    except Exception as exc:
+        st.session_state["_ami_insight_render_success"] = False
+        st.session_state["_ami_insight_render_skipped_reason"] = f"render_exception:{type(exc).__name__}"
         return False

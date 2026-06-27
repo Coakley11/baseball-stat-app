@@ -202,6 +202,9 @@ def build_hof_pipeline_status(session: dict[str, Any]) -> dict[str, Any]:
         "insight_staged_for_resume": str(session.get("_hof_case_insight_staged_for_resume") or ""),
         "insight_render_success": session.get("_ami_insight_render_success"),
         "insight_render_skipped_reason": str(session.get("_ami_insight_render_skipped_reason") or ""),
+        "render_attempted": session.get("_ami_insight_render_attempted"),
+        "render_returned": session.get("_ami_insight_render_returned"),
+        "render_output_success": session.get("_ami_insight_render_output_success"),
         "last_deferred_save_reason": str(session.get("_suite_last_deferred_save_reason") or ""),
         "persist_insight_dirty": bool(session.get("_suite_persist_insight_dirty")),
     }

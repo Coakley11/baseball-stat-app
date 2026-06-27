@@ -242,7 +242,73 @@ class HofCasePipelineTests(unittest.TestCase):
         mock_render.assert_called_once()
         self.assertTrue(st.session_state.get("_ami_insight_render_success"))
         self.assertEqual(st.session_state.get("_ami_insight_render_skipped_reason"), "")
-        self.assertIsNone(st.session_state.get("_ami_force_insight_render"))
+        self.assertFalse(st.session_state.get("_ami_force_insight_render"))
+
+    def test_force_render_runs_panel_when_only_short_answer_present(self) -> None:
+        from applied_math_return_insight import (
+            SESSION_PENDING_KEY,
+            render_applied_math_insight_panel,
+            render_suite_applied_math_insight_for_page,
+        )
+
+        st = MagicMock()
+        st.session_state = {
+            SESSION_PENDING_KEY: {
+                "insight_id": "ins-short",
+                "source_app": "baseball",
+                "source_page": "Career Totals",
+                "short_answer": "Compact HOF thesis for the card.",
+                "method": "Hall of Fame Statistical Case Score — Strong",
+            },
+            "_ami_force_insight_render": True,
+        }
+        st.container.return_value.__enter__.return_value = None
+        st.container.return_value.__exit__.return_value = False
+        st.columns.return_value = [MagicMock(), MagicMock()]
+        st.button.return_value = False
+
+        rendered = render_applied_math_insight_panel(
+            st,
+            source_app="baseball",
+            insight=st.session_state[SESSION_PENDING_KEY],
+        )
+        self.assertTrue(rendered)
+
+        with patch("applied_math_return_insight.render_applied_math_insight_panel", return_value=True) as mock_render:
+            ok = render_suite_applied_math_insight_for_page(
+                st,
+                source_app="baseball",
+                source_page="Career Totals",
+            )
+        self.assertTrue(ok)
+        mock_render.assert_called_once()
+        self.assertTrue(st.session_state.get("_ami_insight_render_success"))
+        self.assertFalse(st.session_state.get("_ami_force_insight_render"))
+
+    def test_panel_failure_sets_explicit_skip_reason(self) -> None:
+        from applied_math_return_insight import (
+            SESSION_PENDING_KEY,
+            render_suite_applied_math_insight_for_page,
+        )
+
+        st = MagicMock()
+        st.session_state = {
+            SESSION_PENDING_KEY: {
+                "insight_id": "ins-empty",
+                "source_app": "baseball",
+                "source_page": "Career Totals",
+            },
+            "_ami_force_insight_render": True,
+        }
+
+        rendered = render_suite_applied_math_insight_for_page(
+            st,
+            source_app="baseball",
+            source_page="Career Totals",
+        )
+        self.assertFalse(rendered)
+        self.assertFalse(st.session_state.get("_ami_insight_render_success"))
+        self.assertEqual(st.session_state.get("_ami_insight_render_skipped_reason"), "no_pending_insight")
 
 
 if __name__ == "__main__":
