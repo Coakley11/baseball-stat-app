@@ -11722,11 +11722,11 @@ DEVELOPER_MODE_KEY = "app_developer_mode"
 
 
 def developer_mode_enabled() -> bool:
-    """When False (default), hide debug/diagnostic UI and skip expensive debug work."""
+    """True only when the Developer Mode sidebar checkbox is on (not ?dev=1 alone)."""
     try:
-        from suite_workspace import can_show_developer_tools
+        from suite_workspace import developer_mode_checkbox_enabled
 
-        return can_show_developer_tools(st=st)
+        return developer_mode_checkbox_enabled(st=st)
     except ImportError:
         return False
 
@@ -11779,7 +11779,7 @@ def render_hof_developer_diagnostics(
     if not hof_data_available(BASE_DIR):
         st.warning(hof_data_setup_message())
 
-    with st.expander("Hall of Fame developer diagnostics", expanded=True):
+    with st.expander("Hall of Fame developer diagnostics", expanded=False):
         payload = build_hof_runtime_diagnostics(
             BASE_DIR,
             results_df=results_df,
@@ -13328,13 +13328,15 @@ if active_page == "Historical Explorer":
 
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
     hist_hof_filter = HOF_FILTER_ALL
-    render_hof_page_runtime_diag(
-        st,
-        st.session_state,
-        page_name="Historical Explorer",
-        hof_case_mode=hof_case_mode,
-        hof_dropdown_render_path_active=hof_case_mode,
-    )
+    if developer_mode_enabled():
+        render_hof_page_runtime_diag(
+            st,
+            st.session_state,
+            page_name="Historical Explorer",
+            hof_case_mode=hof_case_mode,
+            hof_dropdown_render_path_active=hof_case_mode,
+            developer_mode=True,
+        )
 
     render_section_header(
         "🔎 Historical Explorer",
@@ -13518,12 +13520,13 @@ if active_page == "Historical Explorer":
     if hof_case_mode and merge_hof_flag is not None and "playerID" in hist.columns:
         hist = merge_hof_flag(hist, HOF_PLAYER_IDS)
         hist = apply_hof_membership_filter(hist, hist_hof_filter)
-    render_hof_developer_diagnostics(
-        hist,
-        page_key="historical",
-        page_label="Historical Explorer",
-        hof_filter_value=hist_hof_filter if hof_case_mode else HOF_FILTER_ALL,
-    )
+    if developer_mode_enabled():
+        render_hof_developer_diagnostics(
+            hist,
+            page_key="historical",
+            page_label="Historical Explorer",
+            hof_filter_value=hist_hof_filter if hof_case_mode else HOF_FILTER_ALL,
+        )
     hist = safe_round_rate_stats(hist)
     st.caption(hist_note)
 
@@ -13746,13 +13749,15 @@ if active_page == "Career Totals":
         on_change=career_hof_case_mode_changed,
     )
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
-    render_hof_page_runtime_diag(
-        st,
-        st.session_state,
-        page_name="Career Totals",
-        hof_case_mode=hof_case_mode,
-        hof_dropdown_render_path_active=hof_case_mode,
-    )
+    if developer_mode_enabled():
+        render_hof_page_runtime_diag(
+            st,
+            st.session_state,
+            page_name="Career Totals",
+            hof_case_mode=hof_case_mode,
+            hof_dropdown_render_path_active=hof_case_mode,
+            developer_mode=True,
+        )
     st.caption(HOF_CASE_MODE_EXPLANATION)
     if hof_case_mode:
         default_target = career_player_options[0] if career_player_options else ""
@@ -13930,12 +13935,13 @@ if active_page == "Career Totals":
     if hof_case_mode and merge_hof_flag is not None and "playerID" in career_totals.columns:
         career_totals = merge_hof_flag(career_totals, HOF_PLAYER_IDS)
         career_totals = apply_hof_membership_filter(career_totals, career_hof_filter)
-    render_hof_developer_diagnostics(
-        career_totals,
-        page_key="career",
-        page_label="Career Totals",
-        hof_filter_value=career_hof_filter if hof_case_mode else HOF_FILTER_ALL,
-    )
+    if developer_mode_enabled():
+        render_hof_developer_diagnostics(
+            career_totals,
+            page_key="career",
+            page_label="Career Totals",
+            hof_filter_value=career_hof_filter if hof_case_mode else HOF_FILTER_ALL,
+        )
     career_totals = safe_round_rate_stats(career_totals)
     st.caption(career_mode_note)
 
@@ -14140,12 +14146,24 @@ if active_page == "Career Totals":
                             full_analysis_url=action_url,
                             resume_key=f"bb:hof_case:{hof_case_target_slug(hof_target_player)}",
                         )
-                        summary_line = str(hof_packet.get("hof_case_summary") or "").strip()
-                        insight.conclusion = (
-                            summary_line
-                            or f"{CASE_SCORE_LABEL} saved for {hof_target_player}."
+                        from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
+
+                        analysis = (
+                            hof_packet.get("hof_case_analysis")
+                            if isinstance(hof_packet.get("hof_case_analysis"), dict)
+                            else compose_hof_statistical_case(hof_packet)
                         )
-                        insight.method = CASE_SCORE_LABEL
+                        memo_md = format_hof_case_memo_markdown(analysis)
+                        insight.conclusion = str(
+                            analysis.get("thesis") or hof_packet.get("hof_case_summary") or memo_md[:280]
+                        ).strip()
+                        insight.short_answer = insight.conclusion
+                        insight.method = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
+                        insight.supporting_points = list(analysis.get("supporting_points") or [])[:8]
+                        if analysis.get("score") is not None:
+                            insight.score = analysis.get("score")
+                        if analysis.get("confidence"):
+                            insight.confidence = analysis.get("confidence")
                         stage_pending_insight(
                             st,
                             insight,
@@ -14229,14 +14247,18 @@ if active_page == "Career Totals":
         try:
             from hof_case_resume import render_hof_case_resume_debug
 
-            render_hof_case_resume_debug(st)
+            render_hof_case_resume_debug(st, developer_mode=True)
         except ImportError:
             pass
         if hof_case_mode and isinstance(st.session_state.get(HOF_CASE_PACKET_KEY), dict):
             with st.expander("Developer: last Hall of Fame case packet", expanded=False):
                 st.json(st.session_state.get(HOF_CASE_PACKET_KEY))
         if hof_case_mode and isinstance(st.session_state.get("_hof_case_last_ami_blob"), dict):
-            render_hof_ami_blob_diagnostics(st, st.session_state.get("_hof_case_last_ami_blob"))
+            render_hof_ami_blob_diagnostics(
+                st,
+                st.session_state.get("_hof_case_last_ami_blob"),
+                developer_mode=True,
+            )
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
 

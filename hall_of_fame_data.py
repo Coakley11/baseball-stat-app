@@ -222,15 +222,18 @@ def render_hof_page_runtime_diag(
     page_name: str,
     hof_case_mode: bool,
     hof_dropdown_render_path_active: bool,
+    developer_mode: bool = False,
 ) -> None:
-    """Temporary deploy audit — top of Career Totals / Historical Explorer."""
+    """Deploy audit for Career Totals / Historical Explorer — developer mode only."""
+    if not developer_mode:
+        return
     audit = build_hof_page_runtime_diag(
         session,
         page_name=page_name,
         hof_case_mode=hof_case_mode,
         hof_dropdown_render_path_active=hof_dropdown_render_path_active,
     )
-    with st.expander("Deploy runtime audit (HOF)", expanded=True):
+    with st.expander("Deploy runtime audit (HOF)", expanded=False):
         st.caption(
             f"Commit `{audit.get('git_commit')}` on `{audit.get('git_branch')}`. "
             "If HOF dropdown appears while `hof_case_mode_active` is false, the deployed build is stale."
@@ -1417,14 +1420,26 @@ def build_hof_ami_payload(
             "confidence": insight.get("confidence"),
             "score": insight.get("score"),
         }
+    analysis = packet.get("hof_case_analysis") if isinstance(packet.get("hof_case_analysis"), dict) else {}
+    if not analysis:
+        try:
+            from hof_case_analysis import compose_hof_statistical_case
+
+            analysis = compose_hof_statistical_case(packet)
+        except ImportError:
+            analysis = {}
     verdict: dict[str, Any] = {
         "hof_case_summary": packet.get("hof_case_summary"),
         "score_label": packet.get("score_label"),
         "score_buckets": packet.get("score_buckets"),
-        "recommendation": (insight or {}).get("conclusion") or (insight or {}).get("short_answer"),
-        "supporting_points": (insight or {}).get("supporting_points") or (insight or {}).get("bullets"),
-        "confidence": (insight or {}).get("confidence"),
-        "score": (insight or {}).get("score"),
+        "recommendation": analysis.get("recommendation") or (insight or {}).get("conclusion") or (insight or {}).get("short_answer"),
+        "supporting_points": analysis.get("supporting_points") or (insight or {}).get("supporting_points") or (insight or {}).get("bullets"),
+        "confidence": analysis.get("confidence") or (insight or {}).get("confidence"),
+        "score": analysis.get("score") or (insight or {}).get("score"),
+        "verdict_bucket": analysis.get("verdict_bucket"),
+        "thesis": analysis.get("thesis"),
+        "case_memo": analysis.get("case_memo"),
+        "disclaimer": analysis.get("disclaimer"),
     }
     payload["verdict_context"] = {k: v for k, v in verdict.items() if v not in (None, "", [], {})}
     if workspace_snapshot:
@@ -1494,8 +1509,16 @@ def audit_hof_ami_blob(blob: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def render_hof_ami_blob_diagnostics(st: Any, blob: dict[str, Any] | None, *, expanded: bool = False) -> None:
+def render_hof_ami_blob_diagnostics(
+    st: Any,
+    blob: dict[str, Any] | None,
+    *,
+    expanded: bool = False,
+    developer_mode: bool = False,
+) -> None:
     """Developer panel: HOF AMI blob keys and completeness checks."""
+    if not developer_mode:
+        return
     audit = audit_hof_ami_blob(blob)
     with st.expander("Developer: HOF AMI blob audit", expanded=expanded):
         st.json(audit)
@@ -1670,6 +1693,12 @@ def build_hof_case_packet(
         "cohort_award_comparison": awards_context.get("cohort_award_comparison"),
     }
     packet["hof_case_summary"] = build_hof_case_summary_line(packet)
+    try:
+        from hof_case_analysis import compose_hof_statistical_case
+
+        packet["hof_case_analysis"] = compose_hof_statistical_case(packet)
+    except ImportError:
+        pass
     return packet
 
 
@@ -1691,8 +1720,12 @@ def build_hof_case_question(target_player: str, packet: dict[str, Any]) -> str:
         )
     return (
         f"Hall of Fame Case Mode — assign a {CASE_SCORE_LABEL} for {target}. "
+        f"Build a full statistical argument from hof_case_packet: career totals, best and weak categories, "
+        f"position-relative ranks, era/career span, awards, milestones, comparables, and cohort selectivity. "
         f"The Career Totals search returned {total} players with {hof_n} Hall of Famers ({rate}% HOF rate).{rank_line}{awards_line} "
-        f"Use the statistical cohort and awards summaries in hof_case_packet as supporting evidence. "
+        f"Interpret filters — do not judge the case by the filtered sort stat alone if other categories are stronger. "
+        f"Distinguish evidence (milestones, awards, position excellence, high cohort HOF rate) from cohort context "
+        f"(handedness, switch hitters, year windows, narrow demographic filters). "
         f"Respond with one of: {', '.join(CASE_SCORE_BUCKETS)}. "
         f"Do NOT present this as true Hall of Fame induction odds."
     )
@@ -1722,6 +1755,10 @@ def hof_case_ami_guidance() -> str:
         f"9. {CASE_SCORE_LABEL} — final bucket with brief justification.\n\n"
         "Also use insight / verdict_context when present for page-generated summary and recommendation bullets. "
         "Interpret the baseball statistics themselves — not just the cohort HOF percentage. "
+        "Distinguish signal from coincidence: HR ≥ 400, 3,000 hits, MVP-level awards, and position-relative "
+        "excellence are meaningful evidence; left/right/switch handedness, arbitrary year ranges, and narrow "
+        "demographic filters define the comparison group but are not Hall quality evidence by themselves. "
+        "Separate 'evidence that strengthens the case' from 'context that merely defines the cohort'. "
         "Never say '90% chance of making the Hall of Fame', 'true induction odds', or 'guaranteed probability'. "
         "Use terms like 'statistical case', 'cohort strength', and 'supporting awards evidence'."
     )

@@ -44,19 +44,13 @@ def _code_status() -> str:
 
 
 def _ami_debug_visible(st: Any, session_state: dict[str, Any]) -> bool:
-    """True only for explicit dev surfaces — never for normal users."""
-    if session_state.get("dev_mode"):
-        return True
-    if session_state.get("app_developer_mode"):
-        return True
+    """True only when the Developer Mode sidebar checkbox is on."""
     try:
-        from suite_workspace import _developer_query_enabled
+        from suite_workspace import developer_mode_checkbox_enabled
 
-        if _developer_query_enabled(st):
-            return True
+        return developer_mode_checkbox_enabled(st=st)
     except ImportError:
-        pass
-    return False
+        return bool(session_state.get("app_developer_mode"))
 
 
 def _render_ami_submit_debug_panel(

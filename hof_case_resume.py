@@ -478,15 +478,30 @@ def _stage_hof_case_insight_once(
     target = str(target_player or "").strip()
     ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
-    if packet.get("hof_case_summary"):
-        insight.short_answer = str(packet["hof_case_summary"])
-    if target:
-        rate = packet.get("hall_of_fame_rate_pct")
-        total = packet.get("total_players_returned")
-        hof_n = packet.get("hall_of_famers_returned")
-        cohort = f" Cohort: {hof_n}/{total} HOF ({rate}%)." if total is not None else ""
-        insight.conclusion = f"{CASE_SCORE_LABEL} for {target}.{cohort}"
-    insight.method = CASE_SCORE_LABEL
+    try:
+        from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
+
+        analysis = (
+            packet.get("hof_case_analysis")
+            if isinstance(packet.get("hof_case_analysis"), dict)
+            else compose_hof_statistical_case(packet)
+        )
+        insight.conclusion = str(
+            analysis.get("thesis") or packet.get("hof_case_summary") or ""
+        ).strip()
+        insight.short_answer = insight.conclusion
+        insight.method = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
+        insight.supporting_points = list(analysis.get("supporting_points") or [])[:8]
+    except ImportError:
+        if packet.get("hof_case_summary"):
+            insight.short_answer = str(packet["hof_case_summary"])
+        if target:
+            rate = packet.get("hall_of_fame_rate_pct")
+            total = packet.get("total_players_returned")
+            hof_n = packet.get("hall_of_famers_returned")
+            cohort = f" Cohort: {hof_n}/{total} HOF ({rate}%)." if total is not None else ""
+            insight.conclusion = f"{CASE_SCORE_LABEL} for {target}.{cohort}"
+        insight.method = CASE_SCORE_LABEL
     ent_state = source_state if isinstance(source_state, dict) else (
         payload.get("source_state") if isinstance(payload.get("source_state"), dict) else None
     )
@@ -754,8 +769,10 @@ def reapply_pending_hof_case_resume(st: Any) -> bool:
     return True
 
 
-def render_hof_case_resume_debug(st: Any) -> None:
+def render_hof_case_resume_debug(st: Any, *, developer_mode: bool = False) -> None:
     """Developer diagnostics for Hall of Fame Case resume flow."""
+    if not developer_mode:
+        return
     ss = st.session_state
     diag = dict(ss.get(HOF_CASE_RESUME_DIAG_KEY) or {})
     if not diag and not hof_case_resume_requested(ss):

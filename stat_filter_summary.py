@@ -129,7 +129,7 @@ def render_stat_filter_summary_developer_diagnostics(
     *,
     mode: Literal["career", "historical"],
 ) -> None:
-    with st.expander("Filter summary diagnostics", expanded=True):
+    with st.expander("Filter summary diagnostics", expanded=False):
         st.json(build_stat_filter_summary_diagnostics(session, mode=mode))
 
 

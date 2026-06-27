@@ -301,6 +301,20 @@ def can_show_developer_tools(*, st: Any | None = None) -> bool:
     return developer_tools_workspace_eligible(st=st) and is_developer_mode_enabled(st=st)
 
 
+def developer_mode_checkbox_enabled(*, st: Any | None = None) -> bool:
+    """True only when the Developer Mode sidebar checkbox is on (not ?dev=1 alone)."""
+    try:
+        import streamlit as st_module  # noqa: WPS433
+
+        ss = st.session_state if st is not None else st_module.session_state
+        sync_developer_mode_widget(ss, source="developer_mode_checkbox_gate")
+        if not developer_tools_workspace_eligible(st=st):
+            return False
+        return bool(ss.get(DEVELOPER_MODE_WIDGET_KEY, False))
+    except Exception:
+        return False
+
+
 def _qp_get(st: Any, name: str) -> str:
     try:
         raw = st.query_params.get(name)

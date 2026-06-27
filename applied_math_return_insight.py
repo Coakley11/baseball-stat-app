@@ -2003,6 +2003,40 @@ def prepare_fresh_submit_insight(st: Any, *, question_id: str = "") -> None:
     clear_pending_insight(st)
 
 
+def _insight_card_conclusion(data: dict[str, Any]) -> str:
+    """Prefer short thesis on Baseball cards when a full memo was stored by mistake."""
+    conclusion = str(data.get("conclusion") or "").strip()
+    short = str(data.get("short_answer") or "").strip()
+    method = str(data.get("method") or "")
+    if short and ("### Verdict" in conclusion or "#### Statistical case" in conclusion):
+        return short
+    try:
+        from hall_of_fame_data import CASE_SCORE_LABEL
+
+        if short and CASE_SCORE_LABEL in method and len(conclusion) > max(len(short) * 2, 400):
+            return short
+    except ImportError:
+        pass
+    return conclusion
+
+
+def _insight_card_question(data: dict[str, Any]) -> str:
+    q = str(data.get("question") or "").strip()
+    if not q:
+        return ""
+    try:
+        from hall_of_fame_data import CASE_SCORE_LABEL
+
+        if CASE_SCORE_LABEL in str(data.get("method") or ""):
+            short = str(data.get("short_answer") or "").strip()
+            if short:
+                return short
+            return q.split(".")[0].strip() + "." if "." in q else q[:200]
+    except ImportError:
+        pass
+    return q
+
+
 def render_applied_math_insight_panel(
     st: Any,
     *,
@@ -2019,7 +2053,7 @@ def render_applied_math_insight_panel(
 
     with st.container(border=True):
         st.markdown(f"#### {_insight_panel_title(app, data)}")
-        q = str(data.get("question") or "").strip()
+        q = _insight_card_question(data)
         if q:
             st.markdown(f"**Question:** *{q}*")
         if str(source_app or data.get("source_app") or "").strip().lower() == "investment":
@@ -2047,13 +2081,17 @@ def render_applied_math_insight_panel(
             if body:
                 st.markdown(body)
             else:
-                st.markdown(f"**Conclusion:** {data.get('conclusion')}")
+                st.markdown(f"**Conclusion:** {_insight_card_conclusion(data)}")
         else:
-            st.markdown(f"**Conclusion:** {data.get('conclusion')}")
+            st.markdown(f"**Conclusion:** {_insight_card_conclusion(data)}")
         show_details = str(source_app or data.get("source_app") or "").strip().lower() != "investment"
         method = str(data.get("method") or data.get("model_name") or "").strip()
         if show_details and method:
             st.markdown(f"**Math used:** {method}")
+        bullets = data.get("supporting_points") or data.get("bullets") or []
+        if show_details and isinstance(bullets, list) and bullets:
+            for point in bullets[:5]:
+                st.markdown(f"- {point}")
         assumptions = data.get("assumptions") or []
         if show_details and assumptions:
             st.markdown("**Assumptions:**")

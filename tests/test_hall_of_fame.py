@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from hall_of_fame_data import (
+    CASE_SCORE_BUCKETS,
     CASE_SCORE_LABEL,
     CAREER_HOF_CASE_MODE_KEY,
     CAREER_HOF_FILTER_KEY,
@@ -325,6 +326,54 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertIn("hof_case_summary", packet)
         self.assertEqual(packet["primary_position"], "OF")
 
+    def test_build_hof_case_packet_includes_analysis(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "playerID": "ruthba01",
+                    "fullName": "Babe Ruth",
+                    "isHallOfFamer": True,
+                    "careerPrimaryPos": "OF",
+                    "HR": 714,
+                    "H": 2873,
+                    "RBI": 2214,
+                    "OBP": 0.474,
+                },
+                {
+                    "playerID": "burnije01",
+                    "fullName": "Jeremy Burnitz",
+                    "isHallOfFamer": False,
+                    "careerPrimaryPos": "OF",
+                    "HR": 315,
+                    "H": 1578,
+                    "RBI": 1066,
+                    "OBP": 0.356,
+                },
+            ]
+        )
+        filters = {"sort_stat": "HR", "stat_minimums": {"HR": 300}, "batting_hand": ["L", "S"]}
+        packet = build_hof_case_packet(
+            "Jeremy Burnitz",
+            df,
+            filters_summary=filters,
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        analysis = packet.get("hof_case_analysis")
+        self.assertIsInstance(analysis, dict)
+        self.assertIn(analysis.get("verdict_bucket"), CASE_SCORE_BUCKETS)
+        memo = analysis.get("case_memo") if isinstance(analysis.get("case_memo"), dict) else {}
+        self.assertTrue(memo.get("strongest_evidence") or memo.get("weakest_evidence"))
+        from hof_case_analysis import format_hof_case_memo_markdown
+
+        md = format_hof_case_memo_markdown(analysis)
+        self.assertIn("Verdict:", md)
+        self.assertIn("Statistical case", md)
+        self.assertIn("Evidence that strengthens the case", md)
+        self.assertIn("Cohort context only", md)
+        self.assertIn("switch", md.lower())
+        self.assertIn("not true Hall of Fame induction odds", md)
+
     def test_player_not_in_results_blocks_packet_rank(self) -> None:
         df = pd.DataFrame([{"fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714}])
         packet = build_hof_case_packet(
@@ -380,6 +429,79 @@ class HallOfFameDataTests(unittest.TestCase):
             self.assertEqual(diag["first_5_hof_player_ids"], ["ruthbabe01"])
             self.assertTrue(diag["known_ids_present"]["ruthba01"] is False)
             self.assertIn("csv_modified_utc", diag)
+
+    def test_hof_diagnostic_renderers_hidden_without_developer_mode(self) -> None:
+        from unittest.mock import MagicMock
+
+        from hall_of_fame_data import render_hof_ami_blob_diagnostics, render_hof_page_runtime_diag
+
+        st = MagicMock()
+        render_hof_page_runtime_diag(
+            st,
+            {},
+            page_name="Career Totals",
+            hof_case_mode=True,
+            hof_dropdown_render_path_active=True,
+            developer_mode=False,
+        )
+        render_hof_ami_blob_diagnostics(st, {"question_id": "abc"}, developer_mode=False)
+        st.expander.assert_not_called()
+
+    def test_landing_diagnostics_hidden_without_developer_mode(self) -> None:
+        from unittest.mock import MagicMock
+
+        from suite_analytical_question import render_applied_intelligence_landing_diagnostics
+
+        st = MagicMock()
+        st.session_state = {"_suite_ai_hydrate_diag": {"question_id": "abc", "blob_found": True}}
+        render_applied_intelligence_landing_diagnostics(st, developer_mode=False)
+        st.expander.assert_not_called()
+
+    def test_developer_mode_checkbox_ignores_dev_query_param(self) -> None:
+        from unittest.mock import MagicMock
+
+        from suite_workspace import developer_mode_checkbox_enabled, is_developer_mode_enabled
+
+        st = MagicMock()
+        st.session_state = {"app_developer_mode": False}
+        st.query_params = {"dev": "1"}
+        self.assertTrue(is_developer_mode_enabled(st=st))
+        self.assertFalse(developer_mode_checkbox_enabled(st=st))
+
+    def test_render_hof_case_full_analysis_includes_verdict(self) -> None:
+        from unittest.mock import MagicMock
+
+        from hof_case_analysis import render_hof_case_full_analysis
+
+        df = pd.DataFrame(
+            [
+                {"fullName": "Alfonso Soriano", "isHallOfFamer": False, "careerPrimaryPos": "OF", "HR": 412},
+                {"fullName": "Babe Ruth", "isHallOfFamer": True, "careerPrimaryPos": "OF", "HR": 714},
+            ]
+        )
+        packet = build_hof_case_packet(
+            "Alfonso Soriano",
+            df,
+            filters_summary={"sort_stat": "HR"},
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        st = MagicMock()
+        markdown_calls: list[str] = []
+
+        def _capture_md(text: str) -> None:
+            markdown_calls.append(str(text))
+
+        st.markdown = _capture_md
+        st.caption = lambda *args, **kwargs: None
+        self.assertTrue(render_hof_case_full_analysis(st, packet))
+        joined = "\n".join(markdown_calls)
+        self.assertIn("### Verdict:", joined)
+        self.assertIn("Evidence that strengthens the case", joined)
+        self.assertNotEqual(
+            joined.strip(),
+            str(packet.get("hof_case_summary") or "").strip(),
+        )
 
     def test_ensure_hof_scatter_columns(self) -> None:
         from hall_of_fame_data import (
