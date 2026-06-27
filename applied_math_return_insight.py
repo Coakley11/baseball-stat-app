@@ -1864,6 +1864,8 @@ def stage_hof_submit_pending_insight(
         st.session_state[HOF_SUBMIT_PENDING_SNAPSHOT_KEY] = copy.deepcopy(data)
     except ImportError:
         st.session_state["_hof_case_submit_pending_insight"] = copy.deepcopy(data)
+    st.session_state.pop("_ami_insight_render_skipped_reason", None)
+    st.session_state.pop("_ami_insight_render_success", None)
 
 
 def _hof_submit_pending_snapshot(session: dict[str, Any]) -> dict[str, Any]:
@@ -1951,9 +1953,52 @@ def ensure_baseball_pending_insight_for_render(st: Any) -> dict[str, Any]:
         ss.setdefault("_ami_force_insight_render", True)
         ss["_ami_insight_hydrate_success"] = True
         ss["_ami_insight_hydrate_source"] = "hof_submit_snapshot"
+        clear_stale_baseball_insight_render_skip(st)
         return data
 
     return {}
+
+
+def clear_stale_baseball_insight_render_skip(st: Any) -> None:
+    """Drop stale no_pending_insight skip once a card payload is available."""
+    ss = st.session_state
+    if str(ss.get("_ami_insight_render_skipped_reason") or "") != "no_pending_insight":
+        return
+    pending = ss.get(SESSION_PENDING_KEY)
+    if _insight_payload_has_card_body(pending if isinstance(pending, dict) else None):
+        ss.pop("_ami_insight_render_skipped_reason", None)
+        return
+    snap = _hof_submit_pending_snapshot(ss)
+    if _insight_payload_has_card_body(snap):
+        ss.pop("_ami_insight_render_skipped_reason", None)
+
+
+def resolve_pending_insight_for_render(st: Any, *, app: str) -> dict[str, Any]:
+    """Hydrate session pending insight before any card render decision."""
+    app_key = str(app or "").strip().lower()
+    if app_key == "investment":
+        hydrate_applied_math_insight_for_session(st, app_key)
+    elif app_key == "baseball":
+        ensure_baseball_pending_insight_for_render(st)
+        clear_stale_baseball_insight_render_skip(st)
+
+    insight = _pending_insight_valid(st)
+    if not _insight_payload_has_card_body(insight):
+        raw = st.session_state.get(SESSION_PENDING_KEY)
+        if (
+            isinstance(raw, dict)
+            and _insight_payload_has_card_body(raw)
+            and not _insight_payload_is_dismissed(st, raw)
+        ):
+            insight = dict(raw)
+
+    if app_key == "baseball" and not _insight_payload_has_card_body(insight):
+        restored = ensure_baseball_pending_insight_for_render(st)
+        if _insight_payload_has_card_body(restored):
+            clear_stale_baseball_insight_render_skip(st)
+            insight = _pending_insight_valid(st) or dict(restored)
+
+    return insight if _insight_payload_has_card_body(insight) else {}
 
 
 def render_pending_insight_pre_render_debug(st: Any, *, developer_mode: bool = False) -> None:
@@ -2296,10 +2341,7 @@ def render_suite_applied_math_insight_for_page(
 ) -> bool:
     """Render insight card when pending insight matches this page (source apps)."""
     app = str(source_app or "").strip().lower()
-    if app == "investment":
-        hydrate_applied_math_insight_for_session(st, app)
-    elif app == "baseball":
-        ensure_baseball_pending_insight_for_render(st)
+    insight = resolve_pending_insight_for_render(st, app=app)
 
     try:
         from suite_workspace import can_show_developer_tools
@@ -2309,12 +2351,11 @@ def render_suite_applied_math_insight_for_page(
         dev_mode = False
     render_pending_insight_pre_render_debug(st, developer_mode=dev_mode)
 
-    insight = _pending_insight_valid(st)
-    pending_exists = isinstance(insight, dict) and bool(insight.get("conclusion") or insight.get("question"))
+    pending_exists = _insight_payload_has_card_body(insight)
     cloud_exists = insight_exists_in_cloud(app) if app == "investment" else False
     scope = (
         insight_page_scope_decision(app, source_page, insight)
-        if isinstance(insight, dict) and pending_exists
+        if pending_exists
         else {"should_render_insight_on_page": False, "render_skip_reason": "no_pending_insight"}
     )
     should_render = bool(scope.get("should_render_insight_on_page"))
@@ -2374,9 +2415,9 @@ def render_suite_applied_math_insight_for_page(
     rendered = render_applied_math_insight_panel(st, source_app=app, insight=insight)
     st.session_state["_ami_insight_render_success"] = bool(rendered)
     if rendered:
+        st.session_state["_ami_insight_render_skipped_reason"] = ""
         st.session_state.pop("_ami_force_insight_render", None)
         st.session_state.pop("_ami_submit_render_insight_this_run", None)
-        st.session_state.pop("_ami_insight_render_skipped_reason", None)
     if rendered and app == "investment":
         st.session_state["_ami_insight_card_rendered"] = True
         try:

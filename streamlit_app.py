@@ -13201,9 +13201,15 @@ pdemo.schedule_page_demo(st, active_page)
 from suite_analytical_question import render_suite_applied_math_insight
 
 try:
-    from applied_math_return_insight import hydrate_applied_math_insight_for_session
+    from applied_math_return_insight import (
+        clear_stale_baseball_insight_render_skip,
+        ensure_baseball_pending_insight_for_render,
+        hydrate_applied_math_insight_for_session,
+    )
 
     hydrate_applied_math_insight_for_session(st, "baseball")
+    ensure_baseball_pending_insight_for_render(st)
+    clear_stale_baseball_insight_render_skip(st)
     if st.session_state.pop("_suite_persist_insight_dirty", None):
         try:
             force_save_baseball_state(st, reason="insight_hydrate")
@@ -14332,7 +14338,17 @@ if active_page == "Career Totals":
                         },
                     )
                     try:
-                        render_suite_applied_math_insight(st, source_app="baseball", source_page="Career Totals")
+                        from applied_math_return_insight import (
+                            ensure_baseball_pending_insight_for_render,
+                            render_suite_applied_math_insight_for_page,
+                        )
+
+                        ensure_baseball_pending_insight_for_render(st)
+                        render_suite_applied_math_insight_for_page(
+                            st,
+                            source_app="baseball",
+                            source_page="Career Totals",
+                        )
                     except Exception as exc:
                         record_hof_pipeline_exception(st.session_state, "inline_insight_render", exc)
                     if developer_mode_enabled():
