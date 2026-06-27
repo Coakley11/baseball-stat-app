@@ -2324,7 +2324,14 @@ def _add_scatter_context_columns(plot_df):
 
 
 @st.cache_data(show_spinner=False)
-def _prepare_historical_scatter_data(hist_df, team_col, _hof_cache_key: float = 0.0, *, include_hof: bool = True):
+def _prepare_historical_scatter_data(
+    hist_df,
+    team_col,
+    _hof_cache_key: float = 0.0,
+    *,
+    include_hof: bool = True,
+    _hof_mode_key: bool = False,
+):
     """Build plot-ready data for Historical Explorer.
 
     The visible table stays clean, but the scatterplot can use internal fields such as
@@ -3341,6 +3348,14 @@ def render_scatterplot_section(
     """Interactive scatterplot for the current filtered result set."""
     if plot_df is None or plot_df.empty:
         return
+
+    try:
+        from hall_of_fame_data import career_hof_case_mode_active
+
+        if career_hof_case_mode_active(st.session_state):
+            include_hof_color = True
+    except (ImportError, NameError, AttributeError):
+        pass
 
     st.subheader(title)
     show_scatter = st.checkbox(
@@ -13584,7 +13599,11 @@ if active_page == "Historical Explorer":
         key_prefix="hist",
         title="Visualize Historical Results",
         prepare_plot_df=lambda: _prepare_historical_scatter_data(
-            hist, team_col_for_display, HOF_CACHE_KEY, include_hof=hof_case_mode
+            hist,
+            team_col_for_display,
+            HOF_CACHE_KEY,
+            include_hof=hof_case_mode,
+            _hof_mode_key=bool(hof_case_mode),
         ),
         include_hof_color=hof_case_mode,
     )

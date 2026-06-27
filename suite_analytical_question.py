@@ -687,6 +687,40 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         "player": str((ctx or {}).get("player") or blob_payload.get("player") or ""),
     }
 
+    is_hof = (
+        area == "hall_of_fame_case"
+        or str(blob_payload.get("app_context_type") or "").strip() == "baseball_hof_case"
+        or str((ctx or {}).get("app_context_type") or "").strip() == "baseball_hof_case"
+        or _qp("suite_hof_case") == "1"
+        or str((ctx or {}).get("routing_hint") or "") == "hof_case_analysis"
+        or str((ctx or {}).get("intent") or "") == "hof_case_analysis"
+    )
+    if is_hof:
+        ss["_suite_hof_case"] = True
+        ss["_suite_ai_area"] = "hall_of_fame_case"
+        ss["view_mode"] = "Solve a Problem"
+        ss["_suite_ai_page"] = "Solve a Problem"
+        packet = blob_payload.get("hof_case_packet")
+        if not isinstance(packet, dict):
+            packet = ctx.get("hof_case_packet")
+        if isinstance(packet, dict) and packet:
+            ss["_hof_case_packet"] = copy.deepcopy(packet)
+        insight_blob = blob_payload.get("insight")
+        if isinstance(insight_blob, dict) and insight_blob:
+            ss["_hof_case_insight"] = copy.deepcopy(insight_blob)
+        verdict = blob_payload.get("verdict_context")
+        if isinstance(verdict, dict) and verdict:
+            ss["_hof_case_verdict"] = copy.deepcopy(verdict)
+        target = str(
+            blob_payload.get("target_player")
+            or blob_payload.get("player")
+            or (ctx or {}).get("player")
+            or _qp("suite_hof_target")
+            or ""
+        ).strip()
+        if target:
+            ss["_suite_hof_target"] = target
+
 
 def _format_context_value(key: str, val: Any) -> str:
     if key == "cohort_selectivity" and isinstance(val, dict):
@@ -954,6 +988,83 @@ def _is_hof_case_submission(
     return ctx.get("routing_hint") == "hof_case_analysis" or ctx.get("intent") == "hof_case_analysis"
 
 
+HOF_CASE_ACTIVITY_EVENTS = frozenset({"hof_case_analysis_submitted"})
+
+
+def should_exclude_from_recent_ami_questions(
+    *,
+    event: str = "",
+    metrics: dict[str, Any] | None = None,
+    resume_key: str = "",
+    title: str = "",
+    quant_area: str = "",
+    app_context_type: str = "",
+) -> bool:
+    """True when an activity/resume row is a HOF statistical case, not a user-typed AMI question."""
+    m = dict(metrics or {})
+    if m.get("exclude_from_recent_ami") is True:
+        return True
+    if str(m.get("activity_kind") or "") == "hof_case":
+        return True
+    ctx = m.get("context") if isinstance(m.get("context"), dict) else {}
+    actx = str(app_context_type or m.get("app_context_type") or ctx.get("app_context_type") or "").strip()
+    if actx == "baseball_hof_case":
+        return True
+    qarea = str(quant_area or m.get("quant_area") or m.get("area") or "").strip()
+    if qarea == "hall_of_fame_case":
+        return True
+    evt = str(event or m.get("event") or "").strip()
+    if evt in HOF_CASE_ACTIVITY_EVENTS:
+        return True
+    rk = str(resume_key or m.get("resume_key") or "").strip()
+    if rk.startswith("bb:hof_case:") or rk.startswith("hof:ami:"):
+        return True
+    if str(m.get("resume_key") or "").startswith("ai:question:") and _is_hof_case_submission(qarea, ctx):
+        return True
+    title_l = str(title or m.get("title") or m.get("summary") or "").strip().lower()
+    if "hall of fame" in title_l and any(x in title_l for x in ("analysis", "case", "open full", "review")):
+        return True
+    if _is_hof_case_submission(qarea, ctx):
+        return True
+    return False
+
+
+def load_recent_ami_questions(limit: int = 10) -> list[dict[str, Any]]:
+    """Recent user-typed analytical_question events — excludes HOF statistical cases."""
+    try:
+        from suite_storage_supabase import load_events
+    except ImportError:
+        return []
+    rows = load_events(limit=max(limit * 5, 40))
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        evt = str(row.get("event") or "")
+        if evt != "analytical_question":
+            continue
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        if should_exclude_from_recent_ami_questions(event=evt, metrics=metrics):
+            continue
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def filter_resume_items_for_recent_ami(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop HOF case resume rows from a generic resume-item list."""
+    out: list[dict[str, Any]] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        if should_exclude_from_recent_ami_questions(
+            resume_key=str(row.get("item_key") or ""),
+            title=str(row.get("title") or ""),
+        ):
+            continue
+        out.append(row)
+    return out
+
+
 def submit_analytical_question(
     *,
     source_app: str,
@@ -1009,7 +1120,6 @@ def submit_analytical_question(
             "app_context_type": "baseball_hof_case",
         }
         _store_question_context_blob(hof_payload)
-        _upsert_applied_intelligence_resume(hof_payload, action_url=action_url)
         if not duplicate:
             metrics = metrics_for_applied_math_resume(hof_payload)
             metrics["source_app"] = normalize_source_app_id(
@@ -1020,6 +1130,7 @@ def submit_analytical_question(
             if player:
                 metrics["hof_case_target"] = player
                 metrics["target_player"] = player
+            hof_resume_key = f"hof:ami:{payload['question_id']}"
             try:
                 from suite_activity_client import record_activity
                 from baseball_hof_activity import HOF_CASE_ACTIVITY_EVENT
@@ -1030,7 +1141,7 @@ def submit_analytical_question(
                     page=str(hof_payload.get("source_page") or "Career Totals"),
                     metrics=metrics,
                     summary=f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis",
-                    resume_key=str(hof_payload.get("resume_key") or ""),
+                    resume_key=hof_resume_key,
                     resume_title=f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis",
                     resume_subtitle=_hof_case_card_subtitle(hof_payload),
                     action_url=action_url,

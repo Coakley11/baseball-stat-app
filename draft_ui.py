@@ -63,6 +63,14 @@ def _draft_pool_for_meta_lookup(session: dict[str, Any]) -> Any:
     pool_df = session.get("draft_room_player_pool")
     if pool_df is not None and not getattr(pool_df, "empty", True):
         return pool_df
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        board = get_canonical_draft_board(session)
+        if board is not None and not getattr(board, "empty", True) and "Player" in board.columns:
+            return board
+    except Exception:
+        pass
     return None
 
 
@@ -682,7 +690,7 @@ def render_draft_button(
 
 def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, Any]:
     """Always show round, pick, and on-clock team in the workflow sidebar."""
-    from draft_actions import draft_status_summary
+    from draft_actions import draft_status_summary, resolve_on_clock_team_label
 
     summary = draft_status_summary(session)
     if summary.get("draft_complete"):
@@ -698,25 +706,8 @@ def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, A
             line_parts.append(f"Pick {pick_n}")
         if line_parts:
             st.sidebar.markdown(f"**{' · '.join(line_parts)}**")
-        on_clock = str(summary.get("on_clock_team") or "").strip()
-        if not on_clock or on_clock == "—":
-            if summary.get("live_draft_active"):
-                room = session.get("live_draft_room")
-                if isinstance(room, dict):
-                    try:
-                        from live_draft_state import analyze_live_draft_progress
-                        from live_draft_timer_logic import live_draft_current_slot
-
-                        progress = analyze_live_draft_progress(room)
-                        on_clock = str(progress.get("on_clock_team") or "").strip()
-                        if not on_clock:
-                            slot = progress.get("slot") or live_draft_current_slot(room)
-                            if isinstance(slot, dict):
-                                on_clock = str(slot.get("Team") or "").strip()
-                    except ImportError:
-                        pass
-        on_clock = on_clock or "—"
-        st.sidebar.caption(f"On Clock: **{on_clock}**")
+        on_clock = resolve_on_clock_team_label(session, summary=summary)
+        st.sidebar.caption(f"On Clock: **{on_clock or '—'}**")
         if summary.get("live_draft_active"):
             render_draft_sidebar_timer(st, session, summary=summary)
     return summary

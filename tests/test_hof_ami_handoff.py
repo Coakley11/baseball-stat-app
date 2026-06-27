@@ -36,7 +36,7 @@ class HofAmiHandoffTests(unittest.TestCase):
         self.assertNotIn("Do NOT present", subtitle)
         self.assertIn("Open analysis", button)
 
-    def test_hof_submit_upserts_applied_intelligence_resume(self) -> None:
+    def test_hof_submit_records_hof_event_not_generic_resume(self) -> None:
         upserts: list = []
         activities: list = []
         with patch("suite_analytical_question._upsert_applied_intelligence_resume", side_effect=lambda p, **k: upserts.append((p, k))):
@@ -56,12 +56,14 @@ class HofAmiHandoffTests(unittest.TestCase):
                         },
                         quant_area="hall_of_fame_case",
                     )
-        self.assertTrue(upserts)
+        self.assertFalse(upserts)
         self.assertTrue(str(result.get("action_url") or "").strip())
         self.assertIn("suite_ai_question_id", str(result.get("action_url") or ""))
         self.assertTrue(activities)
         event_type = activities[0][0][1]
         self.assertEqual(event_type, "hof_case_analysis_submitted")
+        resume_key = str(activities[0][1].get("resume_key") or "")
+        self.assertTrue(resume_key.startswith("hof:ami:"))
 
 
 if __name__ == "__main__":

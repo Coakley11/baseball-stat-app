@@ -1909,6 +1909,13 @@ def apply_ami_insight_from_query(st: Any, app_key: str) -> bool:
 
 def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
     """Dismiss insight locally and persist dismissal for cross-device sync."""
+    hof_mode_snapshot: dict[str, Any] = {}
+    try:
+        from hall_of_fame_data import snapshot_hof_case_mode_state
+
+        hof_mode_snapshot = snapshot_hof_case_mode_state(st.session_state)
+    except ImportError:
+        pass
     pending = st.session_state.get(SESSION_PENDING_KEY)
     iid = ""
     qid = ""
@@ -1946,12 +1953,27 @@ def dismiss_applied_math_insight(st: Any, *, app_key: str = "") -> None:
     if iid:
         persist_insight_dismissal_to_cloud(source_app, iid, dismissed_at=dismissed_at)
     st.session_state[SESSION_PERSIST_INSIGHT_DIRTY] = True
-    try:
-        from investment_persistent_state import autosave_investment_state
+    if hof_mode_snapshot:
+        try:
+            from hall_of_fame_data import restore_hof_case_mode_state
 
-        autosave_investment_state(st, trigger="insight_dismiss")
-    except Exception:
-        pass
+            restore_hof_case_mode_state(st.session_state, hof_mode_snapshot)
+        except ImportError:
+            pass
+    if source_app == "baseball":
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="insight_dismiss")
+        except Exception:
+            pass
+    elif source_app == "investment":
+        try:
+            from investment_persistent_state import autosave_investment_state
+
+            autosave_investment_state(st, trigger="insight_dismiss")
+        except Exception:
+            pass
 
 
 

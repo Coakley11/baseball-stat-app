@@ -261,6 +261,26 @@ class TestDraftQueueAndUndo(unittest.TestCase):
         self.assertEqual(str(row["Player"]).strip(), "")
 
 
+class TestOnClockLabel(unittest.TestCase):
+    def test_resolve_on_clock_from_live_room_slot(self) -> None:
+        from draft_actions import resolve_on_clock_team_label
+
+        session = {
+            "live_draft_room": {
+                "status": "in_progress",
+                "current_pick_index": 1,
+                "pick_order": [
+                    {"Team": "Team 1", "Round": 1, "Pick": 1},
+                    {"Team": "Team 2", "Round": 1, "Pick": 2},
+                ],
+                "draft_board": [],
+                "config": {"team_count": 2},
+            }
+        }
+        label = resolve_on_clock_team_label(session, summary={"on_clock_team": None, "pick": 2})
+        self.assertEqual(label, "Team 2")
+
+
 class TestImportFallback(unittest.TestCase):
     @patch("importlib.import_module")
     def test_import_baseball_app_tries_both_casings(self, mock_import: MagicMock) -> None:

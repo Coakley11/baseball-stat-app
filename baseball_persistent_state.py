@@ -61,6 +61,9 @@ def _multiplayer_restore_active(ss: dict[str, Any], state: dict[str, Any]) -> bo
 _GLOBAL_KEYS = (
     "active_page",
     "main_sidebar_page",
+    "career_hof_case_mode",
+    "career_hof_case_target_player",
+    "_hof_case_packet",
     "comparison_user_team",
     "draft_room_table",
     "room_your_team",

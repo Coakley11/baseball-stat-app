@@ -197,6 +197,9 @@ def log_hof_case_analysis_submitted(
         "filters_used": filters_used,
         "hof_case_summary": packet.get("hof_case_summary"),
     }
+    metrics["exclude_from_recent_ami"] = True
+    metrics["activity_kind"] = "hof_case"
+    metrics["app_context_type"] = "baseball_hof_case"
     if question_id:
         metrics["question_id"] = question_id
         metrics["ami_question_id"] = question_id

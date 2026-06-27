@@ -664,7 +664,12 @@ def load_current_states(*, include_metrics: bool = False) -> dict[str, dict[str,
     return out
 
 
-def load_active_resume_items(limit: int = 8, *, app: str | None = None) -> list[dict[str, Any]]:
+def load_active_resume_items(
+    limit: int = 8,
+    *,
+    app: str | None = None,
+    exclude_hof_from_recent_ami: bool = False,
+) -> list[dict[str, Any]]:
     from suite_workspace import logical_storage_app_key
 
     app_keys = [_scoped_storage_app(app)] if app else _workspace_storage_app_keys()
@@ -687,7 +692,7 @@ def load_active_resume_items(limit: int = 8, *, app: str | None = None) -> list[
         )
     if not isinstance(rows, list):
         return []
-    return [
+    items = [
         {
             "app": logical_storage_app_key(str(row.get("app") or "")),
             "item_key": str(row.get("item_key") or ""),
@@ -699,6 +704,14 @@ def load_active_resume_items(limit: int = 8, *, app: str | None = None) -> list[
         for row in rows
         if isinstance(row, dict)
     ]
+    if exclude_hof_from_recent_ami:
+        try:
+            from suite_analytical_question import filter_resume_items_for_recent_ami
+
+            return filter_resume_items_for_recent_ami(items)[:limit]
+        except ImportError:
+            pass
+    return items
 
 
 def _is_duplicate_key_error(exc: BaseException) -> bool:

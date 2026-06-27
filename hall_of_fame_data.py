@@ -42,6 +42,39 @@ def career_hof_case_mode_active(session: dict[str, Any]) -> bool:
     return bool(session.get(CAREER_HOF_CASE_MODE_KEY))
 
 
+def snapshot_hof_case_mode_state(session: dict[str, Any]) -> dict[str, Any]:
+    """Capture persistent HOF Case Mode keys (survives insight dismiss / cloud restore)."""
+    out: dict[str, Any] = {}
+    if not career_hof_case_mode_active(session):
+        return out
+    out[CAREER_HOF_CASE_MODE_KEY] = True
+    target = str(session.get(CAREER_HOF_CASE_TARGET_KEY) or "").strip()
+    if target:
+        out[CAREER_HOF_CASE_TARGET_KEY] = target
+    packet = session.get(HOF_CASE_PACKET_KEY)
+    if isinstance(packet, dict) and packet:
+        out[HOF_CASE_PACKET_KEY] = copy.deepcopy(packet)
+    filt = session.get(CAREER_HOF_FILTER_KEY)
+    if filt is not None:
+        out[CAREER_HOF_FILTER_KEY] = normalize_hof_filter_value(filt)
+    return out
+
+
+def restore_hof_case_mode_state(session: dict[str, Any], snapshot: dict[str, Any] | None) -> None:
+    """Re-apply pinned HOF Case Mode keys without touching unrelated session state."""
+    if not isinstance(snapshot, dict) or not snapshot.get(CAREER_HOF_CASE_MODE_KEY):
+        return
+    session[CAREER_HOF_CASE_MODE_KEY] = True
+    target = str(snapshot.get(CAREER_HOF_CASE_TARGET_KEY) or "").strip()
+    if target:
+        session[CAREER_HOF_CASE_TARGET_KEY] = target
+    packet = snapshot.get(HOF_CASE_PACKET_KEY)
+    if isinstance(packet, dict) and packet:
+        session[HOF_CASE_PACKET_KEY] = copy.deepcopy(packet)
+    if CAREER_HOF_FILTER_KEY in snapshot:
+        session[CAREER_HOF_FILTER_KEY] = normalize_hof_filter_value(snapshot[CAREER_HOF_FILTER_KEY])
+
+
 def migrate_legacy_historical_hof_filter(session: dict[str, Any]) -> None:
     """Use one shared player-scope key; drop legacy Historical-only filter."""
     legacy = session.pop(HISTORICAL_HOF_FILTER_KEY, None)
@@ -62,6 +95,7 @@ def resolve_shared_hof_membership_filter(session: dict[str, Any]) -> str:
 
 def clear_career_hof_case_scope_state(session: dict[str, Any]) -> None:
     """Reset HOF player-scope UI state when Case Mode is off (no filter, badges, or scatter color)."""
+    # Case Mode toggle is independent — never clear CAREER_HOF_CASE_MODE_KEY here.
     session.pop(CAREER_HOF_FILTER_KEY, None)
     session.pop(HISTORICAL_HOF_FILTER_KEY, None)
 
