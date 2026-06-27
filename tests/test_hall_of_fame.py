@@ -503,6 +503,37 @@ class HallOfFameDataTests(unittest.TestCase):
             str(packet.get("hof_case_summary") or "").strip(),
         )
 
+    def test_compose_hof_case_tolerates_malformed_award_fields(self) -> None:
+        from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
+
+        df = pd.DataFrame(
+            [
+                {"fullName": "Alfonso Soriano", "isHallOfFamer": False, "careerPrimaryPos": "OF", "HR": 412},
+                {"fullName": "Babe Ruth", "isHallOfFamer": True, "careerPrimaryPos": "OF", "HR": 714},
+            ]
+        )
+        packet = build_hof_case_packet(
+            "Alfonso Soriano",
+            df,
+            filters_summary={"sort_stat": "HR"},
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        packet["target_awards_summary"] = {
+            "data_available": True,
+            "major_awards": "0.0",
+            "mvp_count": "",
+            "total_awards": float("nan"),
+        }
+        packet["cohort_award_comparison"] = {
+            "data_available": True,
+            "players_with_more_total_awards": "not-a-number",
+        }
+        analysis = compose_hof_statistical_case(packet)
+        self.assertIn(analysis.get("verdict_bucket"), CASE_SCORE_BUCKETS)
+        md = format_hof_case_memo_markdown(analysis)
+        self.assertIn("Verdict:", md)
+
     def test_ensure_hof_scatter_columns(self) -> None:
         from hall_of_fame_data import (
             HOF_SCATTER_COLOR_COL,

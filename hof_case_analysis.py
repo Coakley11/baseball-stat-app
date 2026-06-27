@@ -33,6 +33,34 @@ _STAT_LABELS = {
 }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Coerce packet numeric fields without crashing on NaN, floats, or bad strings."""
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str) and not value.strip():
+            return default
+        if isinstance(value, float) and value != value:  # NaN
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str) and not value.strip():
+            return default
+        f = float(value)
+        if f != f:  # NaN
+            return default
+        return f
+    except (TypeError, ValueError):
+        return default
+
+
 def _fmt_rank(rank_info: dict[str, Any]) -> str:
     rank = rank_info.get("rank")
     total = rank_info.get("of")
@@ -40,7 +68,7 @@ def _fmt_rank(rank_info: dict[str, Any]) -> str:
     label = _STAT_LABELS.get(stat, stat)
     val = rank_info.get("value")
     tier = str(rank_info.get("tier") or "").strip()
-    val_s = f" ({int(val)})" if val is not None and stat not in ("BA", "OBP", "SLG", "OPS") else ""
+    val_s = f" ({_safe_int(val)})" if val is not None and stat not in ("BA", "OBP", "SLG", "OPS") else ""
     if rank and total:
         base = f"#{rank} of {total} in cohort by {label}{val_s}"
         return f"{base} ({tier})" if tier else base
@@ -60,9 +88,8 @@ def _player_names(rows: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
 
 def _stat_min_meaning(stat: str, val: Any) -> str:
     """Return 'strong', 'moderate', or 'context' for a stat minimum."""
-    try:
-        n = int(float(val))
-    except (TypeError, ValueError):
+    n = _safe_int(val, default=-1)
+    if n < 0:
         return "context"
     stat = str(stat or "").strip().upper()
     if stat == "HR" and n >= 400:
@@ -158,18 +185,19 @@ def _build_signal_vs_context(packet: dict[str, Any], filter_interp: dict[str, An
 
     hof_n = packet.get("hall_of_famers_returned")
     total = packet.get("total_players_returned")
-    rate = float(packet.get("hall_of_fame_rate_pct") or 0)
+    rate = _safe_float(packet.get("hall_of_fame_rate_pct"))
+    total_n = _safe_int(total)
     if total and hof_n is not None:
-        if rate >= 50 and int(total) >= 5:
+        if rate >= 50 and total_n >= 5:
             case_evidence.append(
                 f"{hof_n}/{total} players in this cohort are Hall of Famers ({rate}%) — "
                 "high prevalence is evidence the filter created a Hall-like peer group."
             )
-        elif rate >= 30 and int(total) >= 8:
+        elif rate >= 30 and total_n >= 8:
             case_evidence.append(
                 f"{hof_n}/{total} Hall of Famers ({rate}%) — a meaningful share of the cohort is inducted."
             )
-        elif rate <= 15 and int(total) >= 10:
+        elif rate <= 15 and total_n >= 10:
             cohort_context.append(
                 f"Only {rate}% of this cohort is inducted — filter membership is context; "
                 "the case must rest on standing out within the group."
@@ -202,16 +230,16 @@ def _build_signal_vs_context(packet: dict[str, Any], filter_interp: dict[str, An
     awards_cmp = packet.get("cohort_award_comparison") if isinstance(packet.get("cohort_award_comparison"), dict) else {}
     target_awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
     if awards_cmp.get("data_available") and target_awards.get("data_available"):
-        major = int(target_awards.get("major_awards") or target_awards.get("mvp_count") or 0)
-        total_aw = int(target_awards.get("total_awards") or 0)
+        major = _safe_int(target_awards.get("major_awards") or target_awards.get("mvp_count"))
+        total_aw = _safe_int(target_awards.get("total_awards"))
         if major >= 1:
             case_evidence.append(
                 f"{major} major award(s) (MVP/Cy Young etc.) — meaningful evidence, not cohort context."
             )
         elif total_aw >= 3:
             case_evidence.append(f"{total_aw} career awards — supporting evidence for the statistical case.")
-        fewer = int(awards_cmp.get("players_with_more_total_awards") or 0)
-        if total and fewer >= int(total) // 2:
+        fewer = _safe_int(awards_cmp.get("players_with_more_total_awards"))
+        if total and fewer >= total_n // 2:
             cohort_context.append(
                 f"{fewer} cohort peers have more total awards — awards do not clearly separate the target."
             )
@@ -236,9 +264,9 @@ def _era_note(identity: dict[str, Any]) -> str:
     if seasons:
         note += f" ({seasons} seasons)"
     note += ". "
-    if int(debut) < 1970:
+    if _safe_int(debut) < 1970:
         note += "Earlier-era counting totals can look stronger in raw numbers; compare within cohort and position."
-    elif int(final) >= 2010:
+    elif _safe_int(final) >= 2010:
         note += "Modern-era offense and roster usage can depress raw counting totals relative to older peers."
     return note
 
@@ -254,8 +282,8 @@ def _score_case(packet: dict[str, Any]) -> tuple[int, str]:
     pos_findings = list(packet.get("position_rarity_findings") or [])
     milestones = list(packet.get("career_milestones") or [])
     selectivity = packet.get("cohort_selectivity") if isinstance(packet.get("cohort_selectivity"), dict) else {}
-    hof_rate = float(packet.get("hall_of_fame_rate_pct") or 0)
-    total = int(packet.get("total_players_returned") or 0)
+    hof_rate = _safe_float(packet.get("hall_of_fame_rate_pct"))
+    total = _safe_int(packet.get("total_players_returned"))
     target_rank = packet.get("target_rank")
 
     score += min(len(strengths) * 6, 24)
@@ -270,7 +298,7 @@ def _score_case(packet: dict[str, Any]) -> tuple[int, str]:
             continue
         pct = info.get("percentile_top")
         tier = str(info.get("tier") or "")
-        if pct is not None and float(pct) >= 90:
+        if pct is not None and _safe_float(pct) >= 90:
             top_pos_tiers += 1
         elif "top" in tier.lower():
             top_pos_tiers += 1
@@ -278,7 +306,7 @@ def _score_case(packet: dict[str, Any]) -> tuple[int, str]:
 
     awards_cmp = packet.get("cohort_award_comparison") if isinstance(packet.get("cohort_award_comparison"), dict) else {}
     if awards_cmp.get("data_available"):
-        fewer = int(awards_cmp.get("players_with_more_total_awards") or 0)
+        fewer = _safe_int(awards_cmp.get("players_with_more_total_awards"))
         if total and fewer <= max(1, total // 4):
             score += 8
         elif fewer >= total // 2:
@@ -302,7 +330,8 @@ def _score_case(packet: dict[str, Any]) -> tuple[int, str]:
         score -= 6
 
     if target_rank and total:
-        pct_in_cohort = 100.0 * (1 - (int(target_rank) - 1) / max(total - 1, 1))
+        rank_n = _safe_int(target_rank)
+        pct_in_cohort = 100.0 * (1 - (rank_n - 1) / max(total - 1, 1))
         if pct_in_cohort >= 90:
             score += 10
         elif pct_in_cohort >= 75:
