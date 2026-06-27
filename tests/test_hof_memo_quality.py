@@ -39,10 +39,17 @@ def _palmeiro_packet() -> dict:
         "target_cohort_ranks": {
             "HR": {"rank": 10, "of": 87, "stat": "HR", "value": 569, "percentile_top": 90, "tier": "top 10%"},
         },
-        "position_percentiles": {"G": {"percentile_top": 95}, "H": {"percentile_top": 92}},
+        "position_percentiles": {
+            "G": {"percentile_top": 95, "tier": "top 5%"},
+            "H": {"percentile_top": 92, "tier": "top 10%"},
+            "R": {"percentile_top": 92, "tier": "top 10%"},
+            "2B": {"percentile_top": 90, "tier": "top 10%"},
+        },
         "position_stat_ranks": {
-            "G": {"rank": 20, "of": 7679, "value": 2831},
-            "H": {"rank": 55, "of": 7679, "value": 3020},
+            "G": {"rank": 20, "of": 7679, "value": 162},
+            "H": {"rank": 55, "of": 7679, "value": 203},
+            "R": {"rank": 55, "of": 7679, "value": 124},
+            "2B": {"rank": 26, "of": 7679, "value": 49},
         },
         "comparable_players": {
             "hall_of_famers": [
@@ -77,6 +84,12 @@ class HofMemoQualityTests(unittest.TestCase):
         self.assertIn("1,500-RBI", line or "")
         self.assertNotIn("1,000", line or "")
 
+    def test_highest_milestone_585_doubles(self) -> None:
+        line = _highest_milestone_line("2B", 585)
+        self.assertIn("585", line or "")
+        self.assertIn("500-double", line or "")
+        self.assertNotIn("400-double", line or "")
+
     def test_career_total_evidence_uses_actual_totals(self) -> None:
         lines = _build_career_total_evidence(_palmeiro_packet())
         joined = " ".join(lines)
@@ -104,12 +117,21 @@ class HofMemoQualityTests(unittest.TestCase):
         self.assertIn("Broader Hall of Fame", comp_text)
         self.assertIn("not-yet-inducted", comp_text.lower())
 
-    def test_position_relative_includes_actual_totals(self) -> None:
+    def test_position_relative_uses_career_totals_not_rank_values(self) -> None:
         analysis = compose_hof_statistical_case(_palmeiro_packet())
         memo = analysis.get("case_memo") or {}
         pos_text = " ".join(memo.get("position_era_context") or [])
         self.assertIn("2,831", pos_text)
+        self.assertIn("3,020", pos_text)
+        self.assertIn("1,663", pos_text)
+        self.assertIn("585", pos_text)
         self.assertIn("#20", pos_text)
+        self.assertIn("#55", pos_text)
+        self.assertIn("#26", pos_text)
+        self.assertNotIn("(162;", pos_text)
+        self.assertNotIn("(203;", pos_text)
+        self.assertNotIn("(124;", pos_text)
+        self.assertNotIn("(49;", pos_text)
 
     def test_stale_blob_forces_recompose(self) -> None:
         packet = _palmeiro_packet()

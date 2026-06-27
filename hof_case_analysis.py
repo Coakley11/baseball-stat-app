@@ -103,7 +103,7 @@ _STAT_MILESTONE_THRESHOLDS: dict[str, tuple[tuple[int, str], ...]] = {
     "H": ((3000, "3,000-hit"), (2500, "2,500-hit"), (2000, "2,000-hit")),
     "RBI": ((1500, "1,500-RBI"), (1000, "1,000-RBI")),
     "R": ((2000, "2,000-run"),),
-    "2B": ((600, "600-double"), (400, "400-double")),
+    "2B": ((600, "600-double"), (500, "500-double"), (400, "400-double")),
     "BB": ((1500, "1,500-walk"), (1000, "1,000-walk")),
     "SB": ((500, "500-SB"), (300, "300-SB")),
     "G": ((3000, "3,000-game"), (2000, "2,000-game")),
@@ -379,7 +379,11 @@ def _build_career_total_evidence(packet: dict[str, Any], *, limit: int = 5) -> l
 
 def _fmt_position_rank_clause(stat: str, rank_info: dict[str, Any], target_stats: dict[str, Any]) -> str:
     label = _STAT_LABELS.get(str(stat), str(stat))
-    val = rank_info.get("value") if rank_info.get("value") is not None else target_stats.get(stat)
+    stat_key = str(stat)
+    # Rank payloads may carry season highs or rate-column artifacts — career totals are authoritative.
+    val = target_stats.get(stat_key)
+    if val is None:
+        val = rank_info.get("value")
     rank = rank_info.get("rank")
     peer_n = rank_info.get("of")
     if str(stat) in ("BA", "OBP", "SLG", "OPS"):
