@@ -14219,7 +14219,7 @@ if active_page == "Career Totals":
                         pass
                     st.success(
                         f"Hall of Fame case saved for {hof_target_player}. "
-                        "Use the Baseball Insight card below or Command Center to continue."
+                        "See the Baseball Insight above, or open Command Center for the full analysis."
                     )
                     st.rerun()
                 except Exception as exc:

@@ -94,6 +94,30 @@ def load_saved_items(
     return storage.load_saved_items(app=app_key, item_type=item_type, limit=limit)
 
 
+def fetch_saved_item(
+    app: str,
+    item_type: str,
+    item_key: str,
+) -> dict[str, Any] | None:
+    """Load one saved item by exact key under a logical app id."""
+    try:
+        import suite_storage as storage
+    except ImportError:
+        import suite_storage_supabase as storage
+
+    return storage.load_saved_item_by_key(item_type, item_key, app=app)
+
+
+def fetch_saved_item_any_app(item_type: str, item_key: str) -> dict[str, Any] | None:
+    """Load one saved item by exact key across all app namespaces for this user."""
+    try:
+        import suite_storage as storage
+    except ImportError:
+        import suite_storage_supabase as storage
+
+    return storage.load_saved_item_by_key(item_type, item_key, app=None)
+
+
 def save_settings(app: str, settings: dict[str, Any]) -> None:
     """Per-app settings, or ``_global`` for suite-wide preferences."""
     import suite_storage as storage

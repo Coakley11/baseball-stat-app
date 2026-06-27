@@ -525,48 +525,152 @@ def load_analytical_question_context(question_id: str) -> dict[str, Any]:
     return load_analytical_question_payload(question_id).get("context") or {}
 
 
-def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
+_CONTEXT_SEARCH_APPS = ("applied_intelligence", "baseball", "baseball_analytics")
+_HOF_RESUME_ITEM_TYPE = "hof_case_resume"
+
+
+def _payload_from_saved_row(row: dict[str, Any], *, load_source: str) -> dict[str, Any]:
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    out = copy.deepcopy(payload)
+    out["blob_load_source"] = load_source
+    out["blob_store_app"] = str(row.get("storage_app") or row.get("app") or "")
+    return out
+
+
+def _hof_resume_bundle_to_payload(bundle: dict[str, Any]) -> dict[str, Any]:
+    packet = bundle.get("hof_case_packet") if isinstance(bundle.get("hof_case_packet"), dict) else {}
+    target = str(bundle.get("target_player") or packet.get("target_player") or "").strip()
+    ctx = {
+        "hof_case_packet": copy.deepcopy(packet),
+        "player": target,
+        "app_context_type": "baseball_hof_case",
+        "routing_hint": "hof_case_analysis",
+        "intent": "hof_case_analysis",
+    }
+    insight = bundle.get("insight") if isinstance(bundle.get("insight"), dict) else {}
+    return {
+        "question_id": str(bundle.get("question_id") or "").strip(),
+        "question": str(packet.get("hof_case_summary") or f"Hall of Fame case — {target}").strip(),
+        "source_app": "baseball",
+        "source_page": "Career Totals",
+        "quant_area": "hall_of_fame_case",
+        "app_context_type": "baseball_hof_case",
+        "context": ctx,
+        "hof_case_packet": copy.deepcopy(packet),
+        "player": target,
+        "target_player": target,
+        "source_state": copy.deepcopy(bundle.get("source_state") or {}),
+        "insight": copy.deepcopy(insight) if insight else {},
+        "blob_load_source": "hof_case_resume_bundle",
+    }
+
+
+def _load_hof_resume_bundle_fallback(
+    question_id: str,
+    *,
+    hof_target_slug: str = "",
+) -> dict[str, Any]:
+    qid = str(question_id or "").strip()
+    if not qid:
+        return {}
+    try:
+        from suite_account import fetch_saved_item, load_saved_items
+    except ImportError:
+        return {}
+
+    slug = str(hof_target_slug or "").strip().lower()
+    if slug:
+        row = fetch_saved_item("baseball", _HOF_RESUME_ITEM_TYPE, f"bb:hof_case:{slug}")
+        if row:
+            bundle = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if isinstance(bundle, dict) and str(bundle.get("question_id") or qid) == qid:
+                return _hof_resume_bundle_to_payload(bundle)
+
+    for row in load_saved_items(app="baseball", item_type=_HOF_RESUME_ITEM_TYPE, limit=120):
+        bundle = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if isinstance(bundle, dict) and str(bundle.get("question_id") or "") == qid:
+            return _hof_resume_bundle_to_payload(bundle)
+    return {}
+
+
+def load_analytical_question_payload(
+    question_id: str,
+    *,
+    hof_target_slug: str = "",
+) -> dict[str, Any]:
     """Load full question blob (context + source_state) by question_id."""
     qid = str(question_id or "").strip()
     if not qid:
         return {}
+    load_attempts: list[str] = []
     resume_key = f"ai:question:{qid}"
-    search_apps = ["applied_intelligence", "baseball"]
+    hof_resume_key = f"hof:ami:{qid}"
+
+    try:
+        from suite_account import fetch_saved_item, fetch_saved_item_any_app
+
+        for app_name in _CONTEXT_SEARCH_APPS:
+            load_attempts.append(f"saved_item:{app_name}")
+            row = fetch_saved_item(app_name, _CONTEXT_ITEM_TYPE, qid)
+            if row:
+                payload = _payload_from_saved_row(row, load_source=f"saved_item:{app_name}")
+                payload["blob_load_candidates"] = load_attempts
+                return payload
+        load_attempts.append("saved_item:any_app")
+        row = fetch_saved_item_any_app(_CONTEXT_ITEM_TYPE, qid)
+        if row:
+            payload = _payload_from_saved_row(row, load_source="saved_item:any_app")
+            payload["blob_load_candidates"] = load_attempts
+            return payload
+    except Exception as exc:
+        log.warning("direct saved-item lookup failed for question context: %s", exc)
+
+    bundle_payload = _load_hof_resume_bundle_fallback(qid, hof_target_slug=hof_target_slug)
+    if bundle_payload:
+        bundle_payload["blob_load_candidates"] = load_attempts + ["hof_case_resume_bundle"]
+        return bundle_payload
+
     try:
         from suite_account import load_saved_items
 
-        for app_name in search_apps:
-            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
+        for app_name in _CONTEXT_SEARCH_APPS:
+            load_attempts.append(f"scan:{app_name}")
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=200)
             for row in rows:
                 if str(row.get("item_key") or "") == qid:
                     payload = row.get("payload")
                     if isinstance(payload, dict):
-                        return copy.deepcopy(payload)
-        for app_name in ("investment", "baseball", "nba", "music"):
-            if app_name in search_apps:
-                continue
-            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
-            for row in rows:
-                if str(row.get("item_key") or "") == qid:
-                    payload = row.get("payload")
-                    if isinstance(payload, dict):
-                        return copy.deepcopy(payload)
+                        out = copy.deepcopy(payload)
+                        out["blob_load_source"] = f"scan:{app_name}"
+                        out["blob_load_candidates"] = load_attempts
+                        return out
     except Exception as exc:
-        log.warning("load_saved_items failed for question context: %s", exc)
+        log.warning("load_saved_items scan failed for question context: %s", exc)
+
     try:
         from suite_storage_supabase import load_active_resume_items
 
-        for row in load_active_resume_items(limit=40):
-            if str(row.get("app") or "") != "applied_intelligence":
-                continue
-            if str(row.get("item_key") or "") != resume_key:
-                continue
-            ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
-            if ctx:
-                return {"context": ctx, "question_id": qid}
+        for app_filter in ("applied_intelligence", "baseball", None):
+            load_attempts.append(f"resume:{app_filter or 'any'}")
+            rows = load_active_resume_items(limit=40, app=app_filter)
+            for row in rows:
+                item_key = str(row.get("item_key") or "")
+                if item_key not in (resume_key, hof_resume_key):
+                    continue
+                ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
+                if ctx:
+                    return {
+                        "context": ctx,
+                        "question_id": qid,
+                        "blob_load_source": f"resume_subtitle:{item_key}",
+                        "blob_load_candidates": load_attempts,
+                    }
     except Exception:
         pass
-    return {}
+
+    return {"blob_load_candidates": load_attempts, "question_id": qid}
 
 
 def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
@@ -606,7 +710,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
 
     # Blob-first: full context by question_id before metrics/URL (avoids truncated deep links).
     if qid:
-        blob_payload = load_analytical_question_payload(qid)
+        blob_payload = load_analytical_question_payload(qid, hof_target_slug=_qp("suite_hof_target"))
         blob_ctx = blob_payload.get("context") if isinstance(blob_payload.get("context"), dict) else {}
         if blob_ctx:
             ctx = copy.deepcopy(blob_ctx)
@@ -738,7 +842,7 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
             selected_renderer = "hof_case_fallback_error"
         elif not insight_staged:
             fallback_reason = "hof_insight_missing_using_packet_only"
-    elif qid and not blob_payload:
+    elif qid and not (blob_payload.get("context") or blob_payload.get("hof_case_packet")):
         fallback_reason = "question_id_blob_not_found"
     elif not ctx:
         fallback_reason = "no_context_from_blob_url_or_metrics"
@@ -753,8 +857,11 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         "source_page": source_page,
         "source_app": source_app,
         "page": page,
-        "blob_found": bool(blob_payload) if qid else False,
+        "blob_found": bool(blob_payload.get("context") or blob_payload.get("hof_case_packet")) if qid else False,
         "blob_keys": sorted(blob_payload.keys()) if isinstance(blob_payload, dict) else [],
+        "blob_load_source": str(blob_payload.get("blob_load_source") or ""),
+        "blob_store_app": str(blob_payload.get("blob_store_app") or ""),
+        "blob_load_candidates": list(blob_payload.get("blob_load_candidates") or []),
         "context_keys": sorted(ctx.keys()) if isinstance(ctx, dict) else [],
         "hof_case_packet_present": packet_staged or isinstance((ctx or {}).get("hof_case_packet"), dict),
         "hof_case_packet_staged": packet_staged,

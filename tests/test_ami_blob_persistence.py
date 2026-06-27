@@ -121,6 +121,29 @@ class TestAmiBlobPersistence(unittest.TestCase):
         blob_ctx = (saved_payload or {}).get("context") or {}
         self.assertEqual(len(blob_ctx.get("available_players") or []), 1)
 
+    @patch("suite_account.fetch_saved_item_any_app")
+    @patch("suite_account.fetch_saved_item")
+    def test_load_payload_uses_direct_saved_item_lookup(
+        self, fetch_mock, fetch_any_mock
+    ) -> None:
+        from suite_analytical_question import load_analytical_question_payload
+
+        fetch_mock.return_value = None
+        fetch_any_mock.return_value = {
+            "app": "baseball",
+            "storage_app": "baseball",
+            "payload": {
+                "question_id": "498e149378a5",
+                "context": {"player": "Rusty Staub", "app_context_type": "baseball_hof_case"},
+                "hof_case_packet": {"target_player": "Rusty Staub"},
+                "app_context_type": "baseball_hof_case",
+            },
+        }
+        result = load_analytical_question_payload("498e149378a5")
+        self.assertTrue(result.get("hof_case_packet"))
+        self.assertEqual(result.get("blob_load_source"), "saved_item:any_app")
+        fetch_any_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

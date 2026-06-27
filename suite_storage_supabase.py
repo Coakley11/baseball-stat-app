@@ -967,6 +967,78 @@ def load_saved_items(
     return out
 
 
+def load_saved_item_by_key(
+    item_type: str,
+    item_key: str,
+    *,
+    app: str | None = None,
+) -> dict[str, Any] | None:
+    """
+    Fetch one saved item by exact ``item_key`` (not a recent-items scan).
+
+    When ``app`` is omitted, searches all workspace-scoped app keys for the user,
+    then falls back to an app-agnostic query so cross-app blobs still resolve.
+    """
+    from suite_workspace import logical_storage_app_key
+
+    key = str(item_key or "").strip()
+    itype = str(item_type or "").strip()
+    if not key or not itype:
+        return None
+    uid = _scoped_user_id()
+    if not uid:
+        return None
+
+    def _fetch(*, app_filter: str | None) -> dict[str, Any] | None:
+        params: dict[str, str] = {
+            "select": "app,item_type,item_key,title,payload,updated_at",
+            "user_id": f"eq.{uid}",
+            "item_type": f"eq.{itype}",
+            "item_key": f"eq.{key}",
+            "valid": "eq.true",
+            "limit": "1",
+        }
+        if app_filter:
+            params["app"] = f"eq.{app_filter}"
+        rows = _request("GET", _TABLE_SAVED, params=params, prefer="return=representation")
+        if not isinstance(rows, list) or not rows:
+            return None
+        row = rows[0]
+        if not isinstance(row, dict):
+            return None
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        storage_app = str(row.get("app") or "")
+        return {
+            "app": logical_storage_app_key(storage_app),
+            "storage_app": storage_app,
+            "item_type": str(row.get("item_type") or ""),
+            "item_key": str(row.get("item_key") or ""),
+            "title": str(row.get("title") or ""),
+            "payload": payload,
+            "updated_at": str(row.get("updated_at") or "")[:19],
+        }
+
+    if app:
+        scoped = _scoped_storage_app(app)
+        hit = _fetch(app_filter=scoped)
+        if hit:
+            return hit
+        base = str(app or "").strip()
+        if base and scoped != base:
+            hit = _fetch(app_filter=base)
+            if hit:
+                return hit
+        return None
+
+    for storage_app in sorted(_workspace_storage_app_keys()):
+        hit = _fetch(app_filter=storage_app)
+        if hit:
+            return hit
+    return _fetch(app_filter=None)
+
+
 def save_user_settings(app: str, settings: dict[str, Any]) -> None:
     app_key = str(app or "_global").strip() or "_global"
     _request(
