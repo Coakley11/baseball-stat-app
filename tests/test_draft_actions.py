@@ -280,6 +280,18 @@ class TestOnClockLabel(unittest.TestCase):
         label = resolve_on_clock_team_label(session, summary={"on_clock_team": None, "pick": 2})
         self.assertEqual(label, "Team 2")
 
+    def test_get_active_draft_status_includes_on_clock_team(self) -> None:
+        from draft_room_state import get_active_draft_status
+
+        board = _four_team_board(filled_through_pick=1)
+        session = {
+            "room_your_team": "Team A",
+            "draft_room_table": board.copy(),
+            "room_team_count": 4,
+        }
+        status = get_active_draft_status(session)
+        self.assertEqual(status.get("on_clock_team"), "Team B")
+
 
 class TestImportFallback(unittest.TestCase):
     @patch("importlib.import_module")

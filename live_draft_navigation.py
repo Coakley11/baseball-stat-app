@@ -114,7 +114,7 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                 "picks_label": f"{status.get('pick_count', 0)} pick(s) logged",
                 "round_no": status.get("current_round"),
                 "pick_no": status.get("current_pick"),
-                "on_clock": status.get("on_clock_team") or "—",
+                "on_clock": str(status.get("on_clock_team") or "").strip(),
                 "user_team": status.get("your_team") or "",
             }
     except ImportError:
@@ -165,8 +165,9 @@ def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_p
             st.caption(f"Your team: **{ctx['user_team']}**")
         if ctx.get("round_no") and ctx.get("pick_no"):
             st.caption(f"Round **{ctx['round_no']}** · Pick **{ctx['pick_no']}**")
-        if ctx.get("on_clock"):
-            st.caption(f"On clock: **{ctx['on_clock']}**")
+        on_clock = str(ctx.get("on_clock") or "").strip()
+        if on_clock and on_clock != "—":
+            st.caption(f"On clock: **{on_clock}**")
         if ctx.get("picks_label"):
             st.caption(str(ctx["picks_label"]))
         sec = ctx.get("seconds_remaining")

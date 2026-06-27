@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 HOF_STAR = "⭐"
+HOF_TARGET_STAR = "🔴"
 HOF_SCATTER_COLOR_COL = "Hall of Fame"
 HOF_SCATTER_HOF_LABEL = "Hall of Famer"
 HOF_SCATTER_NON_HOF_LABEL = "Non-Hall of Famer"
@@ -253,7 +254,7 @@ HOF_CASE_MODE_HISTORICAL_NOTICE = (
 )
 HOF_CASE_ANALYZE_BUTTON_LABEL = "Analyze Hall of Fame Statistical Case with AMI"
 HOF_CASE_TARGET_ALREADY_IN_HOF_MSG = (
-    "This player is already in the Hall of Fame. Select a non-Hall-of-Fame player to analyze."
+    "Target player must be a non-Hall of Famer. Please select another player."
 )
 HOF_DATA_FILENAME = "HallOfFame.csv"
 HOF_PLAYER_CATEGORY = "Player"
@@ -611,10 +612,13 @@ def apply_hof_membership_filter(
     return df
 
 
-def decorate_player_name(name: Any, is_hof: Any) -> str:
+def decorate_player_name(name: Any, is_hof: Any, *, is_target: bool = False) -> str:
     label = str(name or "").strip()
     if not label:
         return label
+    if is_target and not bool(is_hof):
+        if not label.startswith(HOF_TARGET_STAR):
+            return f"{HOF_TARGET_STAR} {label}"
     if bool(is_hof):
         if not label.startswith(HOF_STAR):
             return f"{HOF_STAR} {label}"
@@ -647,8 +651,10 @@ def badge_hof_players_for_table(
     *,
     name_col: str | None = None,
     hof_col: str = "isHallOfFamer",
+    target_player: str | None = None,
+    target_name_col: str = "fullName",
 ) -> pd.DataFrame:
-    """Apply ⭐ to the exact player-name column shown in the rendered table."""
+    """Apply ⭐ to Hall of Famers and 🔴 to the HOF case target player in the rendered table."""
     if table_df is None or table_df.empty:
         return table_df
     out = table_df.copy()
@@ -665,8 +671,24 @@ def badge_hof_players_for_table(
             flags = source_df.reindex(out.index)[hof_col]
     if flags is None:
         return out.drop(columns=[hof_col], errors="ignore")
+    target_norm = str(target_player or "").strip().casefold()
+    match_names = None
+    if target_norm and source_df is not None and target_name_col in source_df.columns:
+        if out.index.equals(source_df.index):
+            match_names = source_df[target_name_col]
+        else:
+            match_names = source_df.reindex(out.index)[target_name_col]
     out[col] = [
-        decorate_player_name(n, h) for n, h in zip(out[col], flags, strict=False)
+        decorate_player_name(
+            n,
+            h,
+            is_target=bool(
+                target_norm
+                and str((match_names.iloc[i] if match_names is not None else n) or "").strip().casefold()
+                == target_norm
+            ),
+        )
+        for i, (n, h) in enumerate(zip(out[col], flags, strict=False))
     ]
     return out.drop(columns=[hof_col], errors="ignore")
 

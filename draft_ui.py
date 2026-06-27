@@ -885,7 +885,7 @@ def render_draft_queue_panel(
         else:
             cols = container.columns([0.08, 0.34, 0.14, 0.22, 0.22])
             cols[0].write(f"{idx + 1}")
-            cols[1].write(format_queue_player_label(pname, meta))
+            cols[1].write(pname)
             cols[2].write(meta["position"])
             cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
             ctrl = container.columns([0.5, 0.5])

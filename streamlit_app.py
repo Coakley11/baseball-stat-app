@@ -13307,7 +13307,6 @@ if active_page == "Historical Explorer":
         apply_hof_membership_filter,
         badge_hof_players_for_table,
         ensure_hof_case_scope_ui_state,
-        HOF_CASE_MODE_HISTORICAL_NOTICE,
         render_hof_case_scope_controls,
         render_hof_cohort_summary,
         render_hof_page_runtime_diag,
@@ -13386,7 +13385,6 @@ if active_page == "Historical Explorer":
         )
 
     if hof_case_mode:
-        st.info(HOF_CASE_MODE_HISTORICAL_NOTICE)
         with st.container():
             st.markdown("**Hall of Fame Case Mode**")
             hist_hof_filter = render_hof_case_scope_controls(
@@ -13943,8 +13941,11 @@ if active_page == "Career Totals":
 
     hof_target_player = ""
     hof_target_in_results = False
+    hof_target_is_hof = False
     if hof_case_mode:
         hof_target_player = str(st.session_state.get(CAREER_HOF_CASE_TARGET_KEY) or "").strip()
+        if hof_target_player:
+            hof_target_is_hof = target_player_is_hall_of_famer(hof_target_player, career_totals)
 
     top_bar_chart(career_totals, "fullName", sort_stat_career, f"Top 10 Career Totals by {sort_stat_career}")
 
@@ -13966,7 +13967,12 @@ if active_page == "Career Totals":
         "fullName": "Player", "bats": "Bats", "displayPosition": "Primary Position", "displayTeam": "Team"
     })
     if hof_case_mode:
-        career_display = badge_hof_players_for_table(career_display, career_totals, name_col="Player")
+        career_display = badge_hof_players_for_table(
+            career_display,
+            career_totals,
+            name_col="Player",
+            target_player=hof_target_player if hof_target_player and not hof_target_is_hof else None,
+        )
     from stat_filter_summary import render_stat_filter_summary, render_stat_filter_summary_developer_diagnostics
 
     if hof_case_mode and len(career_totals) > 0:
@@ -13989,8 +13995,14 @@ if active_page == "Career Totals":
         render_stat_filter_summary(st, st.session_state, mode="career")
     if hof_case_mode:
         hof_target_in_results = bool(hof_target_player) and player_in_results(hof_target_player, career_totals)
-        if hof_target_player and target_player_is_hall_of_famer(hof_target_player, career_totals):
-            st.info(HOF_CASE_TARGET_ALREADY_IN_HOF_MSG)
+        if hof_target_player and hof_target_is_hof:
+            st.warning(HOF_CASE_TARGET_ALREADY_IN_HOF_MSG)
+            st.button(
+                HOF_CASE_ANALYZE_BUTTON_LABEL,
+                type="primary",
+                key="career_hof_case_analyze_btn",
+                disabled=True,
+            )
         elif hof_target_player and not hof_target_in_results:
             st.warning(
                 "Selected player is not included in this search result. Adjust filters and try again."

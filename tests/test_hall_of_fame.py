@@ -214,6 +214,20 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertTrue(str(out.iloc[0]["fullName"]).startswith("⭐"))
         self.assertFalse(str(out.iloc[1]["fullName"]).startswith("⭐"))
 
+    def test_badge_hof_players_for_table_marks_target_player(self) -> None:
+        source = pd.DataFrame(
+            [
+                {"fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714},
+                {"fullName": "Jeremy Burnitz", "isHallOfFamer": False, "HR": 315},
+            ]
+        )
+        table = source[["fullName", "HR"]].rename(columns={"fullName": "Player"})
+        badged = badge_hof_players_for_table(
+            table, source, name_col="Player", target_player="Jeremy Burnitz"
+        )
+        self.assertTrue(str(badged.iloc[0]["Player"]).startswith("⭐"))
+        self.assertTrue(str(badged.iloc[1]["Player"]).startswith("🔴"))
+
     def test_badge_hof_players_for_table_uses_source_flags(self) -> None:
         source = pd.DataFrame(
             [

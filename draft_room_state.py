@@ -1435,6 +1435,14 @@ def get_active_draft_status(session: dict[str, Any]) -> dict[str, Any]:
     if not status["current_round"] and picks > 0:
         team_count = int(session.get("room_team_count") or 12)
         status["current_round"] = ((picks) // team_count) + 1 if team_count else None
+    try:
+        from draft_actions import resolve_on_clock_team_label
+
+        on_clock = resolve_on_clock_team_label(session)
+        if on_clock and on_clock != "—":
+            status["on_clock_team"] = on_clock
+    except Exception:
+        pass
     return status
 
 
