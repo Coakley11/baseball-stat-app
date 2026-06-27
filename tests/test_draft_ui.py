@@ -47,6 +47,33 @@ class TestLookupPlayerDraftMeta(unittest.TestCase):
         self.assertEqual(meta["position"], "SS")
         self.assertEqual(meta["team"], "NYM")
 
+    def test_lookup_resolves_team_from_pool_when_ami_row_lacks_team(self) -> None:
+        import pandas as pd
+
+        session = {
+            "_ami_undrafted_pool_lookup": {
+                "aaron judge": {"player": "Aaron Judge", "Primary Position": "RF"},
+            },
+            "draft_room_player_pool": pd.DataFrame(
+                [{"fullName": "Aaron Judge", "Primary Position": "RF", "Team": "NYY"}]
+            ),
+        }
+        meta = lookup_player_draft_meta(session, "Aaron Judge")
+        self.assertEqual(meta["position"], "RF")
+        self.assertEqual(meta["team"], "NYY")
+
+    def test_position_only_cache_does_not_block_team_lookup(self) -> None:
+        import pandas as pd
+
+        session = {
+            "_queue_player_meta": {"aaron judge": {"position": "RF", "team": "—"}},
+            "draft_room_player_pool": pd.DataFrame(
+                [{"fullName": "Aaron Judge", "Primary Position": "RF", "Team": "NYY"}]
+            ),
+        }
+        meta = lookup_player_draft_meta(session, "Aaron Judge")
+        self.assertEqual(meta["team"], "NYY")
+
 
 class TestSimulatorConvertSettings(unittest.TestCase):
     def test_assess_incomplete_when_keys_missing(self) -> None:

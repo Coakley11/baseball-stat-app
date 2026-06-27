@@ -69,6 +69,12 @@ def _finalize_cache_build_trace(trace: dict[str, Any]) -> dict[str, Any]:
 
 AMI_REC_COLUMNS = (
     "Primary Position",
+    "Team",
+    "team",
+    "teamAbbrev",
+    "teamName",
+    "displayTeam",
+    "primaryTeamName",
     "Model Rank",
     "Market Rank",
     "Expected Fantasy Value",

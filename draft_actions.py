@@ -617,6 +617,45 @@ def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _on_clock_team_from_live_room(session: dict[str, Any], room: dict[str, Any]) -> str:
+    """Resolve fantasy on-clock team from live draft room slot (same source as room banner)."""
+    if not isinstance(room, dict):
+        return ""
+    try:
+        from live_draft_state import analyze_live_draft_progress
+        from live_draft_timer_logic import live_draft_current_slot, resolve_live_draft_on_clock_slot
+
+        progress = analyze_live_draft_progress(room)
+        on_clock = str(progress.get("on_clock_team") or "").strip()
+        if on_clock and on_clock != "—":
+            return on_clock
+        slot = progress.get("slot")
+        if not isinstance(slot, dict):
+            slot = resolve_live_draft_on_clock_slot(room) or live_draft_current_slot(room)
+        if isinstance(slot, dict):
+            on_clock = str(slot.get("Team") or "").strip()
+            if on_clock and on_clock != "—":
+                return on_clock
+        picks = room.get("pick_order") or []
+        idx = int(room.get("current_pick_index") or progress.get("current_pick_index") or 0)
+        if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
+            on_clock = str(picks[idx].get("Team") or "").strip()
+            if on_clock and on_clock != "—":
+                return on_clock
+    except ImportError:
+        pass
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        board = get_canonical_draft_board(session)
+        info = _next_on_clock_pick_info(board)
+        if info:
+            return str(info.get("on_clock_team") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def resolve_on_clock_team_label(
     session: dict[str, Any],
     *,
@@ -630,23 +669,7 @@ def resolve_on_clock_team_label(
 
     room = session.get("live_draft_room")
     if isinstance(room, dict):
-        try:
-            from live_draft_state import analyze_live_draft_progress
-            from live_draft_timer_logic import live_draft_current_slot
-
-            progress = analyze_live_draft_progress(room)
-            on_clock = str(progress.get("on_clock_team") or "").strip()
-            if not on_clock:
-                slot = progress.get("slot") or live_draft_current_slot(room)
-                if isinstance(slot, dict):
-                    on_clock = str(slot.get("Team") or "").strip()
-            if not on_clock:
-                picks = room.get("pick_order") or []
-                idx = int(room.get("current_pick_index") or 0)
-                if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
-                    on_clock = str(picks[idx].get("Team") or "").strip()
-        except ImportError:
-            pass
+        on_clock = _on_clock_team_from_live_room(session, room)
     if on_clock:
         return on_clock
 

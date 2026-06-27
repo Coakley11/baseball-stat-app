@@ -535,29 +535,13 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
     qmeta = session.get(QUEUE_PLAYER_META_KEY)
     if isinstance(qmeta, dict):
         cached = qmeta.get(target) or qmeta.get(name)
-        if isinstance(cached, dict) and (cached.get("position") != "—" or cached.get("team") != "—"):
-            return {
-                "position": str(cached.get("position") or "—").strip() or "—",
-                "team": str(cached.get("team") or "—").strip() or "—",
-            }
-
-    lookup = _ensure_draft_player_meta_lookup(session)
-    row = lookup.get(target) or lookup.get(name)
-    if isinstance(row, dict):
-        resolved = _from_row(row)
-        if resolved["position"] != "—" or resolved["team"] != "—":
-            cache_queue_player_meta(session, name, resolved)
-            return resolved
-
-    try:
-        from draft_ami_helpers import build_player_position_index_from_session
-
-        pos_index = build_player_position_index_from_session(session)
-        pos = pos_index.get(target) or pos_index.get(name.lower())
-        if pos:
-            meta["position"] = pos
-    except Exception:
-        pass
+        if isinstance(cached, dict):
+            cpos = str(cached.get("position") or "—").strip() or "—"
+            cteam = str(cached.get("team") or "—").strip() or "—"
+            if cteam != "—":
+                return {"position": cpos, "team": cteam}
+            if cpos != "—":
+                meta["position"] = cpos
 
     try:
         from draft_room_state import get_canonical_draft_board
@@ -565,22 +549,47 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
         board = get_canonical_draft_board(session)
         if board is not None and not getattr(board, "empty", True):
             hit = _match_pool(board)
-            if hit:
+            if hit and hit.get("team") != "—":
                 cache_queue_player_meta(session, name, hit)
                 return hit
+            if hit and hit.get("position") != "—":
+                meta = hit
     except Exception:
         pass
 
     pool = _draft_pool_for_meta_lookup(session)
     if pool is not None:
         hit = _match_pool(pool)
-        if hit:
+        if hit and hit.get("team") != "—":
             cache_queue_player_meta(session, name, hit)
             return hit
+        if hit and hit.get("position") != "—" and meta.get("position") == "—":
+            meta = hit
+
+    lookup = _ensure_draft_player_meta_lookup(session)
+    row = lookup.get(target) or lookup.get(name)
+    if isinstance(row, dict):
+        resolved = _from_row(row)
+        if resolved.get("team") != "—":
+            if meta.get("position") != "—":
+                resolved["position"] = meta["position"]
+            cache_queue_player_meta(session, name, resolved)
+            return resolved
+        if resolved.get("position") != "—" and meta.get("position") == "—":
+            meta["position"] = resolved["position"]
+
+    try:
+        from draft_ami_helpers import build_player_position_index_from_session
+
+        pos_index = build_player_position_index_from_session(session)
+        pos = pos_index.get(target) or pos_index.get(name.lower())
+        if pos and meta.get("position") == "—":
+            meta["position"] = pos
+    except Exception:
+        pass
 
     if meta["position"] != "—" or meta["team"] != "—":
         cache_queue_player_meta(session, name, meta)
-        return meta
     return meta
 
 

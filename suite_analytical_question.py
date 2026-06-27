@@ -531,7 +531,7 @@ def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     if not qid:
         return {}
     resume_key = f"ai:question:{qid}"
-    search_apps = ["applied_intelligence"]
+    search_apps = ["applied_intelligence", "baseball"]
     try:
         from suite_account import load_saved_items
 
@@ -671,20 +671,16 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     if source_state:
         ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
     ss["_suite_ai_hydrate_source"] = hydrate_source
-    ss["_suite_ai_hydrate_diag"] = {
-        "question_id": qid,
-        "hydrate_source": hydrate_source,
-        "quant_area": area,
-        "source_page": source_page,
-        "source_app": source_app,
-        "page": page,
-        "blob_found": bool(blob_payload) if qid else False,
-        "blob_keys": sorted(blob_payload.keys()) if isinstance(blob_payload, dict) else [],
-        "context_keys": sorted(ctx.keys()) if isinstance(ctx, dict) else [],
-        "hof_case_packet_present": isinstance((ctx or {}).get("hof_case_packet"), dict),
-        "routing_hint": str((ctx or {}).get("routing_hint") or ""),
-        "app_context_type": str(blob_payload.get("app_context_type") or (ctx or {}).get("app_context_type") or ""),
-        "player": str((ctx or {}).get("player") or blob_payload.get("player") or ""),
+    url_params = {
+        "suite_ai_question_id": qid or _qp("suite_ai_question_id"),
+        "suite_ai_question": question or _qp("suite_ai_question"),
+        "suite_ai_source_app": source_app or _qp("suite_ai_source_app"),
+        "suite_ai_source_page": source_page or _qp("suite_ai_source_page"),
+        "suite_ai_area": area or _qp("suite_ai_area"),
+        "suite_page": page or _qp("suite_page"),
+        "suite_hof_case": _qp("suite_hof_case"),
+        "suite_hof_target": _qp("suite_hof_target"),
+        "suite_ai_context_len": str(len(_qp("suite_ai_context") or "")),
     }
 
     is_hof = (
@@ -695,19 +691,29 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         or str((ctx or {}).get("routing_hint") or "") == "hof_case_analysis"
         or str((ctx or {}).get("intent") or "") == "hof_case_analysis"
     )
+    selected_renderer = "default_homepage"
+    fallback_reason = ""
+    packet_staged = False
+    insight_staged = False
+
     if is_hof:
         ss["_suite_hof_case"] = True
         ss["_suite_ai_area"] = "hall_of_fame_case"
         ss["view_mode"] = "Solve a Problem"
         ss["_suite_ai_page"] = "Solve a Problem"
+        selected_renderer = "hof_case_analysis"
         packet = blob_payload.get("hof_case_packet")
         if not isinstance(packet, dict):
             packet = ctx.get("hof_case_packet")
         if isinstance(packet, dict) and packet:
             ss["_hof_case_packet"] = copy.deepcopy(packet)
+            packet_staged = True
         insight_blob = blob_payload.get("insight")
-        if isinstance(insight_blob, dict) and insight_blob:
-            ss["_hof_case_insight"] = copy.deepcopy(insight_blob)
+        if not isinstance(insight_blob, dict):
+            insight_blob = ss.get("_hof_case_insight") if isinstance(ss.get("_hof_case_insight"), dict) else {}
+        if isinstance(blob_payload.get("insight"), dict) and blob_payload.get("insight"):
+            ss["_hof_case_insight"] = copy.deepcopy(blob_payload["insight"])
+            insight_blob = blob_payload["insight"]
         verdict = blob_payload.get("verdict_context")
         if isinstance(verdict, dict) and verdict:
             ss["_hof_case_verdict"] = copy.deepcopy(verdict)
@@ -720,6 +726,146 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         ).strip()
         if target:
             ss["_suite_hof_target"] = target
+        if isinstance(insight_blob, dict) and insight_blob.get("conclusion"):
+            ss["_ami_pending_insight"] = copy.deepcopy(insight_blob)
+            ss["_ami_force_insight_render"] = True
+            ss["_ami_hydrated_insight_id"] = str(insight_blob.get("insight_id") or qid or "")
+            insight_staged = True
+        elif packet_staged:
+            ss["_ami_force_insight_render"] = True
+        if not packet_staged:
+            fallback_reason = "hof_case_packet_missing_after_hydrate"
+            selected_renderer = "hof_case_fallback_error"
+        elif not insight_staged:
+            fallback_reason = "hof_insight_missing_using_packet_only"
+    elif qid and not blob_payload:
+        fallback_reason = "question_id_blob_not_found"
+    elif not ctx:
+        fallback_reason = "no_context_from_blob_url_or_metrics"
+
+    ss["_suite_ai_selected_renderer"] = selected_renderer
+    ss["_suite_ai_hydrate_diag"] = {
+        "incoming_url_params": url_params,
+        "question_id": qid,
+        "suite_ai_question_id": qid,
+        "hydrate_source": hydrate_source,
+        "quant_area": area,
+        "source_page": source_page,
+        "source_app": source_app,
+        "page": page,
+        "blob_found": bool(blob_payload) if qid else False,
+        "blob_keys": sorted(blob_payload.keys()) if isinstance(blob_payload, dict) else [],
+        "context_keys": sorted(ctx.keys()) if isinstance(ctx, dict) else [],
+        "hof_case_packet_present": packet_staged or isinstance((ctx or {}).get("hof_case_packet"), dict),
+        "hof_case_packet_staged": packet_staged,
+        "hof_insight_staged": insight_staged,
+        "routing_hint": str((ctx or {}).get("routing_hint") or ""),
+        "app_context_type": str(blob_payload.get("app_context_type") or (ctx or {}).get("app_context_type") or ""),
+        "player": str((ctx or {}).get("player") or blob_payload.get("player") or ss.get("_suite_hof_target") or ""),
+        "is_hof": bool(is_hof),
+        "selected_renderer": selected_renderer,
+        "fallback_reason": fallback_reason,
+    }
+    ss["_suite_ai_show_landing_diag"] = True
+
+
+def render_applied_intelligence_landing_diagnostics(st: Any, *, expanded: bool | None = None) -> None:
+    """Visible AMI landing diagnostics — URL params, blob lookup, renderer selection."""
+    ss = st.session_state
+    diag = dict(ss.get("_suite_ai_hydrate_diag") or {})
+    if not diag and not ss.get("_suite_ai_show_landing_diag"):
+        return
+    auto_expand = expanded
+    if auto_expand is None:
+        auto_expand = bool(
+            diag.get("is_hof")
+            and (not diag.get("hof_case_packet_staged") or diag.get("fallback_reason"))
+        )
+    with st.expander("AMI landing diagnostics", expanded=bool(auto_expand)):
+        st.caption("Handoff hydration status for Baseball → AMI deep links.")
+        st.json(diag)
+        if diag.get("fallback_reason"):
+            st.error(f"Handoff fallback: {diag['fallback_reason']}")
+        qid = str(diag.get("question_id") or "").strip()
+        if qid and not diag.get("blob_found"):
+            st.warning(
+                f"No analytical_question_context blob found for question_id `{qid}`. "
+                "Check cloud saved items for applied_intelligence and baseball apps."
+            )
+
+
+def render_hof_case_solve_problem_handoff(st: Any) -> bool:
+    """Render Hall of Fame case analysis when hydrated from Baseball. Returns True if content shown."""
+    ss = st.session_state
+    if not ss.get("_suite_hof_case"):
+        return False
+    packet = ss.get("_hof_case_packet")
+    insight = ss.get("_hof_case_insight") or ss.get("_ami_pending_insight")
+    verdict = ss.get("_hof_case_verdict")
+    target = str(ss.get("_suite_hof_target") or (packet or {}).get("target_player") or "").strip()
+
+    render_applied_intelligence_landing_diagnostics(st)
+
+    if not isinstance(packet, dict) or not packet:
+        st.error(
+            "Hall of Fame case handoff failed: no `hof_case_packet` in session. "
+            "See AMI landing diagnostics above for blob lookup status."
+        )
+        return False
+
+    title = f"Hall of Fame Case — {target}" if target else "Hall of Fame Case Analysis"
+    st.markdown(f"## {title}")
+    summary = str(packet.get("hof_case_summary") or "").strip()
+    if summary:
+        st.markdown(summary)
+    score_label = str(packet.get("score_label") or "").strip()
+    if score_label:
+        st.caption(score_label)
+
+    if isinstance(insight, dict) and insight.get("conclusion"):
+        try:
+            from applied_math_return_insight import render_applied_math_insight_panel
+
+            if render_applied_math_insight_panel(st, source_app="baseball", insight=insight):
+                return True
+        except ImportError:
+            st.markdown(f"**Conclusion:** {insight.get('conclusion')}")
+            bullets = insight.get("supporting_points") or insight.get("bullets") or []
+            if isinstance(bullets, list):
+                for point in bullets[:8]:
+                    st.markdown(f"- {point}")
+            return True
+
+    if isinstance(verdict, dict) and verdict:
+        rec = str(verdict.get("recommendation") or "").strip()
+        if rec:
+            st.markdown(f"**Recommendation:** {rec}")
+        points = verdict.get("supporting_points") or []
+        if isinstance(points, list):
+            for point in points[:8]:
+                st.markdown(f"- {point}")
+        return True
+
+    cohort = packet.get("cohort_selectivity")
+    if isinstance(cohort, dict) and cohort.get("threshold_notes"):
+        st.markdown("**Cohort notes**")
+        for note in cohort.get("threshold_notes")[:6]:
+            st.markdown(f"- {note}")
+    sample = packet.get("sample_rows") or packet.get("top_sample") or []
+    if isinstance(sample, list) and sample:
+        st.markdown("**Cohort sample**")
+        st.dataframe(sample[:12], use_container_width=True, hide_index=True)
+    return True
+
+
+def render_applied_intelligence_handoff_page(st: Any) -> bool:
+    """AMI Solve a Problem preamble — diagnostics + HOF case when present."""
+    ss = st.session_state
+    if ss.get("_suite_hof_case"):
+        return render_hof_case_solve_problem_handoff(st)
+    if ss.get("_suite_ai_show_landing_diag") or ss.get("_suite_ai_hydrate_diag"):
+        render_applied_intelligence_landing_diagnostics(st, expanded=False)
+    return False
 
 
 def _format_context_value(key: str, val: Any) -> str:

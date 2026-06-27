@@ -103,6 +103,16 @@ _WORKSPACE_KEYS = (
     "fantasy_state",
 )
 
+_WORKFLOW_KEYS = (
+    "draft_queue",
+    "watchlist_focus",
+    "watchlist_favorites",
+    "workflow_recently_viewed",
+    "workflow_recent_compare_pairs",
+    "workflow_transfer_batches",
+    "_queue_player_meta",
+)
+
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
 
 
@@ -380,6 +390,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
                 state[key] = copy.deepcopy(ss[key])
             except Exception:
                 state[key] = ss[key]
+    for key in _WORKFLOW_KEYS:
+        if key in ss:
+            try:
+                state[key] = copy.deepcopy(ss[key])
+            except Exception:
+                state[key] = ss[key]
     save_reason = str(ss.pop("_suite_pending_save_reason", None) or "autosave")
     state["baseball_workspace_state"] = _build_workspace_envelope(st, state, save_reason=save_reason)
     try:
@@ -496,7 +512,7 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     # draft-room blob. When the user edits settings, draft_room_state_dirty is set
     # (via mark_draft_room_local_edit on_change) and we must not let the cloud blob
     # overwrite their live edits on the very next rerun.
-    for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS:
+    for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _WORKSPACE_KEYS + _WORKFLOW_KEYS:
         if key not in state:
             continue
         if foreign_blob and key in _FOREIGN_GLOBAL_KEYS:
@@ -785,9 +801,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         pass
 
     try:
-        from draft_state import apply_cloud_draft_state_if_allowed
+        from draft_state import apply_cloud_draft_state_if_allowed, prepare_draft_workflow
 
         apply_cloud_draft_state_if_allowed(ss, state)
+        prepare_draft_workflow(ss)
     except ImportError:
         pass
 

@@ -15,6 +15,32 @@ def live_draft_current_slot(room: dict[str, Any]) -> dict[str, Any] | None:
     return slot if isinstance(slot, dict) else None
 
 
+def resolve_live_draft_on_clock_slot(
+    room: dict[str, Any] | None,
+    *,
+    manual_recovery_available: bool | None = None,
+) -> dict[str, Any] | None:
+    """Current pick slot — mirrors Live Draft Room banner recovery when index is stale."""
+    if not isinstance(room, dict):
+        return None
+    slot = live_draft_current_slot(room)
+    if isinstance(slot, dict) and str(slot.get("Team") or "").strip():
+        return slot
+    picks = list(room.get("pick_order") or [])
+    if not picks:
+        return slot if isinstance(slot, dict) else None
+    board = room.get("draft_board") or []
+    board_count = len(board) if isinstance(board, list) else 0
+    idx = int(room.get("current_pick_index") or 0)
+    if board_count < len(picks) and idx < board_count:
+        idx = board_count
+    if manual_recovery_available is False:
+        return slot if isinstance(slot, dict) else None
+    if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
+        return picks[idx]
+    return slot if isinstance(slot, dict) else None
+
+
 def _timer_seconds(room: dict[str, Any]) -> int:
     return int(room.get("config", {}).get("timer_seconds", 60))
 

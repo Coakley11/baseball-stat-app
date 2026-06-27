@@ -2191,14 +2191,16 @@ def _categorical_plot_columns(df, *, include_hof: bool = True):
     return options
 
 
-def _ensure_hof_scatter_columns(plot_df):
+def _ensure_hof_scatter_columns(plot_df, hof_ids=None):
     """Attach HOF flag + categorical color column for scatterplots."""
     try:
         from hall_of_fame_data import ensure_hof_scatter_columns
     except ImportError:
         return plot_df
-    hof_ids = globals().get("HOF_PLAYER_IDS")
-    return ensure_hof_scatter_columns(plot_df, hof_ids if isinstance(hof_ids, frozenset) else None)
+    ids = hof_ids if isinstance(hof_ids, frozenset) else globals().get("HOF_PLAYER_IDS")
+    if not isinstance(ids, frozenset):
+        ids = None
+    return ensure_hof_scatter_columns(plot_df, ids)
 
 
 # Current-franchise helpers for scatterplot labels and colors
@@ -2331,6 +2333,7 @@ def _prepare_historical_scatter_data(
     *,
     include_hof: bool = True,
     _hof_mode_key: bool = False,
+    _hof_player_ids: frozenset[str] | None = None,
 ):
     """Build plot-ready data for Historical Explorer.
 
@@ -2352,8 +2355,9 @@ def _prepare_historical_scatter_data(
     if "G" in plot_df.columns:
         plot_df["G"] = pd.to_numeric(plot_df["G"], errors="coerce")
     if include_hof:
-        plot_df = _ensure_hof_scatter_columns(plot_df)
+        plot_df = _ensure_hof_scatter_columns(plot_df, _hof_player_ids)
     return plot_df
+
 
 @st.cache_data(show_spinner=False)
 def _prepare_career_scatter_data(career_df, filtered_source_df=None, _hof_cache_key: float = 0.0, *, include_hof: bool = True):
@@ -3391,6 +3395,16 @@ def render_scatterplot_section(
         with p2:
             y_col = st.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(default_y), key=f"{key_prefix}_scatter_y")
         cat_options = ["None"] + _categorical_plot_columns(plot_df, include_hof=include_hof_color)
+        try:
+            from hall_of_fame_data import HOF_SCATTER_COLOR_COL, career_hof_case_mode_active, hof_scatter_color_available
+
+            if (include_hof_color or career_hof_case_mode_active(st.session_state)) and HOF_SCATTER_COLOR_COL not in cat_options:
+                if not hof_scatter_color_available(plot_df):
+                    plot_df = _ensure_hof_scatter_columns(plot_df)
+                if hof_scatter_color_available(plot_df):
+                    cat_options.append(HOF_SCATTER_COLOR_COL)
+        except (ImportError, NameError, AttributeError):
+            pass
         color_key = f"{key_prefix}_scatter_color"
         if color_key in st.session_state and st.session_state[color_key] not in cat_options:
             st.session_state.pop(color_key, None)
@@ -11251,6 +11265,12 @@ def record_workflow_recent_player(display_name):
         return
     lst = st.session_state.get("workflow_recently_viewed", [])
     st.session_state["workflow_recently_viewed"] = wf_sb.merge_mru(lst, name, wf_sb.RECENT_VIEW_CAP)
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="tracked_players")
+    except Exception:
+        pass
 
 
 def _short_workflow_page_name(page: str | None) -> str:
@@ -11327,6 +11347,12 @@ def add_transferred_players_to_tracked_players(
     )
     if len(names) >= 2:
         record_workflow_comparison_group(names)
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="tracked_players")
+    except Exception:
+        pass
 
 
 def record_workflow_comparison_pair(label_a, label_b):
@@ -13288,6 +13314,19 @@ if active_page == "Historical Explorer":
     )
     build_hof_cohort_display_text = _resolve_build_hof_cohort_display_text()
 
+    try:
+        from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY
+
+        init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
+        st.checkbox(
+            "Hall of Fame Case Mode",
+            key=CAREER_HOF_CASE_MODE_KEY,
+            help="Shared with Career Totals — enables Hall of Fame cohort tools and scatterplot Color By on both pages.",
+            on_change=historical_filter_changed,
+        )
+    except ImportError:
+        pass
+
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
     hist_hof_filter = HOF_FILTER_ALL
     render_hof_page_runtime_diag(
@@ -13604,6 +13643,7 @@ if active_page == "Historical Explorer":
             HOF_CACHE_KEY,
             include_hof=hof_case_mode,
             _hof_mode_key=bool(hof_case_mode),
+            _hof_player_ids=HOF_PLAYER_IDS if isinstance(HOF_PLAYER_IDS, frozenset) else None,
         ),
         include_hof_color=hof_case_mode,
     )
