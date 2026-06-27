@@ -13,6 +13,82 @@ MANUAL_CANDIDATE_SNAPSHOT_KEY = "_live_draft_manual_candidate_snapshot"
 # Legacy key — do not use for new widgets (pick-index keys are authoritative).
 MANUAL_PICK_SELECTBOX_KEY = "live_draft_player_select"
 MANUAL_DRAFT_BUTTON_KEY = "draft_btn_live_draft_room_live_manual"
+QUEUE_PLAYER_META_KEY = "_queue_player_meta"
+DRAFT_PLAYER_META_LOOKUP_KEY = "_draft_player_meta_lookup"
+
+
+def format_queue_player_label(player_name: str, meta: dict[str, str] | None = None) -> str:
+    """Display label: Player Name — Position — Team."""
+    name = str(player_name or "").strip()
+    if not name:
+        return ""
+    meta = meta or {}
+    pos = str(meta.get("position") or "—").strip() or "—"
+    team = str(meta.get("team") or "—").strip() or "—"
+    return f"{name} — {pos} — {team}"
+
+
+def cache_queue_player_meta(session: dict[str, Any], player_name: str, meta: dict[str, str]) -> None:
+    name = str(player_name or "").strip()
+    if not name:
+        return
+    store = session.get(QUEUE_PLAYER_META_KEY)
+    if not isinstance(store, dict):
+        store = {}
+    store[name.lower()] = {
+        "position": str(meta.get("position") or "—").strip() or "—",
+        "team": str(meta.get("team") or "—").strip() or "—",
+    }
+    session[QUEUE_PLAYER_META_KEY] = store
+    session.pop(DRAFT_PLAYER_META_LOOKUP_KEY, None)
+
+
+def _draft_pool_for_meta_lookup(session: dict[str, Any]) -> Any:
+    """Best-effort player pool for queue meta without heavy reconcile."""
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if isinstance(room, dict):
+            pool = room.get("pool")
+            if pool is not None and not getattr(pool, "empty", True):
+                return pool
+    except ImportError:
+        pass
+    lab = session.get("draft_lab_results")
+    if isinstance(lab, dict):
+        pool = lab.get("pool")
+        if pool is not None and not getattr(pool, "empty", True):
+            return pool
+    pool_df = session.get("draft_room_player_pool")
+    if pool_df is not None and not getattr(pool_df, "empty", True):
+        return pool_df
+    return None
+
+
+def _ensure_draft_player_meta_lookup(session: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    cached = session.get(DRAFT_PLAYER_META_LOOKUP_KEY)
+    if isinstance(cached, dict) and cached:
+        return cached
+    merged: dict[str, dict[str, Any]] = {}
+    ami = session.get("_ami_undrafted_pool_lookup")
+    if isinstance(ami, dict):
+        merged.update(ami)
+    qmeta = session.get(QUEUE_PLAYER_META_KEY)
+    if isinstance(qmeta, dict):
+        for key, val in qmeta.items():
+            if isinstance(val, dict):
+                merged[str(key).lower()] = val
+    pool = _draft_pool_for_meta_lookup(session)
+    if pool is not None:
+        try:
+            from draft_ami_helpers import build_undrafted_player_lookup
+
+            merged.update(build_undrafted_player_lookup(pool))
+        except ImportError:
+            pass
+    session[DRAFT_PLAYER_META_LOOKUP_KEY] = merged
+    return merged
 
 
 def manual_draft_candidate_widget_key(room: dict[str, Any]) -> str:
@@ -448,11 +524,22 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
                 return _from_row(row.to_dict())
         return None
 
-    lookup = session.get("_ami_undrafted_pool_lookup")
-    if isinstance(lookup, dict):
-        row = lookup.get(target) or lookup.get(name)
-        if isinstance(row, dict):
-            return _from_row(row)
+    qmeta = session.get(QUEUE_PLAYER_META_KEY)
+    if isinstance(qmeta, dict):
+        cached = qmeta.get(target) or qmeta.get(name)
+        if isinstance(cached, dict) and (cached.get("position") != "—" or cached.get("team") != "—"):
+            return {
+                "position": str(cached.get("position") or "—").strip() or "—",
+                "team": str(cached.get("team") or "—").strip() or "—",
+            }
+
+    lookup = _ensure_draft_player_meta_lookup(session)
+    row = lookup.get(target) or lookup.get(name)
+    if isinstance(row, dict):
+        resolved = _from_row(row)
+        if resolved["position"] != "—" or resolved["team"] != "—":
+            cache_queue_player_meta(session, name, resolved)
+            return resolved
 
     try:
         from draft_ami_helpers import build_player_position_index_from_session
@@ -471,29 +558,20 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
         if board is not None and not getattr(board, "empty", True):
             hit = _match_pool(board)
             if hit:
+                cache_queue_player_meta(session, name, hit)
                 return hit
     except Exception:
         pass
 
-    try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
-
-        prepare_live_draft_state(session)
-        room = session.get(LIVE_DRAFT_ROOM_KEY)
-        if isinstance(room, dict):
-            hit = _match_pool(room.get("pool"))
-            if hit:
-                return hit
-    except Exception:
-        pass
-
-    pool_df = session.get("draft_room_player_pool")
-    if pool_df is not None:
-        hit = _match_pool(pool_df)
+    pool = _draft_pool_for_meta_lookup(session)
+    if pool is not None:
+        hit = _match_pool(pool)
         if hit:
+            cache_queue_player_meta(session, name, hit)
             return hit
 
     if meta["position"] != "—" or meta["team"] != "—":
+        cache_queue_player_meta(session, name, meta)
         return meta
     return meta
 
@@ -620,7 +698,24 @@ def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, A
             line_parts.append(f"Pick {pick_n}")
         if line_parts:
             st.sidebar.markdown(f"**{' · '.join(line_parts)}**")
-        on_clock = str(summary.get("on_clock_team") or "").strip() or "—"
+        on_clock = str(summary.get("on_clock_team") or "").strip()
+        if not on_clock or on_clock == "—":
+            if summary.get("live_draft_active"):
+                room = session.get("live_draft_room")
+                if isinstance(room, dict):
+                    try:
+                        from live_draft_state import analyze_live_draft_progress
+                        from live_draft_timer_logic import live_draft_current_slot
+
+                        progress = analyze_live_draft_progress(room)
+                        on_clock = str(progress.get("on_clock_team") or "").strip()
+                        if not on_clock:
+                            slot = progress.get("slot") or live_draft_current_slot(room)
+                            if isinstance(slot, dict):
+                                on_clock = str(slot.get("Team") or "").strip()
+                    except ImportError:
+                        pass
+        on_clock = on_clock or "—"
         st.sidebar.caption(f"On Clock: **{on_clock}**")
         if summary.get("live_draft_active"):
             render_draft_sidebar_timer(st, session, summary=summary)
@@ -773,7 +868,8 @@ def render_draft_queue_panel(
             if r.button("✕", key=f"{key_prefix}_rm_{idx}"):
                 remove_player_from_draft_queue(session, pname)
                 rerun = True
-            c_name.caption(f"{idx + 1}. {pname[:32]}" + ("…" if len(pname) > 32 else ""))
+            label = format_queue_player_label(pname, meta)
+            c_name.caption(label[:72] + ("…" if len(label) > 72 else ""))
             if render_draft_button(
                 st,
                 session,
@@ -789,7 +885,7 @@ def render_draft_queue_panel(
         else:
             cols = container.columns([0.08, 0.34, 0.14, 0.22, 0.22])
             cols[0].write(f"{idx + 1}")
-            cols[1].write(pname[:40] + ("…" if len(pname) > 40 else ""))
+            cols[1].write(format_queue_player_label(pname, meta))
             cols[2].write(meta["position"])
             cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
             ctrl = container.columns([0.5, 0.5])

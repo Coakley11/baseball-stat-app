@@ -144,8 +144,9 @@ class CompactRecCardTests(unittest.TestCase):
         self.st.container.return_value.__enter__ = mock.Mock(return_value=mock.MagicMock())
         self.st.container.return_value.__exit__ = mock.Mock(return_value=False)
         self.btn_col = mock.MagicMock()
+        self.queue_col = mock.MagicMock()
         self.detail_col = mock.MagicMock()
-        self.st.columns.return_value = [self.btn_col, self.detail_col]
+        self.st.columns.return_value = [self.btn_col, self.queue_col, self.detail_col]
         self.session = {"live_draft_room": _sample_room()}
         self.rec_df = pd.DataFrame(
             [
@@ -158,6 +159,13 @@ class CompactRecCardTests(unittest.TestCase):
                 }
             ]
         )
+
+    def _draft_button_call(self) -> tuple[tuple[object, ...], dict[str, object]]:
+        for call in self.st.button.call_args_list:
+            label = str(call.args[0] if call.args else "")
+            if label.startswith("Draft "):
+                return call.args, call.kwargs
+        self.fail("Draft button not found in st.button calls")
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
@@ -227,10 +235,14 @@ class CompactRecCardTests(unittest.TestCase):
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
         md = str(self.st.markdown.call_args_list)
         self.assertIn("Juan Soto", md)
-        self.st.button.assert_called_once()
-        args, kwargs = self.st.button.call_args
+        self.assertEqual(self.st.button.call_count, 2)
+        args, kwargs = self._draft_button_call()
         self.assertIn("Draft Soto", args[0])
         self.assertTrue(kwargs.get("on_click"))
+        queue_calls = [
+            call for call in self.st.button.call_args_list if call.args and call.args[0] == "Add to Queue"
+        ]
+        self.assertEqual(len(queue_calls), 1)
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
@@ -248,7 +260,7 @@ class CompactRecCardTests(unittest.TestCase):
             self.rec_df,
             max_cards=1,
         )
-        kwargs = self.st.button.call_args[1]
+        _, kwargs = self._draft_button_call()
         self.assertTrue(kwargs.get("disabled"))
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
@@ -263,7 +275,8 @@ class CompactRecCardTests(unittest.TestCase):
             self.rec_df,
             max_cards=1,
         )
-        self.assertTrue(self.st.button.call_args[1].get("disabled"))
+        _, kwargs = self._draft_button_call()
+        self.assertTrue(kwargs.get("disabled"))
 
 
 class RecCardDraftCommitTests(unittest.TestCase):

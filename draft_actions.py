@@ -572,6 +572,21 @@ def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
                     on_clock = str(match.iloc[0].get("Team") or "").strip()
         except Exception:
             pass
+    if not on_clock and ctx.get("live_draft_active"):
+        room = session.get("live_draft_room")
+        if isinstance(room, dict):
+            try:
+                from live_draft_state import analyze_live_draft_progress
+                from live_draft_timer_logic import live_draft_current_slot
+
+                progress = analyze_live_draft_progress(room)
+                on_clock = str(progress.get("on_clock_team") or "").strip()
+                if not on_clock:
+                    slot = progress.get("slot") or live_draft_current_slot(room)
+                    if isinstance(slot, dict):
+                        on_clock = str(slot.get("Team") or "").strip()
+            except ImportError:
+                pass
     timer_seconds: int | None = None
     if ctx.get("live_draft_active"):
         room = session.get("live_draft_room")

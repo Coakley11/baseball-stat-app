@@ -985,7 +985,13 @@ def render_live_draft_rec_cards(
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
             st.caption(f"Fantasy Edge {edge_txt} · {surv_pct} · {action}")
             st.caption(f"Reason: {explanation}")
-            btn_col, detail_col = st.columns([2, 1])
+            btn_col, queue_col, detail_col = st.columns([2, 1, 1])
+            queued_names = {
+                str(x).strip().lower()
+                for x in (session.get("draft_queue") or [])
+                if str(x).strip()
+            }
+            already_queued = name.strip().lower() in queued_names
             with btn_col:
                 btn_label = f"Draft {name.split()[-1]}" if name else "Draft Player"
                 btn_key = f"rec_card_draft_{pick_idx}_{stable_key}"
@@ -1032,6 +1038,35 @@ def render_live_draft_rec_cards(
                         disabled=True,
                         use_container_width=True,
                         help=disable_reason[:200],
+                    )
+            with queue_col:
+
+                def _on_rec_queue_click(
+                    _session: dict[str, Any] = session,
+                    _name: str = name,
+                ) -> None:
+                    try:
+                        from draft_state import add_player_to_draft_queue
+
+                        add_player_to_draft_queue(_session, _name)
+                    except ImportError:
+                        pass
+
+                if already_queued:
+                    st.button(
+                        "Queued",
+                        key=f"rec_card_queue_{pick_idx}_{stable_key}",
+                        disabled=True,
+                        use_container_width=True,
+                        help=f"{name} is already in your draft queue.",
+                    )
+                else:
+                    st.button(
+                        "Add to Queue",
+                        key=f"rec_card_queue_{pick_idx}_{stable_key}",
+                        use_container_width=True,
+                        on_click=_on_rec_queue_click,
+                        help=f"Add {name} to your draft queue.",
                     )
             with detail_col:
                 with st.expander("Details", expanded=False):

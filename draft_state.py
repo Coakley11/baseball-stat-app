@@ -361,6 +361,12 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
         return q, False
     q.append(name)
     sync_draft_queue(session, q, reason="add_to_queue")
+    try:
+        from draft_ui import cache_queue_player_meta, lookup_player_draft_meta
+
+        cache_queue_player_meta(session, name, lookup_player_draft_meta(session, name))
+    except ImportError:
+        pass
     return q, True
 
 

@@ -9,6 +9,7 @@ from draft_ui import (
     assess_required_live_settings,
     copy_sim_convert_settings_to_live,
     draft_disabled_hint,
+    format_queue_player_label,
     lookup_player_draft_meta,
     on_confirm_convert_simulator_to_live,
 )
@@ -28,6 +29,23 @@ class TestDraftDisabledHint(unittest.TestCase):
 class TestLookupPlayerDraftMeta(unittest.TestCase):
     def test_empty_name(self) -> None:
         self.assertEqual(lookup_player_draft_meta({}, ""), {"position": "—", "team": "—"})
+
+    def test_format_queue_player_label(self) -> None:
+        label = format_queue_player_label(
+            "Francisco Lindor",
+            {"position": "SS", "team": "NYM"},
+        )
+        self.assertEqual(label, "Francisco Lindor — SS — NYM")
+
+    def test_lookup_uses_queue_meta_cache(self) -> None:
+        session = {
+            "_queue_player_meta": {
+                "francisco lindor": {"position": "SS", "team": "NYM"},
+            }
+        }
+        meta = lookup_player_draft_meta(session, "Francisco Lindor")
+        self.assertEqual(meta["position"], "SS")
+        self.assertEqual(meta["team"], "NYM")
 
 
 class TestSimulatorConvertSettings(unittest.TestCase):
