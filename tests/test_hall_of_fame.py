@@ -655,6 +655,126 @@ class HofRuntimeSmokeTests(unittest.TestCase):
         self.assertGreater(len(hist_hof), 10)
 
 
+class HofCasePublishTests(unittest.TestCase):
+    def test_build_hof_case_insight_record_emits_compact_thesis(self) -> None:
+        import pandas as pd
+
+        from hall_of_fame_data import build_hof_case_insight_record, build_hof_case_packet, summarize_career_filters
+        from hof_case_analysis import format_hof_case_memo_markdown, resolve_hof_case_analysis
+
+        df = pd.DataFrame(
+            [
+                {
+                    "fullName": "Jason Giambi",
+                    "isHallOfFamer": False,
+                    "careerPrimaryPos": "1B",
+                    "HR": 440,
+                    "H": 2010,
+                    "RBI": 1441,
+                    "OBP": 0.411,
+                    "OPS": 0.916,
+                },
+                {"fullName": "Frank Thomas", "isHallOfFamer": True, "careerPrimaryPos": "1B", "HR": 521},
+            ]
+        )
+        session = {"career_year_range_filter": [2000, 2024], "career_sort_stat_filter": "HR"}
+        filters = summarize_career_filters(session)
+        filters["stat_minimums"] = {"HR": 300}
+        packet = build_hof_case_packet(
+            "Jason Giambi",
+            df,
+            filters_summary=filters,
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        question = build_hof_case_question("Jason Giambi", packet)
+        insight = build_hof_case_insight_record(
+            packet,
+            question=question,
+            question_id="q-giambi",
+            full_analysis_url="https://example.test/ami",
+            resume_key="bb:hof_case:jason-giambi",
+        )
+        self.assertTrue(str(insight.get("conclusion") or "").strip())
+        self.assertTrue(str(insight.get("insight_id") or "").strip())
+        self.assertIn(CASE_SCORE_LABEL, str(insight.get("method") or ""))
+        self.assertLess(len(str(insight.get("conclusion") or "")), 500)
+        self.assertNotIn("### Verdict", str(insight.get("conclusion") or ""))
+        memo = format_hof_case_memo_markdown(resolve_hof_case_analysis(packet))
+        self.assertIn("### Verdict", memo)
+
+    def test_build_hof_case_insight_record_recomposes_empty_analysis_stub(self) -> None:
+        import pandas as pd
+
+        from hall_of_fame_data import build_hof_case_insight_record, build_hof_case_packet, summarize_career_filters
+
+        df = pd.DataFrame(
+            [
+                {"fullName": "Mike Trout", "isHallOfFamer": False, "HR": 310},
+                {"fullName": "Babe Ruth", "isHallOfFamer": True, "HR": 714},
+            ]
+        )
+        session = {"career_year_range_filter": [2000, 2024], "career_sort_stat_filter": "HR"}
+        packet = build_hof_case_packet(
+            "Mike Trout",
+            df,
+            filters_summary=summarize_career_filters(session),
+            sort_stat="HR",
+        )
+        packet["hof_case_analysis"] = {}
+        insight = build_hof_case_insight_record(
+            packet,
+            question=build_hof_case_question("Mike Trout", packet),
+            question_id="q-trout",
+        )
+        self.assertIn("Mike Trout", str(insight.get("conclusion") or ""))
+        self.assertIn(CASE_SCORE_LABEL, str(insight.get("method") or ""))
+
+    def test_build_hof_ami_payload_publishes_insight_and_verdict(self) -> None:
+        import pandas as pd
+
+        from hall_of_fame_data import (
+            build_hof_ami_payload,
+            build_hof_case_insight_record,
+            build_hof_case_packet,
+            build_hof_case_question,
+            summarize_career_filters,
+        )
+
+        df = pd.DataFrame(
+            [
+                {"fullName": "Alfonso Soriano", "isHallOfFamer": False, "HR": 412, "careerPrimaryPos": "OF"},
+                {"fullName": "Sammy Sosa", "isHallOfFamer": False, "HR": 609, "careerPrimaryPos": "OF"},
+            ]
+        )
+        session = {"career_year_range_filter": [2000, 2024], "career_sort_stat_filter": "HR"}
+        packet = build_hof_case_packet(
+            "Alfonso Soriano",
+            df,
+            filters_summary=summarize_career_filters(session),
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        packet["hof_case_analysis"] = {}
+        question = build_hof_case_question("Alfonso Soriano", packet)
+        insight = build_hof_case_insight_record(packet, question=question, question_id="q-soriano")
+        blob = build_hof_ami_payload(
+            packet=packet,
+            question=question,
+            question_id="q-soriano",
+            action_url="https://example.test/ami?q=soriano",
+            insight=insight,
+            context={"hof_case_packet": packet, "player": "Alfonso Soriano"},
+        )
+        self.assertIsInstance(blob.get("hof_case_packet"), dict)
+        self.assertTrue(blob["hof_case_packet"].get("target_player"))
+        self.assertIsInstance(blob.get("insight"), dict)
+        self.assertTrue(str(blob["insight"].get("conclusion") or "").strip())
+        verdict = blob.get("verdict_context")
+        self.assertIsInstance(verdict, dict)
+        self.assertTrue(str(verdict.get("thesis") or verdict.get("recommendation") or "").strip())
+
+
 class HofCaseAmiIntegrationTests(unittest.TestCase):
     def test_submit_hof_case_creates_cc_and_insight(self) -> None:
         from unittest.mock import patch
@@ -663,6 +783,8 @@ class HofCaseAmiIntegrationTests(unittest.TestCase):
 
         from hall_of_fame_data import (
             HOF_CASE_PACKET_KEY,
+            build_hof_ami_payload,
+            build_hof_case_insight_record,
             build_hof_case_packet,
             build_hof_case_question,
             summarize_career_filters,
@@ -686,6 +808,17 @@ class HofCaseAmiIntegrationTests(unittest.TestCase):
         )
         question = build_hof_case_question("Mike Trout", packet)
         session[HOF_CASE_PACKET_KEY] = packet
+        insight = build_hof_case_insight_record(packet, question=question, question_id="pending-qid")
+        self.assertTrue(str(insight.get("conclusion") or "").strip())
+        blob = build_hof_ami_payload(
+            packet=packet,
+            question=question,
+            question_id="pending-qid",
+            action_url="https://example.test/ami",
+            insight=insight,
+        )
+        self.assertTrue(blob.get("hof_case_packet"))
+        self.assertTrue(blob.get("insight"))
 
         recorded: list = []
         with patch("suite_activity_client.record_activity", side_effect=lambda *a, **k: recorded.append((a, k))):

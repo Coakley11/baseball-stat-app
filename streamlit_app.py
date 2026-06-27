@@ -13214,9 +13214,11 @@ except Exception:
 
 # Skip the global insight render only when inline submit already rendered successfully
 # (avoids duplicate cards; still render when inline attempt failed).
-_submit_insight_run = st.session_state.pop("_ami_submit_render_insight_this_run", None)
+_submit_insight_run = bool(st.session_state.get("_ami_submit_render_insight_this_run"))
 if not _submit_insight_run or not st.session_state.get("_ami_insight_render_success"):
     render_suite_applied_math_insight(st, source_app="baseball", source_page=active_page)
+if _submit_insight_run:
+    st.session_state.pop("_ami_submit_render_insight_this_run", None)
 
 # Drop restored file_uploader widget keys only (restoring them crashes Streamlit).
 for _ephemeral_key in list(st.session_state.keys()):
@@ -14128,55 +14130,51 @@ if active_page == "Career Totals":
                             ).strip()
                         except Exception:
                             action_url = ""
+                    resume_key = f"bb:hof_case:{hof_case_target_slug(hof_target_player)}"
+                    insight_dict: dict = {}
                     try:
                         from applied_math_return_insight import (
-                            build_submit_fallback_insight,
                             prepare_fresh_submit_insight,
                             stage_pending_insight,
+                            store_applied_math_insight,
                         )
-                        from hof_case_resume import HOF_INSIGHT_STAGED_KEY, record_hof_case_submit_snapshot
+                        from hall_of_fame_data import build_hof_case_insight_record
+                        from hof_case_resume import HOF_INSIGHT_STAGED_KEY
 
                         qid = str(ami_result.get("question_id") or "")
                         prepare_fresh_submit_insight(st, question_id=qid)
-                        insight = build_submit_fallback_insight(
+                        insight_dict = build_hof_case_insight_record(
+                            hof_packet,
                             question=hof_question,
-                            source_app="baseball",
-                            source_page="Career Totals",
                             question_id=qid,
                             full_analysis_url=action_url,
-                            resume_key=f"bb:hof_case:{hof_case_target_slug(hof_target_player)}",
+                            resume_key=resume_key,
                         )
-                        from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
-
-                        analysis = (
-                            hof_packet.get("hof_case_analysis")
-                            if isinstance(hof_packet.get("hof_case_analysis"), dict)
-                            else compose_hof_statistical_case(hof_packet)
-                        )
-                        memo_md = format_hof_case_memo_markdown(analysis)
-                        insight.conclusion = str(
-                            analysis.get("thesis") or hof_packet.get("hof_case_summary") or memo_md[:280]
-                        ).strip()
-                        insight.short_answer = insight.conclusion
-                        insight.method = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
-                        insight.supporting_points = list(analysis.get("supporting_points") or [])[:8]
-                        if analysis.get("score") is not None:
-                            insight.score = analysis.get("score")
-                        if analysis.get("confidence"):
-                            insight.confidence = analysis.get("confidence")
                         stage_pending_insight(
                             st,
-                            insight,
+                            insight_dict,
                             return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
+                        )
+                        store_applied_math_insight(
+                            insight_dict,
+                            return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
+                            source_state=submit_source_state if isinstance(submit_source_state, dict) else None,
+                            st=st,
                         )
                         st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
                         st.session_state["_ami_force_insight_render"] = True
-                        st.session_state["_ami_hydrated_insight_id"] = insight.insight_id
-                        insight_dict = insight.to_dict()
-                    except Exception:
+                        st.session_state["_ami_hydrated_insight_id"] = str(insight_dict.get("insight_id") or "")
+                        st.session_state["_ami_insight_return_preserve"] = True
+                        st.session_state["_skip_page_restore_for"] = "Career Totals"
+                        st.session_state["_suite_persist_insight_dirty"] = True
+                    except Exception as exc:
+                        import logging
+
+                        logging.getLogger(__name__).warning("HOF insight staging failed: %s", exc)
                         insight_dict = {}
                     try:
                         from baseball_hof_activity import build_hof_case_resume_bundle, log_hof_case_analysis_submitted
+                        from hof_case_resume import record_hof_case_submit_snapshot
 
                         resume_bundle = build_hof_case_resume_bundle(
                             st,
@@ -14187,7 +14185,6 @@ if active_page == "Career Totals":
                             action_url=action_url,
                             insight=insight_dict,
                         )
-                        resume_key = f"bb:hof_case:{hof_case_target_slug(hof_target_player)}"
                         hof_ami_blob = build_hof_ami_payload(
                             packet=hof_packet,
                             question=hof_question,
@@ -14225,8 +14222,10 @@ if active_page == "Career Totals":
                             "hof_ami_audit": hof_ami_blob.get("hof_ami_audit"),
                         }
                         st.session_state["_hof_case_last_ami_blob"] = hof_ami_blob
-                    except ImportError:
-                        pass
+                    except Exception as exc:
+                        import logging
+
+                        logging.getLogger(__name__).warning("HOF AMI blob publish failed: %s", exc)
                     st.session_state["_ami_submit_render_insight_this_run"] = True
                     st.session_state["_ami_last_submit_source_page"] = "Career Totals"
                     try:

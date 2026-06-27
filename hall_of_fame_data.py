@@ -1369,6 +1369,45 @@ def _find_comparable_players(
     }
 
 
+def build_hof_case_insight_record(
+    packet: dict[str, Any],
+    *,
+    question: str,
+    question_id: str = "",
+    source_page: str = "Career Totals",
+    full_analysis_url: str = "",
+    resume_key: str = "",
+) -> dict[str, Any]:
+    """Compact Baseball insight card + Command Center publish payload for a HOF case."""
+    from applied_math_return_insight import build_submit_fallback_insight
+    from hof_case_analysis import resolve_hof_case_analysis
+
+    analysis = resolve_hof_case_analysis(packet if isinstance(packet, dict) else {})
+    insight = build_submit_fallback_insight(
+        question=str(question or "").strip(),
+        source_app="baseball",
+        source_page=str(source_page or "Career Totals").strip() or "Career Totals",
+        question_id=str(question_id or "").strip(),
+        full_analysis_url=str(full_analysis_url or "").strip(),
+        resume_key=str(resume_key or "").strip(),
+    )
+    thesis = str(analysis.get("thesis") or "").strip()
+    summary = str((packet or {}).get("hof_case_summary") or "").strip()
+    conclusion = thesis or summary or "Hall of Fame case ready — open full analysis for details."
+    data = insight.to_dict()
+    data["conclusion"] = conclusion
+    data["short_answer"] = conclusion
+    data["method"] = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
+    bullets = list(analysis.get("supporting_points") or [])[:8]
+    if bullets:
+        data["supporting_points"] = bullets
+    if analysis.get("score") is not None:
+        data["score"] = analysis.get("score")
+    if analysis.get("confidence"):
+        data["confidence"] = analysis.get("confidence")
+    return data
+
+
 def build_hof_ami_payload(
     *,
     packet: dict[str, Any],
@@ -1420,14 +1459,19 @@ def build_hof_ami_payload(
             "confidence": insight.get("confidence"),
             "score": insight.get("score"),
         }
-    analysis = packet.get("hof_case_analysis") if isinstance(packet.get("hof_case_analysis"), dict) else {}
-    if not analysis:
-        try:
-            from hof_case_analysis import compose_hof_statistical_case
+    try:
+        from hof_case_analysis import resolve_hof_case_analysis
 
-            analysis = compose_hof_statistical_case(packet)
-        except ImportError:
-            analysis = {}
+        analysis = resolve_hof_case_analysis(packet)
+    except ImportError:
+        analysis = packet.get("hof_case_analysis") if isinstance(packet.get("hof_case_analysis"), dict) else {}
+        if not analysis:
+            try:
+                from hof_case_analysis import compose_hof_statistical_case
+
+                analysis = compose_hof_statistical_case(packet)
+            except ImportError:
+                analysis = {}
     verdict: dict[str, Any] = {
         "hof_case_summary": packet.get("hof_case_summary"),
         "score_label": packet.get("score_label"),

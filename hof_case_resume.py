@@ -478,35 +478,38 @@ def _stage_hof_case_insight_once(
     target = str(target_player or "").strip()
     ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
+    if not isinstance(packet, dict) or not packet:
+        top = payload.get("hof_case_packet")
+        packet = top if isinstance(top, dict) else {}
     try:
-        from hof_case_analysis import compose_hof_statistical_case, format_hof_case_memo_markdown
+        from hall_of_fame_data import build_hof_case_insight_record
 
-        analysis = (
-            packet.get("hof_case_analysis")
-            if isinstance(packet.get("hof_case_analysis"), dict)
-            else compose_hof_statistical_case(packet)
+        insight_dict = build_hof_case_insight_record(
+            packet,
+            question=question,
+            question_id=question_id,
+            source_page=HOF_CASE_RESUME_PAGE,
+            full_analysis_url=blob_action_url,
+            resume_key=resume_key,
         )
-        insight.conclusion = str(
-            analysis.get("thesis") or packet.get("hof_case_summary") or ""
-        ).strip()
-        insight.short_answer = insight.conclusion
-        insight.method = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
-        insight.supporting_points = list(analysis.get("supporting_points") or [])[:8]
     except ImportError:
+        insight_dict = insight.to_dict()
         if packet.get("hof_case_summary"):
-            insight.short_answer = str(packet["hof_case_summary"])
+            insight_dict["short_answer"] = str(packet["hof_case_summary"])
         if target:
             rate = packet.get("hall_of_fame_rate_pct")
             total = packet.get("total_players_returned")
             hof_n = packet.get("hall_of_famers_returned")
             cohort = f" Cohort: {hof_n}/{total} HOF ({rate}%)." if total is not None else ""
-            insight.conclusion = f"{CASE_SCORE_LABEL} for {target}.{cohort}"
-        insight.method = CASE_SCORE_LABEL
+            insight_dict["conclusion"] = f"{CASE_SCORE_LABEL} for {target}.{cohort}"
+        insight_dict["method"] = CASE_SCORE_LABEL
+    else:
+        insight_dict.setdefault("source_page", HOF_CASE_RESUME_PAGE)
     ent_state = source_state if isinstance(source_state, dict) else (
         payload.get("source_state") if isinstance(payload.get("source_state"), dict) else None
     )
-    stage_pending_insight(st, insight, return_context=ent_state if ent_state else None)
-    st.session_state[SESSION_PENDING_KEY] = insight.to_dict()
+    stage_pending_insight(st, insight_dict, return_context=ent_state if ent_state else None)
+    st.session_state[SESSION_PENDING_KEY] = copy.deepcopy(insight_dict)
     st.session_state["_ami_force_insight_render"] = True
     st.session_state[HOF_INSIGHT_STAGED_KEY] = question_id
     return True

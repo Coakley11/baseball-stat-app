@@ -835,7 +835,6 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
         pending = _pending_insight_valid(st)
         if pending:
             ss["_ami_insight_return_preserve"] = True
-            ss.pop("_ami_force_insight_render", None)
             ss["_ami_insight_hydrate_success"] = True
             ss["_ami_insight_hydrate_source"] = "submit_staged"
             if key == "investment":
@@ -2191,6 +2190,9 @@ def render_suite_applied_math_insight_for_page(
             return False
     rendered = render_applied_math_insight_panel(st, source_app=app, insight=insight)
     st.session_state["_ami_insight_render_success"] = bool(rendered)
+    if rendered:
+        st.session_state.pop("_ami_force_insight_render", None)
+        st.session_state.pop("_ami_submit_render_insight_this_run", None)
     if rendered and app == "investment":
         st.session_state["_ami_insight_card_rendered"] = True
         try:
