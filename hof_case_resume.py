@@ -44,6 +44,7 @@ HOF_PROTECTED_SNAPSHOT_KEY = "_hof_case_protected_workspace_snapshot"
 HOF_LAST_SUBMIT_SOURCE_STATE_KEY = "_hof_case_last_submit_source_state"
 HOF_LAST_SUBMIT_BUNDLE_KEY = "_hof_case_last_resume_bundle"
 HOF_INSIGHT_STAGED_KEY = "_hof_case_insight_staged_for_resume"
+HOF_SUBMIT_PENDING_SNAPSHOT_KEY = "_hof_case_submit_pending_insight"
 HOF_WORKSPACE_RESTORED_KEY = "_hof_case_workspace_restored"
 
 # Session keys not always included in build_baseball_disk_state — captured in submit bundle supplement.
@@ -406,6 +407,12 @@ def _restore_hof_case_insight(
 
     if isinstance(insight_dict, dict) and insight_dict.get("insight_id"):
         st.session_state[SESSION_PENDING_KEY] = copy.deepcopy(insight_dict)
+        try:
+            from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+            st.session_state[HOF_SUBMIT_PENDING_SNAPSHOT_KEY] = copy.deepcopy(insight_dict)
+        except ImportError:
+            pass
         st.session_state["_ami_force_insight_render"] = True
         if isinstance(source_state, dict) and source_state:
             st.session_state["_ami_return_context"] = copy.deepcopy(source_state)
@@ -510,6 +517,12 @@ def _stage_hof_case_insight_once(
     )
     stage_pending_insight(st, insight_dict, return_context=ent_state if ent_state else None)
     st.session_state[SESSION_PENDING_KEY] = copy.deepcopy(insight_dict)
+    try:
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+        st.session_state[HOF_SUBMIT_PENDING_SNAPSHOT_KEY] = copy.deepcopy(insight_dict)
+    except ImportError:
+        pass
     st.session_state["_ami_force_insight_render"] = True
     st.session_state[HOF_INSIGHT_STAGED_KEY] = question_id
     return True
@@ -780,60 +793,65 @@ def render_hof_case_resume_debug(st: Any, *, developer_mode: bool = False) -> No
     diag = dict(ss.get(HOF_CASE_RESUME_DIAG_KEY) or {})
     if not diag and not hof_case_resume_requested(ss):
         return
-    qid = str(diag.get("question_id") or _question_id_from_pending(st) or "").strip()
-    resume = str(diag.get("resume_key") or _resume_key_from_pending(st) or "").strip()
-    bundle = _load_hof_resume_bundle(st, resume) if resume else {}
-    blob_found = False
-    action_url = str(bundle.get("action_url") or "").strip()
-    if qid:
-        try:
-            from suite_analytical_question import load_analytical_question_payload
+    try:
+        qid = str(diag.get("question_id") or _question_id_from_pending(st) or "").strip()
+        resume = str(diag.get("resume_key") or _resume_key_from_pending(st) or "").strip()
+        bundle = _load_hof_resume_bundle(st, resume) if resume else {}
+        payload: dict[str, Any] = {}
+        blob_found = False
+        action_url = str(bundle.get("action_url") or "").strip()
+        if qid:
+            try:
+                from suite_analytical_question import load_analytical_question_payload
 
-            payload = load_analytical_question_payload(qid)
-            blob_found = bool(payload)
-            if not action_url:
-                action_url = str(payload.get("action_url") or "").strip()
-        except ImportError:
-            pass
-    with st.expander("Developer: Hall of Fame Case resume", expanded=False):
-        st.json(
-            {
-                "resume_requested": hof_case_resume_requested(ss),
-                "resume_completed": hof_case_resume_consumed(ss),
-                "forced_page_active": forced_hof_case_page_active(ss),
-                "active_page": ss.get("active_page"),
-                "pending_query": pending_resume_query(st),
-                "hof_case_mode": ss.get("career_hof_case_mode"),
-                "hof_case_target": ss.get("career_hof_case_target_player"),
-                "career_year_range": ss.get("career_year_range_filter"),
-                "career_hr_min": ss.get("career_HR_min"),
-                "career_hof_filter": ss.get("career_hof_membership_filter"),
-                "packet_target": (ss.get("_hof_case_packet") or {}).get("target_player")
-                if isinstance(ss.get("_hof_case_packet"), dict)
-                else None,
-                "workspace_snapshot_found": bool(bundle.get("workspace_snapshot")),
-                "workspace_restored": bool(ss.get(HOF_WORKSPACE_RESTORED_KEY)),
-                "career_filters_in_snapshot": _career_filter_keys_from_state(
-                    bundle.get("workspace_snapshot") if isinstance(bundle.get("workspace_snapshot"), dict) else {}
-                ),
-                "career_filters_in_session": _career_filter_keys_from_state(ss),
-                "ami_question_id": qid,
-                "ami_action_url": action_url,
-                "ami_blob_found": blob_found,
-                "insight_in_bundle": bool(bundle.get("insight")),
-                "insight_pending": bool(ss.get("_ami_pending_insight")),
-                "insight_staged_key": ss.get(HOF_INSIGHT_STAGED_KEY),
-                "insight_cards_rendered": ss.get("_hof_insight_render_count"),
-                "draft_queue_len": len(ss.get("draft_queue") or []),
-                "watchlist_len": len(ss.get("draft_assistant_focus_players") or []),
-                "tracked_len": len(ss.get("workflow_recently_viewed") or []),
-                "draft_room_status": _draft_status_summary(ss),
-                "last_submit_source_state": bool(ss.get(HOF_LAST_SUBMIT_SOURCE_STATE_KEY)),
-                "last_submit_bundle": bool(ss.get(HOF_LAST_SUBMIT_BUNDLE_KEY)),
-                "last_submit_diag": ss.get("_hof_case_last_submit_diag"),
-                "ami_blob_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
-                "ami_blob_type": (payload or {}).get("blob_type") if isinstance(payload, dict) else None,
-                "ami_app_context_type": (payload or {}).get("app_context_type") if isinstance(payload, dict) else None,
-                "last_diag": diag,
-            }
-        )
+                payload = load_analytical_question_payload(qid)
+                blob_found = bool(payload)
+                if not action_url:
+                    action_url = str(payload.get("action_url") or "").strip()
+            except ImportError:
+                pass
+        with st.expander("Developer: Hall of Fame Case resume", expanded=False):
+            st.json(
+                {
+                    "resume_requested": hof_case_resume_requested(ss),
+                    "resume_completed": hof_case_resume_consumed(ss),
+                    "forced_page_active": forced_hof_case_page_active(ss),
+                    "active_page": ss.get("active_page"),
+                    "pending_query": pending_resume_query(st),
+                    "hof_case_mode": ss.get("career_hof_case_mode"),
+                    "hof_case_target": ss.get("career_hof_case_target_player"),
+                    "career_year_range": ss.get("career_year_range_filter"),
+                    "career_hr_min": ss.get("career_HR_min"),
+                    "career_hof_filter": ss.get("career_hof_membership_filter"),
+                    "packet_target": (ss.get("_hof_case_packet") or {}).get("target_player")
+                    if isinstance(ss.get("_hof_case_packet"), dict)
+                    else None,
+                    "workspace_snapshot_found": bool(bundle.get("workspace_snapshot")),
+                    "workspace_restored": bool(ss.get(HOF_WORKSPACE_RESTORED_KEY)),
+                    "career_filters_in_snapshot": _career_filter_keys_from_state(
+                        bundle.get("workspace_snapshot") if isinstance(bundle.get("workspace_snapshot"), dict) else {}
+                    ),
+                    "career_filters_in_session": _career_filter_keys_from_state(ss),
+                    "ami_question_id": qid,
+                    "ami_action_url": action_url,
+                    "ami_blob_found": blob_found,
+                    "insight_in_bundle": bool(bundle.get("insight")),
+                    "insight_pending": bool(ss.get("_ami_pending_insight")),
+                    "insight_staged_key": ss.get(HOF_INSIGHT_STAGED_KEY),
+                    "insight_cards_rendered": ss.get("_hof_insight_render_count"),
+                    "draft_queue_len": len(ss.get("draft_queue") or []),
+                    "watchlist_len": len(ss.get("draft_assistant_focus_players") or []),
+                    "tracked_len": len(ss.get("workflow_recently_viewed") or []),
+                    "draft_room_status": _draft_status_summary(ss),
+                    "last_submit_source_state": bool(ss.get(HOF_LAST_SUBMIT_SOURCE_STATE_KEY)),
+                    "last_submit_bundle": bool(ss.get(HOF_LAST_SUBMIT_BUNDLE_KEY)),
+                    "last_submit_diag": ss.get("_hof_case_last_submit_diag"),
+                    "ami_blob_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+                    "ami_blob_type": payload.get("blob_type") if isinstance(payload, dict) else None,
+                    "ami_app_context_type": payload.get("app_context_type") if isinstance(payload, dict) else None,
+                    "last_diag": diag,
+                }
+            )
+    except Exception as exc:
+        with st.expander("Developer: Hall of Fame Case resume", expanded=False):
+            st.error(f"HOF resume diagnostics failed: {type(exc).__name__}: {exc}")

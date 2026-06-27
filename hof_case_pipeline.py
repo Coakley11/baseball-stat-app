@@ -139,13 +139,33 @@ def build_hof_pipeline_status(session: dict[str, Any]) -> dict[str, Any]:
             analysis_ok = False
 
     pending = session.get(SESSION_PENDING_KEY)
-    pending_ok = isinstance(pending, dict) and bool(str(pending.get("conclusion") or "").strip())
-    insight_id = str((pending or {}).get("insight_id") or "").strip() if isinstance(pending, dict) else ""
-    qid = str((pending or {}).get("question_id") or "").strip() if isinstance(pending, dict) else ""
+    try:
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+    except ImportError:
+        HOF_SUBMIT_PENDING_SNAPSHOT_KEY = "_hof_case_submit_pending_insight"
+    submit_snap = session.get(HOF_SUBMIT_PENDING_SNAPSHOT_KEY)
+    if not isinstance(submit_snap, dict):
+        submit_snap = {}
+
+    def _pending_body_ok(row: dict[str, Any] | None) -> bool:
+        return isinstance(row, dict) and bool(str(row.get("conclusion") or row.get("short_answer") or "").strip())
+
+    pending_ok = _pending_body_ok(pending if isinstance(pending, dict) else None) or _pending_body_ok(submit_snap)
+    effective_pending = pending if isinstance(pending, dict) and _pending_body_ok(pending) else submit_snap
+
+    insight_id = ""
+    if isinstance(effective_pending, dict):
+        insight_id = str(effective_pending.get("insight_id") or "").strip()
+    qid = str((effective_pending or {}).get("question_id") or "").strip() if isinstance(effective_pending, dict) else ""
 
     last_diag = session.get("_hof_case_last_submit_diag")
     if not isinstance(last_diag, dict):
         last_diag = {}
+    if not insight_id:
+        insight_id = str(last_diag.get("insight_id") or "").strip()
+    if not qid:
+        qid = str(last_diag.get("question_id") or "").strip()
+
     last_blob = session.get("_hof_case_last_ami_blob")
     if not isinstance(last_blob, dict):
         last_blob = {}
@@ -153,12 +173,21 @@ def build_hof_pipeline_status(session: dict[str, Any]) -> dict[str, Any]:
     store_trace = session.get("_ami_insight_store_trace")
     if not isinstance(store_trace, dict):
         store_trace = {}
+    if not insight_id:
+        insight_id = str(
+            store_trace.get("store_insight_id")
+            or store_trace.get("return_link_insight_id")
+            or ""
+        ).strip()
 
+    eff_url = ""
+    if isinstance(effective_pending, dict):
+        eff_url = str(effective_pending.get("full_analysis_url") or "").strip()
+    pend_url = ""
+    if isinstance(pending, dict):
+        pend_url = str(pending.get("full_analysis_url") or "").strip()
     action_url = str(
-        last_diag.get("action_url")
-        or (pending or {}).get("full_analysis_url")
-        or last_blob.get("action_url")
-        or ""
+        last_diag.get("action_url") or eff_url or pend_url or last_blob.get("action_url") or ""
     ).strip()
 
     pipeline = session.get(HOF_PIPELINE_STATUS_KEY)
@@ -221,9 +250,17 @@ def build_hof_pipeline_status(session: dict[str, Any]) -> dict[str, Any]:
         "pipeline_steps": pipeline.get("steps") if isinstance(pipeline.get("steps"), dict) else {},
         "pipeline_errors": list(session.get(HOF_PIPELINE_ERRORS_KEY) or []),
         "pending_insight_preview": {
-            "conclusion_len": len(str((pending or {}).get("conclusion") or "")) if isinstance(pending, dict) else 0,
-            "method": str((pending or {}).get("method") or "")[:120] if isinstance(pending, dict) else "",
-            "source_page": str((pending or {}).get("source_page") or "") if isinstance(pending, dict) else "",
+            "conclusion_len": len(str((effective_pending or {}).get("conclusion") or ""))
+            if isinstance(effective_pending, dict)
+            else 0,
+            "method": str((effective_pending or {}).get("method") or "")[:120]
+            if isinstance(effective_pending, dict)
+            else "",
+            "source_page": str((effective_pending or {}).get("source_page") or "")
+            if isinstance(effective_pending, dict)
+            else "",
+            "session_key": SESSION_PENDING_KEY,
+            "submit_snapshot_present": _pending_body_ok(submit_snap),
         },
     }
 

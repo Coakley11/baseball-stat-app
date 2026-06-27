@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -840,6 +841,13 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
             if key == "investment":
                 _sync_investment_insight_tab_keys(st, key, insight=pending)
             return True
+        if key == "baseball":
+            restored = ensure_baseball_pending_insight_for_render(st)
+            if _insight_payload_has_card_body(restored):
+                ss["_ami_insight_return_preserve"] = True
+                ss["_ami_insight_hydrate_success"] = True
+                ss["_ami_insight_hydrate_source"] = "hof_submit_snapshot"
+                return True
 
     sync_dismissed_insights_from_cloud(st, key)
 
@@ -874,6 +882,17 @@ def hydrate_applied_math_insight_for_session(st: Any, app_key: str) -> bool:
         if raw_id and not _insight_is_dismissed(st, raw_id):
             ss["_ami_insight_hydrate_success"] = True
             ss["_ami_insight_hydrate_source"] = "session_raw"
+            return True
+
+    if key == "baseball" and (
+        ss.get("_ami_force_insight_render")
+        or ss.get("_hof_case_last_submit_diag")
+        or _hof_submit_pending_snapshot(ss)
+    ):
+        restored = ensure_baseball_pending_insight_for_render(st)
+        if _insight_payload_has_card_body(restored):
+            ss["_ami_insight_hydrate_success"] = True
+            ss["_ami_insight_hydrate_source"] = "hof_submit_snapshot"
             return True
 
     dismissed = _get_dismissed_insight_ids(st)
@@ -1830,6 +1849,146 @@ def stage_pending_insight(st: Any, insight: AppliedMathInsight | dict[str, Any],
         _sync_investment_insight_tab_keys(st, app, insight=data)
 
 
+def stage_hof_submit_pending_insight(
+    st: Any,
+    insight: AppliedMathInsight | dict[str, Any],
+    *,
+    return_context: dict[str, Any] | None = None,
+) -> None:
+    """Stage HOF compact insight for card render and keep a submit snapshot until render succeeds."""
+    data = insight.to_dict() if isinstance(insight, AppliedMathInsight) else dict(insight)
+    stage_pending_insight(st, data, return_context=return_context)
+    try:
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+        st.session_state[HOF_SUBMIT_PENDING_SNAPSHOT_KEY] = copy.deepcopy(data)
+    except ImportError:
+        st.session_state["_hof_case_submit_pending_insight"] = copy.deepcopy(data)
+
+
+def _hof_submit_pending_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+    except ImportError:
+        HOF_SUBMIT_PENDING_SNAPSHOT_KEY = "_hof_case_submit_pending_insight"
+    snap = session.get(HOF_SUBMIT_PENDING_SNAPSHOT_KEY)
+    return dict(snap) if isinstance(snap, dict) else {}
+
+
+def _insight_payload_has_card_body(data: dict[str, Any] | None) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return bool(str(data.get("conclusion") or data.get("short_answer") or data.get("question") or "").strip())
+
+
+def ensure_baseball_pending_insight_for_render(st: Any) -> dict[str, Any]:
+    """
+    Restore the compact Baseball card payload when session pending was cleared but
+    the current HOF submit store/publish succeeded.
+    """
+    ss = st.session_state
+    pending = _pending_insight_valid(st)
+    if _insight_payload_has_card_body(pending):
+        return pending
+
+    raw = ss.get(SESSION_PENDING_KEY)
+    if _insight_payload_has_card_body(raw if isinstance(raw, dict) else None):
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    candidates: list[dict[str, Any]] = []
+    snap = _hof_submit_pending_snapshot(ss)
+    if _insight_payload_has_card_body(snap):
+        candidates.append(snap)
+
+    for bundle_key in ("_hof_case_last_resume_bundle", "_hof_case_last_submit_bundle"):
+        bundle = ss.get(bundle_key)
+        if not isinstance(bundle, dict):
+            continue
+        ins = bundle.get("insight")
+        if _insight_payload_has_card_body(ins if isinstance(ins, dict) else None):
+            candidates.append(dict(ins))
+
+    last_diag = ss.get("_hof_case_last_submit_diag")
+    if isinstance(last_diag, dict):
+        iid = str(last_diag.get("insight_id") or "").strip()
+        qid = str(last_diag.get("question_id") or "").strip()
+        if iid:
+            loaded = load_applied_math_insight(iid, source_app="baseball")
+            if _insight_payload_has_card_body(loaded):
+                candidates.append(loaded)
+        if qid:
+            loaded_q = load_applied_math_insight_for_question(qid, source_app="baseball")
+            if _insight_payload_has_card_body(loaded_q):
+                candidates.append(loaded_q)
+
+    store_trace = ss.get("_ami_insight_store_trace")
+    if isinstance(store_trace, dict):
+        trace_iid = str(
+            store_trace.get("store_insight_id")
+            or store_trace.get("return_link_insight_id")
+            or ""
+        ).strip()
+        if trace_iid:
+            loaded = load_applied_math_insight(trace_iid, source_app="baseball")
+            if _insight_payload_has_card_body(loaded):
+                candidates.append(loaded)
+
+    last_blob = ss.get("_hof_case_last_ami_blob")
+    if isinstance(last_blob, dict):
+        blob_insight = last_blob.get("insight")
+        if _insight_payload_has_card_body(blob_insight if isinstance(blob_insight, dict) else None):
+            candidates.append(dict(blob_insight))
+
+    for insight in candidates:
+        data = dict(insight)
+        ss[SESSION_PENDING_KEY] = copy.deepcopy(data)
+        try:
+            from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+            ss[HOF_SUBMIT_PENDING_SNAPSHOT_KEY] = copy.deepcopy(data)
+        except ImportError:
+            ss["_hof_case_submit_pending_insight"] = copy.deepcopy(data)
+        ss.setdefault("_ami_force_insight_render", True)
+        ss["_ami_insight_hydrate_success"] = True
+        ss["_ami_insight_hydrate_source"] = "hof_submit_snapshot"
+        return data
+
+    return {}
+
+
+def render_pending_insight_pre_render_debug(st: Any, *, developer_mode: bool = False) -> None:
+    """Developer Mode — session key + payload preview immediately before card render."""
+    if not developer_mode:
+        return
+    ss = st.session_state
+    raw = ss.get(SESSION_PENDING_KEY)
+    snap = _hof_submit_pending_snapshot(ss)
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if not can_show_developer_tools(st=st):
+            return
+    except ImportError:
+        pass
+    with st.expander("Developer: insight card pre-render", expanded=False):
+        st.json(
+            {
+                "session_key_read": SESSION_PENDING_KEY,
+                "pending_object_exists": isinstance(raw, dict),
+                "submit_snapshot_exists": bool(snap),
+                "conclusion_len": len(str((raw or {}).get("conclusion") or "")) if isinstance(raw, dict) else 0,
+                "short_answer_len": len(str((raw or {}).get("short_answer") or "")) if isinstance(raw, dict) else 0,
+                "method": str((raw or {}).get("method") or "")[:160] if isinstance(raw, dict) else "",
+                "source_page": str((raw or {}).get("source_page") or "") if isinstance(raw, dict) else "",
+                "insight_id": str((raw or {}).get("insight_id") or "") if isinstance(raw, dict) else "",
+                "snapshot_conclusion_len": len(str(snap.get("conclusion") or "")) if snap else 0,
+                "force_insight_render": bool(ss.get("_ami_force_insight_render")),
+                "submit_render_this_run": bool(ss.get("_ami_submit_render_insight_this_run")),
+                "last_submit_diag_insight_id": str((ss.get("_hof_case_last_submit_diag") or {}).get("insight_id") or ""),
+            }
+        )
+
+
 def apply_ami_insight_from_query(st: Any, app_key: str) -> bool:
     """On source app load: hydrate pending insight from ?suite_ami_insight= (cloud-backed)."""
     key = str(app_key or "").strip().lower()
@@ -1981,6 +2140,12 @@ def clear_pending_insight(st: Any, *, preserve_hof_staged: bool = False) -> None
     st.session_state.pop(SESSION_PENDING_KEY, None)
     st.session_state.pop(SESSION_RETURN_PAGE_KEY, None)
     st.session_state.pop(SESSION_RETURN_CONTEXT_KEY, None)
+    try:
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+        st.session_state.pop(HOF_SUBMIT_PENDING_SNAPSHOT_KEY, None)
+    except ImportError:
+        st.session_state.pop("_hof_case_submit_pending_insight", None)
     if preserve_hof_staged:
         if staged:
             st.session_state["_hof_case_insight_staged_for_resume"] = staged
@@ -1999,7 +2164,15 @@ def prepare_fresh_submit_insight(st: Any, *, question_id: str = "") -> None:
     st.session_state.pop("_ami_hydrated_insight_id", None)
     st.session_state.pop("_ami_insight_active_id", None)
     st.session_state.pop("_ami_force_insight_render", None)
-    clear_pending_insight(st)
+    try:
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+        st.session_state.pop(HOF_SUBMIT_PENDING_SNAPSHOT_KEY, None)
+    except ImportError:
+        st.session_state.pop("_hof_case_submit_pending_insight", None)
+    st.session_state.pop(SESSION_PENDING_KEY, None)
+    st.session_state.pop(SESSION_RETURN_PAGE_KEY, None)
+    st.session_state.pop(SESSION_RETURN_CONTEXT_KEY, None)
 
 
 def _insight_card_conclusion(data: dict[str, Any]) -> str:
@@ -2125,6 +2298,16 @@ def render_suite_applied_math_insight_for_page(
     app = str(source_app or "").strip().lower()
     if app == "investment":
         hydrate_applied_math_insight_for_session(st, app)
+    elif app == "baseball":
+        ensure_baseball_pending_insight_for_render(st)
+
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        dev_mode = can_show_developer_tools(st=st)
+    except ImportError:
+        dev_mode = False
+    render_pending_insight_pre_render_debug(st, developer_mode=dev_mode)
 
     insight = _pending_insight_valid(st)
     pending_exists = isinstance(insight, dict) and bool(insight.get("conclusion") or insight.get("question"))
@@ -2193,6 +2376,7 @@ def render_suite_applied_math_insight_for_page(
     if rendered:
         st.session_state.pop("_ami_force_insight_render", None)
         st.session_state.pop("_ami_submit_render_insight_this_run", None)
+        st.session_state.pop("_ami_insight_render_skipped_reason", None)
     if rendered and app == "investment":
         st.session_state["_ami_insight_card_rendered"] = True
         try:

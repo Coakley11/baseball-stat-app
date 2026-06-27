@@ -116,6 +116,81 @@ class HofCasePipelineTests(unittest.TestCase):
         self.assertTrue(blob.get("insight"))
         self.assertTrue(blob.get("verdict_context"))
 
+    def test_hof_pending_insight_hydrates_from_submit_snapshot_when_session_cleared(self) -> None:
+        from applied_math_return_insight import (
+            SESSION_PENDING_KEY,
+            ensure_baseball_pending_insight_for_render,
+            render_suite_applied_math_insight_for_page,
+            stage_hof_submit_pending_insight,
+        )
+        from hall_of_fame_data import (
+            CASE_SCORE_LABEL,
+            build_hof_case_insight_record,
+            build_hof_case_packet,
+            build_hof_case_question,
+            summarize_career_filters,
+        )
+        from hof_case_resume import HOF_SUBMIT_PENDING_SNAPSHOT_KEY
+
+        df = pd.DataFrame(
+            [
+                {"fullName": "Jason Giambi", "isHallOfFamer": False, "HR": 440, "careerPrimaryPos": "1B"},
+                {"fullName": "Frank Thomas", "isHallOfFamer": True, "HR": 521},
+            ]
+        )
+        session: dict = {"career_year_range_filter": [2000, 2024], "career_sort_stat_filter": "HR"}
+        packet = build_hof_case_packet(
+            "Jason Giambi",
+            df,
+            filters_summary=summarize_career_filters(session),
+            sort_stat="HR",
+            position_universe_df=df,
+        )
+        question = build_hof_case_question("Jason Giambi", packet)
+        insight = build_hof_case_insight_record(
+            packet,
+            question=question,
+            question_id="q-giambi",
+            full_analysis_url="https://example.test/?suite_ai_question_id=q-giambi&suite_hof_case=1",
+        )
+        self.assertTrue(str(insight.get("conclusion") or "").strip())
+
+        st = MagicMock()
+        st.session_state = {
+            "_ami_force_insight_render": True,
+            "_ami_submit_render_insight_this_run": True,
+            "_hof_case_last_submit_diag": {
+                "question_id": "q-giambi",
+                "insight_id": insight["insight_id"],
+            },
+            "_ami_insight_store_trace": {
+                "store_insight_id": insight["insight_id"],
+                "store_blob_written_success": True,
+            },
+        }
+        stage_hof_submit_pending_insight(st, insight)
+        self.assertTrue(st.session_state.get(SESSION_PENDING_KEY))
+
+        # Simulate live failure: pending key cleared but submit snapshot + store trace remain.
+        st.session_state.pop(SESSION_PENDING_KEY, None)
+
+        restored = ensure_baseball_pending_insight_for_render(st)
+        self.assertTrue(str(restored.get("conclusion") or "").strip())
+        self.assertIn(CASE_SCORE_LABEL, str(restored.get("method") or ""))
+        self.assertEqual(restored.get("source_page"), "Career Totals")
+        self.assertTrue(st.session_state.get(HOF_SUBMIT_PENDING_SNAPSHOT_KEY))
+
+        with patch("applied_math_return_insight.render_applied_math_insight_panel", return_value=True) as mock_render:
+            rendered = render_suite_applied_math_insight_for_page(
+                st,
+                source_app="baseball",
+                source_page="Career Totals",
+            )
+        self.assertTrue(rendered)
+        mock_render.assert_called_once()
+        self.assertNotEqual(st.session_state.get("_ami_insight_render_skipped_reason"), "no_pending_insight")
+        self.assertIsNone(st.session_state.get("_ami_insight_render_skipped_reason"))
+
 
 if __name__ == "__main__":
     unittest.main()

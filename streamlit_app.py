@@ -14167,7 +14167,7 @@ if active_page == "Career Totals":
                     try:
                         from applied_math_return_insight import (
                             prepare_fresh_submit_insight,
-                            stage_pending_insight,
+                            stage_hof_submit_pending_insight,
                             store_applied_math_insight,
                         )
                         from hall_of_fame_data import build_hof_case_insight_record
@@ -14191,7 +14191,7 @@ if active_page == "Career Totals":
                                 "conclusion_len": len(str(insight_dict.get("conclusion") or "")),
                             },
                         )
-                        stage_pending_insight(
+                        stage_hof_submit_pending_insight(
                             st,
                             insight_dict,
                             return_context=submit_source_state if isinstance(submit_source_state, dict) else None,
@@ -14199,7 +14199,14 @@ if active_page == "Career Totals":
                         record_hof_pipeline_step(
                             st.session_state,
                             "baseball_card_staged",
-                            ok=bool(st.session_state.get("_ami_pending_insight")),
+                            ok=bool(
+                                st.session_state.get("_ami_pending_insight")
+                                and str(
+                                    (st.session_state.get("_ami_pending_insight") or {}).get("conclusion")
+                                    or (st.session_state.get("_ami_pending_insight") or {}).get("short_answer")
+                                    or ""
+                                ).strip()
+                            ),
                         )
                         stored_iid = store_applied_math_insight(
                             insight_dict,

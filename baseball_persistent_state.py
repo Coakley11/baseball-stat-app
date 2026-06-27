@@ -84,6 +84,7 @@ _GLOBAL_KEYS = (
 
 _HOF_HANDOFF_KEYS = (
     "_hof_case_insight_staged_for_resume",
+    "_hof_case_submit_pending_insight",
     "_ami_force_insight_render",
     "_ami_last_submit_source_page",
     "_ami_submit_render_insight_this_run",
@@ -538,7 +539,16 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         if skip_draft_room and key in _DRAFT_ROOM_SETTINGS_GLOBALS:
             continue
         if preserve_insight and key in _INSIGHT_KEYS + _HOF_HANDOFF_KEYS:
-            continue
+            if key == "_ami_pending_insight" and isinstance(val, dict):
+                session_pending = ss.get("_ami_pending_insight")
+                session_valid = isinstance(session_pending, dict) and bool(
+                    str(session_pending.get("conclusion") or session_pending.get("short_answer") or "").strip()
+                )
+                blob_valid = bool(str(val.get("conclusion") or val.get("short_answer") or "").strip())
+                if session_valid or not blob_valid:
+                    continue
+            else:
+                continue
         val = state[key]
         if key == "_ami_pending_insight" and isinstance(val, dict):
             iid = str(val.get("insight_id") or "").strip()
