@@ -265,26 +265,25 @@ def _signed_in_email(ctx: dict[str, Any], session_state: dict[str, Any]) -> str:
 
 def _render_minimal_account_workspace_body(
     st: Any,
-    ui: Any,
     session_state: dict[str, Any],
     ctx: dict[str, Any],
 ) -> None:
-    """Normal mode — email + logout only."""
+    """Normal mode — email + logout only (must run inside expander context using st, not st.sidebar)."""
     email = _signed_in_email(ctx, session_state)
     if email:
-        ui.markdown(f"Signed in: **{email}**")
+        st.markdown(f"Signed in as **{email}**")
     try:
         from suite_auth import is_auth_enabled, is_authenticated, logout
 
         if is_auth_enabled() and is_authenticated(session_state):
-            if ui.button("Log out", key="suite_account_workspace_logout_btn", use_container_width=True):
+            if st.button("Log out", key="suite_account_workspace_logout_btn", use_container_width=True):
                 logout(session_state, st=st)
                 st.rerun()
             return
     except ImportError:
         pass
     if not email:
-        ui.caption("Shared suite profile (no individual sign-in on this deploy).")
+        st.caption("Shared suite profile (no individual sign-in on this deploy).")
 
 
 def render_user_account_access(st: Any, *, for_homepage: bool = False, sidebar: bool = False) -> None:
@@ -335,8 +334,8 @@ def render_account_workspace_access(
         return
 
     header = account_workspace_expander_label(ctx)
-    with ui.expander(header, expanded=False):
-        _render_minimal_account_workspace_body(st, ui, st.session_state, ctx)
+    with ui.expander(header, expanded=False, key="suite_account_workspace_expander"):
+        _render_minimal_account_workspace_body(st, st.session_state, ctx)
 
 
 def render_account_settings_panel(
