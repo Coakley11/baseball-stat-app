@@ -16539,11 +16539,13 @@ if active_page == "Trend Value":
 
 if active_page == "Fantasy Sleepers & Busts":
     from fantasy_state import (
+        default_sleepers_age_range,
         flush_fantasy_section_edits,
         mark_fantasy_local_edit,
         mark_sleepers_filter_local_edit,
         prepare_fantasy_sleepers_filters,
         prepare_fantasy_sleepers_page,
+        read_sleepers_canonical_filters,
         render_fantasy_state_debug,
     )
 
@@ -16913,6 +16915,7 @@ if active_page == "Fantasy Sleepers & Busts":
     fantasy_df["Risk / Disagreement"] = safe_numeric_series(fantasy_df, "Expert Std Dev", np.nan)
 
     with st.expander("Position & age filters", expanded=False):
+        _sleepers_canon = read_sleepers_canonical_filters(st.session_state)
         pa1, pa2 = st.columns(2)
         with pa1:
             standard_fantasy_positions = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
@@ -16936,7 +16939,6 @@ if active_page == "Fantasy Sleepers & Busts":
                 )
             except ImportError:
                 _pos_on_change = lambda: mark_sleepers_filter_local_edit(st.session_state)
-                _sleepers_canon = (st.session_state.get("fantasy_state") or {}).get("sleepers", {}).get("filters") or {}
                 _default_positions = _sleepers_canon.get("fantasy_market_positions")
                 if _default_positions is None:
                     _default_positions = []
@@ -16950,7 +16952,7 @@ if active_page == "Fantasy Sleepers & Busts":
         with pa2:
             max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
             _age_hi = max(45, max_age_fantasy)
-            _default_age = _sleepers_canon.get("fantasy_market_age_range") or (18, _age_hi)
+            _default_age = default_sleepers_age_range(st.session_state, age_hi=_age_hi)
             ensure_slider_range("fantasy_market_age_range", 18, _age_hi, _default_age)
             st.slider(
                 "Age Range",

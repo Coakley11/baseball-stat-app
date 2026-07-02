@@ -15,6 +15,7 @@ from fantasy_state import (
     FANTASY_DIRTY_KEY,
     apply_cloud_fantasy_state_if_allowed,
     apply_fantasy_source_state_from_ami,
+    default_sleepers_age_range,
     flush_fantasy_section_edits,
     is_fantasy_locally_dirty,
     mark_fantasy_filter_pending_sync,
@@ -22,6 +23,8 @@ from fantasy_state import (
     prepare_fantasy_sleepers_filters,
     prepare_fantasy_sleepers_page,
     prepare_fantasy_standings_filters,
+    read_sleepers_canonical_filters,
+    resolve_sleepers_position_age_defaults,
     restore_fantasy_page_filters,
     write_canonical_fantasy_section,
 )
@@ -211,6 +214,49 @@ class TestFantasyState(unittest.TestCase):
         self.assertNotEqual(def_pos, -1)
         self.assertLess(def_pos, page_pos)
         self.assertLess(def_pos, use_pos)
+
+    def test_sleepers_canonical_filters_available_before_age_defaults(self) -> None:
+        """Regression: age slider must not depend on fantasy_position_sync ImportError path."""
+        session = {
+            "fantasy_state": {
+                "sleepers": {
+                    "filters": {
+                        "fantasy_market_age_range": (22, 38),
+                        "fantasy_market_positions": ["OF", "SS"],
+                    }
+                }
+            }
+        }
+        prepare_fantasy_sleepers_page(session)
+        prepare_fantasy_sleepers_filters(session)
+        resolved = resolve_sleepers_position_age_defaults(session, age_hi=50)
+        self.assertEqual(resolved["default_age_range"], (22, 38))
+        self.assertEqual(resolved["default_positions"], ["OF", "SS"])
+        self.assertEqual(
+            default_sleepers_age_range(session, age_hi=50),
+            (22, 38),
+        )
+        self.assertEqual(read_sleepers_canonical_filters({}), {})
+
+    def test_sleepers_age_default_falls_back_when_canonical_missing(self) -> None:
+        self.assertEqual(default_sleepers_age_range({}, age_hi=52), (18, 52))
+        self.assertEqual(
+            resolve_sleepers_position_age_defaults({}, age_hi=45)["default_age_range"],
+            (18, 45),
+        )
+
+    def test_sleepers_expander_initializes_canon_before_age_slider(self) -> None:
+        """Static guard: _sleepers_canon must be assigned before age default logic."""
+        text = (_REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        marker = 'with st.expander("Position & age filters", expanded=False):'
+        start = text.find(marker)
+        self.assertNotEqual(start, -1)
+        chunk = text[start : start + 2500]
+        canon_assign = chunk.find("_sleepers_canon = read_sleepers_canonical_filters")
+        age_use = chunk.find("default_sleepers_age_range(")
+        self.assertNotEqual(canon_assign, -1)
+        self.assertNotEqual(age_use, -1)
+        self.assertLess(canon_assign, age_use)
 
 
 if __name__ == "__main__":
