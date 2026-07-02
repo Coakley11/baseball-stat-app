@@ -860,6 +860,30 @@ def _trend_direction_label(val: float | None, *, is_rate: bool = False) -> str |
     return "↑" if val > 0 else "↓"
 
 
+def _classify_trend_profile(row: Any) -> str:
+    ops_trend = _coerce_float(_row_get(row, "OPS_trend"))
+    hr_trend = _coerce_float(_row_get(row, "HR_trend"))
+    if ops_trend is None:
+        return "insufficient"
+    if ops_trend >= 0.03 or (hr_trend is not None and hr_trend >= 3):
+        return "breakout"
+    if ops_trend <= -0.03 or (hr_trend is not None and hr_trend <= -3):
+        return "decline"
+    return "stable"
+
+
+def build_trend_card_takeaway(row: Any) -> str:
+    """Concise trend label for profile cards (no duplicate Proj: prose)."""
+    profile = _classify_trend_profile(row)
+    labels = {
+        "breakout": "Breakout candidate — recent trend slopes are improving.",
+        "decline": "Decline risk — recent trend slopes are fading.",
+        "stable": "Stable profile — no strong breakout or decline signal.",
+        "insufficient": "Insufficient trend data for a breakout/decline call.",
+    }
+    return labels.get(profile, "")
+
+
 def build_trend_summary_text(row: Any, *, window_years: int | None = None) -> str:
     """Summarize existing *_trend slopes from Trend / Valuation page rows."""
     specs = (
@@ -896,6 +920,43 @@ def build_valuation_market_summary(row: Any) -> str:
         elif edge < 0:
             signal = " — overvalued vs model"
     return f"Valuation: model rank {mdl} vs market rank {mkt}{signal}"
+
+
+def _describe_valuation_index(index: float | None) -> str:
+    if index is None:
+        return "not enough data to classify the valuation score"
+    if index >= 0.90:
+        return "elite valuation score"
+    if index >= 0.75:
+        return "very strong valuation score"
+    if index >= 0.50:
+        return "solid middle-tier valuation score"
+    if index >= 0.25:
+        return "low valuation score"
+    return "very low valuation score"
+
+
+def build_valuation_card_takeaway(row: Any) -> str:
+    """Concise valuation takeaway for profile cards (no duplicate Proj: prose)."""
+    try:
+        from draft_score_display import fmt_valuation_score
+    except ImportError:
+        fmt_valuation_score = lambda v: str(v) if v is not None else ""  # type: ignore[misc,assignment]
+
+    trend_score = _coerce_float(_row_get(row, "Trend_Score"))
+    perf_score = _coerce_float(_row_get(row, "Perf_Score"))
+    valuation_score = _coerce_float(_row_get(row, "Valuation_Score"))
+    if valuation_score is None:
+        return ""
+    val_display = fmt_valuation_score(valuation_score) or "N/A"
+    desc = _describe_valuation_index(valuation_score)
+    parts = [f"Valuation takeaway: {val_display} ({desc})."]
+    if perf_score is not None and trend_score is not None:
+        parts.append(
+            f"Current production score {perf_score:.1f}, trend score {trend_score:.1f} "
+            "(positive trend = improving recent form)."
+        )
+    return " ".join(parts)
 
 
 def render_analytics_profile_card(
@@ -1325,9 +1386,13 @@ def player_grade_display(row: Any) -> str:
         val = _row_get(row, "Player Grade")
         if val is not None and not (isinstance(val, float) and pd.isna(val)):
             try:
+                from draft_score_display import _fmt_hundred_scale
+
+                return _fmt_hundred_scale(val)
+            except ImportError:
                 n = float(val)
                 if n > 1.5:
-                    return f"{n:.2f}"
+                    return f"{n:.2f}".rstrip("0").rstrip(".")
             except (TypeError, ValueError):
                 pass
     result = fmt_player_grade(val)

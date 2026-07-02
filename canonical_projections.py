@@ -26,6 +26,27 @@ CANONICAL_PROJ_STAT_COLUMNS: tuple[str, ...] = (
 
 CANONICAL_PROJ_MERGE_KEYS: tuple[str, ...] = ("playerID", "fullName")
 
+# Unified draft pool columns merged into analytics/sleeper pages (not proj_* stat lines).
+CANONICAL_DRAFT_METRIC_COLUMNS: tuple[str, ...] = (
+    "Expected Fantasy Value",
+    "Model Rank",
+    "Market Rank",
+    "Fantasy Edge",
+    "Sleeper Score",
+    "Scarcity Score",
+    "ML Projection Score",
+    "Blended Projection Score",
+    "Realistic Base Projection Score",
+    "Market vs Model Score",
+    "App Ranking Score",
+    "ADP",
+    "ADP Rank",
+    "FantasyPros Rank",
+    "Expert Avg Rank",
+    "Expert Std Dev",
+    "Projection Source",
+)
+
 
 def apply_ml_blend_to_projection_stats(
     pool: pd.DataFrame,
@@ -90,6 +111,35 @@ def merge_canonical_projections(
         src_mode = canonical_pool[merge_keys + ["Projection Source"]].drop_duplicates(subset=merge_keys, keep="first")
         out = out.merge(src_mode, on=merge_keys, how="left")
     return out
+
+
+def merge_canonical_draft_metrics(
+    target_df: pd.DataFrame | None,
+    canonical_pool: pd.DataFrame | None,
+    *,
+    on: str = "playerID",
+    name_col: str = "fullName",
+) -> pd.DataFrame:
+    """Replace draft rank/value columns on *target_df* with unified pool metrics."""
+    if target_df is None or getattr(target_df, "empty", True):
+        return target_df if target_df is not None else pd.DataFrame()
+    if canonical_pool is None or getattr(canonical_pool, "empty", True):
+        return target_df.copy()
+    metric_cols = [c for c in CANONICAL_DRAFT_METRIC_COLUMNS if c in canonical_pool.columns]
+    if not metric_cols:
+        return target_df.copy()
+    merge_keys = [k for k in (on, name_col) if k in target_df.columns and k in canonical_pool.columns]
+    if not merge_keys:
+        if name_col in target_df.columns and name_col in canonical_pool.columns:
+            merge_keys = [name_col]
+        else:
+            return target_df.copy()
+    src = canonical_pool[merge_keys + metric_cols].drop_duplicates(subset=merge_keys, keep="first")
+    out = target_df.copy()
+    for col in metric_cols:
+        if col in out.columns:
+            out = out.drop(columns=[col])
+    return out.merge(src, on=merge_keys, how="left")
 
 
 def lookup_canonical_projection_row(

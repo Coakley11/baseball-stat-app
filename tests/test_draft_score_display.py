@@ -64,7 +64,7 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(fmt_ml_projection_score(89.07), "89.07")
 
     def test_roster_fit_not_scaled(self) -> None:
-        self.assertEqual(fmt_roster_fit_score(1.70), "1.70")
+        self.assertEqual(fmt_roster_fit_score(1.70), "1.7")
         self.assertEqual(fmt_roster_fit_score(0.88), "0.88")
 
     def test_ml_projection_score_scales_to_100(self) -> None:
@@ -76,7 +76,7 @@ class DraftScoreDisplayTests(unittest.TestCase):
     def test_valuation_score_scales_to_100(self) -> None:
         from draft_score_display import fmt_valuation_score
 
-        self.assertEqual(fmt_valuation_score(1), "100.00")
+        self.assertEqual(fmt_valuation_score(1), "100")
         self.assertEqual(fmt_valuation_score(0.9583), "95.83")
         self.assertEqual(fmt_valuation_score(0.9204), "92.04")
 

@@ -706,7 +706,14 @@ def _format_detail_value(col: str, val: Any) -> str:
             return f"{sign}{int(round(n))}"
         except (TypeError, ValueError):
             return str(val)
-    if col in ("Draft Fit Score", "Decision Score", "Expected Fantasy Value"):
+    if col in ("Draft Fit Score", "Decision Score", "Expected Fantasy Value", "ML Projection Score"):
+        try:
+            from draft_score_display import format_detail_line
+
+            _label, formatted = format_detail_line(col, val)
+            return formatted
+        except ImportError:
+            pass
         try:
             return f"{float(val):.2f}"
         except (TypeError, ValueError):
@@ -983,6 +990,7 @@ def render_live_draft_rec_cards(
             grade = "—"
             try:
                 from player_photos import (
+                    build_draft_score_metrics_html,
                     compact_fantasy_stat_line,
                     get_player_photo_info,
                     inject_player_photo_styles,
@@ -1002,12 +1010,27 @@ def render_live_draft_rec_cards(
                 photo_html = render_rec_card_photo_html(photo_info, alt=name)
                 team_line = f" · {team}" if team else ""
                 stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
+                metrics_html = build_draft_score_metrics_html(
+                    r,
+                    show_decision_score=True,
+                    show_player_grade=True,
+                    show_roster_fit=True,
+                    show_market_rank=True,
+                    show_model_rank=True,
+                    show_fantasy_edge=True,
+                )
+                strength_txt = ""
+                if strengths:
+                    strength_txt = (
+                        f'<div style="font-size:0.82rem;color:#475569;margin-top:2px;">'
+                        f"Top strengths: {', '.join(strengths)}</div>"
+                    )
                 st.markdown(
                     f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
                     f'<div style="font-size:1.05rem;font-weight:800;">{name}</div>'
                     f'<div style="font-size:0.88rem;color:#475569;">{pos}{team_line} · '
                     f'<span class="ld-rec-grade">Grade {grade}</span> · {tier_lbl}</div>'
-                    f"{stat_html}"
+                    f"{stat_html}{metrics_html}{strength_txt}"
                     f"</div></div>",
                     unsafe_allow_html=True,
                 )
@@ -1113,6 +1136,7 @@ def render_live_draft_rec_cards(
                         ("Market Rank", "Market Rank"),
                         ("Fantasy Edge", "Fantasy Edge"),
                         ("Expected Fantasy Value", "Expected Fantasy Value"),
+                        ("ML Projection Score", "ML Projection Score"),
                         ("Draft Fit Score", "Draft Fit Score"),
                         ("Decision Score", "Decision Score"),
                     )

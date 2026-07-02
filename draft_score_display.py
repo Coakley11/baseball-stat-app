@@ -122,10 +122,7 @@ SLEEPER_MIN_PLAYER_GRADE_DEFAULT = 10.0
 
 def fmt_player_grade(val: Any) -> str:
     """Format raw EFV (0–1) as Player Grade display."""
-    n = _num(val)
-    if n is None:
-        return ""
-    return f"{n * 100:.2f}"
+    return _fmt_hundred_scale(val)
 
 
 def coerce_sleeper_min_player_grade(value: Any, *, default: float = SLEEPER_MIN_PLAYER_GRADE_DEFAULT) -> float:
@@ -156,12 +153,7 @@ def fmt_ml_projection_score(val: Any) -> str:
 
 def fmt_valuation_score(val: Any) -> str:
     """Format raw Valuation_Score (0–1 rank within filter) as 0–100 display."""
-    n = _num(val)
-    if n is None:
-        return ""
-    if n > 1.5:
-        return f"{n:.2f}"
-    return f"{n * 100:.2f}"
+    return _fmt_hundred_scale(val)
 
 
 def fmt_roster_fit_score(val: Any) -> str:
@@ -169,7 +161,11 @@ def fmt_roster_fit_score(val: Any) -> str:
     n = _num(val)
     if n is None:
         return ""
-    return f"{n:.2f}"
+    rounded = round(n, 2)
+    text = f"{rounded:.2f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def fmt_relative_draft_grade(val: Any) -> str:
@@ -214,9 +210,9 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
         out = out.rename(columns=rename)
     for col in (DISPLAY_PLAYER_GRADE, DISPLAY_PICK_SCORE, DISPLAY_RELATIVE_GRADE, "ML Projection Score", "Average Player Grade", "Total Player Grade"):
         if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce").round(2)
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(4)
     if DISPLAY_ROSTER_FIT in out.columns:
-        out[DISPLAY_ROSTER_FIT] = pd.to_numeric(out[DISPLAY_ROSTER_FIT], errors="coerce").round(2)
+        out[DISPLAY_ROSTER_FIT] = pd.to_numeric(out[DISPLAY_ROSTER_FIT], errors="coerce").round(4)
     return out
 
 
@@ -312,6 +308,8 @@ def format_detail_line(internal_col: str, val: Any) -> tuple[str, str]:
         return DISPLAY_PICK_SCORE, fmt_pick_score(val)
     if internal_col == COL_ROSTER_FIT:
         return DISPLAY_ROSTER_FIT, fmt_roster_fit_score(val)
+    if internal_col == "ML Projection Score":
+        return "ML Projection Score", fmt_ml_projection_score(val)
     if internal_col in ("Model Rank", "Market Rank"):
         try:
             return internal_col, str(int(round(float(val))))

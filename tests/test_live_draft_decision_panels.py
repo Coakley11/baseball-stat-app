@@ -157,7 +157,7 @@ class PlayerCategoryStrengthsTests(unittest.TestCase):
         st = mock.MagicMock()
         st.container.return_value.__enter__ = mock.Mock(return_value=mock.MagicMock())
         st.container.return_value.__exit__ = mock.Mock(return_value=False)
-        st.columns.return_value = [mock.MagicMock(), mock.MagicMock()]
+        st.columns.return_value = [mock.MagicMock(), mock.MagicMock(), mock.MagicMock()]
         session = {"live_draft_room": _room()}
         rec_df = pd.DataFrame(
             [

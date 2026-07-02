@@ -8,6 +8,43 @@ BROWSING_AWAY_KEY = "_live_draft_browsing_away"
 FORCE_SYNC_ON_RETURN_KEY = "_live_draft_force_sync_on_return"
 DEFAULT_BROWSE_PAGE = "Fantasy Trends"
 
+LIVE_DRAFT_QUICK_NAV_PAGES: tuple[tuple[str, str], ...] = (
+    ("Draft Assistant Simulator", "Draft Assistant"),
+    ("Fantasy Sleepers & Busts", "Sleepers"),
+    ("Trend Value", "Trends"),
+    ("Valuation", "Valuation"),
+    ("ML Predictions", "ML Projections"),
+    ("Comparison Tool", "Comparison"),
+)
+
+
+def render_live_draft_quick_nav(st: Any, session: dict[str, Any]) -> None:
+    """Quick links to related fantasy pages while a live draft is active."""
+    try:
+        from shared_draft_context import prepare_canonical_scoring_context
+    except ImportError:
+        prepare_canonical_scoring_context = None  # type: ignore[misc,assignment]
+
+    def _go(target_page: str) -> None:
+        if prepare_canonical_scoring_context is not None:
+            try:
+                prepare_canonical_scoring_context(session, active_page=target_page)
+            except Exception:
+                pass
+        on_browse_other_pages(session, target_page=target_page)
+
+    st.markdown("**Quick navigation**")
+    cols = st.columns(len(LIVE_DRAFT_QUICK_NAV_PAGES))
+    for col, (page, label) in zip(cols, LIVE_DRAFT_QUICK_NAV_PAGES):
+        with col:
+            col.button(
+                label,
+                key=f"live_draft_quick_nav_{page.replace(' ', '_')}",
+                use_container_width=True,
+                on_click=_go,
+                args=(page,),
+            )
+
 
 def on_browse_other_pages(session: dict[str, Any], *, target_page: str | None = None) -> None:
     """Leave Live Draft Room without ending or pausing the draft."""

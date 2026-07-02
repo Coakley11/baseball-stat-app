@@ -1752,7 +1752,7 @@ def format_fantasy_table(df):
             df[col] = pd.to_numeric(df[col], errors="coerce").round(0).astype("Int64")
     for col in score_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
+            df[col] = pd.to_numeric(df[col], errors="coerce").apply(format_trimmed_2dp)
     for col in rate_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
@@ -16112,7 +16112,7 @@ if active_page == "Trend Value":
     )
     if trend_selected is not None:
         try:
-            from player_photos import build_trend_summary_text, render_analytics_profile_card
+            from player_photos import build_trend_card_takeaway, build_trend_summary_text, render_analytics_profile_card
 
             render_analytics_profile_card(
                 st,
@@ -16121,7 +16121,7 @@ if active_page == "Trend Value":
                 yearly_df=yearly_df,
                 draft_pool_df=trend_profile_pool,
                 trend_summary=build_trend_summary_text(trend_selected, window_years=lag_trend),
-                extra_summary=make_trend_insight_summary(trend_selected),
+                extra_summary=build_trend_card_takeaway(trend_selected),
             )
             try:
                 from shared_draft_context import render_ml_blend_off_note
@@ -16131,10 +16131,6 @@ if active_page == "Trend Value":
                 pass
         except ImportError:
             pass
-        if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
-            st.success(make_trend_insight_summary(trend_selected))
-        else:
-            st.error(make_trend_insight_summary(trend_selected))
 
     try:
         from baseball_activity import log_breakout_analysis, log_trend_filter_change
@@ -16269,7 +16265,7 @@ if active_page == "Trend Value":
         selected_player_summary = trend_value_df[trend_value_df["playerID"] == single_trend_id]
         if not selected_player_summary.empty:
             try:
-                from player_photos import build_trend_summary_text, render_analytics_profile_card
+                from player_photos import build_trend_card_takeaway, build_trend_summary_text, render_analytics_profile_card
 
                 render_analytics_profile_card(
                     st,
@@ -16281,10 +16277,10 @@ if active_page == "Trend Value":
                         selected_player_summary.iloc[0],
                         window_years=lag_trend,
                     ),
+                    extra_summary=build_trend_card_takeaway(selected_player_summary.iloc[0]),
                 )
             except ImportError:
                 pass
-            st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
             try:
                 from applied_math_context import cache_trend_player_context, record_trend_intel
 
@@ -16825,10 +16821,11 @@ if active_page == "Fantasy Sleepers & Busts":
     fantasy_df = agg_fantasy.merge(fantasy_trends, on="playerID", how="left")
     fantasy_df = add_latest_and_projection_columns(fantasy_df, recent_fantasy)
     try:
-        from canonical_projections import merge_canonical_projections
+        from canonical_projections import merge_canonical_draft_metrics, merge_canonical_projections
 
         _canonical_sleeper_pool = get_cached_unified_projection_pool_live()
         fantasy_df = merge_canonical_projections(fantasy_df, _canonical_sleeper_pool)
+        fantasy_df = merge_canonical_draft_metrics(fantasy_df, _canonical_sleeper_pool)
     except Exception:
         pass
 
@@ -16861,10 +16858,6 @@ if active_page == "Fantasy Sleepers & Busts":
             normalize_score(fantasy_df["R"]) + normalize_score(fantasy_df["HR"]) + normalize_score(fantasy_df["RBI"]) +
             normalize_score(fantasy_df["SB"]) + normalize_score(fantasy_df["BA"])
         ) / 5
-        fantasy_df["Projected Production Score"] = (
-            normalize_score(fantasy_df["proj_R"]) + normalize_score(fantasy_df["proj_HR"]) + normalize_score(fantasy_df["proj_RBI"]) +
-            normalize_score(fantasy_df["proj_SB"]) + normalize_score(fantasy_df["proj_BA"])
-        ) / 5
     else:
         with st.expander("Points League Scoring Settings"):
             p1, p2, p3, p4, p5 = st.columns(5)
@@ -16888,25 +16881,33 @@ if active_page == "Fantasy Sleepers & Busts":
             fantasy_df["proj_XBH"] * pts_2b3b - fantasy_df["latest_AB" if "latest_AB" in fantasy_df.columns else "AB"] * pts_ab_penalty
         )
         fantasy_df["Current Production Score"] = normalize_score(fantasy_df["Current Points Proxy"])
-        fantasy_df["Projected Production Score"] = normalize_score(fantasy_df["Projected Points Proxy"])
 
-    fantasy_df["Expected Fantasy Value"] = fantasy_df["Projected Production Score"]
-    fantasy_df["Model Rank"] = fantasy_df["Projected Production Score"].rank(method="min", ascending=False)
+    # Current rank from recent stats; model/market ranks come from unified draft pool merge above.
     fantasy_df["Current Rank"] = fantasy_df["Current Production Score"].rank(method="min", ascending=False)
     fantasy_df["Player Key"] = fantasy_df["fullName"].apply(normalize_player_name_for_merge)
 
     if not market_df.empty:
-        fantasy_df = fantasy_df.merge(
-            market_df[[c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"] if c in market_df.columns]],
-            on="Player Key",
-            how="left"
-        )
+        _market_extra = [
+            c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"]
+            if c in market_df.columns and c not in fantasy_df.columns
+        ]
+        if _market_extra:
+            fantasy_df = fantasy_df.merge(
+                market_df[_market_extra],
+                on="Player Key",
+                how="left",
+            )
     else:
-        for c in ["ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"]:
-            fantasy_df[c] = np.nan
+        for c in ["ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev"]:
+            if c not in fantasy_df.columns:
+                fantasy_df[c] = np.nan
 
-    fantasy_df["Market Rank"] = pd.to_numeric(fantasy_df["Market Rank"], errors="coerce")
-    fantasy_df["Fantasy Edge"] = fantasy_df["Market Rank"] - fantasy_df["Model Rank"]
+    if "Market Rank" in fantasy_df.columns:
+        fantasy_df["Market Rank"] = pd.to_numeric(fantasy_df["Market Rank"], errors="coerce")
+    if "Model Rank" in fantasy_df.columns:
+        fantasy_df["Model Rank"] = pd.to_numeric(fantasy_df["Model Rank"], errors="coerce")
+    if "Expected Fantasy Value" in fantasy_df.columns and "Fantasy Edge" not in fantasy_df.columns:
+        fantasy_df["Fantasy Edge"] = fantasy_df["Market Rank"] - fantasy_df["Model Rank"]
     fantasy_df["Projected OPS"] = fantasy_df["proj_OPS"]
     fantasy_df["Projected HR"] = fantasy_df["proj_HR"]
     fantasy_df["Projected RBI"] = fantasy_df["proj_RBI"]
@@ -16984,9 +16985,9 @@ if active_page == "Fantasy Sleepers & Busts":
         fantasy_df = fantasy_df[
             pd.to_numeric(fantasy_df["proj_HR"], errors="coerce").fillna(0) >= sleeper_min_proj_hr
         ].copy()
-    if "Projected Production Score" in fantasy_df.columns:
+    if "Expected Fantasy Value" in fantasy_df.columns:
         fantasy_df = fantasy_df[
-            pd.to_numeric(fantasy_df["Projected Production Score"], errors="coerce").fillna(0)
+            pd.to_numeric(fantasy_df["Expected Fantasy Value"], errors="coerce").fillna(0)
             >= sleeper_min_projection_score
         ].copy()
 
@@ -17262,6 +17263,10 @@ if active_page == "Fantasy Sleepers & Busts":
                     st.caption("Advanced market-edge curve unavailable because the selected model needs more valid rows or positive values.")
 
         # fantasy_df has already been filtered for draft relevance above.
+        sleeper_profile_pool = build_profile_draft_metrics_pool(
+            sync_team=sleeper_team_name if sleeper_sync_enabled else None,
+            fantasy_format=fantasy_format,
+        )
         fantasy_output_pool = fantasy_df.copy()
         sleepers = fantasy_output_pool.sort_values("Fantasy Edge", ascending=False).head(fantasy_top_n).copy()
         busts = fantasy_output_pool.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
@@ -17303,7 +17308,7 @@ if active_page == "Fantasy Sleepers & Busts":
         with c8:
             st.subheader("🔥 Market Sleepers")
             try:
-                from player_photos import render_draft_player_profile_card
+                from player_photos import merge_profile_row, render_draft_player_profile_card
 
                 for sl_start in range(0, min(4, len(sleepers)), 2):
                     sl_cols = st.columns(2)
@@ -17311,7 +17316,7 @@ if active_page == "Fantasy Sleepers & Busts":
                         sl_idx = sl_start + sl_j
                         if sl_idx >= len(sleepers):
                             break
-                        sl_row = sleepers.iloc[sl_idx]
+                        sl_row = merge_profile_row(sleepers.iloc[sl_idx], sleeper_profile_pool)
                         with sl_col:
                             render_draft_player_profile_card(
                                 st,
@@ -17319,6 +17324,7 @@ if active_page == "Fantasy Sleepers & Busts":
                                 reason="",
                                 show_decision_score=False,
                                 show_fantasy_edge=True,
+                                show_roster_fit=bool(sleeper_sync_enabled),
                                 compact=True,
                             )
             except ImportError:
@@ -20856,6 +20862,12 @@ if active_page == "Live Draft Room":
                 except Exception:
                     pass
                 st.markdown("##### Recommended picks")
+                try:
+                    from live_draft_navigation import render_live_draft_quick_nav
+
+                    render_live_draft_quick_nav(st, st.session_state)
+                except ImportError:
+                    pass
                 _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
                 _gaps: list[str] = []
                 _category_needs: list[str] = []
@@ -22179,6 +22191,7 @@ if active_page == "Valuation":
         try:
             from player_photos import (
                 build_trend_summary_text,
+                build_valuation_card_takeaway,
                 build_valuation_market_summary,
                 merge_profile_row,
                 render_analytics_profile_card,
@@ -22193,6 +22206,7 @@ if active_page == "Valuation":
                 draft_pool_df=val_profile_pool,
                 trend_summary=build_trend_summary_text(selected_value_row, window_years=lag_value),
                 market_summary=build_valuation_market_summary(_val_display_row),
+                extra_summary=build_valuation_card_takeaway(selected_value_row),
                 show_valuation_score=True,
             )
             try:
@@ -22203,7 +22217,6 @@ if active_page == "Valuation":
                 pass
         except ImportError:
             pass
-        st.info(make_valuation_summary(selected_value_row))
 
     try:
         from applied_math_context import cache_valuation_ami_context
