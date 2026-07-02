@@ -93,7 +93,7 @@ class CompletedRosterRecapTests(unittest.TestCase):
 
 class SleepersAndComparisonCardTests(unittest.TestCase):
     def test_sleepers_row_renders_profile_card(self) -> None:
-        from player_photos import build_draft_profile_card_html
+        from player_photos import build_draft_profile_card_html, roster_fit_display
 
         row = pd.Series(
             {
@@ -103,14 +103,46 @@ class SleepersAndComparisonCardTests(unittest.TestCase):
                 "proj_HR": 32,
                 "proj_RBI": 78,
                 "Expected Fantasy Value": 0.72,
+                "Draft Fit Score": 1.42,
                 "Reason": "Positive fantasy edge vs market.",
             }
         )
+        self.assertEqual(roster_fit_display(row), "1.42")
         info = get_player_photo_info(full_name="Tyler O'Neill", use_api=False)
-        html = build_draft_profile_card_html(row, info, reason=str(row["Reason"]), show_adp=True)
+        html = build_draft_profile_card_html(row, info, reason=str(row["Reason"]))
         self.assertIn("Tyler O'Neill", html)
         self.assertIn("Proj:", html)
+        self.assertIn("Roster Fit Score", html)
+        self.assertIn("1.42", html)
+        self.assertIn("Player Grade", html)
         self.assertIn("Positive fantasy edge", html)
+
+    def test_draft_assistant_card_shows_decision_score(self) -> None:
+        from player_photos import build_draft_profile_card_html
+
+        row = pd.Series(
+            {
+                "fullName": "Aaron Judge",
+                "Primary Position": "OF",
+                "Expected Fantasy Value": 0.91,
+                "Decision Score": 0.9123,
+                "Draft Fit Score": 1.55,
+                "Market Rank": 12,
+                "Model Rank": 3,
+                "proj_HR": 48,
+                "proj_RBI": 111,
+                "proj_R": 105,
+                "proj_SB": 9,
+                "proj_BA": 0.289,
+            }
+        )
+        html = build_draft_profile_card_html(row, {}, show_decision_score=True)
+        self.assertIn("Decision Score", html)
+        self.assertIn("91.23", html)
+        self.assertIn("Roster Fit Score", html)
+        self.assertIn("1.55", html)
+        self.assertIn("Market Rank", html)
+        self.assertIn("Model Rank", html)
 
     @patch("player_photos._safe_markdown")
     def test_comparison_historical_player_no_projections(self, mock_md: MagicMock) -> None:
@@ -152,6 +184,8 @@ class SleepersAndComparisonCardTests(unittest.TestCase):
             projection_lookup_df=proj,
         )
         html = str(mock_md.call_args[0][1])
+        self.assertIn("Player Grade", html)
+        self.assertIn("Roster Fit Score", html)
         self.assertIn("Proj:", html)
         self.assertNotIn("Not applicable — historical player", html)
 

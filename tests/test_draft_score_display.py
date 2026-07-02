@@ -50,6 +50,17 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(fmt_roster_fit_score(1.70), "1.70")
         self.assertEqual(fmt_roster_fit_score(0.88), "0.88")
 
+    def test_ml_projection_score_scales_to_100(self) -> None:
+        from draft_score_display import fmt_ml_projection_score
+
+        self.assertEqual(fmt_ml_projection_score(0.9475), "94.75")
+        self.assertEqual(fmt_ml_projection_score(0.8907), "89.07")
+
+    def test_prepare_scales_ml_projection_score(self) -> None:
+        df = pd.DataFrame([{"ML Projection Score": 0.9475}])
+        out = prepare_draft_scores_for_display(df)
+        self.assertEqual(float(out.iloc[0]["ML Projection Score"]), 94.75)
+
     def test_relative_draft_grade_two_decimals(self) -> None:
         self.assertEqual(fmt_relative_draft_grade(0.8214), "82.14")
         self.assertEqual(fmt_relative_draft_grade(0.2785), "27.85")

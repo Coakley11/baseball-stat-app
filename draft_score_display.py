@@ -45,6 +45,7 @@ SCALE_TO_DISPLAY_100: frozenset[str] = frozenset(
         COL_EFV,
         COL_PICK,
         COL_RELATIVE_GRADE,
+        "ML Projection Score",
         "Average Expected Fantasy Value",
         "Total Expected Fantasy Value",
         "Total Projected Fantasy Value",
@@ -137,6 +138,14 @@ def fmt_pick_score(val: Any) -> str:
     return f"{n * 100:.2f}"
 
 
+def fmt_ml_projection_score(val: Any) -> str:
+    """Format raw ML Projection Score (0–1) as 0–100 display."""
+    n = _num(val)
+    if n is None:
+        return ""
+    return f"{n * 100:.2f}"
+
+
 def fmt_roster_fit_score(val: Any) -> str:
     """Format raw Draft Fit Score (unscaled)."""
     n = _num(val)
@@ -185,7 +194,7 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     rename = {k: v for k, v in COLUMN_RENAME_MAP.items() if k in out.columns}
     if rename:
         out = out.rename(columns=rename)
-    for col in (DISPLAY_PLAYER_GRADE, DISPLAY_PICK_SCORE, DISPLAY_RELATIVE_GRADE, "Average Player Grade", "Total Player Grade"):
+    for col in (DISPLAY_PLAYER_GRADE, DISPLAY_PICK_SCORE, DISPLAY_RELATIVE_GRADE, "ML Projection Score", "Average Player Grade", "Total Player Grade"):
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce").round(2)
     if DISPLAY_ROSTER_FIT in out.columns:

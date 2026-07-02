@@ -699,19 +699,46 @@ def lookup_row_by_player_name(
 
 
 def roster_fit_display(row: Any) -> str:
-    for col in ("Draft Fit Score", "Roster Fit Score", "Positional Fit", "Team fit"):
-        val = _row_get(row, col)
-        if val is not None and not (isinstance(val, float) and pd.isna(val)):
-            try:
-                num = float(val)
-                if 0 < num <= 1.5:
-                    return str(int(round(num * 100)))
-                return str(int(round(num)))
-            except (TypeError, ValueError):
-                text = str(val).strip()
-                if text:
-                    return text
-    return "—"
+    """Roster Fit Score from internal Draft Fit Score (unscaled 0–2+ range)."""
+    try:
+        from draft_score_display import COL_ROSTER_FIT, fmt_roster_fit_score
+    except ImportError:
+        COL_ROSTER_FIT = "Draft Fit Score"
+        fmt_roster_fit_score = lambda v: str(v) if v is not None else ""  # type: ignore[misc,assignment]
+
+    val = _row_get(row, COL_ROSTER_FIT)
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "Roster Fit Score")
+    result = fmt_roster_fit_score(val)
+    return result if result else "Not available"
+
+
+def decision_score_display(row: Any) -> str:
+    try:
+        from draft_score_display import COL_PICK, fmt_pick_score
+    except ImportError:
+        COL_PICK = "Decision Score"
+        fmt_pick_score = lambda v: str(v) if v is not None else ""  # type: ignore[misc,assignment]
+
+    val = _row_get(row, COL_PICK)
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "Pick Score")
+    result = fmt_pick_score(val)
+    return result if result else "Not available"
+
+
+def market_rank_display(row: Any) -> str:
+    val = _coerce_float(_row_get(row, "Market Rank"))
+    if val is None:
+        return "Not available"
+    return str(int(round(val)))
+
+
+def model_rank_display(row: Any) -> str:
+    val = _coerce_float(_row_get(row, "Model Rank"))
+    if val is None:
+        return "Not available"
+    return str(int(round(val)))
 
 
 def adp_display(row: Any) -> str:
@@ -743,6 +770,38 @@ def render_queue_headshot_html(photo_info: dict[str, Any], *, size: int = 36) ->
     )
 
 
+def build_draft_score_metrics_html(
+    row: Any,
+    *,
+    show_decision_score: bool = False,
+    show_player_grade: bool = True,
+    show_roster_fit: bool = True,
+    show_market_rank: bool = True,
+    show_model_rank: bool = True,
+) -> str:
+    """Labeled draft metrics block for profile cards."""
+
+    def _line(label: str, value: str) -> str:
+        if not value or value == "Not available":
+            return f'{label}: <span class="bb-profile-na">Not available</span>'
+        return f'{label}: <span class="ld-rec-grade">{value}</span>'
+
+    lines: list[str] = []
+    if show_decision_score:
+        lines.append(_line("Decision Score", decision_score_display(row)))
+    if show_player_grade:
+        lines.append(_line("Player Grade", player_grade_display(row)))
+    if show_roster_fit:
+        lines.append(_line("Roster Fit Score", roster_fit_display(row)))
+    if show_market_rank:
+        lines.append(_line("Market Rank", market_rank_display(row)))
+    if show_model_rank:
+        lines.append(_line("Model Rank", model_rank_display(row)))
+    if not lines:
+        return ""
+    return '<div style="font-size:0.84rem;margin-top:4px;line-height:1.45;">' + "<br/>".join(lines) + "</div>"
+
+
 def build_draft_profile_card_html(
     row: Any,
     photo_info: dict[str, Any],
@@ -753,6 +812,9 @@ def build_draft_profile_card_html(
     show_grade: bool = True,
     show_roster_fit: bool = True,
     show_adp: bool = False,
+    show_decision_score: bool = False,
+    show_market_rank: bool = True,
+    show_model_rank: bool = True,
     compact: bool = False,
     historical_note: str = "",
 ) -> str:
@@ -778,17 +840,16 @@ def build_draft_profile_card_html(
             detail_lines.append(f'<div class="bb-profile-na">{historical_note}</div>')
     elif historical_note:
         detail_lines.append(f'<div class="bb-profile-na">{historical_note}</div>')
-    grade_bits: list[str] = []
-    if show_grade:
-        grade_bits.append(f'Grade <span class="ld-rec-grade">{player_grade_display(row)}</span>')
-    if show_roster_fit:
-        grade_bits.append(f'Roster fit <span class="ld-rec-grade">{roster_fit_display(row)}</span>')
-    if show_adp:
-        adp = adp_display(row)
-        if adp != "—":
-            grade_bits.append(f"ADP/Mkt {adp}")
-    if grade_bits:
-        detail_lines.append(f'<div style="font-size:0.84rem;margin-top:2px;">{" · ".join(grade_bits)}</div>')
+    metrics_html = build_draft_score_metrics_html(
+        row,
+        show_decision_score=show_decision_score,
+        show_player_grade=show_grade,
+        show_roster_fit=show_roster_fit,
+        show_market_rank=show_market_rank or show_adp,
+        show_model_rank=show_model_rank or show_adp,
+    )
+    if metrics_html:
+        detail_lines.append(metrics_html)
     if reason:
         detail_lines.append(f'<div style="font-size:0.86rem;margin-top:4px;color:#334155;">{reason}</div>')
     slot_html = f'<div class="bb-roster-slot-label">{slot_label}</div>' if slot_label else ""
@@ -813,6 +874,9 @@ def render_draft_player_profile_card(
     show_grade: bool = True,
     show_roster_fit: bool = True,
     show_adp: bool = False,
+    show_decision_score: bool = False,
+    show_market_rank: bool = True,
+    show_model_rank: bool = True,
     compact: bool = False,
     historical_note: str = "",
 ) -> None:
@@ -830,6 +894,9 @@ def render_draft_player_profile_card(
         show_grade=show_grade,
         show_roster_fit=show_roster_fit,
         show_adp=show_adp,
+        show_decision_score=show_decision_score,
+        show_market_rank=show_market_rank,
+        show_model_rank=show_model_rank,
         compact=compact,
         historical_note=historical_note,
     )
@@ -989,6 +1056,7 @@ def render_comparison_profile_cards(
     player_ids: list[str],
     yearly_df: pd.DataFrame | None,
     projection_lookup_df: pd.DataFrame | None = None,
+    draft_metrics_lookup_df: pd.DataFrame | None = None,
     projection_lookup_name_col: str = "fullName",
     strengths_map: dict[str, str] | None = None,
 ) -> None:
@@ -1000,8 +1068,20 @@ def render_comparison_profile_cards(
     for label, pid in zip(labels, player_ids):
         active = is_current_draft_pool_player(pid, yearly_df)
         proj_row = lookup_row_by_player_name(label, projection_lookup_df, name_col=projection_lookup_name_col)
-        display_row = proj_row if proj_row is not None else pd.Series({"fullName": label, "playerID": pid})
-        if active and proj_row is None:
+        metrics_row = lookup_row_by_player_name(label, draft_metrics_lookup_df, name_col=projection_lookup_name_col)
+        if proj_row is not None and metrics_row is not None:
+            merged = dict(metrics_row.to_dict())
+            for key, val in proj_row.to_dict().items():
+                if key not in merged or merged.get(key) is None or (
+                    isinstance(merged.get(key), float) and pd.isna(merged.get(key))
+                ):
+                    merged[key] = val
+            display_row = pd.Series(merged)
+        elif metrics_row is not None:
+            display_row = metrics_row
+        elif proj_row is not None:
+            display_row = proj_row
+        else:
             display_row = pd.Series({"fullName": label, "playerID": pid})
         try:
             photo_info = get_player_photo_info(player_id=pid, full_name=label, row=display_row)
@@ -1017,7 +1097,8 @@ def render_comparison_profile_cards(
                     show_projection=True,
                     show_grade=True,
                     show_roster_fit=True,
-                    show_adp=True,
+                    show_market_rank=True,
+                    show_model_rank=True,
                 )
             )
         else:
@@ -1028,7 +1109,8 @@ def render_comparison_profile_cards(
                     show_projection=False,
                     show_grade=False,
                     show_roster_fit=False,
-                    show_adp=False,
+                    show_market_rank=False,
+                    show_model_rank=False,
                     historical_note="Not applicable — historical player",
                     reason=reason,
                 )
@@ -1037,18 +1119,24 @@ def render_comparison_profile_cards(
 
 
 def player_grade_display(row: Any) -> str:
-    for col in ("Expected Fantasy Value", "Player Grade"):
-        if hasattr(row, "get"):
-            val = row.get(col)
-            if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                try:
-                    n = float(val)
-                    if 0 < n <= 1.5:
-                        return str(int(round(n * 100)))
-                    return str(int(round(n)))
-                except (TypeError, ValueError):
-                    continue
-    return "—"
+    try:
+        from draft_score_display import COL_EFV, fmt_player_grade
+    except ImportError:
+        COL_EFV = "Expected Fantasy Value"
+        fmt_player_grade = lambda v: str(v) if v is not None else ""  # type: ignore[misc,assignment]
+
+    val = _row_get(row, COL_EFV)
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "Player Grade")
+        if val is not None and not (isinstance(val, float) and pd.isna(val)):
+            try:
+                n = float(val)
+                if n > 1.5:
+                    return f"{n:.2f}"
+            except (TypeError, ValueError):
+                pass
+    result = fmt_player_grade(val)
+    return result if result else "Not available"
 
 
 def render_draft_pick_callout(
@@ -1068,10 +1156,17 @@ def render_draft_pick_callout(
     name = str(getattr(row, "get", lambda _k, _d="": _d)("fullName") or "Player")
     pos = str(getattr(row, "get", lambda _k, _d="": _d)("Primary Position") or "")
     team = str(getattr(row, "get", lambda _k, _d="": _d)("Team") or getattr(row, "get", lambda _k, _d="": _d)("teamName") or "")
-    grade = player_grade_display(row)
     stats = compact_fantasy_stat_line(row)
     photo_html = render_rec_card_photo_html(photo_info, alt=name)
-    meta = f"{pos}" + (f" · {team}" if team else "") + f" · Grade <span class='ld-rec-grade'>{grade}</span>"
+    meta = f"{pos}" + (f" · {team}" if team else "")
+    metrics_html = build_draft_score_metrics_html(
+        row,
+        show_decision_score=True,
+        show_player_grade=True,
+        show_roster_fit=True,
+        show_market_rank=True,
+        show_model_rank=True,
+    )
     stats_html = f'<div class="ld-rec-stat-line">{stats}</div>' if stats else ""
     detail_html = f'<div style="font-size:0.88rem;margin-top:4px;">{detail}</div>' if detail else ""
     border = "#16a34a" if variant == "success" else "#2563eb"
@@ -1082,5 +1177,5 @@ def render_draft_pick_callout(
         f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
         f'<div style="font-weight:800;">{headline}</div>'
         f'<div style="font-size:0.95rem;"><strong>{name}</strong> — {meta}</div>'
-        f"{stats_html}{detail_html}</div></div></div>",
+        f"{metrics_html}{stats_html}{detail_html}</div></div></div>",
     )

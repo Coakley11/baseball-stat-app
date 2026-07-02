@@ -15032,6 +15032,32 @@ if active_page == "Comparison Tool":
     if not comparison_projection_lookup.empty:
         comparison_projection_lookup = add_latest_and_projection_columns(comparison_projection_lookup, _comparison_recent)
 
+    comparison_card_pool = default_draft_simulation_lookup()
+    if (
+        not comparison_card_pool.empty
+        and comparison_action_team
+        and "fullName" in comparison_card_pool.columns
+    ):
+        try:
+            _cmp_board = _canonical_draft_board_df()
+            if not _cmp_board.empty and "Team" in _cmp_board.columns and "Player" in _cmp_board.columns:
+                _cmp_roster_names = _cmp_board[
+                    _cmp_board["Team"].astype(str) == str(comparison_action_team)
+                ]["Player"].dropna().astype(str).tolist()
+                _cmp_roster_rows = comparison_card_pool[
+                    comparison_card_pool["fullName"].astype(str).isin(set(_cmp_roster_names))
+                ].copy()
+                if not _cmp_roster_rows.empty:
+                    comparison_card_pool, _cmp_scoring_gaps = apply_draft_pick_scoring(
+                        comparison_card_pool,
+                        _cmp_roster_rows,
+                        fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
+                        current_pick=max(1, len(_cmp_board) + 1),
+                        recommendation_mode="draft_fit",
+                    )
+        except Exception:
+            pass
+
     if selected_labels_compare:
         try:
             from player_photos import render_comparison_profile_cards
@@ -15042,6 +15068,7 @@ if active_page == "Comparison Tool":
                 player_ids=selected_ids_compare,
                 yearly_df=yearly_df,
                 projection_lookup_df=comparison_projection_lookup,
+                draft_metrics_lookup_df=comparison_card_pool,
                 projection_lookup_name_col="fullName",
             )
         except ImportError:
@@ -16706,6 +16733,28 @@ if active_page == "Fantasy Sleepers & Busts":
                 if use_pos_filter:
                     fantasy_df = fantasy_df[fantasy_df["Primary Position"].isin(sleeper_auto_positions)].copy()
 
+    if (
+        sleeper_sync_enabled
+        and sleeper_synced_roster
+        and not fantasy_df.empty
+        and "fullName" in fantasy_df.columns
+    ):
+        roster_rows_sleepers = fantasy_df[
+            fantasy_df["fullName"].astype(str).isin(set(sleeper_synced_roster))
+        ].copy()
+        if not roster_rows_sleepers.empty:
+            current_pick_sleepers = max(1, len(sleeper_synced_drafted) + 1)
+            try:
+                fantasy_df, _sleeper_scoring_gaps = apply_draft_pick_scoring(
+                    fantasy_df,
+                    roster_rows_sleepers,
+                    fantasy_format=fantasy_format,
+                    current_pick=current_pick_sleepers,
+                    recommendation_mode="draft_fit",
+                )
+            except Exception:
+                pass
+
     if fantasy_df.empty:
         st.warning("No players met the fantasy filters. Try lowering minimum AB/G, expanding age/position filters, or loosening the sleeper/bust relevance filters.")
     else:
@@ -16934,7 +16983,7 @@ if active_page == "Fantasy Sleepers & Busts":
 
         display_cols = [
             "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
-            "Expected Fantasy Value", "Reason"
+            "Expected Fantasy Value", "Draft Fit Score", "Reason",
         ]
         display_rename = {"fullName": "Player"}
         sleepers_display = sleepers[[c for c in display_cols if c in sleepers.columns]].rename(columns=display_rename)
@@ -16981,15 +17030,25 @@ if active_page == "Fantasy Sleepers & Busts":
                                 st,
                                 sl_row,
                                 reason=str(sl_row.get("Reason") or "").strip(),
-                                show_adp=True,
+                                show_decision_score=False,
                                 compact=True,
                             )
             except ImportError:
                 pass
-            render_output_table(sleepers_display, key="fantasy_market_sleepers", file_name="fantasy_market_sleepers.csv", style_cols=["Fantasy Edge"])
+            render_output_table(
+                sleepers_display,
+                key="fantasy_market_sleepers",
+                file_name="fantasy_market_sleepers.csv",
+                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score"],
+            )
         with c9:
             st.subheader("⚠️ Market Bust Risks")
-            render_output_table(busts_display, key="fantasy_market_busts", file_name="fantasy_market_busts.csv", style_cols=["Fantasy Edge"])
+            render_output_table(
+                busts_display,
+                key="fantasy_market_busts",
+                file_name="fantasy_market_busts.csv",
+                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score"],
+            )
 
         compact_player_action_center(
             pd.concat([sleepers["fullName"], busts["fullName"]], ignore_index=True).dropna().astype(str).drop_duplicates().tolist(),
@@ -17739,9 +17798,15 @@ if active_page == "Draft Assistant Simulator":
                 else:
                     st.caption("Best team fit and best raw value align on the same player.")
 
-        rec_cols = ["fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge", "ML Projection Score", "Expected Fantasy Value", "Draft Fit Score", "Team fit", "Strategy", "Reason"]
+        rec_cols = [
+            "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
+            "ML Projection Score", "Expected Fantasy Value", "Decision Score", "Draft Fit Score",
+            "Team fit", "Strategy", "Reason",
+        ]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
+        if "Pick Score" in recs_display.columns:
+            recs_display = recs_display.rename(columns={"Pick Score": "Decision Score"})
         st.caption(
             "Recommendation table with roster fit, strategy context, and CSV export. "
             "**Player Grade** = overall player quality (0–100). "
@@ -17769,7 +17834,7 @@ if active_page == "Draft Assistant Simulator":
                             st,
                             rec_row,
                             reason=str(rec_row.get("Reason") or rec_row.get("Strategy") or "").strip(),
-                            show_adp=True,
+                            show_decision_score=True,
                             compact=True,
                         )
         except ImportError:
@@ -17778,7 +17843,7 @@ if active_page == "Draft Assistant Simulator":
             recs_display,
             key="draft_assistant_recommendations",
             file_name="draft_assistant_recommendations.csv",
-            style_cols=["Fantasy Edge", "Roster Fit Score", "Player Grade"],
+            style_cols=["Fantasy Edge", "Decision Score", "Roster Fit Score", "Player Grade", "ML Projection Score"],
         )
         if developer_mode_enabled():
             with st.expander("Draft Scoring Breakdown", expanded=False):
