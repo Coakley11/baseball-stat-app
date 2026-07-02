@@ -56,6 +56,13 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(fmt_ml_projection_score(0.9475), "94.75")
         self.assertEqual(fmt_ml_projection_score(0.8907), "89.07")
 
+    def test_valuation_score_scales_to_100(self) -> None:
+        from draft_score_display import fmt_valuation_score
+
+        self.assertEqual(fmt_valuation_score(1), "100.00")
+        self.assertEqual(fmt_valuation_score(0.9583), "95.83")
+        self.assertEqual(fmt_valuation_score(0.9204), "92.04")
+
     def test_prepare_scales_ml_projection_score(self) -> None:
         df = pd.DataFrame([{"ML Projection Score": 0.9475}])
         out = prepare_draft_scores_for_display(df)

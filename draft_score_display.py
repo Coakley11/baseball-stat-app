@@ -146,6 +146,16 @@ def fmt_ml_projection_score(val: Any) -> str:
     return f"{n * 100:.2f}"
 
 
+def fmt_valuation_score(val: Any) -> str:
+    """Format raw Valuation_Score (0–1 rank within filter) as 0–100 display."""
+    n = _num(val)
+    if n is None:
+        return ""
+    if n > 1.5:
+        return f"{n:.2f}"
+    return f"{n * 100:.2f}"
+
+
 def fmt_roster_fit_score(val: Any) -> str:
     """Format raw Draft Fit Score (unscaled)."""
     n = _num(val)

@@ -802,6 +802,184 @@ def build_draft_score_metrics_html(
     return '<div style="font-size:0.84rem;margin-top:4px;line-height:1.45;">' + "<br/>".join(lines) + "</div>"
 
 
+def valuation_score_display(row: Any) -> str:
+    try:
+        from draft_score_display import fmt_valuation_score
+    except ImportError:
+        fmt_valuation_score = lambda v: str(v) if v is not None else ""  # type: ignore[misc,assignment]
+
+    val = _row_get(row, "Valuation_Score")
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "Valuation Score")
+    result = fmt_valuation_score(val)
+    return result if result else "Not available"
+
+
+def merge_profile_row(
+    base_row: Any,
+    draft_pool_df: pd.DataFrame | None,
+    *,
+    name_col: str = "fullName",
+) -> pd.Series:
+    """Merge trend/valuation row with draft-pool metrics (grade, ranks, roster fit)."""
+    if base_row is None:
+        return pd.Series(dtype=object)
+    name = str(_row_get(base_row, "fullName") or _row_get(base_row, "Player") or "").strip()
+    pool_row = lookup_row_by_player_name(name, draft_pool_df, name_col=name_col)
+    if pool_row is None:
+        return base_row if isinstance(base_row, pd.Series) else pd.Series(dict(base_row))
+    merged = dict(pool_row.to_dict())
+    src = base_row.to_dict() if hasattr(base_row, "to_dict") else dict(base_row)
+    for key, val in src.items():
+        if key not in merged or merged.get(key) is None or (
+            isinstance(merged.get(key), float) and pd.isna(merged.get(key))
+        ):
+            merged[key] = val
+    return pd.Series(merged)
+
+
+def _trend_direction_label(val: float | None, *, is_rate: bool = False) -> str | None:
+    if val is None:
+        return None
+    threshold = 0.005 if is_rate else 0.5
+    if abs(val) < threshold:
+        return "flat"
+    return "↑" if val > 0 else "↓"
+
+
+def build_trend_summary_text(row: Any, *, window_years: int | None = None) -> str:
+    """Summarize existing *_trend slopes from Trend / Valuation page rows."""
+    specs = (
+        ("OPS_trend", "OPS", True),
+        ("HR_trend", "HR", False),
+        ("RBI_trend", "RBI", False),
+        ("R_trend", "R", False),
+        ("SB_trend", "SB", False),
+        ("BA_trend", "AVG", True),
+        ("XBH_noHR_trend", "2B+3B", False),
+    )
+    bits: list[str] = []
+    for col, label, is_rate in specs:
+        direction = _trend_direction_label(_coerce_float(_row_get(row, col)), is_rate=is_rate)
+        if direction:
+            bits.append(f"{label} {direction}")
+    if not bits:
+        return "Trend data unavailable"
+    prefix = f"{int(window_years)}-year trend" if window_years else "Trend"
+    return f"{prefix}: " + ", ".join(bits[:6])
+
+
+def build_valuation_market_summary(row: Any) -> str:
+    """Market vs model framing when ranks are available on the row or draft pool."""
+    mkt = market_rank_display(row)
+    mdl = model_rank_display(row)
+    if mkt == "Not available" and mdl == "Not available":
+        return ""
+    edge = _coerce_float(_row_get(row, "Fantasy Edge"))
+    signal = ""
+    if edge is not None:
+        if edge > 0:
+            signal = " — undervalued by model"
+        elif edge < 0:
+            signal = " — overvalued vs model"
+    return f"Valuation: model rank {mdl} vs market rank {mkt}{signal}"
+
+
+def render_analytics_profile_card(
+    st: Any,
+    row: Any,
+    *,
+    player_id: str | None = None,
+    yearly_df: pd.DataFrame | None = None,
+    draft_pool_df: pd.DataFrame | None = None,
+    trend_summary: str = "",
+    valuation_score_line: str = "",
+    market_summary: str = "",
+    extra_summary: str = "",
+    show_decision_score: bool = False,
+    show_valuation_score: bool = False,
+    compact: bool = True,
+    historical_note: str = "",
+) -> None:
+    """Shared profile card for Trend / Valuation pages."""
+    pid = str(player_id or _row_get(row, "playerID") or "").strip() or None
+    active = bool(pid and is_current_draft_pool_player(pid, yearly_df))
+    display_row = merge_profile_row(row, draft_pool_df) if active and draft_pool_df is not None else row
+    if not isinstance(display_row, pd.Series):
+        display_row = pd.Series(display_row)
+
+    summary_bits: list[str] = []
+    if show_valuation_score and active:
+        summary_bits.append(f"Valuation Score: {valuation_score_display(display_row)}")
+    if trend_summary:
+        summary_bits.append(trend_summary)
+    if market_summary:
+        summary_bits.append(market_summary)
+    if extra_summary:
+        summary_bits.append(extra_summary)
+    reason = "<br/>".join(summary_bits)
+
+    if not active and not historical_note:
+        if show_valuation_score:
+            historical_note = "Historical player — current draft valuation not applicable."
+        else:
+            historical_note = "Historical player — current draft projections not applicable."
+
+    render_draft_player_profile_card(
+        st,
+        display_row,
+        reason=reason,
+        show_projection=active,
+        show_grade=active,
+        show_roster_fit=active,
+        show_market_rank=active,
+        show_model_rank=active,
+        show_decision_score=show_decision_score and active,
+        compact=compact,
+        historical_note=historical_note if not active else "",
+    )
+
+
+def render_analytics_profile_cards_row(
+    st: Any,
+    entries: list[dict[str, Any]],
+    *,
+    yearly_df: pd.DataFrame | None = None,
+    draft_pool_df: pd.DataFrame | None = None,
+    window_years: int | None = None,
+    show_valuation_score: bool = False,
+    columns: int = 3,
+) -> None:
+    """Render up to N analytics profile cards in a responsive row."""
+    if not entries:
+        return
+    cols_n = max(1, min(int(columns), 3))
+    for start in range(0, len(entries), cols_n):
+        chunk = entries[start : start + cols_n]
+        st_cols = st.columns(len(chunk))
+        for col, entry in zip(st_cols, chunk):
+            row = entry.get("row")
+            if row is None:
+                continue
+            trend_text = entry.get("trend_summary")
+            if trend_text is None and row is not None:
+                trend_text = build_trend_summary_text(row, window_years=window_years)
+            with col:
+                render_analytics_profile_card(
+                    st,
+                    row,
+                    player_id=entry.get("player_id"),
+                    yearly_df=yearly_df,
+                    draft_pool_df=draft_pool_df,
+                    trend_summary=str(trend_text or ""),
+                    valuation_score_line=entry.get("valuation_score_line", ""),
+                    market_summary=entry.get("market_summary", ""),
+                    extra_summary=entry.get("extra_summary", ""),
+                    show_valuation_score=show_valuation_score,
+                    compact=True,
+                )
+
+
 def build_draft_profile_card_html(
     row: Any,
     photo_info: dict[str, Any],

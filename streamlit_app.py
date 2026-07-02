@@ -1841,9 +1841,15 @@ def make_valuation_summary(row):
     proj_xbh = pd.to_numeric(row.get("proj_XBH", np.nan), errors="coerce")
     proj_rbi = pd.to_numeric(row.get("proj_RBI", np.nan), errors="coerce")
     proj_sb = pd.to_numeric(row.get("proj_SB", np.nan), errors="coerce")
+    try:
+        from draft_score_display import fmt_valuation_score
+
+        valuation_display = fmt_valuation_score(valuation_score) or "N/A"
+    except ImportError:
+        valuation_display = fmt_rate_4(valuation_score)
     valuation_description = describe_valuation_index(valuation_score)
     return (
-        f"**{player}** — Valuation Score **{fmt_rate_4(valuation_score)}** ({valuation_description}). "
+        f"**{player}** — Valuation Score **{valuation_display}** ({valuation_description}). "
         f"Current production score **{fmt_count_1(perf_score)}**, trend score **{fmt_count_1(trend_score)}** "
         f"(positive trend = improving). If recent form continues, trend-line estimate: "
         f"{fmt_rate_4(proj_ops)} OPS, {fmt_count_1(proj_hr)} HR, {fmt_count_1(proj_rbi)} RBI, {fmt_count_1(proj_sb)} SB."
@@ -1891,7 +1897,7 @@ PAGE_GUIDES = {
         "when": "During draft prep or trade talks when you want one short list of names worth a closer look.",
         "outputs": "A sortable table (Valuation Score, Current Score, Trend Score, stats) plus best/worst callouts at the bottom.",
         "extra": [
-            "<strong>Valuation Score (0–1):</strong> Higher is better. 1.0 = top of your filtered list; 0.0 = bottom.",
+            "<strong>Valuation Score (0–100):</strong> Higher is better. 100.00 = top of your filtered list; 0.00 = bottom.",
             "<strong>Current Score:</strong> How strong recent counting and rate stats are in the year window you chose.",
             "<strong>Trend Score:</strong> Whether production is trending up or down (larger = more improvement).",
             "<strong>Reading the table:</strong> Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
@@ -2033,7 +2039,15 @@ def format_display_table(df, count_cols=None, rate_cols=None, score_cols=None, c
             if col in ("Trend Score", "Current Score"):
                 df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
             elif col == "Valuation Score":
-                df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
+                try:
+                    from draft_score_display import fmt_valuation_score
+
+                    df[col] = pd.to_numeric(df[col], errors="coerce").apply(
+                        lambda v: float(fmt_valuation_score(v)) if pd.notna(v) and fmt_valuation_score(v) else np.nan
+                    )
+                except ImportError:
+                    df[col] = pd.to_numeric(df[col], errors="coerce") * 100.0
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
             else:
                 df[col] = pd.to_numeric(df[col], errors="coerce").round(1)
     return df
@@ -8049,6 +8063,32 @@ def default_draft_simulation_lookup():
         return get_cached_unified_projection_pool()
     except Exception:
         return pd.DataFrame()
+
+
+def build_profile_draft_metrics_pool(sync_team=None, fantasy_format=None):
+    """Unified draft pool with roster-context scoring for profile cards."""
+    pool = default_draft_simulation_lookup()
+    if pool is None or getattr(pool, "empty", True) or not sync_team or "fullName" not in pool.columns:
+        return pool
+    try:
+        board = _canonical_draft_board_df()
+        if board.empty or "Team" not in board.columns or "Player" not in board.columns:
+            return pool
+        roster_names = board[board["Team"].astype(str) == str(sync_team)]["Player"].dropna().astype(str).tolist()
+        roster_rows = pool[pool["fullName"].astype(str).isin(set(roster_names))].copy()
+        if roster_rows.empty:
+            return pool
+        fmt = fantasy_format or st.session_state.get("fantasy_market_format", "5x5 Roto")
+        pool, _gaps = apply_draft_pick_scoring(
+            pool,
+            roster_rows,
+            fantasy_format=fmt,
+            current_pick=max(1, len(board) + 1),
+            recommendation_mode="draft_fit",
+        )
+    except Exception:
+        pass
+    return pool
 
 
 @st.cache_data(show_spinner=False)
@@ -15032,31 +15072,10 @@ if active_page == "Comparison Tool":
     if not comparison_projection_lookup.empty:
         comparison_projection_lookup = add_latest_and_projection_columns(comparison_projection_lookup, _comparison_recent)
 
-    comparison_card_pool = default_draft_simulation_lookup()
-    if (
-        not comparison_card_pool.empty
-        and comparison_action_team
-        and "fullName" in comparison_card_pool.columns
-    ):
-        try:
-            _cmp_board = _canonical_draft_board_df()
-            if not _cmp_board.empty and "Team" in _cmp_board.columns and "Player" in _cmp_board.columns:
-                _cmp_roster_names = _cmp_board[
-                    _cmp_board["Team"].astype(str) == str(comparison_action_team)
-                ]["Player"].dropna().astype(str).tolist()
-                _cmp_roster_rows = comparison_card_pool[
-                    comparison_card_pool["fullName"].astype(str).isin(set(_cmp_roster_names))
-                ].copy()
-                if not _cmp_roster_rows.empty:
-                    comparison_card_pool, _cmp_scoring_gaps = apply_draft_pick_scoring(
-                        comparison_card_pool,
-                        _cmp_roster_rows,
-                        fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
-                        current_pick=max(1, len(_cmp_board) + 1),
-                        recommendation_mode="draft_fit",
-                    )
-        except Exception:
-            pass
+    comparison_card_pool = build_profile_draft_metrics_pool(
+        sync_team=comparison_action_team,
+        fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
+    )
 
     if selected_labels_compare:
         try:
@@ -15787,6 +15806,11 @@ if active_page == "Trend Value":
     trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)
     trend_value_df = filter_players_by_fantasy_position(trend_value_df, trend_position_filter)
 
+    trend_profile_pool = build_profile_draft_metrics_pool(
+        sync_team=trend_sync_team,
+        fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
+    )
+
     try:
         from applied_math_context import cache_trend_comparison_index
 
@@ -15934,6 +15958,20 @@ if active_page == "Trend Value":
         on_change=_trend_insight_player_changed,
     )
     if trend_selected is not None:
+        try:
+            from player_photos import build_trend_summary_text, render_analytics_profile_card
+
+            render_analytics_profile_card(
+                st,
+                trend_selected,
+                player_id=str(trend_selected.get("playerID") or ""),
+                yearly_df=yearly_df,
+                draft_pool_df=trend_profile_pool,
+                trend_summary=build_trend_summary_text(trend_selected, window_years=lag_trend),
+                extra_summary=make_trend_insight_summary(trend_selected),
+            )
+        except ImportError:
+            pass
         if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
             st.success(make_trend_insight_summary(trend_selected))
         else:
@@ -16071,6 +16109,22 @@ if active_page == "Trend Value":
     else:
         selected_player_summary = trend_value_df[trend_value_df["playerID"] == single_trend_id]
         if not selected_player_summary.empty:
+            try:
+                from player_photos import build_trend_summary_text, render_analytics_profile_card
+
+                render_analytics_profile_card(
+                    st,
+                    selected_player_summary.iloc[0],
+                    player_id=single_trend_id,
+                    yearly_df=yearly_df,
+                    draft_pool_df=trend_profile_pool,
+                    trend_summary=build_trend_summary_text(
+                        selected_player_summary.iloc[0],
+                        window_years=lag_trend,
+                    ),
+                )
+            except ImportError:
+                pass
             st.info(make_trend_insight_summary(selected_player_summary.iloc[0]))
             try:
                 from applied_math_context import cache_trend_player_context, record_trend_intel
@@ -16207,6 +16261,28 @@ if active_page == "Trend Value":
         )
 
     if selected_ids_trend:
+        try:
+            from player_photos import render_analytics_profile_cards_row
+
+            _viz_entries = []
+            for _lbl, _pid in zip(selected_labels_trend, selected_ids_trend):
+                _match = trend_value_df[trend_value_df["playerID"] == _pid]
+                _row = (
+                    _match.iloc[0]
+                    if not _match.empty
+                    else pd.Series({"fullName": fullname_base_from_label(_lbl), "playerID": _pid})
+                )
+                _viz_entries.append({"row": _row, "player_id": _pid})
+            render_analytics_profile_cards_row(
+                st,
+                _viz_entries[:3],
+                yearly_df=yearly_df,
+                draft_pool_df=trend_profile_pool,
+                window_years=lag_trend,
+            )
+        except ImportError:
+            pass
+
         player_trend = recent_span_df[recent_span_df["playerID"].isin(selected_ids_trend)].sort_values(["fullName", "yearID"])
         player_trend = safe_round_rate_stats(player_trend)
 
@@ -21650,6 +21726,11 @@ if active_page == "Valuation":
     valuation_df = attach_fantasy_position_columns(valuation_df, recent_data_value)
     valuation_df = filter_players_by_fantasy_position(valuation_df, value_position_filter)
 
+    val_profile_pool = build_profile_draft_metrics_pool(
+        sync_team=value_sync_team,
+        fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
+    )
+
     with st.expander("Valuation blend weights", expanded=False):
         st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
         c5, c6 = st.columns(2)
@@ -21682,11 +21763,26 @@ if active_page == "Valuation":
         valuation_df["Valuation_Score"] = 0.0
 
     valuation_df = safe_round_rate_stats(valuation_df)
-    top_bar_chart(valuation_df, "fullName", "Valuation_Score", "Top 10 Valuation Score")
+    try:
+        from draft_score_display import fmt_valuation_score
+    except ImportError:
+        fmt_valuation_score = lambda v: fmt_rate_4(v)  # type: ignore[misc,assignment]
+
+    valuation_chart_df = valuation_df.copy()
+    valuation_chart_df["Valuation_Score"] = pd.to_numeric(
+        valuation_chart_df["Valuation_Score"], errors="coerce"
+    ) * 100.0
+    top_bar_chart(valuation_chart_df, "fullName", "Valuation_Score", "Top 10 Valuation Score")
 
     c7, c8, c9 = st.columns(3)
-    c7.metric("Top Valuation Score", fmt_rate_4(valuation_df["Valuation_Score"].max() if not valuation_df.empty else 0))
-    c8.metric("Average Valuation Score", fmt_rate_4(valuation_df["Valuation_Score"].mean() if not valuation_df.empty else 0))
+    c7.metric(
+        "Top Valuation Score",
+        fmt_valuation_score(valuation_df["Valuation_Score"].max() if not valuation_df.empty else 0) or "0.00",
+    )
+    c8.metric(
+        "Average Valuation Score",
+        fmt_valuation_score(valuation_df["Valuation_Score"].mean() if not valuation_df.empty else 0) or "0.00",
+    )
     c9.metric("Top Valuation Player", valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else "N/A")
 
     st.info(
@@ -21751,6 +21847,27 @@ if active_page == "Valuation":
         on_change=valuation_filter_changed,
     )
     if selected_value_row is not None:
+        try:
+            from player_photos import (
+                build_trend_summary_text,
+                build_valuation_market_summary,
+                merge_profile_row,
+                render_analytics_profile_card,
+            )
+
+            _val_display_row = merge_profile_row(selected_value_row, val_profile_pool)
+            render_analytics_profile_card(
+                st,
+                selected_value_row,
+                player_id=str(selected_value_row.get("playerID") or ""),
+                yearly_df=yearly_df,
+                draft_pool_df=val_profile_pool,
+                trend_summary=build_trend_summary_text(selected_value_row, window_years=lag_value),
+                market_summary=build_valuation_market_summary(_val_display_row),
+                show_valuation_score=True,
+            )
+        except ImportError:
+            pass
         st.info(make_valuation_summary(selected_value_row))
 
     try:
