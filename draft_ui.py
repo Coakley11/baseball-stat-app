@@ -593,6 +593,38 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
     return meta
 
 
+def lookup_player_pool_row(session: dict[str, Any], player_name: str) -> Any:
+    """Full draft-pool row for queue photos and projected stat lines."""
+    name = str(player_name or "").strip()
+    if not name:
+        return None
+    target = name.lower()
+
+    def _match_pool(pool: Any) -> Any:
+        if pool is None or getattr(pool, "empty", True):
+            return None
+        col = "fullName" if "fullName" in pool.columns else "Player"
+        if col not in pool.columns:
+            return None
+        for _, row in pool.iterrows():
+            full = str(row.get(col) or "").strip()
+            if full.lower() == target or full == name:
+                return row
+        return None
+
+    pool = _draft_pool_for_meta_lookup(session)
+    hit = _match_pool(pool)
+    if hit is not None:
+        return hit
+    try:
+        from draft_room_state import get_canonical_draft_board
+
+        board = get_canonical_draft_board(session)
+        return _match_pool(board)
+    except Exception:
+        return None
+
+
 def render_draft_button(
     st: Any,
     session: dict[str, Any],
@@ -843,16 +875,36 @@ def render_draft_queue_panel(
         paused = False
 
     if not compact and not use_sidebar:
-        header = container.columns([0.08, 0.34, 0.14, 0.22, 0.22])
-        header[0].caption("**#**")
+        header = container.columns([0.06, 0.32, 0.12, 0.12, 0.20, 0.18])
+        header[0].caption("**Photo**")
         header[1].caption("**Player**")
         header[2].caption("**Pos**")
         header[3].caption("**Team**")
-        header[4].caption("**Draft**")
+        header[4].caption("**Reorder**")
+        header[5].caption("**Draft**")
+
+    try:
+        from player_photos import get_player_photo_info, inject_player_photo_styles, render_queue_headshot_html
+
+        inject_player_photo_styles(container)
+        _queue_photos = True
+    except ImportError:
+        _queue_photos = False
 
     rerun = False
     for idx, pname in enumerate(queue[:max_rows]):
         meta = lookup_player_draft_meta(session, pname)
+        pool_row = lookup_player_pool_row(session, pname)
+        photo_info: dict[str, Any] = {}
+        if _queue_photos:
+            try:
+                photo_info = get_player_photo_info(
+                    row=pool_row,
+                    full_name=pname,
+                    use_api=False,
+                )
+            except Exception:
+                photo_info = {}
         if compact or use_sidebar:
             c_ctrl, c_name, c_draft = container.columns([0.38, 0.42, 0.20])
             u, d, t, r = c_ctrl.columns(4)
@@ -869,7 +921,15 @@ def render_draft_queue_panel(
                 remove_player_from_draft_queue(session, pname)
                 rerun = True
             label = format_queue_player_label(pname, meta)
-            c_name.caption(label[:72] + ("…" if len(label) > 72 else ""))
+            if _queue_photos:
+                headshot = render_queue_headshot_html(photo_info)
+                short = label[:72] + ("…" if len(label) > 72 else "")
+                c_name.markdown(
+                    f'<div class="bb-queue-row">{headshot}<span>{short}</span></div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                c_name.caption(label[:72] + ("…" if len(label) > 72 else ""))
             if render_draft_button(
                 st,
                 session,
@@ -883,8 +943,11 @@ def render_draft_queue_panel(
             ):
                 rerun = True
         else:
-            cols = container.columns([0.08, 0.34, 0.14, 0.22, 0.22])
-            cols[0].write(f"{idx + 1}")
+            cols = container.columns([0.06, 0.30, 0.10, 0.14, 0.22, 0.18])
+            if _queue_photos:
+                cols[0].markdown(render_queue_headshot_html(photo_info), unsafe_allow_html=True)
+            else:
+                cols[0].write(f"{idx + 1}")
             cols[1].write(pname)
             cols[2].write(meta["position"])
             cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
@@ -909,7 +972,7 @@ def render_draft_queue_panel(
                 pname,
                 source="live_queue" if key_prefix.startswith("live") else "queue",
                 key_suffix=f"{key_prefix}_{idx}",
-                column=cols[4],
+                column=cols[5],
                 show_disabled_reason=idx == 0,
                 extra_disabled=paused,
                 extra_disabled_reason="Draft is paused — resume to pick.",

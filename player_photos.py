@@ -465,6 +465,59 @@ def inject_player_photo_styles(st: Any) -> None:
         .ld-pos-heat-weak { background: #dcfce7; color: #166534; }
         .ld-pos-heat-label { display: block; font-size: 11px; font-weight: 800; }
         .ld-pos-heat-val { display: block; font-size: 10px; font-weight: 600; opacity: 0.9; }
+        .bb-profile-card {
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 12px;
+            padding: 12px 14px;
+            background: #fafbfc;
+            margin-bottom: 10px;
+        }
+        .bb-profile-card-compact { padding: 10px 12px; }
+        .bb-queue-headshot img, .bb-queue-headshot .bb-queue-placeholder {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1px solid rgba(26, 95, 191, 0.25);
+            background: #edf2f7;
+            flex-shrink: 0;
+        }
+        .bb-queue-headshot .bb-queue-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.95rem;
+            color: #64748b;
+        }
+        .bb-queue-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .bb-comparison-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 12px;
+            margin: 10px 0 16px 0;
+        }
+        .bb-roster-recap-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 12px;
+            margin: 12px 0 18px 0;
+        }
+        .bb-roster-slot-label {
+            font-size: 0.78rem;
+            font-weight: 800;
+            color: #0b3d6e;
+            letter-spacing: 0.04em;
+            margin-bottom: 4px;
+        }
+        .bb-profile-na {
+            font-size: 0.82rem;
+            color: #64748b;
+            font-style: italic;
+        }
         </style>
         """,
     )
@@ -506,45 +559,481 @@ def render_rec_card_photo_html(photo_info: dict[str, Any], *, alt: str = "") -> 
     )
 
 
-def compact_fantasy_stat_line(row: Any) -> str:
-    """One-line key fantasy contributions for recommendation cards."""
+PROJECTION_STAT_LIMITS: dict[str, float] = {"HR": 80, "RBI": 180, "R": 180, "SB": 100}
+_PROJECTION_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "HR": ("proj_HR", "Projected HR"),
+    "RBI": ("proj_RBI", "Projected RBI"),
+    "R": ("proj_R", "Projected R"),
+    "SB": ("proj_SB", "Projected SB"),
+    "BA": ("proj_BA", "Projected AVG", "Projected BA"),
+    "OBP": ("proj_OBP", "Projected OBP"),
+    "SLG": ("proj_SLG", "Projected SLG"),
+    "OPS": ("proj_OPS", "Projected OPS"),
+}
+_ROSTER_RECAP_SLOTS = ("C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL")
+
+
+def _row_get(row: Any, col: str) -> Any:
+    if row is None:
+        return None
+    if hasattr(row, "get"):
+        return row.get(col)
+    try:
+        return row[col]
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+def _coerce_float(val: Any) -> float | None:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(num):
+        return None
+    return num
+
+
+def extract_projection_value(row: Any, stat: str) -> float | None:
+    """Read a single-season fantasy projection — never raw career counting totals."""
+    if not hasattr(row, "get"):
+        return None
+    for col in _PROJECTION_COLUMN_ALIASES.get(stat, (f"proj_{stat}",)):
+        val = _coerce_float(_row_get(row, col))
+        if val is not None:
+            return val
+    return None
+
+
+def projection_stat_plausible(stat: str, value: float | None) -> bool:
+    if value is None:
+        return False
+    limit = PROJECTION_STAT_LIMITS.get(stat)
+    if limit is not None and value > limit:
+        return False
+    if stat == "BA" and (value <= 0 or value > 0.450):
+        return False
+    return True
+
+
+def compact_fantasy_stat_line(row: Any, *, prefix: str = "Proj:", require_projection: bool = True) -> str:
+    """One-line projected fantasy stats for draft recommendation cards."""
     parts: list[str] = []
 
-    def _num(col: str, fmt: str = "{:.0f}") -> str | None:
-        if not hasattr(row, "get"):
-            return None
-        val = row.get(col)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            for alt in (f"proj_{col}", col.lower()):
-                val = row.get(alt)
-                if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                    break
-            else:
-                return None
-        try:
-            num = float(val)
-        except (TypeError, ValueError):
-            return None
-        if col in ("BA", "OBP", "SLG", "OPS"):
-            return fmt.format(num)
-        return fmt.format(num)
+    for stat, label in (("HR", "HR"), ("RBI", "RBI"), ("R", "R"), ("SB", "SB")):
+        val = extract_projection_value(row, stat)
+        if val is None and not require_projection:
+            val = _coerce_float(_row_get(row, stat))
+        if val is None:
+            continue
+        if not projection_stat_plausible(stat, val):
+            continue
+        parts.append(f"{int(round(val))} {label}")
 
-    for col, label in (("HR", "HR"), ("RBI", "RBI"), ("R", "R"), ("SB", "SB")):
-        txt = _num(col)
-        if txt is not None:
-            parts.append(f"{label} {txt}")
-    ba = _num("BA", "{:.3f}")
-    obp = _num("OBP", "{:.3f}")
-    if ba is not None:
-        parts.append(f"BA {ba}")
-    elif obp is not None:
-        parts.append(f"OBP {obp}")
-    if not parts:
+    ba_val = extract_projection_value(row, "BA")
+    if ba_val is None and not require_projection:
+        ba_val = _coerce_float(_row_get(row, "BA"))
+    if ba_val is not None and projection_stat_plausible("BA", ba_val):
+        parts.append(f"{ba_val:.3f} AVG")
+    elif not parts:
+        obp_val = extract_projection_value(row, "OBP")
+        if obp_val is not None:
+            parts.append(f"OBP {obp_val:.3f}")
+
+    if not parts and not require_projection:
         for col in ("W", "SO", "SV", "ERA", "WHIP", "K/9"):
-            txt = _num(col, "{:.2f}" if col in ("ERA", "WHIP", "K/9") else "{:.0f}")
-            if txt is not None:
-                parts.append(f"{col} {txt}")
-    return " · ".join(parts[:6])
+            val = _coerce_float(_row_get(row, col))
+            if val is not None:
+                fmt = "{:.2f}" if col in ("ERA", "WHIP", "K/9") else "{:.0f}"
+                parts.append(f"{col} {fmt.format(val)}")
+
+    body = " · ".join(parts[:6])
+    if not body:
+        return ""
+    pref = str(prefix or "").strip()
+    return f"{pref} {body}".strip() if pref else body
+
+
+def is_current_draft_pool_player(player_id: str, yearly_df: pd.DataFrame | None) -> bool:
+    """True when the player is active/recent in the dataset (draft-pool eligible)."""
+    if yearly_df is None or yearly_df.empty:
+        return False
+    if "playerID" not in yearly_df.columns or "yearID" not in yearly_df.columns:
+        return False
+    years = pd.to_numeric(
+        yearly_df.loc[yearly_df["playerID"] == player_id, "yearID"],
+        errors="coerce",
+    ).dropna()
+    if years.empty:
+        return False
+    latest_player_year = int(years.max())
+    all_years = pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna()
+    latest_dataset_year = int(all_years.max()) if not all_years.empty else latest_player_year
+    return latest_player_year in (2025, 2026) or latest_player_year >= latest_dataset_year - 1
+
+
+def lookup_row_by_player_name(
+    name: str,
+    lookup_df: pd.DataFrame | None,
+    *,
+    name_col: str = "fullName",
+) -> pd.Series | None:
+    target = str(name or "").strip().lower()
+    if not target or lookup_df is None or lookup_df.empty:
+        return None
+    col = name_col if name_col in lookup_df.columns else None
+    if col is None:
+        for alt in ("fullName", "Player", "player"):
+            if alt in lookup_df.columns:
+                col = alt
+                break
+    if col is None:
+        return None
+    for _, row in lookup_df.iterrows():
+        full = str(row.get(col) or "").strip()
+        if full.lower() == target or full == str(name or "").strip():
+            return row
+    return None
+
+
+def roster_fit_display(row: Any) -> str:
+    for col in ("Draft Fit Score", "Roster Fit Score", "Positional Fit", "Team fit"):
+        val = _row_get(row, col)
+        if val is not None and not (isinstance(val, float) and pd.isna(val)):
+            try:
+                num = float(val)
+                if 0 < num <= 1.5:
+                    return str(int(round(num * 100)))
+                return str(int(round(num)))
+            except (TypeError, ValueError):
+                text = str(val).strip()
+                if text:
+                    return text
+    return "—"
+
+
+def adp_display(row: Any) -> str:
+    for col in ("ADP", "ADP Rank", "Market Rank"):
+        val = _row_get(row, col)
+        if val is not None and not (isinstance(val, float) and pd.isna(val)):
+            try:
+                return str(int(round(float(val))))
+            except (TypeError, ValueError):
+                text = str(val).strip()
+                if text:
+                    return text
+    return "—"
+
+
+def render_queue_headshot_html(photo_info: dict[str, Any], *, size: int = 36) -> str:
+    url = str(photo_info.get("headshot_url") or "").strip()
+    label = str(photo_info.get("full_name") or "Player").strip()
+    if url:
+        return (
+            f'<div class="bb-queue-headshot">'
+            f'<img src="{url}" alt="{label}" width="{size}" height="{size}"/>'
+            f"</div>"
+        )
+    return (
+        '<div class="bb-queue-headshot">'
+        '<div class="bb-queue-placeholder" aria-hidden="true">⚾</div>'
+        "</div>"
+    )
+
+
+def build_draft_profile_card_html(
+    row: Any,
+    photo_info: dict[str, Any],
+    *,
+    slot_label: str = "",
+    reason: str = "",
+    show_projection: bool = True,
+    show_grade: bool = True,
+    show_roster_fit: bool = True,
+    show_adp: bool = False,
+    compact: bool = False,
+    historical_note: str = "",
+) -> str:
+    name = str(_row_get(row, "fullName") or _row_get(row, "Player") or photo_info.get("full_name") or "Player")
+    pos = str(_row_get(row, "Primary Position") or _row_get(row, "Position") or "—")
+    team = str(
+        _row_get(row, "Team")
+        or _row_get(row, "MLB Team")
+        or _row_get(row, "teamName")
+        or ""
+    ).strip()
+    photo_html = render_rec_card_photo_html(photo_info, alt=name)
+    meta_bits = [pos]
+    if team:
+        meta_bits.append(team)
+    meta_line = " · ".join(meta_bits)
+    detail_lines: list[str] = []
+    if show_projection:
+        stats = compact_fantasy_stat_line(row)
+        if stats:
+            detail_lines.append(f'<div class="ld-rec-stat-line">{stats}</div>')
+        elif historical_note:
+            detail_lines.append(f'<div class="bb-profile-na">{historical_note}</div>')
+    elif historical_note:
+        detail_lines.append(f'<div class="bb-profile-na">{historical_note}</div>')
+    grade_bits: list[str] = []
+    if show_grade:
+        grade_bits.append(f'Grade <span class="ld-rec-grade">{player_grade_display(row)}</span>')
+    if show_roster_fit:
+        grade_bits.append(f'Roster fit <span class="ld-rec-grade">{roster_fit_display(row)}</span>')
+    if show_adp:
+        adp = adp_display(row)
+        if adp != "—":
+            grade_bits.append(f"ADP/Mkt {adp}")
+    if grade_bits:
+        detail_lines.append(f'<div style="font-size:0.84rem;margin-top:2px;">{" · ".join(grade_bits)}</div>')
+    if reason:
+        detail_lines.append(f'<div style="font-size:0.86rem;margin-top:4px;color:#334155;">{reason}</div>')
+    slot_html = f'<div class="bb-roster-slot-label">{slot_label}</div>' if slot_label else ""
+    card_class = "bb-profile-card bb-profile-card-compact" if compact else "bb-profile-card"
+    details_html = "".join(detail_lines)
+    return (
+        f'<div class="{card_class}">{slot_html}'
+        f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
+        f'<div style="font-size:1.02rem;font-weight:800;">{name}</div>'
+        f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
+        f"{details_html}</div></div></div>"
+    )
+
+
+def render_draft_player_profile_card(
+    st: Any,
+    row: Any,
+    *,
+    slot_label: str = "",
+    reason: str = "",
+    show_projection: bool = True,
+    show_grade: bool = True,
+    show_roster_fit: bool = True,
+    show_adp: bool = False,
+    compact: bool = False,
+    historical_note: str = "",
+) -> None:
+    inject_player_photo_styles(st)
+    try:
+        photo_info = get_player_photo_info(row=row)
+    except Exception:
+        photo_info = {}
+    html = build_draft_profile_card_html(
+        row,
+        photo_info,
+        slot_label=slot_label,
+        reason=reason,
+        show_projection=show_projection,
+        show_grade=show_grade,
+        show_roster_fit=show_roster_fit,
+        show_adp=show_adp,
+        compact=compact,
+        historical_note=historical_note,
+    )
+    _safe_markdown(st, html)
+
+
+def render_draft_player_profile_cards(
+    st: Any,
+    rows: list[Any],
+    *,
+    columns: int = 2,
+    **card_kwargs: Any,
+) -> None:
+    if not rows:
+        return
+    inject_player_photo_styles(st)
+    cols = max(1, min(int(columns), 3))
+    for start in range(0, len(rows), cols):
+        chunk = rows[start : start + cols]
+        st_cols = st.columns(len(chunk))
+        for col, row in zip(st_cols, chunk):
+            with col:
+                render_draft_player_profile_card(st, row, **card_kwargs)
+
+
+def render_insight_player_header(st: Any, row: Any) -> None:
+    """Photo + name row above player-specific insight summaries."""
+    if row is None:
+        return
+    inject_player_photo_styles(st)
+    try:
+        photo_info = get_player_photo_info(row=row)
+    except Exception:
+        photo_info = {}
+    name = str(_row_get(row, "fullName") or _row_get(row, "Player") or "Player")
+    pos = str(_row_get(row, "Primary Position") or "")
+    team = str(_row_get(row, "Team") or _row_get(row, "MLB Team") or "").strip()
+    subtitle = " · ".join(x for x in (pos, team) if x)
+    render_player_headshot_row(st, photo_info, title=name, subtitle=subtitle, size=72)
+
+
+def _split_position_tokens(primary_val: Any) -> list[str]:
+    if primary_val is None or (isinstance(primary_val, float) and pd.isna(primary_val)):
+        return []
+    s = str(primary_val).upper().replace(" ", "")
+    parts = re.split(r"[,/\+]", s)
+    out = [p.strip() for p in parts if p.strip()]
+    if not out:
+        out = [str(primary_val).upper().strip()]
+    return list(dict.fromkeys(out))
+
+
+def _eligible_for_slot(pos_tokens: list[str], slot: str) -> bool:
+    if slot == "UTIL":
+        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
+    if slot == "OF":
+        return any(p == "OF" for p in pos_tokens)
+    if slot in ("C", "1B", "2B", "3B", "SS"):
+        if pos_tokens == ["DH"]:
+            return False
+        if slot in pos_tokens:
+            return True
+        if slot == "1B" and "3B" in pos_tokens:
+            return True
+        if slot == "3B" and "1B" in pos_tokens:
+            return True
+        if slot == "2B" and "SS" in pos_tokens:
+            return True
+        if slot == "SS" and "2B" in pos_tokens:
+            return True
+    return False
+
+
+def assign_roster_recap_slots(roster_df: pd.DataFrame) -> list[tuple[str, pd.Series]]:
+    """Map roster rows to fantasy lineup slots for completed-draft recap cards."""
+    if roster_df is None or roster_df.empty:
+        return []
+    df = roster_df.copy()
+    name_col = "fullName" if "fullName" in df.columns else "Player"
+    if name_col not in df.columns:
+        return []
+    score_col = "Expected Fantasy Value" if "Expected Fantasy Value" in df.columns else None
+    if score_col:
+        df["_slot_score"] = pd.to_numeric(df[score_col], errors="coerce").fillna(0)
+    else:
+        df["_slot_score"] = 0.0
+    pos_col = "Primary Position" if "Primary Position" in df.columns else None
+    if pos_col:
+        df["_pos_tokens"] = df[pos_col].apply(_split_position_tokens)
+    else:
+        df["_pos_tokens"] = [[] for _ in range(len(df))]
+    assigned: set[Any] = set()
+    slots_out: list[tuple[str, pd.Series]] = []
+    of_count = 0
+    for slot in _ROSTER_RECAP_SLOTS:
+        display_slot = slot
+        if slot == "OF":
+            of_count += 1
+            display_slot = f"OF{of_count}"
+        best_ix = None
+        best_score = -1.0
+        for ix in df.index:
+            if ix in assigned:
+                continue
+            toks = df.at[ix, "_pos_tokens"]
+            if not isinstance(toks, list):
+                toks = []
+            if _eligible_for_slot(toks, slot):
+                score = float(df.at[ix, "_slot_score"])
+                if score > best_score:
+                    best_score = score
+                    best_ix = ix
+        if best_ix is not None:
+            assigned.add(best_ix)
+            slots_out.append((display_slot, df.loc[best_ix]))
+    for ix in df.index:
+        if ix in assigned:
+            continue
+        name = str(df.at[ix, name_col])
+        slots_out.append((str(df.at[ix, pos_col] if pos_col else "BN"), df.loc[ix]))
+    return slots_out
+
+
+def render_completed_roster_recap(
+    st: Any,
+    roster_df: pd.DataFrame,
+    *,
+    team_name: str = "",
+    title: str = "Draft recap by position",
+) -> None:
+    """Position-slot recap cards with photo, name, team, and projected stat line."""
+    if roster_df is None or roster_df.empty:
+        return
+    inject_player_photo_styles(st)
+    heading = title if not team_name else f"{title} — {team_name}"
+    st.markdown(f"**{heading}**")
+    slots = assign_roster_recap_slots(roster_df)
+    if not slots:
+        return
+    cards_html = "".join(
+        build_draft_profile_card_html(
+            row,
+            get_player_photo_info(row=row),
+            slot_label=f"{slot}:",
+            show_adp=False,
+            compact=True,
+        )
+        for slot, row in slots
+    )
+    _safe_markdown(st, f'<div class="bb-roster-recap-grid">{cards_html}</div>')
+
+
+def render_comparison_profile_cards(
+    st: Any,
+    *,
+    labels: list[str],
+    player_ids: list[str],
+    yearly_df: pd.DataFrame | None,
+    projection_lookup_df: pd.DataFrame | None = None,
+    projection_lookup_name_col: str = "fullName",
+    strengths_map: dict[str, str] | None = None,
+) -> None:
+    """Side-by-side profile cards for the Comparison Tool."""
+    if not labels:
+        return
+    inject_player_photo_styles(st)
+    cards: list[str] = []
+    for label, pid in zip(labels, player_ids):
+        active = is_current_draft_pool_player(pid, yearly_df)
+        proj_row = lookup_row_by_player_name(label, projection_lookup_df, name_col=projection_lookup_name_col)
+        display_row = proj_row if proj_row is not None else pd.Series({"fullName": label, "playerID": pid})
+        if active and proj_row is None:
+            display_row = pd.Series({"fullName": label, "playerID": pid})
+        try:
+            photo_info = get_player_photo_info(player_id=pid, full_name=label, row=display_row)
+        except Exception:
+            photo_info = get_player_photo_info(full_name=label)
+        reason = (strengths_map or {}).get(label, "")
+        if active:
+            cards.append(
+                build_draft_profile_card_html(
+                    display_row,
+                    photo_info,
+                    reason=reason,
+                    show_projection=True,
+                    show_grade=True,
+                    show_roster_fit=True,
+                    show_adp=True,
+                )
+            )
+        else:
+            cards.append(
+                build_draft_profile_card_html(
+                    display_row,
+                    photo_info,
+                    show_projection=False,
+                    show_grade=False,
+                    show_roster_fit=False,
+                    show_adp=False,
+                    historical_note="Not applicable — historical player",
+                    reason=reason,
+                )
+            )
+    _safe_markdown(st, f'<div class="bb-comparison-cards">{"".join(cards)}</div>')
 
 
 def player_grade_display(row: Any) -> str:

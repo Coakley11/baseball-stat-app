@@ -15033,6 +15033,21 @@ if active_page == "Comparison Tool":
         comparison_projection_lookup = add_latest_and_projection_columns(comparison_projection_lookup, _comparison_recent)
 
     if selected_labels_compare:
+        try:
+            from player_photos import render_comparison_profile_cards
+
+            render_comparison_profile_cards(
+                st,
+                labels=selected_labels_compare,
+                player_ids=selected_ids_compare,
+                yearly_df=yearly_df,
+                projection_lookup_df=comparison_projection_lookup,
+                projection_lookup_name_col="fullName",
+            )
+        except ImportError:
+            pass
+
+    if selected_labels_compare:
         st.caption("Context-aware actions: historical players only show historical/watchlist actions; active players show fantasy workflow actions.")
         action_cols = st.columns(min(3, len(selected_labels_compare)))
         for i, label in enumerate(selected_labels_compare):
@@ -16951,6 +16966,26 @@ if active_page == "Fantasy Sleepers & Busts":
         c8, c9 = st.columns(2)
         with c8:
             st.subheader("🔥 Market Sleepers")
+            try:
+                from player_photos import render_draft_player_profile_card
+
+                for sl_start in range(0, min(4, len(sleepers)), 2):
+                    sl_cols = st.columns(2)
+                    for sl_j, sl_col in enumerate(sl_cols):
+                        sl_idx = sl_start + sl_j
+                        if sl_idx >= len(sleepers):
+                            break
+                        sl_row = sleepers.iloc[sl_idx]
+                        with sl_col:
+                            render_draft_player_profile_card(
+                                st,
+                                sl_row,
+                                reason=str(sl_row.get("Reason") or "").strip(),
+                                show_adp=True,
+                                compact=True,
+                            )
+            except ImportError:
+                pass
             render_output_table(sleepers_display, key="fantasy_market_sleepers", file_name="fantasy_market_sleepers.csv", style_cols=["Fantasy Edge"])
         with c9:
             st.subheader("⚠️ Market Bust Risks")
@@ -16988,6 +17023,12 @@ if active_page == "Fantasy Sleepers & Busts":
         if selected_market_row is not None:
             edge_val = pd.to_numeric(selected_market_row.get("Fantasy Edge", np.nan), errors="coerce")
             _selected_insight_text = make_market_selected_insight(selected_market_row)
+            try:
+                from player_photos import render_insight_player_header
+
+                render_insight_player_header(st, selected_market_row)
+            except ImportError:
+                pass
             if pd.notna(edge_val) and edge_val < 0:
                 st.warning(_selected_insight_text)
             else:
@@ -17712,6 +17753,27 @@ if active_page == "Draft Assistant Simulator":
             st.caption(ROSTER_FIT_CONTEXT_NOTES["draft_assistant"])
         except ImportError:
             pass
+        try:
+            from player_photos import render_draft_player_profile_card
+
+            st.caption("Recommended pick cards use **Proj:** fantasy projection stats from the draft pool.")
+            for rec_start in range(0, min(6, len(recs)), 2):
+                rec_cols = st.columns(2)
+                for rec_j, rec_col in enumerate(rec_cols):
+                    rec_idx = rec_start + rec_j
+                    if rec_idx >= len(recs):
+                        break
+                    rec_row = recs.iloc[rec_idx]
+                    with rec_col:
+                        render_draft_player_profile_card(
+                            st,
+                            rec_row,
+                            reason=str(rec_row.get("Reason") or rec_row.get("Strategy") or "").strip(),
+                            show_adp=True,
+                            compact=True,
+                        )
+        except ImportError:
+            pass
         render_output_table(
             recs_display,
             key="draft_assistant_recommendations",
@@ -17736,6 +17798,12 @@ if active_page == "Draft Assistant Simulator":
             default_name=best_fit.iloc[0]["fullName"] if not best_fit.empty else None,
         )
         if selected_draft_row is not None:
+            try:
+                from player_photos import render_insight_player_header
+
+                render_insight_player_header(st, selected_draft_row)
+            except ImportError:
+                pass
             st.info(make_draft_recommendation_insight(selected_draft_row))
         compact_player_action_center(
             recs_display["Player"].dropna().astype(str).tolist(),
@@ -18970,6 +19038,19 @@ if active_page == "Draft Simulation Test Mode":
                 roster_filtered = roster_view
             else:
                 roster_filtered = roster_view[roster_view["Fantasy Team"] == team_view]
+                if not is_dataframe_empty(lab_draft) and has_dataframe_column(lab_draft, "Fantasy Team"):
+                    team_draft_rows = lab_draft[lab_draft["Fantasy Team"] == team_view]
+                    try:
+                        from player_photos import render_completed_roster_recap
+
+                        render_completed_roster_recap(
+                            st,
+                            team_draft_rows,
+                            team_name=str(team_view),
+                            title="Completed roster recap",
+                        )
+                    except ImportError:
+                        pass
             render_output_table(
                 clean_ui_columns(roster_filtered),
                 key="draft_lab_rosters",
@@ -20609,6 +20690,23 @@ if active_page == "Live Draft Room":
                     else f"{picks_done} picks completed"
                 )
                 st.caption(picks_txt)
+            if not roster_df.empty:
+                recap_team = str(cfg.get("your_team") or st.session_state.get("room_your_team") or "").strip()
+                if recap_team and "Fantasy Team" in roster_df.columns:
+                    team_recap = roster_df[roster_df["Fantasy Team"].astype(str).eq(recap_team)].copy()
+                    if not team_recap.empty:
+                        team_recap = team_recap.rename(columns={"Player": "fullName", "MLB Team": "Team"})
+                        try:
+                            from player_photos import render_completed_roster_recap
+
+                            render_completed_roster_recap(
+                                st,
+                                team_recap,
+                                team_name=recap_team,
+                                title="Your completed roster",
+                            )
+                        except ImportError:
+                            pass
             try:
                 from draft_ui import record_live_draft_ui_diagnostics
 

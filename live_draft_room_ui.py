@@ -1001,12 +1001,13 @@ def render_live_draft_rec_cards(
                 stat_line = compact_fantasy_stat_line(r)
                 photo_html = render_rec_card_photo_html(photo_info, alt=name)
                 team_line = f" · {team}" if team else ""
+                stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
                 st.markdown(
                     f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
                     f'<div style="font-size:1.05rem;font-weight:800;">{name}</div>'
                     f'<div style="font-size:0.88rem;color:#475569;">{pos}{team_line} · '
                     f'<span class="ld-rec-grade">Grade {grade}</span> · {tier_lbl}</div>'
-                    f'{"<div class=\\"ld-rec-stat-line\\">" + stat_line + "</div>" if stat_line else ""}'
+                    f"{stat_html}"
                     f"</div></div>",
                     unsafe_allow_html=True,
                 )

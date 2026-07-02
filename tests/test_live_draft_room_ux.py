@@ -193,9 +193,9 @@ class CompactRecCardTests(unittest.TestCase):
         html = str(self.st.markdown.call_args_list)
         self.assertIn("Shohei Ohtani", html)
         self.assertNotIn("...", html)
+        self.assertIn("DH", html)
         captions = str(self.st.caption.call_args_list)
-        self.assertIn("DH", captions)
-        self.assertIn("Reason:", captions)
+        self.assertIn("Best value remaining", captions)
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")

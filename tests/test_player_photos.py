@@ -107,11 +107,17 @@ class PlayerPhotosTests(unittest.TestCase):
         self.assertEqual(info["resolve_source"], "seed_map")
 
     def test_compact_fantasy_stat_line(self) -> None:
-        row = pd.Series({"HR": 45, "RBI": 104, "R": 98, "SB": 12, "BA": 0.291})
+        row = pd.Series({"HR": 45, "proj_HR": 45, "proj_RBI": 104, "proj_R": 98, "proj_SB": 12, "proj_BA": 0.291})
         line = compact_fantasy_stat_line(row)
-        self.assertIn("HR 45", line)
-        self.assertIn("RBI 104", line)
-        self.assertIn("BA 0.291", line)
+        self.assertIn("Proj:", line)
+        self.assertIn("45 HR", line)
+        self.assertIn("0.291 AVG", line)
+
+    def test_career_hr_not_used_when_projection_present(self) -> None:
+        row = pd.Series({"HR": 148, "proj_HR": 48, "proj_RBI": 111, "proj_R": 105, "proj_SB": 9, "proj_BA": 0.289})
+        line = compact_fantasy_stat_line(row)
+        self.assertIn("48 HR", line)
+        self.assertNotIn("148", line)
 
 
 if __name__ == "__main__":
