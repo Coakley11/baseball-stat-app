@@ -28,6 +28,31 @@ def format_queue_player_label(player_name: str, meta: dict[str, str] | None = No
     return f"{name} — {pos} — {team}"
 
 
+def format_queue_player_metrics_line(pool_row: Any) -> str:
+    """Proj: line plus Decision Score / Roster Fit for queue rows."""
+    if pool_row is None:
+        return ""
+    try:
+        from player_photos import compact_fantasy_stat_line, decision_score_display, roster_fit_display
+
+        bits: list[str] = []
+        stat_line = compact_fantasy_stat_line(pool_row)
+        if stat_line:
+            bits.append(stat_line)
+        ds = decision_score_display(pool_row)
+        rf = roster_fit_display(pool_row)
+        score_bits: list[str] = []
+        if ds and ds != "Not available":
+            score_bits.append(f"Decision Score {ds}")
+        if rf and rf != "Not available":
+            score_bits.append(f"Roster Fit {rf}")
+        if score_bits:
+            bits.append(" · ".join(score_bits))
+        return " · ".join(bits)
+    except ImportError:
+        return ""
+
+
 def cache_queue_player_meta(session: dict[str, Any], player_name: str, meta: dict[str, str]) -> None:
     name = str(player_name or "").strip()
     if not name:
@@ -875,7 +900,7 @@ def render_draft_queue_panel(
         paused = False
 
     if not compact and not use_sidebar:
-        header = container.columns([0.06, 0.32, 0.12, 0.12, 0.20, 0.18])
+        header = container.columns([0.06, 0.30, 0.10, 0.14, 0.22, 0.18])
         header[0].caption("**Photo**")
         header[1].caption("**Player**")
         header[2].caption("**Pos**")
@@ -921,15 +946,22 @@ def render_draft_queue_panel(
                 remove_player_from_draft_queue(session, pname)
                 rerun = True
             label = format_queue_player_label(pname, meta)
+            metrics_line = format_queue_player_metrics_line(pool_row)
             if _queue_photos:
                 headshot = render_queue_headshot_html(photo_info)
                 short = label[:72] + ("…" if len(label) > 72 else "")
+                metrics_html = (
+                    f'<div style="font-size:0.76rem;color:#64748b;margin-top:2px;">{metrics_line}</div>'
+                    if metrics_line
+                    else ""
+                )
                 c_name.markdown(
-                    f'<div class="bb-queue-row">{headshot}<span>{short}</span></div>',
+                    f'<div class="bb-queue-row">{headshot}<span>{short}{metrics_html}</span></div>',
                     unsafe_allow_html=True,
                 )
             else:
-                c_name.caption(label[:72] + ("…" if len(label) > 72 else ""))
+                extra = f"\n{metrics_line}" if metrics_line else ""
+                c_name.caption(label[:72] + ("…" if len(label) > 72 else "") + extra)
             if render_draft_button(
                 st,
                 session,
@@ -948,7 +980,11 @@ def render_draft_queue_panel(
                 cols[0].markdown(render_queue_headshot_html(photo_info), unsafe_allow_html=True)
             else:
                 cols[0].write(f"{idx + 1}")
-            cols[1].write(pname)
+            metrics_line = format_queue_player_metrics_line(pool_row)
+            name_block = pname
+            if metrics_line:
+                name_block = f"{pname}\n{metrics_line}"
+            cols[1].write(name_block)
             cols[2].write(meta["position"])
             cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
             ctrl = container.columns([0.5, 0.5])

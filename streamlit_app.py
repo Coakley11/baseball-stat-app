@@ -20924,7 +20924,11 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         pass
                 try:
-                    from live_draft_room_ui import render_live_draft_rec_cards, render_live_draft_rec_summary_banner
+                    from live_draft_room_ui import (
+                        add_why_this_pick_column,
+                        render_live_draft_rec_cards,
+                        render_live_draft_rec_summary_banner,
+                    )
 
                     if _defer_recs:
                         st.caption("Loading recommendations…")
@@ -20966,7 +20970,21 @@ if active_page == "Live Draft Room":
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
                     "Fantasy Edge", "Survival Probability", "Survival Label",
                     "Sleeper Score", "Scarcity Score", "Positional Fit", "Draft Fit Score", "Decision Score",
+                    "Why this pick",
                 ]
+                _pool_for_why = room.get("pool")
+                top_rec = add_why_this_pick_column(
+                    top_rec, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                )
+                best_avail = add_why_this_pick_column(
+                    best_avail, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                )
+                pos_fit = add_why_this_pick_column(
+                    pos_fit, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                )
+                value_sleep = add_why_this_pick_column(
+                    value_sleep, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                )
                 with rec_tabs[0]:
                     _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
                     render_output_table(

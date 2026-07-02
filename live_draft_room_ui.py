@@ -630,7 +630,7 @@ def render_roster_tracker_panel(st: Any, tracker: dict[str, Any]) -> None:
     progress = f"Roster complete: {filled} / {target}" if target else ""
     st.markdown(
         f'<div class="ld-roster-tracker-panel">'
-        f'<div class="ld-panel-title">Your Roster</div>'
+        f'<div class="ld-panel-title">Roster Needs Checklist</div>'
         f'{"".join(html_lines)}'
         f'<div class="ld-roster-progress">{progress}</div>'
         f"</div>",
@@ -820,28 +820,95 @@ def _rec_plain_explanation(
     category_needs: list[str] | None = None,
     strengths: list[str] | None = None,
 ) -> str:
+    """Legacy alias — prefer ``build_why_this_pick_summary``."""
+    return build_why_this_pick_summary(
+        row, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
+    )
+
+
+def build_why_this_pick_summary(
+    row: Any,
+    pos: str,
+    *,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    strengths: list[str] | None = None,
+) -> str:
+    """One-line recommendation rationale — main drivers only, no duplicate Proj: prose."""
+    parts: list[str] = []
+
+    try:
+        from draft_score_display import format_detail_line
+
+        _ds_lbl, ds_val = format_detail_line("Decision Score", row.get("Decision Score"))
+        _rf_lbl, rf_val = format_detail_line("Draft Fit Score", row.get("Draft Fit Score"))
+        if ds_val and str(ds_val).strip() not in ("", "-", "Not available", "n/a"):
+            parts.append(f"{_ds_lbl} {ds_val}")
+        if rf_val and str(rf_val).strip() not in ("", "-", "Not available", "n/a"):
+            parts.append(f"{_rf_lbl} {rf_val}")
+    except ImportError:
+        pass
+
     fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
-    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
-    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    sleeper = pd.to_numeric(row.get("Sleeper Score", np.nan), errors="coerce")
-    boost = f" and boosts {'/'.join(strengths)}" if strengths else ""
     if gaps and str(pos) in gaps and pd.notna(fit) and float(fit) >= 0.5:
         open_of = sum(1 for g in gaps if g == "OF")
         if str(pos) == "OF" and open_of >= 2:
-            return f"Fills OF need — you still need {open_of} OF spots{boost}."
-        return f"Fills your {pos} need{boost}."
-    if category_needs and pd.notna(row.get("Category Need Bonus", np.nan)):
-        weak = category_needs[0] if category_needs else "a weak category"
-        if strengths:
-            return f"Improves your {weak} outlook and boosts {'/'.join(strengths)}."
-        return f"Improves your {weak} outlook."
-    if pd.notna(scarcity) and float(scarcity) >= 0.6:
-        return f"Few quality {pos} remain — scarcity pick."
-    if pd.notna(sleeper) and float(sleeper) >= 0.55:
-        return "Undervalued upside compared to market rank."
-    if pd.notna(edge) and float(edge) >= 8:
-        return "Best value remaining compared to ADP."
-    return "Strong combination of safety and upside."
+            parts.append(f"fills OF need ({open_of} spots open)")
+        else:
+            parts.append(f"fills {pos} need")
+
+    cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
+    if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
+        weak = str(category_needs[0] or "a weak category")
+        parts.append(f"helps {weak}")
+
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    if pd.notna(edge) and abs(float(edge)) >= 5:
+        sign = "+" if float(edge) > 0 else ""
+        parts.append(f"Fantasy Edge {sign}{int(round(float(edge)))}")
+
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.6 and not any("fills" in p for p in parts):
+        parts.append(f"{pos} scarcity")
+
+    if strengths:
+        parts.append(f"strong in {'/'.join(strengths[:2])}")
+
+    if not parts:
+        return "Strong balance of upside and roster fit."
+    return "; ".join(parts[:5]) + "."
+
+
+def add_why_this_pick_column(
+    rec_df: Any,
+    *,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    pool_df: Any = None,
+    config: dict[str, Any] | None = None,
+) -> Any:
+    """Add a single ``Why this pick`` column to a recommendation table."""
+    if rec_df is None or getattr(rec_df, "empty", True):
+        return rec_df
+    out = rec_df.copy()
+    whys: list[str] = []
+    for _, r in out.iterrows():
+        pos = str(r.get("Primary Position") or "")
+        strengths: list[str] = []
+        if pool_df is not None:
+            try:
+                from live_draft_category_outlook import player_top_category_strengths
+
+                strengths = player_top_category_strengths(r, pool_df, config=config or {}, max_count=2)
+            except ImportError:
+                pass
+        whys.append(
+            build_why_this_pick_summary(
+                r, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
+            )
+        )
+    out["Why this pick"] = whys
+    return out
 
 
 def _display_edge(edge: float | None) -> tuple[str, str]:
@@ -952,7 +1019,7 @@ def render_live_draft_rec_cards(
             strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
         except ImportError:
             strengths = []
-        explanation = _rec_plain_explanation(
+        explanation = build_why_this_pick_summary(
             r, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
         )
         badges = _rec_card_badges(i, r, rec_df, gaps=gaps, category_needs=category_needs)
@@ -987,7 +1054,6 @@ def render_live_draft_rec_cards(
 
         with st.container(border=True):
             team = str(r.get("Team") or r.get("teamName") or "").strip()
-            grade = "—"
             try:
                 from player_photos import (
                     build_draft_score_metrics_html,
@@ -1005,7 +1071,6 @@ def render_live_draft_rec_cards(
                     row=r,
                     use_api=True,
                 )
-                grade = player_grade_display(r)
                 stat_line = compact_fantasy_stat_line(r)
                 photo_html = render_rec_card_photo_html(photo_info, alt=name)
                 team_line = f" · {team}" if team else ""
@@ -1028,8 +1093,7 @@ def render_live_draft_rec_cards(
                 st.markdown(
                     f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
                     f'<div style="font-size:1.05rem;font-weight:800;">{name}</div>'
-                    f'<div style="font-size:0.88rem;color:#475569;">{pos}{team_line} · '
-                    f'<span class="ld-rec-grade">Grade {grade}</span> · {tier_lbl}</div>'
+                    f'<div style="font-size:0.88rem;color:#475569;">{pos}{team_line} · {tier_lbl}</div>'
                     f"{stat_html}{metrics_html}{strength_txt}"
                     f"</div></div>",
                     unsafe_allow_html=True,
@@ -1039,7 +1103,7 @@ def render_live_draft_rec_cards(
                 st.caption(f"{pos} · {tier_lbl}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            st.caption(f"Edge {edge_txt} · {surv_pct} · {action} · {explanation}")
+            st.caption(f"{surv_pct} · {action} · {explanation}")
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()
