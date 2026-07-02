@@ -2432,10 +2432,11 @@ def _insight_card_question(data: dict[str, Any]) -> str:
         from hall_of_fame_data import CASE_SCORE_LABEL
 
         if CASE_SCORE_LABEL in str(data.get("method") or ""):
-            short = str(data.get("short_answer") or "").strip()
-            if short:
-                return short
-            return q.split(".")[0].strip() + "." if "." in q else q[:200]
+            if "?" in q:
+                return q
+            display = str(data.get("display_question") or "").strip()
+            if display:
+                return display
     except ImportError:
         pass
     return q

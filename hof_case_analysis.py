@@ -1241,6 +1241,19 @@ def _normalize_hof_analysis(analysis: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _packet_has_awards_context(packet: dict[str, Any]) -> bool:
+    awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    return bool(awards.get("data_available"))
+
+
+def _memo_includes_awards_section(memo_md: str, analysis: dict[str, Any]) -> bool:
+    text = str(memo_md or "")
+    if "#### Awards & accolades" in text or "Awards & accolades" in text:
+        return True
+    memo = _case_memo_dict(analysis.get("case_memo"))
+    return bool(memo.get("awards_analysis"))
+
+
 def _hof_memo_is_full(memo_md: str, summary_line: str = "") -> bool:
     text = str(memo_md or "").strip()
     if len(text) < _MEMO_MIN_LEN:
@@ -1326,21 +1339,21 @@ def resolve_hof_case_analysis(
     """Best available composed analysis dict for memo rendering."""
     packet_dict = packet if isinstance(packet, dict) else {}
     verdict_dict = _normalize_hof_analysis(verdict if isinstance(verdict, dict) else None)
-    if _analysis_is_current(verdict_dict):
-        return verdict_dict
-    analysis = _normalize_hof_analysis(
+    packet_analysis = _normalize_hof_analysis(
         packet_dict.get("hof_case_analysis") if isinstance(packet_dict.get("hof_case_analysis"), dict) else None
     )
-    if _analysis_is_current(analysis):
-        return analysis
+    if _analysis_is_current(packet_analysis):
+        return packet_analysis
     try:
         composed = compose_hof_statistical_case(packet_dict)
         if _structured_case_memo_present(composed.get("case_memo")):
             return composed
     except Exception:
         pass
-    if analysis:
-        return analysis
+    if _analysis_is_current(verdict_dict):
+        return verdict_dict
+    if packet_analysis:
+        return packet_analysis
     if verdict_dict:
         return verdict_dict
     return {}
@@ -1376,6 +1389,16 @@ def render_hof_case_full_analysis(
     fallback_reason = ""
     analysis = resolve_hof_case_analysis(packet, verdict)
     memo_md = format_hof_case_memo_markdown(analysis) if analysis else ""
+
+    if (
+        _packet_has_awards_context(packet)
+        and not _memo_includes_awards_section(memo_md, analysis)
+    ):
+        composed, composed_md, compose_error = _force_compose_hof_memo(packet)
+        if composed_md and _memo_includes_awards_section(composed_md, composed):
+            analysis = composed
+            memo_md = composed_md
+            fallback_reason = ""
 
     if not _hof_memo_is_full(memo_md, summary_line):
         composed, composed_md, compose_error = _force_compose_hof_memo(packet)
@@ -1472,7 +1495,7 @@ def format_hof_case_memo_markdown(analysis: dict[str, Any]) -> str:
             return recommendation
         return recommendation
     lines = [
-        f"### Verdict: {memo.get('verdict', '—')}",
+        f"### {CASE_SCORE_LABEL}: {memo.get('verdict', '—')}",
         "",
         str(memo.get("thesis") or analysis.get("thesis") or "").strip(),
         "",

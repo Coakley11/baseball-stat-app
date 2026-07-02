@@ -546,9 +546,21 @@ def _hof_resume_bundle_to_payload(bundle: dict[str, Any]) -> dict[str, Any]:
         "intent": "hof_case_analysis",
     }
     insight = bundle.get("insight") if isinstance(bundle.get("insight"), dict) else {}
+    display_q = ""
+    if insight.get("question"):
+        display_q = str(insight.get("question") or "").strip()
+    if not display_q:
+        display_q = str(packet.get("hof_case_display_question") or "").strip()
+    if not display_q:
+        try:
+            from hall_of_fame_data import build_hof_case_display_question
+
+            display_q = build_hof_case_display_question(target, packet)
+        except ImportError:
+            display_q = f"Hall of Fame case — {target}" if target else "Hall of Fame case"
     return {
         "question_id": str(bundle.get("question_id") or "").strip(),
-        "question": str(packet.get("hof_case_summary") or f"Hall of Fame case — {target}").strip(),
+        "question": display_q,
         "source_app": "baseball",
         "source_page": "Career Totals",
         "quant_area": "hall_of_fame_case",

@@ -22,6 +22,8 @@ from hall_of_fame_data import (
     apply_hof_membership_filter,
     attach_hof_flag,
     badge_hof_players_for_table,
+    build_hof_case_ami_prompt,
+    build_hof_case_display_question,
     build_hof_case_packet,
     build_hof_case_question,
     build_hof_cohort_display_text,
@@ -92,9 +94,12 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertEqual(packet["target_rank"], 3)
         self.assertTrue(player_in_results("Mike Trout", df))
         self.assertFalse(player_in_results("Juan Soto", df))
-        q = build_hof_case_question("Mike Trout", packet)
+        q = build_hof_case_ami_prompt("Mike Trout", packet)
         self.assertIn("Hall of Fame Statistical Case Score", q)
         self.assertIn("do not present this as true hall of fame induction odds", q.lower())
+        display_q = build_hof_case_display_question("Mike Trout", packet)
+        self.assertIn("?", display_q)
+        self.assertIn("Mike Trout", display_q)
         self.assertIn("target_identity", packet)
         self.assertIn("cohort_table_rows", packet)
         self.assertIn("comparable_players", packet)
@@ -367,7 +372,7 @@ class HallOfFameDataTests(unittest.TestCase):
         from hof_case_analysis import format_hof_case_memo_markdown
 
         md = format_hof_case_memo_markdown(analysis)
-        self.assertIn("Verdict:", md)
+        self.assertIn(f"### {CASE_SCORE_LABEL}:", md)
         self.assertIn("Statistical case", md)
         self.assertIn("Evidence that strengthens the case", md)
         self.assertIn("Cohort context only", md)
@@ -388,7 +393,7 @@ class HallOfFameDataTests(unittest.TestCase):
 
     def test_ami_label_and_guidance_exact(self) -> None:
         packet = {"total_players_returned": 10, "hall_of_famers_returned": 8, "hall_of_fame_rate_pct": 80.0, "sort_stat": "HR"}
-        q = build_hof_case_question("Juan Soto", packet)
+        q = build_hof_case_ami_prompt("Juan Soto", packet)
         self.assertIn(CASE_SCORE_LABEL, q)
         guidance = hof_case_ami_guidance()
         self.assertIn(CASE_SCORE_LABEL, guidance)
@@ -496,7 +501,7 @@ class HallOfFameDataTests(unittest.TestCase):
         st.caption = lambda *args, **kwargs: None
         self.assertTrue(render_hof_case_full_analysis(st, packet))
         joined = "\n".join(markdown_calls)
-        self.assertIn("### Verdict:", joined)
+        self.assertIn(f"### {CASE_SCORE_LABEL}:", joined)
         self.assertIn("Evidence that strengthens the case", joined)
         self.assertNotEqual(
             joined.strip(),
@@ -561,7 +566,7 @@ class HallOfFameDataTests(unittest.TestCase):
         self.assertNotIn("ops ≥ 0", md_lower)
         self.assertNotIn("batting average ≥ 0", md_lower)
         self.assertNotIn("triples ≥ 0", md_lower)
-        self.assertIn("Verdict:", md)
+        self.assertIn(f"### {CASE_SCORE_LABEL}:", md)
         memo = analysis.get("case_memo") or {}
         position_text = " ".join(memo.get("position_era_context") or [])
         self.assertNotIn("Primary position: 1B.", position_text)
@@ -596,7 +601,7 @@ class HallOfFameDataTests(unittest.TestCase):
         analysis = compose_hof_statistical_case(packet)
         self.assertIn(analysis.get("verdict_bucket"), CASE_SCORE_BUCKETS)
         md = format_hof_case_memo_markdown(analysis)
-        self.assertIn("Verdict:", md)
+        self.assertIn(f"### {CASE_SCORE_LABEL}:", md)
 
     def test_ensure_hof_scatter_columns(self) -> None:
         from hall_of_fame_data import (
@@ -701,7 +706,7 @@ class HofCasePublishTests(unittest.TestCase):
         self.assertLess(len(str(insight.get("conclusion") or "")), 500)
         self.assertNotIn("### Verdict", str(insight.get("conclusion") or ""))
         memo = format_hof_case_memo_markdown(resolve_hof_case_analysis(packet))
-        self.assertIn("### Verdict", memo)
+        self.assertIn(f"### {CASE_SCORE_LABEL}", memo)
 
     def test_build_hof_case_insight_record_recomposes_empty_analysis_stub(self) -> None:
         import pandas as pd
@@ -845,7 +850,9 @@ class HofCaseAmiIntegrationTests(unittest.TestCase):
         self.assertTrue(result.get("question_id"))
         self.assertTrue(str(result.get("action_url") or "").strip())
         self.assertIn("suite_ai_question_id", str(result.get("action_url") or ""))
-        self.assertIn(CASE_SCORE_LABEL, question)
+        self.assertIn("?", question)
+        self.assertIn("Mike Trout", question)
+        self.assertIn(CASE_SCORE_LABEL, build_hof_case_ami_prompt("Mike Trout", packet))
         activity_events = [(args[0], args[1]) for args, _kwargs in recorded if len(args) > 1]
         self.assertIn(("applied_intelligence", "hof_case_analysis_submitted"), activity_events)
         baseball_events = [args[1] for args, _kwargs in recorded if len(args) > 1 and args[0] == "baseball"]

@@ -13733,6 +13733,8 @@ if active_page == "Career Totals":
         apply_hof_membership_filter,
         badge_hof_players_for_table,
         build_hof_ami_payload,
+        build_hof_case_ami_prompt,
+        build_hof_case_display_question,
         build_hof_case_packet,
         build_hof_case_question,
         ensure_hof_case_scope_ui_state,
@@ -14052,8 +14054,10 @@ if active_page == "Career Totals":
                     position_universe_df=batting_df,
                     source_df=batting_df,
                 )
+                hof_display_question = build_hof_case_display_question(hof_target_player, hof_packet)
+                hof_ami_prompt = build_hof_case_ami_prompt(hof_target_player, hof_packet)
                 st.session_state[HOF_CASE_PACKET_KEY] = hof_packet
-                hof_question = build_hof_case_question(hof_target_player, hof_packet)
+                hof_question = hof_ami_prompt
                 try:
                     from applied_math_context import cache_page_context
 
@@ -14106,7 +14110,9 @@ if active_page == "Career Totals":
                         "Career Totals",
                         st.session_state,
                         context_extra={
-                            "question": hof_question,
+                            "question": hof_display_question,
+                            "display_question": hof_display_question,
+                            "ami_prompt": hof_ami_prompt,
                             "hof_case_packet": hof_packet,
                             "player": hof_target_player,
                             "app_context_type": "baseball_hof_case",
@@ -14194,7 +14200,7 @@ if active_page == "Career Totals":
                         prepare_fresh_submit_insight(st, question_id=qid)
                         insight_dict = build_hof_case_insight_record(
                             hof_packet,
-                            question=hof_question,
+                            question=hof_display_question,
                             question_id=qid,
                             full_analysis_url=action_url,
                             resume_key=resume_key,
@@ -14282,7 +14288,8 @@ if active_page == "Career Totals":
                         )
                         hof_ami_blob = build_hof_ami_payload(
                             packet=hof_packet,
-                            question=hof_question,
+                            question=hof_display_question,
+                            ami_prompt=hof_ami_prompt,
                             question_id=str(ami_result.get("question_id") or ""),
                             action_url=action_url,
                             context=submit_ctx,

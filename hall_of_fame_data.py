@@ -1432,7 +1432,9 @@ def build_hof_case_insight_record(
 
     analysis = resolve_hof_case_analysis(packet if isinstance(packet, dict) else {})
     insight = build_submit_fallback_insight(
-        question=str(question or "").strip(),
+        question=str(question or packet.get("hof_case_display_question") or build_hof_case_display_question(
+            str(packet.get("target_player") or "")
+        )).strip(),
         source_app="baseball",
         source_page=str(source_page or "Career Totals").strip() or "Career Totals",
         question_id=str(question_id or "").strip(),
@@ -1449,6 +1451,13 @@ def build_hof_case_insight_record(
     )
     data["conclusion"] = conclusion
     data["short_answer"] = conclusion
+    display_q = str(
+        question
+        or (packet or {}).get("hof_case_display_question")
+        or build_hof_case_display_question(str((packet or {}).get("target_player") or ""))
+    ).strip()
+    if display_q:
+        data["question"] = display_q
     data["method"] = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
     bullets = list(analysis.get("supporting_points") or [])[:8]
     if bullets:
@@ -1471,6 +1480,7 @@ def build_hof_ami_payload(
     workspace_snapshot: dict[str, Any] | None = None,
     source_state: dict[str, Any] | None = None,
     resume_key: str = "",
+    ami_prompt: str = "",
 ) -> dict[str, Any]:
     """Full persisted blob for HOF Case AMI / Open full analysis."""
     ctx = dict(context or {})
@@ -1481,8 +1491,18 @@ def build_hof_ami_payload(
     ctx.setdefault("app_context_type", HOF_AMI_CONTEXT_TYPE)
     identity = packet.get("target_identity") if isinstance(packet.get("target_identity"), dict) else {}
     target = str(packet.get("target_player") or identity.get("target_player") or ctx.get("player") or "").strip()
+    display_question = str(
+        packet.get("hof_case_display_question")
+        or build_hof_case_display_question(target, packet)
+    ).strip()
+    prompt = str(ami_prompt or question or "").strip()
+    if prompt and prompt != display_question:
+        ctx.setdefault("ami_prompt", prompt)
+    if display_question:
+        ctx.setdefault("display_question", display_question)
+        ctx.setdefault("user_question", display_question)
     payload: dict[str, Any] = {
-        "question": question,
+        "question": display_question or prompt,
         "question_id": str(question_id or "").strip(),
         "source_app": "baseball",
         "source_page": "Career Totals",
@@ -1499,6 +1519,10 @@ def build_hof_ami_payload(
     }
     if target:
         payload["target_player_name"] = target
+    if prompt:
+        payload["ami_prompt"] = prompt
+    if display_question:
+        payload["display_question"] = display_question
     if identity.get("player_id"):
         payload["player_id"] = identity["player_id"]
     if insight:
@@ -1789,6 +1813,7 @@ def build_hof_case_packet(
         "cohort_award_comparison": awards_context.get("cohort_award_comparison"),
     }
     packet["hof_case_summary"] = build_hof_case_summary_line(packet)
+    packet["hof_case_display_question"] = build_hof_case_display_question(target, packet)
     try:
         from hof_case_analysis import compose_hof_statistical_case
 
@@ -1798,7 +1823,16 @@ def build_hof_case_packet(
     return packet
 
 
-def build_hof_case_question(target_player: str, packet: dict[str, Any]) -> str:
+def build_hof_case_display_question(target_player: str, packet: dict[str, Any] | None = None) -> str:
+    """User-facing question for insight cards and Applied Math UI."""
+    target = str(target_player or (packet or {}).get("target_player") or "").strip()
+    if not target:
+        return "How strong is this player's Hall of Fame case?"
+    return f"How strong is {target}'s Hall of Fame case?"
+
+
+def build_hof_case_ami_prompt(target_player: str, packet: dict[str, Any]) -> str:
+    """Internal AMI instruction prompt — not shown as the user Question field."""
     target = str(target_player or packet.get("target_player") or "").strip()
     total = packet.get("total_players_returned", 0)
     hof_n = packet.get("hall_of_famers_returned", 0)
@@ -1826,6 +1860,11 @@ def build_hof_case_question(target_player: str, packet: dict[str, Any]) -> str:
         f"Respond with one of: {', '.join(CASE_SCORE_BUCKETS)}. "
         f"Do NOT present this as true Hall of Fame induction odds."
     )
+
+
+def build_hof_case_question(target_player: str, packet: dict[str, Any] | None = None) -> str:
+    """Alias for the user-facing display question."""
+    return build_hof_case_display_question(target_player, packet)
 
 
 def hof_case_ami_guidance() -> str:
