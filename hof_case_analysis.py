@@ -1446,7 +1446,7 @@ def render_hof_case_full_analysis(
                 player_id=identity.get("player_id"),
                 full_name=target,
                 mlbam_id=photo_info.get("mlbam_id"),
-                use_api=False,
+                use_api=True,
             )
         render_player_headshot_row(st, photo_info, title=f"Hall of Fame Case — {target or 'Analysis'}", subtitle=header_sub)
     except ImportError:

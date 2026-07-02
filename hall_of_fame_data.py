@@ -492,8 +492,16 @@ def render_hof_candidate_header(
     try:
         from player_photos import get_player_photo_info, render_player_headshot_row
 
-        photo_info = get_player_photo_info(player_id=player_id, full_name=target, use_api=False)
+        photo_info = get_player_photo_info(player_id=player_id, full_name=target, use_api=True)
         render_player_headshot_row(st, photo_info, title=target, subtitle=subtitle)
+        try:
+            from components.applied_math_context_diagnostics import applied_math_developer_mode_enabled
+
+            if applied_math_developer_mode_enabled(st):
+                with st.expander("Developer: player photo resolve", expanded=False):
+                    st.json(photo_info)
+        except ImportError:
+            pass
     except ImportError:
         st.markdown(f"### {target}")
         if subtitle:
@@ -1327,7 +1335,7 @@ def _build_target_identity(
         identity["player_photo"] = get_player_photo_info(
             player_id=identity.get("player_id"),
             full_name=target,
-            use_api=False,
+            use_api=True,
         )
     except ImportError:
         pass

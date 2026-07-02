@@ -89,7 +89,8 @@ class HofAwardsAnalysisTests(unittest.TestCase):
         identity = packet.get("target_identity") or {}
         photo = identity.get("player_photo") or {}
         self.assertIn("headshot_url", photo)
-        self.assertIn("player_id", photo)
+        self.assertTrue(photo.get("has_photo"), photo)
+        self.assertEqual(photo.get("mlbam_id"), 545361)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,79 @@ _CACHE_FILENAME = "player_mlbam_cache.json"
 _PEOPLE_PHOTO_COLS = ("playerID", "nameFirst", "nameLast", "birthYear", "bbrefID", "retroID")
 
 
+def _normalize_name_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+# Built-in Lahman playerID → MLBAM map for common modern players (works without API/cache).
+_KNOWN_MLBAM_BY_PLAYER_ID: dict[str, int] = {
+    "harpebr03": 547180,  # Bryce Harper
+    "troutmi01": 545361,  # Mike Trout
+    "freemfr01": 518692,  # Freddie Freeman
+    "pujolal01": 405395,  # Albert Pujols
+    "sotodo01": 665742,   # Juan Soto
+    "bettsmo01": 605141,  # Mookie Betts
+    "judgeaa01": 592450,  # Aaron Judge
+    "acunaro01": 660670,  # Ronald Acuña Jr.
+    "oneiltr01": 656941,  # Tyler O'Neill
+    "goldspau01": 502671, # Paul Goldschmidt
+    "arenano01": 571448,  # Nolan Arenado
+    "machama01": 592518,  # Manny Machado
+    "tatisfe02": 665487,  # Fernando Tatis Jr.
+    "guerrvl02": 665489,  # Vladimir Guerrero Jr.
+    "bichetb01": 666182,  # Bo Bichette
+    "alonspe01": 624413,  # Pete Alonso
+    "deverra01": 646240,  # Rafael Devers
+    "lindofr01": 596019,  # Francisco Lindor
+    "seagerco01": 608369,  # Corey Seager
+    "turneju01": 607208,  # Justin Turner
+    "stantmi03": 519317,  # Giancarlo Stanton
+    "kershcl01": 477132,  # Clayton Kershaw
+    "degromj01": 594798,  # Jacob deGrom
+    "colege01": 543037,   # Gerrit Cole
+    "schmima01": 592191,  # Max Scherzer
+    "verlaju01": 453286,  # Justin Verlander
+}
+
+# Normalized full-name keys for players when only a display name is available.
+_KNOWN_MLBAM_BY_NAME: dict[str, int] = {
+    _normalize_name_key(name): mlbam
+    for name, mlbam in {
+        "Bryce Harper": 547180,
+        "Mike Trout": 545361,
+        "Freddie Freeman": 518692,
+        "Albert Pujols": 405395,
+        "Juan Soto": 665742,
+        "Mookie Betts": 605141,
+        "Aaron Judge": 592450,
+        "Ronald Acuna Jr.": 660670,
+        "Ronald Acuña Jr.": 660670,
+        "Paul Goldschmidt": 502671,
+        "Nolan Arenado": 571448,
+        "Manny Machado": 592518,
+        "Fernando Tatis Jr.": 665487,
+        "Vladimir Guerrero Jr.": 665489,
+        "Pete Alonso": 624413,
+        "Francisco Lindor": 596019,
+        "Giancarlo Stanton": 519317,
+    }.items()
+}
+
+
+def _seed_mlbam_id(
+    *,
+    player_id: str | None = None,
+    full_name: str | None = None,
+) -> int | None:
+    pid = str(player_id or "").strip().lower()
+    if pid and pid in _KNOWN_MLBAM_BY_PLAYER_ID:
+        return _KNOWN_MLBAM_BY_PLAYER_ID[pid]
+    name_key = _normalize_name_key(full_name or "")
+    if name_key and name_key in _KNOWN_MLBAM_BY_NAME:
+        return _KNOWN_MLBAM_BY_NAME[name_key]
+    return None
+
+
 def app_base_dir() -> Path:
     return Path(__file__).resolve().parent
 
@@ -95,10 +168,6 @@ def load_people_photo_lookup(base_dir: Path | str | None = None) -> pd.DataFrame
     return people
 
 
-def _normalize_name_key(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
-
-
 def _lookup_people_row(
     *,
     player_id: str | None = None,
@@ -165,6 +234,38 @@ def _search_mlbam_via_api(full_name: str, birth_year: int | None = None) -> int 
     return candidates[0][0]
 
 
+def _cache_lookup(
+    cache: dict[str, int],
+    *,
+    player_id: str | None = None,
+    full_name: str | None = None,
+) -> int | None:
+    pid = str(player_id or "").strip()
+    if pid and pid in cache:
+        return cache[pid]
+    name_key = _normalize_name_key(full_name or "")
+    if name_key:
+        by_name = cache.get(f"name:{name_key}")
+        if by_name is not None:
+            return int(by_name)
+    return None
+
+
+def _cache_store(
+    cache: dict[str, int],
+    mlbam_id: int,
+    *,
+    player_id: str | None = None,
+    full_name: str | None = None,
+) -> None:
+    pid = str(player_id or "").strip()
+    if pid:
+        cache[pid] = mlbam_id
+    name_key = _normalize_name_key(full_name or "")
+    if name_key:
+        cache[f"name:{name_key}"] = mlbam_id
+
+
 def resolve_mlbam_id(
     *,
     player_id: str | None = None,
@@ -174,21 +275,17 @@ def resolve_mlbam_id(
     people_df: pd.DataFrame | None = None,
     base_dir: Path | str | None = None,
     use_api: bool = True,
-) -> int | None:
+) -> tuple[int | None, str]:
     """Resolve a Lahman playerID or name to an MLBAM person id (cached)."""
     if mlbam_id is not None:
         try:
             resolved = int(float(str(mlbam_id).strip()))
             if resolved > 0:
-                return resolved
+                return resolved, "mlbam_column"
         except (TypeError, ValueError):
             pass
 
     pid = str(player_id or "").strip()
-    cache = _load_mlbam_cache(base_dir)
-    if pid and pid in cache:
-        return cache[pid]
-
     row = _lookup_people_row(
         player_id=pid or None,
         full_name=full_name,
@@ -197,12 +294,20 @@ def resolve_mlbam_id(
     )
     if not pid and row.get("playerID"):
         pid = str(row["playerID"]).strip()
-        if pid in cache:
-            return cache[pid]
 
     name = str(full_name or row.get("fullName") or "").strip()
-    if not name:
-        return None
+
+    seeded = _seed_mlbam_id(player_id=pid or None, full_name=name)
+    if seeded:
+        return seeded, "seed_map"
+
+    cache = _load_mlbam_cache(base_dir)
+    cached = _cache_lookup(cache, player_id=pid or None, full_name=name)
+    if cached:
+        return cached, "cache"
+
+    if not use_api or not name:
+        return None, "placeholder_no_mlbam_id"
 
     by = birth_year
     if by is None and row.get("birthYear") is not None:
@@ -211,14 +316,12 @@ def resolve_mlbam_id(
         except (TypeError, ValueError):
             by = None
 
-    if not use_api:
-        return None
-
     found = _search_mlbam_via_api(name, by)
-    if found and pid:
-        cache[pid] = found
+    if found:
+        _cache_store(cache, found, player_id=pid or None, full_name=name)
         _save_mlbam_cache(cache, base_dir)
-    return found
+        return found, "api_lookup"
+    return None, "placeholder_no_mlbam_id"
 
 
 def get_player_photo_info(
@@ -246,7 +349,7 @@ def get_player_photo_info(
                         mlbam_id = val
                         break
 
-    resolved = resolve_mlbam_id(
+    resolved, resolve_source = resolve_mlbam_id(
         player_id=player_id,
         full_name=full_name,
         mlbam_id=mlbam_id,
@@ -255,12 +358,15 @@ def get_player_photo_info(
         use_api=use_api,
     )
     url = mlb_headshot_url(resolved, size=image_size) if resolved else None
+    fallback_reason = resolve_source if url else resolve_source
     return {
         "player_id": str(player_id or "").strip() or None,
         "full_name": str(full_name or "").strip() or None,
         "mlbam_id": resolved,
         "headshot_url": url,
         "has_photo": bool(url),
+        "resolve_source": resolve_source,
+        "fallback_reason": fallback_reason,
     }
 
 

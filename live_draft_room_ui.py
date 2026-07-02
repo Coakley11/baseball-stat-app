@@ -995,7 +995,7 @@ def render_live_draft_rec_cards(
                     player_id=player_id or None,
                     full_name=name,
                     row=r,
-                    use_api=False,
+                    use_api=True,
                 )
                 grade = player_grade_display(r)
                 stat_line = compact_fantasy_stat_line(r)
