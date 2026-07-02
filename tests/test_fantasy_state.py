@@ -248,6 +248,12 @@ class TestFantasyState(unittest.TestCase):
     def test_sleepers_expander_initializes_canon_before_age_slider(self) -> None:
         """Static guard: _sleepers_canon must be assigned before age default logic."""
         text = (_REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        page_marker = 'if active_page == "Fantasy Sleepers & Busts":'
+        page_start = text.find(page_marker)
+        self.assertNotEqual(page_start, -1)
+        page_chunk = text[page_start : page_start + 1500]
+        self.assertIn("from sleepers_filter_defaults import", page_chunk)
+
         marker = 'with st.expander("Position & age filters", expanded=False):'
         start = text.find(marker)
         self.assertNotEqual(start, -1)

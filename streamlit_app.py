@@ -16539,15 +16539,14 @@ if active_page == "Trend Value":
 
 if active_page == "Fantasy Sleepers & Busts":
     from fantasy_state import (
-        default_sleepers_age_range,
         flush_fantasy_section_edits,
         mark_fantasy_local_edit,
         mark_sleepers_filter_local_edit,
         prepare_fantasy_sleepers_filters,
         prepare_fantasy_sleepers_page,
-        read_sleepers_canonical_filters,
         render_fantasy_state_debug,
     )
+    from sleepers_filter_defaults import default_sleepers_age_range, read_sleepers_canonical_filters
 
     prepare_fantasy_sleepers_page(st.session_state)
     prepare_fantasy_sleepers_filters(st.session_state)
