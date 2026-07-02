@@ -78,6 +78,20 @@ def test_compute_display_trends_requires_two_seasons():
     assert slopes == {}
 
 
+def test_build_trend_only_diagnostic_projection():
+    season = pd.DataFrame(
+        {
+            "yearID": [2023, 2024, 2025],
+            "G": [150, 150, 150],
+            "HR": [30, 35, 40],
+            "OPS": [0.900, 0.920, 0.940],
+        }
+    )
+    diag = pb.build_trend_only_diagnostic_projection(season)
+    assert diag["HR"] > 40
+    assert diag["OPS"] > 0.940
+
+
 def test_build_projection_breakdown_bundle_stabilized_flag():
     row = pd.Series({
         "proj_HR": 40,

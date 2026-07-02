@@ -126,7 +126,7 @@ def main() -> int:
         return 0
 
     pool = app["get_projection_breakdown_pool_live"]()
-    print(f"Breakdown pool: {len(pool)} players | profile={app['PROJECTION_BREAKDOWN_PROFILE']}")
+    print(f"Breakdown pool: {len(pool)} players | settings={app['_draft_projection_session_kwargs']()}")
     print()
 
     issues = 0

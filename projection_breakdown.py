@@ -356,6 +356,37 @@ def build_trend_cards(
     return cards
 
 
+def build_trend_only_diagnostic_projection(
+    season_history: pd.DataFrame | None,
+) -> dict[str, float]:
+    """
+    Simple latest-season + linear-slope forecast for diagnostic display only.
+
+    This is **not** the canonical stabilized projection shown on player cards.
+    """
+    if season_history is None or season_history.empty:
+        return {}
+    latest = season_history.sort_values("yearID").iloc[-1]
+    slopes, _ = compute_display_trends_from_seasons(season_history)
+    mapping = (
+        ("HR", "HR", "HR_trend"),
+        ("RBI", "RBI", "RBI_trend"),
+        ("R", "R", "R_trend"),
+        ("SB", "SB", "SB_trend"),
+        ("AVG", "BA", "BA_trend"),
+        ("OPS", "OPS", "OPS_trend"),
+    )
+    out: dict[str, float] = {}
+    for label, season_col, trend_col in mapping:
+        base = _num(latest, season_col)
+        if np.isnan(base):
+            continue
+        slope = slopes.get(trend_col, 0.0)
+        slope_v = 0.0 if slope is None or (isinstance(slope, float) and np.isnan(slope)) else float(slope)
+        out[label] = float(base) + slope_v
+    return out
+
+
 def build_projection_snapshot(row) -> dict[str, Any]:
     """Extract stabilized projection fields from a pool row."""
     projections = {}
@@ -438,8 +469,11 @@ def build_projection_breakdown_bundle(
         "method_notes": [TREND_METHOD_NOTE],
         "trend_cards": [],
         "snapshot": {},
+        "diagnostic_trend_only": {},
         "lahman_fallback": lahman_fallback,
     }
+    if season_history is not None and not season_history.empty:
+        bundle["diagnostic_trend_only"] = build_trend_only_diagnostic_projection(season_history)
     if row is not None and hasattr(row, "index"):
         bundle["snapshot"] = build_projection_snapshot(row)
         season_overrides, seasons_used = compute_display_trends_from_seasons(season_history)

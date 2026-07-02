@@ -85,7 +85,31 @@ class InsightCardDedupTests(unittest.TestCase):
         self.assertNotIn("st.error(make_trend_insight_summary", chunk)
         self.assertNotIn("extra_summary=make_trend_insight_summary", chunk)
 
-    def test_streamlit_valuation_no_duplicate_info_summary(self) -> None:
+    def test_trend_viz_cards_no_fantasy_notes_block(self) -> None:
+        text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
+        self.assertNotIn('st.subheader("Fantasy-Style Player Notes")', text)
+        marker = 'st.subheader("Player Trend Visualization")'
+        start = text.find(marker)
+        self.assertNotEqual(start, -1)
+        chunk = text[start : start + 4500]
+        self.assertIn("build_trend_card_extra_summary", chunk)
+        self.assertNotIn("make_trend_insight_summary", chunk)
+
+    def test_trend_slope_detail_excludes_projection_prose(self) -> None:
+        from player_photos import build_trend_card_extra_summary
+
+        row = {
+            "OPS_trend": 0.045,
+            "HR_trend": 5,
+            "RBI_trend": 3,
+            "proj_HR": 43,
+            "proj_OPS": 0.95,
+        }
+        extra = build_trend_card_extra_summary(row)
+        self.assertIn("HR trend", extra)
+        self.assertNotIn("Next year projection", extra)
+        self.assertNotIn("43 HR", extra)
+
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         marker = "build_valuation_card_takeaway"
         self.assertIn(marker, text)

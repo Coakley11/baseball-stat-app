@@ -8194,36 +8194,8 @@ def get_cached_unified_projection_pool_live():
     )
 
 
-# Fixed profile so Projection Breakdown matches across every page (not per-page session sliders).
-PROJECTION_BREAKDOWN_PROFILE = {
-    "draft_window": 3,
-    "fantasy_format": "5x5 Roto",
-    "projection_style": "Balanced",
-    "use_ml_blend": True,
-    "ml_blend_weight": 0.12,
-    "ml_min_games_for_signal": 50,
-}
-
-
-@st.cache_data(show_spinner=False)
-def get_projection_breakdown_pool(lahman_max_year: int):
-    """Canonical stabilized pool for Projection Breakdown (consistent across all pages)."""
-    p = PROJECTION_BREAKDOWN_PROFILE
-    market_df = load_fantasypros_market_data()
-    return build_unified_draft_player_pool(
-        yearly_df,
-        market_df,
-        draft_window=int(p["draft_window"]),
-        fantasy_format=str(p["fantasy_format"]),
-        projection_style=str(p["projection_style"]),
-        use_ml_blend=bool(p["use_ml_blend"]),
-        ml_blend_weight=float(p["ml_blend_weight"]),
-        ml_min_games_for_signal=int(p["ml_min_games_for_signal"]),
-    )
-
-
 def get_projection_breakdown_pool_live():
-    """Same canonical unified pool as player cards (respects active shared draft settings)."""
+    """Canonical unified pool for Projection Breakdown — same active shared settings as player cards."""
     return get_cached_unified_projection_pool_live()
 
 
@@ -8282,12 +8254,14 @@ def assemble_projection_breakdown_bundle(
         projection_style = str(profile["projection_style"])
         fantasy_format = str(profile["fantasy_format"])
         ml_blend_on = bool(profile.get("ml_blend_enabled", True))
+        ml_blend_weight = float(profile.get("ml_signal_weight", 0.12))
     except ImportError:
         kw = _draft_projection_session_kwargs()
         window_years = int(kw["draft_window"])
         projection_style = str(kw["projection_style"])
         fantasy_format = str(kw["fantasy_format"])
         ml_blend_on = bool(kw.get("use_ml_blend", True))
+        ml_blend_weight = float(kw.get("ml_blend_weight", 0.12))
 
     row, source, _pool = resolve_projection_breakdown_row(player_display_name)
 
@@ -8335,6 +8309,7 @@ def assemble_projection_breakdown_bundle(
         lahman_fallback=lahman_fallback,
     )
     bundle["ml_blend_enabled"] = ml_blend_on
+    bundle["ml_blend_weight"] = ml_blend_weight
     return bundle
 
 
@@ -10720,17 +10695,18 @@ def _render_projection_breakdown_dialog(bundle: dict):
 
     player = bundle.get("player_name", "Player")
     st.markdown(f"### {player}")
+    ml_on = bool(bundle.get("ml_blend_enabled", True))
     st.caption(
-        f"**{bundle.get('projection_style', 'Balanced')}** style · "
-        f"**{bundle.get('window_years', 3)}-year** window · "
-        f"**{bundle.get('fantasy_format', '5x5 Roto')}**"
+        f"Projection style: **{bundle.get('projection_style', 'Balanced')}** · "
+        f"Lookback: **{bundle.get('window_years', 3)}** years · "
+        f"ML blend: **{'on' if ml_on else 'off'}** · "
+        f"{bundle.get('fantasy_format', '5x5 Roto')}"
     )
 
     if bundle.get("stabilized"):
-        blend_note = "ML blend **on**" if bundle.get("ml_blend_enabled") else "ML blend **off**"
         st.success(
-            "Canonical projection breakdown — matches the **Proj:** stat line and Player Grade on player cards. "
-            f"Uses your active shared settings ({blend_note})."
+            "Canonical projection breakdown — matches the **Proj:** stat line and Player Grade on player cards "
+            "using your active shared settings."
         )
     else:
         st.warning(
@@ -10741,11 +10717,11 @@ def _render_projection_breakdown_dialog(bundle: dict):
     snapshot = bundle.get("snapshot") or {}
     projections = snapshot.get("projections") or {}
     if projections:
-        st.markdown("#### Canonical projected stats")
+        st.markdown("#### Canonical projection (matches player card Proj: line)")
         pcols = st.columns(len(projections))
         for col, (label, val) in zip(pcols, projections.items()):
             with col:
-                st.metric(label, _format_projection_stat(label, val))
+                st.metric(f"Projected {label}", _format_projection_stat(label, val))
     elif bundle.get("lahman_fallback"):
         fb = bundle["lahman_fallback"]
         st.markdown(f"#### Latest Lahman season ({fb.get('year', 'n/a')})")
@@ -10826,6 +10802,28 @@ def _render_projection_breakdown_dialog(bundle: dict):
             + (f" (base **{fmt_rate_4(rbase)}**)" if rbase is not None and not np.isnan(rbase) else "")
             + (f" · ML adj **{float(ml_adj):+.4f}**" if ml_adj is not None and not np.isnan(ml_adj) else "")
         )
+
+    diagnostic = bundle.get("diagnostic_trend_only") or {}
+    if diagnostic and bundle.get("stabilized"):
+        differs = False
+        for label, val in diagnostic.items():
+            canon = projections.get(label)
+            if canon is None or (isinstance(canon, float) and np.isnan(canon)):
+                continue
+            tol = 0.002 if label in ("AVG", "OPS") else 0.5
+            if abs(float(val) - float(canon)) > tol:
+                differs = True
+                break
+        if differs:
+            st.markdown("#### Trend-only diagnostic projection")
+            st.caption(
+                "Not the canonical forecast — latest full season plus recent linear slope. "
+                "Headline stats above match your player card **Proj:** line."
+            )
+            dcols = st.columns(len(diagnostic))
+            for col, (label, val) in zip(dcols, diagnostic.items()):
+                with col:
+                    st.metric(f"Trend-only {label}", _format_projection_stat(label, val))
 
     trend_cards = bundle.get("trend_cards") or []
     if trend_cards:
@@ -16446,7 +16444,7 @@ if active_page == "Trend Value":
 
     if selected_ids_trend:
         try:
-            from player_photos import render_analytics_profile_cards_row
+            from player_photos import build_trend_card_extra_summary, render_analytics_profile_cards_row
 
             _viz_entries = []
             for _lbl, _pid in zip(selected_labels_trend, selected_ids_trend):
@@ -16456,7 +16454,11 @@ if active_page == "Trend Value":
                     if not _match.empty
                     else pd.Series({"fullName": fullname_base_from_label(_lbl), "playerID": _pid})
                 )
-                _viz_entries.append({"row": _row, "player_id": _pid})
+                _viz_entries.append({
+                    "row": _row,
+                    "player_id": _pid,
+                    "extra_summary": build_trend_card_extra_summary(_row),
+                })
             render_analytics_profile_cards_row(
                 st,
                 _viz_entries[:3],
@@ -16546,13 +16548,6 @@ if active_page == "Trend Value":
                 style_cols=["Slope", "Recent Slope", "R-squared", "Net Change"],
             )
 
-        st.subheader("Fantasy-Style Player Notes")
-        trend_multi_names = []
-        for selected_id_trend in selected_ids_trend:
-            player_summary_row = trend_value_df[trend_value_df["playerID"] == selected_id_trend]
-            if not player_summary_row.empty:
-                trend_multi_names.append(player_summary_row.iloc[0].get("fullName", ""))
-                st.info(make_trend_insight_summary(player_summary_row.iloc[0]))
     else:
         st.info("Select one to three players to view trend charts.")
 

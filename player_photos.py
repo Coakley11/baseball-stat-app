@@ -906,6 +906,37 @@ def build_trend_summary_text(row: Any, *, window_years: int | None = None) -> st
     return f"{prefix}: " + ", ".join(bits[:6])
 
 
+def build_trend_slope_detail_text(row: Any) -> str:
+    """Numeric per-year trend slopes for profile cards (no projection prose)."""
+    specs = (
+        ("OPS_trend", "OPS", True),
+        ("HR_trend", "HR", False),
+        ("XBH_noHR_trend", "2B+3B", False),
+        ("RBI_trend", "RBI", False),
+        ("SB_trend", "SB", False),
+        ("R_trend", "R", False),
+        ("BA_trend", "AVG", True),
+    )
+    bits: list[str] = []
+    for col, label, is_rate in specs:
+        val = _coerce_float(_row_get(row, col))
+        if val is None:
+            continue
+        if is_rate:
+            bits.append(f"{label} trend {val:+.3f}/yr")
+        elif abs(val) >= 1:
+            bits.append(f"{label} trend {int(round(val))}/yr")
+        else:
+            bits.append(f"{label} trend {val:+.1f}/yr")
+    return ", ".join(bits) + "." if bits else ""
+
+
+def build_trend_card_extra_summary(row: Any) -> str:
+    """Breakout/decline takeaway plus numeric slopes — no Proj: duplication."""
+    parts = [build_trend_card_takeaway(row), build_trend_slope_detail_text(row)]
+    return " ".join(p for p in parts if p).strip()
+
+
 def build_valuation_market_summary(row: Any) -> str:
     """Market vs model framing when ranks are available on the row or draft pool."""
     mkt = market_rank_display(row)
