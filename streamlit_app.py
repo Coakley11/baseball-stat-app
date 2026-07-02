@@ -8709,6 +8709,16 @@ def build_unified_draft_player_pool(
         normalize_series(pool["Sleeper Score"]) * 0.03 +
         normalize_series(pool["Market vs Model Score"]) * 0.02
     )
+    try:
+        from canonical_projections import apply_ml_blend_to_projection_stats
+
+        pool = apply_ml_blend_to_projection_stats(
+            pool,
+            use_ml_blend=bool(use_ml_blend),
+            ml_blend_weight=float(ml_blend_weight),
+        )
+    except ImportError:
+        pool["Projection Source"] = "ml_blended" if use_ml_blend else "baseline"
     return pool
 
 
@@ -15149,6 +15159,15 @@ if active_page == "Comparison Tool":
     )
     if not comparison_projection_lookup.empty:
         comparison_projection_lookup = add_latest_and_projection_columns(comparison_projection_lookup, _comparison_recent)
+        try:
+            from canonical_projections import merge_canonical_projections
+
+            _canonical_compare_pool = get_cached_unified_projection_pool_live()
+            comparison_projection_lookup = merge_canonical_projections(
+                comparison_projection_lookup, _canonical_compare_pool
+            )
+        except Exception:
+            pass
 
     comparison_card_pool = build_profile_draft_metrics_pool(
         sync_team=comparison_action_team,
@@ -15920,6 +15939,13 @@ if active_page == "Trend Value":
 
     trend_value_df = agg_trend.merge(trend_table, on="playerID", how="left")
     trend_value_df = add_latest_and_projection_columns(trend_value_df, recent_data_trend)
+    try:
+        from canonical_projections import merge_canonical_projections
+
+        _canonical_trend_pool = get_cached_unified_projection_pool_live()
+        trend_value_df = merge_canonical_projections(trend_value_df, _canonical_trend_pool)
+    except Exception:
+        pass
     trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)
     trend_value_df = filter_players_by_fantasy_position(trend_value_df, trend_position_filter)
 
@@ -16797,6 +16823,13 @@ if active_page == "Fantasy Sleepers & Busts":
 
     fantasy_df = agg_fantasy.merge(fantasy_trends, on="playerID", how="left")
     fantasy_df = add_latest_and_projection_columns(fantasy_df, recent_fantasy)
+    try:
+        from canonical_projections import merge_canonical_projections
+
+        _canonical_sleeper_pool = get_cached_unified_projection_pool_live()
+        fantasy_df = merge_canonical_projections(fantasy_df, _canonical_sleeper_pool)
+    except Exception:
+        pass
 
     latest_cols = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
     latest_context = get_latest_player_context(recent_fantasy, tuple(latest_cols))
@@ -17490,9 +17523,12 @@ if active_page == "Draft Assistant Simulator":
             with mlb1:
                 init_state_once("draft_use_ml_blend", True)
                 use_ml_in_draft = st.checkbox(
-                    "Blend ML projection signal into Roster Fit Score",
+                    "Blend ML projection signal into projections and draft scoring",
                     key="draft_use_ml_blend",
-                    help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score.",
+                    help=(
+                        "Applies across Draft Assistant, Live Draft Room, Sleepers, Trends, Valuation, "
+                        "Comparison, and player profile cards. Turn this off to use baseline projections everywhere."
+                    ),
                     on_change=_draft_assistant_settings_changed,
                 )
             with mlb2:
@@ -21998,6 +22034,13 @@ if active_page == "Valuation":
 
     valuation_df = agg_value.merge(trend_value, on="playerID", how="left")
     valuation_df = add_latest_and_projection_columns(valuation_df, recent_data_value)
+    try:
+        from canonical_projections import merge_canonical_projections
+
+        _canonical_value_pool = get_cached_unified_projection_pool_live()
+        valuation_df = merge_canonical_projections(valuation_df, _canonical_value_pool)
+    except Exception:
+        pass
     valuation_df = attach_fantasy_position_columns(valuation_df, recent_data_value)
     valuation_df = filter_players_by_fantasy_position(valuation_df, value_position_filter)
 
