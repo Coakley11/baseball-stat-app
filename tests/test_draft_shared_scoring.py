@@ -66,14 +66,14 @@ class DraftSharedScoringTests(unittest.TestCase):
         self.assertEqual(read_draft_scoring_settings(session)["projection_style"], "Conservative")
 
     def test_projection_style_from_draft_assistant_propagates_to_ml_page(self) -> None:
-        session = {"fantasy_draft_projection_style": "Aggressive", "ml_projection_style": "Balanced"}
+        session = {"fantasy_draft_projection_style": "Aggressive / Upside", "ml_projection_style": "Balanced"}
         on_draft_settings_changed(
             session,
             source_page="Draft Assistant Simulator",
             style_key="fantasy_draft_projection_style",
         )
         self.assertEqual(session["ml_projection_style"], "Aggressive")
-        self.assertEqual(read_draft_scoring_settings(session)["projection_style"], "Aggressive")
+        self.assertEqual(read_draft_scoring_settings(session)["projection_style"], "Aggressive / Upside")
 
 
 if __name__ == "__main__":

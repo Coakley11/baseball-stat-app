@@ -104,18 +104,20 @@ class SleepersAndComparisonCardTests(unittest.TestCase):
                 "proj_RBI": 78,
                 "Expected Fantasy Value": 0.72,
                 "Draft Fit Score": 1.42,
-                "Reason": "Positive fantasy edge vs market.",
+                "Fantasy Edge": 25,
+                "Market Rank": 80,
+                "Model Rank": 55,
             }
         )
         self.assertEqual(roster_fit_display(row), "1.42")
         info = get_player_photo_info(full_name="Tyler O'Neill", use_api=False)
-        html = build_draft_profile_card_html(row, info, reason=str(row["Reason"]))
+        html = build_draft_profile_card_html(row, info, show_fantasy_edge=True)
         self.assertIn("Tyler O'Neill", html)
         self.assertIn("Proj:", html)
         self.assertIn("Roster Fit Score", html)
-        self.assertIn("1.42", html)
-        self.assertIn("Player Grade", html)
-        self.assertIn("Positive fantasy edge", html)
+        self.assertIn("Fantasy Edge", html)
+        self.assertIn("+25", html)
+        self.assertNotIn("Sleeper:", html)
 
     def test_draft_assistant_card_shows_decision_score(self) -> None:
         from player_photos import build_draft_profile_card_html

@@ -104,13 +104,17 @@ def _num(val: Any) -> float | None:
 
 
 def _fmt_hundred_scale(val: Any) -> str:
-    """Format 0–1 internal or 0–100 display scores with exactly two decimals."""
+    """Format 0–1 internal or 0–100 display scores (up to two decimals, trim trailing zeros)."""
     n = _num(val)
     if n is None:
         return ""
     if n <= 1.5:
         n = n * 100.0
-    return f"{n:.2f}"
+    rounded = round(n, 2)
+    text = f"{rounded:.2f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 SLEEPER_MIN_PLAYER_GRADE_DEFAULT = 10.0

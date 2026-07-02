@@ -18,10 +18,26 @@ DEFAULT_FANTASY_FORMAT = "5x5 Roto"
 DEFAULT_ML_BLEND_ENABLED = True
 DEFAULT_ML_SIGNAL_WEIGHT = 0.12
 DEFAULT_ML_MIN_RECENT_GAMES = 50
+DEFAULT_MIN_GAMES = 50
+DEFAULT_MIN_AT_BATS = 150
 
 GLOBAL_ML_BLEND_KEY = "draft_use_ml_blend"
 GLOBAL_ML_WEIGHT_KEY = "draft_ml_blend_weight"
 GLOBAL_ML_MIN_GAMES_KEY = "draft_ml_min_games_signal"
+GLOBAL_MIN_GAMES_KEY = "fantasy_sample_min_games"
+GLOBAL_MIN_AB_KEY = "fantasy_sample_min_ab"
+
+MIN_GAMES_ALIASES: tuple[str, ...] = (
+    "trend_min_g",
+    "value_min_g",
+    "ml_min_games",
+    "fantasy_market_min_g",
+)
+
+MIN_AB_ALIASES: tuple[str, ...] = (
+    "ml_min_ab",
+    "fantasy_market_min_ab",
+)
 
 WINDOW_ALIASES: dict[str, str] = {
     "draft_window": GLOBAL_WINDOW_KEY,
@@ -68,6 +84,15 @@ DRAFT_SHARED_WIDGET_KEYS: frozenset[str] = frozenset(
         GLOBAL_ML_BLEND_KEY,
         GLOBAL_ML_WEIGHT_KEY,
         GLOBAL_ML_MIN_GAMES_KEY,
+        GLOBAL_MIN_GAMES_KEY,
+        GLOBAL_MIN_AB_KEY,
+        *MIN_GAMES_ALIASES,
+        *MIN_AB_ALIASES,
+        "sync_draft_assistant_position_needs",
+        "trend_position_filter",
+        "value_position_filter",
+        "ml_position_filter",
+        "fantasy_market_positions",
         *WINDOW_ALIASES.keys(),
         *PROJECTION_STYLE_ALIASES.keys(),
         *LOOKBACK_ANALYTICS_ALIASES,
@@ -110,6 +135,44 @@ def _normalize_format(val: Any) -> str:
     except ImportError:
         s = str(val or "").strip()
         return s or DEFAULT_FANTASY_FORMAT
+
+
+def _normalize_projection_style_canonical(style: Any) -> str:
+    s = str(style or "").strip()
+    if not s:
+        return DEFAULT_PROJECTION_STYLE
+    if s == "Aggressive":
+        return "Aggressive / Upside"
+    if s in ("Conservative", "Balanced", "Aggressive / Upside"):
+        return s
+    if "Aggressive" in s:
+        return "Aggressive / Upside"
+    return DEFAULT_PROJECTION_STYLE
+
+
+def _projection_style_for_widget_alias(canonical_style: str, alias_key: str) -> str:
+    canonical = _normalize_projection_style_canonical(canonical_style)
+    if alias_key == "ml_projection_style":
+        return "Aggressive" if canonical == "Aggressive / Upside" else canonical
+    return canonical
+
+
+def _read_min_games(session: dict[str, Any], blob: dict[str, Any]) -> int:
+    if blob.get("min_games") is not None:
+        return int(blob["min_games"])
+    for key in MIN_GAMES_ALIASES:
+        if session.get(key) is not None:
+            return int(session[key])
+    return DEFAULT_MIN_GAMES
+
+
+def _read_min_at_bats(session: dict[str, Any], blob: dict[str, Any]) -> int:
+    if blob.get("min_at_bats") is not None:
+        return int(blob["min_at_bats"])
+    for key in MIN_AB_ALIASES:
+        if session.get(key) is not None:
+            return int(session[key])
+    return DEFAULT_MIN_AT_BATS
 
 
 def _coerce_bool(val: Any, default: bool) -> bool:
@@ -177,11 +240,17 @@ def read_canonical_draft_settings(session: dict[str, Any]) -> dict[str, Any]:
         fmt = session.get("room_format")
     return {
         "lookback_window": int(lookback) if lookback is not None else DEFAULT_LOOKBACK,
-        "projection_style": str(style or DEFAULT_PROJECTION_STYLE).strip() or DEFAULT_PROJECTION_STYLE,
+        "projection_style": _normalize_projection_style_canonical(style),
         "fantasy_format": _normalize_format(fmt),
         "ml_blend_enabled": _read_ml_blend_enabled(session, blob),
         "ml_signal_weight": _read_ml_signal_weight(session, blob),
         "ml_min_recent_games": _read_ml_min_recent_games(session, blob),
+        "min_games": _read_min_games(session, blob),
+        "min_at_bats": _read_min_at_bats(session, blob),
+        "sync_position_needs_to_research": _coerce_bool(
+            blob.get("sync_position_needs_to_research", session.get("sync_draft_assistant_position_needs")),
+            False,
+        ),
         "updated_at": blob.get("updated_at"),
         "updated_by_page": blob.get("updated_by_page"),
     }
@@ -207,28 +276,52 @@ def draft_pool_kwargs_from_session(session: dict[str, Any]) -> dict[str, Any]:
 
 def hydrate_canonical_draft_settings_from_session(session: dict[str, Any]) -> dict[str, Any]:
     """Build/sync canonical blob from top-level session keys (e.g. after cloud restore)."""
+    prev_blob = session.get(CANONICAL_SETTINGS_KEY)
+    if not isinstance(prev_blob, dict):
+        prev_blob = {}
     cur = read_canonical_draft_settings(session)
-    session[CANONICAL_SETTINGS_KEY] = {
+    blob = {
         "lookback_window": cur["lookback_window"],
         "projection_style": cur["projection_style"],
         "fantasy_format": cur["fantasy_format"],
         "ml_blend_enabled": cur["ml_blend_enabled"],
         "ml_signal_weight": cur["ml_signal_weight"],
         "ml_min_recent_games": cur["ml_min_recent_games"],
+        "min_games": cur["min_games"],
+        "min_at_bats": cur["min_at_bats"],
+        "sync_position_needs_to_research": cur.get("sync_position_needs_to_research"),
         "updated_at": cur.get("updated_at"),
         "updated_by_page": cur.get("updated_by_page"),
     }
+    for extra in ("draft_assistant_position_needs", "research_position_filters"):
+        if extra in prev_blob:
+            blob[extra] = prev_blob[extra]
+    session[CANONICAL_SETTINGS_KEY] = blob
+    if cur.get("sync_position_needs_to_research") is not None:
+        session["sync_draft_assistant_position_needs"] = bool(cur["sync_position_needs_to_research"])
     return cur
 
 
 def _mirror_window_and_style_aliases(session: dict[str, Any], *, lookback: int, style: str) -> None:
-    session[GLOBAL_WINDOW_KEY] = int(lookback)
-    session[GLOBAL_PROJECTION_STYLE_KEY] = str(style).strip()
+    canonical_style = _normalize_projection_style_canonical(style)
+    session[GLOBAL_PROJECTION_STYLE_KEY] = canonical_style
     for alias, canonical in _ALL_ALIASES.items():
-        val = int(lookback) if canonical == GLOBAL_WINDOW_KEY else str(style).strip()
-        session[alias] = val
+        if canonical == GLOBAL_WINDOW_KEY:
+            session[alias] = int(lookback)
+        else:
+            session[alias] = _projection_style_for_widget_alias(canonical_style, alias)
+    session[GLOBAL_WINDOW_KEY] = int(lookback)
     for alias in LOOKBACK_ANALYTICS_ALIASES:
         session[alias] = int(lookback)
+
+
+def _mirror_sample_size_aliases(session: dict[str, Any], *, min_games: int, min_at_bats: int) -> None:
+    session[GLOBAL_MIN_GAMES_KEY] = int(min_games)
+    session[GLOBAL_MIN_AB_KEY] = int(min_at_bats)
+    for alias in MIN_GAMES_ALIASES:
+        session[alias] = int(min_games)
+    for alias in MIN_AB_ALIASES:
+        session[alias] = int(min_at_bats)
 
 
 def _mirror_ml_aliases(
@@ -261,6 +354,8 @@ def write_canonical_draft_settings(
     ml_blend_enabled: bool | None = None,
     ml_signal_weight: float | None = None,
     ml_min_recent_games: int | None = None,
+    min_games: int | None = None,
+    min_at_bats: int | None = None,
     lookback: int | None = None,
     format_: str | None = None,
     source_page: str = "",
@@ -275,7 +370,7 @@ def write_canonical_draft_settings(
     if lookback_window is not None:
         cur["lookback_window"] = int(lookback_window)
     if projection_style is not None:
-        cur["projection_style"] = str(projection_style).strip()
+        cur["projection_style"] = _normalize_projection_style_canonical(projection_style)
     if fantasy_format is not None:
         cur["fantasy_format"] = _normalize_format(fantasy_format)
     if ml_blend_enabled is not None:
@@ -284,9 +379,18 @@ def write_canonical_draft_settings(
         cur["ml_signal_weight"] = float(ml_signal_weight)
     if ml_min_recent_games is not None:
         cur["ml_min_recent_games"] = int(ml_min_recent_games)
+    if min_games is not None:
+        cur["min_games"] = int(min_games)
+    if min_at_bats is not None:
+        cur["min_at_bats"] = int(min_at_bats)
     now = _utc_now_iso()
     cur["updated_at"] = now
     cur["updated_by_page"] = str(source_page or "").strip() or None
+    prev_blob = session.get(CANONICAL_SETTINGS_KEY)
+    if isinstance(prev_blob, dict):
+        for extra in ("draft_assistant_position_needs", "research_position_filters", "sync_position_needs_to_research"):
+            if extra not in cur and extra in prev_blob:
+                cur[extra] = prev_blob[extra]
     session[CANONICAL_SETTINGS_KEY] = dict(cur)
     _mirror_window_and_style_aliases(
         session,
@@ -299,6 +403,11 @@ def write_canonical_draft_settings(
         ml_blend_enabled=cur["ml_blend_enabled"],
         ml_signal_weight=cur["ml_signal_weight"],
         ml_min_recent_games=cur["ml_min_recent_games"],
+    )
+    _mirror_sample_size_aliases(
+        session,
+        min_games=cur["min_games"],
+        min_at_bats=cur["min_at_bats"],
     )
     session["_shared_draft_context_last_update_reason"] = reason or None
     _record_diag(session, step=f"write:{reason or 'unspecified'}", active_page=source_page)
@@ -327,6 +436,13 @@ def apply_draft_shared_settings_to_widgets(
         ml_signal_weight=cur["ml_signal_weight"],
         ml_min_recent_games=cur["ml_min_recent_games"],
     )
+    _mirror_sample_size_aliases(
+        session,
+        min_games=cur["min_games"],
+        min_at_bats=cur["min_at_bats"],
+    )
+    if cur.get("sync_position_needs_to_research") is not None:
+        session["sync_draft_assistant_position_needs"] = bool(cur["sync_position_needs_to_research"])
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
 
@@ -412,12 +528,14 @@ def on_draft_settings_changed(
     ml_blend_key: str | None = None,
     ml_weight_key: str | None = None,
     ml_min_games_key: str | None = None,
+    min_games_key: str | None = None,
+    min_ab_key: str | None = None,
 ) -> None:
     kwargs: dict[str, Any] = {"source_page": source_page, "reason": f"widget:{source_page}"}
     if lookback_key and session.get(lookback_key) is not None:
         kwargs["lookback_window"] = int(session[lookback_key])
     if style_key and session.get(style_key) is not None:
-        kwargs["projection_style"] = str(session[style_key])
+        kwargs["projection_style"] = _normalize_projection_style_canonical(session[style_key])
     if format_key and session.get(format_key) is not None:
         kwargs["fantasy_format"] = str(session[format_key])
     if ml_blend_key and ml_blend_key in session:
@@ -426,6 +544,10 @@ def on_draft_settings_changed(
         kwargs["ml_signal_weight"] = float(session[ml_weight_key])
     if ml_min_games_key and session.get(ml_min_games_key) is not None:
         kwargs["ml_min_recent_games"] = int(session[ml_min_games_key])
+    if min_games_key and session.get(min_games_key) is not None:
+        kwargs["min_games"] = int(session[min_games_key])
+    if min_ab_key and session.get(min_ab_key) is not None:
+        kwargs["min_at_bats"] = int(session[min_ab_key])
     if len(kwargs) > 2:
         write_canonical_draft_settings(session, **kwargs)
 

@@ -6861,8 +6861,13 @@ def attach_fantasy_position_columns(player_df: pd.DataFrame, recent_source: pd.D
     return out
 
 
-def player_matches_fantasy_position_filter(row, filter_choice: str) -> bool:
-    """True when player is eligible for the selected fantasy slot filter."""
+def player_matches_fantasy_position_filter(row, filter_choice: str | list | None) -> bool:
+    """True when player is eligible for the selected fantasy slot filter(s)."""
+    if isinstance(filter_choice, (list, tuple, set)):
+        choices = [str(c).strip() for c in filter_choice if str(c).strip()]
+        if not choices:
+            return True
+        return any(player_matches_fantasy_position_filter(row, c) for c in choices)
     choice = str(filter_choice or "").strip()
     if not choice or choice in ("All positions", "All"):
         return True
@@ -6878,9 +6883,15 @@ def player_matches_fantasy_position_filter(row, filter_choice: str) -> bool:
     return _player_eligible_for_slot(tokens, choice)
 
 
-def filter_players_by_fantasy_position(df: pd.DataFrame, filter_choice: str) -> pd.DataFrame:
+def filter_players_by_fantasy_position(df: pd.DataFrame, filter_choice: str | list | None) -> pd.DataFrame:
     if df is None or df.empty:
         return df
+    if isinstance(filter_choice, (list, tuple, set)):
+        choices = [str(c).strip() for c in filter_choice if str(c).strip()]
+        if not choices:
+            return df
+        mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choices), axis=1)
+        return df.loc[mask].copy()
     choice = str(filter_choice or "").strip()
     if not choice or choice in ("All positions", "All"):
         return df
@@ -14611,13 +14622,24 @@ def fantasy_filter_changed():
     except Exception:
         pass
     try:
-        from shared_draft_context import on_alias_lookback_changed
+        from shared_draft_context import on_draft_settings_changed
 
-        on_alias_lookback_changed(
-            st.session_state, "fantasy_market_window", source_page="Fantasy Sleepers & Busts"
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="Fantasy Sleepers & Busts",
+            lookback_key="fantasy_market_window",
+            min_games_key="fantasy_market_min_g",
+            min_ab_key="fantasy_market_min_ab",
         )
     except Exception:
-        pass
+        try:
+            from shared_draft_context import on_alias_lookback_changed
+
+            on_alias_lookback_changed(
+                st.session_state, "fantasy_market_window", source_page="Fantasy Sleepers & Busts"
+            )
+        except Exception:
+            pass
     try:
         force_save_baseball_state(st, reason="fantasy_filter_changed")
     except Exception:
@@ -14992,6 +15014,7 @@ def trend_settings_changed():
             st.session_state,
             source_page="Trend Value",
             lookback_key="trend_lag",
+            min_games_key="trend_min_g",
         )
     except ImportError:
         pass
@@ -15808,14 +15831,41 @@ if active_page == "Trend Value":
             on_change=trend_settings_changed,
         )
     with c3:
-        validate_state_option("trend_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-        trend_position_filter = st.selectbox(
-            "Fantasy Position",
-            FANTASY_POSITION_FILTER_OPTIONS,
-            key="trend_position_filter",
-            help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-            on_change=trend_settings_changed,
-        )
+        try:
+            from fantasy_position_sync import (
+                FANTASY_POSITION_MULTI_OPTIONS,
+                make_research_position_on_change,
+                prepare_research_position_filter,
+            )
+
+            prepare_research_position_filter(
+                st.session_state,
+                page="Trend Value",
+                widget_key="trend_position_filter",
+            )
+            if isinstance(st.session_state.get("trend_position_filter"), str):
+                legacy = st.session_state.get("trend_position_filter", "")
+                st.session_state["trend_position_filter"] = (
+                    [] if legacy in ("All positions", "All", "") else [legacy]
+                )
+            trend_position_filter = st.multiselect(
+                "Fantasy Position",
+                list(FANTASY_POSITION_MULTI_OPTIONS),
+                key="trend_position_filter",
+                help="Select one or more positions (empty = all). LF/CF/RF count as OF.",
+                on_change=make_research_position_on_change(
+                    "Trend Value", "trend_position_filter", extra=trend_settings_changed
+                ),
+            )
+        except ImportError:
+            validate_state_option("trend_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+            trend_position_filter = st.selectbox(
+                "Fantasy Position",
+                FANTASY_POSITION_FILTER_OPTIONS,
+                key="trend_position_filter",
+                help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                on_change=trend_settings_changed,
+            )
 
     max_year_trend = int(yearly_df["yearID"].max())
     recent_years_trend = list(range(max_year_trend - lag_trend + 1, max_year_trend + 1))
@@ -15915,7 +15965,17 @@ if active_page == "Trend Value":
 
     trend_sorted = clean_ui_columns(trend_display.sort_values(sort_col, ascending=False))
     st.subheader("Trend Table")
-    pos_note = f" · **Position: {trend_position_filter}**" if trend_position_filter not in ("All positions", "All") else ""
+    try:
+        from fantasy_position_sync import format_position_filter_caption
+
+        _trend_pos_label = format_position_filter_caption(
+            trend_position_filter if isinstance(trend_position_filter, list) else [trend_position_filter]
+            if trend_position_filter not in ("All positions", "All")
+            else []
+        )
+    except ImportError:
+        _trend_pos_label = str(trend_position_filter)
+    pos_note = f" · **Position: {_trend_pos_label}**" if _trend_pos_label != "All positions" else ""
     st.caption(
         f"Top 250 rows{pos_note} · **Position** uses fantasy eligibility (OF = LF/CF/RF, DH/UTIL = DH or utility bats) · "
         "**Green** = improving · **Red** = declining. Export includes all filtered rows."
@@ -16463,6 +16523,12 @@ if active_page == "Fantasy Sleepers & Busts":
 
     prepare_fantasy_sleepers_page(st.session_state)
     prepare_fantasy_sleepers_filters(st.session_state)
+    try:
+        from shared_draft_context import prepare_canonical_scoring_context
+
+        prepare_canonical_scoring_context(st.session_state, active_page=active_page)
+    except ImportError:
+        pass
 
     render_section_header(
         "💎 Fantasy Sleepers & Busts",
@@ -16523,6 +16589,29 @@ if active_page == "Fantasy Sleepers & Busts":
             max_value=2500,
             key="fantasy_market_min_ab",
             on_change=fantasy_filter_changed,
+        )
+
+    with st.expander("Advanced scoring settings", expanded=False):
+        validate_state_option("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+
+        def _sleepers_projection_style_changed():
+            try:
+                from shared_draft_context import on_draft_settings_changed
+
+                on_draft_settings_changed(
+                    st.session_state,
+                    source_page="Fantasy Sleepers & Busts",
+                    style_key="fantasy_draft_projection_style",
+                )
+            except ImportError:
+                pass
+            fantasy_filter_changed()
+
+        st.selectbox(
+            "Projection style",
+            list(PROJECTION_STYLE_OPTIONS),
+            key="fantasy_draft_projection_style",
+            on_change=_sleepers_projection_style_changed,
         )
 
     init_state_once("fantasy_market_top_n", 15)
@@ -16799,16 +16888,31 @@ if active_page == "Fantasy Sleepers & Busts":
                 if p.strip() and p not in standard_fantasy_positions and p not in ["PH", "PR"]
             ])
             pos_options_fantasy = standard_fantasy_positions + existing_fantasy_positions
-            _sleepers_canon = (st.session_state.get("fantasy_state") or {}).get("sleepers", {}).get("filters") or {}
-            _default_positions = _sleepers_canon.get("fantasy_market_positions")
-            if _default_positions is None:
-                _default_positions = []
-            ensure_multiselect_state("fantasy_market_positions", pos_options_fantasy, _default_positions)
+            try:
+                from fantasy_position_sync import make_research_position_on_change, prepare_research_position_filter
+
+                prepare_research_position_filter(
+                    st.session_state,
+                    page="Fantasy Sleepers & Busts",
+                    widget_key="fantasy_market_positions",
+                )
+                _pos_on_change = make_research_position_on_change(
+                    "Fantasy Sleepers & Busts",
+                    "fantasy_market_positions",
+                    extra=lambda: mark_sleepers_filter_local_edit(st.session_state),
+                )
+            except ImportError:
+                _pos_on_change = lambda: mark_sleepers_filter_local_edit(st.session_state)
+                _sleepers_canon = (st.session_state.get("fantasy_state") or {}).get("sleepers", {}).get("filters") or {}
+                _default_positions = _sleepers_canon.get("fantasy_market_positions")
+                if _default_positions is None:
+                    _default_positions = []
+                ensure_multiselect_state("fantasy_market_positions", pos_options_fantasy, _default_positions)
             st.multiselect(
                 "Primary Position",
                 pos_options_fantasy,
                 key="fantasy_market_positions",
-                on_change=lambda: mark_sleepers_filter_local_edit(st.session_state),
+                on_change=_pos_on_change,
             )
         with pa2:
             max_age_fantasy = int(pd.to_numeric(fantasy_df["Age"], errors="coerce").max()) if not fantasy_df.empty else 45
@@ -17132,7 +17236,7 @@ if active_page == "Fantasy Sleepers & Busts":
 
         display_cols = [
             "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
-            "Expected Fantasy Value", "Draft Fit Score", "Reason",
+            "Expected Fantasy Value", "Draft Fit Score",
         ]
         display_rename = {"fullName": "Player"}
         sleepers_display = sleepers[[c for c in display_cols if c in sleepers.columns]].rename(columns=display_rename)
@@ -17178,8 +17282,9 @@ if active_page == "Fantasy Sleepers & Busts":
                             render_draft_player_profile_card(
                                 st,
                                 sl_row,
-                                reason=str(sl_row.get("Reason") or "").strip(),
+                                reason="",
                                 show_decision_score=False,
+                                show_fantasy_edge=True,
                                 compact=True,
                             )
             except ImportError:
@@ -17647,6 +17752,40 @@ if active_page == "Draft Assistant Simulator":
                     key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
                     help="Auto-filled vs draft pool averages."
                 )
+            try:
+                from fantasy_position_sync import update_draft_assistant_position_needs
+
+                update_draft_assistant_position_needs(
+                    st.session_state,
+                    needed_positions,
+                    source_page="Draft Assistant Simulator",
+                )
+            except ImportError:
+                pass
+
+        init_state_once("sync_draft_assistant_position_needs", False)
+
+        def _draft_assistant_position_sync_changed():
+            try:
+                from fantasy_position_sync import on_sync_position_needs_toggled
+
+                on_sync_position_needs_toggled(
+                    st.session_state,
+                    source_page="Draft Assistant Simulator",
+                )
+            except ImportError:
+                pass
+            _draft_assistant_settings_changed()
+
+        st.checkbox(
+            "Use Draft Assistant position needs on other fantasy pages",
+            key="sync_draft_assistant_position_needs",
+            help=(
+                "When checked, ML Predictions, Sleepers, Trends, and Valuation default to these "
+                "position needs on load/refresh. Temporary overrides on those pages reset after refresh."
+            ),
+            on_change=_draft_assistant_position_sync_changed,
+        )
 
         # Remove every player who is already off the board:
         # players on other rosters + players on my roster.
@@ -21698,6 +21837,7 @@ def valuation_filter_changed():
             st.session_state,
             source_page="Valuation",
             lookback_key="value_lag",
+            min_games_key="value_min_g",
         )
     except ImportError:
         pass
@@ -21718,6 +21858,8 @@ def projections_filter_changed():
             source_page="ML Predictions",
             lookback_key="ml_lookback",
             style_key="ml_projection_style",
+            min_games_key="ml_min_games",
+            min_ab_key="ml_min_ab",
         )
     except ImportError:
         pass
@@ -21765,14 +21907,41 @@ if active_page == "Valuation":
             on_change=valuation_filter_changed,
         )
     with c3:
-        validate_state_option("value_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-        value_position_filter = st.selectbox(
-            "Fantasy Position",
-            FANTASY_POSITION_FILTER_OPTIONS,
-            key="value_position_filter",
-            help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
-            on_change=valuation_filter_changed,
-        )
+        try:
+            from fantasy_position_sync import (
+                FANTASY_POSITION_MULTI_OPTIONS,
+                make_research_position_on_change,
+                prepare_research_position_filter,
+            )
+
+            prepare_research_position_filter(
+                st.session_state,
+                page="Valuation",
+                widget_key="value_position_filter",
+            )
+            if isinstance(st.session_state.get("value_position_filter"), str):
+                legacy = st.session_state.get("value_position_filter", "")
+                st.session_state["value_position_filter"] = (
+                    [] if legacy in ("All positions", "All", "") else [legacy]
+                )
+            value_position_filter = st.multiselect(
+                "Fantasy Position",
+                list(FANTASY_POSITION_MULTI_OPTIONS),
+                key="value_position_filter",
+                help="Select one or more positions (empty = all).",
+                on_change=make_research_position_on_change(
+                    "Valuation", "value_position_filter", extra=valuation_filter_changed
+                ),
+            )
+        except ImportError:
+            validate_state_option("value_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+            value_position_filter = st.selectbox(
+                "Fantasy Position",
+                FANTASY_POSITION_FILTER_OPTIONS,
+                key="value_position_filter",
+                help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
+                on_change=valuation_filter_changed,
+            )
 
     max_year_value = int(yearly_df["yearID"].max())
     recent_years_value = list(range(max_year_value - lag_value + 1, max_year_value + 1))
@@ -21908,7 +22077,17 @@ if active_page == "Valuation":
         "Perf_Score": "Current Score",
         "Valuation_Score": "Valuation Score",
     })
-    val_pos_note = f" · **Position: {value_position_filter}**" if value_position_filter not in ("All positions", "All") else ""
+    try:
+        from fantasy_position_sync import format_position_filter_caption
+
+        _val_pos_label = format_position_filter_caption(
+            value_position_filter if isinstance(value_position_filter, list) else [value_position_filter]
+            if value_position_filter not in ("All positions", "All")
+            else []
+        )
+    except ImportError:
+        _val_pos_label = str(value_position_filter)
+    val_pos_note = f" · **Position: {_val_pos_label}**" if _val_pos_label != "All positions" else ""
     st.caption(
         f"Sorted by **Valuation Score** (highest first){val_pos_note}. "
         "**Position** shows fantasy eligibility (OF = LF/CF/RF, DH/UTIL = DH or utility)."
@@ -22268,14 +22447,41 @@ if active_page == "ML Predictions":
         st.subheader("Next-Season ML Projections")
         _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
         with _ml_tbl_c1:
-            validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-            ml_position_filter = st.selectbox(
-                "Fantasy Position",
-                FANTASY_POSITION_FILTER_OPTIONS,
-                key="ml_position_filter",
-                help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-                on_change=projections_filter_changed,
-            )
+            try:
+                from fantasy_position_sync import (
+                    FANTASY_POSITION_MULTI_OPTIONS,
+                    make_research_position_on_change,
+                    prepare_research_position_filter,
+                )
+
+                prepare_research_position_filter(
+                    st.session_state,
+                    page="ML Predictions",
+                    widget_key="ml_position_filter",
+                )
+                if isinstance(st.session_state.get("ml_position_filter"), str):
+                    legacy = st.session_state.get("ml_position_filter", "")
+                    st.session_state["ml_position_filter"] = (
+                        [] if legacy in ("All positions", "All", "") else [legacy]
+                    )
+                ml_position_filter = st.multiselect(
+                    "Fantasy Position",
+                    list(FANTASY_POSITION_MULTI_OPTIONS),
+                    key="ml_position_filter",
+                    help="Select one or more positions (empty = all).",
+                    on_change=make_research_position_on_change(
+                        "ML Predictions", "ml_position_filter", extra=projections_filter_changed
+                    ),
+                )
+            except ImportError:
+                validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+                ml_position_filter = st.selectbox(
+                    "Fantasy Position",
+                    FANTASY_POSITION_FILTER_OPTIONS,
+                    key="ml_position_filter",
+                    help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                    on_change=projections_filter_changed,
+                )
         with _ml_tbl_c2:
             validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
             ml_sort_by = st.selectbox(

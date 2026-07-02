@@ -49,17 +49,18 @@ class DraftScoreDisplayTests(unittest.TestCase):
     def test_pick_score_exact_two_decimals_from_long_values(self) -> None:
         self.assertEqual(fmt_pick_score(0.94756234), "94.76")
         self.assertEqual(fmt_pick_score(0.8907), "89.07")
-        self.assertEqual(fmt_pick_score(0.92), "92.00")
-        self.assertEqual(fmt_pick_score(1.0), "100.00")
+        self.assertEqual(fmt_pick_score(0.92), "92")
+        self.assertEqual(fmt_pick_score(1.0), "100")
         self.assertEqual(fmt_pick_score(94.756234), "94.76")
 
-    def test_ml_projection_score_exact_two_decimals(self) -> None:
+    def test_ml_projection_score_trim_trailing_zeros(self) -> None:
         from draft_score_display import fmt_ml_projection_score
 
         self.assertEqual(fmt_ml_projection_score(0.94756234), "94.76")
         self.assertEqual(fmt_ml_projection_score(0.8907), "89.07")
-        self.assertEqual(fmt_ml_projection_score(0.92), "92.00")
-        self.assertEqual(fmt_ml_projection_score(1.0), "100.00")
+        self.assertEqual(fmt_ml_projection_score(0.92), "92")
+        self.assertEqual(fmt_ml_projection_score(1.0), "100")
+        self.assertEqual(fmt_ml_projection_score(0.885), "88.5")
         self.assertEqual(fmt_ml_projection_score(89.07), "89.07")
 
     def test_roster_fit_not_scaled(self) -> None:

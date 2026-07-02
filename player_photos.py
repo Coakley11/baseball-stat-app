@@ -741,6 +741,16 @@ def model_rank_display(row: Any) -> str:
     return str(int(round(val)))
 
 
+def fantasy_edge_display(row: Any) -> str:
+    val = _coerce_float(_row_get(row, "Fantasy Edge"))
+    if val is None:
+        return "Not available"
+    rounded = int(round(val))
+    if rounded > 0:
+        return f"+{rounded}"
+    return str(rounded)
+
+
 def adp_display(row: Any) -> str:
     for col in ("ADP", "ADP Rank", "Market Rank"):
         val = _row_get(row, col)
@@ -778,6 +788,7 @@ def build_draft_score_metrics_html(
     show_roster_fit: bool = True,
     show_market_rank: bool = True,
     show_model_rank: bool = True,
+    show_fantasy_edge: bool = False,
 ) -> str:
     """Labeled draft metrics block for profile cards."""
 
@@ -797,6 +808,8 @@ def build_draft_score_metrics_html(
         lines.append(_line("Market Rank", market_rank_display(row)))
     if show_model_rank:
         lines.append(_line("Model Rank", model_rank_display(row)))
+    if show_fantasy_edge:
+        lines.append(_line("Fantasy Edge", fantasy_edge_display(row)))
     if not lines:
         return ""
     return '<div style="font-size:0.84rem;margin-top:4px;line-height:1.45;">' + "<br/>".join(lines) + "</div>"
@@ -993,6 +1006,7 @@ def build_draft_profile_card_html(
     show_decision_score: bool = False,
     show_market_rank: bool = True,
     show_model_rank: bool = True,
+    show_fantasy_edge: bool = False,
     compact: bool = False,
     historical_note: str = "",
 ) -> str:
@@ -1025,6 +1039,7 @@ def build_draft_profile_card_html(
         show_roster_fit=show_roster_fit,
         show_market_rank=show_market_rank or show_adp,
         show_model_rank=show_model_rank or show_adp,
+        show_fantasy_edge=show_fantasy_edge,
     )
     if metrics_html:
         detail_lines.append(metrics_html)
@@ -1055,6 +1070,7 @@ def render_draft_player_profile_card(
     show_decision_score: bool = False,
     show_market_rank: bool = True,
     show_model_rank: bool = True,
+    show_fantasy_edge: bool = False,
     compact: bool = False,
     historical_note: str = "",
 ) -> None:
@@ -1075,6 +1091,7 @@ def render_draft_player_profile_card(
         show_decision_score=show_decision_score,
         show_market_rank=show_market_rank,
         show_model_rank=show_model_rank,
+        show_fantasy_edge=show_fantasy_edge,
         compact=compact,
         historical_note=historical_note,
     )

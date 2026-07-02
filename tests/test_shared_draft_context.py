@@ -63,11 +63,12 @@ class TestCanonicalDraftSettings(unittest.TestCase):
         session = {"room_window": 3, "fantasy_draft_projection_style": "Balanced"}
         write_canonical_draft_settings(
             session,
-            projection_style="Aggressive",
+            projection_style="Aggressive / Upside",
             source_page="Fantasy Sleepers & Busts",
         )
         prepare_shared_draft_context(session, active_page="Draft Room Simulator", force_mirror=True)
-        self.assertEqual(session["fantasy_draft_projection_style"], "Aggressive")
+        self.assertEqual(session["fantasy_draft_projection_style"], "Aggressive / Upside")
+        self.assertEqual(session["ml_projection_style"], "Aggressive")
 
     def test_cloud_hydrate_overrides_stale_page_alias(self) -> None:
         session = {
@@ -158,7 +159,8 @@ class TestCanonicalDraftSettings(unittest.TestCase):
         session = {"ml_projection_style": "Balanced", "fantasy_draft_projection_style": "Balanced"}
         write_canonical_draft_settings(session, projection_style="Aggressive", source_page="ML Predictions")
         self.assertEqual(session["ml_projection_style"], "Aggressive")
-        self.assertEqual(session["fantasy_draft_projection_style"], "Aggressive")
+        self.assertEqual(session["fantasy_draft_projection_style"], "Aggressive / Upside")
+        self.assertEqual(read_canonical_draft_settings(session)["projection_style"], "Aggressive / Upside")
 
     def test_draft_pool_kwargs_from_session(self) -> None:
         from shared_draft_context import draft_pool_kwargs_from_session
