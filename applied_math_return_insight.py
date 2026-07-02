@@ -2464,6 +2464,33 @@ def _insight_card_question(data: dict[str, Any]) -> str:
     return q
 
 
+def _insight_confidence_caption(data: dict[str, Any], *, method: str = "") -> str:
+    """Format cohort/confidence caption without duplicating the value."""
+    conf = data.get("cohort_confidence") or data.get("confidence")
+    if not conf:
+        return ""
+    extra = f" ({data.get('confidence_pct')}%)" if data.get("confidence_pct") else ""
+    conf_label = str(data.get("confidence_label") or "").strip()
+    conf_s = str(conf).strip().lower()
+    if conf_label:
+        label_l = conf_label.lower()
+        if label_l.endswith(f": {conf_s}") or label_l == f"cohort filter confidence: {conf_s}":
+            return f"{conf_label}{extra}"
+        if conf_s and conf_s in label_l.split(":")[-1].strip().lower():
+            return f"{conf_label}{extra}"
+        if conf_label.endswith(":"):
+            conf_label = conf_label.rstrip(":")
+    else:
+        try:
+            from hall_of_fame_data import CASE_SCORE_LABEL
+
+            is_hof_conf = CASE_SCORE_LABEL in method
+        except ImportError:
+            is_hof_conf = False
+        conf_label = "Cohort filter confidence" if is_hof_conf else "Confidence"
+    return f"{conf_label}: **{conf}**{extra}"
+
+
 def render_applied_math_insight_panel(
     st: Any,
     *,
@@ -2534,21 +2561,9 @@ def render_applied_math_insight_panel(
             st.markdown("**Assumptions:**")
             for a in assumptions[:4]:
                 st.markdown(f"- {a}")
-        conf = data.get("cohort_confidence") or data.get("confidence")
-        if conf:
-            extra = f" ({data.get('confidence_pct')}%)" if data.get("confidence_pct") else ""
-            conf_label = str(data.get("confidence_label") or "").strip()
-            if not conf_label:
-                try:
-                    from hall_of_fame_data import CASE_SCORE_LABEL
-
-                    is_hof_conf = CASE_SCORE_LABEL in method
-                except ImportError:
-                    is_hof_conf = False
-                conf_label = "Cohort filter confidence" if is_hof_conf else "Confidence"
-            elif conf_label.endswith(":"):
-                conf_label = conf_label.rstrip(":")
-            st.caption(f"{conf_label}: **{conf}**{extra}")
+        conf_caption = _insight_confidence_caption(data, method=method)
+        if conf_caption:
+            st.caption(conf_caption)
         elif not show_details and isinstance(sections, dict) and sections:
             st.caption("Open full analysis in Applied Intelligence for detailed reasoning and scenarios.")
         url = str(data.get("full_analysis_url") or "").strip()

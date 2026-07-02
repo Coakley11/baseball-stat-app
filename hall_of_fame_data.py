@@ -1521,7 +1521,7 @@ def build_hof_case_insight_record(
     cohort_conf = str(analysis.get("confidence") or "").strip()
     if cohort_conf:
         data["cohort_confidence"] = cohort_conf
-        data["confidence_label"] = f"Cohort filter confidence: {cohort_conf}"
+        data["confidence_label"] = "Cohort filter confidence"
         data["confidence"] = cohort_conf
     return data
 
@@ -1593,17 +1593,22 @@ def build_hof_ami_payload(
             "score": insight.get("score"),
         }
     try:
-        from hof_case_analysis import resolve_hof_case_analysis
+        from hof_case_analysis import compose_hof_statistical_case
 
-        analysis = resolve_hof_case_analysis(packet)
+        analysis = compose_hof_statistical_case(packet)
+        packet = copy.deepcopy(packet)
+        packet["hof_case_analysis"] = analysis
+        packet["disclaimer"] = analysis.get("disclaimer") or packet.get("disclaimer")
+        ctx["hof_case_packet"] = copy.deepcopy(packet)
+        payload["hof_case_packet"] = packet
     except ImportError:
-        analysis = packet.get("hof_case_analysis") if isinstance(packet.get("hof_case_analysis"), dict) else {}
-        if not analysis:
-            try:
-                from hof_case_analysis import compose_hof_statistical_case
+        try:
+            from hof_case_analysis import resolve_hof_case_analysis
 
-                analysis = compose_hof_statistical_case(packet)
-            except ImportError:
+            analysis = resolve_hof_case_analysis(packet)
+        except ImportError:
+            analysis = packet.get("hof_case_analysis") if isinstance(packet.get("hof_case_analysis"), dict) else {}
+            if not analysis:
                 analysis = {}
     verdict: dict[str, Any] = {
         "hof_case_summary": packet.get("hof_case_summary"),

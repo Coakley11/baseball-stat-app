@@ -9,7 +9,11 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
-from applied_math_return_insight import _insight_card_conclusion, _insight_card_question
+from applied_math_return_insight import (
+    _insight_card_conclusion,
+    _insight_card_question,
+    _insight_confidence_caption,
+)
 from awards_players_data import load_awards_players_df
 from hall_of_fame_data import (
     CASE_SCORE_LABEL,
@@ -172,7 +176,66 @@ class HofAmiQuestionHandoffTests(unittest.TestCase):
         display_q = build_hof_case_display_question("Bryce Harper", packet)
         insight = build_hof_case_insight_record(packet, question=display_q, question_id="q-harper")
         self.assertIn("cohort_confidence", insight)
-        self.assertIn("Cohort filter confidence", str(insight.get("confidence_label") or ""))
+        self.assertEqual(str(insight.get("confidence_label") or ""), "Cohort filter confidence")
+        caption = _insight_confidence_caption(insight, method=str(insight.get("method") or ""))
+        conf = str(insight.get("cohort_confidence") or insight.get("confidence") or "")
+        self.assertEqual(caption, f"Cohort filter confidence: **{conf}**")
+        self.assertNotIn(f"{conf}: {conf}", caption)
+
+    def test_insight_confidence_caption_handles_legacy_embedded_value(self) -> None:
+        legacy = {
+            "cohort_confidence": "low",
+            "confidence": "low",
+            "confidence_label": "Cohort filter confidence: low",
+            "method": f"{CASE_SCORE_LABEL} — Strong",
+        }
+        caption = _insight_confidence_caption(legacy, method=legacy["method"])
+        self.assertEqual(caption, "Cohort filter confidence: low")
+        self.assertNotIn("low: low", caption)
+
+    def test_render_ignores_legacy_verdict_memo_and_shows_awards(self) -> None:
+        packet = self._harper_packet()
+        legacy_markdown = (
+            "### Verdict: Solid\n\n"
+            "Bryce Harper's statistical Hall of Fame case is **Solid**.\n\n"
+            "#### Statistical case\n"
+            "**Strongest evidence**\n"
+            "- 350 home runs.\n"
+            "**Weakest evidence / cautions**\n"
+            "- Limited relative value by home runs.\n"
+            "**Cohort interpretation**\n"
+            "- Small cohort.\n"
+        )
+        stale_verdict = {
+            "verdict_bucket": "Solid",
+            "case_memo": {"_preformatted_markdown": legacy_markdown},
+        }
+        st = MagicMock()
+        markdown_calls: list[str] = []
+
+        def _capture_md(text: str, **kwargs) -> None:
+            markdown_calls.append(str(text))
+
+        st.markdown = _capture_md
+        st.caption = lambda *args, **kwargs: None
+        self.assertTrue(render_hof_case_full_analysis(st, packet, verdict=stale_verdict))
+        joined = "\n".join(markdown_calls)
+        self.assertIn("Awards & accolades", joined)
+        self.assertIn(CASE_SCORE_LABEL, joined)
+        self.assertNotIn("### Verdict: Solid", joined)
+        self.assertTrue(
+            any(token in joined for token in ("MVP", "Silver Slugger", "Hank Aaron Award", "Rookie of the Year"))
+        )
+
+    def test_full_report_and_ami_bucket_match_for_fresh_packet(self) -> None:
+        packet = self._harper_packet()
+        display_q = build_hof_case_display_question("Bryce Harper", packet)
+        insight = build_hof_case_insight_record(packet, question=display_q, question_id="q-harper")
+        resolved = resolve_hof_case_analysis(packet)
+        method_bucket = str(insight.get("method") or "").split("—")[-1].strip()
+        memo = format_hof_case_memo_markdown(resolved)
+        self.assertEqual(method_bucket, str(resolved.get("verdict_bucket") or ""))
+        self.assertIn(f"{CASE_SCORE_LABEL}: {method_bucket}", memo)
 
     def test_disclaimer_mentions_awards_only_when_awards_exist(self) -> None:
         packet = self._harper_packet()
@@ -180,14 +243,9 @@ class HofAmiQuestionHandoffTests(unittest.TestCase):
         without_awards = hof_case_disclaimer_text({"target_awards_summary": {"data_available": False}})
         self.assertIn("awards evidence", with_awards)
         self.assertNotIn("awards evidence", without_awards)
-
-    def test_full_report_and_insight_share_verdict_bucket(self) -> None:
-        packet = self._harper_packet()
-        display_q = build_hof_case_display_question("Bryce Harper", packet)
-        insight = build_hof_case_insight_record(packet, question=display_q, question_id="q-harper")
-        resolved = resolve_hof_case_analysis(packet)
-        method_bucket = str(insight.get("method") or "").split("—")[-1].strip()
-        self.assertEqual(method_bucket, str(resolved.get("verdict_bucket") or ""))
+        memo = format_hof_case_memo_markdown(resolve_hof_case_analysis(packet))
+        if "Awards & accolades" in memo:
+            self.assertIn("awards evidence", memo)
 
     def test_resolve_prefers_packet_analysis_over_stale_verdict(self) -> None:
         packet = self._harper_packet()

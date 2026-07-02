@@ -744,46 +744,27 @@ def _enrich_hof_packet_for_full_memo(
     packet: dict[str, Any],
     verdict: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Ensure staged HOF packet carries memo analysis from blob verdict when available."""
+    """Ensure staged HOF packet carries a fresh composed memo from packet data."""
     out = copy.deepcopy(packet) if isinstance(packet, dict) else {}
     if not out:
         return out
-    verdict_dict = verdict if isinstance(verdict, dict) else {}
-    existing = out.get("hof_case_analysis") if isinstance(out.get("hof_case_analysis"), dict) else {}
-    if isinstance(existing, dict) and existing.get("case_memo"):
-        try:
-            from hof_case_analysis import _memo_includes_awards_section, _packet_has_awards_context
-
-            if _packet_has_awards_context(out) and not _memo_includes_awards_section("", existing):
-                pass
-            else:
-                return out
-        except ImportError:
-            return out
-    if verdict_dict.get("case_memo"):
-        try:
-            from hof_case_analysis import _memo_includes_awards_section, _packet_has_awards_context
-
-            if _packet_has_awards_context(out) and not _memo_includes_awards_section("", verdict_dict):
-                pass
-            elif verdict_dict.get("case_memo"):
-                merged = dict(verdict_dict)
-                merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
-                out["hof_case_analysis"] = merged
-                return out
-        except ImportError:
-            merged = dict(verdict_dict)
-            merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
-            out["hof_case_analysis"] = merged
-            return out
     try:
         from hof_case_analysis import compose_hof_statistical_case
 
         composed = compose_hof_statistical_case(out)
         if composed.get("case_memo"):
             out["hof_case_analysis"] = composed
+            return out
     except Exception:
         pass
+    verdict_dict = verdict if isinstance(verdict, dict) else {}
+    existing = out.get("hof_case_analysis") if isinstance(out.get("hof_case_analysis"), dict) else {}
+    if isinstance(existing, dict) and existing.get("case_memo"):
+        return out
+    if verdict_dict.get("case_memo"):
+        merged = dict(verdict_dict)
+        merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
+        out["hof_case_analysis"] = merged
     return out
 
 

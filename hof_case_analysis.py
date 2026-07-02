@@ -1259,13 +1259,30 @@ def _memo_includes_awards_section(memo_md: str, analysis: dict[str, Any]) -> boo
     return bool(memo.get("awards_analysis"))
 
 
-def _hof_memo_is_full(memo_md: str, summary_line: str = "") -> bool:
+def _is_legacy_hof_memo_markdown(text: str) -> bool:
+    """True for older memos that used 'Verdict:' instead of the case score label."""
+    blob = str(text or "")
+    if not blob.strip():
+        return False
+    if "### Verdict:" in blob or "**Verdict:" in blob:
+        return True
+    if "### Verdict" in blob and CASE_SCORE_LABEL not in blob:
+        return True
+    return False
+
+
+def _hof_memo_is_full(memo_md: str, summary_line: str = "", packet: dict[str, Any] | None = None) -> bool:
     text = str(memo_md or "").strip()
+    if not text or _is_legacy_hof_memo_markdown(text):
+        return False
     if len(text) < _MEMO_MIN_LEN:
         return False
     if summary_line and text == summary_line.strip():
         return False
-    if "### Verdict:" in text or "### Verdict" in text:
+    if isinstance(packet, dict) and _packet_has_awards_context(packet):
+        if not _memo_includes_awards_section(text, {}):
+            return False
+    if CASE_SCORE_LABEL in text:
         return len(text) >= _MEMO_MIN_LEN
     return len(text) >= _MEMO_FULL_MIN_LEN and any(
         marker in text
@@ -1388,11 +1405,36 @@ def _force_compose_hof_memo(packet: dict[str, Any]) -> tuple[dict[str, Any], str
     try:
         composed = compose_hof_statistical_case(packet)
         memo_md = format_hof_case_memo_markdown(composed)
-        if _structured_case_memo_present(composed.get("case_memo")) or _hof_memo_is_full(memo_md):
+        if _structured_case_memo_present(composed.get("case_memo")) or _hof_memo_is_full(memo_md, packet=packet):
             return composed, memo_md, ""
     except Exception as exc:
         return {}, "", f"compose_failed:{type(exc).__name__}:{exc}"
     return {}, "", "compose_empty_memo"
+
+
+def _best_hof_display_memo(
+    packet: dict[str, Any],
+    verdict: dict[str, Any] | None,
+    summary_line: str = "",
+) -> tuple[dict[str, Any], str, str]:
+    """Prefer a live packet compose for display; ignore stale legacy verdict memos."""
+    composed, composed_md, compose_error = _force_compose_hof_memo(packet)
+    if composed_md and _hof_memo_is_full(composed_md, summary_line, packet):
+        return composed, composed_md, ""
+
+    resolved = resolve_hof_case_analysis(packet, verdict)
+    resolved_md = format_hof_case_memo_markdown(resolved) if resolved else ""
+    if resolved_md and _hof_memo_is_full(resolved_md, summary_line, packet):
+        return resolved, resolved_md, ""
+
+    if composed_md and not _is_legacy_hof_memo_markdown(composed_md):
+        if not _packet_has_awards_context(packet) or _memo_includes_awards_section(composed_md, composed):
+            return composed, composed_md, compose_error or "compose_partial_fallback"
+
+    if resolved_md and not _is_legacy_hof_memo_markdown(resolved_md):
+        return resolved, resolved_md, compose_error or "resolved_partial_fallback"
+
+    return composed or resolved or {}, composed_md or resolved_md, compose_error or "no_acceptable_memo"
 
 
 def render_hof_case_full_analysis(
@@ -1411,34 +1453,9 @@ def render_hof_case_full_analysis(
         or ""
     ).strip()
     fallback_reason = ""
-    composed, composed_md, compose_error = _force_compose_hof_memo(packet)
-    if composed_md and _hof_memo_is_full(composed_md, summary_line):
-        analysis = composed
-        memo_md = composed_md
-    else:
-        analysis = resolve_hof_case_analysis(packet, verdict)
-        memo_md = format_hof_case_memo_markdown(analysis) if analysis else ""
+    analysis, memo_md, fallback_reason = _best_hof_display_memo(packet, verdict, summary_line)
 
-    if (
-        _packet_has_awards_context(packet)
-        and not _memo_includes_awards_section(memo_md, analysis)
-    ):
-        composed, composed_md, compose_error = _force_compose_hof_memo(packet)
-        if composed_md and _memo_includes_awards_section(composed_md, composed):
-            analysis = composed
-            memo_md = composed_md
-            fallback_reason = ""
-
-    if not _hof_memo_is_full(memo_md, summary_line):
-        composed, composed_md, compose_error = _force_compose_hof_memo(packet)
-        if compose_error:
-            fallback_reason = compose_error
-        if _hof_memo_is_full(composed_md, summary_line):
-            analysis = composed
-            memo_md = composed_md
-            fallback_reason = ""
-
-    if not _hof_memo_is_full(memo_md, summary_line):
+    if not _hof_memo_is_full(memo_md, summary_line, packet):
         if summary_line and memo_md.strip() == summary_line:
             fallback_reason = fallback_reason or "memo_md_equals_hof_case_summary"
         elif not memo_md:
@@ -1485,7 +1502,7 @@ def render_hof_case_full_analysis(
         if score_label:
             st.caption(score_label)
 
-    if _hof_memo_is_full(memo_md, summary_line):
+    if _hof_memo_is_full(memo_md, summary_line, packet):
         st.markdown(memo_md)
         diag["fallback_reason"] = ""
         _store_hof_memo_render_diag(st, diag)
@@ -1517,7 +1534,13 @@ def format_hof_case_memo_markdown(analysis: dict[str, Any]) -> str:
     """Render case memo as markdown for AMI / insight panels."""
     memo = _case_memo_dict(analysis.get("case_memo"))
     if memo.get("_preformatted_markdown"):
-        return str(memo["_preformatted_markdown"]).strip()
+        text = str(memo["_preformatted_markdown"]).strip()
+        structured_awards = memo.get("awards_analysis") or []
+        if (
+            not _is_legacy_hof_memo_markdown(text)
+            and (not structured_awards or _memo_includes_awards_section(text, {"case_memo": memo}))
+        ):
+            return text
     if not memo:
         recommendation = str(analysis.get("recommendation") or "").strip()
         if recommendation and _hof_memo_is_full(recommendation):
