@@ -777,7 +777,7 @@ def _build_awards_case_analysis(packet: dict[str, Any]) -> list[str]:
 
     if major_count >= 1:
         detail_parts: list[str] = []
-        for aw in major_list[:6]:
+        for aw in major_list[:8]:
             if not isinstance(aw, dict):
                 continue
             label = str(aw.get("display_name") or aw.get("award") or "").strip()
@@ -792,9 +792,16 @@ def _build_awards_case_analysis(packet: dict[str, Any]) -> list[str]:
                 year_note = f" ({years[0]}–{years[-1]})"
             detail_parts.append(f"{cnt}× {label}{year_note}" if cnt > 1 else f"{label}{year_note}")
         if detail_parts:
+            if len(detail_parts) == 1:
+                headline = detail_parts[0]
+            elif len(detail_parts) == 2:
+                headline = f"{detail_parts[0]} and {detail_parts[1]}"
+            else:
+                headline = f"{', '.join(detail_parts[:-1])}, and {detail_parts[-1]}"
             lines.append(
-                f"{target}'s major awards — {', '.join(detail_parts)} — signal peak dominance that "
-                "belongs in the overall Hall of Fame argument, not as a footnote."
+                f"{target}'s {major_count} major awards — {headline} — materially strengthen "
+                "the Hall of Fame case by showing elite peak dominance, league recognition, and "
+                "award-level performance beyond the raw career totals."
             )
         rank_major = target_rank.get("rank_by_major_awards")
         if rank_major == 1:
@@ -1437,6 +1444,67 @@ def _best_hof_display_memo(
     return composed or resolved or {}, composed_md or resolved_md, compose_error or "no_acceptable_memo"
 
 
+def _should_use_preformatted_hof_memo(memo: dict[str, Any], text: str, packet: dict[str, Any] | None = None) -> bool:
+    """Only reuse stored markdown when it is current and includes required awards evidence."""
+    blob = str(text or "").strip()
+    if not blob or _is_legacy_hof_memo_markdown(blob):
+        return False
+    structured_awards = memo.get("awards_analysis") or []
+    if structured_awards and not _memo_includes_awards_section(blob, {"case_memo": memo}):
+        return False
+    if isinstance(packet, dict) and _packet_has_awards_context(packet):
+        if not _memo_includes_awards_section(blob, {"case_memo": memo}):
+            return False
+    return True
+
+
+def sync_hof_display_analysis(
+    analysis: dict[str, Any] | None,
+    packet: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Ensure visible full-report analysis includes awards memo + thesis language from packet."""
+    if not isinstance(analysis, dict):
+        return {}
+    if not isinstance(packet, dict) or not packet:
+        return _normalize_hof_analysis(analysis)
+    out = _normalize_hof_analysis(analysis)
+    if not _packet_has_awards_context(packet):
+        return out
+
+    memo = _case_memo_dict(out.get("case_memo"))
+    pre = str(memo.get("_preformatted_markdown") or "").strip()
+    if pre and not _memo_includes_awards_section(pre, {"case_memo": memo}):
+        memo.pop("_preformatted_markdown", None)
+
+    awards = _build_awards_case_analysis(packet)
+    if awards:
+        memo["awards_analysis"] = awards
+
+    thesis = str(memo.get("thesis") or out.get("thesis") or "").strip()
+    awards_clause = _awards_thesis_clause(packet)
+    if awards_clause and awards_clause.lower() not in thesis.lower():
+        try:
+            fresh = compose_hof_statistical_case(packet)
+            refreshed_thesis = str(fresh.get("thesis") or "").strip()
+            if refreshed_thesis:
+                thesis = refreshed_thesis
+                memo["thesis"] = refreshed_thesis
+                out["thesis"] = refreshed_thesis
+                if fresh.get("verdict_bucket"):
+                    memo["verdict"] = fresh.get("verdict_bucket")
+                    out["verdict_bucket"] = fresh.get("verdict_bucket")
+        except Exception:
+            pass
+
+    if awards:
+        out["disclaimer"] = _hof_disclaimer_for_packet(packet, awards)
+    elif thesis and not memo.get("thesis"):
+        memo["thesis"] = thesis
+
+    out["case_memo"] = memo
+    return out
+
+
 def render_hof_case_full_analysis(
     st: Any,
     packet: dict[str, Any],
@@ -1446,6 +1514,12 @@ def render_hof_case_full_analysis(
     """Dedicated Hall of Fame case memo — not the generic Applied Math insight card."""
     if not isinstance(packet, dict) or not packet:
         return False
+    try:
+        from hall_of_fame_data import rehydrate_hof_case_packet_awards
+
+        packet = rehydrate_hof_case_packet_awards(packet)
+    except ImportError:
+        pass
     target = str(packet.get("target_player") or "").strip()
     summary_line = str(
         packet.get("hof_case_summary")
@@ -1454,6 +1528,8 @@ def render_hof_case_full_analysis(
     ).strip()
     fallback_reason = ""
     analysis, memo_md, fallback_reason = _best_hof_display_memo(packet, verdict, summary_line)
+    analysis = sync_hof_display_analysis(analysis, packet)
+    memo_md = format_hof_case_memo_markdown(analysis, packet=packet)
 
     if not _hof_memo_is_full(memo_md, summary_line, packet):
         if summary_line and memo_md.strip() == summary_line:
@@ -1530,17 +1606,23 @@ def render_hof_case_full_analysis(
     return False
 
 
-def format_hof_case_memo_markdown(analysis: dict[str, Any]) -> str:
+def format_hof_case_memo_markdown(
+    analysis: dict[str, Any],
+    *,
+    packet: dict[str, Any] | None = None,
+) -> str:
     """Render case memo as markdown for AMI / insight panels."""
+    if isinstance(packet, dict) and packet:
+        analysis = sync_hof_display_analysis(analysis, packet)
     memo = _case_memo_dict(analysis.get("case_memo"))
     if memo.get("_preformatted_markdown"):
         text = str(memo["_preformatted_markdown"]).strip()
-        structured_awards = memo.get("awards_analysis") or []
-        if (
-            not _is_legacy_hof_memo_markdown(text)
-            and (not structured_awards or _memo_includes_awards_section(text, {"case_memo": memo}))
-        ):
-            return text
+        if _should_use_preformatted_hof_memo(memo, text, packet):
+            disclaimer = str(analysis.get("disclaimer") or "").strip()
+            if disclaimer and "awards evidence" in disclaimer.lower() and not _memo_includes_awards_section(text, {"case_memo": memo}):
+                pass
+            else:
+                return text
     if not memo:
         recommendation = str(analysis.get("recommendation") or "").strip()
         if recommendation and _hof_memo_is_full(recommendation):
@@ -1605,7 +1687,16 @@ def format_hof_case_memo_markdown(analysis: dict[str, Any]) -> str:
         lines.append("")
         lines.append("#### Final takeaway")
         lines.append(str(memo["final_takeaway"]))
-    if analysis.get("disclaimer"):
+    disclaimer = str(analysis.get("disclaimer") or "").strip()
+    rendered = "\n".join(lines)
+    if disclaimer:
+        if "awards evidence" in disclaimer.lower() and not _memo_includes_awards_section(rendered, {"case_memo": memo}):
+            try:
+                from hall_of_fame_data import hof_case_disclaimer_text
+
+                disclaimer = hof_case_disclaimer_text(packet if isinstance(packet, dict) else None, include_awards=False)
+            except ImportError:
+                disclaimer = _HOF_DISCLAIMER
         lines.append("")
-        lines.append(f"*{analysis['disclaimer']}*")
+        lines.append(f"*{disclaimer}*")
     return "\n".join(lines)

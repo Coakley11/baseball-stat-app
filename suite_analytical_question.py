@@ -749,6 +749,12 @@ def _enrich_hof_packet_for_full_memo(
     if not out:
         return out
     try:
+        from hall_of_fame_data import rehydrate_hof_case_packet_awards
+
+        out = rehydrate_hof_case_packet_awards(out)
+    except ImportError:
+        pass
+    try:
         from hof_case_analysis import compose_hof_statistical_case
 
         composed = compose_hof_statistical_case(out)

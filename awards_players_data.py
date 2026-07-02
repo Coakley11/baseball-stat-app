@@ -51,6 +51,15 @@ def awards_players_csv_path(base_dir: Path | str) -> Path:
     return Path(base_dir) / AWARDS_PLAYERS_FILENAME
 
 
+def resolve_awards_base_dir() -> Path:
+    """Best-effort app root containing AwardsPlayers.csv."""
+    here = Path(__file__).resolve().parent
+    for candidate in (here, here.parent, Path.cwd()):
+        if awards_players_csv_path(candidate).is_file():
+            return candidate
+    return here
+
+
 def awards_file_cache_key(base_dir: Path | str) -> float:
     path = awards_players_csv_path(base_dir)
     try:

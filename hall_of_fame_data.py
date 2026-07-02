@@ -260,6 +260,78 @@ def is_hof_ami_internal_prompt(text: str) -> bool:
     return any(marker in blob for marker in _HOF_INTERNAL_PROMPT_MARKERS)
 
 
+def _cohort_df_from_hof_packet(packet: dict[str, Any]) -> pd.DataFrame:
+    """Rebuild a minimal cohort dataframe from a persisted HOF packet."""
+    rows = packet.get("cohort_table_rows")
+    if not isinstance(rows, list) or not rows:
+        rows = packet.get("result_sample") or []
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rec = dict(row)
+        if rec.get("player") and not rec.get("fullName"):
+            rec["fullName"] = rec["player"]
+        records.append(rec)
+    target_row = packet.get("target_player_row") if isinstance(packet.get("target_player_row"), dict) else {}
+    if target_row:
+        rec = dict(target_row)
+        if rec.get("player") and not rec.get("fullName"):
+            rec["fullName"] = rec["player"]
+        if not any(str(r.get("playerID") or "") == str(rec.get("playerID") or "") for r in records):
+            records.append(rec)
+    if not records:
+        identity = packet.get("target_identity") if isinstance(packet.get("target_identity"), dict) else {}
+        name = str(packet.get("target_player") or identity.get("full_name") or "").strip()
+        pid = str(identity.get("player_id") or "").strip()
+        if name or pid:
+            records.append({"fullName": name, "playerID": pid})
+    return pd.DataFrame(records) if records else pd.DataFrame()
+
+
+def rehydrate_hof_case_packet_awards(packet: dict[str, Any]) -> dict[str, Any]:
+    """Restore awards context on hydrated packets when summary fields were dropped."""
+    out = copy.deepcopy(packet) if isinstance(packet, dict) else {}
+    if not out:
+        return out
+    summary = out.get("target_awards_summary") if isinstance(out.get("target_awards_summary"), dict) else {}
+    try:
+        major_count = int(summary.get("major_award_count") or 0)
+    except (TypeError, ValueError):
+        major_count = 0
+    if summary.get("data_available") and major_count >= 1:
+        return out
+    try:
+        from awards_players_data import build_hof_case_awards_context, load_awards_players_df, resolve_awards_base_dir
+    except ImportError:
+        return out
+    awards_df = load_awards_players_df(resolve_awards_base_dir())
+    if awards_df.empty:
+        return out
+    cohort_df = _cohort_df_from_hof_packet(out)
+    if cohort_df.empty:
+        return out
+    ctx = build_hof_case_awards_context(
+        str(out.get("target_player") or ""),
+        cohort_df,
+        awards_df,
+        fallback_df=cohort_df,
+    )
+    for key in (
+        "target_awards_summary",
+        "cohort_awards_summary",
+        "target_award_rank",
+        "cohort_award_comparison",
+    ):
+        value = ctx.get(key)
+        if isinstance(value, dict) and value:
+            out[key] = value
+    refreshed = out.get("target_awards_summary") if isinstance(out.get("target_awards_summary"), dict) else {}
+    if refreshed.get("data_available"):
+        out["disclaimer"] = hof_case_disclaimer_text(out)
+    return out
+
+
 def hof_case_disclaimer_text(packet: dict[str, Any] | None = None, *, include_awards: bool | None = None) -> str:
     """Footer disclaimer — mentions awards only when awards evidence is part of the case."""
     base = (
@@ -1593,10 +1665,11 @@ def build_hof_ami_payload(
             "score": insight.get("score"),
         }
     try:
+        from hall_of_fame_data import rehydrate_hof_case_packet_awards
         from hof_case_analysis import compose_hof_statistical_case
 
+        packet = rehydrate_hof_case_packet_awards(copy.deepcopy(packet))
         analysis = compose_hof_statistical_case(packet)
-        packet = copy.deepcopy(packet)
         packet["hof_case_analysis"] = analysis
         packet["disclaimer"] = analysis.get("disclaimer") or packet.get("disclaimer")
         ctx["hof_case_packet"] = copy.deepcopy(packet)

@@ -24,12 +24,14 @@ from hall_of_fame_data import (
     build_hof_case_packet,
     hof_case_disclaimer_text,
     is_hof_ami_internal_prompt,
+    rehydrate_hof_case_packet_awards,
 )
 from hof_case_analysis import (
     compose_hof_statistical_case,
     format_hof_case_memo_markdown,
     render_hof_case_full_analysis,
     resolve_hof_case_analysis,
+    sync_hof_display_analysis,
 )
 from suite_analytical_question import submit_analytical_question
 
@@ -246,6 +248,122 @@ class HofAmiQuestionHandoffTests(unittest.TestCase):
         memo = format_hof_case_memo_markdown(resolve_hof_case_analysis(packet))
         if "Awards & accolades" in memo:
             self.assertIn("awards evidence", memo)
+
+    def _alex_rodriguez_cohort(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "fullName": "Alex Rodriguez",
+                    "playerID": "rodrial01",
+                    "isHallOfFamer": False,
+                    "G": 2784,
+                    "AB": 10566,
+                    "R": 2021,
+                    "H": 3115,
+                    "HR": 696,
+                    "RBI": 2086,
+                    "2B": 548,
+                    "OBP": 0.380,
+                    "OPS": 0.930,
+                    "careerPrimaryPos": "SS",
+                },
+                {
+                    "fullName": "Cal Ripken Jr.",
+                    "playerID": "ripkeca01",
+                    "isHallOfFamer": True,
+                    "G": 3001,
+                    "HR": 431,
+                    "OBP": 0.340,
+                    "OPS": 0.787,
+                    "careerPrimaryPos": "SS",
+                },
+            ]
+        )
+
+    def _alex_rodriguez_packet(self) -> dict:
+        repo_awards = Path(__file__).resolve().parents[1] / "AwardsPlayers.csv"
+        awards_df = load_awards_players_df(repo_awards.parent) if repo_awards.is_file() else self.awards_df
+        return build_hof_case_packet(
+            "Alex Rodriguez",
+            self._alex_rodriguez_cohort(),
+            filters_summary={"sort_stat": "G"},
+            sort_stat="G",
+            awards_df=awards_df,
+            position_universe_df=self._alex_rodriguez_cohort(),
+        )
+
+    def _rendered_markdown(self, packet: dict, *, verdict: dict | None = None) -> str:
+        st = MagicMock()
+        markdown_calls: list[str] = []
+
+        def _capture_md(text: str, **kwargs) -> None:
+            markdown_calls.append(str(text))
+
+        st.markdown = _capture_md
+        st.caption = lambda *args, **kwargs: None
+        self.assertTrue(render_hof_case_full_analysis(st, packet, verdict=verdict))
+        return "\n".join(markdown_calls)
+
+    def test_full_report_rehydrates_awards_for_alex_rodriguez(self) -> None:
+        packet = self._alex_rodriguez_packet()
+        stripped = dict(packet)
+        stripped["target_awards_summary"] = {"data_available": False}
+        stripped["cohort_award_comparison"] = {"data_available": False}
+        rehydrated = rehydrate_hof_case_packet_awards(stripped)
+        self.assertTrue((rehydrated.get("target_awards_summary") or {}).get("data_available"))
+        rendered = self._rendered_markdown(stripped)
+        self.assertIn("Awards & accolades", rendered)
+        self.assertTrue(any(token in rendered for token in ("MVP", "Silver Slugger", "Hank Aaron Award", "Gold Glove")))
+        self.assertIn("major award", rendered.lower())
+
+    def test_preformatted_full_report_without_awards_is_upgraded_on_render(self) -> None:
+        packet = self._alex_rodriguez_packet()
+        fresh = compose_hof_statistical_case(packet)
+        memo_md = format_hof_case_memo_markdown(fresh, packet=packet)
+        stripped_lines: list[str] = []
+        skip = False
+        for line in memo_md.splitlines():
+            if line.strip() == "#### Awards & accolades":
+                skip = True
+                continue
+            if skip and line.startswith("#### "):
+                skip = False
+            if not skip:
+                stripped_lines.append(line)
+        preformatted = "\n".join(stripped_lines)
+        rendered = self._rendered_markdown(packet, verdict={"case_memo": preformatted})
+        self.assertIn("Awards & accolades", rendered)
+        self.assertIn("Silver Slugger", rendered)
+        self.assertNotIn("Awards context unavailable", rendered)
+
+    def test_rendered_full_report_thesis_mentions_awards(self) -> None:
+        packet = self._alex_rodriguez_packet()
+        rendered = self._rendered_markdown(packet)
+        self.assertIn("major award", rendered.lower())
+        synced = sync_hof_display_analysis(compose_hof_statistical_case(packet), packet)
+        thesis = str(synced.get("thesis") or "")
+        self.assertIn("major award", thesis.lower())
+
+    def test_disclaimer_mentions_awards_only_when_rendered_report_has_awards(self) -> None:
+        packet = self._alex_rodriguez_packet()
+        rendered = self._rendered_markdown(packet)
+        self.assertIn("Awards & accolades", rendered)
+        self.assertIn("awards evidence", rendered.lower())
+        no_awards_packet = {"target_awards_summary": {"data_available": False}}
+        bare_md = format_hof_case_memo_markdown(
+            compose_hof_statistical_case(
+                build_hof_case_packet(
+                    "Alex Rodriguez",
+                    self._alex_rodriguez_cohort(),
+                    filters_summary={"sort_stat": "G"},
+                    sort_stat="G",
+                    awards_df=pd.DataFrame(columns=["playerID", "awardID", "yearID"]),
+                    position_universe_df=self._alex_rodriguez_cohort(),
+                )
+            ),
+            packet=no_awards_packet,
+        )
+        self.assertNotIn("awards evidence", bare_md.lower())
 
     def test_resolve_prefers_packet_analysis_over_stale_verdict(self) -> None:
         packet = self._harper_packet()
