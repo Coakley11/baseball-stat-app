@@ -242,6 +242,40 @@ def render_hof_page_runtime_diag(
 
 
 CASE_SCORE_LABEL = "Hall of Fame Statistical Case Score"
+
+_HOF_INTERNAL_PROMPT_MARKERS = (
+    "hof_case_packet",
+    "target_awards_summary",
+    "cohort_award_comparison",
+    "Respond with one of",
+    "Hall of Fame Case Mode — assign",
+)
+
+
+def is_hof_ami_internal_prompt(text: str) -> bool:
+    """True when text is the long internal AMI instruction, not a user question."""
+    blob = str(text or "").strip()
+    if not blob:
+        return False
+    return any(marker in blob for marker in _HOF_INTERNAL_PROMPT_MARKERS)
+
+
+def hof_case_disclaimer_text(packet: dict[str, Any] | None = None, *, include_awards: bool | None = None) -> str:
+    """Footer disclaimer — mentions awards only when awards evidence is part of the case."""
+    base = (
+        "Statistical Hall of Fame case analysis only — not true Hall of Fame induction odds. "
+        "Use cohort strength, career totals, and position-adjusted rarity"
+    )
+    has_awards = include_awards
+    if has_awards is None and isinstance(packet, dict):
+        awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+        has_awards = bool(awards.get("data_available") and int(awards.get("major_award_count") or 0) >= 1)
+    if has_awards:
+        return (
+            f"{base}, and supporting awards evidence. "
+            "Do not present a guaranteed probability of induction."
+        )
+    return f"{base}. Do not present a guaranteed probability of induction."
 CASE_SCORE_BUCKETS = ("Weak", "Borderline", "Solid", "Strong", "Very Strong")
 HOF_CASE_MODE_EXPLANATION = (
     "Hall of Fame Case Mode lets you evaluate whether a player belongs to a statistical cohort "
@@ -1433,16 +1467,24 @@ def build_hof_case_insight_record(
     source_page: str = "Career Totals",
     full_analysis_url: str = "",
     resume_key: str = "",
+    ami_prompt: str = "",
 ) -> dict[str, Any]:
     """Compact Baseball insight card + Command Center publish payload for a HOF case."""
     from applied_math_return_insight import build_submit_fallback_insight, fresh_submit_insight_id
     from hof_case_analysis import resolve_hof_case_analysis
 
-    analysis = resolve_hof_case_analysis(packet if isinstance(packet, dict) else {})
+    packet_dict = packet if isinstance(packet, dict) else {}
+    analysis = resolve_hof_case_analysis(packet_dict)
+    target = str(packet_dict.get("target_player") or "").strip()
+    display_q = str(
+        question
+        or packet_dict.get("hof_case_display_question")
+        or build_hof_case_display_question(target, packet_dict)
+    ).strip()
+    if is_hof_ami_internal_prompt(display_q):
+        display_q = build_hof_case_display_question(target, packet_dict)
     insight = build_submit_fallback_insight(
-        question=str(question or packet.get("hof_case_display_question") or build_hof_case_display_question(
-            str(packet.get("target_player") or "")
-        )).strip(),
+        question=display_q,
         source_app="baseball",
         source_page=str(source_page or "Career Totals").strip() or "Career Totals",
         question_id=str(question_id or "").strip(),
@@ -1459,21 +1501,28 @@ def build_hof_case_insight_record(
     )
     data["conclusion"] = conclusion
     data["short_answer"] = conclusion
-    display_q = str(
-        question
-        or (packet or {}).get("hof_case_display_question")
-        or build_hof_case_display_question(str((packet or {}).get("target_player") or ""))
-    ).strip()
     if display_q:
         data["question"] = display_q
+        data["display_question"] = display_q
+        data["user_question"] = display_q
+    prompt = str(ami_prompt or packet_dict.get("hof_case_ami_prompt") or "").strip()
+    if prompt and prompt != display_q:
+        data["ami_prompt"] = prompt
     data["method"] = f"{CASE_SCORE_LABEL} — {analysis.get('verdict_bucket', '—')}"
+    data["verdict_bucket"] = analysis.get("verdict_bucket")
+    data["quant_area"] = "hall_of_fame_case"
+    if target:
+        data["target_player"] = target
     bullets = list(analysis.get("supporting_points") or [])[:8]
     if bullets:
         data["supporting_points"] = bullets
     if analysis.get("score") is not None:
         data["score"] = analysis.get("score")
-    if analysis.get("confidence"):
-        data["confidence"] = analysis.get("confidence")
+    cohort_conf = str(analysis.get("confidence") or "").strip()
+    if cohort_conf:
+        data["cohort_confidence"] = cohort_conf
+        data["confidence_label"] = f"Cohort filter confidence: {cohort_conf}"
+        data["confidence"] = cohort_conf
     return data
 
 
@@ -1783,11 +1832,7 @@ def build_hof_case_packet(
         "mode": "hall_of_fame_case",
         "score_label": CASE_SCORE_LABEL,
         "score_buckets": list(CASE_SCORE_BUCKETS),
-        "disclaimer": (
-            "Statistical Hall of Fame case analysis only — not true Hall of Fame induction odds. "
-            "Use cohort strength, career totals, position-adjusted rarity, and supporting awards evidence. "
-            "Do not present a guaranteed probability of induction."
-        ),
+        "disclaimer": hof_case_disclaimer_text(),
         "target_player": target,
         "target_identity": target_identity,
         "primary_position": primary_position,
@@ -1822,10 +1867,14 @@ def build_hof_case_packet(
     }
     packet["hof_case_summary"] = build_hof_case_summary_line(packet)
     packet["hof_case_display_question"] = build_hof_case_display_question(target, packet)
+    packet["hof_case_ami_prompt"] = build_hof_case_ami_prompt(target, packet)
+    packet["disclaimer"] = hof_case_disclaimer_text(packet)
     try:
         from hof_case_analysis import compose_hof_statistical_case
 
         packet["hof_case_analysis"] = compose_hof_statistical_case(packet)
+        if isinstance(packet.get("hof_case_analysis"), dict):
+            packet["hof_case_analysis"]["disclaimer"] = packet["disclaimer"]
     except ImportError:
         pass
     return packet

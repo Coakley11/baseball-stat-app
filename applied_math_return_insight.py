@@ -2425,20 +2425,42 @@ def _insight_card_conclusion(data: dict[str, Any]) -> str:
 
 
 def _insight_card_question(data: dict[str, Any]) -> str:
-    q = str(data.get("question") or "").strip()
-    if not q:
-        return ""
+    is_hof = False
     try:
-        from hall_of_fame_data import CASE_SCORE_LABEL
+        from hall_of_fame_data import (
+            CASE_SCORE_LABEL,
+            build_hof_case_display_question,
+            is_hof_ami_internal_prompt,
+        )
 
-        if CASE_SCORE_LABEL in str(data.get("method") or ""):
-            if "?" in q:
-                return q
-            display = str(data.get("display_question") or "").strip()
-            if display:
-                return display
+        is_hof = (
+            CASE_SCORE_LABEL in str(data.get("method") or "")
+            or str(data.get("quant_area") or "") == "hall_of_fame_case"
+        )
     except ImportError:
-        pass
+        build_hof_case_display_question = None  # type: ignore[assignment,misc]
+        is_hof_ami_internal_prompt = None  # type: ignore[assignment,misc]
+
+    for key in ("display_question", "user_question"):
+        q = str(data.get(key) or "").strip()
+        if q and "?" in q:
+            return q
+
+    q = str(data.get("question") or "").strip()
+    if is_hof and is_hof_ami_internal_prompt and is_hof_ami_internal_prompt(q):
+        display = str(data.get("display_question") or data.get("user_question") or "").strip()
+        if display:
+            return display
+        target = str(data.get("target_player") or data.get("player") or "").strip()
+        if target and build_hof_case_display_question:
+            return build_hof_case_display_question(target)
+        return "How strong is this player's Hall of Fame case?"
+    if is_hof and q and "?" in q:
+        return q
+    if is_hof:
+        display = str(data.get("display_question") or data.get("user_question") or "").strip()
+        if display:
+            return display
     return q
 
 
@@ -2512,10 +2534,21 @@ def render_applied_math_insight_panel(
             st.markdown("**Assumptions:**")
             for a in assumptions[:4]:
                 st.markdown(f"- {a}")
-        conf = data.get("confidence")
+        conf = data.get("cohort_confidence") or data.get("confidence")
         if conf:
             extra = f" ({data.get('confidence_pct')}%)" if data.get("confidence_pct") else ""
-            st.caption(f"Confidence: **{conf}**{extra}")
+            conf_label = str(data.get("confidence_label") or "").strip()
+            if not conf_label:
+                try:
+                    from hall_of_fame_data import CASE_SCORE_LABEL
+
+                    is_hof_conf = CASE_SCORE_LABEL in method
+                except ImportError:
+                    is_hof_conf = False
+                conf_label = "Cohort filter confidence" if is_hof_conf else "Confidence"
+            elif conf_label.endswith(":"):
+                conf_label = conf_label.rstrip(":")
+            st.caption(f"{conf_label}: **{conf}**{extra}")
         elif not show_details and isinstance(sections, dict) and sections:
             st.caption("Open full analysis in Applied Intelligence for detailed reasoning and scenarios.")
         url = str(data.get("full_analysis_url") or "").strip()

@@ -395,13 +395,18 @@ def _fmt_position_rank_clause(stat: str, rank_info: dict[str, Any], target_stats
     return f"{label} ({val_s})"
 
 
-def _analysis_is_current(analysis: dict[str, Any] | None) -> bool:
+def _analysis_is_current(analysis: dict[str, Any] | None, packet: dict[str, Any] | None = None) -> bool:
     if not isinstance(analysis, dict):
         return False
     memo = _case_memo_dict(analysis.get("case_memo"))
     if str(memo.get("memo_quality_version") or "") != MEMO_QUALITY_VERSION:
         return False
-    return _structured_case_memo_present(memo)
+    if not _structured_case_memo_present(memo):
+        return False
+    if isinstance(packet, dict) and _packet_has_awards_context(packet):
+        if not _memo_includes_awards_section("", analysis):
+            return False
+    return True
 
 
 def _normalize_bullet_key(text: str) -> str:
@@ -1150,10 +1155,10 @@ def compose_hof_statistical_case(packet: dict[str, Any]) -> dict[str, Any]:
         "score_label": CASE_SCORE_LABEL,
         "score_buckets": list(CASE_SCORE_BUCKETS),
         "thesis": thesis,
-        "recommendation": f"**Verdict: {bucket}** — {thesis}",
+        "recommendation": f"**{CASE_SCORE_LABEL}: {bucket}** — {thesis}",
         "supporting_points": supporting,
         "case_memo": memo_sections,
-        "disclaimer": str(packet.get("disclaimer") or "").strip() or _HOF_DISCLAIMER,
+        "disclaimer": _hof_disclaimer_for_packet(packet, awards_analysis),
         "confidence": str(selectivity.get("confidence") or "moderate"),
         "target_player": target,
     }
@@ -1332,6 +1337,19 @@ def _render_hof_memo_render_diagnostics(st: Any, diag: dict[str, Any]) -> None:
         st.json(diag)
 
 
+def _hof_disclaimer_for_packet(packet: dict[str, Any], awards_analysis: list[str] | None = None) -> str:
+    packet_disclaimer = str(packet.get("disclaimer") or "").strip()
+    if packet_disclaimer:
+        return packet_disclaimer
+    try:
+        from hall_of_fame_data import hof_case_disclaimer_text
+
+        include_awards = bool(awards_analysis) or _packet_has_awards_context(packet)
+        return hof_case_disclaimer_text(packet, include_awards=include_awards)
+    except ImportError:
+        return _HOF_DISCLAIMER
+
+
 def resolve_hof_case_analysis(
     packet: dict[str, Any],
     verdict: dict[str, Any] | None = None,
@@ -1342,15 +1360,21 @@ def resolve_hof_case_analysis(
     packet_analysis = _normalize_hof_analysis(
         packet_dict.get("hof_case_analysis") if isinstance(packet_dict.get("hof_case_analysis"), dict) else None
     )
-    if _analysis_is_current(packet_analysis):
-        return packet_analysis
     try:
         composed = compose_hof_statistical_case(packet_dict)
         if _structured_case_memo_present(composed.get("case_memo")):
-            return composed
+            if _packet_has_awards_context(packet_dict):
+                if _memo_includes_awards_section("", composed):
+                    return composed
+            elif _analysis_is_current(composed, packet_dict):
+                return composed
     except Exception:
-        pass
-    if _analysis_is_current(verdict_dict):
+        composed = {}
+    if _analysis_is_current(packet_analysis, packet_dict):
+        return packet_analysis
+    if isinstance(composed, dict) and composed.get("case_memo"):
+        return composed
+    if _analysis_is_current(verdict_dict, packet_dict):
         return verdict_dict
     if packet_analysis:
         return packet_analysis
@@ -1387,8 +1411,13 @@ def render_hof_case_full_analysis(
         or ""
     ).strip()
     fallback_reason = ""
-    analysis = resolve_hof_case_analysis(packet, verdict)
-    memo_md = format_hof_case_memo_markdown(analysis) if analysis else ""
+    composed, composed_md, compose_error = _force_compose_hof_memo(packet)
+    if composed_md and _hof_memo_is_full(composed_md, summary_line):
+        analysis = composed
+        memo_md = composed_md
+    else:
+        analysis = resolve_hof_case_analysis(packet, verdict)
+        memo_md = format_hof_case_memo_markdown(analysis) if analysis else ""
 
     if (
         _packet_has_awards_context(packet)

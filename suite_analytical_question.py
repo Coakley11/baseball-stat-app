@@ -688,6 +688,58 @@ def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
     return dict(ss) if isinstance(ss, dict) else {}
 
 
+def _normalize_hof_question_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ensure HOF submissions store the short display question, not the internal AMI prompt."""
+    ctx = dict(payload.get("context") or {})
+    if not _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
+        return payload
+    try:
+        from hall_of_fame_data import (
+            build_hof_case_display_question,
+            is_hof_ami_internal_prompt,
+        )
+    except ImportError:
+        return payload
+
+    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
+    target = str(
+        packet.get("target_player")
+        or ctx.get("player")
+        or payload.get("player")
+        or ""
+    ).strip()
+    display_q = str(
+        ctx.get("display_question")
+        or ctx.get("user_question")
+        or payload.get("display_question")
+        or packet.get("hof_case_display_question")
+        or ""
+    ).strip()
+    ami_prompt = str(
+        ctx.get("ami_prompt")
+        or payload.get("ami_prompt")
+        or packet.get("hof_case_ami_prompt")
+        or ""
+    ).strip()
+    raw_q = str(payload.get("question") or "").strip()
+    if not display_q and raw_q and not is_hof_ami_internal_prompt(raw_q):
+        display_q = raw_q
+    if not display_q and target:
+        display_q = build_hof_case_display_question(target, packet)
+    if not ami_prompt and raw_q and is_hof_ami_internal_prompt(raw_q):
+        ami_prompt = raw_q
+    if display_q:
+        payload["question"] = display_q
+        payload["display_question"] = display_q
+        ctx["display_question"] = display_q
+        ctx["user_question"] = display_q
+    if ami_prompt:
+        payload["ami_prompt"] = ami_prompt
+        ctx["ami_prompt"] = ami_prompt
+    payload["context"] = ctx
+    return payload
+
+
 def _enrich_hof_packet_for_full_memo(
     packet: dict[str, Any],
     verdict: dict[str, Any] | None,
@@ -699,12 +751,31 @@ def _enrich_hof_packet_for_full_memo(
     verdict_dict = verdict if isinstance(verdict, dict) else {}
     existing = out.get("hof_case_analysis") if isinstance(out.get("hof_case_analysis"), dict) else {}
     if isinstance(existing, dict) and existing.get("case_memo"):
-        return out
+        try:
+            from hof_case_analysis import _memo_includes_awards_section, _packet_has_awards_context
+
+            if _packet_has_awards_context(out) and not _memo_includes_awards_section("", existing):
+                pass
+            else:
+                return out
+        except ImportError:
+            return out
     if verdict_dict.get("case_memo"):
-        merged = dict(verdict_dict)
-        merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
-        out["hof_case_analysis"] = merged
-        return out
+        try:
+            from hof_case_analysis import _memo_includes_awards_section, _packet_has_awards_context
+
+            if _packet_has_awards_context(out) and not _memo_includes_awards_section("", verdict_dict):
+                pass
+            elif verdict_dict.get("case_memo"):
+                merged = dict(verdict_dict)
+                merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
+                out["hof_case_analysis"] = merged
+                return out
+        except ImportError:
+            merged = dict(verdict_dict)
+            merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
+            out["hof_case_analysis"] = merged
+            return out
     try:
         from hof_case_analysis import compose_hof_statistical_case
 
@@ -1423,6 +1494,7 @@ def submit_analytical_question(
         quant_area=quant_area,
         source_state=source_state,
     )
+    payload = _normalize_hof_question_payload(payload)
     action_url = build_applied_math_resume_url(payload)
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
     hof_case = _is_hof_case_submission(quant_area, context)

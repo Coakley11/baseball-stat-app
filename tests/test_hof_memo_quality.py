@@ -7,7 +7,7 @@ import unittest
 
 import pandas as pd
 
-from hall_of_fame_data import build_hof_case_packet
+from hall_of_fame_data import CASE_SCORE_LABEL, build_hof_case_packet
 from hof_case_analysis import (
     MEMO_QUALITY_VERSION,
     _build_career_total_evidence,
@@ -165,7 +165,7 @@ class HofMemoQualityTests(unittest.TestCase):
         analysis = compose_hof_statistical_case(packet)
         md = format_hof_case_memo_markdown(analysis)
         self.assertIn(MEMO_QUALITY_VERSION, str((analysis.get("case_memo") or {}).get("memo_quality_version")))
-        self.assertIn("Verdict:", md)
+        self.assertIn(CASE_SCORE_LABEL, md)
 
 
 if __name__ == "__main__":

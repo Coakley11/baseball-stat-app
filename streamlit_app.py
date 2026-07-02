@@ -14057,7 +14057,6 @@ if active_page == "Career Totals":
                 hof_display_question = build_hof_case_display_question(hof_target_player, hof_packet)
                 hof_ami_prompt = build_hof_case_ami_prompt(hof_target_player, hof_packet)
                 st.session_state[HOF_CASE_PACKET_KEY] = hof_packet
-                hof_question = hof_ami_prompt
                 try:
                     from applied_math_context import cache_page_context
 
@@ -14122,7 +14121,7 @@ if active_page == "Career Totals":
                         submit_ctx,
                         st.session_state,
                         source_page="Career Totals",
-                        question=hof_question,
+                        question=hof_display_question,
                     )
                     if isinstance(hof_packet, dict):
                         submit_ctx["hof_case_packet"] = hof_packet
@@ -14138,7 +14137,7 @@ if active_page == "Career Totals":
                     ami_result = submit_analytical_question(
                         source_app="baseball",
                         source_page="Career Totals",
-                        question=hof_question,
+                        question=hof_display_question,
                         context=submit_ctx,
                         context_summary=f"{CASE_SCORE_LABEL} — {hof_target_player}",
                         quant_area="hall_of_fame_case",
@@ -14204,6 +14203,7 @@ if active_page == "Career Totals":
                             question_id=qid,
                             full_analysis_url=action_url,
                             resume_key=resume_key,
+                            ami_prompt=hof_ami_prompt,
                         )
                         record_hof_pipeline_step(
                             st.session_state,

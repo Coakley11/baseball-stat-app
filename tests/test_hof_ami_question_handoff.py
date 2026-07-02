@@ -18,6 +18,8 @@ from hall_of_fame_data import (
     build_hof_case_display_question,
     build_hof_case_insight_record,
     build_hof_case_packet,
+    hof_case_disclaimer_text,
+    is_hof_ami_internal_prompt,
 )
 from hof_case_analysis import (
     compose_hof_statistical_case,
@@ -25,6 +27,7 @@ from hof_case_analysis import (
     render_hof_case_full_analysis,
     resolve_hof_case_analysis,
 )
+from suite_analytical_question import submit_analytical_question
 
 
 def _sample_awards_csv() -> str:
@@ -127,6 +130,64 @@ class HofAmiQuestionHandoffTests(unittest.TestCase):
         joined = "\n".join(markdown_calls)
         self.assertIn("Awards & accolades", joined)
         self.assertIn("major award", joined.lower())
+
+    def test_internal_prompt_is_detected_and_rejected_as_question(self) -> None:
+        packet = self._harper_packet()
+        ami_prompt = build_hof_case_ami_prompt("Bryce Harper", packet)
+        self.assertTrue(is_hof_ami_internal_prompt(ami_prompt))
+        self.assertIn("hof_case_packet", ami_prompt)
+        insight = build_hof_case_insight_record(
+            packet,
+            question=ami_prompt,
+            question_id="q-harper-bad",
+            ami_prompt=ami_prompt,
+        )
+        question = _insight_card_question(insight)
+        self.assertNotIn("hof_case_packet", question)
+        self.assertNotIn("Respond with one of", question)
+        self.assertIn("?", question)
+
+    def test_submit_normalizes_internal_prompt_to_display_question(self) -> None:
+        packet = self._harper_packet()
+        display_q = build_hof_case_display_question("Bryce Harper", packet)
+        ami_prompt = build_hof_case_ami_prompt("Bryce Harper", packet)
+        result = submit_analytical_question(
+            source_app="baseball",
+            source_page="Career Totals",
+            question=ami_prompt,
+            context={
+                "display_question": display_q,
+                "ami_prompt": ami_prompt,
+                "hof_case_packet": packet,
+                "routing_hint": "hof_case_analysis",
+            },
+            quant_area="hall_of_fame_case",
+        )
+        self.assertEqual(result.get("question"), display_q)
+        self.assertIn(CASE_SCORE_LABEL, str(result.get("ami_prompt") or ""))
+        self.assertNotEqual(result.get("question"), ami_prompt)
+
+    def test_insight_uses_cohort_confidence_label(self) -> None:
+        packet = self._harper_packet()
+        display_q = build_hof_case_display_question("Bryce Harper", packet)
+        insight = build_hof_case_insight_record(packet, question=display_q, question_id="q-harper")
+        self.assertIn("cohort_confidence", insight)
+        self.assertIn("Cohort filter confidence", str(insight.get("confidence_label") or ""))
+
+    def test_disclaimer_mentions_awards_only_when_awards_exist(self) -> None:
+        packet = self._harper_packet()
+        with_awards = hof_case_disclaimer_text(packet)
+        without_awards = hof_case_disclaimer_text({"target_awards_summary": {"data_available": False}})
+        self.assertIn("awards evidence", with_awards)
+        self.assertNotIn("awards evidence", without_awards)
+
+    def test_full_report_and_insight_share_verdict_bucket(self) -> None:
+        packet = self._harper_packet()
+        display_q = build_hof_case_display_question("Bryce Harper", packet)
+        insight = build_hof_case_insight_record(packet, question=display_q, question_id="q-harper")
+        resolved = resolve_hof_case_analysis(packet)
+        method_bucket = str(insight.get("method") or "").split("—")[-1].strip()
+        self.assertEqual(method_bucket, str(resolved.get("verdict_bucket") or ""))
 
     def test_resolve_prefers_packet_analysis_over_stale_verdict(self) -> None:
         packet = self._harper_packet()
