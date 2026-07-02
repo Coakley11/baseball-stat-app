@@ -14029,6 +14029,17 @@ if active_page == "Career Totals":
                 "Selected player is not included in this search result. Adjust filters and try again."
             )
         elif hof_target_player and hof_target_in_results:
+            try:
+                from hall_of_fame_data import render_hof_candidate_header
+
+                render_hof_candidate_header(
+                    st,
+                    hof_target_player,
+                    career_totals,
+                    subtitle="Hall of Fame Case Mode candidate",
+                )
+            except ImportError:
+                pass
             if st.button(HOF_CASE_ANALYZE_BUTTON_LABEL, type="primary", key="career_hof_case_analyze_btn"):
                 filters_summary = summarize_career_filters(st.session_state)
                 hof_packet = build_hof_case_packet(
@@ -17642,19 +17653,41 @@ if active_page == "Draft Assistant Simulator":
         with bv1:
             if not best_fit.empty:
                 bf = best_fit.iloc[0]
-                st.success(
-                    f"**Best pick for your team now:** **{bf['fullName']}** ({bf.get('Primary Position', '')}). "
-                    f"{bf.get('Reason', '')}"
-                )
+                try:
+                    from player_photos import render_draft_pick_callout
+
+                    render_draft_pick_callout(
+                        st,
+                        bf,
+                        headline="Best pick for your team now",
+                        detail=str(bf.get("Reason", "") or ""),
+                        variant="success",
+                    )
+                except ImportError:
+                    st.success(
+                        f"**Best pick for your team now:** **{bf['fullName']}** ({bf.get('Primary Position', '')}). "
+                        f"{bf.get('Reason', '')}"
+                    )
         with bv2:
             if not best_value.empty:
                 bv = best_value.iloc[0]
                 alt = not best_fit.empty and best_fit.iloc[0]["fullName"] != bv["fullName"]
                 if alt:
-                    st.info(
-                        f"**Highest raw value:** {bv['fullName']} — Player Grade {fmt_player_grade_display(bv.get('Expected Fantasy Value'))} "
-                        f"(before roster-fit bonuses)."
-                    )
+                    try:
+                        from player_photos import render_draft_pick_callout
+
+                        render_draft_pick_callout(
+                            st,
+                            bv,
+                            headline="Highest raw value",
+                            detail=f"Player Grade {fmt_player_grade_display(bv.get('Expected Fantasy Value'))} before roster-fit bonuses.",
+                            variant="info",
+                        )
+                    except ImportError:
+                        st.info(
+                            f"**Highest raw value:** {bv['fullName']} — Player Grade {fmt_player_grade_display(bv.get('Expected Fantasy Value'))} "
+                            f"(before roster-fit bonuses)."
+                        )
                 else:
                     st.caption("Best team fit and best raw value align on the same player.")
 
@@ -20346,7 +20379,7 @@ if active_page == "Live Draft Room":
                     try:
                         from live_draft_category_outlook import compute_category_outlook
                         from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
-                        from live_draft_room_ui import render_category_outlook_panel, render_roster_tracker_panel
+                        from live_draft_room_ui import render_category_outlook_panel, render_roster_tracker_panel, render_position_scarcity_panel
 
                         _tracker = build_team_roster_tracker(room, _tracker_team)
                         _roster_df = roster_df_for_team(room, _tracker_team)
@@ -20358,6 +20391,11 @@ if active_page == "Live Draft Room":
                         )
                         render_roster_tracker_panel(st, _tracker)
                         render_category_outlook_panel(st, _outlook)
+                        render_position_scarcity_panel(
+                            st,
+                            live_draft_get_available(room),
+                            gaps=list(_tracker.get("gaps") or []),
+                        )
                         _gaps = list(_tracker.get("gaps") or [])
                         _category_needs = list(_outlook.get("needs_attention") or [])
                     except ImportError:

@@ -96,7 +96,7 @@ _HOF_DISCLAIMER = (
     "Statistical case score only — not Hall of Fame induction odds or election probability."
 )
 
-MEMO_QUALITY_VERSION = "hof_memo_quality_v2"
+MEMO_QUALITY_VERSION = "hof_memo_quality_v3"
 
 _STAT_MILESTONE_THRESHOLDS: dict[str, tuple[tuple[int, str], ...]] = {
     "HR": ((500, "500-HR"), (400, "400-HR"), (300, "300-HR")),
@@ -460,13 +460,25 @@ def _build_strongest_evidence(packet: dict[str, Any], *, limit: int = 5) -> list
     lines.extend(_build_career_total_evidence(packet, limit=limit))
 
     awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
-    major = _safe_int(awards.get("major_awards") or awards.get("mvp_count"))
-    if major >= 1:
-        detail = str(awards.get("mvp_summary") or awards.get("award_summary") or "").strip()
-        line = f"{major} major award(s) at MVP/Cy Young level"
-        if detail:
-            line += f" ({detail})"
-        lines.append(line + " — peak-value support for the case.")
+    major_count = _safe_int(awards.get("major_award_count"))
+    major_list = awards.get("major_awards") if isinstance(awards.get("major_awards"), list) else []
+    if major_count >= 1 and major_list:
+        peak_bits: list[str] = []
+        for aw in major_list[:4]:
+            if not isinstance(aw, dict):
+                continue
+            label = str(aw.get("display_name") or aw.get("award") or "").strip()
+            cnt = _safe_int(aw.get("count"), default=1)
+            if label:
+                peak_bits.append(f"{cnt}× {label}" if cnt > 1 else label)
+        peak_text = ", ".join(peak_bits) if peak_bits else f"{major_count} major award(s)"
+        lines.append(
+            f"{peak_text} — peak recognition that strengthens the Hall of Fame argument beyond counting stats."
+        )
+    elif major_count >= 1:
+        lines.append(
+            f"{major_count} major award(s) — peak-value support for the statistical case."
+        )
 
     priority_stats = _stat_priority_for_position(str(packet.get("primary_position") or "Unknown"))
     ordered = [s for s in priority_stats if s in strengths]
@@ -716,6 +728,110 @@ def _build_signal_vs_context(packet: dict[str, Any], filter_interp: dict[str, An
     }
 
 
+def _awards_thesis_clause(packet: dict[str, Any]) -> str:
+    """Short awards phrase for thesis / takeaway weaving."""
+    target_awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    if not target_awards.get("data_available"):
+        return ""
+    major_list = target_awards.get("major_awards") if isinstance(target_awards.get("major_awards"), list) else []
+    major_count = _safe_int(target_awards.get("major_award_count"))
+    if major_count >= 1 and major_list:
+        labels = [
+            str(a.get("display_name") or a.get("award") or "").strip()
+            for a in major_list[:2]
+            if isinstance(a, dict) and str(a.get("display_name") or a.get("award") or "").strip()
+        ]
+        if labels:
+            return f"supported by {major_count} major award(s) including {', '.join(labels)}"
+    total = _safe_int(target_awards.get("total_award_count"))
+    if total >= 3:
+        return f"with {total} career awards as supporting hardware"
+    if major_count < 1 and total > 0:
+        return "with limited major-award recognition relative to typical inductees"
+    return ""
+
+
+def _build_awards_case_analysis(packet: dict[str, Any]) -> list[str]:
+    """Narrative awards analysis woven into the Hall of Fame argument."""
+    lines: list[str] = []
+    target = str(packet.get("target_player") or "").strip() or "The target"
+    target_awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    comparison = packet.get("cohort_award_comparison") if isinstance(packet.get("cohort_award_comparison"), dict) else {}
+    target_rank = packet.get("target_award_rank") if isinstance(packet.get("target_award_rank"), dict) else {}
+    cohort_summary = packet.get("cohort_awards_summary") if isinstance(packet.get("cohort_awards_summary"), dict) else {}
+
+    if not target_awards.get("data_available"):
+        msg = str(target_awards.get("message") or "").strip()
+        if msg:
+            lines.append(f"Awards context unavailable ({msg}) — evaluate the case on career totals and cohort ranks.")
+        return lines
+
+    major_list = target_awards.get("major_awards") if isinstance(target_awards.get("major_awards"), list) else []
+    major_count = _safe_int(target_awards.get("major_award_count"))
+    total_count = _safe_int(target_awards.get("total_award_count"))
+
+    if major_count >= 1:
+        detail_parts: list[str] = []
+        for aw in major_list[:6]:
+            if not isinstance(aw, dict):
+                continue
+            label = str(aw.get("display_name") or aw.get("award") or "").strip()
+            cnt = _safe_int(aw.get("count"), default=1)
+            years = aw.get("years") if isinstance(aw.get("years"), list) else []
+            if not label:
+                continue
+            year_note = ""
+            if years and len(years) <= 4:
+                year_note = f" ({', '.join(str(y) for y in years)})"
+            elif years:
+                year_note = f" ({years[0]}–{years[-1]})"
+            detail_parts.append(f"{cnt}× {label}{year_note}" if cnt > 1 else f"{label}{year_note}")
+        if detail_parts:
+            lines.append(
+                f"{target}'s major awards — {', '.join(detail_parts)} — signal peak dominance that "
+                "belongs in the overall Hall of Fame argument, not as a footnote."
+            )
+        rank_major = target_rank.get("rank_by_major_awards")
+        if rank_major == 1:
+            lines.append("Leads this cohort in major awards — hardware that reinforces the statistical case.")
+        elif rank_major is not None and _safe_int(rank_major) <= 3:
+            lines.append(f"Ranks #{rank_major} in the cohort for major awards — competitive recognition among peers.")
+    elif total_count >= 1:
+        lines.append(
+            f"{total_count} total awards on record, but no MVP/Cy Young-level hardware — "
+            "the case must rest primarily on career totals and cohort standing."
+        )
+    else:
+        lines.append(
+            "No major awards listed — the Hall of Fame argument depends on sustained production and milestones, not peak accolades."
+        )
+
+    if comparison.get("data_available"):
+        fewer_total = _safe_int(comparison.get("players_with_more_total_awards"))
+        more_total = _safe_int(comparison.get("players_with_fewer_total_awards"))
+        rank_total = target_rank.get("rank_by_total_awards")
+        total_players = _safe_int(packet.get("total_players_returned"))
+        if rank_total == 1 and total_count > 0:
+            lines.append("Most decorated player in this cohort by total awards.")
+        elif fewer_total >= max(1, total_players // 2) and major_count < 2:
+            lines.append(
+                f"{fewer_total} cohort peers have more total awards — awards do not clearly separate "
+                f"{target} from the comparison group."
+            )
+        elif more_total >= max(1, total_players // 2) and major_count >= 1:
+            lines.append(
+                f"More total awards than {more_total} peers in this cohort — supporting evidence alongside the stat line."
+            )
+        avg_major = _safe_float(cohort_summary.get("average_major_award_count"))
+        if major_count >= 2 and avg_major > 0 and major_count >= avg_major * 1.5:
+            lines.append(
+                f"Major-award count ({major_count}) exceeds the cohort average ({avg_major:.1f}) — "
+                "a meaningful differentiator for peak value."
+            )
+
+    return _dedupe_lines(lines)[:6]
+
+
 def _era_note(identity: dict[str, Any]) -> str:
     span = identity.get("career_span") if isinstance(identity.get("career_span"), dict) else {}
     debut = span.get("debut_year")
@@ -844,6 +960,16 @@ def _score_case(packet: dict[str, Any]) -> tuple[int, str]:
     score += min(top_pos_tiers * 4, 12)
 
     awards_cmp = packet.get("cohort_award_comparison") if isinstance(packet.get("cohort_award_comparison"), dict) else {}
+    target_awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    if target_awards.get("data_available"):
+        major_count = _safe_int(target_awards.get("major_award_count"))
+        if major_count >= 3:
+            score += 12
+        elif major_count >= 1:
+            score += 8
+        target_rank = packet.get("target_award_rank") if isinstance(packet.get("target_award_rank"), dict) else {}
+        if target_rank.get("rank_by_major_awards") == 1 and major_count >= 1:
+            score += 6
     if awards_cmp.get("data_available"):
         fewer = _safe_int(awards_cmp.get("players_with_more_total_awards"))
         if total and fewer <= max(1, total // 4):
@@ -961,6 +1087,7 @@ def compose_hof_statistical_case(packet: dict[str, Any]) -> dict[str, Any]:
     non_hof_names = _player_names(comparables.get("non_hall_of_famers") or [])
 
     strength_labels = [_STAT_LABELS.get(s, s) for s in strengths[:4]]
+    awards_clause = _awards_thesis_clause(packet)
     thesis_parts = [f"{target}'s statistical Hall of Fame case is **{bucket}**"]
     if strengths and sort_stat in weaknesses:
         thesis_parts.append(
@@ -969,9 +1096,13 @@ def compose_hof_statistical_case(packet: dict[str, Any]) -> dict[str, Any]:
         )
     elif strengths:
         thesis_parts.append(f"driven by {', '.join(strength_labels)} within this cohort")
+    if awards_clause:
+        thesis_parts.append(awards_clause)
     if primary_pos != "Unknown":
         thesis_parts.append(f"evaluated against {primary_pos} offensive standards")
     thesis = " — ".join(thesis_parts) + "."
+
+    awards_analysis = _build_awards_case_analysis(packet)
 
     career_totals = _build_career_total_evidence(packet, limit=4)
 
@@ -994,13 +1125,14 @@ def compose_hof_statistical_case(packet: dict[str, Any]) -> dict[str, Any]:
     if filter_interp.get("sort_stat_note") and sort_stat in weaknesses:
         cohort_context_only.append(str(filter_interp["sort_stat_note"]))
 
-    supporting = strongest[:4] + ([weakest[0]] if weakest else [])
+    supporting = strongest[:3] + awards_analysis[:2] + ([weakest[0]] if weakest else [])
     memo_sections = {
         "memo_quality_version": MEMO_QUALITY_VERSION,
         "verdict": bucket,
         "thesis": thesis,
         "strongest_evidence": strongest,
         "weakest_evidence": weakest,
+        "awards_analysis": awards_analysis,
         "case_evidence": case_evidence,
         "cohort_context_only": cohort_context_only,
         "cohort_interpretation": cohort_lines,
@@ -1054,6 +1186,7 @@ def build_hof_case_subtitle(packet: dict[str, Any]) -> str:
 _MEMO_SECTION_KEYS = (
     "strongest_evidence",
     "weakest_evidence",
+    "awards_analysis",
     "case_evidence",
     "cohort_context_only",
     "cohort_interpretation",
@@ -1271,13 +1404,34 @@ def render_hof_case_full_analysis(
     )
     _store_hof_memo_render_diag(st, diag)
 
-    st.markdown(f"## Hall of Fame Case — {target or 'Analysis'}")
     subtitle = build_hof_case_subtitle(packet)
-    if subtitle:
-        st.caption(subtitle)
     score_label = str(packet.get("score_label") or analysis.get("score_label") or CASE_SCORE_LABEL).strip()
+    header_sub = subtitle
     if score_label:
-        st.caption(score_label)
+        header_sub = f"{subtitle} · {score_label}" if subtitle else score_label
+    identity = packet.get("target_identity") if isinstance(packet.get("target_identity"), dict) else {}
+    photo_info = (
+        identity.get("player_photo")
+        if isinstance(identity.get("player_photo"), dict)
+        else {}
+    )
+    try:
+        from player_photos import get_player_photo_info, render_player_headshot_row
+
+        if not photo_info.get("headshot_url"):
+            photo_info = get_player_photo_info(
+                player_id=identity.get("player_id"),
+                full_name=target,
+                mlbam_id=photo_info.get("mlbam_id"),
+                use_api=False,
+            )
+        render_player_headshot_row(st, photo_info, title=f"Hall of Fame Case — {target or 'Analysis'}", subtitle=header_sub)
+    except ImportError:
+        st.markdown(f"## Hall of Fame Case — {target or 'Analysis'}")
+        if subtitle:
+            st.caption(subtitle)
+        if score_label:
+            st.caption(score_label)
 
     if _hof_memo_is_full(memo_md, summary_line):
         st.markdown(memo_md)
@@ -1332,6 +1486,11 @@ def format_hof_case_memo_markdown(analysis: dict[str, Any]) -> str:
         lines.append("")
         lines.append("**Weakest evidence / cautions**")
         for item in memo["weakest_evidence"]:
+            lines.append(f"- {item}")
+    if memo.get("awards_analysis"):
+        lines.append("")
+        lines.append("#### Awards & accolades")
+        for item in memo["awards_analysis"]:
             lines.append(f"- {item}")
     if memo.get("case_evidence"):
         lines.append("")

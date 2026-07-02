@@ -473,6 +473,33 @@ def render_hof_cohort_summary(st: Any, summary_text: str | None) -> None:
         st.markdown(summary_text)
 
 
+def render_hof_candidate_header(
+    st: Any,
+    target_player: str,
+    results_df: pd.DataFrame | None = None,
+    *,
+    subtitle: str = "",
+) -> None:
+    """Player headshot + name banner for Hall of Fame candidate selection."""
+    target = str(target_player or "").strip()
+    if not target:
+        return
+    player_id = None
+    if results_df is not None and not results_df.empty and "fullName" in results_df.columns:
+        match = results_df[results_df["fullName"].astype(str).str.strip().eq(target)]
+        if not match.empty and "playerID" in match.columns:
+            player_id = str(match.iloc[0]["playerID"]).strip() or None
+    try:
+        from player_photos import get_player_photo_info, render_player_headshot_row
+
+        photo_info = get_player_photo_info(player_id=player_id, full_name=target, use_api=False)
+        render_player_headshot_row(st, photo_info, title=target, subtitle=subtitle)
+    except ImportError:
+        st.markdown(f"### {target}")
+        if subtitle:
+            st.caption(subtitle)
+
+
 def build_hof_runtime_diagnostics(
     base_dir: Path | str,
     *,
@@ -1045,6 +1072,17 @@ def build_hof_case_summary_line(packet: dict[str, Any]) -> str:
         parts.append(f"#{rank} in cohort by {sort_stat}")
     if pos and pos != "Unknown":
         parts.append(f"primary position {pos}")
+    target_awards = packet.get("target_awards_summary") if isinstance(packet.get("target_awards_summary"), dict) else {}
+    if target_awards.get("data_available"):
+        try:
+            major = int(target_awards.get("major_award_count") or 0)
+            total_aw = int(target_awards.get("total_award_count") or 0)
+        except (TypeError, ValueError):
+            major = total_aw = 0
+        if major >= 1:
+            parts.append(f"{major} major award(s)")
+        elif total_aw >= 1:
+            parts.append(f"{total_aw} total award(s)")
     return " · ".join(parts)
 
 
@@ -1283,6 +1321,16 @@ def _build_target_identity(
                     "final_year": int(years.max()),
                     "seasons": int(years.nunique()),
                 }
+    try:
+        from player_photos import get_player_photo_info
+
+        identity["player_photo"] = get_player_photo_info(
+            player_id=identity.get("player_id"),
+            full_name=target,
+            use_api=False,
+        )
+    except ImportError:
+        pass
     return identity
 
 
@@ -1769,7 +1817,8 @@ def build_hof_case_question(target_player: str, packet: dict[str, Any]) -> str:
     return (
         f"Hall of Fame Case Mode — assign a {CASE_SCORE_LABEL} for {target}. "
         f"Build a full statistical argument from hof_case_packet: career totals, best and weak categories, "
-        f"position-relative ranks, era/career span, awards, milestones, comparables, and cohort selectivity. "
+        f"position-relative ranks, era/career span, awards (analyze target_awards_summary and cohort_award_comparison), "
+        f"milestones, comparables, and cohort selectivity. "
         f"The Career Totals search returned {total} players with {hof_n} Hall of Famers ({rate}% HOF rate).{rank_line}{awards_line} "
         f"Interpret filters — do not judge the case by the filtered sort stat alone if other categories are stronger. "
         f"Distinguish evidence (milestones, awards, position excellence, high cohort HOF rate) from cohort context "
@@ -1796,8 +1845,10 @@ def hof_case_ami_guidance() -> str:
         "5. Position-Based Hall of Fame Case — use primary_position, position_context, "
         "position_stat_ranks, position_percentiles, and position_rarity_findings. "
         "Explain whether the totals are exceptional for that position.\n"
-        "6. Awards / Accolades Context — use target_awards_summary, cohort_awards_summary, "
-        "target_award_rank, and cohort_award_comparison as supporting evidence only.\n"
+        "6. Awards / Accolades Analysis — explicitly analyze target_awards_summary, cohort_awards_summary, "
+        "target_award_rank, and cohort_award_comparison. Weave awards into the Hall of Fame argument: "
+        "explain how MVP/Cy Young/Gold Glove hardware supports or limits the case versus cohort peers. "
+        "Do not merely list awards — interpret their weight for this candidate as supporting evidence.\n"
         "7. Reasons the Case Is Strong — bullet points grounded in stats, milestones, and cohort position.\n"
         "8. Reasons for Caution — limitations, broad cohorts, below-average awards, position norms.\n"
         f"9. {CASE_SCORE_LABEL} — final bucket with brief justification.\n\n"

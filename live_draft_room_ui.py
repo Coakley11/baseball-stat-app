@@ -979,12 +979,43 @@ def render_live_draft_rec_cards(
             disable_reason = avail_reason or f"{name} is not available."
 
         with st.container(border=True):
-            st.markdown(f"**{name}**")
-            st.caption(f"{pos} · {tier_lbl}")
+            team = str(r.get("Team") or r.get("teamName") or "").strip()
+            grade = "—"
+            try:
+                from player_photos import (
+                    compact_fantasy_stat_line,
+                    get_player_photo_info,
+                    inject_player_photo_styles,
+                    player_grade_display,
+                    render_rec_card_photo_html,
+                )
+
+                inject_player_photo_styles(st)
+                photo_info = get_player_photo_info(
+                    player_id=player_id or None,
+                    full_name=name,
+                    row=r,
+                    use_api=False,
+                )
+                grade = player_grade_display(r)
+                stat_line = compact_fantasy_stat_line(r)
+                photo_html = render_rec_card_photo_html(photo_info, alt=name)
+                team_line = f" · {team}" if team else ""
+                st.markdown(
+                    f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
+                    f'<div style="font-size:1.05rem;font-weight:800;">{name}</div>'
+                    f'<div style="font-size:0.88rem;color:#475569;">{pos}{team_line} · '
+                    f'<span class="ld-rec-grade">Grade {grade}</span> · {tier_lbl}</div>'
+                    f'{"<div class=\\"ld-rec-stat-line\\">" + stat_line + "</div>" if stat_line else ""}'
+                    f"</div></div>",
+                    unsafe_allow_html=True,
+                )
+            except ImportError:
+                st.markdown(f"**{name}**")
+                st.caption(f"{pos} · {tier_lbl}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            st.caption(f"Fantasy Edge {edge_txt} · {surv_pct} · {action}")
-            st.caption(f"Reason: {explanation}")
+            st.caption(f"Edge {edge_txt} · {surv_pct} · {action} · {explanation}")
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()
@@ -1094,3 +1125,74 @@ def render_live_draft_rec_cards(
                         st.text(f"{label}: {_format_detail_value(internal_col, val)}")
                     if strengths:
                         st.text(f"Top Category Strengths: {', '.join(strengths)}")
+
+
+def _position_heat_class(dropoff: float, *, strong_cut: float, weak_cut: float) -> str:
+    if pd.isna(dropoff):
+        return "ld-pos-heat-weak"
+    val = float(dropoff)
+    if val >= strong_cut:
+        return "ld-pos-heat-strong"
+    if val >= weak_cut:
+        return "ld-pos-heat-moderate"
+    return "ld-pos-heat-weak"
+
+
+def render_position_scarcity_panel(st: Any, available_df: Any, *, gaps: list[str] | None = None) -> None:
+    """Color-graded positional scarcity heatmap for the live draft room."""
+    if available_df is None or getattr(available_df, "empty", True):
+        return
+    try:
+        from live_draft_pick_scoring import _draft_compute_position_replacement
+    except ImportError:
+        return
+    _, rows = _draft_compute_position_replacement(available_df)
+    if not rows:
+        return
+    try:
+        from player_photos import inject_player_photo_styles
+
+        inject_player_photo_styles(st)
+    except ImportError:
+        pass
+    dropoffs = [
+        float(r.get("Scarcity Dropoff"))
+        for r in rows
+        if r.get("Scarcity Dropoff") is not None and not pd.isna(r.get("Scarcity Dropoff"))
+    ]
+    if not dropoffs:
+        return
+    strong_cut = float(np.percentile(dropoffs, 66))
+    weak_cut = float(np.percentile(dropoffs, 33))
+    open_gaps = {str(g).strip() for g in (gaps or []) if str(g).strip()}
+    cells: list[str] = []
+    for row in sorted(rows, key=lambda x: str(x.get("Position") or "")):
+        pos = str(row.get("Position") or "").strip()
+        if not pos:
+            continue
+        drop = row.get("Scarcity Dropoff")
+        css = _position_heat_class(drop, strong_cut=strong_cut, weak_cut=weak_cut)
+        if pos in open_gaps:
+            css += " ld-pos-heat-need"
+        avail = int(row.get("Available Players") or 0)
+        top = str(row.get("Top Available") or "—")
+        try:
+            drop_txt = f"+{float(drop):.1f}" if pd.notna(drop) else "—"
+        except (TypeError, ValueError):
+            drop_txt = "—"
+        need_mark = " *" if pos in open_gaps else ""
+        cells.append(
+            f'<div class="ld-pos-heat-cell {css}" title="Top: {top}">'
+            f'<span class="ld-pos-heat-label">{pos}{need_mark}</span>'
+            f'<span class="ld-pos-heat-val">{avail} left · {drop_txt}</span></div>'
+        )
+    if not cells:
+        return
+    st.markdown(
+        '<div class="ld-category-outlook-panel">'
+        '<div class="ld-panel-title">Position Scarcity Heatmap</div>'
+        '<div style="font-size:0.8rem;color:#64748b;margin-bottom:4px;">'
+        "Red = thin position (large dropoff). * = open roster need.</div>"
+        f'<div class="ld-pos-heat-grid">{"".join(cells)}</div></div>',
+        unsafe_allow_html=True,
+    )
