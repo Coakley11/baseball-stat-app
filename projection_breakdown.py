@@ -13,9 +13,8 @@ import numpy as np
 import pandas as pd
 
 PROJECTION_SYSTEM_LABEL = (
-    "Draft Lab stabilized pipeline — same anchors, calibration, elite-star protection, "
-    "playing-time realism, and confidence logic as Live Draft Room, Draft Simulation Test Mode, "
-    "and Fantasy Draft Assistant."
+    "Canonical unified draft pool — same stabilized projections, Player Grade, and ML-blend "
+    "settings as Draft Assistant, Live Draft Room, Sleepers, Trends, and Valuation player cards."
 )
 
 TREND_METHOD_NOTE = (
@@ -374,8 +373,13 @@ def build_projection_snapshot(row) -> dict[str, Any]:
     efv_raw = _num(row, "Expected Fantasy Value")
     player_grade = None
     if efv_raw is not None and not (isinstance(efv_raw, float) and np.isnan(efv_raw)):
-        ev = float(efv_raw)
-        player_grade = round(ev * 100.0, 2) if 0 < ev <= 1.5 else round(ev, 2)
+        try:
+            from draft_score_display import fmt_player_grade
+
+            player_grade = fmt_player_grade(efv_raw)
+        except ImportError:
+            ev = float(efv_raw)
+            player_grade = str(round(ev * 100.0, 2) if 0 < ev <= 1.5 else round(ev, 2))
 
     return {
         "projections": projections,
@@ -389,6 +393,7 @@ def build_projection_snapshot(row) -> dict[str, Any]:
         "very_limited_data": bool(row.get("Very Limited Data")) if hasattr(row, "get") else False,
         "volatility_score": _num(row, "Volatility Score"),
         "player_grade": player_grade,
+        "efv_raw": efv_raw if not np.isnan(efv_raw) else None,
         "realistic_base": _num(row, "Realistic Base Projection Score"),
         "ml_adjustment": _num(row, "ML Adjustment"),
         "ml_projection_score": _num(row, "ML Projection Score"),

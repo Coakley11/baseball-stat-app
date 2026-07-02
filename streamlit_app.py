@@ -8223,8 +8223,8 @@ def get_projection_breakdown_pool(lahman_max_year: int):
 
 
 def get_projection_breakdown_pool_live():
-    max_y = int(st.session_state.get("_lahman_max_year", year_max))
-    return get_projection_breakdown_pool(max_y)
+    """Same canonical unified pool as player cards (respects active shared draft settings)."""
+    return get_cached_unified_projection_pool_live()
 
 
 def _find_player_in_pool(pool: pd.DataFrame, display_name: str):
@@ -8249,11 +8249,10 @@ def resolve_projection_breakdown_row(
     projection_lookup_name_col: str = "fullName",
 ):
     """
-    Always prefer the fixed-profile breakdown pool so numbers match on every page.
-    Never use legacy page tables (Trends/Valuation simple projections).
+    Prefer the live unified draft pool (same source as player card Proj: lines).
     Returns (row, data_source_label, pool_df_used).
     """
-    del projection_lookup_df, projection_lookup_name_col, pool_row  # legacy tables ignored
+    del projection_lookup_df, projection_lookup_name_col, pool_row  # page tables are not canonical
 
     try:
         pool = get_projection_breakdown_pool_live()
@@ -8274,9 +8273,22 @@ def assemble_projection_breakdown_bundle(
     projection_lookup_df=None,
     projection_lookup_name_col: str = "fullName",
 ):
-    """Build dialog payload: stabilized projections + compact text trend cards."""
-    del pool_row, projection_lookup_df, projection_lookup_name_col
-    profile = PROJECTION_BREAKDOWN_PROFILE
+    """Build dialog payload: canonical unified projections + compact text trend cards."""
+    try:
+        from shared_draft_context import read_draft_scoring_settings
+
+        profile = read_draft_scoring_settings(st.session_state)
+        window_years = int(profile["lookback_window"])
+        projection_style = str(profile["projection_style"])
+        fantasy_format = str(profile["fantasy_format"])
+        ml_blend_on = bool(profile.get("ml_blend_enabled", True))
+    except ImportError:
+        kw = _draft_projection_session_kwargs()
+        window_years = int(kw["draft_window"])
+        projection_style = str(kw["projection_style"])
+        fantasy_format = str(kw["fantasy_format"])
+        ml_blend_on = bool(kw.get("use_ml_blend", True))
+
     row, source, _pool = resolve_projection_breakdown_row(player_display_name)
 
     season_history = pd.DataFrame()
@@ -8290,10 +8302,10 @@ def assemble_projection_breakdown_bundle(
             player_id = m.iloc[-1].get("playerID")
     if player_id is not None:
         max_y = int(pd.to_numeric(yearly_df["yearID"], errors="coerce").dropna().max())
-        yrs = list(range(max_y - int(profile["draft_window"]) + 1, max_y + 1))
+        yrs = list(range(max_y - int(window_years) + 1, max_y + 1))
         recent = yearly_df[yearly_df["yearID"].isin(yrs)].copy()
         season_history = proj_bd.player_season_history(
-            recent, str(player_id), window_years=profile["draft_window"]
+            recent, str(player_id), window_years=window_years
         )
 
     lahman_fallback = None
@@ -8311,17 +8323,19 @@ def assemble_projection_breakdown_bundle(
                 "OPS": last.get("OPS"),
             }
 
-    return proj_bd.build_projection_breakdown_bundle(
+    bundle = proj_bd.build_projection_breakdown_bundle(
         player_display_name,
         row,
         data_source=source,
         projection_system=proj_bd.PROJECTION_SYSTEM_LABEL,
-        window_years=profile["draft_window"],
-        projection_style=profile["projection_style"],
-        fantasy_format=profile["fantasy_format"],
+        window_years=window_years,
+        projection_style=projection_style,
+        fantasy_format=fantasy_format,
         season_history=season_history,
         lahman_fallback=lahman_fallback,
     )
+    bundle["ml_blend_enabled"] = ml_blend_on
+    return bundle
 
 
 def _format_sim_value(category, value):
@@ -10713,9 +10727,10 @@ def _render_projection_breakdown_dialog(bundle: dict):
     )
 
     if bundle.get("stabilized"):
+        blend_note = "ML blend **on**" if bundle.get("ml_blend_enabled") else "ML blend **off**"
         st.success(
-            "Stabilized draft-lab projections — same core system as Draft Assistant and Live Draft Room. "
-            "Uses a standard **3-year Balanced** profile so numbers stay consistent on every page."
+            "Canonical projection breakdown — matches the **Proj:** stat line and Player Grade on player cards. "
+            f"Uses your active shared settings ({blend_note})."
         )
     else:
         st.warning(
@@ -10726,7 +10741,7 @@ def _render_projection_breakdown_dialog(bundle: dict):
     snapshot = bundle.get("snapshot") or {}
     projections = snapshot.get("projections") or {}
     if projections:
-        st.markdown("#### Stabilized counting projections")
+        st.markdown("#### Canonical projected stats")
         pcols = st.columns(len(projections))
         for col, (label, val) in zip(pcols, projections.items()):
             with col:
@@ -10784,16 +10799,30 @@ def _render_projection_breakdown_dialog(bundle: dict):
         )
 
     efv = snapshot.get("player_grade")
+    efv_raw = snapshot.get("efv_raw")
+    if efv is None and efv_raw is not None and not (isinstance(efv_raw, float) and np.isnan(efv_raw)):
+        try:
+            from draft_score_display import fmt_player_grade
+
+            efv = fmt_player_grade(efv_raw)
+        except ImportError:
+            ev = float(efv_raw)
+            efv = ev * 100.0 if 0 < ev <= 1.5 else ev
     if efv is None:
         legacy = snapshot.get("expected_fantasy_value")
         if legacy is not None and not np.isnan(legacy):
-            ev = float(legacy)
-            efv = ev * 100.0 if 0 < ev <= 1.5 else ev
+            try:
+                from draft_score_display import fmt_player_grade
+
+                efv = fmt_player_grade(legacy)
+            except ImportError:
+                ev = float(legacy)
+                efv = ev * 100.0 if 0 < ev <= 1.5 else ev
     rbase = snapshot.get("realistic_base")
     ml_adj = snapshot.get("ml_adjustment")
-    if efv is not None and not np.isnan(efv):
+    if efv is not None and efv != "" and not (isinstance(efv, float) and np.isnan(efv)):
         st.caption(
-            f"Player Grade **{float(efv):.2f}**"
+            f"Player Grade **{efv}**"
             + (f" (base **{fmt_rate_4(rbase)}**)" if rbase is not None and not np.isnan(rbase) else "")
             + (f" · ML adj **{float(ml_adj):+.4f}**" if ml_adj is not None and not np.isnan(ml_adj) else "")
         )
@@ -16891,9 +16920,12 @@ if active_page == "Fantasy Sleepers & Busts":
             c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"]
             if c in market_df.columns and c not in fantasy_df.columns
         ]
-        if _market_extra:
+        _market_merge_cols = ["Player Key"] + [
+            c for c in _market_extra if c in market_df.columns and c != "Player Key"
+        ]
+        if "Player Key" in market_df.columns and _market_merge_cols:
             fantasy_df = fantasy_df.merge(
-                market_df[_market_extra],
+                market_df[_market_merge_cols],
                 on="Player Key",
                 how="left",
             )
