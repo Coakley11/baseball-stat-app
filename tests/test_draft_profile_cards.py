@@ -175,6 +175,17 @@ class SleepersAndComparisonCardTests(unittest.TestCase):
         proj = pd.DataFrame(
             [{"fullName": "Aaron Judge", "proj_HR": 48, "proj_RBI": 111, "proj_R": 105, "proj_SB": 9, "proj_BA": 0.289}]
         )
+        metrics = pd.DataFrame(
+            [
+                {
+                    "fullName": "Aaron Judge",
+                    "Expected Fantasy Value": 0.91,
+                    "Draft Fit Score": 1.42,
+                    "Market Rank": 12,
+                    "Model Rank": 3,
+                }
+            ]
+        )
         st = MagicMock()
         render_comparison_profile_cards(
             st,
@@ -182,12 +193,32 @@ class SleepersAndComparisonCardTests(unittest.TestCase):
             player_ids=["judgeaa01"],
             yearly_df=yearly,
             projection_lookup_df=proj,
+            draft_metrics_lookup_df=metrics,
         )
         html = str(mock_md.call_args[0][1])
         self.assertIn("Player Grade", html)
         self.assertIn("Roster Fit Score", html)
+        self.assertIn("Model Rank", html)
+        self.assertIn(">3<", html)
+        self.assertNotIn("Minor League", html)
+        self.assertNotIn("minor league", html.lower())
         self.assertIn("Proj:", html)
         self.assertNotIn("Not applicable — historical player", html)
+
+    def test_decision_score_renders_two_decimals(self) -> None:
+        from player_photos import build_draft_profile_card_html
+
+        row = pd.Series(
+            {
+                "fullName": "Aaron Judge",
+                "Decision Score": 0.94756234,
+                "Expected Fantasy Value": 0.91,
+                "Draft Fit Score": 1.42,
+            }
+        )
+        html = build_draft_profile_card_html(row, {}, show_decision_score=True)
+        self.assertIn("94.76", html)
+        self.assertNotIn("94.756", html)
 
     def test_lookup_row_by_player_name(self) -> None:
         pool = pd.DataFrame([{"fullName": "Aaron Judge", "proj_HR": 48}])

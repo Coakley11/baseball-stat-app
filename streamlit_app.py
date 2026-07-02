@@ -621,6 +621,15 @@ def fmt_pick_score_display(x):
         return fmt_score_2(x)
 
 
+def fmt_ml_projection_score_display(x):
+    try:
+        from draft_score_display import fmt_ml_projection_score
+
+        return fmt_ml_projection_score(x)
+    except ImportError:
+        return fmt_score_2(x)
+
+
 def fmt_rate_dot(x):
     """Rate stat for display: four decimals, leading dot when below 1.000."""
     x = pd.to_numeric(x, errors="coerce")
@@ -7641,15 +7650,28 @@ def read_imported_draft_file(uploaded_file):
 def _draft_room_pool_for_import_validation():
     """Player pool for import name validation (matches Draft Room scoring pool)."""
     market = load_fantasypros_market_data()
+    try:
+        from shared_draft_context import draft_pool_kwargs_from_session
+
+        kw = draft_pool_kwargs_from_session(st.session_state)
+    except ImportError:
+        kw = {
+            "draft_window": int(st.session_state.get("room_window", 3)),
+            "fantasy_format": st.session_state.get("room_format", "5x5 Roto"),
+            "projection_style": st.session_state.get("fantasy_draft_projection_style", "Balanced"),
+            "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", True)),
+            "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+            "ml_min_games_for_signal": int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+        }
     return build_unified_draft_player_pool(
         yearly_df,
         market,
-        draft_window=int(st.session_state.get("room_window", 3)),
-        fantasy_format=st.session_state.get("room_format", "5x5 Roto"),
-        projection_style=st.session_state.get("fantasy_draft_projection_style", "Balanced"),
-        use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
-        ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
-        ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+        draft_window=int(kw["draft_window"]),
+        fantasy_format=str(kw["fantasy_format"]),
+        projection_style=str(kw["projection_style"]),
+        use_ml_blend=bool(kw["use_ml_blend"]),
+        ml_blend_weight=float(kw["ml_blend_weight"]),
+        ml_min_games_for_signal=int(kw["ml_min_games_for_signal"]),
     )
 
 
@@ -8060,9 +8082,35 @@ def build_draft_simulation_result(player_name, team_name, lookup_df, name_col="f
 def default_draft_simulation_lookup():
     """Fallback lookup using the same unified stabilized draft pool as Draft Lab / Assistant."""
     try:
-        return get_cached_unified_projection_pool()
+        return get_cached_unified_projection_pool_live()
     except Exception:
         return pd.DataFrame()
+
+
+def _draft_projection_session_kwargs() -> dict:
+    """Read draft projection settings from canonical shared scoring settings."""
+    try:
+        from shared_draft_context import draft_pool_kwargs_from_session
+
+        return draft_pool_kwargs_from_session(st.session_state)
+    except ImportError:
+        window = st.session_state.get("room_window")
+        if window is None:
+            window = st.session_state.get("draft_window", st.session_state.get("draft_lab_window", 3))
+        style = st.session_state.get(
+            "fantasy_draft_projection_style",
+            st.session_state.get("live_draft_proj_style", st.session_state.get("draft_lab_projection_style", "Balanced")),
+        )
+        return {
+            "draft_window": int(window),
+            "fantasy_format": str(
+                st.session_state.get("draft_format", st.session_state.get("draft_lab_format", "5x5 Roto"))
+            ),
+            "projection_style": str(style),
+            "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", True)),
+            "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12)),
+            "ml_min_games_for_signal": int(st.session_state.get("draft_ml_min_games_signal", 50)),
+        }
 
 
 def build_profile_draft_metrics_pool(sync_team=None, fantasy_format=None):
@@ -8078,7 +8126,12 @@ def build_profile_draft_metrics_pool(sync_team=None, fantasy_format=None):
         roster_rows = pool[pool["fullName"].astype(str).isin(set(roster_names))].copy()
         if roster_rows.empty:
             return pool
-        fmt = fantasy_format or st.session_state.get("fantasy_market_format", "5x5 Roto")
+        try:
+            from shared_draft_context import read_draft_scoring_settings
+
+            fmt = fantasy_format or read_draft_scoring_settings(st.session_state)["fantasy_format"]
+        except ImportError:
+            fmt = fantasy_format or st.session_state.get("fantasy_market_format", "5x5 Roto")
         pool, _gaps = apply_draft_pick_scoring(
             pool,
             roster_rows,
@@ -8113,27 +8166,6 @@ def get_cached_unified_projection_pool(
         ml_blend_weight=float(ml_blend_weight),
         ml_min_games_for_signal=int(ml_min_games_for_signal),
     )
-
-
-def _draft_projection_session_kwargs() -> dict:
-    """Read draft projection settings from session (same keys as Draft Assistant / Draft Room)."""
-    window = st.session_state.get("room_window")
-    if window is None:
-        window = st.session_state.get("draft_window", st.session_state.get("draft_lab_window", 3))
-    style = st.session_state.get(
-        "fantasy_draft_projection_style",
-        st.session_state.get("live_draft_proj_style", st.session_state.get("draft_lab_projection_style", "Balanced")),
-    )
-    return {
-        "draft_window": int(window),
-        "fantasy_format": str(
-            st.session_state.get("draft_format", st.session_state.get("draft_lab_format", "5x5 Roto"))
-        ),
-        "projection_style": str(style),
-        "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", True)),
-        "ml_blend_weight": float(st.session_state.get("draft_ml_blend_weight", 0.12)),
-        "ml_min_games_for_signal": int(st.session_state.get("draft_ml_min_games_signal", 50)),
-    }
 
 
 def get_cached_unified_projection_pool_live():
@@ -14954,6 +14986,16 @@ def trend_multi_changed():
 
 def trend_settings_changed():
     try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="Trend Value",
+            lookback_key="trend_lag",
+        )
+    except ImportError:
+        pass
+    try:
         from trend_state import sync_trend_settings_change
 
         sync_trend_settings_change(st.session_state, reason="settings_change")
@@ -14989,6 +15031,12 @@ def sig_players_changed():
 
 
 if active_page == "Comparison Tool":
+    try:
+        from shared_draft_context import prepare_canonical_scoring_context
+
+        prepare_canonical_scoring_context(st.session_state, active_page=active_page)
+    except ImportError:
+        pass
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -15063,7 +15111,14 @@ if active_page == "Comparison Tool":
     elif not comparison_teams:
         st.caption("Draft/trade actions require a Draft Room table with fantasy teams.")
 
-    _comparison_recent_years = list(range(max(year_min, year_max - 2), year_max + 1))
+    _comparison_lookback = 3
+    try:
+        from shared_draft_context import read_canonical_draft_settings
+
+        _comparison_lookback = int(read_canonical_draft_settings(st.session_state)["lookback_window"])
+    except ImportError:
+        pass
+    _comparison_recent_years = list(range(max(year_min, year_max - _comparison_lookback + 1), year_max + 1))
     _comparison_recent = yearly_df[yearly_df["yearID"].isin(_comparison_recent_years)].copy().sort_values(["playerID", "yearID"])
     comparison_projection_lookup = aggregate_recent_player_totals(
         _comparison_recent,
@@ -15090,6 +15145,12 @@ if active_page == "Comparison Tool":
                 draft_metrics_lookup_df=comparison_card_pool,
                 projection_lookup_name_col="fullName",
             )
+            try:
+                from shared_draft_context import render_ml_blend_off_note
+
+                render_ml_blend_off_note(st, st.session_state)
+            except ImportError:
+                pass
         except ImportError:
             pass
 
@@ -15706,6 +15767,12 @@ if active_page == "Comparison Tool":
 
 
 if active_page == "Trend Value":
+    try:
+        from shared_draft_context import prepare_canonical_scoring_context
+
+        prepare_canonical_scoring_context(st.session_state, active_page=active_page)
+    except ImportError:
+        pass
     render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
     try:
         from baseball_event_trace import render_trend_value_deploy_banner
@@ -15970,6 +16037,12 @@ if active_page == "Trend Value":
                 trend_summary=build_trend_summary_text(trend_selected, window_years=lag_trend),
                 extra_summary=make_trend_insight_summary(trend_selected),
             )
+            try:
+                from shared_draft_context import render_ml_blend_off_note
+
+                render_ml_blend_off_note(st, st.session_state)
+            except ImportError:
+                pass
         except ImportError:
             pass
         if pd.to_numeric(trend_selected.get("OPS_trend", np.nan), errors="coerce") >= 0:
@@ -17268,6 +17341,9 @@ if active_page == "Draft Assistant Simulator":
                     lookback_key="draft_window",
                     style_key="fantasy_draft_projection_style",
                     format_key="draft_format",
+                    ml_blend_key="draft_use_ml_blend",
+                    ml_weight_key="draft_ml_blend_weight",
+                    ml_min_games_key="draft_ml_min_games_signal",
                 )
             except ImportError:
                 pass
@@ -17311,7 +17387,8 @@ if active_page == "Draft Assistant Simulator":
                 use_ml_in_draft = st.checkbox(
                     "Blend ML projection signal into Roster Fit Score",
                     key="draft_use_ml_blend",
-                    help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score."
+                    help="Adds a lightweight machine-learning-style projection component to the Draft Assistant score.",
+                    on_change=_draft_assistant_settings_changed,
                 )
             with mlb2:
                 init_state_once("draft_ml_blend_weight", 0.12)
@@ -17322,6 +17399,7 @@ if active_page == "Draft Assistant Simulator":
                     step=0.01,
                     key="draft_ml_blend_weight",
                     help="Higher values make the Draft Assistant trust the ML projection signal more.",
+                    on_change=_draft_assistant_settings_changed,
                 )
             with mlb3:
                 validate_number_state("draft_ml_min_games_signal", 50, min_value=0, max_value=500)
@@ -17331,6 +17409,7 @@ if active_page == "Draft Assistant Simulator":
                     max_value=500,
                     step=10,
                     key="draft_ml_min_games_signal",
+                    on_change=_draft_assistant_settings_changed,
                 )
 
         draft_df = get_cached_unified_projection_pool_live()
@@ -21613,6 +21692,16 @@ if active_page == "Fantasy Lineup Assistant":
 
 def valuation_filter_changed():
     try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="Valuation",
+            lookback_key="value_lag",
+        )
+    except ImportError:
+        pass
+    try:
         from valuation_state import mark_valuation_filter_pending_sync
 
         mark_valuation_filter_pending_sync(st.session_state)
@@ -21622,6 +21711,17 @@ def valuation_filter_changed():
 
 def projections_filter_changed():
     try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="ML Predictions",
+            lookback_key="ml_lookback",
+            style_key="ml_projection_style",
+        )
+    except ImportError:
+        pass
+    try:
         from projections_state import mark_projections_filter_pending_sync
 
         mark_projections_filter_pending_sync(st.session_state)
@@ -21630,6 +21730,12 @@ def projections_filter_changed():
 
 
 if active_page == "Valuation":
+    try:
+        from shared_draft_context import prepare_canonical_scoring_context
+
+        prepare_canonical_scoring_context(st.session_state, active_page=active_page)
+    except ImportError:
+        pass
     from valuation_state import (
         flush_valuation_filter_edits,
         prepare_valuation_filters,
@@ -21866,6 +21972,12 @@ if active_page == "Valuation":
                 market_summary=build_valuation_market_summary(_val_display_row),
                 show_valuation_score=True,
             )
+            try:
+                from shared_draft_context import render_ml_blend_off_note
+
+                render_ml_blend_off_note(st, st.session_state)
+            except ImportError:
+                pass
         except ImportError:
             pass
         st.info(make_valuation_summary(selected_value_row))
@@ -21902,6 +22014,12 @@ if active_page == "Valuation":
 
 
 if active_page == "ML Predictions":
+    try:
+        from shared_draft_context import prepare_canonical_scoring_context
+
+        prepare_canonical_scoring_context(st.session_state, active_page=active_page)
+    except ImportError:
+        pass
     from projections_state import (
         flush_projections_filter_edits,
         prepare_projections_filters,

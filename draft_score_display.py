@@ -103,6 +103,16 @@ def _num(val: Any) -> float | None:
     return float(n)
 
 
+def _fmt_hundred_scale(val: Any) -> str:
+    """Format 0–1 internal or 0–100 display scores with exactly two decimals."""
+    n = _num(val)
+    if n is None:
+        return ""
+    if n <= 1.5:
+        n = n * 100.0
+    return f"{n:.2f}"
+
+
 SLEEPER_MIN_PLAYER_GRADE_DEFAULT = 10.0
 
 
@@ -132,18 +142,12 @@ def sleeper_min_player_grade_to_internal(display_grade: Any) -> float:
 
 def fmt_pick_score(val: Any) -> str:
     """Format raw Decision Score (0–1) as Pick Score display."""
-    n = _num(val)
-    if n is None:
-        return ""
-    return f"{n * 100:.2f}"
+    return _fmt_hundred_scale(val)
 
 
 def fmt_ml_projection_score(val: Any) -> str:
     """Format raw ML Projection Score (0–1) as 0–100 display."""
-    n = _num(val)
-    if n is None:
-        return ""
-    return f"{n * 100:.2f}"
+    return _fmt_hundred_scale(val)
 
 
 def fmt_valuation_score(val: Any) -> str:

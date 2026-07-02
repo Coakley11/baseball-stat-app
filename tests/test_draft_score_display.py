@@ -46,6 +46,22 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(fmt_pick_score(0.9123), "91.23")
         self.assertEqual(fmt_pick_score(0.7421), "74.21")
 
+    def test_pick_score_exact_two_decimals_from_long_values(self) -> None:
+        self.assertEqual(fmt_pick_score(0.94756234), "94.76")
+        self.assertEqual(fmt_pick_score(0.8907), "89.07")
+        self.assertEqual(fmt_pick_score(0.92), "92.00")
+        self.assertEqual(fmt_pick_score(1.0), "100.00")
+        self.assertEqual(fmt_pick_score(94.756234), "94.76")
+
+    def test_ml_projection_score_exact_two_decimals(self) -> None:
+        from draft_score_display import fmt_ml_projection_score
+
+        self.assertEqual(fmt_ml_projection_score(0.94756234), "94.76")
+        self.assertEqual(fmt_ml_projection_score(0.8907), "89.07")
+        self.assertEqual(fmt_ml_projection_score(0.92), "92.00")
+        self.assertEqual(fmt_ml_projection_score(1.0), "100.00")
+        self.assertEqual(fmt_ml_projection_score(89.07), "89.07")
+
     def test_roster_fit_not_scaled(self) -> None:
         self.assertEqual(fmt_roster_fit_score(1.70), "1.70")
         self.assertEqual(fmt_roster_fit_score(0.88), "0.88")

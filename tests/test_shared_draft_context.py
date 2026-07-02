@@ -126,6 +126,61 @@ class TestCanonicalDraftSettings(unittest.TestCase):
         self.assertEqual(cur["projection_style"], "Conservative")
         self.assertEqual(cur["fantasy_format"], "Points League")
 
+    def test_ml_settings_in_canonical_blob(self) -> None:
+        session: dict = {}
+        write_canonical_draft_settings(
+            session,
+            ml_blend_enabled=False,
+            ml_signal_weight=0.20,
+            ml_min_recent_games=40,
+            source_page="Draft Assistant Simulator",
+        )
+        cur = read_canonical_draft_settings(session)
+        self.assertFalse(cur["ml_blend_enabled"])
+        self.assertEqual(cur["ml_signal_weight"], 0.20)
+        self.assertEqual(cur["ml_min_recent_games"], 40)
+        self.assertFalse(session["draft_use_ml_blend"])
+        self.assertEqual(session["draft_ml_blend_weight"], 0.20)
+        self.assertEqual(session["draft_ml_min_games_signal"], 40)
+
+    def test_ml_predictions_lookback_updates_canonical_and_aliases(self) -> None:
+        session = {"draft_window": 3, "trend_lag": 3, "value_lag": 3, "ml_lookback": 3}
+        write_canonical_draft_settings(session, lookback_window=4, source_page="ML Predictions")
+        from shared_draft_context import prepare_canonical_scoring_context
+
+        prepare_canonical_scoring_context(session, active_page="Trend Value")
+        self.assertEqual(session["trend_lag"], 4)
+        self.assertEqual(session["value_lag"], 4)
+        self.assertEqual(session["ml_lookback"], 4)
+        self.assertEqual(session["draft_window"], 4)
+
+    def test_ml_predictions_style_updates_canonical(self) -> None:
+        session = {"ml_projection_style": "Balanced", "fantasy_draft_projection_style": "Balanced"}
+        write_canonical_draft_settings(session, projection_style="Aggressive", source_page="ML Predictions")
+        self.assertEqual(session["ml_projection_style"], "Aggressive")
+        self.assertEqual(session["fantasy_draft_projection_style"], "Aggressive")
+
+    def test_draft_pool_kwargs_from_session(self) -> None:
+        from shared_draft_context import draft_pool_kwargs_from_session
+
+        session = {}
+        write_canonical_draft_settings(
+            session,
+            lookback_window=5,
+            projection_style="Conservative",
+            fantasy_format="Points League",
+            ml_blend_enabled=True,
+            ml_signal_weight=0.18,
+            ml_min_recent_games=60,
+        )
+        kw = draft_pool_kwargs_from_session(session)
+        self.assertEqual(kw["draft_window"], 5)
+        self.assertEqual(kw["projection_style"], "Conservative")
+        self.assertEqual(kw["fantasy_format"], "Points League")
+        self.assertTrue(kw["use_ml_blend"])
+        self.assertEqual(kw["ml_blend_weight"], 0.18)
+        self.assertEqual(kw["ml_min_games_for_signal"], 60)
+
 
 if __name__ == "__main__":
     unittest.main()

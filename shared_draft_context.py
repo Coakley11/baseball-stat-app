@@ -15,6 +15,13 @@ GLOBAL_PROJECTION_STYLE_KEY = "fantasy_draft_projection_style"
 DEFAULT_LOOKBACK = 3
 DEFAULT_PROJECTION_STYLE = "Balanced"
 DEFAULT_FANTASY_FORMAT = "5x5 Roto"
+DEFAULT_ML_BLEND_ENABLED = True
+DEFAULT_ML_SIGNAL_WEIGHT = 0.12
+DEFAULT_ML_MIN_RECENT_GAMES = 50
+
+GLOBAL_ML_BLEND_KEY = "draft_use_ml_blend"
+GLOBAL_ML_WEIGHT_KEY = "draft_ml_blend_weight"
+GLOBAL_ML_MIN_GAMES_KEY = "draft_ml_min_games_signal"
 
 WINDOW_ALIASES: dict[str, str] = {
     "draft_window": GLOBAL_WINDOW_KEY,
@@ -26,7 +33,14 @@ WINDOW_ALIASES: dict[str, str] = {
 PROJECTION_STYLE_ALIASES: dict[str, str] = {
     "live_draft_proj_style": GLOBAL_PROJECTION_STYLE_KEY,
     "draft_lab_projection_style": GLOBAL_PROJECTION_STYLE_KEY,
+    "ml_projection_style": GLOBAL_PROJECTION_STYLE_KEY,
 }
+
+LOOKBACK_ANALYTICS_ALIASES: tuple[str, ...] = (
+    "trend_lag",
+    "value_lag",
+    "ml_lookback",
+)
 
 _ALL_ALIASES: dict[str, str] = {**WINDOW_ALIASES, **PROJECTION_STYLE_ALIASES}
 
@@ -51,8 +65,12 @@ DRAFT_SHARED_WIDGET_KEYS: frozenset[str] = frozenset(
     {
         GLOBAL_WINDOW_KEY,
         GLOBAL_PROJECTION_STYLE_KEY,
+        GLOBAL_ML_BLEND_KEY,
+        GLOBAL_ML_WEIGHT_KEY,
+        GLOBAL_ML_MIN_GAMES_KEY,
         *WINDOW_ALIASES.keys(),
         *PROJECTION_STYLE_ALIASES.keys(),
+        *LOOKBACK_ANALYTICS_ALIASES,
         "draft_format",
         "fantasy_market_format",
         "draft_lab_scoring_type",
@@ -60,6 +78,11 @@ DRAFT_SHARED_WIDGET_KEYS: frozenset[str] = frozenset(
         "live_draft_scoring",
         "room_format",
     }
+)
+
+ML_BLEND_OFF_ROSTER_FIT_NOTE = (
+    "ML projection blend is off. To include ML projection signal in roster fit, "
+    "enable it in Draft Assistant Simulator → Advanced Scoring Settings."
 )
 
 
@@ -89,8 +112,47 @@ def _normalize_format(val: Any) -> str:
         return s or DEFAULT_FANTASY_FORMAT
 
 
+def _coerce_bool(val: Any, default: bool) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off"):
+        return False
+    return default
+
+
+def _read_ml_blend_enabled(session: dict[str, Any], blob: dict[str, Any]) -> bool:
+    if "ml_blend_enabled" in blob:
+        return _coerce_bool(blob.get("ml_blend_enabled"), DEFAULT_ML_BLEND_ENABLED)
+    if session.get(GLOBAL_ML_BLEND_KEY) is not None:
+        return _coerce_bool(session.get(GLOBAL_ML_BLEND_KEY), DEFAULT_ML_BLEND_ENABLED)
+    return DEFAULT_ML_BLEND_ENABLED
+
+
+def _read_ml_signal_weight(session: dict[str, Any], blob: dict[str, Any]) -> float:
+    if blob.get("ml_signal_weight") is not None:
+        return float(blob["ml_signal_weight"])
+    if session.get(GLOBAL_ML_WEIGHT_KEY) is not None:
+        return float(session[GLOBAL_ML_WEIGHT_KEY])
+    return DEFAULT_ML_SIGNAL_WEIGHT
+
+
+def _read_ml_min_recent_games(session: dict[str, Any], blob: dict[str, Any]) -> int:
+    if blob.get("ml_min_recent_games") is not None:
+        return int(blob["ml_min_recent_games"])
+    if session.get(GLOBAL_ML_MIN_GAMES_KEY) is not None:
+        return int(session[GLOBAL_ML_MIN_GAMES_KEY])
+    return DEFAULT_ML_MIN_RECENT_GAMES
+
+
 def read_canonical_draft_settings(session: dict[str, Any]) -> dict[str, Any]:
-    """Return canonical lookback / projection style / fantasy format."""
+    """Return canonical lookback / projection style / fantasy format / ML scoring."""
     blob = session.get(CANONICAL_SETTINGS_KEY)
     if not isinstance(blob, dict):
         blob = {}
@@ -98,7 +160,7 @@ def read_canonical_draft_settings(session: dict[str, Any]) -> dict[str, Any]:
     if lookback is None:
         lookback = session.get(GLOBAL_WINDOW_KEY)
     if lookback is None:
-        for alias in WINDOW_ALIASES:
+        for alias in (*WINDOW_ALIASES, *LOOKBACK_ANALYTICS_ALIASES):
             if session.get(alias) is not None:
                 lookback = session.get(alias)
                 break
@@ -117,8 +179,29 @@ def read_canonical_draft_settings(session: dict[str, Any]) -> dict[str, Any]:
         "lookback_window": int(lookback) if lookback is not None else DEFAULT_LOOKBACK,
         "projection_style": str(style or DEFAULT_PROJECTION_STYLE).strip() or DEFAULT_PROJECTION_STYLE,
         "fantasy_format": _normalize_format(fmt),
+        "ml_blend_enabled": _read_ml_blend_enabled(session, blob),
+        "ml_signal_weight": _read_ml_signal_weight(session, blob),
+        "ml_min_recent_games": _read_ml_min_recent_games(session, blob),
         "updated_at": blob.get("updated_at"),
         "updated_by_page": blob.get("updated_by_page"),
+    }
+
+
+def read_draft_scoring_settings(session: dict[str, Any]) -> dict[str, Any]:
+    """Alias for canonical draft + ML scoring settings (pool builders, profile cards)."""
+    return read_canonical_draft_settings(session)
+
+
+def draft_pool_kwargs_from_session(session: dict[str, Any]) -> dict[str, Any]:
+    """Keyword args for ``get_cached_unified_projection_pool`` from session/canonical settings."""
+    cur = read_draft_scoring_settings(session)
+    return {
+        "draft_window": int(cur["lookback_window"]),
+        "fantasy_format": str(cur["fantasy_format"]),
+        "projection_style": str(cur["projection_style"]),
+        "use_ml_blend": bool(cur["ml_blend_enabled"]),
+        "ml_blend_weight": float(cur["ml_signal_weight"]),
+        "ml_min_games_for_signal": int(cur["ml_min_recent_games"]),
     }
 
 
@@ -129,6 +212,9 @@ def hydrate_canonical_draft_settings_from_session(session: dict[str, Any]) -> di
         "lookback_window": cur["lookback_window"],
         "projection_style": cur["projection_style"],
         "fantasy_format": cur["fantasy_format"],
+        "ml_blend_enabled": cur["ml_blend_enabled"],
+        "ml_signal_weight": cur["ml_signal_weight"],
+        "ml_min_recent_games": cur["ml_min_recent_games"],
         "updated_at": cur.get("updated_at"),
         "updated_by_page": cur.get("updated_by_page"),
     }
@@ -141,6 +227,20 @@ def _mirror_window_and_style_aliases(session: dict[str, Any], *, lookback: int, 
     for alias, canonical in _ALL_ALIASES.items():
         val = int(lookback) if canonical == GLOBAL_WINDOW_KEY else str(style).strip()
         session[alias] = val
+    for alias in LOOKBACK_ANALYTICS_ALIASES:
+        session[alias] = int(lookback)
+
+
+def _mirror_ml_aliases(
+    session: dict[str, Any],
+    *,
+    ml_blend_enabled: bool,
+    ml_signal_weight: float,
+    ml_min_recent_games: int,
+) -> None:
+    session[GLOBAL_ML_BLEND_KEY] = bool(ml_blend_enabled)
+    session[GLOBAL_ML_WEIGHT_KEY] = float(ml_signal_weight)
+    session[GLOBAL_ML_MIN_GAMES_KEY] = int(ml_min_recent_games)
 
 
 def _mirror_format_aliases(session: dict[str, Any], fmt: str) -> None:
@@ -158,6 +258,9 @@ def write_canonical_draft_settings(
     lookback_window: int | None = None,
     projection_style: str | None = None,
     fantasy_format: str | None = None,
+    ml_blend_enabled: bool | None = None,
+    ml_signal_weight: float | None = None,
+    ml_min_recent_games: int | None = None,
     lookback: int | None = None,
     format_: str | None = None,
     source_page: str = "",
@@ -175,6 +278,12 @@ def write_canonical_draft_settings(
         cur["projection_style"] = str(projection_style).strip()
     if fantasy_format is not None:
         cur["fantasy_format"] = _normalize_format(fantasy_format)
+    if ml_blend_enabled is not None:
+        cur["ml_blend_enabled"] = bool(ml_blend_enabled)
+    if ml_signal_weight is not None:
+        cur["ml_signal_weight"] = float(ml_signal_weight)
+    if ml_min_recent_games is not None:
+        cur["ml_min_recent_games"] = int(ml_min_recent_games)
     now = _utc_now_iso()
     cur["updated_at"] = now
     cur["updated_by_page"] = str(source_page or "").strip() or None
@@ -185,6 +294,12 @@ def write_canonical_draft_settings(
         style=cur["projection_style"],
     )
     _mirror_format_aliases(session, cur["fantasy_format"])
+    _mirror_ml_aliases(
+        session,
+        ml_blend_enabled=cur["ml_blend_enabled"],
+        ml_signal_weight=cur["ml_signal_weight"],
+        ml_min_recent_games=cur["ml_min_recent_games"],
+    )
     session["_shared_draft_context_last_update_reason"] = reason or None
     _record_diag(session, step=f"write:{reason or 'unspecified'}", active_page=source_page)
     return cur
@@ -194,9 +309,10 @@ def apply_draft_shared_settings_to_widgets(
     session: dict[str, Any],
     *,
     active_page: str = "",
+    force_all_pages: bool = False,
 ) -> dict[str, Any]:
     """Force canonical values into every draft-page widget alias (pre-render)."""
-    if active_page and not is_draft_sync_page(active_page):
+    if active_page and not force_all_pages and not is_draft_sync_page(active_page):
         return read_canonical_draft_settings(session)
     cur = hydrate_canonical_draft_settings_from_session(session)
     _mirror_window_and_style_aliases(
@@ -205,6 +321,12 @@ def apply_draft_shared_settings_to_widgets(
         style=cur["projection_style"],
     )
     _mirror_format_aliases(session, cur["fantasy_format"])
+    _mirror_ml_aliases(
+        session,
+        ml_blend_enabled=cur["ml_blend_enabled"],
+        ml_signal_weight=cur["ml_signal_weight"],
+        ml_min_recent_games=cur["ml_min_recent_games"],
+    )
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
 
@@ -213,6 +335,19 @@ def apply_draft_shared_settings_to_widgets(
         pass
     _record_diag(session, step=f"apply_widgets:{active_page or 'global'}", active_page=active_page)
     return cur
+
+
+def prepare_canonical_scoring_context(
+    session: dict[str, Any],
+    *,
+    active_page: str = "",
+) -> dict[str, Any]:
+    """Before widgets on any scoring-related page: canonical always wins."""
+    return apply_draft_shared_settings_to_widgets(
+        session,
+        active_page=active_page,
+        force_all_pages=True,
+    )
 
 
 def prepare_shared_draft_context(
@@ -274,6 +409,9 @@ def on_draft_settings_changed(
     lookback_key: str | None = None,
     style_key: str | None = None,
     format_key: str | None = None,
+    ml_blend_key: str | None = None,
+    ml_weight_key: str | None = None,
+    ml_min_games_key: str | None = None,
 ) -> None:
     kwargs: dict[str, Any] = {"source_page": source_page, "reason": f"widget:{source_page}"}
     if lookback_key and session.get(lookback_key) is not None:
@@ -282,8 +420,25 @@ def on_draft_settings_changed(
         kwargs["projection_style"] = str(session[style_key])
     if format_key and session.get(format_key) is not None:
         kwargs["fantasy_format"] = str(session[format_key])
+    if ml_blend_key and ml_blend_key in session:
+        kwargs["ml_blend_enabled"] = bool(session[ml_blend_key])
+    if ml_weight_key and session.get(ml_weight_key) is not None:
+        kwargs["ml_signal_weight"] = float(session[ml_weight_key])
+    if ml_min_games_key and session.get(ml_min_games_key) is not None:
+        kwargs["ml_min_recent_games"] = int(session[ml_min_games_key])
     if len(kwargs) > 2:
         write_canonical_draft_settings(session, **kwargs)
+
+
+def is_ml_blend_enabled(session: dict[str, Any]) -> bool:
+    return bool(read_draft_scoring_settings(session).get("ml_blend_enabled"))
+
+
+def render_ml_blend_off_note(st: Any, session: dict[str, Any]) -> None:
+    """Optional helper when roster fit is shown without ML blend."""
+    if is_ml_blend_enabled(session):
+        return
+    st.caption(ML_BLEND_OFF_ROSTER_FIT_NOTE)
 
 
 def has_active_draft_context(session: dict[str, Any]) -> bool:
@@ -344,6 +499,9 @@ def draft_shared_settings_diagnostics(
         "canonical_lookback_window": canonical["lookback_window"],
         "canonical_projection_style": canonical["projection_style"],
         "canonical_fantasy_format": canonical["fantasy_format"],
+        "canonical_ml_blend_enabled": canonical["ml_blend_enabled"],
+        "canonical_ml_signal_weight": canonical["ml_signal_weight"],
+        "canonical_ml_min_recent_games": canonical["ml_min_recent_games"],
         "widget_lookback": w_lookback,
         "widget_projection_style": w_style,
         "widget_format": w_format,
@@ -390,7 +548,8 @@ def render_draft_shared_settings_diagnostics(
         st.caption(
             f"Canonical: Lookback **{diag['canonical_lookback_window']}** yr · "
             f"Style **{diag['canonical_projection_style']}** · "
-            f"Format **{diag['canonical_fantasy_format']}**"
+            f"Format **{diag['canonical_fantasy_format']}** · "
+            f"ML blend **{'on' if diag.get('canonical_ml_blend_enabled') else 'off'}**"
         )
         if diag.get("last_updated_page"):
             st.caption(
@@ -417,10 +576,14 @@ def render_draft_shared_settings_diagnostics(
 
 
 def record_cloud_draft_settings_snapshot(session: dict[str, Any], cloud_state: dict[str, Any]) -> None:
+    cur = read_canonical_draft_settings({**session, **cloud_state})
     session[_CLOUD_SETTINGS_KEY] = {
-        "lookback_window": cloud_state.get(GLOBAL_WINDOW_KEY),
-        "projection_style": cloud_state.get(GLOBAL_PROJECTION_STYLE_KEY),
-        "fantasy_format": cloud_state.get("room_format"),
+        "lookback_window": cur["lookback_window"],
+        "projection_style": cur["projection_style"],
+        "fantasy_format": cur["fantasy_format"],
+        "ml_blend_enabled": cur["ml_blend_enabled"],
+        "ml_signal_weight": cur["ml_signal_weight"],
+        "ml_min_recent_games": cur["ml_min_recent_games"],
     }
 
 
