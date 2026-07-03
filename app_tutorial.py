@@ -456,22 +456,20 @@ def render_tutorial_header_bar() -> None:
 
     st.markdown(_tutorial_css(), unsafe_allow_html=True)
     left, right = st.columns([3, 1])
-    with left:
-        st.markdown(
-            '<p class="tutorial-bar-text">New here? <strong>Start Tutorial</strong> for a '
-            "quick, fan-friendly walkthrough.</p>",
-            unsafe_allow_html=True,
-        )
-    with right:
-        if st.button(
-            "Start Tutorial",
-            key="tutorial_header_open_btn",
-            use_container_width=True,
-            type="primary",
-        ):
-            st.session_state[TUTORIAL_OPEN_KEY] = True
-            st.session_state[TUTORIAL_STEP_KEY] = 0
-            st.rerun()
+    left.markdown(
+        '<p class="tutorial-bar-text">New here? <strong>Start Tutorial</strong> for a '
+        "quick, fan-friendly walkthrough.</p>",
+        unsafe_allow_html=True,
+    )
+    if right.button(
+        "Start Tutorial",
+        key="tutorial_header_open_btn",
+        use_container_width=True,
+        type="primary",
+    ):
+        st.session_state[TUTORIAL_OPEN_KEY] = True
+        st.session_state[TUTORIAL_STEP_KEY] = 0
+        st.rerun()
 
 
 def _render_progress(idx: int, total: int) -> None:

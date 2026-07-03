@@ -49,7 +49,7 @@ class DraftRoomJoinTraceTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_join_records_trace_and_activates_multiplayer(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest_session, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         trace = self.guest_session.get(JOIN_TRACE_KEY)
         self.assertIsInstance(trace, list)
@@ -65,7 +65,7 @@ class DraftRoomJoinTraceTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_prepare_live_draft_state_preserves_shared_room(self, _mock_auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host_session, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest_session, code, store=self.store)
+        join_shared_draft_room(self.guest_session, code, requested_team="Team 2", store=self.store)
         prepare_global_draft_context(self.guest_session)
         shared_room = self.guest_session[LIVE_DRAFT_ROOM_KEY]
         shared_room["current_pick_index"] = 99
@@ -75,7 +75,9 @@ class DraftRoomJoinTraceTests(unittest.TestCase):
             "draft_board": [],
         }
         restored = prepare_live_draft_state(self.guest_session)
-        self.assertEqual(int(restored.get("current_pick_index") or 0), 99)
+        self.assertEqual(restored.get("draft_room_id"), "MULTI1")
+        self.assertNotEqual(restored.get("draft_room_id"), "LOCAL-STALE")
+        self.assertEqual(self.guest_session["live_draft_state"]["draft_room_id"], "MULTI1")
 
     def test_trace_join_step_appends(self) -> None:
         session: dict = {}

@@ -546,6 +546,16 @@ DRAFT_FOCUS_PAGES = frozenset({
 })
 
 
+def _streamlit_script_run_ctx_active() -> bool:
+    """True during a real Streamlit rerun; false on bare imports / unit tests."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
 def render_global_app_chrome(active_page: str) -> None:
     """Single app header + tutorial entry — always show explorer banner."""
     compact = active_page in DRAFT_FOCUS_PAGES
@@ -13201,7 +13211,8 @@ try:
         )
 except ImportError:
     pass
-render_global_app_chrome(active_page)
+if _streamlit_script_run_ctx_active():
+    render_global_app_chrome(active_page)
 _record_sidebar_nav_trace(
     "after_sidebar_radio",
     rerun_source="sidebar_render",
@@ -13387,7 +13398,8 @@ if developer_mode_enabled():
         except ImportError:
             pass
 render_page_state_debug(active_page)
-app_tutorial.maybe_open_tutorial_dialog()
+if _streamlit_script_run_ctx_active():
+    app_tutorial.maybe_open_tutorial_dialog()
 try:
     from draft_state import flush_draft_workflow_edits, prepare_draft_workflow, render_draft_state_debug
 

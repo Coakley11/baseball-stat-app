@@ -245,3 +245,15 @@ def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
 
 def sync_draft_lab_session_before_save(session: dict[str, Any]) -> None:
     ensure_draft_lab_widget_keys(session)
+    pf = session.get("page_filter_state")
+    if not isinstance(pf, dict):
+        return
+    block = dict(pf.get(DRAFT_LAB_PAGE) or {})
+    for key in DRAFT_LAB_SNAPSHOT_KEYS:
+        if key in session:
+            try:
+                block[key] = copy.deepcopy(session[key])
+            except Exception:
+                block[key] = session[key]
+    if block:
+        pf[DRAFT_LAB_PAGE] = block

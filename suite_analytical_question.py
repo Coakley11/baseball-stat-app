@@ -1505,6 +1505,7 @@ def submit_analytical_question(
     quant_area: str = "",
     source_state: dict[str, Any] | None = None,
     session_state: dict[str, Any] | None = None,
+    defer_blob_save: bool = False,
 ) -> dict[str, Any]:
     """Log event on source app and upsert Applied Intelligence resume item."""
     payload = build_question_payload(
@@ -1520,12 +1521,14 @@ def submit_analytical_question(
     action_url = build_applied_math_resume_url(payload)
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
     hof_case = _is_hof_case_submission(quant_area, context)
-    if not duplicate:
+    source_app_norm = normalize_source_app_id(
+        str(payload.get("source_app") or ""),
+        dict(payload.get("context") or {}),
+    )
+    record_activity_for_send = (not duplicate) or (not hof_case and source_app_norm == "baseball")
+    if record_activity_for_send:
         metrics = metrics_for_applied_math_resume(payload)
-        metrics["source_app"] = normalize_source_app_id(
-            str(payload.get("source_app") or ""),
-            dict(payload.get("context") or {}),
-        )
+        metrics["source_app"] = source_app_norm
         if not hof_case:
             if metrics["source_app"] == "music":
                 summary = f"Asked Music Coach: {payload['question'][:80]}"
@@ -1587,8 +1590,10 @@ def submit_analytical_question(
         and isinstance(ss, dict)
         and bool(ss.get("entity_params"))
     )
-    if refresh_blob and not hof_case:
+    if refresh_blob and not hof_case and not defer_blob_save:
         _store_question_context_blob(payload)
+    if defer_blob_save and session_state is not None and not duplicate and not hof_case:
+        session_state["_ami_pending_blob_save"] = dict(payload)
     if session_state is not None:
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],

@@ -80,7 +80,7 @@ class SharedRoomCreateCodeTests(unittest.TestCase):
     def test_guest_joins_with_host_code(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
         guest = {"draft_room_participant_id": "guest-user"}
-        ok, msg, _ = join_shared_draft_room(guest, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(guest, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         self.assertEqual(resolve_shared_room_code(guest), code)
 

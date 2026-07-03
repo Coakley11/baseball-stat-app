@@ -1069,7 +1069,11 @@ def build_return_insight_payload(
         conclusion = str(getattr(result, "short_answer", "") or getattr(result, "conclusion", "") or "").strip()
         method = str(getattr(result, "math_idea", "") or getattr(result, "problem_type", "") or "").strip()
         model_name = str(getattr(result, "model_name", "") or "").strip()
-        math_summary = str(getattr(result, "variables", "") or "").strip()[:400]
+        why_text = str(getattr(result, "why", "") or "").strip()
+        vars_text = str(getattr(result, "variables", "") or "").strip()
+        if why_text and "no exact solver" in why_text.lower():
+            why_text = ""
+        math_summary = (why_text or vars_text)[:400]
         assumptions = list(getattr(result, "assumptions", []) or [])[:6]
         confidence_pct = getattr(result, "confidence_pct", None)
         computed = getattr(result, "computed", None)
@@ -1085,9 +1089,11 @@ def build_return_insight_payload(
     if route is not None:
         if not model_name:
             model_name = str(getattr(route, "model_name", "") or getattr(route, "problem_type", "") or "").strip()
-        if not method:
-            method = str(getattr(route, "model_rationale", "") or method).strip()
         pt = str(getattr(route, "problem_type", "") or "").strip()
+        if pt:
+            method = pt
+        elif not method:
+            method = str(getattr(route, "model_rationale", "") or method).strip()
         if pt:
             key_numbers["problem_type"] = pt
 
@@ -1911,11 +1917,12 @@ def commit_ami_return_page_restore(st: Any, app_key: str) -> bool:
 def stage_pending_insight(st: Any, insight: AppliedMathInsight | dict[str, Any], *, return_context: dict[str, Any] | None = None) -> None:
     """Write insight into Streamlit session for AMI return button."""
     data = insight.to_dict() if isinstance(insight, AppliedMathInsight) else dict(insight)
-    st.session_state[SESSION_PENDING_KEY] = data
+    session = st.session_state if hasattr(st, "session_state") else st
+    session[SESSION_PENDING_KEY] = data
     source_page = _resolve_insight_source_page(data) or str(data.get("source_page") or "").strip()
-    st.session_state[SESSION_RETURN_PAGE_KEY] = source_page
+    session[SESSION_RETURN_PAGE_KEY] = source_page
     if return_context:
-        st.session_state[SESSION_RETURN_CONTEXT_KEY] = dict(return_context)
+        session[SESSION_RETURN_CONTEXT_KEY] = dict(return_context)
     app = str(data.get("source_app") or "").strip().lower()
     if app == "investment":
         _sync_investment_insight_tab_keys(st, app, insight=data)

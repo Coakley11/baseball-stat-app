@@ -244,7 +244,7 @@ def save_page_state(session, page_name: str, store: dict):
     """Snapshot widget keys for a page into ``store[page_name]``."""
     page_name = str(page_name)
     existing = store.get(page_name) if isinstance(store.get(page_name), dict) else {}
-    snapshot = {}
+    snapshot = dict(existing)
     for key in _collect_keys_for_page(session, page_name):
         if key in session:
             try:
