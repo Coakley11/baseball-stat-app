@@ -10,16 +10,12 @@ _HEALTH_PROBE_PREFIX = "_HEALTH_"
 
 
 def _dev_visible(session: dict[str, Any]) -> bool:
-    if session.get("dev_mode") or session.get("app_developer_mode"):
-        return True
     try:
-        from suite_workspace import _developer_query_enabled
+        from suite_workspace import developer_ui_visible_from_session
 
-        if _developer_query_enabled(st=type("S", (), {"session_state": session})()):
-            return True
+        return developer_ui_visible_from_session(session)
     except ImportError:
-        pass
-    return False
+        return False
 
 
 def probe_shared_room_supabase_health(*, run_write_probe: bool = True) -> dict[str, Any]:

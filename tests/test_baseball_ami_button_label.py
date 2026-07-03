@@ -20,6 +20,7 @@ from suite_analytical_question import (
     infer_runtime_suite_app_id,
     resolve_ami_sidebar_app_id,
 )
+from suite_workspace import set_active_workspace_id
 
 
 class BaseballAmiButtonLabelTests(unittest.TestCase):
@@ -92,9 +93,13 @@ class BaseballAmiButtonLabelTests(unittest.TestCase):
         self.assertFalse(any("AMI submit debug" in t for t in caption_calls))
         self.assertNotIn("_ami_sidebar_render_debug", mock_st.session_state)
 
-    def test_baseball_sidebar_shows_debug_when_dev_mode(self) -> None:
+    def test_baseball_sidebar_shows_debug_when_developer_mode_checkbox(self) -> None:
+        from suite_workspace import set_developer_mode_user
+
         mock_st = MagicMock()
-        mock_st.session_state = {"_suite_runtime_app_id": "baseball", "dev_mode": True}
+        mock_st.session_state = {"_suite_runtime_app_id": "baseball"}
+        set_active_workspace_id(mock_st, "daniel")
+        set_developer_mode_user(mock_st.session_state, True, source="test")
         mock_st.sidebar = MagicMock()
         mock_st.sidebar.text_area.return_value = ""
         mock_st.sidebar.button.return_value = False

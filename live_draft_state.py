@@ -27,6 +27,15 @@ from draft_scoring_pool import (
 LIVE_DRAFT_PERSIST_SCHEMA = 1
 
 
+def _developer_ui_visible(st: Any) -> bool:
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        return developer_mode_checkbox_enabled(st=st)
+    except ImportError:
+        return False
+
+
 def _current_auth_user_id(session: dict[str, Any]) -> str:
     try:
         from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
@@ -1327,6 +1336,8 @@ def live_draft_restore_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
 
 def render_live_draft_save_diagnostics(st: Any) -> None:
     """Developer Mode panel for last live draft save and restore."""
+    if not _developer_ui_visible(st):
+        return
     ss = st.session_state
     trace = ss.get("_live_draft_last_save_trace")
     restore = live_draft_restore_diagnostics(ss)

@@ -60,7 +60,7 @@ def _render_ami_submit_debug_panel(
     submit_label: str,
     source_page: str = "",
 ) -> None:
-    """Dev-only diagnostics beside the submit button (?dev=1 or dev_mode)."""
+    """Dev-only diagnostics beside the submit button (Developer Mode checkbox)."""
     module_path = str(Path(__file__).resolve())
     status = _code_status()
     st.sidebar.caption(

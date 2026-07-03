@@ -103,17 +103,12 @@ def _repr(value: Any) -> Any:
 
 
 def _dev_trace_enabled(session: dict[str, Any]) -> bool:
-    if session.get("_suite_dev_mode"):
-        return True
     try:
-        import streamlit as st
+        from suite_workspace import developer_ui_visible_from_session
 
-        qp = st.query_params
-        if str(qp.get("dev") or qp.get("developer") or "").strip().lower() in ("1", "true", "yes"):
-            return True
-    except Exception:
-        pass
-    return False
+        return developer_ui_visible_from_session(session)
+    except ImportError:
+        return False
 
 
 def _ring_push(session: dict[str, Any], ring_key: str, entry: dict[str, Any]) -> None:

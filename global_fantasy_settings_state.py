@@ -176,15 +176,13 @@ def record_global_settings_trace(session: dict[str, Any], step: str) -> None:
     Inspect ``st.session_state['_global_format_trace']`` in Dev Mode to see the
     full lifecycle: before render, after on_change, snapshot, restore, final.
     """
-    if not session.get("_suite_dev_mode"):
-        try:
-            import streamlit as st
+    try:
+        from suite_workspace import developer_ui_visible_from_session
 
-            qp = st.query_params
-            if str(qp.get("dev") or qp.get("developer") or "").strip().lower() not in ("1", "true", "yes"):
-                return
-        except Exception:
+        if not developer_ui_visible_from_session(session):
             return
+    except ImportError:
+        return
     try:
         entry = {
             "step": step,

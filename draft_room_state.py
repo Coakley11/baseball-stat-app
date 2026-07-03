@@ -25,6 +25,16 @@ DRAFT_ROOM_LOCAL_EDIT_TS_KEY = "draft_room_state_last_local_edit_ts"
 SUITE_LOCAL_DIRTY_BASEBALL_KEY = "_suite_local_dirty::baseball"
 DRAFT_ROOM_PERSIST_SCHEMA = 1
 
+
+def _developer_ui_visible(st: Any) -> bool:
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        return developer_mode_checkbox_enabled(st=st)
+    except ImportError:
+        return False
+
+
 DRAFT_ROOM_SETTINGS_KEYS = (
     "room_your_team",
     "room_team_count",
@@ -1884,6 +1894,8 @@ def render_pick_entry_workflow_debug(
     player_names_pool: list[str] | None = None,
 ) -> None:
     """How picks enter the board — and where session state stores them."""
+    if not _developer_ui_visible(st):
+        return
     info = collect_pick_entry_diagnostics(session, st, player_names_pool=player_names_pool)
     with st.expander("Pick entry workflow debug", expanded=False):
         st.markdown("**How to log picks**")
@@ -1919,7 +1931,9 @@ def render_pick_entry_workflow_debug(
 
 
 def render_quick_draft_status(st: Any, session: dict[str, Any]) -> None:
-    """Always-visible quick draft result + trace."""
+    """Quick draft result + trace (developer mode only)."""
+    if not _developer_ui_visible(st):
+        return
     trace = session.get("_draft_room_last_quick_draft_trace")
     flash = session.get("_draft_room_quick_draft_flash")
     active_count = int(session.get("_draft_room_active_board_pick_count") or 0)
@@ -2013,6 +2027,8 @@ def inspect_widget_state_debug(st: Any, session: dict[str, Any], widget_key: str
 
 def render_raw_widget_state_debug(st: Any, widget_key: str) -> None:
     """Immediately under the Board editor — raw Streamlit widget state."""
+    if not _developer_ui_visible(st):
+        return
     ss = st.session_state
     info = inspect_widget_state_debug(st, ss, widget_key)
     with st.expander("Raw widget state debug", expanded=True):
@@ -2158,6 +2174,8 @@ def build_board_debug_report(
 
 
 def render_board_debug_expander(st: Any, widget_key: str, editor_return: Any = None) -> None:
+    if not _developer_ui_visible(st):
+        return
     ss = st.session_state
     inspect_widget_state_debug(st, ss, widget_key)
     report = build_board_debug_report(ss, widget_key, editor_return, st=st)
@@ -3160,7 +3178,9 @@ def _deploy_build_label() -> str:
 
 
 def render_manual_save_readback_panel(st: Any) -> None:
-    """Always-visible Supabase readback panel directly under Save Draft Board Now."""
+    """Supabase readback panel for manual board save (developer mode only)."""
+    if not _developer_ui_visible(st):
+        return
     ss = st.session_state
     manual = ss.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
     if not isinstance(manual, dict):
@@ -3688,7 +3708,9 @@ def board_tab_diagnostics(session: dict[str, Any], *, st: Any | None = None) -> 
 
 
 def render_board_tab_diagnostics(st: Any) -> None:
-    """Always-visible Board tab status panel (not dev-mode only)."""
+    """Board tab save/sync diagnostics (developer mode only)."""
+    if not _developer_ui_visible(st):
+        return
     ss = st.session_state
     diag = board_tab_diagnostics(ss, st=st)
     manual = ss.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
@@ -3790,6 +3812,8 @@ def render_board_tab_diagnostics(st: Any) -> None:
 
 
 def render_draft_board_diagnostics(st: Any) -> None:
+    if not _developer_ui_visible(st):
+        return
     ss = st.session_state
     board = draft_board_diagnostics(ss)
     trace = ss.get("_draft_room_last_save_trace")

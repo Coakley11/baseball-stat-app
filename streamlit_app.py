@@ -11943,15 +11943,12 @@ def render_developer_mode_sidebar_toggle():
         from suite_workspace import (
             DEVELOPER_MODE_DIAG_KEY,
             developer_tools_workspace_eligible,
-            is_developer_mode_enabled,
             record_developer_mode_diagnostics,
             sync_developer_mode_widget,
         )
 
         sync_developer_mode_widget(st.session_state, source="pre_toggle_render")
-        eligible = developer_tools_workspace_eligible(st=st)
-        dev_on = is_developer_mode_enabled(st=st)
-        if not eligible and not dev_on and not st.session_state.get(DEVELOPER_MODE_KEY):
+        if not developer_tools_workspace_eligible(st=st):
             return
     except ImportError:
         pass
@@ -11981,13 +11978,14 @@ def render_developer_mode_sidebar_toggle():
         from suite_workspace import record_developer_mode_diagnostics
 
         record_developer_mode_diagnostics(st.session_state, source="post_toggle_render")
-        diag = st.session_state.get(DEVELOPER_MODE_DIAG_KEY)
-        if isinstance(diag, dict) and (
-            diag.get("developer_mode_restored_value") or diag.get("developer_mode_reset_reason")
-        ):
-            with st.sidebar.expander("Developer mode trace", expanded=False):
-                for label, value in diag.items():
-                    st.text(f"{label}: {value}")
+        if developer_mode_enabled():
+            diag = st.session_state.get(DEVELOPER_MODE_DIAG_KEY)
+            if isinstance(diag, dict) and (
+                diag.get("developer_mode_restored_value") or diag.get("developer_mode_reset_reason")
+            ):
+                with st.sidebar.expander("Developer mode trace", expanded=False):
+                    for label, value in diag.items():
+                        st.text(f"{label}: {value}")
     except ImportError:
         pass
     if developer_mode_enabled():

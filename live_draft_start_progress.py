@@ -102,6 +102,11 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
     if not isinstance(prog, dict):
         return
     in_flight = is_live_draft_start_in_flight(session)
+    if not developer_mode:
+        if not in_flight:
+            return
+        st.info(f"Starting draft… current step: **{prog.get('current_step', '—')}**")
+        return
     with st.expander("Draft start progress", expanded=bool(in_flight or developer_mode)):
         if in_flight:
             st.info(f"Starting draft… current step: **{prog.get('current_step', '—')}**")

@@ -129,6 +129,13 @@ def render_stat_filter_summary_developer_diagnostics(
     *,
     mode: Literal["career", "historical"],
 ) -> None:
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st):
+            return
+    except ImportError:
+        return
     with st.expander("Filter summary diagnostics", expanded=False):
         st.json(build_stat_filter_summary_diagnostics(session, mode=mode))
 

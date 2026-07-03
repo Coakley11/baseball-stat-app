@@ -19,16 +19,12 @@ def prepare_baseball_auth_session(st: Any) -> None:
 
 
 def _dev_auth_details_visible(session: dict[str, Any]) -> bool:
-    if session.get("dev_mode") or session.get("app_developer_mode"):
-        return True
     try:
-        from suite_workspace import _developer_query_enabled
+        from suite_workspace import developer_ui_visible_from_session
 
-        if _developer_query_enabled(st=type("S", (), {"session_state": session})()):
-            return True
+        return developer_ui_visible_from_session(session)
     except ImportError:
-        pass
-    return False
+        return False
 
 
 def real_account_status(session: dict[str, Any]) -> dict[str, Any]:

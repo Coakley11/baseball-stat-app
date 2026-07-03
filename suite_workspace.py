@@ -297,8 +297,17 @@ def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:
 
 
 def can_show_developer_tools(*, st: Any | None = None) -> bool:
-    """Explicit developer mode on an eligible workspace profile."""
-    return developer_tools_workspace_eligible(st=st) and is_developer_mode_enabled(st=st)
+    """Developer UI gate: eligible workspace + Developer Mode checkbox (not ?dev=1 alone)."""
+    return developer_tools_workspace_eligible(st=st) and developer_mode_checkbox_enabled(st=st)
+
+
+def developer_ui_visible_from_session(session: dict[str, Any]) -> bool:
+    """Session-only developer UI gate (ignores ?dev=1; no Streamlit import required)."""
+    try:
+        st_obj = type("_DevGateSt", (), {"session_state": session, "query_params": {}})()
+        return can_show_developer_tools(st=st_obj)
+    except Exception:
+        return False
 
 
 def developer_mode_checkbox_enabled(*, st: Any | None = None) -> bool:

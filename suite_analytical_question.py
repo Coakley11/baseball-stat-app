@@ -274,8 +274,6 @@ def ami_sidebar_build_marker() -> str:
 
 def _ami_sidebar_debug_visible(st: Any, session_state: dict[str, Any]) -> bool:
     """True only when the Developer Mode sidebar checkbox is on."""
-    if session_state.get("dev_mode"):
-        return True
     try:
         from suite_workspace import developer_mode_checkbox_enabled
 

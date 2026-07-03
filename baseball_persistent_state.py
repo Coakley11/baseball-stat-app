@@ -1194,7 +1194,14 @@ def _workspace_meta(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_cross_device_sync_debug(st: Any) -> None:
-    """Developer / ?dev=1 panel — authoritative workspace sync trace."""
+    """Developer Mode panel — authoritative workspace sync trace."""
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st):
+            return
+    except ImportError:
+        return
     try:
         from suite_cloud_state import FULL_SESSION_KEY, parse_persist_timestamp, probe_cloud_restore_diagnostics
         from suite_user_persistence import _applied_cloud_ts_key, _local_dirty_key, state_file_path
