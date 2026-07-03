@@ -28,14 +28,14 @@ class TestDraftAmiHelpers(unittest.TestCase):
                     "Expected Fantasy Value": 0.91,
                     "Decision Score": 0.87,
                     "Draft Fit Score": 1.35,
-                    "Reason": "Strong fit",
+                    "Why this pick": "Strong pick because he fills OF need.",
                 }
             ]
         )
         rows = compact_recommendation_rows(df)
         self.assertEqual(rows[0]["player"], "Corbin Carroll")
         self.assertEqual(rows[0]["Primary Position"], "OF")
-        self.assertEqual(rows[0]["reason"], "Strong fit")
+        self.assertEqual(rows[0]["why_this_pick"], "Strong pick because he fills OF need.")
         self.assertIn(DISPLAY_PLAYER_GRADE, rows[0])
         self.assertIn(DISPLAY_PICK_SCORE, rows[0])
         self.assertIn(DISPLAY_ROSTER_FIT, rows[0])

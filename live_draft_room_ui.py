@@ -879,6 +879,114 @@ def build_why_this_pick_summary(
     return "; ".join(parts[:5]) + "."
 
 
+def build_draft_assistant_why_this_pick(
+    row: Any,
+    *,
+    needed_positions: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    pool_df: Any = None,
+    draft_format: str = "5x5 Roto",
+) -> str:
+    """Natural-language one-line rationale for Draft Assistant (no duplicate Proj: prose)."""
+    pos = str(row.get("Primary Position") or "")
+    strengths: list[str] = []
+    if pool_df is not None:
+        try:
+            from live_draft_category_outlook import player_top_category_strengths
+
+            scoring = (
+                "Roto (5x5)"
+                if str(draft_format).strip() in ("5x5 Roto", "Roto (5x5)")
+                else str(draft_format)
+            )
+            strengths = player_top_category_strengths(
+                row,
+                pool_df,
+                config={"scoring_type": scoring, "fantasy_format": draft_format},
+                max_count=2,
+            )
+        except ImportError:
+            pass
+
+    gaps = list(needed_positions or [])
+    clauses: list[str] = []
+
+    pos_fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+    fills_need = bool(pos and pos in gaps and pd.notna(pos_fit) and float(pos_fit) >= 0.5)
+    if fills_need:
+        open_of = sum(1 for g in gaps if g == "OF")
+        if pos == "OF" and open_of >= 2:
+            clauses.append(f"he fills your OF need ({open_of} spots open)")
+        else:
+            clauses.append(f"he fills your {pos} need")
+
+    cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
+    if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
+        cat_label = "/".join(str(c) for c in category_needs[:2])
+        clauses.append(f"improves your {cat_label} outlook")
+
+    if strengths:
+        clauses.append(f"adds {'/'.join(strengths)} strength")
+
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
+    mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
+    if pd.notna(edge) and float(edge) >= 8:
+        if pd.notna(mkt) and pd.notna(mdl):
+            clauses.append(
+                f"the model ranks him well above market (model {int(round(float(mdl)))} vs market {int(round(float(mkt)))})"
+            )
+        else:
+            clauses.append(f"Fantasy Edge +{int(round(float(edge)))}")
+    elif pd.notna(edge) and float(edge) <= -8:
+        clauses.append("market rank runs ahead of the model")
+
+    try:
+        from draft_score_display import format_detail_line
+
+        _, ds_val = format_detail_line("Decision Score", row.get("Decision Score"))
+        _, rf_val = format_detail_line("Draft Fit Score", row.get("Draft Fit Score"))
+        ds_ok = ds_val and str(ds_val).strip() not in ("", "-", "Not available", "n/a")
+        rf_ok = rf_val and str(rf_val).strip() not in ("", "-", "Not available", "n/a")
+        if ds_ok and not fills_need:
+            clauses.append(f"a strong Decision Score ({ds_val})")
+        if rf_ok and fills_need:
+            clauses.append(f"a strong Roster Fit Score ({rf_val})")
+    except ImportError:
+        pass
+
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.6 and not fills_need:
+        clauses.append(f"few quality {pos} options remain")
+
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv) and float(surv) < 0.35:
+        clauses.append("may not be available next round")
+
+    decision = pd.to_numeric(row.get("Decision Score", np.nan), errors="coerce")
+    weak_fit = bool(pos and pos not in gaps and pd.notna(pos_fit) and float(pos_fit) < 0.45)
+    if weak_fit and pd.notna(decision) and float(decision) >= 0.65:
+        lead = f"Good but not urgent: strong player grade, but weaker roster fit because {pos} is already filled"
+        if clauses:
+            return lead + ", and " + ", ".join(clauses[:3]) + "."
+        return lead + "."
+
+    if fills_need and any("Roster Fit" in c for c in clauses):
+        lead = "Best roster fit because"
+    elif pd.notna(edge) and float(edge) >= 8:
+        lead = "High-value target because"
+    elif fills_need:
+        lead = "Strong pick because"
+    else:
+        lead = "Draft because"
+
+    if not clauses:
+        return build_why_this_pick_summary(
+            row, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
+        )
+    return lead + " " + ", ".join(clauses[:4]) + "."
+
+
 def add_why_this_pick_column(
     rec_df: Any,
     *,

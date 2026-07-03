@@ -86,8 +86,7 @@ AMI_REC_COLUMNS = (
     "Decision Score",
     "Survival Probability",
     "Survival Label",
-    "Reason",
-    "Strategy",
+    "Why this pick",
 )
 
 
@@ -107,7 +106,9 @@ def compact_recommendation_rows(df_or_rows: Any, *, limit: int = 8) -> list[dict
             for col in AMI_REC_COLUMNS:
                 if col in row.index and pd.notna(row.get(col)):
                     val = row.get(col)
-                    if col in ("Reason", "Strategy") and val:
+                    if col in ("Why this pick", "why this pick") and val:
+                        entry["why_this_pick"] = str(val)[:240]
+                    elif col in ("Reason", "Strategy") and val:
                         entry[col.lower()] = str(val)[:240]
                     else:
                         entry[col] = val

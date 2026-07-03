@@ -242,8 +242,6 @@ if not hasattr(pg_xfer, "top_players_in_display_order"):
     pg_xfer.summarize_transfer_payload = summarize_transfer_payload
 
 import page_state as pg_state
-from draft_strategy_intel import draft_strategy_line
-from draft_team_fit import team_fit_summary_line
 from projection_style import PROJECTION_STYLE_OPTIONS, get_draft_projection_factors
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -3917,7 +3915,7 @@ def make_draft_recommendation_insight(row):
     parts.append(f"has Roster Fit Score **{fit}** and Player Grade **{grade}**.")
     if market or model:
         parts.append(f"Market rank **{market or 'N/A'}**, model rank **{model or 'N/A'}**, fantasy edge **{edge or 'N/A'}**.")
-    for col in ["Reason", "Team fit", "Strategy"]:
+    for col in ["Why this pick"]:
         val = sanitize_draft_terminology_text(str(row.get(col, "")).strip())
         if val:
             parts.append(val)
@@ -17875,178 +17873,34 @@ if active_page == "Draft Assistant Simulator":
             recommendation_mode="draft_fit",
         )
 
-        def make_draft_reason(r):
-            pieces = []
-            if pd.notna(r.get("Fantasy Edge", np.nan)) and r.get("Fantasy Edge", 0) > 0:
-                pieces.append(
-                    f"our model likes him more than ADP by about {fmt_int(r['Fantasy Edge'])} rank spots "
-                    f"(market {fmt_int(r.get('Market Rank'))} vs model {fmt_int(r.get('Model Rank'))})"
-                )
-            elif pd.notna(r.get("Fantasy Edge", np.nan)) and r.get("Fantasy Edge", 0) < 0:
-                pieces.append("ADP is ahead of our model, so he is less of a value target")
-
-            # Explain WHY the ML projection boosted the player.
-            ml_component = pd.to_numeric(r.get("ML Projection Component", 0), errors="coerce")
-            ml_score = pd.to_numeric(r.get("ML Projection Score", np.nan), errors="coerce")
-
-            proj_hr = pd.to_numeric(r.get("proj_HR", r.get("Projected HR", np.nan)), errors="coerce")
-            proj_rbi = pd.to_numeric(r.get("proj_RBI", r.get("Projected RBI", np.nan)), errors="coerce")
-            proj_r = pd.to_numeric(r.get("proj_R", r.get("Projected R", np.nan)), errors="coerce")
-            proj_sb = pd.to_numeric(r.get("proj_SB", r.get("Projected SB", np.nan)), errors="coerce")
-            proj_ba = pd.to_numeric(r.get("proj_BA", r.get("Projected BA", np.nan)), errors="coerce")
-            proj_ops = pd.to_numeric(r.get("proj_OPS", r.get("Projected OPS", np.nan)), errors="coerce")
-
-            hr_trend = pd.to_numeric(r.get("HR_trend", np.nan), errors="coerce")
-            ops_trend = pd.to_numeric(r.get("OPS_trend", np.nan), errors="coerce")
-            ba_trend = pd.to_numeric(r.get("BA_trend", np.nan), errors="coerce")
-            sb_trend = pd.to_numeric(r.get("SB_trend", np.nan), errors="coerce")
-
-            age = pd.to_numeric(r.get("Age", np.nan), errors="coerce")
-            games = pd.to_numeric(r.get("G", np.nan), errors="coerce")
-            ab = pd.to_numeric(r.get("AB", np.nan), errors="coerce")
-
-            if pd.notna(ml_component) and ml_component > 0.02:
-                ml_reasons = []
-
-                if pd.notna(proj_hr) and proj_hr >= 30:
-                    ml_reasons.append(f"major projected power ({fmt_count_1(proj_hr)} HR)")
-                elif pd.notna(proj_hr) and proj_hr >= 25:
-                    ml_reasons.append(f"strong projected power ({fmt_count_1(proj_hr)} HR)")
-
-                if pd.notna(proj_rbi) and proj_rbi >= 90:
-                    ml_reasons.append(f"high RBI projection ({fmt_count_1(proj_rbi)} RBI)")
-                elif pd.notna(proj_rbi) and proj_rbi >= 75:
-                    ml_reasons.append(f"useful run-production projection ({fmt_count_1(proj_rbi)} RBI)")
-
-                if pd.notna(proj_r) and proj_r >= 90:
-                    ml_reasons.append(f"strong run-scoring projection ({fmt_count_1(proj_r)} R)")
-
-                if pd.notna(proj_sb) and proj_sb >= 20:
-                    ml_reasons.append(f"plus speed projection ({fmt_count_1(proj_sb)} SB)")
-                elif pd.notna(proj_sb) and proj_sb >= 12:
-                    ml_reasons.append(f"some speed contribution ({fmt_count_1(proj_sb)} SB)")
-
-                if pd.notna(proj_ops) and proj_ops >= 0.850:
-                    ml_reasons.append(f"strong overall bat ({fmt_rate_3(proj_ops)} OPS)")
-                elif pd.notna(proj_ops) and proj_ops >= 0.800:
-                    ml_reasons.append(f"solid projected OPS ({fmt_rate_3(proj_ops)})")
-
-                if pd.notna(proj_ba) and proj_ba >= 0.275:
-                    ml_reasons.append(f"batting-average support ({fmt_rate_3(proj_ba)} BA)")
-
-                if pd.notna(hr_trend) and hr_trend > 2:
-                    ml_reasons.append("improving power trend")
-                if pd.notna(ops_trend) and ops_trend > 0.020:
-                    ml_reasons.append("improving OPS trend")
-                if pd.notna(ba_trend) and ba_trend > 0.010:
-                    ml_reasons.append("improving batting-average trend")
-                if pd.notna(sb_trend) and sb_trend > 2:
-                    ml_reasons.append("improving stolen-base trend")
-
-                if pd.notna(age) and 26 <= age <= 30:
-                    ml_reasons.append("prime-age profile")
-                elif pd.notna(age) and 23 <= age <= 25:
-                    ml_reasons.append("young growth/upside profile")
-
-                if pd.notna(games) and games >= 140:
-                    ml_reasons.append("stable playing time")
-                elif pd.notna(ab) and ab >= 500:
-                    ml_reasons.append("strong recent volume")
-
-                if pd.notna(ml_score):
-                    if ml_score >= 0.80:
-                        ml_prefix = "strong ML projection boost"
-                    elif ml_score >= 0.65:
-                        ml_prefix = "moderate ML projection boost"
-                    else:
-                        ml_prefix = "ML projection boost"
-                else:
-                    ml_prefix = "ML projection boost"
-
-                if ml_reasons:
-                    pieces.append(f"{ml_prefix} driven by " + ", ".join(ml_reasons[:4]))
-                else:
-                    pieces.append(f"{ml_prefix} based on the blended projection, trend, age, and playing-time signal")
-
-            if r.get("Primary Position") in needed_positions:
-                pieces.append(f"you still need a {r.get('Primary Position')} on your roster")
-            if r.get("Position Scarcity Bonus", 0) > 0.05:
-                pieces.append(f"few strong {r.get('Primary Position')} options remain at this pick")
-            if r.get("Category Need Bonus", 0) > 0:
-                pieces.append("helps the weak categories you selected above")
-            if r.get("Risk Penalty", 0) > 0.04:
-                pieces.append("experts disagree more on this player than most")
-            if not pieces:
-                pieces.append("ranks among the strongest available options for your roster right now")
-            return "Pick note: " + "; ".join(pieces[:4]) + "."
-
-        available["Reason"] = available.apply(make_draft_reason, axis=1)
-
-        recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
-
-        def _team_fit_for_row(r):
-            return team_fit_summary_line(
-                r,
-                draft_format=draft_format,
-                needed_positions=needed_positions,
-                category_needs=category_needs,
-                roster_means=roster_means,
-                pool_means=pool_means,
-                current_position_counts=dict(current_position_counts),
-                target_position_counts=target_position_counts,
-                roster_expert_std_mean=roster_expert_std_mean,
-                pool_expert_std_mean=pool_expert_std_mean,
-            )
-
-        recs["Team fit"] = recs.apply(_team_fit_for_row, axis=1)
-
-        position_meta_by_pos: dict[str, dict] = {}
         _drop_vals: list[float] = []
-        for _row in position_summary_rows:
-            _p = str(_row.get("Position", "")).strip()
-            if not _p:
-                continue
+        for _row in position_summary_rows or []:
             _dv = _row.get("Scarcity Dropoff", np.nan)
-            position_meta_by_pos[_p] = {
-                "dropoff": _dv,
-                "available": int(_row.get("Available Players", 0) or 0),
-            }
             if pd.notna(_dv):
                 try:
                     _drop_vals.append(float(_dv))
                 except (TypeError, ValueError):
                     pass
         median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
-        _sb_floor = 12 if draft_format == "5x5 Roto" else 10
-        remaining_high_sb_count = (
-            int((pd.to_numeric(available["proj_SB"], errors="coerce") >= _sb_floor).sum())
-            if "proj_SB" in available.columns
-            else 0
-        )
-        remaining_high_hr_count = (
-            int((pd.to_numeric(available["proj_HR"], errors="coerce") >= 22).sum())
-            if "proj_HR" in available.columns
-            else 0
-        )
 
-        def _strategy_for_row(r):
-            return draft_strategy_line(
-                r,
-                draft_format=draft_format,
-                current_pick=int(current_pick),
-                position_meta_by_pos=position_meta_by_pos,
-                median_scarcity_dropoff=median_scarcity_dropoff,
-                remaining_high_sb_count=remaining_high_sb_count,
-                remaining_high_hr_count=remaining_high_hr_count,
-                category_needs=category_needs,
-                roster_means=roster_means,
-                pool_means=pool_means,
-                needed_positions=needed_positions,
-                current_position_counts=dict(current_position_counts),
-                target_position_counts=target_position_counts,
+        recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
+
+        try:
+            from live_draft_room_ui import build_draft_assistant_why_this_pick
+
+            recs["Why this pick"] = recs.apply(
+                lambda r: build_draft_assistant_why_this_pick(
+                    r,
+                    needed_positions=needed_positions,
+                    category_needs=category_needs,
+                    pool_df=available,
+                    draft_format=draft_format,
+                ),
+                axis=1,
             )
+        except ImportError:
+            recs["Why this pick"] = ""
 
-        recs["Strategy"] = recs.apply(_strategy_for_row, axis=1)
         _ami_roster_detail: list[dict[str, str]] = []
         _ami_roster_index: dict[str, str] = {}
         if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns:
@@ -18097,7 +17951,7 @@ if active_page == "Draft Assistant Simulator":
                     for k, v in _pool_diag.items():
                         st.text(f"{k}: {v}")
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
-        best_fit = available.sort_values("Draft Fit Score", ascending=False).head(1).copy()
+        best_fit = recs.head(1).copy()
 
         st.subheader("Top players left by market value")
         st.caption("Best ADP/market ranks still on the board (lower rank number = drafted earlier in real leagues).")
@@ -18131,13 +17985,13 @@ if active_page == "Draft Assistant Simulator":
                         st,
                         bf,
                         headline="Best pick for your team now",
-                        detail=str(bf.get("Reason", "") or ""),
+                        detail=str(bf.get("Why this pick", "") or ""),
                         variant="success",
                     )
                 except ImportError:
                     st.success(
                         f"**Best pick for your team now:** **{bf['fullName']}** ({bf.get('Primary Position', '')}). "
-                        f"{bf.get('Reason', '')}"
+                        f"{bf.get('Why this pick', '')}"
                     )
         with bv2:
             if not best_value.empty:
@@ -18165,14 +18019,15 @@ if active_page == "Draft Assistant Simulator":
         rec_cols = [
             "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
             "ML Projection Score", "Expected Fantasy Value", "Decision Score", "Draft Fit Score",
-            "Team fit", "Strategy", "Reason",
+            "Why this pick",
         ]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         if "Pick Score" in recs_display.columns:
             recs_display = recs_display.rename(columns={"Pick Score": "Decision Score"})
         st.caption(
-            "Recommendation table with roster fit, strategy context, and CSV export. "
+            "Recommendation table with roster fit context and CSV export. "
+            "**Why this pick** summarizes the main drivers in one line. "
             "**Player Grade** = overall player quality (0–100). "
             "**Roster Fit Score** = fit for your roster right now."
         )
@@ -18197,7 +18052,7 @@ if active_page == "Draft Assistant Simulator":
                         render_draft_player_profile_card(
                             st,
                             rec_row,
-                            reason=str(rec_row.get("Reason") or rec_row.get("Strategy") or "").strip(),
+                            reason=str(rec_row.get("Why this pick") or "").strip(),
                             show_decision_score=True,
                             compact=True,
                         )
