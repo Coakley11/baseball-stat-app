@@ -948,23 +948,34 @@ def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
     try:
-        from page_perf import perf_end, perf_timer
+        from page_perf_phases import session_perf_phase
 
-        t0 = perf_timer(ss, "workspace_sync")
+        with session_perf_phase(ss, "cloud_hydration"):
+            result = sync_workspace_protocol(
+                st,
+                APP_ID,
+                apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
+                cloud_first=True,
+            )
     except ImportError:
-        t0 = 0.0
-    result = sync_workspace_protocol(
-        st,
-        APP_ID,
-        apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
-        cloud_first=True,
-    )
-    try:
-        from page_perf import perf_end
+        try:
+            from page_perf import perf_end, perf_timer
 
-        perf_end(ss, "workspace_sync", t0)
-    except ImportError:
-        pass
+            t0 = perf_timer(ss, "workspace_sync")
+        except ImportError:
+            t0 = 0.0
+        result = sync_workspace_protocol(
+            st,
+            APP_ID,
+            apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
+            cloud_first=True,
+        )
+        try:
+            from page_perf import perf_end
+
+            perf_end(ss, "workspace_sync", t0)
+        except ImportError:
+            pass
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
 

@@ -9,6 +9,7 @@ import pandas as pd
 REC_CACHE_KEY = "_live_draft_rec_cache"
 AVAILABLE_CACHE_KEY = "_live_draft_available_cache"
 DECISION_CACHE_KEY = "_live_draft_decision_cache"
+WHY_COLUMN_CACHE_KEY = "_live_draft_why_column_cache"
 DA_SCORING_CACHE_KEY = "_draft_assistant_scoring_cache"
 
 
@@ -19,6 +20,7 @@ def invalidate_live_draft_ui_caches(session: dict[str, Any] | None) -> None:
     session.pop(REC_CACHE_KEY, None)
     session.pop(AVAILABLE_CACHE_KEY, None)
     session.pop(DECISION_CACHE_KEY, None)
+    session.pop(WHY_COLUMN_CACHE_KEY, None)
 
 
 def invalidate_draft_assistant_scoring_cache(session: dict[str, Any] | None) -> None:
@@ -40,7 +42,6 @@ def live_draft_ui_cache_key(
     slots = dict(cfg.get("slots") or {})
     slots_key = tuple(sorted((k, int(v or 0)) for k, v in slots.items()))
     rev = int(((room.get("meta") or {}).get("sync") or {}).get("revision") or 0)
-    queue = tuple(str(x) for x in (session.get("draft_queue") or [])[:20])
     scoring = (
         str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
         bool(cfg.get("use_ml_blend")),
@@ -53,7 +54,7 @@ def live_draft_ui_cache_key(
             for t, players in (room.get("rosters") or {}).items()
         )
     )
-    return (idx, board_len, team_s, int(top_n), slots_key, rev, queue, scoring, roster_sig)
+    return (idx, board_len, team_s, int(top_n), slots_key, rev, scoring, roster_sig)
 
 
 def available_pool_cache_key(room: dict[str, Any]) -> tuple[Any, ...]:
@@ -76,10 +77,79 @@ def cached_live_draft_get_available(session: dict[str, Any], room: dict[str, Any
     if isinstance(entry, dict) and entry.get("key") == key:
         df = entry.get("df")
         if isinstance(df, pd.DataFrame):
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "live_draft_available_pool", hit=True)
+            except ImportError:
+                pass
             return df.copy()
+    try:
+        from page_perf_phases import record_cache_event
+
+        record_cache_event(session, "live_draft_available_pool", hit=False)
+    except ImportError:
+        pass
     df = live_draft_get_available(room)
     session[AVAILABLE_CACHE_KEY] = {"key": key, "df": df}
     return df.copy()
+
+
+def enrich_live_draft_recommendations_with_why(
+    session: dict[str, Any],
+    ui_cache_key: tuple[Any, ...] | None,
+    tables: dict[str, pd.DataFrame],
+    *,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    pool_df: Any = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Cache expensive Why-this-pick column enrichment across tab reruns."""
+    from live_draft_room_ui import add_why_this_pick_column
+
+    if ui_cache_key is None:
+        return {
+            name: add_why_this_pick_column(
+                df,
+                gaps=gaps,
+                category_needs=category_needs,
+                pool_df=pool_df,
+                config=config,
+            )
+            for name, df in tables.items()
+        }
+    entry = session.get(WHY_COLUMN_CACHE_KEY)
+    if isinstance(entry, dict) and entry.get("key") == ui_cache_key:
+        stored = entry.get("tables")
+        if isinstance(stored, dict) and all(name in stored for name in tables):
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "live_draft_why_columns", hit=True)
+            except ImportError:
+                pass
+            return {name: stored[name].copy() for name in tables}
+    try:
+        from page_perf_phases import record_cache_event
+
+        record_cache_event(session, "live_draft_why_columns", hit=False)
+    except ImportError:
+        pass
+    enriched: dict[str, pd.DataFrame] = {}
+    for name, df in tables.items():
+        enriched[name] = add_why_this_pick_column(
+            df,
+            gaps=gaps,
+            category_needs=category_needs,
+            pool_df=pool_df,
+            config=config,
+        )
+    session[WHY_COLUMN_CACHE_KEY] = {
+        "key": ui_cache_key,
+        "tables": {name: enriched[name].copy() for name in enriched},
+    }
+    return enriched
 
 
 def get_cached_live_draft_decision_context(

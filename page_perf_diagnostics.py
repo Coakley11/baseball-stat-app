@@ -20,6 +20,13 @@ def _set_perf_ns(ns: dict[str, Any]) -> None:
 def mark_page_perf(phase: str, elapsed_sec: float) -> None:
     import streamlit as st
 
+    try:
+        from page_perf_phases import record_perf_phase
+
+        record_perf_phase(st.session_state, phase, elapsed_sec)
+        return
+    except ImportError:
+        pass
     ns = _perf_ns()
     timings = dict(ns.get("timings") or {})
     timings[str(phase)] = round(float(elapsed_sec), 4)
@@ -45,6 +52,7 @@ def start_page_perf_run(active_page: str) -> None:
         "timings": {},
         "started_at": time.perf_counter(),
     }
+    st.session_state.pop("_page_perf_cache_audit", None)
 
 
 def finish_page_perf_run() -> None:
@@ -58,19 +66,10 @@ def finish_page_perf_run() -> None:
 
 def render_page_perf_diagnostics(st: Any) -> None:
     try:
-        from suite_workspace import developer_mode_checkbox_enabled
+        from page_perf_phases import render_perf_report
 
-        if not developer_mode_checkbox_enabled(st=st):
-            return
+        import streamlit as _st
+
+        render_perf_report(st, _st.session_state)
     except ImportError:
-        return
-    ns = _perf_ns()
-    if not ns:
-        return
-    timings = dict(ns.get("timings") or {})
-    if not timings:
-        return
-    with st.sidebar.expander("Page performance", expanded=False):
-        st.text(f"page: {ns.get('page', '')}")
-        for phase, sec in sorted(timings.items(), key=lambda kv: kv[1], reverse=True):
-            st.text(f"{phase}: {sec:.3f}s")
+        pass

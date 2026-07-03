@@ -1301,7 +1301,13 @@ def draft_player(
         result = _draft_simulator(session, name, source=src)
 
     if result.get("ok"):
-        side = _post_draft_side_effects(session, name, st_obj=st_obj, save_reason=f"draft_player:{src}")
+        try:
+            from page_perf_phases import session_perf_phase
+
+            with session_perf_phase(session, "draft_pick_action"):
+                side = _post_draft_side_effects(session, name, st_obj=st_obj, save_reason=f"draft_player:{src}")
+        except ImportError:
+            side = _post_draft_side_effects(session, name, st_obj=st_obj, save_reason=f"draft_player:{src}")
         result["queue_after"] = side.get("queue_after")
         result["saved"] = side.get("saved", False)
 
