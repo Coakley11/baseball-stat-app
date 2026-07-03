@@ -10,10 +10,12 @@ ACCOUNT_EXPANDER_FLAG = "_baseball_account_expander_open"
 def prepare_baseball_auth_session(st: Any) -> None:
     """Restore Supabase Auth from browser tokens before sidebar/widgets render."""
     try:
-        from suite_auth import is_auth_enabled, restore_auth_session
+        from suite_auth import enforce_workspace_ownership, is_auth_enabled, restore_auth_session
 
         if is_auth_enabled():
             restore_auth_session(st.session_state, st=st)
+            if st.session_state.get("_suite_auth_session"):
+                enforce_workspace_ownership(st.session_state)
     except ImportError:
         pass
 

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from suite_auth import allowed_workspaces_for_user, enforce_workspace_ownership
 from suite_workspace import (
+    bootstrap_suite_workspace,
     get_active_workspace_id,
     init_suite_workspace,
     load_persisted_workspace_id,
@@ -152,6 +153,66 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
             ws = init_suite_workspace(st)
             self.assertEqual(ws, "ariel")
             self.assertGreaterEqual(enforce_mock.call_count, 1)
+
+    def test_bootstrap_auth_before_workspace_coakley11(self) -> None:
+        """Startup smoke: stale daniel session + foreign URL → coakley11 after bootstrap."""
+        session = _auth_session(
+            user_id="uuid-coakley",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        session["_suite_active_workspace_id"] = "daniel"
+        st = _FakeSt(session, query={"suite_workspace": "daniel"})
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            reg = data / "workspaces" / "_ownership_registry.json"
+            active_dir = data / "workspaces" / "_active"
+            global_persist = data / "suite_active_workspace.json"
+            global_persist.write_text(
+                json.dumps({"workspace_id": "daniel", "label": "Daniel"}),
+                encoding="utf-8",
+            )
+            with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+                "suite_auth.is_authenticated", return_value=True
+            ), patch("suite_auth.restore_auth_session", return_value=True), patch(
+                "suite_workspace_registry.DATA_DIR", data
+            ), patch("suite_workspace_registry.REGISTRY_FILE", reg), patch(
+                "suite_workspace_registry.ACTIVE_DIR", active_dir
+            ), patch("suite_workspace.DATA_DIR", data), patch(
+                "suite_workspace._PERSISTED_FILE", global_persist
+            ):
+                ws = bootstrap_suite_workspace(st)
+                self.assertEqual(ws, "coakley11")
+                self.assertEqual(get_active_workspace_id(st), "coakley11")
+                self.assertNotEqual(get_active_workspace_id(st), "daniel")
+
+    def test_bootstrap_refresh_stays_coakley11(self) -> None:
+        """Second bootstrap (refresh) keeps coakley11 owned workspace."""
+        session = _auth_session(
+            user_id="uuid-coakley",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        st = _FakeSt(session)
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            reg = data / "workspaces" / "_ownership_registry.json"
+            active_dir = data / "workspaces" / "_active"
+            with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+                "suite_auth.is_authenticated", return_value=True
+            ), patch("suite_auth.restore_auth_session", return_value=True), patch(
+                "suite_workspace_registry.DATA_DIR", data
+            ), patch("suite_workspace_registry.REGISTRY_FILE", reg), patch(
+                "suite_workspace_registry.ACTIVE_DIR", active_dir
+            ), patch("suite_workspace.DATA_DIR", data), patch(
+                "suite_workspace._PERSISTED_FILE", data / "suite_active_workspace.json"
+            ):
+                first = bootstrap_suite_workspace(st)
+                persist_active_workspace_id(first, session_state=st.session_state)
+                st.session_state.pop("_suite_workspace_initialized", None)
+                second = bootstrap_suite_workspace(st)
+                self.assertEqual(first, "coakley11")
+                self.assertEqual(second, "coakley11")
 
 
 if __name__ == "__main__":

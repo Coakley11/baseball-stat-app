@@ -470,9 +470,9 @@ import portfolio_demo as pdemo
 pp.inject_polish_css(st, app_slug="baseball")
 
 try:
-    from suite_workspace import init_suite_workspace
+    from suite_workspace import bootstrap_suite_workspace
 
-    init_suite_workspace(st)
+    bootstrap_suite_workspace(st)
 except Exception:
     pass
 
@@ -487,13 +487,6 @@ try:
     from suite_egress_trace import reset_run_egress_summary
 
     reset_run_egress_summary()
-except Exception:
-    pass
-
-try:
-    from baseball_account_sidebar import prepare_baseball_auth_session
-
-    prepare_baseball_auth_session(st)
 except Exception:
     pass
 

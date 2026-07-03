@@ -364,6 +364,25 @@ def _qp_get(st: Any, name: str) -> str:
     return str(raw).strip()
 
 
+def bootstrap_suite_workspace(st: Any) -> str:
+    """
+    Restore authenticated account identity before workspace selection.
+
+    Prevents a signed-in user from briefly loading another profile's persisted
+    workspace (e.g. coakley11 seeing daniel) during app startup.
+    """
+    try:
+        from suite_auth import enforce_workspace_ownership, is_auth_enabled, restore_auth_session
+
+        if is_auth_enabled():
+            restore_auth_session(st.session_state, st=st)
+            if st.session_state.get("_suite_auth_session"):
+                enforce_workspace_ownership(st.session_state)
+    except ImportError:
+        pass
+    return init_suite_workspace(st)
+
+
 def init_suite_workspace(st: Any) -> str:
     """
     Apply ?suite_workspace=, else session/persisted choice.
