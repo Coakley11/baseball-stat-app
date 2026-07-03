@@ -659,6 +659,13 @@ def render_draft_shared_settings_diagnostics(
     widget_style_key: str | None = None,
     widget_format_key: str | None = None,
 ) -> None:
+    try:
+        from suite_workspace import is_developer_mode_enabled
+
+        if not is_developer_mode_enabled(st=st):
+            return
+    except ImportError:
+        return
     diag = draft_shared_settings_diagnostics(
         session,
         active_page=active_page,

@@ -17822,7 +17822,12 @@ if active_page == "Draft Assistant Simulator":
             available = _da_scored["available"].copy()
             _gaps = list(_da_scored.get("gaps") or [])
             position_summary_rows = list(_da_scored.get("position_summary_rows") or [])
-            recs = _da_scored["recs"].copy()
+            recs_ranked = _da_scored.get("recs_ranked")
+            if recs_ranked is None:
+                legacy = _da_scored.get("recs")
+                recs_ranked = legacy.copy() if isinstance(legacy, pd.DataFrame) else pd.DataFrame()
+            else:
+                recs_ranked = recs_ranked.copy()
         else:
             available, _gaps, position_summary_rows = apply_draft_pick_scoring(
                 available,
@@ -17856,12 +17861,12 @@ if active_page == "Draft Assistant Simulator":
                     if str(r.get("Position") or "") in _active_pos
                 ]
 
-            recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
+            recs_ranked = available.sort_values("Draft Fit Score", ascending=False).copy()
 
             try:
                 from live_draft_room_ui import build_draft_assistant_why_this_pick
 
-                recs["Why this pick"] = recs.apply(
+                recs_ranked["Why this pick"] = recs_ranked.apply(
                     lambda r: build_draft_assistant_why_this_pick(
                         r,
                         needed_positions=needed_positions,
@@ -17872,7 +17877,7 @@ if active_page == "Draft Assistant Simulator":
                     axis=1,
                 )
             except ImportError:
-                recs["Why this pick"] = ""
+                recs_ranked["Why this pick"] = ""
 
             if _da_key is not None:
                 try:
@@ -17883,7 +17888,7 @@ if active_page == "Draft Assistant Simulator":
                         "available": available.copy(),
                         "gaps": list(_gaps or []),
                         "position_summary_rows": list(position_summary_rows or []),
-                        "recs": recs.copy(),
+                        "recs_ranked": recs_ranked.copy(),
                     }
                 except ImportError:
                     pass
@@ -17895,6 +17900,28 @@ if active_page == "Draft Assistant Simulator":
                 if pd.notna(r.get("Scarcity Dropoff"))
             ]
             median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
+
+        if recs_ranked.empty and not available.empty:
+            recs_ranked = available.sort_values("Draft Fit Score", ascending=False).copy()
+
+        from recommendation_dedupe import (
+            add_recommendation_rank_column,
+            collect_featured_player_ids,
+            recommendation_player_id,
+            remaining_recommendations,
+        )
+
+        best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
+        best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
+        featured_ids = collect_featured_player_ids(best_fit, best_value)
+        recs = remaining_recommendations(recs_ranked, featured_ids, limit=int(draft_top_n))
+        _featured_card_count = int(not best_fit.empty) + int(
+            not best_value.empty
+            and (
+                best_fit.empty
+                or recommendation_player_id(best_value.iloc[0]) != recommendation_player_id(best_fit.iloc[0])
+            )
+        )
 
         _ami_roster_detail: list[dict[str, str]] = []
         _ami_roster_index: dict[str, str] = {}
@@ -17945,8 +17972,6 @@ if active_page == "Draft Assistant Simulator":
                 with st.expander("AMI player pool diagnostics", expanded=False):
                     for k, v in _pool_diag.items():
                         st.text(f"{k}: {v}")
-        best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
-        best_fit = recs.head(1).copy()
 
         st.subheader("Top players left by market value")
         st.caption("Best ADP/market ranks still on the board (lower rank number = drafted earlier in real leagues).")
@@ -17991,7 +18016,7 @@ if active_page == "Draft Assistant Simulator":
         with bv2:
             if not best_value.empty:
                 bv = best_value.iloc[0]
-                alt = not best_fit.empty and best_fit.iloc[0]["fullName"] != bv["fullName"]
+                alt = not best_fit.empty and recommendation_player_id(best_fit.iloc[0]) != recommendation_player_id(bv)
                 if alt:
                     try:
                         from player_photos import render_draft_pick_callout
@@ -18017,6 +18042,7 @@ if active_page == "Draft Assistant Simulator":
             "Why this pick",
         ]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
+        recs_display = add_recommendation_rank_column(recs_display, start_rank=_featured_card_count + 1)
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         if "Pick Score" in recs_display.columns:
             recs_display = recs_display.rename(columns={"Pick Score": "Decision Score"})
@@ -20747,10 +20773,24 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 if not _defer_recs:
-                    top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
-                        st.session_state, room, top_n=6, team=_rec_team
+                    _LIVE_REC_CARD_COUNT = 6
+                    _LIVE_REC_TABLE_COUNT = 10
+                    top_rec_pool, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                        st.session_state,
+                        room,
+                        top_n=_LIVE_REC_CARD_COUNT + _LIVE_REC_TABLE_COUNT,
+                        team=_rec_team,
+                    )
+                    from recommendation_dedupe import collect_featured_player_ids, remaining_recommendations
+
+                    top_rec_cards = top_rec_pool.head(_LIVE_REC_CARD_COUNT)
+                    _card_featured_ids = collect_featured_player_ids(top_rec_cards)
+                    top_rec = remaining_recommendations(
+                        top_rec_pool, _card_featured_ids, limit=_LIVE_REC_TABLE_COUNT
                     )
                 else:
+                    top_rec_pool = pd.DataFrame()
+                    top_rec_cards = pd.DataFrame()
                     top_rec = best_avail = pos_fit = value_sleep = pd.DataFrame()
                 try:
                     from live_draft_start_progress import flush_pending_live_draft_created_activity, mark_start_step
@@ -20768,7 +20808,10 @@ if active_page == "Live Draft Room":
                     )
 
                     _ui_cache_key = live_draft_ui_cache_key(
-                        st.session_state, room, top_n=6, team=_rec_team
+                        st.session_state,
+                        room,
+                        top_n=_LIVE_REC_CARD_COUNT + _LIVE_REC_TABLE_COUNT,
+                        team=_rec_team,
                     )
                     _available_cached = cached_live_draft_get_available(st.session_state, room)
                 except ImportError:
@@ -20840,7 +20883,7 @@ if active_page == "Live Draft Room":
                         st.session_state,
                         page="Live Draft Room",
                         room=room,
-                        top_rec_df=top_rec,
+                        top_rec_df=top_rec_pool if not top_rec_pool.empty else top_rec,
                         best_avail_df=best_avail,
                         pos_fit_df=pos_fit,
                         value_sleep_df=value_sleep,
@@ -20865,8 +20908,8 @@ if active_page == "Live Draft Room":
                         st.caption("Loading recommendations…")
                     else:
                         st.caption(
-                            "**Fantasy Edge** on cards = value vs market. Open **Details** for "
-                            "**Player Grade** (0–100), **Roster Fit Score**, and **Decision Score** (0–100)."
+                            "**Fantasy Edge** on cards = value vs market. Expand **Why Recommended** for "
+                            "category impact, scarcity, market value, and roster fit."
                         )
                         try:
                             from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
@@ -20874,12 +20917,12 @@ if active_page == "Live Draft Room":
                             st.caption(ROSTER_FIT_CONTEXT_NOTES["live_draft"])
                         except ImportError:
                             pass
-                        render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
+                        render_live_draft_rec_summary_banner(st, top_rec_cards, gaps=_gaps)
                         render_live_draft_rec_cards(
                             st,
                             st.session_state,
                             room,
-                            top_rec,
+                            top_rec_cards,
                             max_cards=6,
                             multiplayer=_multiplayer_draft,
                             fmt_rate_4=fmt_rate_4,
@@ -20888,7 +20931,7 @@ if active_page == "Live Draft Room":
                             category_needs=_category_needs,
                         )
                 except ImportError:
-                    _render_live_draft_rec_cards(top_rec, max_cards=6)
+                    _render_live_draft_rec_cards(top_rec_cards if not top_rec_cards.empty else top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                 rec_cols = [
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
@@ -21067,6 +21110,27 @@ if active_page == "Live Draft Room":
                     else f"{picks_done} picks completed"
                 )
                 st.caption(picks_txt)
+            _save_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
+            if _save_team and _save_team != "—":
+                with st.expander("Save completed draft team", expanded=False):
+                    _archive_name = st.text_input(
+                        "Draft name",
+                        value=f"{cfg.get('league_name', 'Live Draft')} — {_save_team}",
+                        key="live_draft_archive_name_input",
+                    )
+                    if st.button("Save Draft Team", key="live_draft_save_archive_btn", type="secondary"):
+                        try:
+                            from draft_archive_state import save_live_draft_team_archive
+
+                            entry = save_live_draft_team_archive(
+                                st.session_state,
+                                room,
+                                team_name=_save_team,
+                                draft_name=_archive_name,
+                            )
+                            st.success(f"Saved **{entry.get('draft_name')}** ({len(entry.get('players') or [])} players).")
+                        except Exception as exc:
+                            st.error(f"Could not save draft team: {exc}")
             if not roster_df.empty:
                 recap_team = str(cfg.get("your_team") or st.session_state.get("room_your_team") or "").strip()
                 if recap_team and "Fantasy Team" in roster_df.columns:

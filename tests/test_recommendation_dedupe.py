@@ -1,0 +1,97 @@
+"""Tests for recommendation_dedupe — featured cards vs follow-on lists."""
+
+from __future__ import annotations
+
+import unittest
+
+import pandas as pd
+
+from recommendation_dedupe import (
+    add_recommendation_rank_column,
+    collect_featured_player_ids,
+    exclude_recommendation_player_ids,
+    recommendation_player_id,
+    remaining_recommendations,
+)
+
+
+def _rows(*specs):
+    return pd.DataFrame(
+        [
+            {
+                "playerID": pid,
+                "fullName": name,
+                "Draft Fit Score": score,
+                "Expected Fantasy Value": score,
+            }
+            for pid, name, score in specs
+        ]
+    )
+
+
+class TestRecommendationPlayerId(unittest.TestCase):
+    def test_prefers_player_id(self):
+        row = pd.Series({"playerID": "592450", "fullName": "Aaron Judge"})
+        self.assertEqual(recommendation_player_id(row), "592450")
+
+    def test_falls_back_to_name(self):
+        row = pd.Series({"fullName": "Aaron Judge"})
+        self.assertEqual(recommendation_player_id(row), "name:aaron judge")
+
+
+class TestRecommendationDedupe(unittest.TestCase):
+    def test_excludes_two_featured_players(self):
+        ranked = _rows(
+            ("1", "Shohei Ohtani", 95),
+            ("2", "Aaron Judge", 90),
+            ("3", "Juan Soto", 88),
+            ("4", "Kyle Schwarber", 85),
+        )
+        featured = collect_featured_player_ids(ranked.head(1), ranked.iloc[1:2])
+        remaining = remaining_recommendations(ranked, featured, limit=10)
+        self.assertEqual(remaining["playerID"].tolist(), ["3", "4"])
+
+    def test_same_player_featured_once(self):
+        ranked = _rows(
+            ("1", "Shohei Ohtani", 95),
+            ("2", "Aaron Judge", 90),
+            ("3", "Juan Soto", 88),
+        )
+        same = ranked.head(1)
+        featured = collect_featured_player_ids(same, same)
+        self.assertEqual(featured, {"1"})
+        remaining = remaining_recommendations(ranked, featured, limit=10)
+        self.assertEqual(remaining["playerID"].tolist(), ["2", "3"])
+
+    def test_limit_preserves_count_after_exclusion(self):
+        ranked = _rows(
+            ("1", "A", 10),
+            ("2", "B", 9),
+            ("3", "C", 8),
+            ("4", "D", 7),
+            ("5", "E", 6),
+        )
+        featured = {"1", "2"}
+        remaining = remaining_recommendations(ranked, featured, limit=3)
+        self.assertEqual(len(remaining), 3)
+        self.assertEqual(remaining["playerID"].tolist(), ["3", "4", "5"])
+
+    def test_dedupe_by_id_not_name(self):
+        ranked = pd.DataFrame(
+            [
+                {"playerID": "99", "fullName": "Duplicate Name", "Draft Fit Score": 10},
+                {"playerID": "2", "fullName": "Other", "Draft Fit Score": 9},
+            ]
+        )
+        featured = collect_featured_player_ids(pd.DataFrame([{"playerID": "99", "fullName": "Other Spelling"}]))
+        out = exclude_recommendation_player_ids(ranked, featured)
+        self.assertEqual(out["playerID"].tolist(), ["2"])
+
+    def test_rank_column_starts_after_featured(self):
+        df = _rows(("3", "Juan Soto", 88), ("4", "Kyle Schwarber", 85))
+        ranked_display = add_recommendation_rank_column(df, start_rank=3)
+        self.assertEqual(ranked_display["Rank"].tolist(), [3, 4])
+
+
+if __name__ == "__main__":
+    unittest.main()

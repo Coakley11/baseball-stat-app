@@ -127,6 +127,8 @@ _WORKFLOW_KEYS = (
     "workflow_recent_compare_pairs",
     "workflow_transfer_batches",
     "_queue_player_meta",
+    "draft_archive_teams",
+    "active_draft_archive_id",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"

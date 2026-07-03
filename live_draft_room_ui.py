@@ -382,6 +382,11 @@ def inject_live_draft_room_styles(st: Any) -> None:
         .ld-rec-badge.gold { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
         .ld-rec-badge.need { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
         .ld-rec-badge.fire { background: #ffedd5; color: #c2410c; border-color: #fdba74; }
+        .ld-rec-badge.safe { background: #f0fdf4; color: #166534; border-color: #86efac; }
+        .ld-rec-card-reason {
+            font-size: 0.88rem; font-weight: 700; color: #1e40af;
+            margin: 4px 0 2px 0; line-height: 1.35;
+        }
         .ld-draft-complete-banner {
             background: linear-gradient(135deg, #ecfdf5 0%, #dbeafe 100%);
             border: 2px solid #22c55e;
@@ -743,61 +748,101 @@ def _rec_card_badges(
     *,
     gaps: list[str] | None = None,
     category_needs: list[str] | None = None,
+    strengths: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Return (label, css_class) badge tuples for a recommendation card."""
-    badges: list[tuple[str, str]] = []
-    rank_labels = {1: "🏆 Best Overall", 2: "🥈 Second Best", 3: "🥉 Third Best"}
-    if rank in rank_labels:
-        badges.append((rank_labels[rank], "gold"))
+    try:
+        from live_draft_rec_badges import build_smart_recommendation_badges
 
-    if rec_df is not None and not getattr(rec_df, "empty", True) and "Fantasy Edge" in rec_df.columns:
-        edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
-        top_edge = pd.to_numeric(rec_df["Fantasy Edge"], errors="coerce").max()
-        if pd.notna(edge) and pd.notna(top_edge) and float(edge) >= float(top_edge):
-            badges.append(("🔥 Best Value", "fire"))
+        return build_smart_recommendation_badges(
+            rank,
+            row,
+            rec_df,
+            gaps=gaps,
+            category_needs=category_needs,
+            strengths=strengths,
+        )
+    except ImportError:
+        pass
+    return []
 
-    pos = str(row.get("Primary Position") or "")
+
+def _rec_tier_badge(rank: int, row: Any, *, badges: list[tuple[str, str]] | None = None) -> tuple[str, str]:
+    if badges:
+        label, css = badges[0]
+        css_map = {"gold": "ld-rec-tier-best", "fire": "ld-rec-tier-value", "need": "ld-rec-tier-need", "safe": "ld-rec-tier-safe"}
+        return label, css_map.get(css, "ld-rec-tier-strong")
     fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
-    if gaps and pos in gaps and pd.notna(fit) and float(fit) >= 0.5:
-        badges.append(("📈 Position Need", "need"))
-
-    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    if pd.notna(scarcity) and float(scarcity) >= 0.6:
-        if rec_df is not None and "Scarcity Score" in getattr(rec_df, "columns", []):
-            if float(scarcity) >= float(pd.to_numeric(rec_df["Scarcity Score"], errors="coerce").max() or 0):
-                badges.append(("⚡ Best Scarcity Pick", "need"))
-
-    cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
-    if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
-        badges.append(("🎯 Best Category Fit", "need"))
-
-    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
-    if pd.notna(edge) and float(edge) >= 10 and not any("Best Value" in b[0] for b in badges):
-        badges.append(("Highest Fantasy Edge", "fire"))
-
-    return badges[:4]
-
-
-def _rec_rank_label(rank: int) -> str:
-    labels = {1: "🥇 Best Pick", 2: "🥈 Second Best Option", 3: "🥉 Third Best Option"}
-    return labels.get(rank, f"Rank #{rank}")
-
-
-def _rec_tier_badge(rank: int, row: Any) -> tuple[str, str]:
-    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
-    sleeper = pd.to_numeric(row.get("Sleeper Score", np.nan), errors="coerce")
     edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
     if rank == 1:
         return "Best Pick", "ld-rec-tier-best"
-    if pd.notna(fit) and float(fit) >= 0.65:
-        return "Position Need", "ld-rec-tier-need"
-    if pd.notna(sleeper) and float(sleeper) >= 0.6:
-        return "Sleeper", "ld-rec-tier-sleeper"
     if pd.notna(edge) and float(edge) >= 8:
         return "High Value", "ld-rec-tier-value"
-    if rank <= 3:
+    if pd.notna(fit) and float(fit) >= 0.65:
         return "Strong Fit", "ld-rec-tier-strong"
     return "Safe Pick", "ld-rec-tier-safe"
+
+
+def build_rec_card_detail_body(
+    row: Any,
+    *,
+    badges: list[tuple[str, str]] | None = None,
+    strengths: list[str] | None = None,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    rank: int = 0,
+) -> str:
+    """Expanded analytics for Why Recommended."""
+    lines: list[str] = []
+    pos = str(row.get("Primary Position") or "—")
+    insight = build_draft_insight_expander_text(
+        row, badges=badges, strengths=strengths, gaps=gaps, rank=rank
+    )
+    if insight:
+        lines.append(f"**Recommendation:** {insight}")
+
+    if strengths:
+        lines.append(f"**Category impact:** Strengthens {', '.join(strengths)}.")
+    if category_needs:
+        lines.append(f"**Team needs:** {', '.join(str(c) for c in category_needs[:4])}.")
+
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.5:
+        lines.append(f"**Scarcity:** {pos} tier is thinning ({float(scarcity):.2f} scarcity score).")
+
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
+    mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
+    if pd.notna(edge):
+        sign = "+" if float(edge) > 0 else ""
+        market_line = f"**Market value:** Fantasy Edge {sign}{int(round(float(edge)))}"
+        if pd.notna(mkt) and pd.notna(mdl):
+            market_line += f" (model {int(round(float(mdl)))} vs market {int(round(float(mkt)))})"
+        lines.append(market_line + ".")
+
+    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+    dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
+    if pd.notna(fit) or pd.notna(dfs):
+        fit_txt = f"{float(fit):.0%}" if pd.notna(fit) else "—"
+        roster_txt = f"{float(dfs):.2f}" if pd.notna(dfs) else "—"
+        if gaps and pos in gaps:
+            lines.append(f"**Roster fit:** Positional fit {fit_txt}; roster fit score {roster_txt} for open {pos} slot.")
+        else:
+            lines.append(f"**Roster fit:** Positional fit {fit_txt}; roster fit score {roster_txt}.")
+
+    risk = pd.to_numeric(row.get("Risk Penalty", np.nan), errors="coerce")
+    conf = pd.to_numeric(row.get("Projection Confidence", np.nan), errors="coerce")
+    if pd.notna(risk) or pd.notna(conf):
+        risk_txt = "lower" if pd.notna(risk) and float(risk) <= 0.35 else "moderate"
+        if pd.notna(conf) and float(conf) >= 0.65:
+            risk_txt = "low"
+        lines.append(f"**Risk level:** {risk_txt} projection volatility.")
+
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv):
+        lines.append(f"**Availability:** ~{int(round(float(surv) * 100))}% chance still on the board at your next pick.")
+
+    return "\n\n".join(lines)
 
 
 def _rec_action_guidance(surv: float | None, rank: int) -> str:
@@ -1173,9 +1218,6 @@ def render_live_draft_rec_cards(
         pos = str(r.get("Primary Position", "") or "—")
         edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
         surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
-        tier_lbl, _tier_css = _rec_tier_badge(i, r)
-        edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
-        action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
         pool_df = room.get("pool")
         cfg = dict(room.get("config") or {})
         try:
@@ -1184,7 +1226,20 @@ def render_live_draft_rec_cards(
             strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
         except ImportError:
             strengths = []
-        badges = _rec_card_badges(i, r, rec_df, gaps=gaps, category_needs=category_needs)
+        badges = _rec_card_badges(
+            i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths
+        )
+        tier_lbl, _tier_css = _rec_tier_badge(i, r, badges=badges)
+        edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
+        action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
+        try:
+            from live_draft_rec_badges import primary_recommendation_reason
+
+            headline = primary_recommendation_reason(
+                i, r, badges=badges, strengths=strengths, gaps=gaps
+            )
+        except ImportError:
+            headline = tier_lbl
         explanation = build_draft_insight_text(
             r, badges=badges, strengths=strengths, gaps=gaps, rank=i
         )
@@ -1268,6 +1323,7 @@ def render_live_draft_rec_cards(
                 st.caption(f"{pos} · {tier_lbl}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="ld-rec-card-reason">{headline}</div>', unsafe_allow_html=True)
             insight_parts = [surv_pct, action]
             if explanation:
                 insight_parts.append(explanation)
@@ -1362,13 +1418,14 @@ def render_live_draft_rec_cards(
                         help=f"Add {name} to your draft queue.",
                     )
             with detail_col:
-                with st.expander("Draft Insight", expanded=False):
-                    st.caption(
-                        build_draft_insight_expander_text(
+                with st.expander("Why Recommended", expanded=False):
+                    st.markdown(
+                        build_rec_card_detail_body(
                             r,
                             badges=badges,
                             strengths=strengths,
                             gaps=gaps,
+                            category_needs=category_needs,
                             rank=i,
                         )
                     )

@@ -223,7 +223,7 @@ class PlayerCategoryStrengthsTests(unittest.TestCase):
                     gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
                     render_live_draft_rec_cards(st, session, session["live_draft_room"], rec_df, max_cards=1)
         expander_calls = [str(c) for c in st.expander.call_args_list]
-        self.assertTrue(any("Draft Insight" in c for c in expander_calls))
+        self.assertTrue(any("Why Recommended" in c for c in expander_calls))
         caption_calls = str(st.caption.call_args_list)
         self.assertNotIn("proj_HR", caption_calls)
 
@@ -389,10 +389,10 @@ class RecCardBadgeTests(unittest.TestCase):
             }
         )
         rec_df = pd.DataFrame([row])
-        badges = _rec_card_badges(1, row, rec_df, gaps=["OF"], category_needs=["HR"])
+        badges = _rec_card_badges(1, row, rec_df, gaps=["OF"], category_needs=["HR"], strengths=["HR"])
         labels = " ".join(b[0] for b in badges)
         self.assertIn("Best Overall", labels)
-        self.assertIn("Position Need", labels)
+        self.assertNotIn("Position Need", labels)
 
     def test_draft_insight_text_does_not_repeat_position_need_badge(self) -> None:
         from live_draft_room_ui import _rec_card_badges, build_draft_insight_text
