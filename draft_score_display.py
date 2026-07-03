@@ -21,7 +21,7 @@ COL_DRAFT_RANK = "Draft Room Rank"
 
 # User-facing display names
 DISPLAY_PLAYER_GRADE = "Player Grade"
-DISPLAY_PICK_SCORE = "Pick Score"
+DISPLAY_PICK_SCORE = "Decision Score"
 DISPLAY_ROSTER_FIT = "Roster Fit Score"
 DISPLAY_RELATIVE_GRADE = "Relative Draft Grade"
 DISPLAY_DRAFT_RANK = "Draft Rank"
@@ -59,7 +59,7 @@ SCORE_TOOLTIPS: dict[str, str] = {
     DISPLAY_ROSTER_FIT: (
         "How well this player fits your current roster construction and needs."
     ),
-    DISPLAY_PICK_SCORE: "How strong this recommendation is right now.",
+    DISPLAY_PICK_SCORE: "How strong this recommendation is right now (0–100).",
     "Fantasy Edge": "How much higher or lower the model ranks this player compared with the market.",
     DISPLAY_RELATIVE_GRADE: (
         "How this team's draft compares with other teams in the current draft room."
@@ -142,7 +142,7 @@ def sleeper_min_player_grade_to_internal(display_grade: Any) -> float:
 
 
 def fmt_pick_score(val: Any) -> str:
-    """Format raw Decision Score (0–1) as Pick Score display."""
+    """Format raw Decision Score (0–1) as Decision Score display."""
     return _fmt_hundred_scale(val)
 
 
@@ -232,7 +232,7 @@ FORBIDDEN_USER_SCORE_TERMS: frozenset[str] = frozenset(
         "EFV",
         "ESV",
         "Expected Fantasy Value",
-        "Decision Score",
+        "Pick Score",
         "Draft Fit Score",
         "Drafted Score",
     }
@@ -259,7 +259,7 @@ def sanitize_draft_terminology_text(text: str) -> str:
     out = re.sub(r"\bEFV\b", DISPLAY_PLAYER_GRADE, out)
     out = re.sub(r"\bESV\b", DISPLAY_PLAYER_GRADE, out)
     out = re.sub(r"\bexpected fantasy value\b", DISPLAY_PLAYER_GRADE, out, flags=re.IGNORECASE)
-    out = re.sub(r"\bdecision score\b", DISPLAY_PICK_SCORE, out, flags=re.IGNORECASE)
+    out = re.sub(r"\bpick score\b", DISPLAY_PICK_SCORE, out, flags=re.IGNORECASE)
     out = re.sub(r"\bdraft fit score\b", DISPLAY_ROSTER_FIT, out, flags=re.IGNORECASE)
     out = re.sub(r"\bdrafted score\b", DISPLAY_PICK_SCORE, out, flags=re.IGNORECASE)
     return out

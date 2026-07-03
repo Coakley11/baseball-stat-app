@@ -51,8 +51,6 @@ def on_browse_other_pages(session: dict[str, Any], *, target_page: str | None = 
     page = str(target_page or session.get("_live_draft_browse_return_page") or DEFAULT_BROWSE_PAGE).strip()
     session[BROWSING_AWAY_KEY] = True
     session["_navigate_to_page"] = page
-    session["active_page"] = page
-    session["main_sidebar_page"] = page
     session["_suite_page_user_nav"] = True
 
 
@@ -60,16 +58,12 @@ def on_return_to_live_draft(session: dict[str, Any]) -> None:
     session.pop(BROWSING_AWAY_KEY, None)
     session[FORCE_SYNC_ON_RETURN_KEY] = True
     session["_navigate_to_page"] = "Live Draft Room"
-    session["active_page"] = "Live Draft Room"
-    session["main_sidebar_page"] = "Live Draft Room"
     session["_suite_page_user_nav"] = True
 
 
 def on_return_to_draft_simulator(session: dict[str, Any]) -> None:
     session.pop(BROWSING_AWAY_KEY, None)
     session["_navigate_to_page"] = "Draft Room Simulator"
-    session["active_page"] = "Draft Room Simulator"
-    session["main_sidebar_page"] = "Draft Room Simulator"
     session["_suite_page_user_nav"] = True
 
 

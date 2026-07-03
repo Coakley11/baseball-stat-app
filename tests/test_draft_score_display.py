@@ -115,7 +115,7 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(mapped, ["Fantasy Edge", DISPLAY_ROSTER_FIT, DISPLAY_PLAYER_GRADE])
 
     def test_sanitize_legacy_score_terms_in_prose(self) -> None:
-        raw = "Decision Score 0.91 beats Draft Fit Score; EFV is high vs Expected Fantasy Value."
+        raw = "Pick Score 0.91 beats Draft Fit Score; EFV is high vs Expected Fantasy Value."
         cleaned = sanitize_draft_terminology_text(raw)
         for term in FORBIDDEN_USER_SCORE_TERMS:
             self.assertNotIn(term, cleaned)
@@ -138,7 +138,7 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertIn(DISPLAY_ROSTER_FIT, row)
         self.assertEqual(row[DISPLAY_PLAYER_GRADE], 91.0)
         self.assertEqual(row[DISPLAY_PICK_SCORE], 88.0)
-        self.assertNotIn("Decision Score", row["reason"])
+        self.assertNotIn("Pick Score", row["reason"])
         self.assertNotIn("EFV", row["reason"])
 
 

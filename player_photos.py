@@ -709,6 +709,8 @@ def roster_fit_display(row: Any) -> str:
     val = _row_get(row, COL_ROSTER_FIT)
     if val is None or (isinstance(val, float) and pd.isna(val)):
         val = _row_get(row, "Roster Fit Score")
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "roster_fit_score_at_pick")
     result = fmt_roster_fit_score(val)
     return result if result else "Not available"
 
@@ -723,6 +725,8 @@ def decision_score_display(row: Any) -> str:
     val = _row_get(row, COL_PICK)
     if val is None or (isinstance(val, float) and pd.isna(val)):
         val = _row_get(row, "Pick Score")
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "decision_score_at_pick")
     result = fmt_pick_score(val)
     return result if result else "Not available"
 

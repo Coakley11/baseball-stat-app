@@ -730,10 +730,10 @@ def _detail_display_label(col: str) -> str:
     except ImportError:
         mapping = {
             "Draft Fit Score": "Roster Fit Score",
-            "Decision Score": "Pick Score",
+            "Decision Score": "Decision Score",
             "Expected Fantasy Value": "Player Grade",
         }
-        return mapping.get(col, col.replace("Draft Fit Score", "Roster Fit").replace("Decision Score", "Pick Score"))
+        return mapping.get(col, col.replace("Draft Fit Score", "Roster Fit"))
 
 
 def _rec_card_badges(
@@ -810,6 +810,60 @@ def _rec_action_guidance(surv: float | None, rank: int) -> str:
     if surv is not None and surv >= 0.7:
         return "Can Wait One Round"
     return "Strong Consideration"
+
+
+def build_draft_insight_text(
+    row: Any,
+    *,
+    badges: list[tuple[str, str]] | None = None,
+    strengths: list[str] | None = None,
+    gaps: list[str] | None = None,
+    rank: int = 0,
+) -> str:
+    """Non-redundant guidance below badges — never restates badge labels."""
+    badge_labels = " ".join(label for label, _css in (badges or []))
+    pos = str(row.get("Primary Position") or "")
+    parts: list[str] = []
+
+    if strengths:
+        parts.append(f"Strengthens {' and '.join(strengths)}.")
+
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv) and float(surv) < 0.35:
+        pos_word = pos or "player"
+        parts.append(f"May be the last high-quality {pos_word} available before your next pick.")
+    elif pd.notna(surv) and float(surv) < 0.5 and "Scarcity" not in badge_labels:
+        parts.append(f"{int(round(float(surv) * 100))}% chance still available next round.")
+
+    fills_need = bool(gaps and pos in gaps and "Position Need" in badge_labels)
+    if not fills_need and rank == 1 and "Best Overall" not in badge_labels and "Second" not in badge_labels:
+        parts.append("Does not fill a positional need but provides top projected value remaining.")
+    elif not fills_need:
+        dec = pd.to_numeric(row.get("Decision Score", np.nan), errors="coerce")
+        if pd.notna(dec) and float(dec) >= 0.70 and "Position Need" not in badge_labels:
+            parts.append("Strong player grade without an open positional slot.")
+
+    return " ".join(parts[:3])
+
+
+def build_draft_insight_expander_text(
+    row: Any,
+    *,
+    badges: list[tuple[str, str]] | None = None,
+    strengths: list[str] | None = None,
+    gaps: list[str] | None = None,
+    rank: int = 0,
+) -> str:
+    """Longer draft guidance for the Draft Insight expander (no duplicate stats)."""
+    lead = build_draft_insight_text(
+        row, badges=badges, strengths=strengths, gaps=gaps, rank=rank
+    )
+    if lead:
+        return lead
+    pos = str(row.get("Primary Position") or "")
+    if gaps and pos in gaps:
+        return f"Targets your remaining {pos} roster slot."
+    return "Balanced upside and availability at this pick."
 
 
 def _rec_plain_explanation(
@@ -1127,10 +1181,10 @@ def render_live_draft_rec_cards(
             strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
         except ImportError:
             strengths = []
-        explanation = build_why_this_pick_summary(
-            r, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
-        )
         badges = _rec_card_badges(i, r, rec_df, gaps=gaps, category_needs=category_needs)
+        explanation = build_draft_insight_text(
+            r, badges=badges, strengths=strengths, gaps=gaps, rank=i
+        )
         badge_html = "".join(
             f'<span class="ld-rec-badge {css}">{label}</span>' for label, css in badges
         )
@@ -1211,7 +1265,10 @@ def render_live_draft_rec_cards(
                 st.caption(f"{pos} · {tier_lbl}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            st.caption(f"{surv_pct} · {action} · {explanation}")
+            insight_parts = [surv_pct, action]
+            if explanation:
+                insight_parts.append(explanation)
+            st.caption(" · ".join(insight_parts))
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()
@@ -1302,26 +1359,16 @@ def render_live_draft_rec_cards(
                         help=f"Add {name} to your draft queue.",
                     )
             with detail_col:
-                with st.expander("Details", expanded=False):
-                    detail_cols = (
-                        ("Model Rank", "Model Rank"),
-                        ("Market Rank", "Market Rank"),
-                        ("Fantasy Edge", "Fantasy Edge"),
-                        ("Expected Fantasy Value", "Expected Fantasy Value"),
-                        ("ML Projection Score", "ML Projection Score"),
-                        ("Draft Fit Score", "Draft Fit Score"),
-                        ("Decision Score", "Decision Score"),
+                with st.expander("Draft Insight", expanded=False):
+                    st.caption(
+                        build_draft_insight_expander_text(
+                            r,
+                            badges=badges,
+                            strengths=strengths,
+                            gaps=gaps,
+                            rank=i,
+                        )
                     )
-                    for internal_col, _ in detail_cols:
-                        if internal_col not in rec_df.columns and internal_col not in r.index:
-                            continue
-                        val = r.get(internal_col)
-                        if pd.isna(val):
-                            continue
-                        label = _detail_display_label(internal_col)
-                        st.text(f"{label}: {_format_detail_value(internal_col, val)}")
-                    if strengths:
-                        st.text(f"Top Category Strengths: {', '.join(strengths)}")
 
 
 def _position_heat_class(dropoff: float, *, strong_cut: float, weak_cut: float) -> str:
@@ -1335,15 +1382,29 @@ def _position_heat_class(dropoff: float, *, strong_cut: float, weak_cut: float) 
     return "ld-pos-heat-weak"
 
 
-def render_position_scarcity_panel(st: Any, available_df: Any, *, gaps: list[str] | None = None) -> None:
-    """Color-graded positional scarcity heatmap for the live draft room."""
+def render_position_scarcity_panel(
+    st: Any,
+    available_df: Any,
+    *,
+    gaps: list[str] | None = None,
+    room: dict[str, Any] | None = None,
+) -> None:
+    """Demand-adjusted positional scarcity for active draft slots only."""
     if available_df is None or getattr(available_df, "empty", True):
         return
     try:
         from live_draft_pick_scoring import _draft_compute_position_replacement
+        from live_draft_roster_slots import get_active_position_codes, get_league_remaining_demand
     except ImportError:
         return
-    _, rows = _draft_compute_position_replacement(available_df)
+    cfg = dict((room or {}).get("config") or {})
+    active = get_active_position_codes(cfg)
+    league_demand = get_league_remaining_demand(room, cfg)
+    _, rows = _draft_compute_position_replacement(
+        available_df,
+        active_positions=active or None,
+        league_demand=league_demand,
+    )
     if not rows:
         return
     try:
@@ -1353,9 +1414,9 @@ def render_position_scarcity_panel(st: Any, available_df: Any, *, gaps: list[str
     except ImportError:
         pass
     dropoffs = [
-        float(r.get("Scarcity Dropoff"))
+        float(r.get("Scarcity Score"))
         for r in rows
-        if r.get("Scarcity Dropoff") is not None and not pd.isna(r.get("Scarcity Dropoff"))
+        if r.get("Scarcity Score") is not None and not pd.isna(r.get("Scarcity Score"))
     ]
     if not dropoffs:
         return
@@ -1363,33 +1424,39 @@ def render_position_scarcity_panel(st: Any, available_df: Any, *, gaps: list[str
     weak_cut = float(np.percentile(dropoffs, 33))
     open_gaps = {str(g).strip() for g in (gaps or []) if str(g).strip()}
     cells: list[str] = []
+    scarcity_tip = (
+        "Higher scores indicate fewer quality players remain relative to teams that still need the position."
+    )
     for row in sorted(rows, key=lambda x: str(x.get("Position") or "")):
         pos = str(row.get("Position") or "").strip()
         if not pos:
             continue
-        drop = row.get("Scarcity Dropoff")
-        css = _position_heat_class(drop, strong_cut=strong_cut, weak_cut=weak_cut)
+        score = row.get("Scarcity Score")
+        css = _position_heat_class(score, strong_cut=strong_cut, weak_cut=weak_cut)
         if pos in open_gaps:
             css += " ld-pos-heat-need"
-        avail = int(row.get("Available Players") or 0)
-        top = str(row.get("Top Available") or "—")
+        demand = int(row.get("Remaining Demand") or 0)
+        quality = int(row.get("Quality Supply") or 0)
         try:
-            drop_txt = f"+{float(drop):.1f}" if pd.notna(drop) else "—"
+            score_txt = f"+{float(score):.1f}" if pd.notna(score) else "—"
         except (TypeError, ValueError):
-            drop_txt = "—"
+            score_txt = "—"
         need_mark = " *" if pos in open_gaps else ""
         cells.append(
-            f'<div class="ld-pos-heat-cell {css}" title="Top: {top}">'
+            f'<div class="ld-pos-heat-cell {css}" title="{scarcity_tip}">'
             f'<span class="ld-pos-heat-label">{pos}{need_mark}</span>'
-            f'<span class="ld-pos-heat-val">{avail} left · {drop_txt}</span></div>'
+            f'<span class="ld-pos-heat-val">Scarcity Score: {score_txt}</span>'
+            f'<span class="ld-pos-heat-val" style="font-size:0.72rem;">'
+            f'{quality} quality · {demand} slots open league-wide</span></div>'
         )
     if not cells:
         return
     st.markdown(
         '<div class="ld-category-outlook-panel">'
-        '<div class="ld-panel-title">Position Scarcity Heatmap</div>'
+        '<div class="ld-panel-title">Position Scarcity Map</div>'
         '<div style="font-size:0.8rem;color:#64748b;margin-bottom:4px;">'
-        "Red = thin position (large dropoff). * = open roster need.</div>"
+        "<strong>Thin position</strong> = few quality players remain relative to remaining roster demand. "
+        "🟢 Low scarcity · 🟡 Moderate · 🔴 High scarcity. * = open roster need.</div>"
         f'<div class="ld-pos-heat-grid">{"".join(cells)}</div></div>',
         unsafe_allow_html=True,
     )

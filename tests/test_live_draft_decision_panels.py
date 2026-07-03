@@ -66,7 +66,7 @@ class RosterTrackerTests(unittest.TestCase):
         self.assertGreater(checklist["target"], checklist["filled"])
         labels = [ln["label"] for ln in checklist["lines"] if not ln["filled"]]
         self.assertIn("SS", labels)
-        self.assertIn("OF", labels)
+        self.assertTrue(any(str(l).startswith("OF") for l in labels))
 
     def test_tracker_is_team_specific(self) -> None:
         room = _room()
@@ -220,9 +220,10 @@ class PlayerCategoryStrengthsTests(unittest.TestCase):
                 with mock.patch("draft_actions._live_player_available", return_value=(True, "")):
                     gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
                     render_live_draft_rec_cards(st, session, session["live_draft_room"], rec_df, max_cards=1)
-        text_calls = str(st.text.call_args_list)
-        self.assertIn("Top Category Strengths:", text_calls)
-        self.assertNotIn("proj_HR", text_calls)
+        expander_calls = [str(c) for c in st.expander.call_args_list]
+        self.assertTrue(any("Draft Insight" in c for c in expander_calls))
+        caption_calls = str(st.caption.call_args_list)
+        self.assertNotIn("proj_HR", caption_calls)
 
     def test_reason_references_strengths(self) -> None:
         from live_draft_room_ui import _rec_plain_explanation
@@ -237,14 +238,14 @@ class DraftNavigationTests(unittest.TestCase):
         session = {"live_draft_room": _room(), "active_shared_draft_room_code": "ABC123"}
         on_browse_other_pages(session, target_page="Fantasy Trends")
         self.assertTrue(session.get(BROWSING_AWAY_KEY))
-        self.assertEqual(session.get("active_page"), "Fantasy Trends")
+        self.assertEqual(session.get("_navigate_to_page"), "Fantasy Trends")
         self.assertIn("live_draft_room", session)
 
     def test_return_sets_force_sync(self) -> None:
         session: dict = {}
         on_return_to_live_draft(session)
         self.assertTrue(session.get(FORCE_SYNC_ON_RETURN_KEY))
-        self.assertEqual(session.get("active_page"), "Live Draft Room")
+        self.assertEqual(session.get("_navigate_to_page"), "Live Draft Room")
 
     def test_return_context_for_active_live_draft(self) -> None:
         session = {
@@ -290,8 +291,7 @@ class DraftNavigationTests(unittest.TestCase):
         for page in ("Fantasy Trends", "Sleepers/Busts", "Player Comparison"):
             session = {"active_page": page, "main_sidebar_page": page}
             on_return_to_live_draft(session)
-            self.assertEqual(session.get("active_page"), "Live Draft Room")
-            self.assertEqual(session.get("main_sidebar_page"), "Live Draft Room")
+            self.assertEqual(session.get("_navigate_to_page"), "Live Draft Room")
 
     def test_simulator_return_context(self) -> None:
         session: dict = {}
@@ -314,7 +314,7 @@ class DraftNavigationTests(unittest.TestCase):
     def test_simulator_return_navigates_to_simulator(self) -> None:
         session = {"active_page": "Fantasy Trends"}
         on_return_to_draft_simulator(session)
-        self.assertEqual(session.get("active_page"), "Draft Room Simulator")
+        self.assertEqual(session.get("_navigate_to_page"), "Draft Room Simulator")
 
     def test_force_sync_on_return(self) -> None:
         session = {FORCE_SYNC_ON_RETURN_KEY: True, "live_draft_room": _room()}

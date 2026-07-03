@@ -202,10 +202,23 @@ def commit_manual_live_pick(
         pass
     board_before = len(room.get("draft_board") or [])
     idx_before = int(room.get("current_pick_index") or 0)
-    verdict_text = verdict or f"Draft ({source})"
+    try:
+        from live_draft_pick_engine import build_structured_pick_verdict, normalize_pick_source_label
+
+        source_label = normalize_pick_source_label(source)
+        verdict_text = verdict or build_structured_pick_verdict(dict(player_row), pick_source=source_label)
+    except ImportError:
+        source_label = str(source or "Manual Pick")
+        verdict_text = verdict or f"Draft ({source})"
     expected_revision = sync_expected_revision(session)
 
-    ok, msg = live_draft_make_pick(room, player_row, verdict=verdict_text)
+    ok, msg = live_draft_make_pick(
+        room,
+        player_row,
+        verdict=verdict_text,
+        pick_source=source_label,
+        snapshot=dict(player_row),
+    )
     if not ok:
         result = PickCommitResult(
             ok=False,

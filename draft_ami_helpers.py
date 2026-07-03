@@ -608,7 +608,18 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
     out["available_players"] = compact_recommendation_rows(best_avail)
     out["positional_fits"] = compact_recommendation_rows(pos_fit)
     out["sleepers"] = compact_recommendation_rows(value_sleep)
-    if pos_fit is not None and hasattr(pos_fit, "empty") and not pos_fit.empty:
+    try:
+        from live_draft_roster_slots import get_remaining_position_needs
+        from live_draft_roster_tracker import roster_df_for_team
+
+        if user_team:
+            roster_for_needs = roster_df_for_team(live_room, user_team)
+            gaps = get_remaining_position_needs(roster_for_needs, cfg)
+            if gaps:
+                out["needed_positions"] = gaps[:8]
+    except ImportError:
+        gaps = []
+    if not out.get("needed_positions") and pos_fit is not None and hasattr(pos_fit, "empty") and not pos_fit.empty:
         try:
             gaps = sorted(
                 {
@@ -650,25 +661,35 @@ def infer_draft_assistant_needs(
     draft_df: Any,
     *,
     draft_format: str = "5x5 Roto",
+    config: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Auto-detect position and category needs (mirrors Draft Assistant defaults)."""
+    """Auto-detect position and category needs from host-configured roster slots when available."""
     import pandas as pd
 
-    target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
     roster_df_auto = roster_df if roster_df is not None else pd.DataFrame()
-    current_position_counts = (
-        roster_df_auto["Primary Position"].value_counts().to_dict()
-        if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
-        else {}
-    )
+    cfg = dict(config or {})
     needed_positions: list[str] = []
-    for pos in POSITION_ORDER:
-        target = target_position_counts.get(pos, 1)
-        current = int(current_position_counts.get(pos, 0))
-        if target > 0 and current < target:
-            needed_positions.append(pos)
-    if not needed_positions:
-        needed_positions = ["OF", "DH"]
+    if cfg.get("slots"):
+        try:
+            from live_draft_roster_slots import get_remaining_position_needs
+
+            needed_positions = get_remaining_position_needs(roster_df_auto, cfg)
+        except ImportError:
+            needed_positions = []
+    if not needed_positions and not cfg.get("slots"):
+        target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
+        current_position_counts = (
+            roster_df_auto["Primary Position"].value_counts().to_dict()
+            if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
+            else {}
+        )
+        for pos in POSITION_ORDER:
+            target = target_position_counts.get(pos, 1)
+            current = int(current_position_counts.get(pos, 0))
+            if target > 0 and current < target:
+                needed_positions.append(pos)
+        if not needed_positions:
+            needed_positions = ["OF", "DH"]
 
     if draft_format == "5x5 Roto":
         cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
@@ -1277,7 +1298,7 @@ def draft_ami_guidance(page: str) -> str:
     """Solver framing for draft acceptance questions."""
     terminology = (
         " Use user-facing score names only: Player Grade (never EFV, ESV, or Expected Fantasy Value), "
-        "Pick Score (never Decision Score or Drafted Score), Roster Fit Score (never Draft Fit Score)."
+        "Decision Score (never Pick Score or Drafted Score), Roster Fit Score (never Draft Fit Score)."
     )
     p = str(page or "").strip()
     if p == "Fantasy Sleepers & Busts":

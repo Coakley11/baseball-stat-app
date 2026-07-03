@@ -95,7 +95,7 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                     out[col] = 0.5
             return out
 
-        def _fake_score(available, roster_df, rule, target_counts, config=None):
+        def _fake_score(available, roster_df, rule, target_counts, config=None, room=None):
             if not roster_df.empty and "Primary Position" in roster_df.columns:
                 captured.append(roster_df["Primary Position"].astype(str).tolist())
             else:
@@ -125,7 +125,7 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                     out[col] = 0.5
             return out
 
-        def _fake_score(available, roster_df, rule, target_counts, config=None):
+        def _fake_score(available, roster_df, rule, target_counts, config=None, room=None):
             captured.append(
                 roster_df["Primary Position"].astype(str).tolist()
                 if not roster_df.empty and "Primary Position" in roster_df.columns
@@ -160,7 +160,7 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
         def _gaps_for_team(team: str):
             captured: list[str] = []
 
-            def _fake_score(available, roster_df, rule, target_counts, config=None):
+            def _fake_score(available, roster_df, rule, target_counts, config=None, room=None):
                 pos = (
                     roster_df["Primary Position"].astype(str).tolist()[0]
                     if not roster_df.empty and "Primary Position" in roster_df.columns

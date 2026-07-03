@@ -2113,7 +2113,7 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
                 fmt[col] = "{:.4f}"
             elif col in ("Roster Fit Score", "Draft Fit Score"):
                 fmt[col] = "{:.2f}"
-            elif col in ("Player Grade", "Pick Score", "Relative Draft Grade"):
+            elif col in ("Player Grade", "Pick Score", "Decision Score", "Relative Draft Grade"):
                 fmt[col] = "{:.2f}"
             elif col == "Fantasy Edge":
                 fmt[col] = "{:.0f}"
@@ -8917,7 +8917,7 @@ def render_shared_scoring_consistency_check(yearly_source, market_df, key_suffix
     with st.expander("Shared Scoring Consistency Check", expanded=False):
         st.caption(
             "Validates canonical pool metrics and `apply_draft_pick_scoring()` using the session's draft settings. "
-            "Pool stats should match across pages; Roster Fit Score / Pick Score may differ when pick # or roster context differs."
+            "Pool stats should match across pages; Roster Fit Score / Decision Score may differ when pick # or roster context differs."
         )
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -9705,7 +9705,7 @@ def render_draft_scoring_breakdown(scored_df, player_name=None, key_suffix=""):
         ("Confidence Component", "Projection confidence"),
         ("Risk Component", "Risk penalty (subtracted)"),
         ("Draft Fit Score", "Final Roster Fit Score"),
-        ("Decision Score", "Final Pick Score"),
+        ("Decision Score", "Final Decision Score"),
     ]
     rows = []
     for _, r in view.iterrows():
@@ -9743,14 +9743,18 @@ def _sort_draft_candidates(df, columns, *, ascending=None):
     return df.sort_values(cols, ascending=asc, na_position="last")
 
 
-def _live_draft_score_available(available, roster_df, rule, target_counts, config=None):
+def _live_draft_score_available(available, roster_df, rule, target_counts, config=None, room=None):
     config = config or {}
     fantasy_format = config.get("fantasy_format", "5x5 Roto")
     current_pick = int(config.get("current_pick", 1) or 1)
     category_needs = config.get("category_needs")
     if category_needs is None and not roster_df.empty:
         category_needs = _draft_lab_infer_category_needs(roster_df, available, fantasy_format)
-    scored, gaps = apply_draft_pick_scoring(
+    try:
+        from live_draft_pick_scoring import apply_draft_pick_scoring as _apply_scoring
+    except ImportError:
+        _apply_scoring = apply_draft_pick_scoring
+    scored, gaps = _apply_scoring(
         available,
         roster_df,
         fantasy_format=fantasy_format,
@@ -9760,6 +9764,7 @@ def _live_draft_score_available(available, roster_df, rule, target_counts, confi
         needed_positions=config.get("needed_positions"),
         use_ml_blend=bool(config.get("use_ml_blend", False)),
         ml_blend_weight=float(config.get("ml_blend_weight", 0) or 0),
+        room=room,
     )
     scored = enrich_player_survival_metrics(
         scored,
@@ -9868,10 +9873,10 @@ def replay_simulator_board_on_live_room(room, board_df) -> dict:
     )
 
 
-def live_draft_make_pick(room, player_row, verdict="Manual pick"):
+def live_draft_make_pick(room, player_row, verdict="Manual pick", *, pick_source="", snapshot=None):
     from live_draft_pick_engine import live_draft_make_pick as _make_pick
 
-    return _make_pick(room, player_row, verdict=verdict)
+    return _make_pick(room, player_row, verdict=verdict, pick_source=pick_source, snapshot=snapshot)
 
 
 def live_draft_auto_pick(room, session=None):
@@ -9917,7 +9922,7 @@ def live_draft_recommendations(room, top_n=8, team=None):
     cfg["next_user_pick"] = live_draft_next_pick_for_team(room, target_team)
     cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
     target_counts = _live_draft_target_counts(cfg)
-    balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg)
+    balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg, room=room)
     top_recommended = balanced.head(top_n)
     best_available = balanced.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[False, False]).head(top_n)
     positional = balanced[balanced["Primary Position"].isin(gaps)].sort_values(
@@ -9932,7 +9937,11 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     idx = int(room.get("current_pick_index") or 0)
     board_len = len(room.get("draft_board") or [])
     team_s = str(team or "")
-    cache_key = (idx, board_len, team_s, int(top_n))
+    slots = dict((room.get("config") or {}).get("slots") or {})
+    slots_key = tuple(sorted((k, int(v or 0)) for k, v in slots.items()))
+    rev = int(((room.get("meta") or {}).get("sync") or {}).get("revision") or 0)
+    queue = tuple(str(x) for x in (session.get("draft_queue") or [])[:20])
+    cache_key = (idx, board_len, team_s, int(top_n), slots_key, rev, queue)
     entry = session.get("_live_draft_rec_cache")
     if isinstance(entry, dict) and entry.get("key") == cache_key:
         return entry["top_rec"], entry["best_avail"], entry["pos_fit"], entry["value_sleep"]
@@ -10024,6 +10033,12 @@ def live_draft_to_lab_draft_df(room):
         df["Fantasy Team"] = df["Draft Team"]
     if "fullName" not in df.columns and "Player" in df.columns:
         df["fullName"] = df["Player"]
+    try:
+        from draft_lab_analysis import apply_pick_time_snapshots
+
+        df = apply_pick_time_snapshots(df)
+    except ImportError:
+        pass
     if "Decision Score" not in df.columns:
         df["Decision Score"] = np.nan
     return df
@@ -18911,14 +18926,29 @@ if active_page == "Draft Room Simulator":
                     "Average OPS Projection": pd.to_numeric(team_df["proj_OPS"], errors="coerce").mean(),
                 })
             grades_df = pd.DataFrame(grade_rows)
-            grades_df["Overall Draft Grade Score"] = (
-                normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
-                normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
-                normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
-                normalize_series(grades_df["Total HR Projection"]) * 0.05 +
-                normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
-                normalize_series(grades_df["Total SB Projection"]) * 0.05
+            has_avg_fit = (
+                "Average Draft Fit Score" in grades_df.columns
+                and pd.to_numeric(grades_df["Average Draft Fit Score"], errors="coerce").notna().any()
             )
+            if has_avg_fit:
+                grades_df["Overall Draft Grade Score"] = (
+                    normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
+                    normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
+                    normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
+                    normalize_series(grades_df["Total HR Projection"]) * 0.05 +
+                    normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
+                    normalize_series(grades_df["Total SB Projection"]) * 0.05
+                )
+            else:
+                if "Average Draft Fit Score" in grades_df.columns:
+                    grades_df = grades_df.drop(columns=["Average Draft Fit Score"])
+                grades_df["Overall Draft Grade Score"] = (
+                    normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.55 +
+                    normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.20 +
+                    normalize_series(grades_df["Total HR Projection"]) * 0.075 +
+                    normalize_series(grades_df["Total RBI Projection"]) * 0.075 +
+                    normalize_series(grades_df["Total SB Projection"]) * 0.05
+                )
             grades_df["Draft Room Rank"] = grades_df["Overall Draft Grade Score"].rank(ascending=False, method="min")
             grades_df = grades_df.sort_values("Draft Room Rank")
 
@@ -19058,7 +19088,7 @@ if active_page == "Draft Simulation Test Mode":
     with st.expander("How the Draft Model Works", expanded=False):
         st.markdown(
             """
-            **Pick Score is anchored to player quality first.** The simulator separates **Best Player Available**
+            **Decision Score is anchored to player quality first.** The simulator separates **Best Player Available**
             from **Best Value / Sleeper Pick** so sleepers do not jump elite players just because they are underpriced.
 
             **Final pick weights:**
@@ -19268,7 +19298,7 @@ if active_page == "Draft Simulation Test Mode":
 
                 st.caption(
                     "**Player Grade** (0–100) = overall player quality. "
-                    "**Pick Score** (0–100) = recommendation strength at that pick. "
+                    "**Decision Score** (0–100) = recommendation strength at that pick. "
                     "**Roster Fit Score** = roster fit at that pick."
                 )
                 st.caption(ROSTER_FIT_CONTEXT_NOTES["draft_sim_test"])
@@ -19279,7 +19309,7 @@ if active_page == "Draft Simulation Test Mode":
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
-                style_cols=["Fantasy Edge", "Player Grade", "Scarcity Score", "Roster Fit Score", "Pick Score"],
+                style_cols=["Fantasy Edge", "Player Grade", "Scarcity Score", "Roster Fit Score", "Decision Score"],
             )
             if developer_mode_enabled():
                 with st.expander("Draft Scoring Breakdown", expanded=False):
@@ -19358,7 +19388,7 @@ if active_page == "Draft Simulation Test Mode":
                 )
             if lab_gaps is not None and not lab_gaps.empty:
                 st.subheader("Roster Needs Analysis")
-                st.caption("All roster positions from league settings — including positions not yet filled.")
+                st.caption("Roster needs from host-configured draft slots only.")
                 render_output_table(clean_ui_columns(lab_gaps), key="draft_lab_position_gaps", file_name="draft_simulation_position_gaps.csv", display_rows=40)
             if not is_dataframe_empty(lab_actual_summary):
                 st.subheader("Actual 2026 Results Check")
@@ -19834,6 +19864,12 @@ if active_page == "Live Draft Room":
                         "BN": slot_bench,
                     },
                 }
+                try:
+                    from live_draft_roster_slots import freeze_slot_instances_on_config
+
+                    config = freeze_slot_instances_on_config(config)
+                except ImportError:
+                    pass
                 new_room = live_draft_init_room(config, pool_live)
                 record_start_live_draft_diagnostics(st.session_state, live_room_created=True)
                 try:
@@ -20773,6 +20809,7 @@ if active_page == "Live Draft Room":
                             st,
                             live_draft_get_available(room),
                             gaps=list(_tracker.get("gaps") or []),
+                            room=room,
                         )
                         _gaps = list(_tracker.get("gaps") or [])
                         _category_needs = list(_outlook.get("needs_attention") or [])
@@ -20797,7 +20834,7 @@ if active_page == "Live Draft Room":
                             )
                         st.caption(
                             "**Fantasy Edge** on cards = value vs market. Open **Details** for "
-                            "**Player Grade** (0–100), **Roster Fit Score**, and **Pick Score** (0–100)."
+                            "**Player Grade** (0–100), **Roster Fit Score**, and **Decision Score** (0–100)."
                         )
                         try:
                             from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
@@ -20824,7 +20861,7 @@ if active_page == "Live Draft Room":
                 rec_cols = [
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
                     "Fantasy Edge", "Survival Probability", "Survival Label",
-                    "Sleeper Score", "Scarcity Score", "Positional Fit", "Draft Fit Score", "Decision Score",
+                    "Draft Fit Score", "Decision Score",
                     "Why this pick",
                 ]
                 _pool_for_why = room.get("pool")
@@ -20847,7 +20884,7 @@ if active_page == "Live Draft Room":
                         key="live_draft_rec_top",
                         file_name="live_draft_top_recommendations.csv",
                         display_rows=10,
-                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
+                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                     )
                 with rec_tabs[1]:
                     _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
@@ -20856,7 +20893,7 @@ if active_page == "Live Draft Room":
                         key="live_draft_rec_bpa",
                         file_name="live_draft_best_available.csv",
                         display_rows=10,
-                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
+                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                     )
                 with rec_tabs[2]:
                     if pos_fit.empty:
@@ -20868,7 +20905,7 @@ if active_page == "Live Draft Room":
                             key="live_draft_rec_pos",
                             file_name="live_draft_positional_fits.csv",
                             display_rows=10,
-                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
+                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                         )
                 with rec_tabs[3]:
                     _val_show = value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})
@@ -20877,7 +20914,7 @@ if active_page == "Live Draft Room":
                         key="live_draft_rec_value",
                         file_name="live_draft_value_sleepers.csv",
                         display_rows=10,
-                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Pick Score"],
+                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                     )
                 if developer_mode_enabled():
                     with st.expander("Draft Scoring Breakdown", expanded=False):
@@ -21041,11 +21078,7 @@ if active_page == "Live Draft Room":
                     )
             with act2:
                 if st.button("View Results", key="live_draft_view_results_btn"):
-                    st.session_state["_navigate_to_page"] = "Draft Room Simulator"
-                    st.session_state["active_page"] = "Draft Room Simulator"
-                    st.session_state["main_sidebar_page"] = "Draft Room Simulator"
-                    st.session_state["_suite_page_user_nav"] = True
-                    st.rerun()
+                    navigate_to_page("Draft Room Simulator")
             export_frames_live = live_draft_export_frames(room)
             ex1, ex2 = st.columns(2)
             with ex1:
@@ -21326,9 +21359,20 @@ if active_page == "Fantasy Lineup Assistant":
     prepare_fantasy_lineup_page(st.session_state)
     prepare_fantasy_lineup_filters(st.session_state)
 
+    try:
+        from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+
+        _lineup_team_hdr = active_fantasy_team_label(st.session_state) or get_active_fantasy_team(st.session_state)
+    except ImportError:
+        _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
+    _lineup_title = (
+        f"Fantasy Lineup Assistant — {_lineup_team_hdr}"
+        if _lineup_team_hdr
+        else "Fantasy Lineup Assistant / Start-Sit AI"
+    )
     render_section_header(
-        "🧠 Fantasy Lineup Assistant / Start-Sit AI",
-        "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch."
+        _lineup_title,
+        "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch.",
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -21513,6 +21557,29 @@ if active_page == "Fantasy Lineup Assistant":
             st.caption(
                 "Position-aware starters for your active team. **Lineup Reason** explains why each player is slotted to start."
             )
+            if not starters.empty:
+                try:
+                    from player_photos import get_player_photo_info, inject_player_photo_styles, render_rec_card_photo_html
+
+                    inject_player_photo_styles(st)
+                    photo_cells: list[str] = []
+                    for _, srow in starters.head(9).iterrows():
+                        pname = str(srow.get("Player") or srow.get("fullName") or "")
+                        slot_lbl = str(srow.get("Fantasy slot") or "")
+                        photo_info = get_player_photo_info(full_name=pname, row=srow, use_api=True)
+                        photo_html = render_rec_card_photo_html(photo_info, alt=pname)
+                        photo_cells.append(
+                            f'<div style="text-align:center;min-width:64px;">{photo_html}'
+                            f'<div style="font-size:0.7rem;font-weight:600;">{slot_lbl}</div>'
+                            f'<div style="font-size:0.68rem;color:#64748b;">{pname.split()[-1] if pname else ""}</div></div>'
+                        )
+                    if photo_cells:
+                        st.markdown(
+                            f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 12px;">{"".join(photo_cells)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                except ImportError:
+                    pass
             starter_cols = [
                 "Fantasy slot",
                 "Player",

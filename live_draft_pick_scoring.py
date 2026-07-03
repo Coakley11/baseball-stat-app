@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -33,13 +35,22 @@ DRAFT_POSITION_REPLACEMENT_DEPTHS = {
 }
 
 
-def _draft_compute_position_replacement(available, replacement_depths=None):
-    """Replacement-level scarcity among remaining players at each position."""
+def _draft_compute_position_replacement(
+    available,
+    replacement_depths=None,
+    *,
+    active_positions: set[str] | None = None,
+    league_demand: dict[str, int] | None = None,
+):
+    """Replacement-level scarcity among remaining players at each active draft position."""
     depths = replacement_depths or DRAFT_POSITION_REPLACEMENT_DEPTHS
     replacement_values = {}
     position_summary_rows = []
     efv_col = "Expected Fantasy Value"
     for pos, pos_group in available.groupby("Primary Position"):
+        pos = str(pos)
+        if active_positions is not None and pos not in active_positions:
+            continue
         pos_group = pos_group.copy().sort_values(efv_col, ascending=False)
         depth = depths.get(pos, 12)
         if pos_group.empty:
@@ -51,6 +62,15 @@ def _draft_compute_position_replacement(available, replacement_depths=None):
         replacement_values[pos] = replacement_value
         top_row = pos_group.iloc[0]
         top_value = pd.to_numeric(top_row.get(efv_col, np.nan), errors="coerce")
+        dropoff = (
+            top_value - replacement_value
+            if pd.notna(top_value) and pd.notna(replacement_value)
+            else np.nan
+        )
+        efv_series = pd.to_numeric(pos_group[efv_col], errors="coerce")
+        quality_supply = int((efv_series >= float(replacement_value)).sum()) if pd.notna(replacement_value) else len(pos_group)
+        demand = max(1, int((league_demand or {}).get(pos, 1) or 1))
+        scarcity_score = float(demand) / max(float(quality_supply), 1.0)
         position_summary_rows.append({
             "Position": pos,
             "Available Players": len(pos_group),
@@ -58,7 +78,10 @@ def _draft_compute_position_replacement(available, replacement_depths=None):
             "Replacement Value": replacement_value,
             "Top Available": top_row.get("fullName", ""),
             "Top Available Value": top_value,
-            "Scarcity Dropoff": top_value - replacement_value if pd.notna(top_value) and pd.notna(replacement_value) else np.nan,
+            "Scarcity Dropoff": dropoff,
+            "Remaining Demand": demand,
+            "Quality Supply": quality_supply,
+            "Scarcity Score": round(scarcity_score, 4),
         })
     return replacement_values, position_summary_rows
 def _draft_lab_category_need_bonus(available, roster_df):
@@ -127,25 +150,38 @@ def enrich_player_survival_metrics(scored, *, current_pick, next_user_pick, num_
         ).clip(lower=0)
     return out
 def _live_draft_target_counts(config):
-    slots = config.get("slots", {})
-    return {
-        "C": int(slots.get("C", 1)),
-        "1B": int(slots.get("1B", 1)),
-        "2B": int(slots.get("2B", 1)),
-        "3B": int(slots.get("3B", 1)),
-        "SS": int(slots.get("SS", 1)),
-        "OF": int(slots.get("OF", 3)),
-        "DH": int(slots.get("DH", 1)),
-        "P": int(slots.get("P", 0)),
-    }
+    try:
+        from live_draft_roster_slots import live_draft_target_counts as _canonical
+
+        return _canonical(config)
+    except ImportError:
+        slots = config.get("slots", {})
+        return {
+            "C": int(slots.get("C", 1)),
+            "1B": int(slots.get("1B", 1)),
+            "2B": int(slots.get("2B", 1)),
+            "3B": int(slots.get("3B", 1)),
+            "SS": int(slots.get("SS", 1)),
+            "OF": int(slots.get("OF", 3)),
+            "DH": int(slots.get("DH", 1)),
+            "P": int(slots.get("P", 0)),
+        }
 
 
-def _live_draft_roster_needs(roster_df, target_counts):
-    if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
-        return [pos for pos, n in target_counts.items() if n > 0]
-    counts = roster_df["Primary Position"].fillna("DH").astype(str).value_counts().to_dict()
-    gaps = [pos for pos, target in target_counts.items() if target > 0 and int(counts.get(pos, 0)) < target]
-    return gaps
+def _live_draft_roster_needs(roster_df, target_counts, config=None):
+    try:
+        from live_draft_roster_slots import get_remaining_position_needs
+
+        cfg = dict(config or {})
+        if not cfg.get("slots") and target_counts:
+            cfg["slots"] = dict(target_counts)
+        return get_remaining_position_needs(roster_df, cfg)
+    except ImportError:
+        if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
+            return [pos for pos, n in (target_counts or {}).items() if n > 0]
+        counts = roster_df["Primary Position"].fillna("DH").astype(str).value_counts().to_dict()
+        gaps = [pos for pos, target in (target_counts or {}).items() if target > 0 and int(counts.get(pos, 0)) < target]
+        return gaps
 
 
 def _live_draft_pick_verdict(row, rule, gaps):
@@ -235,6 +271,7 @@ def apply_draft_pick_scoring(
     replacement_depths=None,
     return_position_summary=False,
     recommendation_mode="decision",
+    room: dict[str, Any] | None = None,
 ):
     """
     Centralized fantasy draft intelligence engine.
@@ -253,9 +290,22 @@ def apply_draft_pick_scoring(
     scored = available.copy()
     roster_df = roster_df if roster_df is not None else pd.DataFrame()
     target_counts = target_counts or {}
-    gaps = _live_draft_roster_needs(roster_df, target_counts)
+    try:
+        from live_draft_roster_slots import get_active_position_codes, get_league_remaining_demand
+
+        slot_cfg = {"slots": target_counts}
+        if room and isinstance(room.get("config"), dict):
+            slot_cfg = dict(room["config"])
+        active_positions = get_active_position_codes(slot_cfg)
+        league_demand = get_league_remaining_demand(room, slot_cfg)
+    except ImportError:
+        active_positions = {p for p, n in target_counts.items() if int(n or 0) > 0 and p != "BN"}
+        league_demand = {}
+    gaps = _live_draft_roster_needs(roster_df, target_counts, config={"slots": target_counts})
     if needed_positions is None:
         needed_positions = gaps if gaps else []
+    elif active_positions:
+        needed_positions = [p for p in needed_positions if p in active_positions]
 
     # --- Positional / roster slot fit (display + Decision roster-need term) ---
     slot_fit = scored["Primary Position"].isin(gaps).astype(float)
@@ -274,7 +324,10 @@ def apply_draft_pick_scoring(
 
     # --- Replacement-level position scarcity (pick-time, from remaining pool) ---
     replacement_values, position_summary_rows = _draft_compute_position_replacement(
-        scored, replacement_depths=replacement_depths
+        scored,
+        replacement_depths=replacement_depths,
+        active_positions=active_positions or None,
+        league_demand=league_demand,
     )
     scored["Position Replacement Value"] = scored["Primary Position"].map(replacement_values).fillna(
         pd.to_numeric(scored["Expected Fantasy Value"], errors="coerce").median()

@@ -69,6 +69,28 @@ def analysis_context_from_session(session: dict[str, Any] | None, lab_state: dic
     }
 
 
+def apply_pick_time_snapshots(draft_df: pd.DataFrame) -> pd.DataFrame:
+    """Prefer draft-time frozen scores over recomputed values in post-draft review."""
+    if draft_df is None or draft_df.empty:
+        return draft_df
+    out = draft_df.copy()
+    mapping = {
+        "decision_score_at_pick": "Decision Score",
+        "roster_fit_score_at_pick": "Draft Fit Score",
+        "scarcity_score_at_pick": "Scarcity Score",
+    }
+    for src, dst in mapping.items():
+        if src not in out.columns:
+            continue
+        snap = pd.to_numeric(out[src], errors="coerce")
+        if dst not in out.columns:
+            out[dst] = snap
+        else:
+            cur = pd.to_numeric(out[dst], errors="coerce")
+            out[dst] = cur.where(cur.notna(), snap)
+    return out
+
+
 def roster_position_targets(config: dict[str, Any] | None) -> dict[str, int]:
     cfg = dict(config or {})
     slots = dict(cfg.get("slots") or {})
@@ -121,6 +143,8 @@ def build_team_roster_needs_rows(team: str, roster_df: pd.DataFrame, targets: di
     rows: list[dict[str, Any]] = []
     for label, _codes in POSITION_ROWS:
         target = int(targets.get(label, 0) or 0)
+        if target <= 0:
+            continue
         have = int(haves.get(label, 0) or 0)
         rows.append(
             {
@@ -245,7 +269,7 @@ def _explain_best_pick(row: pd.Series, gaps_before: list[str]) -> str:
         parts.append(f"Fantasy Edge +{_fmt_int(edge)}")
     dec = _num_or_nan(row.get("Decision Score"))
     if pd.notna(dec):
-        parts.append(f"Pick Score {_fmt_pick_score_display(dec)} led this roster")
+        parts.append(f"Decision Score {_fmt_pick_score_display(dec)} led this roster")
     fit = _num_or_nan(row.get("Draft Fit Score"))
     if pd.notna(fit) and fit >= 0.6:
         parts.append("strong roster fit")
@@ -272,7 +296,7 @@ def _questionable_reasons(
     dec = _num_or_nan(row.get("Decision Score"))
     if pd.notna(dec) and pd.notna(team_median_decision) and dec < team_median_decision - 0.10:
         reasons.append(
-            f"Pick Score {_fmt_pick_score_display(dec)} trailed team median "
+            f"Decision Score {_fmt_pick_score_display(dec)} trailed team median "
             f"{_fmt_pick_score_display(team_median_decision)}"
         )
     pos = str(row.get("Primary Position") or "")
@@ -305,7 +329,7 @@ def _explain_good_pick(row: pd.Series, gaps_before: list[str]) -> str:
         parts.append(f"positive Fantasy Edge (+{_fmt_int(edge)})")
     dec = _num_or_nan(row.get("Decision Score"))
     if pd.notna(dec):
-        parts.append(f"Pick Score {_fmt_pick_score_display(dec)}")
+        parts.append(f"Decision Score {_fmt_pick_score_display(dec)}")
     if not parts:
         parts.append("solid contribution without major reach or roster-fit concerns")
     text = ", ".join(parts[:3])
@@ -408,7 +432,7 @@ def enrich_lab_draft_metrics(
     """Backfill Decision Score and fit metrics using the shared draft scoring engine."""
     if draft_df is None or draft_df.empty:
         return draft_df
-    out = draft_df.copy()
+    out = apply_pick_time_snapshots(draft_df)
     if pool_df is None or getattr(pool_df, "empty", True):
         return out
     try:
@@ -426,6 +450,8 @@ def enrich_lab_draft_metrics(
         return out
 
     for idx, row in out.sort_values("Pick").iterrows():
+        if pd.notna(pd.to_numeric(row.get("decision_score_at_pick"), errors="coerce")):
+            continue
         pick_no = int(_num(row.get("Pick")))
         team = str(row.get("Fantasy Team") or "")
         pid = str(row.get("playerID") or "")

@@ -69,7 +69,7 @@ class TestDraftAmiHelpers(unittest.TestCase):
             text = draft_ami_guidance(page)
             self.assertIn("Player Grade", text)
             self.assertIn("never EFV", text)
-            self.assertIn("never Decision Score", text)
+            self.assertIn("never Pick Score", text)
             self.assertIn("never Draft Fit Score", text)
 
     def test_draft_ami_guidance_per_page(self) -> None:

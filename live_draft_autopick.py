@@ -8,7 +8,6 @@ import pandas as pd
 
 from live_draft_pick_engine import live_draft_make_pick
 from live_draft_pick_scoring import (
-    live_draft_pick_verdict,
     live_draft_target_counts,
     score_available_for_rule,
 )
@@ -75,6 +74,7 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
         return False, "No eligible recommendation for auto-pick."
 
     chosen = rec_scored.iloc[0]
+    chosen_dict = chosen.to_dict()
     top_rec_name = str(chosen.get("fullName") or chosen.get("Player") or "").strip()
     skip_reason = ""
     rule_pick_name = ""
@@ -91,8 +91,16 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
                     f"using top recommendation {top_rec_name}."
                 )
 
-    verdict = live_draft_pick_verdict(chosen, "balanced recommendation", gaps)
-    ok, msg = live_draft_make_pick(room, chosen.to_dict(), verdict=verdict)
+    from live_draft_pick_engine import build_structured_pick_verdict
+
+    verdict = build_structured_pick_verdict(chosen_dict, pick_source="Auto Pick", gaps=gaps)
+    ok, msg = live_draft_make_pick(
+        room,
+        chosen_dict,
+        verdict=verdict,
+        pick_source="Auto Pick",
+        snapshot=chosen_dict,
+    )
 
     if session is not None:
         try:
