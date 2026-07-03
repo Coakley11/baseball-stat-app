@@ -182,7 +182,9 @@ def _timer_expired_pending(session: dict[str, Any], room: dict[str, Any]) -> boo
     return live_draft_timer_expired_for_pick(live_room)
 
 
-def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     raw = session.get(LIVE_DRAFT_TIMER_DIAG_KEY)
     if not isinstance(raw, dict):
         return

@@ -186,4 +186,66 @@ def archive_roster_dataframe(entry: dict[str, Any]) -> pd.DataFrame:
     for old, new in rename.items():
         if old in df.columns and new not in df.columns:
             df = df.rename(columns={old: new})
+    if "Player" not in df.columns:
+        for col in ("name", "player"):
+            if col in df.columns:
+                df = df.rename(columns={col: "Player"})
+                break
+    team_name = str(entry.get("team_name") or "").strip()
+    if team_name and "Team" not in df.columns:
+        df["Team"] = team_name
     return df
+
+
+def activate_draft_archive(session: dict[str, Any], draft_id: str) -> dict[str, Any] | None:
+    """Mark one saved draft active without removing other archives."""
+    entry = get_draft_archive(session, draft_id)
+    if not entry:
+        return None
+    set_active_draft_archive(session, str(entry.get("draft_id") or ""))
+    team = str(entry.get("team_name") or "").strip()
+    if team:
+        session["room_your_team"] = team
+    fmt = str(entry.get("fantasy_format") or "").strip()
+    if fmt:
+        session["room_format"] = fmt
+        session["standings_scoring_format"] = fmt
+    return entry
+
+
+def clear_active_draft_archive(session: dict[str, Any]) -> None:
+    set_active_draft_archive(session, None)
+
+
+def active_archive_label(entry: dict[str, Any] | None) -> str:
+    if not entry:
+        return ""
+    name = str(entry.get("draft_name") or "Saved Draft").strip()
+    team = str(entry.get("team_name") or "").strip()
+    draft_type = str(entry.get("draft_type") or "").replace("_", " ")
+    parts = [p for p in (name, team, draft_type) if p]
+    return " — ".join(parts[:2]) if parts else "Saved Draft"
+
+
+def build_roster_stats_from_archive(
+    entry: dict[str, Any],
+    current_stats: pd.DataFrame,
+    *,
+    normalize_name_fn,
+) -> pd.DataFrame:
+    """Merge saved archive roster with current-season hitter stats."""
+    if current_stats is None or getattr(current_stats, "empty", True):
+        return pd.DataFrame()
+    drafted = archive_roster_dataframe(entry)
+    if drafted.empty or "Player" not in drafted.columns:
+        return pd.DataFrame()
+    work = drafted[drafted["Player"].astype(str).str.strip() != ""].copy()
+    work["Player Key"] = work["Player"].apply(normalize_name_fn)
+    stats = current_stats.copy()
+    if "Player Key" not in stats.columns:
+        name_col = "Player" if "Player" in stats.columns else stats.columns[0]
+        stats["Player Key"] = stats[name_col].apply(normalize_name_fn)
+    roster_stats = work.merge(stats, on="Player Key", how="left", suffixes=("", "_stats"))
+    if "Player_stats" in roster_stats.columns:
+        roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
+    return roster_stats

@@ -6,6 +6,8 @@ from typing import Any
 
 
 def render_safe_mode_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     try:
         from live_draft_safe_mode import RERUN_DIAG_KEY, SAFE_MODE_DIAG_KEY
     except ImportError:
@@ -16,7 +18,7 @@ def render_safe_mode_diagnostics(st: Any, session: dict[str, Any], *, developer_
     if not isinstance(safe, dict) and not isinstance(rerun, dict):
         return
 
-    expanded = developer_mode or bool(
+    expanded = developer_mode and bool(
         isinstance(safe, dict) and (safe.get("safe_mode_active") or safe.get("false_complete_detected"))
     )
     with st.expander("Draft state / rerun diagnostics", expanded=expanded):

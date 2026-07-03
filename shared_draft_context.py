@@ -660,9 +660,9 @@ def render_draft_shared_settings_diagnostics(
     widget_format_key: str | None = None,
 ) -> None:
     try:
-        from suite_workspace import is_developer_mode_enabled
+        from suite_workspace import developer_mode_checkbox_enabled
 
-        if not is_developer_mode_enabled(st=st):
+        if not developer_mode_checkbox_enabled(st=st):
             return
     except ImportError:
         return

@@ -223,20 +223,20 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                         prepare_global_draft_context(session)
                         st.warning("Cleared stale membership/team globals for this auth account. Re-join the room if needed.")
                         return True
-            except ImportError:
-                pass
-            render_shared_room_diagnostics(st, session)
-            render_join_assignment_diagnostics(st, session)
-            render_compact_pool_diagnostics(st, session)
-            try:
-                from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
+                    render_shared_room_diagnostics(st, session, developer_mode=True)
+                    render_join_assignment_diagnostics(st, session, developer_mode=True)
+                    render_compact_pool_diagnostics(st, session)
+                    try:
+                        from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
 
-                render_runtime_diagnostic_table(st, session)
+                        render_runtime_diagnostic_table(st, session)
+                    except ImportError:
+                        pass
+                    render_shared_room_create_diagnostics(st, session, developer_mode=True)
+                    render_shared_room_auth_diagnostics(st, session)
+                    render_join_trace_panel(st, session)
             except ImportError:
                 pass
-            render_shared_room_create_diagnostics(st, session)
-            render_shared_room_auth_diagnostics(st, session)
-            render_join_trace_panel(st, session)
             return False
 
         needs_sign_in_rerun = _show_join_auth_hint(st, session)

@@ -6,6 +6,8 @@ from typing import Any
 
 
 def render_autopick_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     try:
         from live_draft_expired_pick import AUTOPICK_DIAG_KEY
     except ImportError:
@@ -13,7 +15,7 @@ def render_autopick_diagnostics(st: Any, session: dict[str, Any], *, developer_m
     raw = session.get(AUTOPICK_DIAG_KEY)
     if not isinstance(raw, dict):
         return
-    expanded = developer_mode or bool(raw.get("autopick_failure_backoff_active"))
+    expanded = developer_mode and bool(raw.get("autopick_failure_backoff_active"))
     with st.expander("Auto-pick diagnostics", expanded=expanded):
         keys = (
             "expired_pick_detected",

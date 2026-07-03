@@ -1270,6 +1270,15 @@ def _render_manual_draft_action_button(
 
 
 def render_live_manual_draft_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        try:
+            from suite_workspace import developer_mode_checkbox_enabled
+
+            developer_mode = developer_mode_checkbox_enabled(st=st)
+        except ImportError:
+            pass
+    if not developer_mode:
+        return
     raw = session.get(_LIVE_DRAFT_UI_DIAG_KEY)
     if not isinstance(raw, dict):
         return

@@ -9,13 +9,21 @@ import pandas as pd
 from draft_archive_state import (
     DRAFT_ARCHIVE_KEY,
     DRAFT_TYPE_LIVE,
+    activate_draft_archive,
     archive_roster_dataframe,
+    build_roster_stats_from_archive,
+    clear_active_draft_archive,
     get_active_draft_archive,
+    get_draft_archive,
     list_draft_archives,
     save_live_draft_team_archive,
     save_simulator_team_archive,
     set_active_draft_archive,
 )
+
+
+def _normalize(name: str) -> str:
+    return str(name or "").strip().lower()
 
 
 class DraftArchiveTests(unittest.TestCase):
@@ -54,6 +62,45 @@ class DraftArchiveTests(unittest.TestCase):
         df = archive_roster_dataframe(active)
         self.assertFalse(df.empty)
         self.assertIn("Player", df.columns)
+        self.assertEqual(df.iloc[0]["Team"], "Team A")
+
+    def test_multiple_archives_preserved_on_activate(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "A", "Player": "P1", "Pick": 1, "Round": 1}])
+        first = save_simulator_team_archive(session, board, team_name="A", draft_name="Draft 1")
+        second = save_simulator_team_archive(
+            session,
+            pd.DataFrame([{"Team": "B", "Player": "P2", "Pick": 1, "Round": 1}]),
+            team_name="B",
+            draft_name="Draft 2",
+        )
+        activate_draft_archive(session, second["draft_id"])
+        self.assertEqual(len(list_draft_archives(session)), 2)
+        active = get_active_draft_archive(session)
+        assert active is not None
+        self.assertEqual(active["draft_id"], second["draft_id"])
+        self.assertEqual(get_draft_archive(session, first["draft_id"])["draft_name"], "Draft 1")
+
+    def test_build_roster_stats_from_archive(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame(
+            [{"Team": "Team A", "Player": "Aaron Judge", "Pick": 1, "Round": 1, "Primary Position": "OF"}]
+        )
+        entry = save_simulator_team_archive(session, board, team_name="Team A")
+        stats = pd.DataFrame([{"Player": "Aaron Judge", "HR": 20, "RBI": 50}])
+        merged = build_roster_stats_from_archive(entry, stats, normalize_name_fn=_normalize)
+        self.assertFalse(merged.empty)
+        self.assertEqual(int(merged.iloc[0]["HR"]), 20)
+        self.assertEqual(str(merged.iloc[0]["Team"]), "Team A")
+
+    def test_clear_active_draft_archive(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "A", "Player": "P", "Pick": 1, "Round": 1}])
+        entry = save_simulator_team_archive(session, board, team_name="A")
+        activate_draft_archive(session, entry["draft_id"])
+        clear_active_draft_archive(session)
+        self.assertIsNone(get_active_draft_archive(session))
+        self.assertEqual(len(list_draft_archives(session)), 1)
 
 
 if __name__ == "__main__":

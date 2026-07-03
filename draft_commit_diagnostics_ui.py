@@ -6,6 +6,8 @@ from typing import Any
 
 
 def render_draft_commit_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     try:
         from draft_commit_diagnostics import DRAFT_COMMIT_DIAG_KEY
     except ImportError:

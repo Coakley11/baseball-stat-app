@@ -195,6 +195,8 @@ def record_multiplayer_sync_diagnostics(
 
 
 def render_multiplayer_sync_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     raw = session.get(LIVE_DRAFT_MP_DIAG_KEY)
     if not isinstance(raw, dict):
         return

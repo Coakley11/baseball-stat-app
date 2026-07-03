@@ -9852,7 +9852,21 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     entry = session.get(REC_CACHE_KEY)
     if isinstance(entry, dict) and entry.get("key") == cache_key:
         return entry["top_rec"], entry["best_avail"], entry["pos_fit"], entry["value_sleep"]
+    t0 = 0.0
+    try:
+        from page_perf import perf_timer, perf_end
+
+        t0 = perf_timer(session, "live_draft_recommendations")
+    except ImportError:
+        pass
     top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=top_n, team=team)
+    if t0:
+        try:
+            from page_perf import perf_end
+
+            perf_end(session, "live_draft_recommendations", t0)
+        except ImportError:
+            pass
     session[REC_CACHE_KEY] = {
         "key": cache_key,
         "top_rec": top_rec,
@@ -11853,6 +11867,12 @@ def render_hof_developer_diagnostics(
 
 def _page_perf_start(page: str) -> None:
     try:
+        from page_perf_diagnostics import start_page_perf_run
+
+        start_page_perf_run(page)
+    except ImportError:
+        pass
+    try:
         from page_perf import perf_page_start
 
         st.session_state["_page_render_t0"] = perf_page_start(st.session_state, page)
@@ -11861,6 +11881,12 @@ def _page_perf_start(page: str) -> None:
 
 
 def _page_perf_end(page: str) -> None:
+    try:
+        from page_perf_diagnostics import finish_page_perf_run
+
+        finish_page_perf_run()
+    except ImportError:
+        pass
     try:
         from page_perf import perf_page_end
 
@@ -11930,6 +11956,13 @@ def render_developer_mode_sidebar_toggle():
                     st.text(f"{label}: {value}")
     except ImportError:
         pass
+    if developer_mode_enabled():
+        try:
+            from page_perf_diagnostics import render_page_perf_diagnostics
+
+            render_page_perf_diagnostics(st)
+        except ImportError:
+            pass
 
 
 def migrate_legacy_widget_keys():
@@ -18832,6 +18865,17 @@ if active_page == "Draft Room Simulator":
         st.caption(
             "Lineup-style tables by fantasy team: projections plus model/market scores."
         )
+        try:
+            from draft_archive_ui import render_save_simulator_draft_team
+
+            render_save_simulator_draft_team(
+                st,
+                st.session_state,
+                _session_draft_board_df(),
+                team_name=str(your_team or ""),
+            )
+        except ImportError:
+            pass
 
         view_col1, view_col2 = st.columns([1, 2])
         with view_col1:
@@ -21016,7 +21060,7 @@ if active_page == "Live Draft Room":
                     render_safe_mode_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_live_poll_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                     render_multiplayer_sync_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
-                    render_live_draft_timer_diagnostics(st, st.session_state)
+                    render_live_draft_timer_diagnostics(st, st.session_state, developer_mode=developer_mode_enabled())
                 except ImportError:
                     pass
 
@@ -21101,26 +21145,14 @@ if active_page == "Live Draft Room":
                 )
                 st.caption(picks_txt)
             _save_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
-            if _save_team and _save_team != "—":
-                with st.expander("Save completed draft team", expanded=False):
-                    _archive_name = st.text_input(
-                        "Draft name",
-                        value=f"{cfg.get('league_name', 'Live Draft')} — {_save_team}",
-                        key="live_draft_archive_name_input",
-                    )
-                    if st.button("Save Draft Team", key="live_draft_save_archive_btn", type="secondary"):
-                        try:
-                            from draft_archive_state import save_live_draft_team_archive
+            try:
+                from draft_archive_ui import render_save_live_draft_team
 
-                            entry = save_live_draft_team_archive(
-                                st.session_state,
-                                room,
-                                team_name=_save_team,
-                                draft_name=_archive_name,
-                            )
-                            st.success(f"Saved **{entry.get('draft_name')}** ({len(entry.get('players') or [])} players).")
-                        except Exception as exc:
-                            st.error(f"Could not save draft team: {exc}")
+                render_save_live_draft_team(st, st.session_state, room, team_name=_save_team)
+            except ImportError:
+                if _save_team and _save_team != "—":
+                    with st.expander("Save completed draft team", expanded=False):
+                        st.caption("Draft archive module unavailable.")
             if not roster_df.empty:
                 recap_team = str(cfg.get("your_team") or st.session_state.get("room_your_team") or "").strip()
                 if recap_team and "Fantasy Team" in roster_df.columns:
@@ -21236,6 +21268,13 @@ if active_page == "Fantasy Standings Tracker":
         format_key="standings_scoring_format",
     )
 
+    try:
+        from draft_archive_ui import render_load_saved_draft_team
+
+        render_load_saved_draft_team(st, st.session_state, key_prefix="standings_archive")
+    except ImportError:
+        pass
+
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
     def _standings_format_changed():
@@ -21329,57 +21368,113 @@ if active_page == "Fantasy Standings Tracker":
         current_stats = normalize_uploaded_stat_columns(current_stats)
 
     if not current_stats.empty:
-        draft_table = _session_draft_board_df()
-        if draft_table.empty:
-            st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
+        st.session_state["_fantasy_current_hitter_stats"] = current_stats.copy()
+        try:
+            from draft_archive_state import build_roster_stats_from_archive, get_active_draft_archive
+
+            active_archive = get_active_draft_archive(st.session_state)
+        except ImportError:
+            active_archive = None
+        if active_archive:
+            roster_stats = build_roster_stats_from_archive(
+                active_archive,
+                current_stats,
+                normalize_name_fn=normalize_player_name_for_merge,
+            )
+            if roster_stats.empty:
+                st.warning("Loaded saved draft has no roster players to score.")
+            else:
+                st.caption(f"Scoring saved draft: **{active_archive.get('draft_name', 'Saved Draft')}** ({active_archive.get('team_name', '')}).")
+                show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
+                render_output_table(
+                    format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))),
+                    key="standings_roster_current_stats",
+                    file_name="fantasy_rosters_current_stats.csv",
+                    display_rows=300,
+                )
+                standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
+                st.subheader("Live Fantasy Standings")
+                render_output_table(
+                    format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
+                    key="fantasy_live_standings",
+                    file_name="fantasy_live_standings.csv",
+                    display_rows=50,
+                    style_cols=["Total Roto Points", "Estimated Points"],
+                )
+                st.session_state["fantasy_current_roster_stats"] = roster_stats
+                st.session_state["fantasy_current_standings"] = standings
+                from datetime import datetime, timezone as _tz
+
+                st.session_state["_fantasy_standings_stats_loaded_at"] = datetime.now(_tz.utc).isoformat()
+                st.session_state["_fantasy_standings_stats_source"] = stats_source
+                _standings_team_ctx = str(active_archive.get("team_name") or st.session_state.get("room_your_team") or "")
+                _standings_needs_ctx = (
+                    summarize_team_category_needs(standings, _standings_team_ctx)
+                    if _standings_team_ctx and not standings.empty
+                    else {}
+                )
+                render_contextual_page_nav(
+                    "Fantasy Standings Tracker",
+                    "after_standings",
+                    label="Analyze this roster in…",
+                    extra_context={
+                        "team": _standings_team_ctx,
+                        "category_needs": _standings_needs_ctx,
+                    },
+                )
         else:
-            drafted = draft_table[draft_table["Player"].astype(str).str.strip() != ""].copy()
-            drafted["Player Key"] = drafted["Player"].apply(normalize_player_name_for_merge)
-            roster_stats = drafted.merge(current_stats, on="Player Key", how="left", suffixes=("", "_stats"))
+            draft_table = _session_draft_board_df()
+            if draft_table.empty:
+                st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first, or load a saved draft team above.")
+            else:
+                drafted = draft_table[draft_table["Player"].astype(str).str.strip() != ""].copy()
+                drafted["Player Key"] = drafted["Player"].apply(normalize_player_name_for_merge)
+                roster_stats = drafted.merge(current_stats, on="Player Key", how="left", suffixes=("", "_stats"))
 
-            # Prefer uploaded player names/stats, keep draft ownership.
-            if "Player_stats" in roster_stats.columns:
-                roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
+                # Prefer uploaded player names/stats, keep draft ownership.
+                if "Player_stats" in roster_stats.columns:
+                    roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
 
-            st.subheader("Drafted Rosters With Current Stats")
-            show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
-            render_output_table(
-                format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))),
-                key="standings_roster_current_stats",
-                file_name="fantasy_rosters_current_stats.csv",
-                display_rows=300
-            )
+                st.subheader("Drafted Rosters With Current Stats")
+                show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
+                render_output_table(
+                    format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))),
+                    key="standings_roster_current_stats",
+                    file_name="fantasy_rosters_current_stats.csv",
+                    display_rows=300,
+                )
 
-            standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
-            st.subheader("Live Fantasy Standings")
-            render_output_table(
-                format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
-                key="fantasy_live_standings",
-                file_name="fantasy_live_standings.csv",
-                display_rows=50,
-                style_cols=["Total Roto Points", "Estimated Points"]
-            )
+                standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
+                st.subheader("Live Fantasy Standings")
+                render_output_table(
+                    format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
+                    key="fantasy_live_standings",
+                    file_name="fantasy_live_standings.csv",
+                    display_rows=50,
+                    style_cols=["Total Roto Points", "Estimated Points"],
+                )
 
-            st.session_state["fantasy_current_roster_stats"] = roster_stats
-            st.session_state["fantasy_current_standings"] = standings
-            from datetime import datetime, timezone as _tz
-            st.session_state["_fantasy_standings_stats_loaded_at"] = datetime.now(_tz.utc).isoformat()
-            st.session_state["_fantasy_standings_stats_source"] = stats_source
-            _standings_team_ctx = st.session_state.get("room_your_team")
-            _standings_needs_ctx = (
-                summarize_team_category_needs(standings, _standings_team_ctx)
-                if _standings_team_ctx and not standings.empty
-                else {}
-            )
-            render_contextual_page_nav(
-                "Fantasy Standings Tracker",
-                "after_standings",
-                label="Analyze this roster in…",
-                extra_context={
-                    "team": _standings_team_ctx,
-                    "category_needs": _standings_needs_ctx,
-                },
-            )
+                st.session_state["fantasy_current_roster_stats"] = roster_stats
+                st.session_state["fantasy_current_standings"] = standings
+                from datetime import datetime, timezone as _tz
+
+                st.session_state["_fantasy_standings_stats_loaded_at"] = datetime.now(_tz.utc).isoformat()
+                st.session_state["_fantasy_standings_stats_source"] = stats_source
+                _standings_team_ctx = st.session_state.get("room_your_team")
+                _standings_needs_ctx = (
+                    summarize_team_category_needs(standings, _standings_team_ctx)
+                    if _standings_team_ctx and not standings.empty
+                    else {}
+                )
+                render_contextual_page_nav(
+                    "Fantasy Standings Tracker",
+                    "after_standings",
+                    label="Analyze this roster in…",
+                    extra_context={
+                        "team": _standings_team_ctx,
+                        "category_needs": _standings_needs_ctx,
+                    },
+                )
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
@@ -21470,11 +21565,34 @@ if active_page == "Fantasy Lineup Assistant":
     if _xfer_cats:
         st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}** — prioritize starters who help these areas.")
     st.caption(
-        "Requires rosters in **Draft Room** and current stats from **Fantasy Standings Tracker**. "
+        "Requires rosters in **Draft Room** or a **saved draft team**, plus current stats from **Fantasy Standings Tracker**. "
         "Momentum uses season-to-date production (not daily game logs)."
     )
 
+    try:
+        from draft_archive_ui import render_load_saved_draft_team
+
+        render_load_saved_draft_team(st, st.session_state, key_prefix="lineup_archive")
+    except ImportError:
+        pass
+
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
+    try:
+        from draft_archive_state import build_roster_stats_from_archive, get_active_draft_archive
+
+        _lineup_archive = get_active_draft_archive(st.session_state)
+        if _lineup_archive is not None and roster_stats.empty:
+            _cached_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats")
+            if isinstance(_cached_hitter_stats, pd.DataFrame) and not _cached_hitter_stats.empty:
+                roster_stats = build_roster_stats_from_archive(
+                    _lineup_archive,
+                    _cached_hitter_stats,
+                    normalize_name_fn=normalize_player_name_for_merge,
+                )
+                if not roster_stats.empty:
+                    st.session_state["fantasy_current_roster_stats"] = roster_stats
+    except ImportError:
+        pass
 
     if roster_stats.empty:
         _stats_loaded_at = st.session_state.get("_fantasy_standings_stats_loaded_at")

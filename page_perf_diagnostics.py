@@ -57,6 +57,13 @@ def finish_page_perf_run() -> None:
 
 
 def render_page_perf_diagnostics(st: Any) -> None:
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st):
+            return
+    except ImportError:
+        return
     ns = _perf_ns()
     if not ns:
         return

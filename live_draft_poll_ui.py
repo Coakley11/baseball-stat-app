@@ -53,6 +53,8 @@ def record_live_poll_diagnostics(
 
 
 def render_live_poll_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     raw = session.get(LIVE_DRAFT_POLL_DIAG_KEY)
     if not isinstance(raw, dict):
         return

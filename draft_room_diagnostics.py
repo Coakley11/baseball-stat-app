@@ -158,8 +158,10 @@ def _participant_membership_diag(session: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
-def render_shared_room_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def render_shared_room_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     """Compact dev/acceptance diagnostics panel."""
+    if not developer_mode:
+        return
     diag = get_shared_room_diagnostics(session)
     if not diag.get("active"):
         return
@@ -282,8 +284,10 @@ def render_compact_pool_diagnostics(st: Any, session: dict[str, Any]) -> None:
             st.text(f"Last scoring hydrate defaults: {scoring_diag.get('default_filled_counts')}")
 
 
-def render_join_assignment_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def render_join_assignment_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     """Team assignment trace after join or restore (acceptance)."""
+    if not developer_mode:
+        return
     raw = session.get("_draft_room_join_assignment_diag")
     if not isinstance(raw, dict):
         return
@@ -309,8 +313,10 @@ def render_join_assignment_diagnostics(st: Any, session: dict[str, Any]) -> None
             )
 
 
-def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     """Show post-create verification snapshot (always after create attempt)."""
+    if not developer_mode:
+        return
     raw = session.get("_draft_room_create_diag")
     if not isinstance(raw, dict) or not raw.get("create_button_clicked"):
         return
@@ -354,7 +360,9 @@ def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any]) -> N
             )
 
 
-def render_shared_room_join_load_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def render_shared_room_join_load_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
     raw = session.get("_draft_room_join_load_diag")
     if not isinstance(raw, dict):
         return
