@@ -1951,6 +1951,11 @@ PAGE_GUIDES = {
         "when": "Mock drafts, portfolio demos, or testing draft-room flow before multi-user sync is added.",
         "outputs": "Live draft board, team rosters, recommendations, exports, and optional handoff to Draft Simulation analysis.",
     },
+    "Saved Draft Library": {
+        "purpose": "Browse, rename, duplicate, and activate saved draft teams from Live Draft and Simulator.",
+        "when": "After finishing a draft or when switching between real team, mock drafts, and practice rosters.",
+        "outputs": "Active saved draft for Standings Tracker and Lineup Assistant; multiple archives preserved.",
+    },
     "Fantasy Standings Tracker": {
         "purpose": "Score every fantasy team with current-season stats.",
         "when": "In-season to see category standings and roster totals.",
@@ -11701,6 +11706,7 @@ PAGE_OPTIONS = [
     "Draft Assistant Simulator",
     "Draft Simulation Test Mode",
     "Live Draft Room",
+    "Saved Draft Library",
     "Fantasy Standings Tracker",
     "Fantasy Lineup Assistant",
 ]
@@ -11724,6 +11730,7 @@ PAGE_OPTION_LABELS = {
     "Draft Assistant Simulator": "🧩 Draft Assistant Simulator",
     "Draft Simulation Test Mode": "🧪 Draft Simulation Test Mode",
     "Live Draft Room": "📡 Live Draft Room",
+    "Saved Draft Library": "📁 Saved Draft Library",
     "Fantasy Standings Tracker": "📊 Fantasy Standings Tracker",
     "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
 }
@@ -21360,6 +21367,23 @@ if active_page == "Live Draft Room":
     render_page_filters_debug(active_page)
 
 
+if active_page == "Saved Draft Library":
+    from draft_archive_ui import render_saved_draft_library_page
+
+    _page_perf_start(active_page)
+    render_section_header(
+        "📁 Saved Draft Library",
+        "Browse and manage saved draft teams from Live Draft Room and Draft Room Simulator.",
+        compact=True,
+    )
+    render_page_guide(active_page)
+    apply_pending_page_transfer(active_page)
+    render_saved_draft_library_page(st, st.session_state)
+    save_page_state(active_page)
+    _page_perf_end(active_page)
+    render_page_filters_debug(active_page)
+
+
 if active_page == "Fantasy Standings Tracker":
     from fantasy_state import (
         flush_fantasy_section_edits,
@@ -21384,9 +21408,9 @@ if active_page == "Fantasy Standings Tracker":
     )
 
     try:
-        from draft_archive_ui import render_load_saved_draft_team
+        from draft_archive_ui import render_active_saved_draft_chip
 
-        render_load_saved_draft_team(st, st.session_state, key_prefix="standings_archive")
+        render_active_saved_draft_chip(st, st.session_state, key_prefix="standings_archive")
     except ImportError:
         pass
 
@@ -21732,9 +21756,9 @@ if active_page == "Fantasy Lineup Assistant":
     )
 
     try:
-        from draft_archive_ui import render_load_saved_draft_team
+        from draft_archive_ui import render_active_saved_draft_chip
 
-        render_load_saved_draft_team(st, st.session_state, key_prefix="lineup_archive")
+        render_active_saved_draft_chip(st, st.session_state, key_prefix="lineup_archive")
     except ImportError:
         pass
 

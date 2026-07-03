@@ -13,9 +13,14 @@ from draft_archive_state import (
     archive_roster_dataframe,
     build_roster_stats_from_archive,
     clear_active_draft_archive,
+    delete_draft_archive,
+    draft_type_display,
+    duplicate_draft_archive,
+    format_archive_modified,
     get_active_draft_archive,
     get_draft_archive,
     list_draft_archives,
+    rename_draft_archive,
     save_live_draft_team_archive,
     save_simulator_team_archive,
     set_active_draft_archive,
@@ -101,6 +106,32 @@ class DraftArchiveTests(unittest.TestCase):
         clear_active_draft_archive(session)
         self.assertIsNone(get_active_draft_archive(session))
         self.assertEqual(len(list_draft_archives(session)), 1)
+
+    def test_rename_duplicate_delete_archive(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "A", "Player": "P1", "Pick": 1, "Round": 1}])
+        entry = save_simulator_team_archive(session, board, team_name="A", draft_name="Mock 2026")
+        draft_id = str(entry["draft_id"])
+        renamed = rename_draft_archive(session, draft_id, "Renamed Draft")
+        assert renamed is not None
+        self.assertEqual(renamed["draft_name"], "Renamed Draft")
+        dup = duplicate_draft_archive(session, draft_id)
+        assert dup is not None
+        self.assertNotEqual(dup["draft_id"], draft_id)
+        self.assertEqual(len(list_draft_archives(session)), 2)
+        activate_draft_archive(session, draft_id)
+        self.assertTrue(delete_draft_archive(session, draft_id))
+        self.assertIsNone(get_active_draft_archive(session))
+        self.assertEqual(len(list_draft_archives(session)), 1)
+        self.assertIsNotNone(get_draft_archive(session, dup["draft_id"]))
+
+    def test_draft_type_display_and_modified(self) -> None:
+        entry = {
+            "draft_type": DRAFT_TYPE_LIVE,
+            "updated_at": "2026-07-03T12:00:00+00:00",
+        }
+        self.assertEqual(draft_type_display(entry), "Live Draft")
+        self.assertIn("2026", format_archive_modified(entry))
 
 
 if __name__ == "__main__":

@@ -217,6 +217,81 @@ def clear_active_draft_archive(session: dict[str, Any]) -> None:
     set_active_draft_archive(session, None)
 
 
+def draft_type_display(entry: dict[str, Any] | None) -> str:
+    if not entry:
+        return ""
+    draft_type = str(entry.get("draft_type") or DRAFT_TYPE_SIMULATOR)
+    if draft_type == DRAFT_TYPE_LIVE:
+        return "Live Draft"
+    return "Simulator"
+
+
+def format_archive_modified(entry: dict[str, Any] | None) -> str:
+    if not entry:
+        return "—"
+    raw = str(entry.get("updated_at") or entry.get("created_at") or "").strip()
+    if not raw:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.strftime("%b %d, %Y %H:%M UTC")
+    except ValueError:
+        return raw[:16]
+
+
+def rename_draft_archive(session: dict[str, Any], draft_id: str, new_name: str) -> dict[str, Any] | None:
+    draft_id = str(draft_id or "").strip()
+    label = str(new_name or "").strip()
+    if not draft_id or not label:
+        return None
+    entries = _archive_list(session)
+    updated: dict[str, Any] | None = None
+    for i, existing in enumerate(entries):
+        if str(existing.get("draft_id") or "") != draft_id:
+            continue
+        row = dict(existing)
+        row["draft_name"] = label
+        row["updated_at"] = _utc_now_iso()
+        entries[i] = row
+        updated = row
+        break
+    if updated is None:
+        return None
+    _set_archive_list(session, entries)
+    return copy.deepcopy(updated)
+
+
+def duplicate_draft_archive(session: dict[str, Any], draft_id: str) -> dict[str, Any] | None:
+    source = get_draft_archive(session, draft_id)
+    if not source:
+        return None
+    now = _utc_now_iso()
+    copy_entry = copy.deepcopy(source)
+    copy_entry["draft_id"] = uuid.uuid4().hex[:12]
+    base_name = str(source.get("draft_name") or "Saved Draft").strip()
+    copy_entry["draft_name"] = f"{base_name} (copy)"
+    copy_entry["created_at"] = now
+    copy_entry["updated_at"] = now
+    entries = _archive_list(session)
+    entries.append(copy_entry)
+    _set_archive_list(session, entries)
+    return copy.deepcopy(copy_entry)
+
+
+def delete_draft_archive(session: dict[str, Any], draft_id: str) -> bool:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return False
+    before = len(_archive_list(session))
+    entries = [e for e in _archive_list(session) if str(e.get("draft_id") or "") != draft_id]
+    if len(entries) == before:
+        return False
+    _set_archive_list(session, entries)
+    if str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "") == draft_id:
+        clear_active_draft_archive(session)
+    return True
+
+
 def active_archive_label(entry: dict[str, Any] | None) -> str:
     if not entry:
         return ""
