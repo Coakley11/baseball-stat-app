@@ -370,6 +370,12 @@ def room_from_persist_dict(data: dict[str, Any] | None) -> dict[str, Any] | None
             from live_draft_timer_logic import live_draft_reset_timer
 
             live_draft_reset_timer(out)
+    try:
+        from live_draft_roster_slots import ensure_room_slot_config
+
+        ensure_room_slot_config(out)
+    except ImportError:
+        pass
     return out
 
 
@@ -667,6 +673,13 @@ def _apply_derived_draft_status(session: dict[str, Any], room: dict[str, Any] | 
     if not isinstance(room, dict):
         return room
     room = repair_stale_live_draft_progress(dict(room))
+    try:
+        from live_draft_roster_slots import ensure_room_slot_config, sync_live_slot_widgets_from_config
+
+        ensure_room_slot_config(room)
+        sync_live_slot_widgets_from_config(session, room.get("config"))
+    except ImportError:
+        pass
     try:
         from live_draft_safe_mode import reconcile_live_draft_room
 

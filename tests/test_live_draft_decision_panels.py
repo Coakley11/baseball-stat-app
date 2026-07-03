@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import pandas as pd
@@ -29,6 +30,7 @@ def _config() -> dict:
 
 def _room(**overrides) -> dict:
     room = {
+        "draft_room_id": "ROOMTEST",
         "status": "in_progress",
         "current_pick_index": 2,
         "config": _config(),
@@ -259,7 +261,40 @@ class DraftNavigationTests(unittest.TestCase):
         self.assertIsNotNone(ctx)
         assert ctx is not None
         self.assertEqual(ctx.get("kind"), "live_active")
+        self.assertEqual(ctx.get("title"), "Return to Live Draft")
         self.assertEqual(ctx.get("user_team"), "Danny")
+
+    def test_return_context_hydrates_from_canonical_blob(self) -> None:
+        from live_draft_state import LIVE_DRAFT_STATE_KEY, room_to_persist_dict
+
+        room = _room()
+        session = {LIVE_DRAFT_STATE_KEY: room_to_persist_dict(room)}
+        with mock.patch("live_draft_state.has_active_live_draft", return_value=True):
+            ctx = get_draft_return_context(session)
+        self.assertIsNotNone(ctx)
+        assert ctx is not None
+        self.assertEqual(ctx.get("title"), "Return to Live Draft")
+
+    def test_live_draft_priority_over_simulator(self) -> None:
+        from live_draft_state import LIVE_DRAFT_STATE_KEY, room_to_persist_dict
+
+        session = {LIVE_DRAFT_STATE_KEY: room_to_persist_dict(_room())}
+        sim_status = {
+            "active": True,
+            "mode": "draft_room_simulator",
+            "pick_count": 8,
+            "current_round": 2,
+            "current_pick": 9,
+            "on_clock_team": "Team A",
+            "your_team": "Team A",
+        }
+        with mock.patch("live_draft_state.has_active_live_draft", return_value=True):
+            with mock.patch("draft_room_state.get_active_draft_status", return_value=sim_status):
+                ctx = get_draft_return_context(session)
+        self.assertIsNotNone(ctx)
+        assert ctx is not None
+        self.assertEqual(ctx.get("title"), "Return to Live Draft")
+        self.assertNotEqual(ctx.get("kind"), "simulator")
 
     def test_completed_draft_context(self) -> None:
         session = {
@@ -326,6 +361,17 @@ class DraftNavigationTests(unittest.TestCase):
         sync_fn.assert_called_once()
         poll_fn.assert_called_once()
         self.assertNotIn(FORCE_SYNC_ON_RETURN_KEY, session)
+
+    def test_recommendations_heading_follows_quick_navigation(self) -> None:
+        text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
+        quick_idx = text.find("render_live_draft_quick_nav(st, st.session_state)")
+        heading_idx = text.find('st.markdown("##### Recommendations")')
+        self.assertNotEqual(quick_idx, -1)
+        self.assertNotEqual(heading_idx, -1)
+        self.assertGreater(heading_idx, quick_idx)
+
+
+_REPO = Path(__file__).resolve().parents[1]
 
 
 class RecCardBadgeTests(unittest.TestCase):

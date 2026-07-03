@@ -21,6 +21,89 @@ _SLOT_EXPAND_ORDER: tuple[tuple[str, str], ...] = (
 
 _POSITION_CODES = ("C", "1B", "2B", "3B", "SS", "OF", "DH", "P", "BN")
 
+LIVE_SLOT_WIDGET_KEYS: dict[str, str] = {
+    "C": "live_slot_c",
+    "1B": "live_slot_1b",
+    "2B": "live_slot_2b",
+    "3B": "live_slot_3b",
+    "SS": "live_slot_ss",
+    "OF": "live_slot_of",
+    "DH": "live_slot_dh",
+    "P": "live_slot_p",
+    "BN": "live_slot_bench",
+}
+
+
+def session_slot_count(session: dict[str, Any] | None, widget_key: str, default: int = 0) -> int:
+    """Read a roster slot widget value; 0 is valid and must not fall back to defaults."""
+    session = session or {}
+    if widget_key not in session:
+        return int(default)
+    try:
+        return int(session[widget_key])
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def slots_dict_from_session_widgets(session: dict[str, Any] | None) -> dict[str, int]:
+    """Build host slot counts from live draft setup widgets."""
+    return {
+        pos: session_slot_count(session, widget_key, 0)
+        for pos, widget_key in LIVE_SLOT_WIDGET_KEYS.items()
+    }
+
+
+def sync_live_slot_widgets_from_config(session: dict[str, Any] | None, config: dict[str, Any] | None) -> None:
+    """Mirror persisted room slot config into setup widgets after restore."""
+    slots = get_required_position_counts(config)
+    if not any(int(n or 0) > 0 for n in slots.values()):
+        return
+    session = session or {}
+    for pos, widget_key in LIVE_SLOT_WIDGET_KEYS.items():
+        session[widget_key] = int(slots.get(pos, 0) or 0)
+
+
+def _slot_instances_match_slots(config: dict[str, Any] | None) -> bool:
+    cfg = dict(config or {})
+    slots = _slots_dict(cfg)
+    instances = cfg.get("slot_instances")
+    if not isinstance(instances, list) or not instances:
+        return False
+    if len(instances) != sum(int(slots.get(code, 0) or 0) for code in _POSITION_CODES):
+        return False
+    inst_counts: dict[str, int] = {}
+    for slot in instances:
+        if not isinstance(slot, dict):
+            return False
+        pos = str(slot.get("position") or "").strip()
+        if not pos:
+            return False
+        inst_counts[pos] = int(inst_counts.get(pos, 0) or 0) + 1
+    return all(inst_counts.get(code, 0) == int(slots.get(code, 0) or 0) for code in _POSITION_CODES)
+
+
+def normalize_draft_slot_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Slots dict is authoritative; regenerate slot_instances when stale or missing."""
+    cfg = dict(config or {})
+    raw_slots = cfg.get("slots")
+    if not isinstance(raw_slots, dict) or not raw_slots:
+        return cfg
+    cfg["slots"] = _slots_dict(cfg)
+    if not _slot_instances_match_slots(cfg):
+        cfg = freeze_slot_instances_on_config(cfg)
+    return cfg
+
+
+def ensure_room_slot_config(room: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize host slot config on an in-memory live draft room."""
+    if not isinstance(room, dict):
+        return room
+    cfg = dict(room.get("config") or {})
+    if not cfg.get("slots"):
+        return room
+    room["config"] = normalize_draft_slot_config(cfg)
+    return room
+
 
 def _slots_dict(config: dict[str, Any] | None) -> dict[str, int]:
     cfg = dict(config or {})
@@ -40,29 +123,7 @@ def get_active_position_codes(config: dict[str, Any] | None, *, include_bench: b
     return codes
 
 
-def get_active_draft_roster_slots(config: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Ordered slot instances — duplicate positions are separate entries (e.g. three OF slots)."""
-    cfg = dict(config or {})
-    stored = cfg.get("slot_instances")
-    if isinstance(stored, list) and stored:
-        out: list[dict[str, Any]] = []
-        for i, slot in enumerate(stored):
-            if not isinstance(slot, dict):
-                continue
-            pos = str(slot.get("position") or "").strip()
-            if not pos:
-                continue
-            out.append(
-                {
-                    "position": pos,
-                    "label": str(slot.get("label") or pos),
-                    "slot_index": int(slot.get("slot_index", i)),
-                }
-            )
-        if out:
-            return out
-
-    counts = _slots_dict(cfg)
+def _expand_slot_instances_from_counts(counts: dict[str, int]) -> list[dict[str, Any]]:
     instances: list[dict[str, Any]] = []
     of_counter = 0
     for pos_key, display_base in _SLOT_EXPAND_ORDER:
@@ -87,10 +148,36 @@ def get_active_draft_roster_slots(config: dict[str, Any] | None) -> list[dict[st
     return instances
 
 
+def get_active_draft_roster_slots(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Ordered slot instances — duplicate positions are separate entries (e.g. three OF slots)."""
+    cfg = dict(config or {})
+    counts = _slots_dict(cfg)
+    if isinstance(cfg.get("slot_instances"), list) and cfg["slot_instances"] and _slot_instances_match_slots(cfg):
+        out: list[dict[str, Any]] = []
+        for i, slot in enumerate(cfg["slot_instances"]):
+            if not isinstance(slot, dict):
+                continue
+            pos = str(slot.get("position") or "").strip()
+            if not pos:
+                continue
+            out.append(
+                {
+                    "position": pos,
+                    "label": str(slot.get("label") or pos),
+                    "slot_index": int(slot.get("slot_index", i)),
+                }
+            )
+        if out:
+            return out
+    return _expand_slot_instances_from_counts(counts)
+
+
 def freeze_slot_instances_on_config(config: dict[str, Any]) -> dict[str, Any]:
     """Persist ordered slot instances on room config at draft start."""
     cfg = dict(config or {})
-    cfg["slot_instances"] = get_active_draft_roster_slots(cfg)
+    counts = _slots_dict(cfg)
+    cfg["slots"] = counts
+    cfg["slot_instances"] = _expand_slot_instances_from_counts(counts)
     return cfg
 
 
@@ -184,12 +271,12 @@ def resolve_draft_slot_config_from_session(session: dict[str, Any] | None) -> di
     room = session.get("live_draft_room")
     cfg = _config_with_slots_from_mapping(room if isinstance(room, dict) else None)
     if cfg.get("slots"):
-        return cfg
+        return normalize_draft_slot_config(cfg)
 
     blob = session.get("live_draft_state")
     cfg = _config_with_slots_from_mapping(blob if isinstance(blob, dict) else None)
     if cfg.get("slots"):
-        return cfg
+        return normalize_draft_slot_config(cfg)
 
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
@@ -198,7 +285,7 @@ def resolve_draft_slot_config_from_session(session: dict[str, Any] | None) -> di
             legacy = block.get(LIVE_DRAFT_ROOM_KEY) or block.get("live_draft_room")
             cfg = _config_with_slots_from_mapping(legacy if isinstance(legacy, dict) else None)
             if cfg.get("slots"):
-                return cfg
+                return normalize_draft_slot_config(cfg)
 
     lab = session.get("draft_lab_results")
     if isinstance(lab, dict):
@@ -207,7 +294,7 @@ def resolve_draft_slot_config_from_session(session: dict[str, Any] | None) -> di
             out = {"slots": dict(handoff["slots"])}
             if handoff.get("slot_instances"):
                 out["slot_instances"] = handoff["slot_instances"]
-            return out
+            return normalize_draft_slot_config(out)
     return {}
 
 

@@ -9824,6 +9824,12 @@ def live_draft_recommendations(room, top_n=8, team=None):
         target_team = str(slot["Team"])
     roster_df = pd.DataFrame(room["rosters"].get(target_team, []))
     cfg = dict(room.get("config", {}))
+    try:
+        from live_draft_roster_slots import normalize_draft_slot_config
+
+        cfg = normalize_draft_slot_config(cfg)
+    except ImportError:
+        pass
     cfg["current_pick"] = int(slot.get("Pick", 1))
     cfg["next_user_pick"] = live_draft_next_pick_for_team(room, target_team)
     cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
@@ -19722,15 +19728,26 @@ if active_page == "Live Draft Room":
                 str(st.session_state.get(f"live_draft_team_name_{i}") or default_teams[i]).strip() or default_teams[i]
                 for i in range(int(live_num_teams))
             ]
-            slot_c = int(st.session_state.get("live_slot_c") or 1)
-            slot_1b = int(st.session_state.get("live_slot_1b") or 1)
-            slot_2b = int(st.session_state.get("live_slot_2b") or 1)
-            slot_3b = int(st.session_state.get("live_slot_3b") or 1)
-            slot_ss = int(st.session_state.get("live_slot_ss") or 1)
-            slot_of = int(st.session_state.get("live_slot_of") or 3)
-            slot_dh = int(st.session_state.get("live_slot_dh") or 1)
-            slot_p = int(st.session_state.get("live_slot_p") or 0)
-            slot_bench = int(st.session_state.get("live_slot_bench") or 5)
+            try:
+                from live_draft_roster_slots import session_slot_count
+            except ImportError:
+                def session_slot_count(session, widget_key, default=0):
+                    if widget_key not in session:
+                        return int(default)
+                    try:
+                        return int(session[widget_key])
+                    except (TypeError, ValueError):
+                        return int(default)
+
+            slot_c = session_slot_count(st.session_state, "live_slot_c", 1)
+            slot_1b = session_slot_count(st.session_state, "live_slot_1b", 1)
+            slot_2b = session_slot_count(st.session_state, "live_slot_2b", 1)
+            slot_3b = session_slot_count(st.session_state, "live_slot_3b", 1)
+            slot_ss = session_slot_count(st.session_state, "live_slot_ss", 1)
+            slot_of = session_slot_count(st.session_state, "live_slot_of", 3)
+            slot_dh = session_slot_count(st.session_state, "live_slot_dh", 1)
+            slot_p = session_slot_count(st.session_state, "live_slot_p", 0)
+            slot_bench = session_slot_count(st.session_state, "live_slot_bench", 5)
             fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
             try:
                 if mark_start_step:
@@ -20365,7 +20382,15 @@ if active_page == "Live Draft Room":
                         st.caption("Draft setup is read-only after the first pick.")
         except ImportError:
             pass
-        cfg = room.get("config", {})
+        cfg = dict(room.get("config", {}))
+        try:
+            from live_draft_roster_slots import normalize_draft_slot_config
+
+            cfg = normalize_draft_slot_config(cfg)
+            if cfg.get("slots"):
+                room["config"] = cfg
+        except ImportError:
+            pass
         slot = live_draft_current_slot(room)
         if slot is None and _reconcile is not None and _reconcile.manual_recovery_available:
             picks = room.get("pick_order") or []
@@ -20822,13 +20847,13 @@ if active_page == "Live Draft Room":
                     )
                 except Exception:
                     pass
-                st.markdown("##### Recommendations")
                 try:
                     from live_draft_navigation import render_live_draft_quick_nav
 
                     render_live_draft_quick_nav(st, st.session_state)
                 except ImportError:
                     pass
+                st.markdown("##### Recommendations")
                 try:
                     from live_draft_room_ui import (
                         add_why_this_pick_column,

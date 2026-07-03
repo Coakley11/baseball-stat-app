@@ -1397,15 +1397,18 @@ def render_position_scarcity_panel(
         return
     try:
         from live_draft_pick_scoring import _draft_compute_position_replacement
-        from live_draft_roster_slots import get_active_position_codes, get_league_remaining_demand
+        from live_draft_roster_slots import get_active_position_codes, get_league_remaining_demand, normalize_draft_slot_config
     except ImportError:
         return
-    cfg = dict((room or {}).get("config") or {})
+    cfg = normalize_draft_slot_config(dict((room or {}).get("config") or {}))
     active = get_active_position_codes(cfg)
+    if not active:
+        st.caption("No roster slots configured.")
+        return
     league_demand = get_league_remaining_demand(room, cfg)
     _, rows = _draft_compute_position_replacement(
         available_df,
-        active_positions=active or None,
+        active_positions=active,
         league_demand=league_demand,
     )
     if not rows:

@@ -10,9 +10,13 @@ import pandas as pd
 from live_draft_pick_scoring import _draft_compute_position_replacement
 from live_draft_roster_slots import (
     freeze_slot_instances_on_config,
+    format_open_position_needs,
     get_active_draft_roster_slots,
     get_remaining_position_needs,
     get_required_position_counts,
+    normalize_draft_slot_config,
+    session_slot_count,
+    sync_live_slot_widgets_from_config,
 )
 from live_draft_roster_tracker import build_roster_checklist
 
@@ -205,6 +209,89 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         )
         self.assertTrue(text.startswith("Draft Assistant Pick:"))
         self.assertIn("OF", text)
+
+    def test_session_slot_count_preserves_zero(self) -> None:
+        session = {"live_slot_3b": 0, "live_slot_dh": 0, "live_slot_bench": 0}
+        self.assertEqual(session_slot_count(session, "live_slot_3b", 1), 0)
+        self.assertEqual(session_slot_count(session, "live_slot_dh", 1), 0)
+        self.assertEqual(session_slot_count(session, "live_slot_bench", 5), 0)
+        self.assertEqual(session_slot_count(session, "live_slot_c", 1), 1)
+
+    def test_normalize_draft_slot_config_drops_stale_slot_instances(self) -> None:
+        cfg = _minimal_config()
+        stale = freeze_slot_instances_on_config(
+            {
+                "slots": {
+                    "C": 1,
+                    "1B": 1,
+                    "2B": 1,
+                    "3B": 1,
+                    "SS": 1,
+                    "OF": 3,
+                    "DH": 1,
+                    "P": 0,
+                    "BN": 5,
+                }
+            }
+        )
+        cfg["slot_instances"] = stale["slot_instances"]
+        normalized = normalize_draft_slot_config(cfg)
+        labels = [s["label"] for s in get_active_draft_roster_slots(normalized)]
+        self.assertEqual(labels, ["C", "1B", "2B", "SS", "OF"])
+        self.assertEqual(len(labels), 5)
+
+    def test_restore_round_trip_preserves_five_position_format(self) -> None:
+        from live_draft_state import LIVE_DRAFT_STATE_KEY, prepare_live_draft_state, room_from_persist_dict, room_to_persist_dict
+
+        cfg = _minimal_config()
+        room = {
+            "draft_room_id": "ROOM5",
+            "status": "in_progress",
+            "config": cfg,
+            "teams": ["Team A", "Team B"],
+            "pick_order": [
+                {"Pick": 1, "Round": 1, "Team": "Team A"},
+                {"Pick": 2, "Round": 1, "Team": "Team B"},
+            ],
+            "current_pick_index": 0,
+            "draft_board": [],
+            "rosters": {"Team A": [], "Team B": []},
+            "drafted_player_ids": [],
+            "pool": pd.DataFrame(
+                [
+                    {"fullName": "C1", "Primary Position": "C", "Expected Fantasy Value": 0.9, "playerID": "c1"},
+                    {"fullName": "SS1", "Primary Position": "SS", "Expected Fantasy Value": 0.85, "playerID": "s1"},
+                ]
+            ),
+        }
+        blob = room_to_persist_dict(room)
+        session = {LIVE_DRAFT_STATE_KEY: blob}
+        restored_room = prepare_live_draft_state(session)
+        self.assertIsNotNone(restored_room)
+        restored_cfg = normalize_draft_slot_config(dict(restored_room.get("config") or {}))
+        checklist = build_roster_checklist(pd.DataFrame(), restored_cfg)
+        self.assertEqual(checklist["target"], 5)
+        needs = get_remaining_position_needs(pd.DataFrame(), restored_cfg)
+        need_label = format_open_position_needs(needs)
+        self.assertNotIn("3B", need_label)
+        self.assertNotIn("DH", need_label)
+        self.assertNotIn("BN", need_label)
+        active = {s["position"] for s in get_active_draft_roster_slots(restored_cfg)}
+        self.assertEqual(active, {"C", "1B", "2B", "SS", "OF"})
+        round_trip = room_from_persist_dict(blob)
+        assert round_trip is not None
+        self.assertEqual(
+            [s["label"] for s in get_active_draft_roster_slots(round_trip["config"])],
+            ["C", "1B", "2B", "SS", "OF"],
+        )
+
+    def test_sync_live_slot_widgets_from_config(self) -> None:
+        session: dict = {"live_slot_3b": 1, "live_slot_dh": 1, "live_slot_bench": 5}
+        sync_live_slot_widgets_from_config(session, _minimal_config())
+        self.assertEqual(session["live_slot_3b"], 0)
+        self.assertEqual(session["live_slot_dh"], 0)
+        self.assertEqual(session["live_slot_bench"], 0)
+        self.assertEqual(session["live_slot_c"], 1)
 
 
 if __name__ == "__main__":

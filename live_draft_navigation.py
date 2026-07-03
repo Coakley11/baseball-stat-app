@@ -92,9 +92,33 @@ def _seconds_remaining(room: dict[str, Any]) -> int | None:
     return None
 
 
+def _is_live_draft_room(room: Any) -> bool:
+    return isinstance(room, dict) and bool(room.get("draft_room_id") or room.get("pick_order"))
+
+
+def _live_draft_room_for_return(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Hydrate a return-card room without running the full Live Draft page pipeline."""
+    room = session.get("live_draft_room")
+    if _is_live_draft_room(room):
+        return room
+    try:
+        from live_draft_state import canonical_live_draft, room_from_persist_dict
+
+        blob = canonical_live_draft(session)
+        if isinstance(blob, dict) and (blob.get("draft_room_id") or blob.get("pick_order")):
+            restored = room_from_persist_dict(blob)
+            if restored:
+                session["live_draft_room"] = restored
+                return restored
+    except ImportError:
+        pass
+    return None
+
+
 def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
     """Sidebar card context for active live draft, lobby, completed draft, or simulator."""
-    room = session.get("live_draft_room")
+    room = _live_draft_room_for_return(session)
+
     if isinstance(room, dict):
         try:
             from live_draft_state import analyze_live_draft_progress, has_active_live_draft
@@ -113,8 +137,9 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
             on_clock = progress.get("on_clock_team") or "—"
             done = int(progress.get("draft_board_count") or 0)
             total = int(progress.get("total_picks") or 0)
+            status = str(room.get("status") or "").strip()
 
-            if progress.get("draft_complete"):
+            if progress.get("draft_complete") or status == "complete":
                 return {
                     "kind": "live_complete",
                     "title": "Draft Completed",
@@ -125,9 +150,9 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                     "user_team": user_team,
                 }
 
-            if has_active_live_draft(session) or str(room.get("status") or "") == "not_started":
+            if has_active_live_draft(session) or status in ("not_started", "in_progress", "paused"):
                 return {
-                    "kind": "live_active" if has_active_live_draft(session) else "live_lobby",
+                    "kind": "live_active" if status in ("in_progress", "paused") else "live_lobby",
                     "title": "Return to Live Draft",
                     "team_label": team_label,
                     "room_code": code,
@@ -139,8 +164,21 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                     "picks_label": f"{done} / {total} picks made" if total else f"{done} picks",
                     "seconds_remaining": _seconds_remaining(room),
                 }
-        except ImportError:
-            pass
+        except Exception:
+            status = str(room.get("status") or "").strip()
+            if status == "complete":
+                return {
+                    "kind": "live_complete",
+                    "title": "Draft Completed",
+                    "team_label": str((room.get("config") or {}).get("league_name") or "Live Draft"),
+                    "user_team": str(session.get("draft_room_participant_team") or ""),
+                }
+            return {
+                "kind": "live_active" if status in ("in_progress", "paused") else "live_lobby",
+                "title": "Return to Live Draft",
+                "team_label": str((room.get("config") or {}).get("league_name") or "Live Draft"),
+                "user_team": str(session.get("draft_room_participant_team") or ""),
+            }
 
     try:
         from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, get_active_draft_status
