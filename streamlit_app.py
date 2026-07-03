@@ -20765,6 +20765,7 @@ if active_page == "Live Draft Room":
                     remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 _rec_team = user_team if _multiplayer_draft else None
+                _LIVE_REC_TOP_N = 10
                 _defer_recs = False
                 try:
                     from live_draft_start_progress import is_live_draft_start_in_flight
@@ -20773,24 +20774,13 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 if not _defer_recs:
-                    _LIVE_REC_CARD_COUNT = 6
-                    _LIVE_REC_TABLE_COUNT = 10
-                    top_rec_pool, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                    top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                         st.session_state,
                         room,
-                        top_n=_LIVE_REC_CARD_COUNT + _LIVE_REC_TABLE_COUNT,
+                        top_n=_LIVE_REC_TOP_N,
                         team=_rec_team,
                     )
-                    from recommendation_dedupe import collect_featured_player_ids, remaining_recommendations
-
-                    top_rec_cards = top_rec_pool.head(_LIVE_REC_CARD_COUNT)
-                    _card_featured_ids = collect_featured_player_ids(top_rec_cards)
-                    top_rec = remaining_recommendations(
-                        top_rec_pool, _card_featured_ids, limit=_LIVE_REC_TABLE_COUNT
-                    )
                 else:
-                    top_rec_pool = pd.DataFrame()
-                    top_rec_cards = pd.DataFrame()
                     top_rec = best_avail = pos_fit = value_sleep = pd.DataFrame()
                 try:
                     from live_draft_start_progress import flush_pending_live_draft_created_activity, mark_start_step
@@ -20810,7 +20800,7 @@ if active_page == "Live Draft Room":
                     _ui_cache_key = live_draft_ui_cache_key(
                         st.session_state,
                         room,
-                        top_n=_LIVE_REC_CARD_COUNT + _LIVE_REC_TABLE_COUNT,
+                        top_n=_LIVE_REC_TOP_N,
                         team=_rec_team,
                     )
                     _available_cached = cached_live_draft_get_available(st.session_state, room)
@@ -20883,7 +20873,7 @@ if active_page == "Live Draft Room":
                         st.session_state,
                         page="Live Draft Room",
                         room=room,
-                        top_rec_df=top_rec_pool if not top_rec_pool.empty else top_rec,
+                        top_rec_df=top_rec,
                         best_avail_df=best_avail,
                         pos_fit_df=pos_fit,
                         value_sleep_df=value_sleep,
@@ -20917,12 +20907,12 @@ if active_page == "Live Draft Room":
                             st.caption(ROSTER_FIT_CONTEXT_NOTES["live_draft"])
                         except ImportError:
                             pass
-                        render_live_draft_rec_summary_banner(st, top_rec_cards, gaps=_gaps)
+                        render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
                         render_live_draft_rec_cards(
                             st,
                             st.session_state,
                             room,
-                            top_rec_cards,
+                            top_rec,
                             max_cards=6,
                             multiplayer=_multiplayer_draft,
                             fmt_rate_4=fmt_rate_4,
@@ -20931,7 +20921,7 @@ if active_page == "Live Draft Room":
                             category_needs=_category_needs,
                         )
                 except ImportError:
-                    _render_live_draft_rec_cards(top_rec_cards if not top_rec_cards.empty else top_rec, max_cards=6)
+                    _render_live_draft_rec_cards(top_rec, max_cards=6)
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                 rec_cols = [
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
