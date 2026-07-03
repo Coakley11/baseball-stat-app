@@ -76,7 +76,7 @@ def build_account_settings_context(*, st: Any | None = None) -> dict[str, Any]:
     ws = get_active_workspace_id(st)
     acct = account_summary()
     email = get_user_email()
-    persisted = load_persisted_workspace_id()
+    persisted = load_persisted_workspace_id(session_state=st.session_state if st is not None else None)
     query_ws = normalize_workspace_id(_qp_get(st, _QUERY_PARAM)) if st is not None else persisted
     query_raw = _qp_get(st, _QUERY_PARAM) if st is not None else ""
     namespace_keys = sorted(workspace_storage_app_keys(ws))
@@ -148,7 +148,7 @@ def detect_workspace_namespace_issues(*, st: Any | None = None) -> list[dict[str
         init_suite_workspace(st)
 
     ws = get_active_workspace_id(st)
-    persisted = load_persisted_workspace_id()
+    persisted = load_persisted_workspace_id(session_state=st.session_state if st is not None else None)
     if persisted != ws:
         issues.append(
             {

@@ -73,15 +73,28 @@ def workspace_dir(workspace_id: str | None = None) -> Path:
     return DATA_DIR / "workspaces" / ws
 
 
-def load_persisted_workspace_id() -> str:
+def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) -> str:
+    try:
+        from suite_workspace_registry import load_persisted_workspace_for_account
+
+        return load_persisted_workspace_for_account(session_state=session_state)
+    except ImportError:
+        pass
     raw = _read_json(_PERSISTED_FILE)
     if isinstance(raw, dict):
         return normalize_workspace_id(str(raw.get("workspace_id") or raw.get("active_workspace_id") or ""))
     return DEFAULT_WORKSPACE_ID
 
 
-def persist_active_workspace_id(workspace_id: str) -> bool:
+def persist_active_workspace_id(workspace_id: str, *, session_state: dict[str, Any] | None = None) -> bool:
     ws = normalize_workspace_id(workspace_id)
+    try:
+        from suite_workspace_registry import persist_active_workspace_for_account
+
+        if persist_active_workspace_for_account(ws, session_state=session_state):
+            return True
+    except ImportError:
+        pass
     payload = {
         "workspace_id": ws,
         "label": workspace_label(ws),
@@ -92,19 +105,23 @@ def persist_active_workspace_id(workspace_id: str) -> bool:
 def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) -> str:
     if explicit not in (None, ""):
         return normalize_workspace_id(explicit)
+    ss: dict[str, Any] | None = None
     if st is not None:
-        raw = st.session_state.get(SESSION_KEY)
+        ss = st.session_state
+        raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
             return normalize_workspace_id(str(raw))
     try:
         import streamlit as st_module  # noqa: WPS433
 
-        raw = st_module.session_state.get(SESSION_KEY)
+        if ss is None:
+            ss = st_module.session_state
+        raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
             return normalize_workspace_id(str(raw))
     except Exception:
-        pass
-    return load_persisted_workspace_id()
+        ss = None
+    return load_persisted_workspace_id(session_state=ss)
 
 
 def get_active_workspace_id(st: Any | None = None) -> str:
@@ -121,10 +138,21 @@ def _sync_workspace_selector_widget(st: Any, workspace_id: str) -> None:
 
 def set_active_workspace_id(st: Any, workspace_id: str) -> str:
     ws = normalize_workspace_id(workspace_id)
+    try:
+        from suite_workspace_registry import workspace_access_allowed
+
+        if not workspace_access_allowed(ws, session_state=st.session_state):
+            from suite_workspace_registry import get_owned_workspace_id
+
+            owned = get_owned_workspace_id(st.session_state)
+            if owned:
+                ws = normalize_workspace_id(owned)
+    except ImportError:
+        pass
     prev_raw = st.session_state.get(SESSION_KEY)
     prev = normalize_workspace_id(str(prev_raw)) if prev_raw not in (None, "") else None
     st.session_state[SESSION_KEY] = ws
-    persist_active_workspace_id(ws)
+    persist_active_workspace_id(ws, session_state=st.session_state)
     _sync_workspace_selector_widget(st, ws)
     if prev is not None and prev != ws:
         _on_active_workspace_changed(st)
@@ -341,30 +369,56 @@ def init_suite_workspace(st: Any) -> str:
     Apply ?suite_workspace=, else session/persisted choice.
     Call once near app startup before restore/autosave.
     """
+    try:
+        from suite_auth import enforce_workspace_ownership, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(st.session_state):
+            enforce_workspace_ownership(st.session_state)
+    except ImportError:
+        pass
     from_url = _qp_get(st, _QUERY_PARAM)
     if from_url:
         incoming = normalize_workspace_id(from_url)
+        allowed_incoming = True
+        try:
+            from suite_workspace_registry import workspace_access_allowed
+
+            allowed_incoming = workspace_access_allowed(incoming, session_state=st.session_state)
+        except ImportError:
+            pass
         current = normalize_workspace_id(
-            str(st.session_state.get(SESSION_KEY) or load_persisted_workspace_id())
+            str(st.session_state.get(SESSION_KEY) or load_persisted_workspace_id(session_state=st.session_state))
         )
-        if incoming != current:
+        if allowed_incoming and incoming != current:
             set_active_workspace_id(st, incoming)
             st.session_state[_INITIALIZED_KEY] = True
             return incoming
+        if not allowed_incoming:
+            try:
+                from suite_auth import enforce_workspace_ownership
+
+                enforce_workspace_ownership(st.session_state)
+            except ImportError:
+                pass
 
     if st.session_state.get(_INITIALIZED_KEY):
         return get_active_workspace_id(st)
 
-    if from_url:
-        set_active_workspace_id(st, from_url)
-    elif SESSION_KEY not in st.session_state:
-        set_active_workspace_id(st, load_persisted_workspace_id())
+    if SESSION_KEY not in st.session_state:
+        set_active_workspace_id(st, load_persisted_workspace_id(session_state=st.session_state))
     else:
         ws = normalize_workspace_id(str(st.session_state.get(SESSION_KEY) or ""))
         st.session_state[SESSION_KEY] = ws
-        persist_active_workspace_id(ws)
+        persist_active_workspace_id(ws, session_state=st.session_state)
 
     st.session_state[_INITIALIZED_KEY] = True
+    try:
+        from suite_auth import enforce_workspace_ownership, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(st.session_state):
+            enforce_workspace_ownership(st.session_state)
+    except ImportError:
+        pass
     return get_active_workspace_id(st)
 
 
@@ -395,7 +449,15 @@ def append_suite_workspace_param(url: str, workspace_id: str | None = None) -> s
     base = str(url or "").strip()
     if not base:
         return ""
-    ws = normalize_workspace_id(workspace_id if workspace_id not in (None, "") else load_persisted_workspace_id())
+    if workspace_id not in (None, ""):
+        ws = normalize_workspace_id(workspace_id)
+    else:
+        try:
+            import streamlit as st_module  # noqa: WPS433
+
+            ws = load_persisted_workspace_id(session_state=st_module.session_state)
+        except Exception:
+            ws = resolve_workspace_id()
     parsed = urlparse(base)
     params = parse_qs(parsed.query, keep_blank_values=True)
     params[_QUERY_PARAM] = [ws]
@@ -428,6 +490,20 @@ def render_workspace_selector_sidebar(st: Any) -> str:
     except ImportError:
         pass
     current = get_active_workspace_id(st)
+    try:
+        from suite_workspace_registry import can_switch_workspaces, get_owned_workspace_id
+
+        if not can_switch_workspaces(session_state=st.session_state):
+            owned = get_owned_workspace_id(st.session_state) or current
+            label = workspace_label(owned)
+            st.markdown(f"**Workspace:** {label}")
+            st.caption(f"Your account workspace (`{owned}`). Multi-profile switching is admin-only.")
+            if owned != current:
+                set_active_workspace_id(st, owned)
+                current = owned
+            return current
+    except ImportError:
+        pass
     presets = _workspace_presets_for_session(st)
     labels = [p["label"] for p in presets]
     ids = [p["id"] for p in presets]

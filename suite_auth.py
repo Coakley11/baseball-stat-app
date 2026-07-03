@@ -90,14 +90,16 @@ def current_auth_email(session_state: dict[str, Any]) -> str:
 
 
 def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
-    """Workspace ownership v1 — preset profiles allowed for this account."""
+    """Owned workspace(s) allowed for this account — one workspace unless admin demo."""
     key = str(external_user_id or "").strip().lower()
     if key in _DEFAULT_ALLOWED_WORKSPACES:
-        return _DEFAULT_ALLOWED_WORKSPACES[key]
+        if key == "daniel":
+            return _DEFAULT_ALLOWED_WORKSPACES[key]
+        return (key,)
     if key == "default":
         return ("daniel", "ariel", "guest", "test_user")
-    if re.fullmatch(r"[a-z0-9_]+", key) and key not in _DEFAULT_ALLOWED_WORKSPACES:
-        return (key, "guest", "test_user")
+    if re.fullmatch(r"[a-z0-9_]+", key):
+        return (key,)
     return ("daniel", "guest", "test_user")
 
 
@@ -139,23 +141,40 @@ def _infer_external_id_from_email(email: str) -> str:
 
 
 def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
-    """Clamp active workspace to profiles owned by the signed-in account."""
+    """Clamp active workspace to the signed-in account's owned workspace."""
     if not is_auth_enabled() or not is_authenticated(session_state):
         return
     try:
         from types import SimpleNamespace
 
         from suite_workspace import get_active_workspace_id, normalize_workspace_id, set_active_workspace_id
+        from suite_workspace_registry import (
+            ensure_owned_workspace_for_session,
+            get_owned_workspace_id,
+            workspace_access_allowed,
+        )
 
         st = SimpleNamespace(session_state=session_state)
-        allowed = allowed_workspaces_for_session(session_state)
-        preferred = normalize_workspace_id(resolve_auth_external_id(session_state))
+        ensure_owned_workspace_for_session(session_state)
+        owned = normalize_workspace_id(get_owned_workspace_id(session_state))
+        allowed = tuple(
+            normalize_workspace_id(w)
+            for w in allowed_workspaces_for_session(session_state)
+        )
         active = normalize_workspace_id(get_active_workspace_id(st))
-        if preferred in allowed and active != preferred:
-            set_active_workspace_id(st, preferred)
+        if owned and active != owned and not workspace_access_allowed(active, session_state=session_state):
+            set_active_workspace_id(st, owned)
             return
+        if owned and len(allowed) == 1 and active != owned:
+            set_active_workspace_id(st, owned)
+            return
+        if preferred := normalize_workspace_id(resolve_auth_external_id(session_state)):
+            if preferred in allowed and active != preferred and len(allowed) == 1:
+                set_active_workspace_id(st, preferred)
+                return
         if active not in allowed and allowed:
-            set_active_workspace_id(st, allowed[0])
+            target = owned or allowed[0]
+            set_active_workspace_id(st, target)
     except ImportError:
         pass
 
@@ -329,6 +348,13 @@ def _persist_auth_session(
             pass
     except Exception:
         pass
+    try:
+        from suite_workspace_registry import ensure_owned_workspace_for_session
+
+        ensure_owned_workspace_for_session(session_state)
+    except ImportError:
+        pass
+    enforce_workspace_ownership(session_state)
     if st is not None and tokens and suite_user_id:
         try:
             from suite_auth_browser import save_browser_auth_tokens
