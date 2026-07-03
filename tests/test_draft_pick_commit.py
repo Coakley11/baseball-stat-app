@@ -57,11 +57,11 @@ class DraftPickCommitTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_manual_pick_commits_with_fresh_revision(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
-        ok, msg, _ = join_shared_draft_room(self.guest, code, store=self.store)
+        ok, msg, _ = join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         self.assertTrue(ok, msg)
         room = self.guest[LIVE_DRAFT_ROOM_KEY]
-        self.guest["draft_room_participant_team"] = "Team 1"
-        self.guest["room_your_team"] = "Team 1"
+        self.guest["draft_room_participant_team"] = "Team 2"
+        self.guest["room_your_team"] = "Team 2"
         before = int(room.get("current_pick_index") or 0)
         result = _draft_live(self.host, "Aaron Judge", source="test")
         self.assertTrue(result.get("ok"), result.get("message"))
@@ -75,7 +75,7 @@ class DraftPickCommitTests(unittest.TestCase):
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_post_pick_validation_not_reapplied(self, _auth: object) -> None:
         code, _ = create_and_host_shared_room(self.host, _sample_live_room(), store=self.store)
-        join_shared_draft_room(self.guest, code, store=self.store)
+        join_shared_draft_room(self.guest, code, requested_team="Team 2", store=self.store)
         room = self.host[LIVE_DRAFT_ROOM_KEY]
         self.host["draft_room_participant_team"] = "Team 1"
         self.host["room_your_team"] = "Team 1"

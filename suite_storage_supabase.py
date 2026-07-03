@@ -191,9 +191,75 @@ def _merge_state_metrics(scoped_app_key: str, incoming: dict[str, Any] | None) -
         merged.update(new_metrics)
         if _FULL_SESSION_KEY not in new_metrics and _FULL_SESSION_KEY in prior:
             merged[_FULL_SESSION_KEY] = prior[_FULL_SESSION_KEY]
+        elif _FULL_SESSION_KEY in new_metrics and _FULL_SESSION_KEY in prior:
+            merged[_FULL_SESSION_KEY] = _merge_full_session_preserve_richer_draft(
+                prior[_FULL_SESSION_KEY],
+                new_metrics[_FULL_SESSION_KEY],
+            )
         return merged
     except Exception:
         return new_metrics
+
+
+def _draft_pick_count_from_session_blob(full_session: dict[str, Any] | None) -> int:
+    if not isinstance(full_session, dict):
+        return 0
+    for key in ("draft_room_state", "draft_room_table"):
+        blob = full_session.get(key)
+        if not isinstance(blob, dict):
+            continue
+        try:
+            if blob.get("pick_count") is not None:
+                return int(blob.get("pick_count") or 0)
+        except (TypeError, ValueError):
+            pass
+        records = blob.get("table_records")
+        if isinstance(records, list):
+            return len(records)
+    return 0
+
+
+def _pick_best_state_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_count = -1
+    best_ts = ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        full = metrics.get(_FULL_SESSION_KEY)
+        count = _draft_pick_count_from_session_blob(full if isinstance(full, dict) else None)
+        ts = str(row.get("updated_at") or "")
+        if count > best_count or (count == best_count and ts > best_ts):
+            best = dict(row)
+            best["_draft_pick_count"] = count
+            best_count = count
+            best_ts = ts
+    return best
+
+
+def _merge_full_session_preserve_richer_draft(
+    prior: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(incoming or {})
+    prior_count = _draft_pick_count_from_session_blob(prior)
+    incoming_count = _draft_pick_count_from_session_blob(incoming)
+    if prior_count > incoming_count:
+        for key in ("draft_room_state", "draft_room_table"):
+            if isinstance(prior.get(key), dict):
+                merged[key] = prior[key]
+    return merged
+
+
+def load_current_state_rows(**kwargs: Any) -> list[dict[str, Any]]:
+    """Back-compat alias for tests and legacy callers."""
+    params: dict[str, str] = {"select": "app,page,summary,metrics,updated_at"}
+    uid = _cloud_user_id()
+    if uid:
+        params["user_id"] = f"eq.{uid}"
+    rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+    return rows if isinstance(rows, list) else []
 
 
 def _now_iso() -> str:
@@ -510,6 +576,59 @@ def save_current_state(
     )
 
 
+def save_current_state_with_result(
+    app: str,
+    *,
+    page: str = "",
+    summary: str = "",
+    metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist app state and report write mode (PATCH when a row already exists)."""
+    logical_app = normalize_app_key(app)
+    app_key = _scoped_storage_app(app)
+    if logical_app not in ACTIVE_APP_KEYS:
+        return {"ok": False, "write_mode": "skipped", "error": "inactive_app"}
+    merged_metrics = _merge_state_metrics(app_key, metrics)
+    body: dict[str, Any] = {
+        "app": app_key,
+        "page": page or "",
+        "summary": summary or "",
+        "metrics": merged_metrics,
+        "updated_at": _now_iso(),
+    }
+    uid = _cloud_user_id()
+    if uid:
+        body["user_id"] = uid
+    write_mode = "post"
+    try:
+        params: dict[str, str] = {"select": "app", "app": f"eq.{app_key}"}
+        if uid:
+            params["user_id"] = f"eq.{uid}"
+        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+        if isinstance(rows, list) and rows:
+            patch_params = {"app": f"eq.{app_key}"}
+            if uid:
+                patch_params["user_id"] = f"eq.{uid}"
+            _request(
+                "PATCH",
+                _TABLE_STATE,
+                params=patch_params,
+                json_body=body,
+                prefer="return=minimal",
+            )
+            write_mode = "patch"
+        else:
+            _request(
+                "POST",
+                _TABLE_STATE,
+                json_body=body,
+                prefer="resolution=merge-duplicates,return=minimal",
+            )
+        return {"ok": True, "write_mode": write_mode}
+    except Exception as exc:
+        return {"ok": False, "write_mode": write_mode, "error": str(exc)}
+
+
 def upsert_resume_item(
     app: str,
     item_key: str,
@@ -651,6 +770,7 @@ def load_current_states(*, include_metrics: bool = False) -> dict[str, dict[str,
     if not isinstance(rows, list):
         return {}
     out: dict[str, dict[str, Any]] = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -660,7 +780,10 @@ def load_current_states(*, include_metrics: bool = False) -> dict[str, dict[str,
         logical = logical_storage_app_key(storage_app)
         if logical not in ACTIVE_APP_KEYS:
             continue
-        out[logical] = _row_to_state_dict(row, logical=logical)
+        grouped.setdefault(logical, []).append(row)
+    for logical, app_rows in grouped.items():
+        best_row = _pick_best_state_row(app_rows) or app_rows[-1]
+        out[logical] = _row_to_state_dict(best_row, logical=logical)
     return out
 
 

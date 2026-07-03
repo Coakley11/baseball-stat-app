@@ -46,6 +46,7 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
             publish_shared_room_runtime,
             shared_document_room_blob,
         )
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
         if not is_multiplayer_draft_active(session):
             return None
@@ -55,11 +56,17 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
         head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
         meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
         if head_rev > meta_rev and isinstance(shared_doc, dict):
-            try:
-                from live_draft_state import LIVE_DRAFT_ROOM_KEY, should_prefer_runtime_live_room
-
-                runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+            runtime = session.get(LIVE_DRAFT_ROOM_KEY)
+            remote_room = shared_document_room_blob(shared_doc)
+            if not isinstance(remote_room, dict):
                 remote_room = shared_doc.get("live_room") if isinstance(shared_doc.get("live_room"), dict) else shared_doc
+            local_picks = len((runtime or {}).get("draft_board") or []) if isinstance(runtime, dict) else 0
+            remote_picks = len((remote_room or {}).get("draft_board") or []) if isinstance(remote_room, dict) else 0
+            if local_picks < remote_picks:
+                return meta_rev
+            try:
+                from live_draft_state import should_prefer_runtime_live_room
+
                 if isinstance(runtime, dict) and isinstance(remote_room, dict) and should_prefer_runtime_live_room(
                     session, runtime, remote_room
                 ):
@@ -264,6 +271,18 @@ def commit_manual_live_pick(
         board_size_before=board_before,
         idx_before=idx_before,
     )
+    if not persisted.ok:
+        try:
+            from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, get_shared_room_store, publish_shared_room_runtime
+
+            code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+            if code:
+                head = get_shared_room_store().load(code)
+                if isinstance(head, dict):
+                    publish_shared_room_runtime(session, head, reason="rollback_failed_pick")
+                    room = session.get(LIVE_DRAFT_ROOM_KEY) or room
+        except ImportError:
+            pass
     if persisted.ok:
         persisted.message = msg
         try:

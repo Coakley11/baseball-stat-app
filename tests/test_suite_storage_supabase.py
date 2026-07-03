@@ -85,8 +85,10 @@ class TestSuiteStorageSupabase(unittest.TestCase):
                 "metrics": {_FULL_SESSION_KEY: _full_session(3)},
             },
         ]
-        with patch("suite_storage_supabase.load_current_state_rows", return_value=fake_rows):
-            states = load_current_states()
+        with patch("suite_storage_supabase._request", return_value=fake_rows):
+            with patch("suite_workspace.workspace_storage_app_keys", return_value=frozenset({"baseball"})):
+                with patch("suite_workspace.logical_storage_app_key", return_value="baseball"):
+                    states = load_current_states(include_metrics=True)
         baseball = states.get("baseball") or {}
         blob = (baseball.get("metrics") or {}).get(_FULL_SESSION_KEY) or {}
         self.assertEqual((blob.get("draft_room_state") or {}).get("pick_count"), 3)
@@ -101,22 +103,24 @@ class TestSuiteStorageSupabase(unittest.TestCase):
             }
         ]
         with patch("suite_storage_supabase._cloud_user_id", return_value="user-1"):
-            with patch("suite_storage_supabase.load_current_state_rows", return_value=existing):
-                with patch("suite_storage_supabase._request", return_value=[{"app": "baseball"}]) as mock_req:
-                    with patch("suite_storage_supabase.load_current_states", return_value={}):
-                        result = __import__(
-                            "suite_storage_supabase",
-                            fromlist=["save_current_state_with_result"],
-                        ).save_current_state_with_result(
-                            "baseball",
-                            page="Draft Room Simulator",
-                            summary="test",
-                            metrics={"full_session": _full_session(3)},
-                        )
+            with patch(
+                "suite_storage_supabase._request",
+                side_effect=[
+                    [],
+                    [{"app": "baseball"}],
+                    None,
+                ],
+            ) as mock_req:
+                result = save_current_state_with_result(
+                    "baseball",
+                    page="Draft Room Simulator",
+                    summary="test",
+                    metrics={"full_session": _full_session(3)},
+                )
         self.assertTrue(result.get("ok"))
         self.assertEqual(result.get("write_mode"), "patch")
-        mock_req.assert_called_once()
-        self.assertEqual(mock_req.call_args.args[0], "PATCH")
+        patch_calls = [c for c in mock_req.call_args_list if c.args and c.args[0] == "PATCH"]
+        self.assertEqual(len(patch_calls), 1)
 
     def test_merge_state_metrics_keeps_richer_full_session(self) -> None:
         existing = {
@@ -127,7 +131,10 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         incoming = {
             _FULL_SESSION_KEY: _full_session(0, page="Historical Explorer"),
         }
-        with patch("suite_storage_supabase.load_current_states", return_value={"baseball": existing}):
+        with patch(
+            "suite_storage_supabase._request",
+            return_value=[{"metrics": existing["metrics"]}],
+        ):
             merged = _merge_state_metrics("baseball", incoming)
         blob = merged.get(_FULL_SESSION_KEY) or {}
         self.assertEqual((blob.get("draft_room_state") or {}).get("pick_count"), 3)

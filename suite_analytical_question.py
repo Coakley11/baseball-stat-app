@@ -444,6 +444,41 @@ def _hof_case_player_name(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _blob_payload_richness(payload: dict[str, Any]) -> int:
+    diag = payload.get("blob_diagnostics") if isinstance(payload.get("blob_diagnostics"), dict) else {}
+    count = 0
+    try:
+        count = int(diag.get("available_players_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    avail = ctx.get("available_players")
+    if isinstance(avail, list):
+        count = max(count, len(avail))
+    return count
+
+
+def _select_best_blob_payload(
+    candidates: list[tuple[str, str, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """Pick the richest blob payload; break ties by newest timestamp."""
+    best: dict[str, Any] | None = None
+    best_ts = ""
+    best_richness = -1
+    for ts, app, payload in candidates:
+        if not isinstance(payload, dict):
+            continue
+        richness = _blob_payload_richness(payload)
+        ts_s = str(ts or "")
+        if ts_s > best_ts or (ts_s == best_ts and richness > best_richness):
+            best = dict(payload)
+            best["blob_store_app"] = app
+            best["blob_load_candidates"] = [c[1] for c in candidates]
+            best_ts = ts_s
+            best_richness = richness
+    return best
+
+
 def _store_question_context_blob(payload: dict[str, Any]) -> None:
     """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()

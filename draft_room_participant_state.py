@@ -372,6 +372,9 @@ def reconcile_auth_scoped_draft_workflow(session: dict[str, Any]) -> bool:
         return False
     if tracked == current:
         return False
+    if not tracked:
+        session[AUTH_WORKFLOW_USER_KEY] = current
+        return False
     on_auth_user_switch(session, from_user_id=tracked, to_user_id=current)
     return True
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from draft_lab_state import PENDING_DRAFT_LAB_HANDOFF_KEY, stage_draft_lab_handoff_settings
+from draft_lab_state import PENDING_DRAFT_LAB_HANDOFF_KEY, apply_pending_draft_lab_widget_keys, stage_draft_lab_handoff_settings
 
 DRAFT_LAB_HANDOFF_DIAG_KEY = "_draft_lab_handoff_diag"
 
@@ -133,6 +133,7 @@ def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str,
     stage_draft_lab_handoff_settings(session, _settings_keys_from_extracted(extracted))
     session["live_draft_room"] = room
     record_draft_lab_handoff_diagnostics(session, extracted, loaded=True)
+    apply_pending_draft_lab_widget_keys(session)
     handoff_meta = {
         "source": "Live Draft Room",
         "team_count": extracted.get("draft_lab_team_count"),
