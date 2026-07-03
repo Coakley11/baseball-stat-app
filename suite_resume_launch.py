@@ -276,6 +276,16 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         target_page = "Draft Simulation Test Mode"
     if not target_page and resume.startswith("bb:hof_case:"):
         target_page = "Career Totals"
+    if not target_page and resume.startswith("bb:saved_draft:"):
+        target_page = "Saved Draft Library"
+    if not target_page and resume.startswith("historical:"):
+        target_page = "Historical Explorer"
+    if not target_page and resume.startswith("bb:standings:"):
+        target_page = "Fantasy Standings Tracker"
+    if not target_page and resume.startswith("bb:draft_assistant"):
+        target_page = "Draft Assistant Simulator"
+    if not target_page and resume.startswith("bb:simulator_draft"):
+        target_page = "Draft Room Simulator"
     hof_target = _qp_get(st, "suite_hof_target")
     if not hof_target and resume.startswith("bb:hof_case:"):
         slug = resume.split(":", 2)[-1].strip()
@@ -319,6 +329,33 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         draft_section = "team_analysis"
     if draft_section:
         st.session_state["_suite_resume_draft_section"] = draft_section
+    saved_draft = _qp_get(st, "suite_saved_draft")
+    if not saved_draft and resume.startswith("bb:saved_draft:"):
+        saved_draft = resume.split(":", 2)[-1].strip()
+    if saved_draft:
+        try:
+            from draft_archive_state import activate_draft_archive
+
+            activate_draft_archive(st.session_state, saved_draft)
+        except ImportError:
+            st.session_state["_suite_resume_saved_draft_id"] = saved_draft
+    hist_stat = _qp_get(st, "suite_historical_stat")
+    if not hist_stat and resume.startswith("historical:"):
+        parts = resume.split(":", 2)
+        if len(parts) >= 2:
+            hist_stat = parts[1].strip()
+    if hist_stat:
+        st.session_state["_pending_historical_stat"] = hist_stat
+    hist_ys = _qp_get(st, "suite_historical_year_start")
+    hist_ye = _qp_get(st, "suite_historical_year_end")
+    if not hist_ys and resume.startswith("historical:"):
+        parts = resume.split(":", 2)
+        if len(parts) >= 3 and "-" in parts[2]:
+            hist_ys, hist_ye = parts[2].split("-", 1)
+    if hist_ys:
+        st.session_state["_pending_historical_year_start"] = hist_ys
+    if hist_ye:
+        st.session_state["_pending_historical_year_end"] = hist_ye
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()
@@ -343,7 +380,7 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
                     target_player=str(st.session_state.get("_pending_hof_case_target") or ""),
                     question_id=str(st.session_state.get("_pending_hof_case_question_id") or ""),
                 )
-            else:
+            elif resume.startswith("bb:live_draft:") or resume.startswith("bb:draft_lab:"):
                 from draft_lab_resume import schedule_draft_lab_resume_navigation
 
                 schedule_draft_lab_resume_navigation(
@@ -352,6 +389,11 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
                     room_id=str(st.session_state.get("_suite_resume_draft_room") or ""),
                     section=str(st.session_state.get("_suite_resume_draft_section") or ""),
                 )
+            else:
+                st.session_state["_navigate_to_page"] = target_page
+                st.session_state["_suite_page_user_nav"] = True
+                st.session_state["_skip_page_restore_for"] = target_page
+                st.session_state["active_page"] = target_page
         except ImportError:
             st.session_state["_navigate_to_page"] = target_page
             st.session_state["_suite_page_user_nav"] = True

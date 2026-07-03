@@ -185,17 +185,29 @@ def log_live_draft_room_created(room: dict[str, Any], *, session: dict[str, Any]
         activity_type="live_draft_created",
         feature="Live Draft Room",
     )
+    metrics.setdefault("cc_card_kind", "continue")
+    metrics.setdefault("workstream", "baseball_draft")
     subtitle = matchup or (f"Room {rid[:8]}" if rid else "Live draft")
     _record_draft_event(
         "live_draft_created",
         page="Live Draft Room",
         metrics=metrics,
-        summary=f"Started live draft — {subtitle}" if subtitle else "Started live draft",
+        summary=f"Started Live Draft" + (f" — {subtitle}" if subtitle else ""),
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
         resume_title="Open Live Draft Room",
         resume_subtitle=subtitle,
         session=session,
     )
+
+
+def _last_board_player(room: dict[str, Any] | None) -> str:
+    if not isinstance(room, dict):
+        return ""
+    board = room.get("draft_board") or []
+    if not board or not isinstance(board[-1], dict):
+        return ""
+    last = board[-1]
+    return str(last.get("fullName") or last.get("Player") or "").strip()
 
 
 def log_live_draft_pick(room: dict[str, Any], *, session: dict[str, Any] | None = None) -> None:
@@ -208,6 +220,7 @@ def log_live_draft_pick(room: dict[str, Any], *, session: dict[str, Any] | None 
         return
     teams = _team_names(room)
     matchup = _matchup_label(teams)
+    player = _last_board_player(room)
     metrics = live_draft_activity_metrics(
         room,
         session=session,
@@ -215,14 +228,24 @@ def log_live_draft_pick(room: dict[str, Any], *, session: dict[str, Any] | None 
         feature="Live Draft Room",
     )
     metrics["pick_number"] = pick_no
+    metrics.setdefault("cc_card_kind", "continue")
+    metrics.setdefault("workstream", "baseball_draft")
+    if player:
+        metrics["player"] = player
+    if player:
+        summary = f"Made draft pick: {player}"
+        resume_subtitle = player
+    else:
+        summary = f"Live draft pick {pick_no}" + (f" — {matchup}" if matchup else "")
+        resume_subtitle = matchup or f"Pick {pick_no}"
     _record_draft_event(
         "live_draft_pick",
         page="Live Draft Room",
         metrics=metrics,
-        summary=f"Live draft pick {pick_no}" + (f" — {matchup}" if matchup else ""),
+        summary=summary,
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",
         resume_title="Continue Live Draft Room",
-        resume_subtitle=matchup or f"Pick {pick_no}",
+        resume_subtitle=resume_subtitle,
         session=session,
     )
 

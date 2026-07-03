@@ -13466,6 +13466,12 @@ if active_page == "Historical Explorer":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+    try:
+        from historical_state import apply_pending_historical_resume
+
+        apply_pending_historical_resume(st.session_state)
+    except ImportError:
+        pass
 
     hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
     sort_options_hist = [
@@ -13699,6 +13705,22 @@ if active_page == "Historical Explorer":
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
     render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    try:
+        from baseball_activity import log_historical_analysis
+
+        _hist_cc_sig = (str(hist_sort_stat), int(hist_year_range[0]), int(hist_year_range[1]), int(len(hist_display_raw)))
+        if st.session_state.get("_cc_historical_activity_sig") != _hist_cc_sig and len(hist_display_raw) > 0:
+            st.session_state["_cc_historical_activity_sig"] = _hist_cc_sig
+            _top_hist_player = str(hist_display_raw.iloc[0].get("fullName") or "").strip()
+            log_historical_analysis(
+                sort_stat=str(hist_sort_stat),
+                year_start=hist_year_range[0],
+                year_end=hist_year_range[1],
+                row_count=len(hist_display_raw),
+                top_player=_top_hist_player,
+            )
+    except Exception:
+        pass
     try:
         from applied_math_context import cache_page_context
 
@@ -18016,6 +18038,23 @@ if active_page == "Draft Assistant Simulator":
                 or recommendation_player_id(best_value.iloc[0]) != recommendation_player_id(best_fit.iloc[0])
             )
         )
+        try:
+            from baseball_activity import log_draft_assistant_session
+
+            _da_top = ""
+            if not best_fit.empty:
+                _da_top = str(best_fit.iloc[0].get("fullName") or "").strip()
+            _da_sig = (int(current_pick), int(draft_summary["current_round"]), _da_top)
+            if st.session_state.get("_cc_draft_assistant_activity_sig") != _da_sig:
+                st.session_state["_cc_draft_assistant_activity_sig"] = _da_sig
+                log_draft_assistant_session(
+                    current_pick=int(current_pick),
+                    draft_round=int(draft_summary["current_round"]),
+                    top_player=_da_top,
+                    team_name=str(assistant_my_team_name or ""),
+                )
+        except Exception:
+            pass
 
         _ami_roster_detail: list[dict[str, str]] = []
         _ami_roster_index: dict[str, str] = {}
@@ -21651,6 +21690,28 @@ if active_page == "Fantasy Standings Tracker":
                     "category_needs": _standings_needs_ctx,
                 },
             )
+            try:
+                from baseball_activity import log_standings_updated
+                from draft_archive_state import get_active_draft_archive
+
+                _active_saved = get_active_draft_archive(st.session_state)
+                _stand_cc_sig = (
+                    str(_cache_key or ""),
+                    str(scoring_format_tracker),
+                    int(len(standings)),
+                )
+                if st.session_state.get("_cc_standings_activity_sig") != _stand_cc_sig:
+                    st.session_state["_cc_standings_activity_sig"] = _stand_cc_sig
+                    log_standings_updated(
+                        team=_standings_team_ctx,
+                        season=st.session_state.get("fantasy_season_year") or "",
+                        scoring_format=scoring_format_tracker,
+                        team_count=len(standings),
+                        source=str(stats_source or ""),
+                        saved_draft_name=str(_active_saved.get("draft_name") or "") if _active_saved else "",
+                    )
+            except Exception:
+                pass
     else:
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 

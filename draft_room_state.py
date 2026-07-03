@@ -3009,6 +3009,19 @@ def commit_draft_room_table(
                 pass
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
+    pick_count = int(trace.get("persisted_pick_count") or table_pick_count(table) or 0)
+    prev_cc = session.get("_cc_sim_activity_pick_count")
+    if pick_count > 0 and pick_count != prev_cc:
+        session["_cc_sim_activity_pick_count"] = pick_count
+        try:
+            from baseball_activity import log_simulator_board_session
+
+            log_simulator_board_session(
+                pick_count=pick_count,
+                team_name=str(session.get("room_your_team") or ""),
+            )
+        except Exception:
+            pass
     session["_draft_room_last_save_trace"] = trace
     return trace
 

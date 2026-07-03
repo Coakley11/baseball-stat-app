@@ -58,6 +58,11 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
     ("baseball:breakouts", "Trend Value"),
+    ("historical:", "Historical Explorer"),
+    ("bb:saved_draft:", "Saved Draft Library"),
+    ("bb:standings:", "Fantasy Standings Tracker"),
+    ("bb:draft_assistant", "Draft Assistant Simulator"),
+    ("bb:simulator_draft", "Draft Room Simulator"),
 )
 
 _INVESTMENT_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
@@ -275,6 +280,28 @@ def build_resume_action_url(
             params["suite_hof_target"] = hof_target[:120]
         if rk.startswith("bb:hof_case:") or m.get("hof_case_mode"):
             params["suite_hof_case"] = "1"
+        saved_draft = str(m.get("draft_id") or "").strip()
+        if not saved_draft and rk.startswith("bb:saved_draft:"):
+            saved_draft = rk.split(":", 2)[-1].strip()
+        if saved_draft:
+            params["suite_saved_draft"] = saved_draft[:80]
+        hist_stat = str(m.get("sort_stat") or "").strip()
+        if not hist_stat and rk.startswith("historical:"):
+            parts = rk.split(":", 2)
+            if len(parts) >= 2:
+                hist_stat = parts[1].strip()
+        if hist_stat:
+            params["suite_historical_stat"] = hist_stat[:40]
+        ys = str(m.get("year_start") or "").strip()
+        ye = str(m.get("year_end") or "").strip()
+        if not ys and rk.startswith("historical:"):
+            parts = rk.split(":", 2)
+            if len(parts) >= 3 and "-" in parts[2]:
+                ys, ye = parts[2].split("-", 1)
+        if ys:
+            params["suite_historical_year_start"] = ys[:8]
+        if ye:
+            params["suite_historical_year_end"] = ye[:8]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:

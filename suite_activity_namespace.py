@@ -26,6 +26,23 @@ DRAFT_ACTIVITY_EVENT_TYPES: frozenset[str] = frozenset(
         "completed_live_draft",
         "draft_analysis_created",
         "draft_analysis_attempted",
+        "draft_assistant_session",
+        "simulator_draft_session",
+        "saved_draft_archived",
+        "saved_draft_activated",
+    }
+)
+
+BASEBALL_WORKFLOW_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        *DRAFT_ACTIVITY_EVENT_TYPES,
+        "player_comparison",
+        "trend_comparison_viewed",
+        "historical_analysis",
+        "standings_updated",
+        "hof_case_analysis",
+        "draft_prep",
+        "roster_build",
     }
 )
 

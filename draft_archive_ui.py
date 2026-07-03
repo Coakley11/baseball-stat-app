@@ -120,6 +120,12 @@ def render_save_live_draft_team(
                 set_active_draft_archive(session, str(entry.get("draft_id") or ""))
                 _clear_fantasy_caches_on_archive_change(session)
                 _persist_archive(session, st, reason="live_draft_archive_saved")
+                try:
+                    from baseball_archive_activity import log_saved_draft_archived
+
+                    log_saved_draft_archived(entry, session=session)
+                except ImportError:
+                    pass
                 _render_post_save_actions(st, session, entry)
             except Exception as exc:
                 st.error(f"Could not save draft team: {exc}")
@@ -154,6 +160,12 @@ def render_save_simulator_draft_team(
                 set_active_draft_archive(session, str(entry.get("draft_id") or ""))
                 _clear_fantasy_caches_on_archive_change(session)
                 _persist_archive(session, st, reason="simulator_draft_archive_saved")
+                try:
+                    from baseball_archive_activity import log_saved_draft_archived
+
+                    log_saved_draft_archived(entry, session=session)
+                except ImportError:
+                    pass
                 _render_post_save_actions(st, session, entry)
             except Exception as exc:
                 st.error(f"Could not save draft team: {exc}")
@@ -190,6 +202,12 @@ def _render_archive_actions(
             if loaded:
                 _clear_fantasy_caches_on_archive_change(session)
                 _persist_archive(session, st, reason="draft_archive_activated")
+                try:
+                    from baseball_archive_activity import log_saved_draft_activated
+
+                    log_saved_draft_activated(entry, session=session, target_page="Saved Draft Library")
+                except ImportError:
+                    pass
                 st.rerun()
     with btn2:
         if st.button("Rename", key=f"archive_rename_btn_{draft_id}", use_container_width=True):
@@ -313,6 +331,18 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any]) -> None:
     go1, go2 = st.columns(2)
     with go1:
         if st.button("Open Standings Tracker", key="library_open_standings", use_container_width=True):
+            active = get_active_draft_archive(session)
+            if active:
+                try:
+                    from baseball_archive_activity import log_saved_draft_activated
+
+                    log_saved_draft_activated(
+                        active,
+                        session=session,
+                        target_page="Fantasy Standings Tracker",
+                    )
+                except ImportError:
+                    pass
             session["_navigate_to_page"] = "Fantasy Standings Tracker"
             st.rerun()
     with go2:

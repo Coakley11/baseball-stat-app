@@ -495,6 +495,26 @@ def apply_historical_source_state_from_ami(session: dict[str, Any], source_state
         session["_ami_historical_snapshot"] = copy.deepcopy(snap)
 
 
+def apply_pending_historical_resume(session: dict[str, Any]) -> bool:
+    """Apply Command Center deep-link filters once before Historical Explorer widgets."""
+    stat = str(session.pop("_pending_historical_stat", "") or "").strip()
+    ys_raw = session.pop("_pending_historical_year_start", None)
+    ye_raw = session.pop("_pending_historical_year_end", None)
+    if not stat and ys_raw is None and ye_raw is None:
+        return False
+    filters: dict[str, Any] = {}
+    if stat:
+        filters["historical_sort_stat_filter"] = stat
+    if ys_raw is not None and ye_raw is not None:
+        try:
+            filters["historical_year_range_filter"] = (int(ys_raw), int(ye_raw))
+        except (TypeError, ValueError):
+            pass
+    if filters:
+        write_canonical_historical_state(session, filters=filters, reason="command_center_resume", local_edit=False)
+    return bool(filters)
+
+
 def render_historical_state_debug(st: Any, session: dict[str, Any]) -> None:
     meta = session.get("historical_state")
     if not isinstance(meta, dict):
