@@ -128,10 +128,10 @@ class RecCardMetricsTests(unittest.TestCase):
         self.assertIn("Decision Score", html)
         self.assertIn("Player Grade", html)
         self.assertIn("Roster Fit Score", html)
-        self.assertIn("Market Rank", html)
-        self.assertIn("Model Rank", html)
         self.assertIn("Fantasy Edge", html)
         self.assertIn("Proj:", html)
+        self.assertNotIn("Market Rank", html)
+        self.assertNotIn("Model Rank", html)
 
     def test_why_summary_mentions_drivers_not_proj_prose(self) -> None:
         row = _pool().iloc[0]
@@ -157,7 +157,7 @@ class QueueMetricsTests(unittest.TestCase):
 
 class QuickNavTests(unittest.TestCase):
     def test_quick_nav_pages_complete(self) -> None:
-        labels = {label for _page, label in LIVE_DRAFT_QUICK_NAV_PAGES}
+        labels = {label for _page, label, _sub, _theme in LIVE_DRAFT_QUICK_NAV_PAGES}
         self.assertIn("Draft Assistant", labels)
         self.assertIn("Sleepers", labels)
         self.assertIn("Trends", labels)
@@ -168,8 +168,8 @@ class QuickNavTests(unittest.TestCase):
     def test_quick_nav_renders_buttons(self) -> None:
         st = mock.MagicMock()
         session: dict = {}
-        cols = [mock.MagicMock() for _ in LIVE_DRAFT_QUICK_NAV_PAGES]
-        st.columns.return_value = cols
+        cols = [mock.MagicMock() for _ in range(3)]
+        st.columns.side_effect = [cols, cols]
         with mock.patch("shared_draft_context.prepare_canonical_scoring_context"):
             render_live_draft_quick_nav(st, session)
         button_calls = sum(col.button.call_count for col in cols)

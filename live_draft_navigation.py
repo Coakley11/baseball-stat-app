@@ -23,15 +23,17 @@ def inject_live_draft_quick_nav_styles(st: Any) -> None:
     st.markdown(
         """
         <style>
-        .ld-quick-nav-wrap { margin: 0 0 12px 0; }
+        .ld-quick-nav-wrap { margin: 0 0 10px 0; }
         .ld-quick-nav-title {
             font-size: 13px; font-weight: 800; color: #334155;
-            letter-spacing: 0.04em; margin-bottom: 8px;
+            letter-spacing: 0.04em; margin-bottom: 10px;
         }
+        .ld-quick-nav-row { margin-bottom: 6px; }
         .ld-quick-tile {
-            border-radius: 10px; padding: 8px 10px 6px 10px;
-            min-height: 52px; border: 1px solid transparent;
-            margin-bottom: 2px;
+            border-radius: 12px; padding: 10px 12px 8px 12px;
+            min-height: 56px; border: 1px solid transparent;
+            margin-bottom: 4px;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
         .ld-quick-tile-assistant { background: linear-gradient(135deg,#eff6ff,#dbeafe); border-color:#93c5fd; }
         .ld-quick-tile-sleepers { background: linear-gradient(135deg,#fff7ed,#ffedd5); border-color:#fdba74; }
@@ -39,11 +41,17 @@ def inject_live_draft_quick_nav_styles(st: Any) -> None:
         .ld-quick-tile-valuation { background: linear-gradient(135deg,#f5f3ff,#ede9fe); border-color:#c4b5fd; }
         .ld-quick-tile-ml { background: linear-gradient(135deg,#fdf2f8,#fce7f3); border-color:#f9a8d4; }
         .ld-quick-tile-comparison { background: linear-gradient(135deg,#f8fafc,#e2e8f0); border-color:#cbd5e1; }
-        .ld-quick-tile-label { font-size: 13px; font-weight: 800; color: #0f172a; line-height: 1.2; }
-        .ld-quick-tile-sub { font-size: 10px; color: #64748b; margin-top: 2px; line-height: 1.2; }
-        div[data-testid="column"] .ld-quick-nav-btn-wrap + div[data-testid="stButton"] button {
-            min-height: 28px; padding: 2px 8px; font-size: 11px; font-weight: 700;
-            border-radius: 8px; margin-top: 0;
+        .ld-quick-tile-label { font-size: 13px; font-weight: 800; color: #0f172a; line-height: 1.25; }
+        .ld-quick-tile-sub { font-size: 10px; color: #64748b; margin-top: 3px; line-height: 1.25; }
+        div[data-testid="column"] .ld-quick-tile + div[data-testid="stButton"] button {
+            min-height: 30px; padding: 4px 10px; font-size: 11px; font-weight: 700;
+            border-radius: 8px; margin-top: 2px;
+        }
+        @media (max-width: 768px) {
+            .ld-quick-nav-wrap { margin-bottom: 8px; }
+            .ld-quick-tile { min-height: 48px; padding: 8px 10px 6px 10px; }
+            .ld-quick-tile-label { font-size: 12px; }
+            .ld-quick-tile-sub { display: none; }
         }
         </style>
         """,
@@ -69,22 +77,25 @@ def render_live_draft_quick_nav(st: Any, session: dict[str, Any]) -> None:
 
     inject_live_draft_quick_nav_styles(st)
     st.markdown('<div class="ld-quick-nav-wrap"><div class="ld-quick-nav-title">Quick navigation</div></div>', unsafe_allow_html=True)
-    cols = st.columns(len(LIVE_DRAFT_QUICK_NAV_PAGES))
-    for col, (page, label, subtitle, theme) in zip(cols, LIVE_DRAFT_QUICK_NAV_PAGES):
-        with col:
-            col.markdown(
-                f'<div class="ld-quick-tile ld-quick-tile-{theme}">'
-                f'<div class="ld-quick-tile-label">{label}</div>'
-                f'<div class="ld-quick-tile-sub">{subtitle}</div></div>',
-                unsafe_allow_html=True,
-            )
-            col.button(
-                "Open →",
-                key=f"live_draft_quick_nav_{page.replace(' ', '_')}",
-                use_container_width=True,
-                on_click=_go,
-                args=(page,),
-            )
+    row_size = 3
+    for row_start in range(0, len(LIVE_DRAFT_QUICK_NAV_PAGES), row_size):
+        row_pages = LIVE_DRAFT_QUICK_NAV_PAGES[row_start : row_start + row_size]
+        cols = st.columns(len(row_pages))
+        for col, (page, label, subtitle, theme) in zip(cols, row_pages):
+            with col:
+                col.markdown(
+                    f'<div class="ld-quick-tile ld-quick-tile-{theme}">'
+                    f'<div class="ld-quick-tile-label">{label}</div>'
+                    f'<div class="ld-quick-tile-sub">{subtitle}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                col.button(
+                    "Open →",
+                    key=f"live_draft_quick_nav_{page.replace(' ', '_')}",
+                    use_container_width=True,
+                    on_click=_go,
+                    args=(page,),
+                )
 
 
 def _apply_scheduled_page(session: dict[str, Any], target_page: str) -> None:

@@ -463,8 +463,14 @@ def inject_player_photo_styles(st: Any) -> None:
         .ld-pos-heat-strong { background: #fee2e2; color: #991b1b; }
         .ld-pos-heat-moderate { background: #fef3c7; color: #92400e; }
         .ld-pos-heat-weak { background: #dcfce7; color: #166534; }
+        .ld-pos-heat-need { box-shadow: inset 0 0 0 2px #6366f1; }
         .ld-pos-heat-label { display: block; font-size: 11px; font-weight: 800; }
         .ld-pos-heat-val { display: block; font-size: 10px; font-weight: 600; opacity: 0.9; }
+        @media (max-width: 768px) {
+            .ld-rec-card-header { gap: 10px; }
+            .ld-rec-card-photo img { width: 52px; height: 52px; }
+            .ld-pos-heat-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
+        }
         .bb-profile-card {
             border: 1px solid rgba(15, 23, 42, 0.12);
             border-radius: 12px;

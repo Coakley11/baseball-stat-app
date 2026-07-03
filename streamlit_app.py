@@ -21037,15 +21037,9 @@ if active_page == "Live Draft Room":
                         st.caption("Loading recommendations…")
                     else:
                         st.caption(
-                            "**Fantasy Edge** on cards = value vs market. Expand **Why Recommended** for "
-                            "category impact, scarcity, market value, and roster fit."
+                            "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
+                            "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                         )
-                        try:
-                            from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
-
-                            st.caption(ROSTER_FIT_CONTEXT_NOTES["live_draft"])
-                        except ImportError:
-                            pass
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
                         render_live_draft_rec_cards(
                             st,

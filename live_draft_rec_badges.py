@@ -105,8 +105,9 @@ def build_smart_recommendation_badges(
         badges.append((label, css))
 
     rank_labels = {1: "Best Overall", 2: "Second Best", 3: "Third Best"}
+    rank_badge: tuple[str, str] | None = None
     if rank in rank_labels:
-        _add(rank_labels[rank], _BADGE_CSS["gold"])
+        rank_badge = (rank_labels[rank], _BADGE_CSS["gold"])
 
     edge = _num(row, "Fantasy Edge")
     top_edge = np.nan
@@ -165,7 +166,13 @@ def build_smart_recommendation_badges(
     if pd.notna(fit) and float(fit) >= 0.8 and not any("Fills" in b[0] or "Best Remaining" in b[0] for b in badges):
         _add("Elite Floor", _BADGE_CSS["safe"])
 
+    if rank_badge and len(badges) < 4:
+        _add(rank_badge[0], rank_badge[1])
+
     return badges[:4]
+
+
+_GENERIC_RANK_BADGES = frozenset({"Best Overall", "Second Best", "Third Best"})
 
 
 def primary_recommendation_reason(
@@ -176,17 +183,39 @@ def primary_recommendation_reason(
     strengths: list[str] | None = None,
     gaps: list[str] | None = None,
 ) -> str:
-    """One-line headline for the card surface."""
-    if badges:
-        return badges[0][0]
+    """One-line prose headline for the card — never repeats badge pill text."""
     pos = str(row.get("Primary Position") or "")
     edge = _num(row, "Fantasy Edge")
+    badge_labels = {label for label, _css in (badges or [])}
+
+    if gaps and pos in gaps:
+        open_of = sum(1 for g in gaps if g == "OF")
+        if pos == "OF" and open_of >= 2:
+            return f"Best option to cover {open_of} open outfield slots"
+        return f"Top fit for your open {pos} slot"
+
+    if strengths:
+        return f"Strengthens {' & '.join(strengths[:2])}"
+
     if pd.notna(edge) and float(edge) >= 8:
         return f"Strong value vs market (+{int(round(float(edge)))})"
-    if strengths:
-        return f"Boosts {' & '.join(strengths[:2])}"
-    if gaps and pos in gaps:
-        return f"Top fit for open {pos} slot"
-    if rank == 1:
-        return "Top Decision Score on the board"
-    return "Strong option at this pick"
+
+    scarcity = _num(row, "Scarcity Score")
+    if pd.notna(scarcity) and float(scarcity) >= 0.65:
+        return f"{pos} tier is thinning — act before quality drops" if pos else "Position scarcity is rising"
+
+    for label in badge_labels:
+        if label in _GENERIC_RANK_BADGES:
+            continue
+        if "Bargain" in label or "Discount" in label:
+            if pd.notna(edge):
+                return f"Market undervalues this pick (+{int(round(float(edge)))} edge)"
+            return "Market undervalues this pick"
+        if "Scarcity" in label:
+            return f"{pos} options are fading fast" if pos else "Scarcity is building at this position"
+
+    if rank == 1 and ("Best Overall" in badge_labels or not badges):
+        return "Highest Decision Score on the board"
+    if rank <= 3:
+        return "Strong option at this pick"
+    return "Solid value among remaining players"

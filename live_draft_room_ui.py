@@ -368,24 +368,30 @@ def inject_live_draft_room_styles(st: Any) -> None:
         .ld-roster-progress { font-size: 12px; color: #64748b; margin-top: 6px; }
         .ld-cat-bar-row { font-size: 13px; line-height: 1.5; color: #1e293b; margin: 2px 0; font-family: ui-monospace, monospace; }
         .ld-cat-insight { font-size: 12px; color: #475569; margin-top: 8px; line-height: 1.45; }
-        .ld-rec-badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px 0; }
+        .ld-rec-badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 6px 0; }
         .ld-rec-badge {
             display: inline-block;
-            padding: 3px 8px;
+            padding: 3px 9px;
             border-radius: 999px;
             font-size: 11px;
             font-weight: 800;
             background: #dbeafe;
             color: #1e40af;
             border: 1px solid #93c5fd;
+            line-height: 1.2;
         }
+        .ld-rec-badge.rank { font-size: 10px; opacity: 0.88; font-weight: 700; }
         .ld-rec-badge.gold { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
         .ld-rec-badge.need { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
         .ld-rec-badge.fire { background: #ffedd5; color: #c2410c; border-color: #fdba74; }
         .ld-rec-badge.safe { background: #f0fdf4; color: #166534; border-color: #86efac; }
         .ld-rec-card-reason {
-            font-size: 0.88rem; font-weight: 700; color: #1e40af;
-            margin: 4px 0 2px 0; line-height: 1.35;
+            font-size: 0.9rem; font-weight: 700; color: #1e40af;
+            margin: 2px 0 4px 0; line-height: 1.4;
+        }
+        .ld-rec-card-caption {
+            font-size: 0.82rem; color: #64748b; line-height: 1.45;
+            margin-bottom: 6px;
         }
         .ld-draft-complete-banner {
             background: linear-gradient(135deg, #ecfdf5 0%, #dbeafe 100%);
@@ -417,6 +423,15 @@ def inject_live_draft_room_styles(st: Any) -> None:
             .live-draft-timer { font-size: 26px; min-width: 72px; padding: 10px 14px; }
             .ld-room-code-value { font-size: 22px; letter-spacing: 0.16em; }
             .live-rec-grid { grid-template-columns: 1fr; }
+            .ld-rec-summary-banner { font-size: 13px; padding: 10px 12px; margin-bottom: 10px; }
+            .ld-rec-card-header { gap: 10px; margin-bottom: 4px; }
+            .ld-rec-card-photo img { width: 52px; height: 52px; }
+            .ld-rec-badge-row { gap: 4px; margin: 6px 0 4px 0; }
+            .ld-rec-card-reason { font-size: 0.85rem; }
+            .ld-roster-tracker-panel,
+            .ld-category-outlook-panel { padding: 10px 12px; margin-bottom: 10px; }
+            .ld-pos-heat-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
+            div[data-testid="stDataFrame"] { font-size: 12px; }
         }
         </style>
         """,
@@ -979,32 +994,32 @@ def build_why_this_pick_summary(
     cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
     if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
         weak = str(category_needs[0] or "a weak category")
-        parts.append(f"helps {weak}")
+        parts.append(f"helps your {weak} outlook")
 
     if strengths:
-        parts.append(f"strong in {'/'.join(strengths[:2])}")
+        parts.append(f"adds {'/'.join(strengths[:2])} production")
 
     edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
     if pd.notna(edge) and abs(float(edge)) >= 5:
         sign = "+" if float(edge) > 0 else ""
-        parts.append(f"Fantasy Edge {sign}{int(round(float(edge)))}")
+        parts.append(f"{sign}{int(round(float(edge)))} vs market")
 
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
     if pd.notna(scarcity) and float(scarcity) >= 0.6:
-        parts.append(f"{pos} scarcity rising")
+        parts.append(f"{pos} pool thinning")
 
     if include_position_need:
         fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
         if gaps and str(pos) in gaps and pd.notna(fit) and float(fit) >= 0.5:
             open_of = sum(1 for g in gaps if g == "OF")
             if str(pos) == "OF" and open_of >= 2:
-                parts.append(f"fills OF need ({open_of} spots open)")
+                parts.append(f"fills {open_of} OF slots")
             else:
-                parts.append(f"fills {pos} need")
+                parts.append(f"fills open {pos}")
 
     if not parts:
-        return "Strong balance of upside and roster fit."
-    return "; ".join(parts[:5]) + "."
+        return "Balanced upside, roster fit, and availability."
+    return " · ".join(parts[:4]) + "."
 
 
 def build_draft_assistant_why_this_pick(
@@ -1244,9 +1259,10 @@ def render_live_draft_rec_cards(
             r, badges=badges, strengths=strengths, gaps=gaps, rank=i
         )
         badge_html = "".join(
-            f'<span class="ld-rec-badge {css}">{label}</span>' for label, css in badges
+            f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
+            for label, css in badges
         )
-        surv_pct = f"{int(round(float(surv) * 100))}% avail next" if pd.notna(surv) else "—"
+        surv_pct = f"{int(round(float(surv) * 100))}% avail next round" if pd.notna(surv) else "—"
         player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
         stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
 
@@ -1300,34 +1316,40 @@ def render_live_draft_rec_cards(
                     show_decision_score=True,
                     show_player_grade=True,
                     show_roster_fit=True,
-                    show_market_rank=True,
-                    show_model_rank=True,
+                    show_market_rank=False,
+                    show_model_rank=False,
                     show_fantasy_edge=True,
                 )
                 strength_txt = ""
                 if strengths:
                     strength_txt = (
-                        f'<div style="font-size:0.82rem;color:#475569;margin-top:2px;">'
+                        f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
                         f"Top strengths: {', '.join(strengths)}</div>"
                     )
+                meta_line = f"{pos}{team_line}" if not badges else f"{pos}{team_line}"
                 st.markdown(
                     f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
-                    f'<div style="font-size:1.05rem;font-weight:800;">{name}</div>'
-                    f'<div style="font-size:0.88rem;color:#475569;">{pos}{team_line} · {tier_lbl}</div>'
+                    f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
+                    f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
                     f"{stat_html}{metrics_html}{strength_txt}"
                     f"</div></div>",
                     unsafe_allow_html=True,
                 )
             except ImportError:
                 st.markdown(f"**{name}**")
-                st.caption(f"{pos} · {tier_lbl}")
+                st.caption(f"{pos}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="ld-rec-card-reason">{headline}</div>', unsafe_allow_html=True)
+            badge_texts = {label for label, _css in badges}
+            if headline and headline not in badge_texts:
+                st.markdown(f'<div class="ld-rec-card-reason">{headline}</div>', unsafe_allow_html=True)
             insight_parts = [surv_pct, action]
             if explanation:
                 insight_parts.append(explanation)
-            st.caption(" · ".join(insight_parts))
+            st.markdown(
+                f'<div class="ld-rec-card-caption">{" · ".join(insight_parts)}</div>',
+                unsafe_allow_html=True,
+            )
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()

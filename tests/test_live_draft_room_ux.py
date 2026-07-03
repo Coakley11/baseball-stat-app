@@ -194,8 +194,7 @@ class CompactRecCardTests(unittest.TestCase):
         self.assertIn("Shohei Ohtani", html)
         self.assertNotIn("...", html)
         self.assertIn("DH", html)
-        captions = str(self.st.caption.call_args_list)
-        self.assertIn("Best value remaining", captions)
+        self.assertIn("ld-rec-card-caption", html)
 
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")

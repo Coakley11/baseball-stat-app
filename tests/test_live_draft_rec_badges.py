@@ -58,10 +58,11 @@ class SmartRecommendationBadgeTests(unittest.TestCase):
             strengths=["HR", "RBI"],
         )
         labels = [b[0] for b in badges]
-        self.assertIn("Best Overall", labels)
         self.assertIn("Best Remaining SS", labels)
         self.assertTrue(any("Power" in lb or "Category" in lb or "HR" in lb for lb in labels))
         self.assertNotIn("Position Need", labels)
+        if "Best Overall" in labels:
+            self.assertEqual(labels[-1], "Best Overall")
 
     def test_second_ss_gets_different_badges_than_first(self) -> None:
         row_c = _rec_df().iloc[2]
@@ -69,11 +70,13 @@ class SmartRecommendationBadgeTests(unittest.TestCase):
         labels = [b[0] for b in badges]
         self.assertNotIn("Best Remaining SS", labels)
 
-    def test_primary_reason_uses_top_badge(self) -> None:
+    def test_primary_reason_is_prose_not_badge_duplicate(self) -> None:
         row = _rec_df().iloc[0]
         badges = build_smart_recommendation_badges(1, row, _rec_df(), gaps=["SS"], strengths=["HR"])
         reason = primary_recommendation_reason(1, row, badges=badges, strengths=["HR"], gaps=["SS"])
-        self.assertEqual(reason, badges[0][0])
+        badge_labels = {b[0] for b in badges}
+        self.assertNotIn(reason, badge_labels)
+        self.assertIn("SS", reason)
 
 
 if __name__ == "__main__":
