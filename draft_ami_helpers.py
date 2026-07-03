@@ -619,19 +619,6 @@ def gather_live_draft_ami_section(session: dict[str, Any], room: dict[str, Any] 
                 out["needed_positions"] = gaps[:8]
     except ImportError:
         gaps = []
-    if not out.get("needed_positions") and pos_fit is not None and hasattr(pos_fit, "empty") and not pos_fit.empty:
-        try:
-            gaps = sorted(
-                {
-                    str(p)
-                    for p in pos_fit.get("Primary Position", []).dropna().astype(str).tolist()
-                    if str(p).strip()
-                }
-            )
-            if gaps:
-                out["needed_positions"] = gaps[:8]
-        except Exception:
-            pass
     merge_draft_workflow_into_snapshot(session, out)
     return out
 
@@ -676,20 +663,7 @@ def infer_draft_assistant_needs(
             needed_positions = get_remaining_position_needs(roster_df_auto, cfg)
         except ImportError:
             needed_positions = []
-    if not needed_positions and not cfg.get("slots"):
-        target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
-        current_position_counts = (
-            roster_df_auto["Primary Position"].value_counts().to_dict()
-            if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
-            else {}
-        )
-        for pos in POSITION_ORDER:
-            target = target_position_counts.get(pos, 1)
-            current = int(current_position_counts.get(pos, 0))
-            if target > 0 and current < target:
-                needed_positions.append(pos)
-        if not needed_positions:
-            needed_positions = ["OF", "DH"]
+    # No host slots configured — do not assume a default fantasy roster template.
 
     if draft_format == "5x5 Roto":
         cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}

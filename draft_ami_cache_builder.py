@@ -153,10 +153,24 @@ def build_draft_assistant_ami_cache_from_board_state(
     from draft_ami_helpers import infer_draft_assistant_needs
 
     roster_df_auto = draft_df[draft_df["fullName"].isin(set(ctx["my_roster"]))].copy()
+    try:
+        from live_draft_roster_slots import get_required_position_counts, resolve_draft_slot_config_from_session
+
+        slot_cfg = resolve_draft_slot_config_from_session(settings)
+        target_counts = (
+            get_required_position_counts(slot_cfg)
+            if slot_cfg.get("slots")
+            else {}
+        )
+    except ImportError:
+        slot_cfg = {}
+        target_counts = {}
+
     needed_positions, category_needs = infer_draft_assistant_needs(
         roster_df_auto,
         draft_df,
         draft_format=draft_cfg["draft_format"],
+        config=slot_cfg,
     )
 
     available = draft_df[~draft_df["fullName"].isin(ctx["drafted_or_owned"])].copy()
@@ -168,7 +182,7 @@ def build_draft_assistant_ami_cache_from_board_state(
             available,
             roster_df_auto,
             fantasy_format=draft_cfg["draft_format"],
-            target_counts=TARGET_POSITION_COUNTS,
+            target_counts=target_counts,
             current_pick=ctx["current_pick"],
             category_needs=category_needs,
             needed_positions=needed_positions,

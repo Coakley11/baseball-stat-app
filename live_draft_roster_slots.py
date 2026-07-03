@@ -156,3 +156,74 @@ def get_league_remaining_demand(room: dict[str, Any] | None, config: dict[str, A
 def live_draft_target_counts(config: dict[str, Any] | None) -> dict[str, int]:
     """Backward-compatible alias used by scoring and tracker modules."""
     return get_required_position_counts(config)
+
+
+def _config_with_slots_from_mapping(data: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract host slot config from a room dict or persisted blob."""
+    if not isinstance(data, dict):
+        return {}
+    cfg = dict(data.get("config") or {})
+    if cfg.get("slots"):
+        if data.get("slot_instances") and not cfg.get("slot_instances"):
+            cfg = {**cfg, "slot_instances": data["slot_instances"]}
+        return cfg
+    return {}
+
+
+def resolve_draft_slot_config_from_session(session: dict[str, Any] | None) -> dict[str, Any]:
+    """Host slot config from live draft room, canonical blob, or draft-lab handoff."""
+    session = session or {}
+    try:
+        from live_draft_state import LIVE_DRAFT_PAGE_BLOCK, LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+
+        prepare_live_draft_state(session)
+    except ImportError:
+        LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
+        LIVE_DRAFT_ROOM_KEY = "live_draft_room"
+
+    room = session.get("live_draft_room")
+    cfg = _config_with_slots_from_mapping(room if isinstance(room, dict) else None)
+    if cfg.get("slots"):
+        return cfg
+
+    blob = session.get("live_draft_state")
+    cfg = _config_with_slots_from_mapping(blob if isinstance(blob, dict) else None)
+    if cfg.get("slots"):
+        return cfg
+
+    pf = session.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get(LIVE_DRAFT_PAGE_BLOCK) or pf.get("live_draft")
+        if isinstance(block, dict):
+            legacy = block.get(LIVE_DRAFT_ROOM_KEY) or block.get("live_draft_room")
+            cfg = _config_with_slots_from_mapping(legacy if isinstance(legacy, dict) else None)
+            if cfg.get("slots"):
+                return cfg
+
+    lab = session.get("draft_lab_results")
+    if isinstance(lab, dict):
+        handoff = lab.get("handoff")
+        if isinstance(handoff, dict) and handoff.get("slots"):
+            out = {"slots": dict(handoff["slots"])}
+            if handoff.get("slot_instances"):
+                out["slot_instances"] = handoff["slot_instances"]
+            return out
+    return {}
+
+
+def position_codes_in_slot_order(config: dict[str, Any] | None) -> list[str]:
+    """Active position codes in host slot display order (excludes bench)."""
+    active = get_active_position_codes(config, include_bench=False)
+    return [code for code, _ in _SLOT_EXPAND_ORDER if code in active]
+
+
+def format_open_position_needs(gaps: list[str] | None) -> str:
+    """Deduped open-need label for summary banners."""
+    if not gaps:
+        return "balanced roster"
+    seen: list[str] = []
+    for g in gaps:
+        s = str(g or "").strip()
+        if s and s not in seen:
+            seen.append(s)
+    return ", ".join(seen) if seen else "balanced roster"

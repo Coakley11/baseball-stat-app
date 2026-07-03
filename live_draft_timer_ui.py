@@ -346,7 +346,12 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
         _render_timer_static(st, session, tick_room, source="fragment_tick")
         if poll_changed:
-            session.pop("_live_draft_rec_cache", None)
+            try:
+                from live_draft_ui_cache import invalidate_live_draft_ui_caches
+
+                invalidate_live_draft_ui_caches(session)
+            except ImportError:
+                session.pop("_live_draft_rec_cache", None)
             try:
                 from live_draft_safe_mode import request_live_draft_rerun
 

@@ -83,6 +83,49 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         self.assertIn("SS", positions)
         self.assertNotIn("3B", positions)
 
+    def test_infer_draft_assistant_needs_respects_host_slots(self) -> None:
+        from draft_ami_helpers import infer_draft_assistant_needs
+
+        cfg = _minimal_config()
+        roster = pd.DataFrame([{"fullName": "Catcher", "Primary Position": "C"}])
+        pool = pd.DataFrame(
+            [
+                {"fullName": "Catcher", "Primary Position": "C", "proj_HR": 20, "proj_RBI": 80},
+                {"fullName": "Other", "Primary Position": "SS", "proj_HR": 25, "proj_RBI": 90},
+            ]
+        )
+        needed, _cats = infer_draft_assistant_needs(roster, pool, draft_format="5x5 Roto", config=cfg)
+        self.assertIn("SS", needed)
+        self.assertIn("OF", needed)
+        self.assertNotIn("3B", needed)
+        self.assertNotIn("DH", needed)
+
+    def test_resolve_draft_slot_config_from_session(self) -> None:
+        from live_draft_roster_slots import position_codes_in_slot_order, resolve_draft_slot_config_from_session
+
+        cfg = _minimal_config()
+        session = {"live_draft_room": {"config": cfg, "status": "in_progress"}}
+        resolved = resolve_draft_slot_config_from_session(session)
+        self.assertEqual(resolved.get("slots"), cfg["slots"])
+        order = position_codes_in_slot_order(resolved)
+        self.assertEqual(order, ["C", "1B", "2B", "SS", "OF"])
+        self.assertNotIn("3B", order)
+        self.assertNotIn("DH", order)
+
+    def test_resolve_draft_slot_config_from_live_draft_state_blob(self) -> None:
+        from live_draft_roster_slots import resolve_draft_slot_config_from_session
+
+        cfg = _minimal_config()
+        session = {"live_draft_state": {"config": cfg, "draft_room_id": "ROOM1", "status": "in_progress"}}
+        resolved = resolve_draft_slot_config_from_session(session)
+        self.assertEqual(resolved.get("slots"), cfg["slots"])
+
+    def test_infer_draft_assistant_needs_without_host_slots_returns_empty(self) -> None:
+        from draft_ami_helpers import infer_draft_assistant_needs
+
+        needed, _cats = infer_draft_assistant_needs(pd.DataFrame(), pd.DataFrame(), config={})
+        self.assertEqual(needed, [])
+
     def test_view_results_uses_safe_navigation(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         marker = 'key="live_draft_view_results_btn"'

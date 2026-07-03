@@ -166,7 +166,12 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
             poll_suppressed_reason="",
         )
         if changed:
-            session.pop("_live_draft_rec_cache", None)
+            try:
+                from live_draft_ui_cache import invalidate_live_draft_ui_caches
+
+                invalidate_live_draft_ui_caches(session)
+            except ImportError:
+                session.pop("_live_draft_rec_cache", None)
             _rerun_after_poll(st, session)
 
     _poll_tick()

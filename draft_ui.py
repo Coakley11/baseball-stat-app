@@ -471,7 +471,13 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         pass
 
     session.pop("_live_draft_manual_pick_in_flight", None)
-    session.pop("_live_draft_rec_cache", None)
+    try:
+        from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+
+        invalidate_live_draft_ui_caches(session)
+        invalidate_draft_assistant_scoring_cache(session)
+    except ImportError:
+        session.pop("_live_draft_rec_cache", None)
     session.pop("_rec_card_commit_in_flight", None)
     try:
         from live_draft_pick_timer import clear_pick_submit_state
@@ -779,6 +785,89 @@ def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, A
     return summary
 
 
+SIDEBAR_TIMER_REMAINING_KEY = "_live_draft_sidebar_timer_remaining"
+SIDEBAR_TIMER_PAUSED_KEY = "_live_draft_sidebar_timer_paused"
+
+
+def refresh_sidebar_timer_session(session: dict[str, Any], *, summary: dict[str, Any] | None = None) -> None:
+    """Update timer values in session only — safe from fragment/callback contexts."""
+    from draft_actions import draft_status_summary
+
+    summary = summary or draft_status_summary(session)
+    session.pop(SIDEBAR_TIMER_REMAINING_KEY, None)
+    session.pop(SIDEBAR_TIMER_PAUSED_KEY, None)
+    if not summary.get("live_draft_active"):
+        return
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        remaining = summary.get("timer_seconds")
+        if remaining is not None:
+            session[SIDEBAR_TIMER_REMAINING_KEY] = int(remaining)
+        return
+    try:
+        from live_draft_timer_logic import (
+            ensure_live_draft_timer_for_pick,
+            live_draft_seconds_remaining,
+        )
+        from live_draft_timer_ui import sync_live_draft_timer_state
+
+        room = sync_live_draft_timer_state(session, room)
+        session["live_draft_room"] = room
+    except ImportError:
+        pass
+    status = str(room.get("status") or "")
+    if status != "in_progress":
+        paused_remaining = room.get("paused_remaining_seconds")
+        if paused_remaining is not None:
+            session[SIDEBAR_TIMER_PAUSED_KEY] = int(paused_remaining)
+        return
+    try:
+        from live_draft_timer_logic import ensure_live_draft_timer_for_pick, live_draft_seconds_remaining
+
+        ensure_live_draft_timer_for_pick(room)
+        session[SIDEBAR_TIMER_REMAINING_KEY] = max(0, int(live_draft_seconds_remaining(room)))
+    except ImportError:
+        remaining = summary.get("timer_seconds")
+        if remaining is not None:
+            session[SIDEBAR_TIMER_REMAINING_KEY] = int(remaining)
+
+
+def _render_sidebar_timer_caption(st: Any, session: dict[str, Any], *, summary: dict[str, Any] | None = None) -> None:
+    """Render sidebar timer from session values — main script path only."""
+    from draft_actions import draft_status_summary
+
+    summary = summary or draft_status_summary(session)
+    if not summary.get("live_draft_active"):
+        return
+    paused = session.get(SIDEBAR_TIMER_PAUSED_KEY)
+    if paused is not None:
+        st.sidebar.caption(f"Time Left: **{int(paused)}s** (paused)")
+        return
+    remaining = session.get(SIDEBAR_TIMER_REMAINING_KEY)
+    if remaining is None:
+        remaining = summary.get("timer_seconds")
+    if remaining is not None:
+        st.sidebar.caption(f"Time Left: **{int(remaining)}s**")
+    room = session.get("live_draft_room")
+    if isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
+        try:
+            from live_draft_timer_logic import live_draft_timer_deadline
+            from live_draft_timer_ui import _mount_js_countdown
+
+            deadline = live_draft_timer_deadline(room)
+            if deadline:
+                pick_idx = int(room.get("current_pick_index") or 0)
+                _mount_js_countdown(
+                    st,
+                    float(deadline),
+                    pick_index=pick_idx,
+                    element_id=f"sidebar-ld-timer-{pick_idx}",
+                    height=0,
+                )
+        except Exception:
+            pass
+
+
 def render_draft_sidebar_timer(
     st: Any,
     session: dict[str, Any],
@@ -791,57 +880,16 @@ def render_draft_sidebar_timer(
     summary = summary or draft_status_summary(session)
     if not summary.get("live_draft_active"):
         return
-    room = session.get("live_draft_room")
-    if not isinstance(room, dict) or str(room.get("status") or "") != "in_progress":
-        remaining = summary.get("timer_seconds")
-        if remaining is not None:
-            st.sidebar.caption(f"Time Left: **{remaining}s**")
-        return
+    refresh_sidebar_timer_session(session, summary=summary)
+    _render_sidebar_timer_caption(st, session, summary=summary)
 
     fragment = getattr(st, "fragment", None)
     if fragment is None:
-        remaining = summary.get("timer_seconds")
-        if remaining is not None:
-            st.sidebar.caption(f"Time Left: **{remaining}s**")
         return
 
     @fragment(run_every=1)
     def _sidebar_timer_tick() -> None:
-        from live_draft_timer_logic import (
-            ensure_live_draft_timer_for_pick,
-            live_draft_seconds_remaining,
-            live_draft_timer_deadline,
-        )
-        from live_draft_timer_ui import sync_live_draft_timer_state
-
-        live_room = session.get("live_draft_room")
-        if not isinstance(live_room, dict):
-            return
-        live_room = sync_live_draft_timer_state(session, live_room)
-        session["live_draft_room"] = live_room
-        if str(live_room.get("status") or "") != "in_progress":
-            paused_remaining = live_room.get("paused_remaining_seconds")
-            if paused_remaining is not None:
-                st.sidebar.caption(f"Time Left: **{int(paused_remaining)}s** (paused)")
-            return
-        ensure_live_draft_timer_for_pick(live_room)
-        remaining = max(0, int(live_draft_seconds_remaining(live_room)))
-        st.sidebar.caption(f"Time Left: **{remaining}s**")
-        deadline = live_draft_timer_deadline(live_room)
-        if deadline:
-            try:
-                from live_draft_timer_ui import _mount_js_countdown
-
-                pick_idx = int(live_room.get("current_pick_index") or 0)
-                _mount_js_countdown(
-                    st,
-                    float(deadline),
-                    pick_index=pick_idx,
-                    element_id=f"sidebar-ld-timer-{pick_idx}",
-                    height=0,
-                )
-            except Exception:
-                pass
+        refresh_sidebar_timer_session(session, summary=summary)
 
     _sidebar_timer_tick()
 

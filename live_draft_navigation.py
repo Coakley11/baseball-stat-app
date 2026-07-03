@@ -6,6 +6,7 @@ from typing import Any
 
 BROWSING_AWAY_KEY = "_live_draft_browsing_away"
 FORCE_SYNC_ON_RETURN_KEY = "_live_draft_force_sync_on_return"
+MAIN_SIDEBAR_PAGE_KEY = "main_sidebar_page"
 DEFAULT_BROWSE_PAGE = "Fantasy Trends"
 
 LIVE_DRAFT_QUICK_NAV_PAGES: tuple[tuple[str, str], ...] = (
@@ -16,6 +17,18 @@ LIVE_DRAFT_QUICK_NAV_PAGES: tuple[tuple[str, str], ...] = (
     ("ML Predictions", "ML Projections"),
     ("Comparison Tool", "Comparison"),
 )
+
+
+def _apply_scheduled_page(session: dict[str, Any], target_page: str) -> None:
+    """Navigate immediately — sidebar radio reads these keys on the same rerun."""
+    page = str(target_page or "").strip()
+    if not page:
+        return
+    session["_navigate_to_page"] = page
+    session[MAIN_SIDEBAR_PAGE_KEY] = page
+    session["active_page"] = page
+    session["_suite_page_user_nav"] = True
+    session.pop("_suite_cloud_target_page", None)
 
 
 def render_live_draft_quick_nav(st: Any, session: dict[str, Any]) -> None:
@@ -31,7 +44,8 @@ def render_live_draft_quick_nav(st: Any, session: dict[str, Any]) -> None:
                 prepare_canonical_scoring_context(session, active_page=target_page)
             except Exception:
                 pass
-        on_browse_other_pages(session, target_page=target_page)
+        session[BROWSING_AWAY_KEY] = True
+        _apply_scheduled_page(session, target_page)
 
     st.markdown("**Quick navigation**")
     cols = st.columns(len(LIVE_DRAFT_QUICK_NAV_PAGES))
@@ -50,21 +64,18 @@ def on_browse_other_pages(session: dict[str, Any], *, target_page: str | None = 
     """Leave Live Draft Room without ending or pausing the draft."""
     page = str(target_page or session.get("_live_draft_browse_return_page") or DEFAULT_BROWSE_PAGE).strip()
     session[BROWSING_AWAY_KEY] = True
-    session["_navigate_to_page"] = page
-    session["_suite_page_user_nav"] = True
+    _apply_scheduled_page(session, page)
 
 
 def on_return_to_live_draft(session: dict[str, Any]) -> None:
     session.pop(BROWSING_AWAY_KEY, None)
     session[FORCE_SYNC_ON_RETURN_KEY] = True
-    session["_navigate_to_page"] = "Live Draft Room"
-    session["_suite_page_user_nav"] = True
+    _apply_scheduled_page(session, "Live Draft Room")
 
 
 def on_return_to_draft_simulator(session: dict[str, Any]) -> None:
     session.pop(BROWSING_AWAY_KEY, None)
-    session["_navigate_to_page"] = "Draft Room Simulator"
-    session["_suite_page_user_nav"] = True
+    _apply_scheduled_page(session, "Draft Room Simulator")
 
 
 def _seconds_remaining(room: dict[str, Any]) -> int | None:
@@ -207,7 +218,7 @@ def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_p
 
         if kind in ("live_active", "live_lobby"):
             st.button(
-                "Return to Draft",
+                "Return to Live Draft",
                 type="primary",
                 key="sidebar_return_live_draft_btn",
                 use_container_width=True,

@@ -88,7 +88,7 @@ class RecCardQueueTests(unittest.TestCase):
         )
         st.container.return_value.__enter__ = mock.Mock(return_value=mock.MagicMock())
         st.container.return_value.__exit__ = mock.Mock(return_value=False)
-        st.columns.return_value = [mock.MagicMock(), mock.MagicMock()]
+        st.columns.return_value = [mock.MagicMock(), mock.MagicMock(), mock.MagicMock()]
 
         with mock.patch("draft_actions.resolve_manual_draft_panel_gate") as gate_fn, mock.patch(
             "draft_actions.draft_action_context"

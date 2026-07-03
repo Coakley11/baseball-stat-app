@@ -249,7 +249,13 @@ def commit_manual_live_pick(
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
         session[LIVE_DRAFT_ROOM_KEY] = room
-        session.pop("_live_draft_rec_cache", None)
+        try:
+            from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+
+            invalidate_live_draft_ui_caches(session)
+            invalidate_draft_assistant_scoring_cache(session)
+        except ImportError:
+            session.pop("_live_draft_rec_cache", None)
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
         record_draft_commit_diagnostics(

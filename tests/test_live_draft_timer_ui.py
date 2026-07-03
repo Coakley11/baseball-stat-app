@@ -131,6 +131,24 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         }
         self.assertFalse(_page_load_grace_active(session, room))
 
+    def test_sidebar_timer_fragment_does_not_write_sidebar(self) -> None:
+        import time
+
+        from draft_ui import SIDEBAR_TIMER_REMAINING_KEY, refresh_sidebar_timer_session
+
+        session = {
+            "live_draft_room": {
+                "status": "in_progress",
+                "config": {"timer_seconds": 90},
+                "current_pick_index": 0,
+                "timer_deadline": time.time() + 45,
+                "timer_started_at": time.time(),
+            }
+        }
+        refresh_sidebar_timer_session(session)
+        self.assertIn(SIDEBAR_TIMER_REMAINING_KEY, session)
+        self.assertGreater(int(session[SIDEBAR_TIMER_REMAINING_KEY]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

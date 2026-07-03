@@ -157,14 +157,15 @@ def _live_draft_target_counts(config):
     except ImportError:
         slots = config.get("slots", {})
         return {
-            "C": int(slots.get("C", 1)),
-            "1B": int(slots.get("1B", 1)),
-            "2B": int(slots.get("2B", 1)),
-            "3B": int(slots.get("3B", 1)),
-            "SS": int(slots.get("SS", 1)),
-            "OF": int(slots.get("OF", 3)),
-            "DH": int(slots.get("DH", 1)),
-            "P": int(slots.get("P", 0)),
+            "C": int(slots.get("C", 0) or 0),
+            "1B": int(slots.get("1B", 0) or 0),
+            "2B": int(slots.get("2B", 0) or 0),
+            "3B": int(slots.get("3B", 0) or 0),
+            "SS": int(slots.get("SS", 0) or 0),
+            "OF": int(slots.get("OF", 0) or 0),
+            "DH": int(slots.get("DH", 0) or 0),
+            "P": int(slots.get("P", 0) or 0),
+            "BN": int(slots.get("BN", 0) or 0),
         }
 
 

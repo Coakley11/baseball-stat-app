@@ -136,11 +136,9 @@ class RecCardMetricsTests(unittest.TestCase):
     def test_why_summary_mentions_drivers_not_proj_prose(self) -> None:
         row = _pool().iloc[0]
         why = build_why_this_pick_summary(row, "OF", gaps=["OF"], category_needs=["HR"], strengths=["HR", "RBI"])
-        self.assertIn("Decision Score", why)
-        self.assertIn("Roster Fit", why)
-        self.assertIn("fills OF need", why)
         self.assertIn("HR", why)
         self.assertNotIn("Proj:", why)
+        self.assertNotIn("fills OF need", why)
 
     def test_why_column_added_to_table(self) -> None:
         rec = _pool().head(2)

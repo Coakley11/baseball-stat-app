@@ -348,6 +348,28 @@ class RecCardBadgeTests(unittest.TestCase):
         self.assertIn("Best Overall", labels)
         self.assertIn("Position Need", labels)
 
+    def test_draft_insight_text_does_not_repeat_position_need_badge(self) -> None:
+        from live_draft_room_ui import _rec_card_badges, build_draft_insight_text
+
+        row = pd.Series(
+            {
+                "fullName": "Player A",
+                "Primary Position": "SS",
+                "Positional Fit": 0.82,
+                "Scarcity Score": 0.72,
+                "Survival Probability": 0.42,
+                "Decision Score": 0.8,
+            }
+        )
+        rec_df = pd.DataFrame([row])
+        badges = _rec_card_badges(1, row, rec_df, gaps=["SS"])
+        text = build_draft_insight_text(row, badges=badges, strengths=["HR", "SB"], gaps=["SS"], rank=1)
+        lower = text.lower()
+        self.assertNotIn("fills ss need", lower)
+        self.assertNotIn("fills your ss need", lower)
+        self.assertNotIn("second best", lower)
+        self.assertTrue("strengthens" in lower or "42%" in text or "scarcity" in lower)
+
 
 if __name__ == "__main__":
     unittest.main()

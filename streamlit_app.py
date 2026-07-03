@@ -9399,25 +9399,42 @@ def _live_draft_default_teams(num_teams):
 
 
 def _live_draft_target_counts(config):
-    slots = config.get("slots", {})
-    return {
-        "C": int(slots.get("C", 1)),
-        "1B": int(slots.get("1B", 1)),
-        "2B": int(slots.get("2B", 1)),
-        "3B": int(slots.get("3B", 1)),
-        "SS": int(slots.get("SS", 1)),
-        "OF": int(slots.get("OF", 3)),
-        "DH": int(slots.get("DH", 1)),
-        "P": int(slots.get("P", 0)),
-    }
+    try:
+        from live_draft_roster_slots import live_draft_target_counts as _canonical
+
+        return _canonical(config or {})
+    except ImportError:
+        slots = dict((config or {}).get("slots") or {})
+        return {
+            "C": int(slots.get("C", 0) or 0),
+            "1B": int(slots.get("1B", 0) or 0),
+            "2B": int(slots.get("2B", 0) or 0),
+            "3B": int(slots.get("3B", 0) or 0),
+            "SS": int(slots.get("SS", 0) or 0),
+            "OF": int(slots.get("OF", 0) or 0),
+            "DH": int(slots.get("DH", 0) or 0),
+            "P": int(slots.get("P", 0) or 0),
+            "BN": int(slots.get("BN", 0) or 0),
+        }
 
 
-def _live_draft_roster_needs(roster_df, target_counts):
-    if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
-        return [pos for pos, n in target_counts.items() if n > 0]
-    counts = roster_df["Primary Position"].fillna("DH").astype(str).value_counts().to_dict()
-    gaps = [pos for pos, target in target_counts.items() if target > 0 and int(counts.get(pos, 0)) < target]
-    return gaps
+def _live_draft_roster_needs(roster_df, target_counts, config=None):
+    try:
+        from live_draft_roster_slots import get_remaining_position_needs
+
+        cfg = dict(config or {})
+        if not cfg.get("slots") and target_counts:
+            cfg = {"slots": dict(target_counts)}
+        return get_remaining_position_needs(roster_df, cfg)
+    except ImportError:
+        if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
+            return [pos for pos, n in (target_counts or {}).items() if int(n or 0) > 0]
+        counts = roster_df["Primary Position"].fillna("DH").astype(str).value_counts().to_dict()
+        return [
+            pos
+            for pos, target in (target_counts or {}).items()
+            if int(target or 0) > 0 and int(counts.get(pos, 0)) < int(target)
+        ]
 
 
 def _live_draft_pick_verdict(row, rule, gaps):
@@ -9511,14 +9528,13 @@ def apply_draft_pick_scoring(
     replacement_depths=None,
     return_position_summary=False,
     recommendation_mode="decision",
+    room=None,
 ):
     """
     Centralized fantasy draft intelligence engine.
 
-    Powers Live Draft Room, Draft Simulation Test Mode, Fantasy Draft Assistant, and auto-pick.
-    Computes Draft Fit Score (roster-construction fit) and Decision Score (blended pick rank).
-
-    All component columns are exposed for the Draft Scoring Breakdown debug expander.
+    Delegates to live_draft_pick_scoring (host-slot aware). Powers Live Draft Room,
+    Draft Simulation Test Mode, Fantasy Draft Assistant, and auto-pick.
     """
     try:
         from draft_scoring_pool import ensure_draft_scoring_pool_columns
@@ -9526,155 +9542,35 @@ def apply_draft_pick_scoring(
         available = ensure_draft_scoring_pool_columns(available)
     except ImportError:
         pass
+    try:
+        from live_draft_pick_scoring import apply_draft_pick_scoring as _apply_scoring
+
+        return _apply_scoring(
+            available,
+            roster_df,
+            fantasy_format=fantasy_format,
+            target_counts=target_counts,
+            current_pick=current_pick,
+            category_needs=category_needs,
+            needed_positions=needed_positions,
+            use_ml_blend=use_ml_blend,
+            ml_blend_weight=ml_blend_weight,
+            replacement_depths=replacement_depths,
+            return_position_summary=return_position_summary,
+            recommendation_mode=recommendation_mode,
+            room=room,
+        )
+    except ImportError:
+        pass
     scored = available.copy()
     roster_df = roster_df if roster_df is not None else pd.DataFrame()
     target_counts = target_counts or {}
-    gaps = _live_draft_roster_needs(roster_df, target_counts)
+    slot_cfg = {"slots": dict(target_counts)} if target_counts else {}
+    gaps = _live_draft_roster_needs(roster_df, target_counts, config=slot_cfg)
     if needed_positions is None:
         needed_positions = gaps if gaps else []
-
-    # --- Positional / roster slot fit (display + Decision roster-need term) ---
-    slot_fit = scored["Primary Position"].isin(gaps).astype(float)
-    slot_fit = slot_fit.mask(scored["Primary Position"].astype(str).eq("C"), slot_fit * 0.85)
-    if category_needs:
-        cat_need_raw = _draft_category_need_bonus_list(scored, category_needs, fantasy_format)
-    else:
-        cat_need_raw = _draft_lab_category_need_bonus(scored, roster_df)
-    category_need_norm = normalize_series(cat_need_raw)
-    scored["Positional Fit"] = (slot_fit * 0.70 + category_need_norm * 0.30).clip(0, 1)
-    scored["Roster Need Score"] = scored["Positional Fit"]
-    scored["Position Need Bonus"] = scored["Primary Position"].apply(
-        lambda p: 0.08 if str(p) in needed_positions else 0.0
-    )
-    scored["Category Need Bonus"] = cat_need_raw
-
-    # --- Replacement-level position scarcity (pick-time, from remaining pool) ---
-    replacement_values, position_summary_rows = _draft_compute_position_replacement(
-        scored, replacement_depths=replacement_depths
-    )
-    scored["Position Replacement Value"] = scored["Primary Position"].map(replacement_values).fillna(
-        pd.to_numeric(scored["Expected Fantasy Value"], errors="coerce").median()
-    )
-    scored["Position Scarcity Score"] = (
-        pd.to_numeric(scored["Expected Fantasy Value"], errors="coerce") -
-        pd.to_numeric(scored["Position Replacement Value"], errors="coerce")
-    ).clip(lower=0)
-    scored["Position Scarcity Bonus"] = normalize_series(scored["Position Scarcity Score"]) * 0.12
-    scored.loc[scored["Primary Position"].isin(needed_positions), "Position Scarcity Bonus"] *= 1.25
-
-    # --- Risk & projection confidence ---
-    scored["Risk Penalty"] = normalize_series(safe_numeric_series(scored, "Expert Std Dev", 0))
-    conf = (
-        normalize_series(safe_numeric_series(scored, "Projection Confidence Score", 0.5))
-        if "Projection Confidence Score" in scored.columns
-        else pd.Series(0.5, index=scored.index)
-    )
-    scored["Projection Confidence"] = conf
-
-    # --- Availability / urgency (ADP vs current pick) ---
-    if current_pick is not None:
-        mr = safe_numeric_series(scored, "Market Rank", float(current_pick))
-        scored["Availability Probability"] = 1 / (1 + np.exp(-(mr - float(current_pick)) / 35))
-    else:
-        scored["Availability Probability"] = pd.Series(0.50, index=scored.index)
-
-    # --- Draft Fit Score components (Fantasy Draft Assistant formula, unified) ---
-    ml_w = float(ml_blend_weight) if use_ml_blend else 0.0
-    value_weight = max(0.38 - (ml_w * 0.25 if use_ml_blend else 0.0), 0.28)
-    scored["Player Value Component"] = normalize_series(scored["Expected Fantasy Value"]) * value_weight
-    scored["ML Projection Component"] = (
-        normalize_series(scored["ML Adjustment"].fillna(0).clip(lower=0)) * ml_w
-        if use_ml_blend and "ML Adjustment" in scored.columns
-        else pd.Series(0.0, index=scored.index)
-    )
-    if "Projection Confidence Score" in scored.columns:
-        scored["Player Value Component"] *= (0.94 + conf * 0.06)
-        scored["Confidence Component"] = conf * 0.02
-    else:
-        scored["Confidence Component"] = pd.Series(0.0, index=scored.index)
-
-    scored["Market Edge Component"] = normalize_series(safe_numeric_series(scored, "Fantasy Edge", 0)) * 0.22
-    scored["Roster Need Component"] = normalize_series(scored["Position Need Bonus"].fillna(0)) * 0.14
-    scored["Scarcity Component"] = normalize_series(scored["Position Scarcity Bonus"].fillna(0))
-    scored["Category Fit Component"] = normalize_series(scored["Category Need Bonus"].fillna(0)) * 0.08
-    scored["Availability Urgency Component"] = (
-        1 - pd.to_numeric(scored["Availability Probability"], errors="coerce").fillna(0.50)
-    ) * 0.06
-    scored["Sleeper Fit Component"] = (
-        normalize_series(scored["Sleeper Score"]) * 0.03
-        if "Sleeper Score" in scored.columns
-        else pd.Series(0.0, index=scored.index)
-    )
-    scored["Risk Component"] = scored["Risk Penalty"] * 0.08 * (1.12 - conf * 0.12)
-
-    scored["Draft Fit Score"] = (
-        scored["Player Value Component"]
-        + scored["ML Projection Component"]
-        + scored["Market Edge Component"]
-        + scored["Roster Need Component"]
-        + scored["Scarcity Component"]
-        + scored["Category Fit Component"]
-        + scored["Availability Urgency Component"]
-        + scored["Sleeper Fit Component"]
-        + scored["Confidence Component"]
-        - scored["Risk Component"]
-    ).clip(lower=0)
-
-    # --- Decision Score (auto-pick / balanced recommendation) ---
-    rank_component = (
-        scored["App Ranking Score"]
-        if "App Ranking Score" in scored.columns
-        else normalize_series(-pd.to_numeric(scored.get("Model Rank"), errors="coerce").fillna(9999))
-    )
-    pool_scarcity = (
-        normalize_series(scored["Scarcity Score"])
-        if "Scarcity Score" in scored.columns
-        else normalize_series(scored["Position Scarcity Score"])
-    )
-    trend_comp = (
-        normalize_series(scored["Trend Signal"])
-        if "Trend Signal" in scored.columns
-        else pd.Series(0.0, index=scored.index)
-    )
-    sleeper_dec = (
-        normalize_series(scored["Sleeper Score"])
-        if "Sleeper Score" in scored.columns
-        else pd.Series(0.0, index=scored.index)
-    )
-    market_dec = (
-        normalize_series(scored["Market vs Model Score"])
-        if "Market vs Model Score" in scored.columns
-        else normalize_series(safe_numeric_series(scored, "Fantasy Edge", 0))
-    )
-    value_dec = normalize_series(scored["Expected Fantasy Value"])
-
-    scored["Decision Value Component"] = value_dec * 0.55
-    scored["Decision Rank Component"] = normalize_series(rank_component) * 0.20
-    scored["Decision Roster Component"] = normalize_series(scored["Roster Need Score"]) * 0.10
-    scored["Decision Scarcity Component"] = pool_scarcity * 0.05
-    scored["Decision Trend Component"] = trend_comp * 0.05
-    scored["Decision Sleeper Component"] = sleeper_dec * 0.03
-    scored["Decision Market Component"] = market_dec * 0.02
-
-    scored["Decision Score"] = (
-        scored["Decision Value Component"]
-        + scored["Decision Rank Component"]
-        + scored["Decision Roster Component"]
-        + scored["Decision Scarcity Component"]
-        + scored["Decision Trend Component"]
-        + scored["Decision Sleeper Component"]
-        + scored["Decision Market Component"]
-    ).clip(lower=0)
-    scored["Draft Fit Rank"] = scored["Draft Fit Score"].rank(ascending=False, method="min")
-    if recommendation_mode == "draft_fit":
-        scored["Recommendation Score"] = scored["Draft Fit Score"]
-        scored["Recommendation Rank"] = scored["Draft Fit Rank"]
-    else:
-        scored["Recommendation Score"] = scored["Decision Score"]
-        scored["Recommendation Rank"] = scored["Decision Score"].rank(ascending=False, method="min")
-
     if return_position_summary:
-        return scored, gaps, position_summary_rows
+        return scored, gaps, []
     return scored, gaps
 
 
@@ -9944,19 +9840,14 @@ def live_draft_recommendations(room, top_n=8, team=None):
 
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
-    idx = int(room.get("current_pick_index") or 0)
-    board_len = len(room.get("draft_board") or [])
-    team_s = str(team or "")
-    slots = dict((room.get("config") or {}).get("slots") or {})
-    slots_key = tuple(sorted((k, int(v or 0)) for k, v in slots.items()))
-    rev = int(((room.get("meta") or {}).get("sync") or {}).get("revision") or 0)
-    queue = tuple(str(x) for x in (session.get("draft_queue") or [])[:20])
-    cache_key = (idx, board_len, team_s, int(top_n), slots_key, rev, queue)
-    entry = session.get("_live_draft_rec_cache")
+    from live_draft_ui_cache import REC_CACHE_KEY, live_draft_ui_cache_key
+
+    cache_key = live_draft_ui_cache_key(session, room, top_n=top_n, team=team)
+    entry = session.get(REC_CACHE_KEY)
     if isinstance(entry, dict) and entry.get("key") == cache_key:
         return entry["top_rec"], entry["best_avail"], entry["pos_fit"], entry["value_sleep"]
     top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(room, top_n=top_n, team=team)
-    session["_live_draft_rec_cache"] = {
+    session[REC_CACHE_KEY] = {
         "key": cache_key,
         "top_rec": top_rec,
         "best_avail": best_avail,
@@ -17760,45 +17651,39 @@ if active_page == "Draft Assistant Simulator":
             if pick_adjustment:
                 st.caption(f"Pick correction applied: {pick_adjustment:+d} (effective pick **{current_pick}**).")
 
-        # Automatically infer position needs from your synced roster.
+        # Automatically infer position needs from host-configured draft slots (live draft room).
         roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
-        target_position_counts = {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "DH": 1, "P": 0}
-        current_position_counts = (
-            roster_df_auto["Primary Position"].value_counts().to_dict()
-            if not roster_df_auto.empty and "Primary Position" in roster_df_auto.columns
-            else {}
-        )
+        try:
+            from draft_ami_helpers import infer_draft_assistant_needs
+            from live_draft_roster_slots import (
+                get_required_position_counts,
+                position_codes_in_slot_order,
+                resolve_draft_slot_config_from_session,
+            )
 
-        auto_needed_positions = []
-        for pos in POSITION_ORDER:
-            target = target_position_counts.get(pos, 1)
-            current = int(current_position_counts.get(pos, 0))
-            if target > 0 and current < target:
-                auto_needed_positions.append(pos)
-
-        if not auto_needed_positions:
-            auto_needed_positions = ["OF", "DH"]
-
-        # Automatically infer category needs from your roster averages compared with the draft pool.
-        if draft_format == "5x5 Roto":
-            cat_defs_auto = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
-            default_cat_fallback = ["HR", "RBI"]
-        else:
-            cat_defs_auto = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
-            default_cat_fallback = ["Power", "Run Production"]
-
-        auto_category_needs = []
-        if not roster_df_auto.empty:
-            for label, col in cat_defs_auto.items():
-                if col not in roster_df_auto.columns or col not in draft_df.columns:
-                    continue
-                roster_val = pd.to_numeric(roster_df_auto[col], errors="coerce").mean()
-                pool_val = pd.to_numeric(draft_df[col], errors="coerce").mean()
-                if pd.notna(roster_val) and pd.notna(pool_val) and roster_val < pool_val:
-                    auto_category_needs.append(label)
-
-        if not auto_category_needs:
-            auto_category_needs = default_cat_fallback
+            _slot_cfg = resolve_draft_slot_config_from_session(st.session_state)
+            target_position_counts = (
+                get_required_position_counts(_slot_cfg)
+                if _slot_cfg.get("slots")
+                else {}
+            )
+            position_options = (
+                position_codes_in_slot_order(_slot_cfg)
+                if _slot_cfg.get("slots")
+                else []
+            )
+            auto_needed_positions, auto_category_needs = infer_draft_assistant_needs(
+                roster_df_auto,
+                draft_df,
+                draft_format=draft_format,
+                config=_slot_cfg,
+            )
+        except ImportError:
+            _slot_cfg = {}
+            target_position_counts = {}
+            position_options = []
+            auto_needed_positions = []
+            auto_category_needs = []
 
         roster_means = {}
         pool_means = {}
@@ -17826,17 +17711,28 @@ if active_page == "Draft Assistant Simulator":
             _rs = pd.to_numeric(roster_df_auto["Expert Std Dev"], errors="coerce").mean()
             roster_expert_std_mean = float(_rs) if pd.notna(_rs) else None
 
+        if draft_format == "5x5 Roto":
+            cat_defs_auto = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
+        else:
+            cat_defs_auto = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
+
         with st.expander("Position & category priorities (auto-filled; override if needed)", expanded=False):
             st.markdown("#### Auto-detected team needs")
-            st.caption("Derived from your Draft Room roster. Change only if you want a different build.")
+            st.caption(
+                "Derived from your roster and host-configured draft slots."
+                if _slot_cfg.get("slots")
+                else "Derived from your Draft Room roster. Change only if you want a different build."
+            )
             r1, r2 = st.columns(2)
             with r1:
+                _pos_options = position_options
+                _pos_default = [p for p in auto_needed_positions if p in _pos_options]
                 needed_positions = st.multiselect(
                     "Positions to prioritize",
-                    POSITION_ORDER,
-                    default=auto_needed_positions,
-                    key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(auto_needed_positions)}",
-                    help="Auto-filled from your Draft Room roster."
+                    _pos_options,
+                    default=_pos_default,
+                    key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(_pos_default)}",
+                    help="Auto-filled from host draft slots and your roster.",
                 )
             with r2:
                 category_options_auto = list(cat_defs_auto.keys())
@@ -17886,47 +17782,113 @@ if active_page == "Draft Assistant Simulator":
         # players on other rosters + players on my roster.
         available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
 
-        available, _gaps, position_summary_rows = apply_draft_pick_scoring(
-            available,
-            roster_df_auto,
-            fantasy_format=draft_format,
-            target_counts=target_position_counts,
-            current_pick=current_pick,
-            category_needs=category_needs,
-            needed_positions=needed_positions,
-            use_ml_blend=use_ml_in_draft,
-            ml_blend_weight=ml_blend_weight,
-            return_position_summary=True,
-            recommendation_mode="draft_fit",
+        _live_draft_room = st.session_state.get("live_draft_room")
+        _score_room = (
+            {"config": _slot_cfg, **(_live_draft_room if isinstance(_live_draft_room, dict) else {})}
+            if _slot_cfg.get("slots")
+            else (_live_draft_room if isinstance(_live_draft_room, dict) else None)
         )
-
-        _drop_vals: list[float] = []
-        for _row in position_summary_rows or []:
-            _dv = _row.get("Scarcity Dropoff", np.nan)
-            if pd.notna(_dv):
-                try:
-                    _drop_vals.append(float(_dv))
-                except (TypeError, ValueError):
-                    pass
-        median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
-
-        recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
-
+        _da_scored = None
         try:
-            from live_draft_room_ui import build_draft_assistant_why_this_pick
+            from live_draft_ui_cache import DA_SCORING_CACHE_KEY, draft_assistant_scoring_cache_key
 
-            recs["Why this pick"] = recs.apply(
-                lambda r: build_draft_assistant_why_this_pick(
-                    r,
-                    needed_positions=needed_positions,
-                    category_needs=category_needs,
-                    pool_df=available,
-                    draft_format=draft_format,
-                ),
-                axis=1,
+            _da_key = draft_assistant_scoring_cache_key(
+                st.session_state,
+                drafted_names=set(drafted_or_owned_players),
+                my_roster=my_roster,
+                current_pick=int(current_pick),
+                needed_positions=needed_positions,
+                category_needs=category_needs,
+                target_counts=target_position_counts,
+                draft_format=draft_format,
+                use_ml_blend=use_ml_in_draft,
+                ml_blend_weight=ml_blend_weight,
+                draft_top_n=int(draft_top_n),
             )
+            _da_entry = st.session_state.get(DA_SCORING_CACHE_KEY)
+            if isinstance(_da_entry, dict) and _da_entry.get("key") == _da_key:
+                _da_scored = _da_entry
         except ImportError:
-            recs["Why this pick"] = ""
+            _da_key = None
+            _da_scored = None
+
+        if _da_scored:
+            available = _da_scored["available"].copy()
+            _gaps = list(_da_scored.get("gaps") or [])
+            position_summary_rows = list(_da_scored.get("position_summary_rows") or [])
+            recs = _da_scored["recs"].copy()
+        else:
+            available, _gaps, position_summary_rows = apply_draft_pick_scoring(
+                available,
+                roster_df_auto,
+                fantasy_format=draft_format,
+                target_counts=target_position_counts,
+                current_pick=current_pick,
+                category_needs=category_needs,
+                needed_positions=needed_positions,
+                use_ml_blend=use_ml_in_draft,
+                ml_blend_weight=ml_blend_weight,
+                return_position_summary=True,
+                recommendation_mode="draft_fit",
+                room=_score_room,
+            )
+
+            _drop_vals: list[float] = []
+            for _row in position_summary_rows or []:
+                _dv = _row.get("Scarcity Dropoff", np.nan)
+                if pd.notna(_dv):
+                    try:
+                        _drop_vals.append(float(_dv))
+                    except (TypeError, ValueError):
+                        pass
+            median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
+
+            if _slot_cfg.get("slots"):
+                _active_pos = set(position_codes_in_slot_order(_slot_cfg))
+                position_summary_rows = [
+                    r for r in (position_summary_rows or [])
+                    if str(r.get("Position") or "") in _active_pos
+                ]
+
+            recs = available.sort_values("Draft Fit Score", ascending=False).head(draft_top_n).copy()
+
+            try:
+                from live_draft_room_ui import build_draft_assistant_why_this_pick
+
+                recs["Why this pick"] = recs.apply(
+                    lambda r: build_draft_assistant_why_this_pick(
+                        r,
+                        needed_positions=needed_positions,
+                        category_needs=category_needs,
+                        pool_df=available,
+                        draft_format=draft_format,
+                    ),
+                    axis=1,
+                )
+            except ImportError:
+                recs["Why this pick"] = ""
+
+            if _da_key is not None:
+                try:
+                    from live_draft_ui_cache import DA_SCORING_CACHE_KEY
+
+                    st.session_state[DA_SCORING_CACHE_KEY] = {
+                        "key": _da_key,
+                        "available": available.copy(),
+                        "gaps": list(_gaps or []),
+                        "position_summary_rows": list(position_summary_rows or []),
+                        "recs": recs.copy(),
+                    }
+                except ImportError:
+                    pass
+
+        if _da_scored:
+            _drop_vals = [
+                float(r.get("Scarcity Dropoff"))
+                for r in (position_summary_rows or [])
+                if pd.notna(r.get("Scarcity Dropoff"))
+            ]
+            median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
 
         _ami_roster_detail: list[dict[str, str]] = []
         _ami_roster_index: dict[str, str] = {}
@@ -18134,31 +18096,24 @@ if active_page == "Draft Assistant Simulator":
             )
             position_scarcity_df = pd.DataFrame(position_summary_rows)
 
-            if not position_scarcity_df.empty and "DH" not in position_scarcity_df["Position"].astype(str).tolist():
-                dh_group = available[available["Primary Position"].astype(str).eq("DH")].copy() if "Primary Position" in available.columns else pd.DataFrame()
-                if not dh_group.empty:
-                    dh_group = dh_group.sort_values("Expected Fantasy Value", ascending=False)
-                    dh_depth = replacement_depths.get("DH", 12)
-                    dh_replacement = pd.to_numeric(dh_group.iloc[min(len(dh_group), dh_depth) - 1]["Expected Fantasy Value"], errors="coerce")
-                    dh_top = dh_group.iloc[0]
-                    dh_top_value = pd.to_numeric(dh_top.get("Expected Fantasy Value", np.nan), errors="coerce")
-                    position_scarcity_df = pd.concat([position_scarcity_df, pd.DataFrame([{
-                        "Position": "DH",
-                        "Available Players": len(dh_group),
-                        "Replacement Depth": dh_depth,
-                        "Replacement Value": dh_replacement,
-                        "Top Available": dh_top.get("fullName", ""),
-                        "Top Available Value": dh_top_value,
-                        "Scarcity Dropoff": dh_top_value - dh_replacement if pd.notna(dh_replacement) and pd.notna(dh_top_value) else np.nan,
-                    }])], ignore_index=True)
-
             if position_scarcity_df.empty:
                 st.info("Position scarcity could not be calculated yet.")
             else:
+                _scarcity_order = (
+                    position_codes_in_slot_order(_slot_cfg)
+                    if _slot_cfg.get("slots")
+                    else sorted(
+                        {
+                            str(r.get("Position") or "")
+                            for r in (position_summary_rows or [])
+                            if str(r.get("Position") or "").strip()
+                        }
+                    )
+                )
                 position_scarcity_df["Position"] = pd.Categorical(
                     position_scarcity_df["Position"],
-                    categories=POSITION_ORDER,
-                    ordered=True
+                    categories=_scarcity_order,
+                    ordered=True,
                 )
                 position_scarcity_df = position_scarcity_df.sort_values("Position")
                 position_scarcity_display = position_scarcity_df[[
@@ -19561,7 +19516,12 @@ if active_page == "Live Draft Room":
                     pass
                 _poll_changed = poll_shared_draft_room(st.session_state)
                 if _poll_changed:
-                    st.session_state.pop("_live_draft_rec_cache", None)
+                    try:
+                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+
+                        invalidate_live_draft_ui_caches(st.session_state)
+                    except ImportError:
+                        st.session_state.pop("_live_draft_rec_cache", None)
                     try:
                         from live_draft_safe_mode import request_poll_apply_rerun
 
@@ -19606,9 +19566,7 @@ if active_page == "Live Draft Room":
             st.rerun()
     apply_pending_page_transfer(active_page)
     from draft_ui import on_open_simulator_convert_panel, on_start_new_live_draft
-    from live_draft_state import prepare_live_draft_state, render_live_draft_save_diagnostics
-
-    prepare_live_draft_state(st.session_state)
+    from live_draft_state import render_live_draft_save_diagnostics
     if developer_mode_enabled():
         from suite_deploy_marker import format_deploy_caption
         from draft_ui import render_start_live_draft_dev_panel
@@ -20661,7 +20619,13 @@ if active_page == "Live Draft Room":
                     room["status"] = "in_progress"
                 ok, msg = live_draft_auto_pick(room, st.session_state)
                 if ok:
-                    st.session_state.pop("_live_draft_rec_cache", None)
+                    try:
+                        from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+
+                        invalidate_live_draft_ui_caches(st.session_state)
+                        invalidate_draft_assistant_scoring_cache(st.session_state)
+                    except ImportError:
+                        st.session_state.pop("_live_draft_rec_cache", None)
                     st.success(msg)
                 else:
                     st.warning(msg)
@@ -20771,12 +20735,79 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 try:
+                    from live_draft_ui_cache import (
+                        cached_live_draft_get_available,
+                        get_cached_live_draft_decision_context,
+                        live_draft_ui_cache_key,
+                        store_live_draft_decision_context,
+                    )
+
+                    _ui_cache_key = live_draft_ui_cache_key(
+                        st.session_state, room, top_n=6, team=_rec_team
+                    )
+                    _available_cached = cached_live_draft_get_available(st.session_state, room)
+                except ImportError:
+                    _ui_cache_key = None
+                    _available_cached = live_draft_get_available(room)
+                try:
                     from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
 
-                    available = live_draft_get_available(room)
-                    record_scoring_pipeline_stage(st.session_state, "displayed", available)
+                    record_scoring_pipeline_stage(st.session_state, "displayed", _available_cached)
                 except Exception:
                     pass
+                _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
+                _gaps: list[str] = []
+                _category_needs: list[str] = []
+                if _tracker_team and _tracker_team != "—":
+                    try:
+                        from live_draft_category_outlook import compute_category_outlook
+                        from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
+                        from live_draft_room_ui import render_category_outlook_panel, render_roster_tracker_panel, render_position_scarcity_panel
+
+                        _decision_ctx = None
+                        if _ui_cache_key is not None:
+                            _decision_ctx = get_cached_live_draft_decision_context(
+                                st.session_state,
+                                room,
+                                tracker_team=_tracker_team,
+                                cache_key=_ui_cache_key,
+                            )
+                        if _decision_ctx:
+                            _tracker = _decision_ctx["tracker"]
+                            _outlook = _decision_ctx["outlook"]
+                            _gaps = list(_decision_ctx.get("gaps") or [])
+                            _category_needs = list(_decision_ctx.get("category_needs") or [])
+                        else:
+                            _tracker = build_team_roster_tracker(room, _tracker_team)
+                            _roster_df = roster_df_for_team(room, _tracker_team)
+                            _outlook = compute_category_outlook(
+                                _roster_df,
+                                _available_cached,
+                                config=cfg,
+                                roster_gaps=_tracker.get("open_positions"),
+                            )
+                            _gaps = list(_tracker.get("gaps") or [])
+                            _category_needs = list(_outlook.get("needs_attention") or [])
+                            if _ui_cache_key is not None:
+                                store_live_draft_decision_context(
+                                    st.session_state,
+                                    cache_key=_ui_cache_key,
+                                    tracker_team=_tracker_team,
+                                    tracker=_tracker,
+                                    outlook=_outlook,
+                                    gaps=_gaps,
+                                    category_needs=_category_needs,
+                                )
+                        render_roster_tracker_panel(st, _tracker)
+                        render_category_outlook_panel(st, _outlook)
+                        render_position_scarcity_panel(
+                            st,
+                            _available_cached,
+                            gaps=_gaps,
+                            room=room,
+                        )
+                    except ImportError:
+                        pass
                 try:
                     from applied_math_context import cache_live_draft_ami_context
 
@@ -20791,42 +20822,13 @@ if active_page == "Live Draft Room":
                     )
                 except Exception:
                     pass
-                st.markdown("##### Recommended picks")
+                st.markdown("##### Recommendations")
                 try:
                     from live_draft_navigation import render_live_draft_quick_nav
 
                     render_live_draft_quick_nav(st, st.session_state)
                 except ImportError:
                     pass
-                _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
-                _gaps: list[str] = []
-                _category_needs: list[str] = []
-                if _tracker_team and _tracker_team != "—":
-                    try:
-                        from live_draft_category_outlook import compute_category_outlook
-                        from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
-                        from live_draft_room_ui import render_category_outlook_panel, render_roster_tracker_panel, render_position_scarcity_panel
-
-                        _tracker = build_team_roster_tracker(room, _tracker_team)
-                        _roster_df = roster_df_for_team(room, _tracker_team)
-                        _outlook = compute_category_outlook(
-                            _roster_df,
-                            live_draft_get_available(room),
-                            config=cfg,
-                            roster_gaps=_tracker.get("open_positions"),
-                        )
-                        render_roster_tracker_panel(st, _tracker)
-                        render_category_outlook_panel(st, _outlook)
-                        render_position_scarcity_panel(
-                            st,
-                            live_draft_get_available(room),
-                            gaps=list(_tracker.get("gaps") or []),
-                            room=room,
-                        )
-                        _gaps = list(_tracker.get("gaps") or [])
-                        _category_needs = list(_outlook.get("needs_attention") or [])
-                    except ImportError:
-                        pass
                 try:
                     from live_draft_room_ui import (
                         add_why_this_pick_column,
@@ -20837,13 +20839,6 @@ if active_page == "Live Draft Room":
                     if _defer_recs:
                         st.caption("Loading recommendations…")
                     else:
-                        if not _gaps:
-                            _gaps = (
-                                pos_fit["Primary Position"].astype(str).dropna().unique().tolist()
-                                if pos_fit is not None and not getattr(pos_fit, "empty", True)
-                                and "Primary Position" in pos_fit.columns
-                                else []
-                            )
                         st.caption(
                             "**Fantasy Edge** on cards = value vs market. Open **Details** for "
                             "**Player Grade** (0–100), **Roster Fit Score**, and **Decision Score** (0–100)."

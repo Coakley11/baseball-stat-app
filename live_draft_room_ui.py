@@ -829,19 +829,52 @@ def build_draft_insight_text(
         parts.append(f"Strengthens {' and '.join(strengths)}.")
 
     surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
-    if pd.notna(surv) and float(surv) < 0.35:
-        pos_word = pos or "player"
-        parts.append(f"May be the last high-quality {pos_word} available before your next pick.")
-    elif pd.notna(surv) and float(surv) < 0.5 and "Scarcity" not in badge_labels:
-        parts.append(f"{int(round(float(surv) * 100))}% chance still available next round.")
+    if pd.notna(surv):
+        pct = int(round(float(surv) * 100))
+        if float(surv) < 0.25:
+            parts.append("High risk if passed — unlikely to reach your next pick.")
+        elif float(surv) < 0.35:
+            pos_word = pos or "player"
+            parts.append(f"May be the last high-quality {pos_word} before your next turn.")
+        elif float(surv) < 0.5 and "Scarcity" not in badge_labels:
+            parts.append(f"{pct}% chance still available next round.")
 
-    fills_need = bool(gaps and pos in gaps and "Position Need" in badge_labels)
-    if not fills_need and rank == 1 and "Best Overall" not in badge_labels and "Second" not in badge_labels:
-        parts.append("Does not fill a positional need but provides top projected value remaining.")
-    elif not fills_need:
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.6 and "Scarcity" not in badge_labels:
+        if gaps and pos in gaps:
+            parts.append(f"Scarcity rising at {pos}.")
+        elif pos:
+            parts.append(f"Thin {pos} tier remaining.")
+
+    if (
+        "Position Need" not in badge_labels
+        and gaps
+        and pos in gaps
+        and not any("Scarcity" in p for p in parts)
+    ):
+        open_of = sum(1 for g in gaps if g == "OF")
+        if pos == "OF" and open_of >= 2:
+            parts.append(f"{open_of} OF slots still open on your roster.")
+
+    if (
+        rank == 1
+        and "Best Overall" not in badge_labels
+        and "Best Pick" not in badge_labels
+        and "Position Need" not in badge_labels
+        and "Highest Fantasy Edge" not in badge_labels
+        and "Best Value" not in badge_labels
+        and (not gaps or pos not in (gaps or []))
+    ):
+        parts.append("Top projected value without filling an open roster slot.")
+
+    if rank > 1 and ("Second" in badge_labels or "Third" in badge_labels):
         dec = pd.to_numeric(row.get("Decision Score", np.nan), errors="coerce")
-        if pd.notna(dec) and float(dec) >= 0.70 and "Position Need" not in badge_labels:
-            parts.append("Strong player grade without an open positional slot.")
+        if pd.notna(dec) and float(dec) >= 0.68 and not parts:
+            parts.append("Strong grade among remaining options at this pick.")
+    elif rank > 1 and "Second" not in badge_labels and "Third" not in badge_labels:
+        dec = pd.to_numeric(row.get("Decision Score", np.nan), errors="coerce")
+        if pd.notna(dec) and float(dec) >= 0.72 and not parts:
+            parts.append("Strong grade among remaining options at this pick.")
 
     return " ".join(parts[:3])
 
@@ -887,34 +920,24 @@ def build_why_this_pick_summary(
     gaps: list[str] | None = None,
     category_needs: list[str] | None = None,
     strengths: list[str] | None = None,
+    include_position_need: bool = False,
 ) -> str:
     """One-line recommendation rationale — main drivers only, no duplicate Proj: prose."""
     parts: list[str] = []
 
-    try:
-        from draft_score_display import format_detail_line
-
-        _ds_lbl, ds_val = format_detail_line("Decision Score", row.get("Decision Score"))
-        _rf_lbl, rf_val = format_detail_line("Draft Fit Score", row.get("Draft Fit Score"))
-        if ds_val and str(ds_val).strip() not in ("", "-", "Not available", "n/a"):
-            parts.append(f"{_ds_lbl} {ds_val}")
-        if rf_val and str(rf_val).strip() not in ("", "-", "Not available", "n/a"):
-            parts.append(f"{_rf_lbl} {rf_val}")
-    except ImportError:
-        pass
-
-    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
-    if gaps and str(pos) in gaps and pd.notna(fit) and float(fit) >= 0.5:
-        open_of = sum(1 for g in gaps if g == "OF")
-        if str(pos) == "OF" and open_of >= 2:
-            parts.append(f"fills OF need ({open_of} spots open)")
-        else:
-            parts.append(f"fills {pos} need")
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv) and float(surv) < 0.35:
+        parts.append(f"{int(round(float(surv) * 100))}% avail at next pick")
+    elif pd.notna(surv) and float(surv) < 0.5:
+        parts.append(f"{int(round(float(surv) * 100))}% avail at next pick")
 
     cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
     if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
         weak = str(category_needs[0] or "a weak category")
         parts.append(f"helps {weak}")
+
+    if strengths:
+        parts.append(f"strong in {'/'.join(strengths[:2])}")
 
     edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
     if pd.notna(edge) and abs(float(edge)) >= 5:
@@ -922,11 +945,17 @@ def build_why_this_pick_summary(
         parts.append(f"Fantasy Edge {sign}{int(round(float(edge)))}")
 
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    if pd.notna(scarcity) and float(scarcity) >= 0.6 and not any("fills" in p for p in parts):
-        parts.append(f"{pos} scarcity")
+    if pd.notna(scarcity) and float(scarcity) >= 0.6:
+        parts.append(f"{pos} scarcity rising")
 
-    if strengths:
-        parts.append(f"strong in {'/'.join(strengths[:2])}")
+    if include_position_need:
+        fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+        if gaps and str(pos) in gaps and pd.notna(fit) and float(fit) >= 0.5:
+            open_of = sum(1 for g in gaps if g == "OF")
+            if str(pos) == "OF" and open_of >= 2:
+                parts.append(f"fills OF need ({open_of} spots open)")
+            else:
+                parts.append(f"fills {pos} need")
 
     if not parts:
         return "Strong balance of upside and roster fit."
@@ -965,14 +994,9 @@ def build_draft_assistant_why_this_pick(
     gaps = list(needed_positions or [])
     clauses: list[str] = []
 
-    pos_fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
-    fills_need = bool(pos and pos in gaps and pd.notna(pos_fit) and float(pos_fit) >= 0.5)
-    if fills_need:
-        open_of = sum(1 for g in gaps if g == "OF")
-        if pos == "OF" and open_of >= 2:
-            clauses.append(f"he fills your OF need ({open_of} spots open)")
-        else:
-            clauses.append(f"he fills your {pos} need")
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv) and float(surv) < 0.35:
+        clauses.append(f"roughly {int(round(float(surv) * 100))}% chance to reach your next pick")
 
     cat_bonus = pd.to_numeric(row.get("Category Need Bonus", np.nan), errors="coerce")
     if category_needs and pd.notna(cat_bonus) and float(cat_bonus) > 0:
@@ -995,27 +1019,10 @@ def build_draft_assistant_why_this_pick(
     elif pd.notna(edge) and float(edge) <= -8:
         clauses.append("market rank runs ahead of the model")
 
-    try:
-        from draft_score_display import format_detail_line
-
-        _, ds_val = format_detail_line("Decision Score", row.get("Decision Score"))
-        _, rf_val = format_detail_line("Draft Fit Score", row.get("Draft Fit Score"))
-        ds_ok = ds_val and str(ds_val).strip() not in ("", "-", "Not available", "n/a")
-        rf_ok = rf_val and str(rf_val).strip() not in ("", "-", "Not available", "n/a")
-        if ds_ok and not fills_need:
-            clauses.append(f"a strong Decision Score ({ds_val})")
-        if rf_ok and fills_need:
-            clauses.append(f"a strong Roster Fit Score ({rf_val})")
-    except ImportError:
-        pass
-
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    if pd.notna(scarcity) and float(scarcity) >= 0.6 and not fills_need:
+    pos_fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.6:
         clauses.append(f"few quality {pos} options remain")
-
-    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
-    if pd.notna(surv) and float(surv) < 0.35:
-        clauses.append("may not be available next round")
 
     decision = pd.to_numeric(row.get("Decision Score", np.nan), errors="coerce")
     weak_fit = bool(pos and pos not in gaps and pd.notna(pos_fit) and float(pos_fit) < 0.45)
@@ -1025,20 +1032,11 @@ def build_draft_assistant_why_this_pick(
             return lead + ", and " + ", ".join(clauses[:3]) + "."
         return lead + "."
 
-    if fills_need and any("Roster Fit" in c for c in clauses):
-        lead = "Best roster fit because"
-    elif pd.notna(edge) and float(edge) >= 8:
-        lead = "High-value target because"
-    elif fills_need:
-        lead = "Strong pick because"
-    else:
-        lead = "Draft because"
-
     if not clauses:
         return build_why_this_pick_summary(
             row, pos, gaps=gaps, category_needs=category_needs, strengths=strengths
         )
-    return lead + " " + ", ".join(clauses[:4]) + "."
+    return ", ".join(clauses[:4]).capitalize() + "."
 
 
 def add_why_this_pick_column(
@@ -1095,7 +1093,12 @@ def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str
     if rec_df is None or getattr(rec_df, "empty", True):
         return
     top_name = str(rec_df.iloc[0].get("fullName", "") or "")
-    need = ", ".join(gaps or []) or "balanced roster"
+    try:
+        from live_draft_roster_slots import format_open_position_needs
+
+        need = format_open_position_needs(gaps)
+    except ImportError:
+        need = ", ".join(gaps or []) or "balanced roster"
     scarcity_note = ""
     if "Scarcity Score" in rec_df.columns:
         scarce = rec_df.sort_values("Scarcity Score", ascending=False).head(1)
