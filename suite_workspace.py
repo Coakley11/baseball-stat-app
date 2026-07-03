@@ -73,17 +73,41 @@ def workspace_dir(workspace_id: str | None = None) -> Path:
     return DATA_DIR / "workspaces" / ws
 
 
-def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) -> str:
-    try:
-        from suite_workspace_registry import load_persisted_workspace_for_account
-
-        return load_persisted_workspace_for_account(session_state=session_state)
-    except ImportError:
-        pass
+def _load_legacy_persisted_workspace_id() -> str:
+    """Legacy global workspace path — no account awareness, never delegates."""
     raw = _read_json(_PERSISTED_FILE)
     if isinstance(raw, dict):
         return normalize_workspace_id(str(raw.get("workspace_id") or raw.get("active_workspace_id") or ""))
     return DEFAULT_WORKSPACE_ID
+
+
+def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) -> str:
+    """
+    Resolve persisted workspace.
+
+    Authenticated: delegates once to the account-owned path (which reads the
+    account file directly and does NOT call back here). Unauthenticated/demo:
+    resolves the legacy global workspace file with no delegation.
+    """
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        account_aware = (
+            isinstance(session_state, dict)
+            and is_auth_enabled()
+            and is_authenticated(session_state)
+        )
+    except ImportError:
+        account_aware = False
+
+    if account_aware:
+        try:
+            from suite_workspace_registry import load_persisted_workspace_for_account
+
+            return load_persisted_workspace_for_account(session_state=session_state)
+        except ImportError:
+            pass
+    return _load_legacy_persisted_workspace_id()
 
 
 def persist_active_workspace_id(workspace_id: str, *, session_state: dict[str, Any] | None = None) -> bool:

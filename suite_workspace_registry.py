@@ -261,7 +261,11 @@ def active_workspace_persist_path(*, owner_user_id: str = "") -> Path:
 
 
 def load_persisted_workspace_for_account(*, session_state: dict[str, Any] | None = None) -> str:
-    from suite_workspace import DEFAULT_WORKSPACE_ID, normalize_workspace_id, _read_json
+    """
+    Account-owned workspace resolution. Reads the per-account file directly and
+    never calls back into ``load_persisted_workspace_id`` (avoids recursion).
+    """
+    from suite_workspace import normalize_workspace_id, _load_legacy_persisted_workspace_id, _read_json
 
     owner_user_id = ""
     try:
@@ -272,22 +276,23 @@ def load_persisted_workspace_for_account(*, session_state: dict[str, Any] | None
             owner_user_id = ctx["owner_user_id"]
     except ImportError:
         pass
-    path = active_workspace_persist_path(owner_user_id=owner_user_id)
-    raw = _read_json(path)
-    if isinstance(raw, dict):
-        wid = normalize_workspace_id(str(raw.get("workspace_id") or raw.get("active_workspace_id") or ""))
-        if wid:
-            if owner_user_id and not workspace_access_allowed(wid, session_state=session_state):
-                owned = get_owned_workspace_id(session_state)
-                return owned or wid
-            return wid
+
     if owner_user_id:
+        path = active_workspace_persist_path(owner_user_id=owner_user_id)
+        raw = _read_json(path)
+        if isinstance(raw, dict):
+            wid = normalize_workspace_id(str(raw.get("workspace_id") or raw.get("active_workspace_id") or ""))
+            if wid:
+                if not workspace_access_allowed(wid, session_state=session_state):
+                    owned = get_owned_workspace_id(session_state)
+                    return owned or wid
+                return wid
         owned = get_owned_workspace_id(session_state)
         if owned:
             return owned
-    from suite_workspace import load_persisted_workspace_id
 
-    return load_persisted_workspace_id()
+    # No account owner: fall back to the legacy global file directly (no callback).
+    return _load_legacy_persisted_workspace_id()
 
 
 def persist_active_workspace_for_account(workspace_id: str, *, session_state: dict[str, Any] | None = None) -> bool:
