@@ -112,6 +112,7 @@ def write_canonical_draft_state(
     reason: str = "",
     local_edit: bool = False,
     sync_widget_keys: bool = True,
+    sync_participant: bool = True,
 ) -> dict[str, Any]:
     """Write canonical draft_state; mirror queue + watchlist widget keys."""
     widget = _read_widget_lists(session)
@@ -141,7 +142,8 @@ def write_canonical_draft_state(
     session["_suite_last_cloud_payload_draft_workflow"] = copy.deepcopy(payload)
     _sync_page_filter_draft_block(session, data=payload)
     record_draft_field_write(session, "draft_workflow", reason or "canonical", new=payload)
-    _sync_participant_workflow_if_multiplayer(session, reason=reason or "canonical")
+    if sync_participant:
+        _sync_participant_workflow_if_multiplayer(session, reason=reason or "canonical")
     if local_edit:
         mark_draft_local_edit(session)
     return meta
@@ -259,6 +261,12 @@ def gather_draft_workflow(session: dict[str, Any]) -> dict[str, list[str]]:
 
 def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
     """Reconcile draft queue + watchlist before sidebar widgets render."""
+    try:
+        from draft_room_participant_state import reconcile_auth_scoped_draft_workflow
+
+        reconcile_auth_scoped_draft_workflow(session)
+    except ImportError:
+        pass
     _load_participant_workflow_if_multiplayer(session)
     widget = _read_widget_lists(session)
     drift = _draft_widget_drift(session) or bool(session.get(DRAFT_PENDING_SYNC_KEY))

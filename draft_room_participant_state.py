@@ -24,6 +24,8 @@ ACTIVE_PARTICIPANT_ID_KEY = "draft_room_participant_id"
 ACTIVE_PARTICIPANT_TEAM_KEY = "draft_room_participant_team"
 PARTICIPANT_NOTES_KEY = "draft_room_participant_notes"
 MEMBERSHIP_KEY = "draft_room_participant_membership"
+SOLO_WORKFLOW_ROOM_KEY = "_solo"
+AUTH_WORKFLOW_USER_KEY = "_draft_workflow_auth_user_id"
 
 
 def _utc_now_iso() -> str:
@@ -165,6 +167,213 @@ def participant_workflow_slot(session: dict[str, Any], room_code: str) -> dict[s
         by_pid[pid] = slot
     slot.setdefault("participant_id", pid)
     return slot
+
+
+def _by_participant_slot(session: dict[str, Any], room_code: str, participant_id: str) -> dict[str, Any]:
+    code = str(room_code or "").strip().upper()
+    pid = str(participant_id or "").strip()
+    room_state = participant_state_for_room(session, code)
+    by_pid = room_state.get("by_participant")
+    if not isinstance(by_pid, dict):
+        by_pid = {}
+        room_state["by_participant"] = by_pid
+    if pid not in by_pid:
+        by_pid[pid] = {"participant_id": pid}
+    slot = by_pid[pid]
+    if not isinstance(slot, dict):
+        slot = {"participant_id": pid}
+        by_pid[pid] = slot
+    slot.setdefault("participant_id", pid)
+    return slot
+
+
+def _solo_slot_for_pid(session: dict[str, Any], participant_id: str) -> dict[str, Any]:
+    pid = str(participant_id or "").strip()
+    bucket = _participant_bucket(session)
+    solo = bucket.get(SOLO_WORKFLOW_ROOM_KEY)
+    if not isinstance(solo, dict):
+        solo = {}
+        bucket[SOLO_WORKFLOW_ROOM_KEY] = solo
+    by_pid = solo.get("by_participant")
+    if not isinstance(by_pid, dict):
+        by_pid = {}
+        solo["by_participant"] = by_pid
+    if pid not in by_pid:
+        by_pid[pid] = {"participant_id": pid}
+    slot = by_pid[pid]
+    if not isinstance(slot, dict):
+        slot = {"participant_id": pid}
+        by_pid[pid] = slot
+    slot.setdefault("participant_id", pid)
+    return slot
+
+
+def _workflow_payload_from_dict(workflow: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "queue": copy.deepcopy(workflow.get("queue") or []),
+        "watchlist_focus": copy.deepcopy(workflow.get("watchlist_focus") or []),
+        "watchlist_favorites": copy.deepcopy(workflow.get("watchlist_favorites") or []),
+        "updated_at": _utc_now_iso(),
+    }
+
+
+def save_workflow_for_participant_id(
+    session: dict[str, Any],
+    participant_id: str,
+    workflow: dict[str, Any],
+    *,
+    room_code: str | None = None,
+) -> None:
+    """Persist queue/watchlist for one auth user — room slot when in multiplayer, always solo mirror."""
+    pid = str(participant_id or "").strip()
+    if not pid:
+        return
+    payload = _workflow_payload_from_dict(workflow)
+    code = str(
+        room_code
+        or session.get(ACTIVE_SHARED_ROOM_CODE_KEY)
+        or ""
+    ).strip().upper()
+    if code:
+        slot = _by_participant_slot(session, code, pid)
+        slot["workflow"] = copy.deepcopy(payload)
+    solo = _solo_slot_for_pid(session, pid)
+    solo["workflow"] = copy.deepcopy(payload)
+
+
+def load_workflow_for_participant_id(
+    session: dict[str, Any],
+    participant_id: str,
+    *,
+    room_code: str | None = None,
+) -> dict[str, list[str]]:
+    """Load saved queue/watchlist for one auth user."""
+    empty: dict[str, list[str]] = {
+        "queue": [],
+        "watchlist_focus": [],
+        "watchlist_favorites": [],
+    }
+    pid = str(participant_id or "").strip()
+    if not pid:
+        return empty
+    code = str(
+        room_code
+        or session.get(ACTIVE_SHARED_ROOM_CODE_KEY)
+        or ""
+    ).strip().upper()
+    if code:
+        slot = _by_participant_slot(session, code, pid)
+        wf = slot.get("workflow")
+        if isinstance(wf, dict) and any(wf.get(k) for k in ("queue", "watchlist_focus", "watchlist_favorites")):
+            return {
+                "queue": list(wf.get("queue") or []),
+                "watchlist_focus": list(wf.get("watchlist_focus") or []),
+                "watchlist_favorites": list(wf.get("watchlist_favorites") or []),
+            }
+    solo = _solo_slot_for_pid(session, pid)
+    wf = solo.get("workflow")
+    if isinstance(wf, dict):
+        return {
+            "queue": list(wf.get("queue") or []),
+            "watchlist_focus": list(wf.get("watchlist_focus") or []),
+            "watchlist_favorites": list(wf.get("watchlist_favorites") or []),
+        }
+    return empty
+
+
+def _clear_session_draft_workflow_widgets(session: dict[str, Any]) -> None:
+    try:
+        from draft_state import write_canonical_draft_state
+
+        write_canonical_draft_state(
+            session,
+            queue=[],
+            watchlist_focus=[],
+            watchlist_favorites=[],
+            reason="auth_user_switch",
+            local_edit=False,
+            sync_widget_keys=True,
+            sync_participant=False,
+        )
+    except ImportError:
+        session[DRAFT_QUEUE_KEY] = []
+        session[DRAFT_WATCHLIST_FOCUS_KEY] = []
+        session[DRAFT_WATCHLIST_FAVORITES_KEY] = []
+
+
+def apply_workflow_to_session(session: dict[str, Any], workflow: dict[str, Any]) -> None:
+    try:
+        from draft_state import write_canonical_draft_state
+
+        write_canonical_draft_state(
+            session,
+            queue=list(workflow.get("queue") or []),
+            watchlist_focus=list(workflow.get("watchlist_focus") or []),
+            watchlist_favorites=list(workflow.get("watchlist_favorites") or []),
+            reason="auth_user_restore",
+            local_edit=False,
+            sync_widget_keys=True,
+            sync_participant=False,
+        )
+    except ImportError:
+        session[DRAFT_QUEUE_KEY] = list(workflow.get("queue") or [])
+        session[DRAFT_WATCHLIST_FOCUS_KEY] = list(workflow.get("watchlist_focus") or [])
+        session[DRAFT_WATCHLIST_FAVORITES_KEY] = list(workflow.get("watchlist_favorites") or [])
+
+
+def on_auth_user_switch(
+    session: dict[str, Any],
+    *,
+    from_user_id: str,
+    to_user_id: str,
+) -> None:
+    """Save outgoing account queue, clear session widgets, load incoming account queue."""
+    old_id = str(from_user_id or "").strip()
+    new_id = str(to_user_id or "").strip()
+    if old_id and new_id and old_id != new_id:
+        from draft_state import gather_draft_workflow
+
+        save_workflow_for_participant_id(session, old_id, gather_draft_workflow(session))
+    if old_id == new_id and new_id:
+        session[AUTH_WORKFLOW_USER_KEY] = new_id
+        return
+    session[AUTH_WORKFLOW_USER_KEY] = new_id
+    _clear_session_draft_workflow_widgets(session)
+    if new_id:
+        apply_workflow_to_session(session, load_workflow_for_participant_id(session, new_id))
+        try:
+            from draft_room_context import is_multiplayer_draft_active
+
+            if is_multiplayer_draft_active(session):
+                code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+                if code:
+                    load_participant_workflow_into_session(session, code)
+        except ImportError:
+            pass
+
+
+def on_auth_logout_save_workflow(session: dict[str, Any]) -> None:
+    """Persist queue for the signing-out account and clear session widgets."""
+    pid = str(session.get(AUTH_WORKFLOW_USER_KEY) or resolve_participant_id(session)).strip()
+    if pid:
+        from draft_state import gather_draft_workflow
+
+        save_workflow_for_participant_id(session, pid, gather_draft_workflow(session))
+    session.pop(AUTH_WORKFLOW_USER_KEY, None)
+    _clear_session_draft_workflow_widgets(session)
+
+
+def reconcile_auth_scoped_draft_workflow(session: dict[str, Any]) -> bool:
+    """Safety net when auth participant id changes without an explicit login hook."""
+    current = str(resolve_participant_id(session) or "").strip()
+    tracked = str(session.get(AUTH_WORKFLOW_USER_KEY) or "").strip()
+    if not current:
+        session.pop(AUTH_WORKFLOW_USER_KEY, None)
+        return False
+    if tracked == current:
+        return False
+    on_auth_user_switch(session, from_user_id=tracked, to_user_id=current)
+    return True
 
 
 def _persist_room_membership(
@@ -317,6 +526,10 @@ def save_participant_workflow_from_session(session: dict[str, Any], room_code: s
     if isinstance(notes, str):
         slot["notes"] = notes
     pid = resolve_participant_id(session)
+    if pid:
+        solo = _solo_slot_for_pid(session, pid)
+        solo["workflow"] = copy.deepcopy(slot["workflow"])
+        session[AUTH_WORKFLOW_USER_KEY] = pid
     team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or slot.get("assigned_team") or "").strip()
     if team:
         _persist_room_membership(session, room_code=room_code, participant_id=pid, assigned_team=team)

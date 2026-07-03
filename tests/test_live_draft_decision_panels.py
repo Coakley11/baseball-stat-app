@@ -84,6 +84,41 @@ class CategoryOutlookTests(unittest.TestCase):
         self.assertTrue(outlook["bars"])
         self.assertTrue(any("SB" == b["category"] or "HR" == b["category"] for b in outlook["bars"]))
 
+    def test_empty_roster_does_not_crash(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "proj_HR": 20,
+                    "proj_RBI": 70,
+                    "proj_SB": 10,
+                    "proj_BA": 0.260,
+                    "proj_R": 75,
+                }
+            ]
+        )
+        outlook = compute_category_outlook(pd.DataFrame(), pool, config=_config(), roster_gaps=["C"])
+        self.assertTrue(outlook["bars"])
+        for bar in outlook["bars"]:
+            self.assertIn("expected", bar)
+            self.assertEqual(bar["team_value"], 0.0)
+            self.assertEqual(bar["ratio"], 0.0)
+
+    def test_partial_roster_missing_columns_is_safe(self) -> None:
+        roster = pd.DataFrame([{"fullName": "Player A", "proj_HR": 25}])
+        pool = pd.DataFrame([{"proj_HR": 20, "proj_RBI": 70, "proj_SB": 10, "proj_BA": 0.260, "proj_R": 75}])
+        outlook = compute_category_outlook(roster, pool, config=_config())
+        self.assertTrue(outlook["bars"])
+        hr = next(b for b in outlook["bars"] if b["category"] == "HR")
+        self.assertGreater(hr["team_value"], 0.0)
+
+    def test_zero_pool_baseline_uses_safe_ratio(self) -> None:
+        roster = pd.DataFrame([{"proj_HR": 0, "proj_RBI": 0, "proj_SB": 0, "proj_BA": 0.0, "proj_R": 0}])
+        pool = pd.DataFrame([{"proj_HR": 0, "proj_RBI": 0, "proj_SB": 0, "proj_BA": 0.0, "proj_R": 0}])
+        outlook = compute_category_outlook(roster, pool, config=_config())
+        self.assertTrue(outlook["bars"])
+        for bar in outlook["bars"]:
+            self.assertEqual(bar["ratio"], 0.0)
+
 
 class PlayerCategoryStrengthsTests(unittest.TestCase):
     def _pool(self) -> pd.DataFrame:

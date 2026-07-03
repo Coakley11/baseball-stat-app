@@ -76,15 +76,15 @@ def compute_category_outlook(
         if pool_med <= 0 and kind == "rate":
             pool_med = 0.001
 
+        expected = pool_med if kind == "rate" else pool_med * n_players
+
         if roster_df.empty or col not in roster_df.columns:
             team_val = 0.0
         elif kind == "rate":
             vals = pd.to_numeric(roster_df[col], errors="coerce")
             team_val = float(vals.mean()) if vals.notna().any() else 0.0
-            expected = pool_med
         else:
             team_val = float(pd.to_numeric(roster_df[col], errors="coerce").fillna(0).sum())
-            expected = pool_med * n_players
 
         ratio = team_val / expected if expected > 0 else 0.0
         level_txt, level_num = _level_label(ratio)

@@ -304,7 +304,16 @@ def _persist_auth_session(
     email_fallback: str = "",
     st: Any | None = None,
 ) -> None:
+    old_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback)
+    new_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+    if old_uid != new_uid:
+        try:
+            from draft_room_participant_state import on_auth_user_switch
+
+            on_auth_user_switch(session_state, from_user_id=old_uid, to_user_id=new_uid)
+        except ImportError:
+            pass
     suite_user_id = ""
     try:
         from suite_storage_supabase import ensure_user_row
@@ -396,6 +405,12 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
             st = st_mod
         except Exception:
             st = None
+    try:
+        from draft_room_participant_state import on_auth_logout_save_workflow
+
+        on_auth_logout_save_workflow(session_state)
+    except ImportError:
+        pass
     try:
         if session_state.get(AUTH_TOKENS_KEY) or session_state.get(AUTH_CLIENT_KEY):
             auth = _auth_api(session_state)

@@ -14,11 +14,16 @@ import pandas as pd
 from draft_room_context import create_and_host_shared_room, join_shared_draft_room, prepare_global_draft_context
 from draft_room_participant_state import (
     ACTIVE_PARTICIPANT_ID_KEY,
+    AUTH_WORKFLOW_USER_KEY,
     PARTICIPANT_STATE_KEY,
     load_participant_workflow_into_session,
+    load_workflow_for_participant_id,
+    on_auth_user_switch,
     participant_workflow_slot,
+    reconcile_auth_scoped_draft_workflow,
     resolve_participant_id,
     save_participant_workflow_from_session,
+    save_workflow_for_participant_id,
 )
 from draft_room_shared_state import (
     LocalFileSharedRoomStore,
@@ -205,6 +210,79 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
         self.assertEqual(restore_persisted_shared_room_membership(session), "")
         prepare_global_draft_context(session)
         self.assertNotIn("active_shared_draft_room_code", session)
+
+    def test_auth_account_switch_isolates_solo_queue(self) -> None:
+        daniel_id = "auth-daniel-cohen11"
+        ari_id = "auth-coakley11"
+        session: dict = {
+            AUTH_USER_ID_KEY: daniel_id,
+            AUTH_WORKFLOW_USER_KEY: daniel_id,
+            DRAFT_QUEUE_KEY: ["Aaron Judge", "Juan Soto"],
+        }
+        with patch("suite_auth.is_auth_enabled", return_value=True):
+            on_auth_user_switch(session, from_user_id=daniel_id, to_user_id=ari_id)
+            session[AUTH_USER_ID_KEY] = ari_id
+            self.assertEqual(session.get(DRAFT_QUEUE_KEY), [])
+            session[DRAFT_QUEUE_KEY] = ["Mike Trout"]
+            save_workflow_for_participant_id(
+                session,
+                ari_id,
+                {"queue": ["Mike Trout"], "watchlist_focus": [], "watchlist_favorites": []},
+            )
+            on_auth_user_switch(session, from_user_id=ari_id, to_user_id=daniel_id)
+            session[AUTH_USER_ID_KEY] = daniel_id
+            self.assertEqual(session.get(DRAFT_QUEUE_KEY), ["Aaron Judge", "Juan Soto"])
+
+    def test_auth_switch_in_shared_room_keeps_separate_queues(self) -> None:
+        daniel_id = "auth-daniel-cohen11"
+        ari_id = "auth-coakley11"
+        host: dict = {ACTIVE_PARTICIPANT_ID_KEY: daniel_id, AUTH_USER_ID_KEY: daniel_id}
+        guest: dict = {ACTIVE_PARTICIPANT_ID_KEY: ari_id, AUTH_USER_ID_KEY: ari_id}
+
+        room_code, _ = create_and_host_shared_room(host, _sample_live_room(), store=self.store)
+        host[DRAFT_QUEUE_KEY] = ["Aaron Judge"]
+        save_participant_workflow_from_session(host, room_code)
+
+        join_shared_draft_room(guest, room_code, store=self.store)
+        guest[DRAFT_QUEUE_KEY] = ["Juan Soto"]
+        save_participant_workflow_from_session(guest, room_code)
+
+        # Same Streamlit session retains room-private blobs for all participants.
+        guest[PARTICIPANT_STATE_KEY] = copy.deepcopy(host.get(PARTICIPANT_STATE_KEY) or {})
+        room_private = guest[PARTICIPANT_STATE_KEY][room_code]["by_participant"]
+        room_private[ari_id] = copy.deepcopy(
+            participant_workflow_slot(guest, room_code)
+        )
+        guest["active_shared_draft_room_code"] = room_code
+
+        with patch("suite_auth.is_auth_enabled", return_value=True):
+            on_auth_user_switch(guest, from_user_id=ari_id, to_user_id=daniel_id)
+            guest[AUTH_USER_ID_KEY] = daniel_id
+            load_participant_workflow_into_session(guest, room_code)
+            self.assertEqual(guest.get(DRAFT_QUEUE_KEY), ["Aaron Judge"])
+
+            on_auth_user_switch(guest, from_user_id=daniel_id, to_user_id=ari_id)
+            guest[AUTH_USER_ID_KEY] = ari_id
+            load_participant_workflow_into_session(guest, room_code)
+            self.assertEqual(guest.get(DRAFT_QUEUE_KEY), ["Juan Soto"])
+
+    def test_reconcile_auth_scoped_workflow_after_refresh(self) -> None:
+        daniel_id = "auth-daniel-cohen11"
+        ari_id = "auth-coakley11"
+        session: dict = {
+            AUTH_USER_ID_KEY: ari_id,
+            AUTH_WORKFLOW_USER_KEY: daniel_id,
+            DRAFT_QUEUE_KEY: ["Aaron Judge"],
+        }
+        save_workflow_for_participant_id(
+            session,
+            ari_id,
+            {"queue": ["Mike Trout"], "watchlist_focus": [], "watchlist_favorites": []},
+        )
+        with patch("suite_auth.is_auth_enabled", return_value=True):
+            self.assertTrue(reconcile_auth_scoped_draft_workflow(session))
+            self.assertEqual(session.get(DRAFT_QUEUE_KEY), ["Mike Trout"])
+            self.assertEqual(load_workflow_for_participant_id(session, daniel_id)["queue"], ["Aaron Judge"])
 
 
 if __name__ == "__main__":
