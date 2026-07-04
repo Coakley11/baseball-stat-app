@@ -17,19 +17,25 @@ from fantasy_league_context import (
 from fantasy_trade_proposals import (
     STALE_TRADE_MESSAGE,
     TRADE_PROPOSAL_STATUS_ACCEPTED,
+    TRADE_PROPOSAL_STATUS_CANCELED,
     TRADE_PROPOSAL_STATUS_DECLINED,
     TRADE_PROPOSAL_STATUS_PENDING,
     accept_trade_proposal,
+    cancel_trade_proposal,
     consume_trade_proposal_handoff,
     create_trade_proposal,
     decline_trade_proposal,
     get_incoming_trade_proposals,
     get_outgoing_trade_proposals,
+    get_trade_notifications,
+    mark_trade_notification_seen,
+    navigate_to_trade_proposal,
     recipient_view,
     set_trade_proposal_handoff,
     validate_proposal_for_acceptance,
 )
-from fantasy_waiver_wire import build_waiver_pool, rostered_player_names
+from fantasy_league_context import LINEUP_ASSISTANT_PAGE
+from fantasy_waiver_wire import build_waiver_pool, get_league_activity, rostered_player_names
 
 
 def _league_board() -> pd.DataFrame:
@@ -280,6 +286,202 @@ class TradeProposalIntegrationTests(unittest.TestCase):
         proposal = incoming[0]
         ok, _ = validate_proposal_for_acceptance(context, proposal)
         self.assertTrue(ok)
+
+
+class TradeProposalPhase2Tests(unittest.TestCase):
+    def test_incoming_notification_for_recipient(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        alerts = get_trade_notifications(session, "Team 2")
+        self.assertTrue(any(a.get("kind") == "incoming" for a in alerts))
+
+    def test_outgoing_accepted_declined_notifications_for_proposer(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        accept_trade_proposal(session, pid)
+        alerts = get_trade_notifications(session, "Donny")
+        self.assertTrue(any(a.get("kind") == "accepted" for a in alerts))
+
+        session2: dict = {}
+        _seed_league(session2)
+        proposal2, _ = create_trade_proposal(
+            session2,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal2 is not None
+        decline_trade_proposal(session2, str(proposal2["proposal_id"]))
+        alerts2 = get_trade_notifications(session2, "Donny")
+        self.assertTrue(any(a.get("kind") == "declined" for a in alerts2))
+
+    def test_notification_deep_link_loads_proposal(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        navigate_to_trade_proposal(session, proposal_id=pid, view_as_team="Team 2", alert_key=f"{pid}:incoming")
+        self.assertEqual(session["_navigate_to_page"], LINEUP_ASSISTANT_PAGE)
+        view = consume_trade_proposal_handoff(session)
+        assert view is not None
+        self.assertEqual(session["lineup_trade_give_players"], ["Player B"])
+        self.assertEqual(session["lineup_trade_get_players"], ["Player A"])
+
+    def test_proposer_deep_link_shows_outgoing_perspective(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        navigate_to_trade_proposal(session, proposal_id=str(proposal["proposal_id"]), view_as_team="Donny")
+        view = consume_trade_proposal_handoff(session)
+        assert view is not None
+        self.assertEqual(view["give_players"], ["Player A"])
+        self.assertEqual(view["receive_players"], ["Player B"])
+
+    def test_cancel_pending_trade(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        canceled, err = cancel_trade_proposal(session, str(proposal["proposal_id"]), canceled_by_team="Donny")
+        self.assertEqual(err, "")
+        assert canceled is not None
+        self.assertEqual(canceled["status"], TRADE_PROPOSAL_STATUS_CANCELED)
+
+    def test_canceled_trade_cannot_be_accepted(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        cancel_trade_proposal(session, pid, canceled_by_team="Donny")
+        accepted, err = accept_trade_proposal(session, pid)
+        self.assertIsNone(accepted)
+        self.assertIn("no longer pending", err.lower())
+
+    def test_accepted_trade_cannot_be_canceled(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        accept_trade_proposal(session, pid)
+        canceled, err = cancel_trade_proposal(session, pid, canceled_by_team="Donny")
+        self.assertIsNone(canceled)
+        self.assertIn("pending", err.lower())
+
+    def test_declined_trade_cannot_be_accepted(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        decline_trade_proposal(session, pid)
+        accepted, err = accept_trade_proposal(session, pid)
+        self.assertIsNone(accepted)
+        self.assertIn("no longer pending", err.lower())
+
+    def test_league_activity_includes_accepted_trade_summary(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        accept_trade_proposal(session, str(proposal["proposal_id"]))
+        context = get_active_league_context(session)
+        assert context is not None
+        activity = get_league_activity(context)
+        summaries = [str(a.get("summary") or "") for a in activity]
+        self.assertTrue(any("Donny traded Player A to Team 2 for Player B" in s for s in summaries))
+
+    def test_notifications_survive_disk_restore(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        alerts_before = get_trade_notifications(session, "Team 2")
+        disk = {FANTASY_LEAGUE_CONTEXT_STATE_KEY: session.get(FANTASY_LEAGUE_CONTEXT_STATE_KEY)}
+        restored: dict = {}
+        apply_fantasy_league_context_disk_state(restored, disk)
+        alerts_after = get_trade_notifications(restored, "Team 2")
+        self.assertEqual(len(alerts_before), len(alerts_after))
+
+    def test_notifications_scoped_to_active_team(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertTrue(get_trade_notifications(session, "Team 2"))
+        self.assertFalse(get_trade_notifications(session, "Rivals"))
 
 
 if __name__ == "__main__":

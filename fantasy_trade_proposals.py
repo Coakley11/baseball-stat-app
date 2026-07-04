@@ -16,10 +16,14 @@ from fantasy_league_context import (
 )
 
 WORKFLOW_KEY_TRADE_PROPOSALS = "trade_proposals"
+WORKFLOW_KEY_TRADE_ALERTS_SEEN = "trade_alerts_seen"
 TRADE_PROPOSAL_STATUS_PENDING = "pending"
 TRADE_PROPOSAL_STATUS_ACCEPTED = "accepted"
 TRADE_PROPOSAL_STATUS_DECLINED = "declined"
-TRADE_PROPOSAL_HANDOFF_KEY = "_fantasy_trade_proposal_handoff"
+TRADE_PROPOSAL_STATUS_CANCELED = "canceled"
+TRADE_PROPOSAL_STATUS_STALE = "stale"
+TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_proposal_handoff"
+LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
 STALE_TRADE_MESSAGE = (
     "Trade can no longer be completed because one or more players are no longer on the expected roster."
 )
@@ -191,6 +195,157 @@ def get_outgoing_trade_proposals(session: dict[str, Any], team_name: str) -> lis
     ]
 
 
+def _format_player_list(players: list[dict[str, Any]]) -> str:
+    names = [str(p.get("player_name") or "").strip() for p in players if str(p.get("player_name") or "").strip()]
+    return ", ".join(names) if names else "—"
+
+
+def _alert_key(proposal_id: str, kind: str) -> str:
+    return f"{proposal_id}:{kind}"
+
+
+def _ensure_alerts_seen(context: dict[str, Any]) -> dict[str, list[str]]:
+    workflow = context.setdefault("workflow", {})
+    if not isinstance(workflow, dict):
+        workflow = {}
+        context["workflow"] = workflow
+    raw = workflow.get(WORKFLOW_KEY_TRADE_ALERTS_SEEN)
+    if not isinstance(raw, dict):
+        raw = {}
+        workflow[WORKFLOW_KEY_TRADE_ALERTS_SEEN] = raw
+    return raw
+
+
+def get_alerts_seen_for_team(context: dict[str, Any] | None, team_name: str) -> set[str]:
+    if not context:
+        return set()
+    team = str(team_name or "").strip()
+    seen = _ensure_alerts_seen(context).get(team) or []
+    if not isinstance(seen, list):
+        return set()
+    return {str(x).strip() for x in seen if str(x).strip()}
+
+
+def mark_trade_notification_seen(
+    session: dict[str, Any],
+    *,
+    team_name: str,
+    alert_key: str,
+) -> None:
+    context = get_active_league_context(session)
+    if not context:
+        return
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    context = get_league_context(session, league_context_id)
+    if not context:
+        return
+    team = str(team_name or "").strip()
+    key = str(alert_key or "").strip()
+    if not team or not key:
+        return
+    seen_map = _ensure_alerts_seen(context)
+    seen_list = [str(x).strip() for x in (seen_map.get(team) or []) if str(x).strip()]
+    if key not in seen_list:
+        seen_list.append(key)
+    seen_map[team] = seen_list[-200:]
+    upsert_league_context(session, context)
+
+
+def get_display_status(context: dict[str, Any], proposal: dict[str, Any]) -> str:
+    status = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
+    if status != TRADE_PROPOSAL_STATUS_PENDING:
+        return status
+    ok, _ = validate_proposal_for_acceptance(context, proposal)
+    if not ok:
+        return TRADE_PROPOSAL_STATUS_STALE
+    return TRADE_PROPOSAL_STATUS_PENDING
+
+
+def is_proposal_actionable(context: dict[str, Any], proposal: dict[str, Any], *, as_team: str) -> bool:
+    display = get_display_status(context, proposal)
+    if display != TRADE_PROPOSAL_STATUS_PENDING:
+        return False
+    team = str(as_team or "").strip()
+    if team == str(proposal.get("recipient_team") or "").strip():
+        return True
+    if team == str(proposal.get("proposer_team") or "").strip():
+        return True
+    return False
+
+
+def get_trade_notifications(
+    session: dict[str, Any],
+    team_name: str,
+) -> list[dict[str, Any]]:
+    """Build unread trade alerts for the active league and team."""
+    context = get_active_league_context(session)
+    team = str(team_name or "").strip()
+    if not context or not team:
+        return []
+    seen = get_alerts_seen_for_team(context, team)
+    alerts: list[dict[str, Any]] = []
+
+    for proposal in get_incoming_trade_proposals(session, team):
+        pid = str(proposal.get("proposal_id") or "")
+        display = get_display_status(context, proposal)
+        if display == TRADE_PROPOSAL_STATUS_PENDING:
+            key = _alert_key(pid, "incoming")
+            if key not in seen:
+                proposer = str(proposal.get("proposer_team") or "")
+                alerts.append(
+                    {
+                        "alert_key": key,
+                        "proposal_id": pid,
+                        "kind": "incoming",
+                        "message": f"1 incoming trade offer from {proposer}",
+                        "view_as_team": team,
+                    }
+                )
+        elif display == TRADE_PROPOSAL_STATUS_CANCELED:
+            key = _alert_key(pid, "canceled_in")
+            if key not in seen:
+                alerts.append(
+                    {
+                        "alert_key": key,
+                        "proposal_id": pid,
+                        "kind": "canceled",
+                        "message": f"Trade offer from {proposal.get('proposer_team')} was canceled",
+                        "view_as_team": team,
+                    }
+                )
+
+    for proposal in get_outgoing_trade_proposals(session, team):
+        pid = str(proposal.get("proposal_id") or "")
+        status = str(proposal.get("status") or "")
+        recipient = str(proposal.get("recipient_team") or "")
+        if status == TRADE_PROPOSAL_STATUS_ACCEPTED:
+            key = _alert_key(pid, "accepted")
+            if key not in seen:
+                alerts.append(
+                    {
+                        "alert_key": key,
+                        "proposal_id": pid,
+                        "kind": "accepted",
+                        "message": f"Trade accepted by {recipient}",
+                        "view_as_team": team,
+                    }
+                )
+        elif status == TRADE_PROPOSAL_STATUS_DECLINED:
+            key = _alert_key(pid, "declined")
+            if key not in seen:
+                alerts.append(
+                    {
+                        "alert_key": key,
+                        "proposal_id": pid,
+                        "kind": "declined",
+                        "message": f"Trade declined by {recipient}",
+                        "view_as_team": team,
+                    }
+                )
+
+    return alerts
+
+
 def pending_incoming_count(session: dict[str, Any], team_name: str) -> int:
     return sum(
         1
@@ -331,27 +486,19 @@ def _execute_roster_swap(context: dict[str, Any], proposal: dict[str, Any]) -> b
             return False
 
     workflow = context.setdefault("workflow", {})
+    gives_fmt = _format_player_list(proposal.get("proposer_gives") or [])
+    receives_fmt = _format_player_list(proposal.get("proposer_receives") or [])
     activity = list(workflow.get("league_activity") or [])
-    for name in gives:
-        activity.append(
-            {
-                "team_name": proposer,
-                "action": "trade_away",
-                "player_name": name,
-                "counterparty": recipient,
-                "recorded_at": _utc_now_iso(),
-            }
-        )
-    for name in receives:
-        activity.append(
-            {
-                "team_name": recipient,
-                "action": "trade_away",
-                "player_name": name,
-                "counterparty": proposer,
-                "recorded_at": _utc_now_iso(),
-            }
-        )
+    activity.append(
+        {
+            "team_name": proposer,
+            "action": "trade_completed",
+            "player_name": gives_fmt,
+            "counterparty": recipient,
+            "summary": f"{proposer} traded {gives_fmt} to {recipient} for {receives_fmt}.",
+            "recorded_at": _utc_now_iso(),
+        }
+    )
     workflow["league_activity"] = activity[-50:]
     context["workflow"] = workflow
     return True
@@ -378,8 +525,16 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
     if proposal is None:
         return None, "Trade proposal not found."
 
+    if str(proposal.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
+        return None, "This trade is no longer pending."
+
     ok, msg = validate_proposal_for_acceptance(context, proposal)
     if not ok:
+        if msg == STALE_TRADE_MESSAGE:
+            proposal["status"] = TRADE_PROPOSAL_STATUS_STALE
+            proposal["updated_at"] = _utc_now_iso()
+            proposals[target_idx] = proposal
+            upsert_league_context(session, context)
         return None, msg
 
     if not _execute_roster_swap(context, proposal):
@@ -426,21 +581,77 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     return get_trade_proposal(saved, proposal_id), ""
 
 
+def cancel_trade_proposal(
+    session: dict[str, Any],
+    proposal_id: str,
+    *,
+    canceled_by_team: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    context = get_active_league_context(session)
+    if not context:
+        return None, "Set an active league context before canceling a trade."
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    context = get_league_context(session, league_context_id)
+    if not context:
+        return None, "Active league context could not be loaded."
+
+    proposal_id = str(proposal_id or "").strip()
+    proposals = _ensure_trade_proposals_workflow(context)
+    target_idx = -1
+    proposal: dict[str, Any] | None = None
+    for idx, existing in enumerate(proposals):
+        if str(existing.get("proposal_id") or "") == proposal_id:
+            target_idx = idx
+            proposal = dict(existing)
+            break
+    if proposal is None:
+        return None, "Trade proposal not found."
+    if str(proposal.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
+        return None, "Only pending trades can be canceled."
+    proposer = str(proposal.get("proposer_team") or "").strip()
+    team = str(canceled_by_team or proposer).strip()
+    if team != proposer:
+        return None, "Only the proposing team can cancel this offer."
+
+    now = _utc_now_iso()
+    proposal["status"] = TRADE_PROPOSAL_STATUS_CANCELED
+    proposal["updated_at"] = now
+    proposal["responded_at"] = now
+    proposals[target_idx] = proposal
+    saved = upsert_league_context(session, context)
+    return get_trade_proposal(saved, proposal_id), ""
+
+
 def set_trade_proposal_handoff(
     session: dict[str, Any],
     *,
     proposal_id: str,
     view_as_team: str,
 ) -> None:
-    session[TRADE_PROPOSAL_HANDOFF_KEY] = {
+    session[TRADE_HANDOFF_SESSION_KEY] = {
         "proposal_id": str(proposal_id or "").strip(),
         "view_as_team": str(view_as_team or "").strip(),
     }
     session["_lineup_focus_trade_analyzer"] = True
 
 
+def navigate_to_trade_proposal(
+    session: dict[str, Any],
+    *,
+    proposal_id: str,
+    view_as_team: str,
+    alert_key: str = "",
+) -> None:
+    """Deep-link to Fantasy Lineup Assistant Trade Analyzer with proposal loaded."""
+    set_trade_proposal_handoff(session, proposal_id=proposal_id, view_as_team=view_as_team)
+    session["_navigate_to_page"] = LINEUP_ASSISTANT_PAGE
+    session["_skip_page_restore_for"] = LINEUP_ASSISTANT_PAGE
+    if alert_key:
+        mark_trade_notification_seen(session, team_name=view_as_team, alert_key=alert_key)
+
+
 def consume_trade_proposal_handoff(session: dict[str, Any]) -> dict[str, Any] | None:
-    handoff = session.pop(TRADE_PROPOSAL_HANDOFF_KEY, None)
+    handoff = session.pop(TRADE_HANDOFF_SESSION_KEY, None)
     if not isinstance(handoff, dict):
         return None
     proposal_id = str(handoff.get("proposal_id") or "").strip()

@@ -11699,6 +11699,13 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             + (f" +{len(removed_drafted) - 3} more" if len(removed_drafted) > 3 else "")
         )
 
+    try:
+        from fantasy_trade_notifications_ui import render_trade_notification_sidebar
+
+        render_trade_notification_sidebar(st, st.session_state)
+    except ImportError:
+        pass
+
     dq = st.session_state.get("draft_queue", []) or []
     watch = st.session_state.get("draft_assistant_focus_players", []) or []
     favorites = st.session_state.get("workflow_favorite_targets", []) or []
