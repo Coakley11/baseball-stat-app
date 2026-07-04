@@ -34,6 +34,7 @@ from fantasy_league_context import (
 SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
 FANTASY_STANDINGS_PAGE = "Fantasy Standings Tracker"
 FANTASY_LINEUP_PAGE = "Fantasy Lineup Assistant"
+SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 
 
@@ -54,9 +55,27 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
     return f"{icon} {text}".strip()
 
 
-def schedule_saved_draft_library_navigation(session: dict[str, Any]) -> None:
+def schedule_saved_draft_library_navigation(
+    session: dict[str, Any],
+    *,
+    return_page: str = "",
+) -> None:
+    """Navigate to Saved Draft Library; remember source page for return."""
+    source = str(return_page or session.get("active_page") or "").strip()
+    if source and source != SAVED_DRAFT_LIBRARY_PAGE:
+        session[SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY] = source
     session["_navigate_to_page"] = SAVED_DRAFT_LIBRARY_PAGE
     session["_skip_page_restore_for"] = SAVED_DRAFT_LIBRARY_PAGE
+
+
+def schedule_return_from_saved_draft_library(session: dict[str, Any]) -> bool:
+    """Return to the workflow page that opened the library."""
+    target = str(session.pop(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY, None) or "").strip()
+    if not target or target == SAVED_DRAFT_LIBRARY_PAGE:
+        return False
+    session["_navigate_to_page"] = target
+    session["_skip_page_restore_for"] = target
+    return True
 
 
 def schedule_fantasy_analysis_navigation(session: dict[str, Any], target_page: str) -> bool:
@@ -145,7 +164,10 @@ def render_active_saved_draft_chip(
             key=f"{key_prefix}_manage_btn",
             use_container_width=True,
         ):
-            schedule_saved_draft_library_navigation(session)
+            schedule_saved_draft_library_navigation(
+                session,
+                return_page=str(session.get("active_page") or ""),
+            )
             st.rerun()
 
 
@@ -512,6 +534,16 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
         "and practice drafts. Setting one **Active League Context** tells **Standings Tracker** and "
         "**Lineup Assistant** which roster to analyze."
     )
+
+    return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
+    if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:
+        if st.button(
+            _nav_label(return_page, f"Return to {return_page}", page_label_fn),
+            key="library_return_to_workflow",
+            use_container_width=False,
+        ):
+            schedule_return_from_saved_draft_library(session)
+            st.rerun()
 
     top_left, top_right = st.columns([3, 1])
     with top_left:

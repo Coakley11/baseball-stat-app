@@ -87,6 +87,27 @@ class TestBaseballPersistence(unittest.TestCase):
         self.assertEqual(ss["sig_player_b_clean"], "Francisco Lindor (NYM)")
         self.assertTrue(ss.get("_suite_cloud_workspace_applied"))
 
+    def test_apply_disk_state_preserves_scheduled_saved_draft_library_navigation(self) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Fantasy Lineup Assistant",
+            "main_sidebar_page": "Fantasy Lineup Assistant",
+            "page_filter_state": {},
+            "_navigate_to_page": "Saved Draft Library",
+            "_skip_page_restore_for": "Saved Draft Library",
+            "_saved_draft_library_return_page": "Fantasy Lineup Assistant",
+        }
+        cloud_state = {
+            "active_page": "Fantasy Lineup Assistant",
+            "page_filter_state": {},
+        }
+        apply_baseball_disk_state(st, cloud_state)
+        ss = st.session_state
+        self.assertEqual(ss["active_page"], "Saved Draft Library")
+        self.assertEqual(ss["main_sidebar_page"], "Saved Draft Library")
+        self.assertEqual(ss["_navigate_to_page"], "Saved Draft Library")
+        self.assertEqual(ss.get("_suite_page_overwrite_source"), "scheduled_navigation_preserved")
+
 
 class TestSettingsCloudSaveNotBlocked(unittest.TestCase):
     """Settings-change saves must reach the cloud even when workspace sync was skipped.
