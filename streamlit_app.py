@@ -10406,6 +10406,12 @@ def _render_trade_acquire_flow_ui(*, key_prefix: str) -> None:
             msg = complete_trade_acquire_flow(st.session_state, mode=mode)
             if msg:
                 st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+                try:
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    force_save_baseball_state(st, reason="trade_acquire_handoff")
+                except Exception:
+                    pass
             st.rerun()
         return
 
@@ -10429,6 +10435,12 @@ def _render_trade_acquire_flow_ui(*, key_prefix: str) -> None:
         )
         if msg:
             st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="trade_acquire_handoff")
+            except Exception:
+                pass
         st.rerun()
 
 
@@ -10447,6 +10459,12 @@ def _on_trade_acquire_flow_click(*, player_raw: str, key_prefix: str):
     )
     if msg:
         st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="trade_acquire_handoff")
+        except Exception:
+            pass
     st.rerun()
 
 
@@ -21941,6 +21959,13 @@ if active_page == "Fantasy Lineup Assistant":
     prepare_fantasy_lineup_filters(st.session_state)
 
     try:
+        from fantasy_league_context import consume_trade_acquire_handoff
+
+        consume_trade_acquire_handoff(st.session_state)
+    except ImportError:
+        pass
+
+    try:
         from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
 
         _lineup_team_hdr = active_fantasy_team_label(st.session_state) or get_active_fantasy_team(st.session_state)
@@ -22375,9 +22400,29 @@ if active_page == "Fantasy Lineup Assistant":
                         .dropna().astype(str).unique()
                     )
 
+                    try:
+                        from fantasy_trade_plan_ui import render_trade_plan_section
+
+                        def _persist_trade_plan(_session, _st, *, reason: str) -> None:
+                            try:
+                                from baseball_persistent_state import force_save_baseball_state
+
+                                force_save_baseball_state(_st, reason=reason)
+                            except Exception:
+                                pass
+
+                        workflow_give, workflow_get = render_trade_plan_section(
+                            st,
+                            st.session_state,
+                            persist_fn=_persist_trade_plan,
+                            key_prefix="lineup_trade_plan",
+                        )
+                    except ImportError:
+                        workflow_give, workflow_get = [], []
+
                     st.markdown("##### Analyze a Proposed Trade")
-                    pending_give = [p for p in st.session_state.get("pending_trade_away_players", []) if p in my_trade_players]
-                    pending_get = [p for p in st.session_state.get("pending_trade_acquire_players", []) if p in other_trade_players]
+                    pending_give = [p for p in workflow_give if p in my_trade_players]
+                    pending_get = [p for p in workflow_get if p in other_trade_players]
                     if pending_give and "lineup_trade_give_players" not in st.session_state:
                         st.session_state["lineup_trade_give_players"] = pending_give
                     if pending_get and "lineup_trade_get_players" not in st.session_state:

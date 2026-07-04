@@ -1985,11 +1985,31 @@ def build_context_from_session(
                     ctx["trend_window"] = f"{lag} seasons"
         elif "trade" in low_page:
             ctx["workflow"] = "Trade analysis"
-            acquire = session_state.get("pending_trade_acquire_players") or []
-            away = session_state.get("pending_trade_away_players") or []
-            if isinstance(acquire, list) and acquire:
+            acquire: list[str] = []
+            away: list[str] = []
+            try:
+                from fantasy_league_context import (
+                    TRADE_MODE_ACQUIRE,
+                    TRADE_MODE_TRADE_AWAY,
+                    get_active_league_context,
+                    workflow_target_player_names,
+                )
+
+                active_ctx = get_active_league_context(session_state)
+                if active_ctx:
+                    acquire = workflow_target_player_names(active_ctx, TRADE_MODE_ACQUIRE)
+                    away = workflow_target_player_names(active_ctx, TRADE_MODE_TRADE_AWAY)
+            except ImportError:
+                pass
+            if not acquire:
+                acquire_raw = session_state.get("pending_trade_acquire_players") or []
+                acquire = [str(x) for x in acquire_raw if str(x).strip()] if isinstance(acquire_raw, list) else []
+            if not away:
+                away_raw = session_state.get("pending_trade_away_players") or []
+                away = [str(x) for x in away_raw if str(x).strip()] if isinstance(away_raw, list) else []
+            if acquire:
                 ctx["players"] = [_player_name(x) for x in acquire[:4]]
-            if isinstance(away, list) and away:
+            if away:
                 ctx["player_a"] = _player_name(away[0]) if away else ""
                 ctx["player_b"] = _player_name(acquire[0]) if acquire else ""
         elif "lineup" in low_page or "fantasy" in low_page:

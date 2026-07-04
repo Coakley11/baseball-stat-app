@@ -363,6 +363,197 @@ def _empty_workflow() -> dict[str, list[Any]]:
     }
 
 
+WORKFLOW_KEY_TRADE_CANDIDATES = "trade_candidates"
+WORKFLOW_KEY_ACQUIRE_TARGETS = "acquire_targets"
+TRADE_MODE_TRADE_AWAY = "trade_away"
+TRADE_MODE_ACQUIRE = "acquire"
+TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_handoff"
+LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
+
+
+def _workflow_key_for_mode(mode: str) -> str:
+    if str(mode or "").strip() == TRADE_MODE_TRADE_AWAY:
+        return WORKFLOW_KEY_TRADE_CANDIDATES
+    return WORKFLOW_KEY_ACQUIRE_TARGETS
+
+
+def _normalize_workflow_target(player_name: str, *, owner_team: str = "") -> dict[str, Any]:
+    name = str(player_name or "").strip()
+    return {
+        "player_name": name,
+        "player_key": normalize_player_key(name),
+        "owner_team": str(owner_team or "").strip(),
+        "added_at": _utc_now_iso(),
+    }
+
+
+def _ensure_workflow(context: dict[str, Any]) -> dict[str, Any]:
+    workflow = context.get("workflow")
+    if not isinstance(workflow, dict):
+        workflow = _empty_workflow()
+        context["workflow"] = workflow
+    for key in (
+        WORKFLOW_KEY_TRADE_CANDIDATES,
+        WORKFLOW_KEY_ACQUIRE_TARGETS,
+        "add_targets",
+        "drop_candidates",
+    ):
+        if not isinstance(workflow.get(key), list):
+            workflow[key] = []
+    return workflow
+
+
+def get_workflow_targets(context: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    workflow = _ensure_workflow(context)
+    key = _workflow_key_for_mode(mode)
+    raw = workflow.get(key) or []
+    return [dict(x) for x in raw if isinstance(x, dict)]
+
+
+def workflow_target_player_names(context: dict[str, Any] | None, mode: str) -> list[str]:
+    if not context:
+        return []
+    names: list[str] = []
+    for target in get_workflow_targets(context, mode):
+        name = str(target.get("player_name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def get_active_workflow_targets(session: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    context = get_active_league_context(session)
+    if not context:
+        return []
+    return get_workflow_targets(context, mode)
+
+
+def add_workflow_target(
+    session: dict[str, Any],
+    league_context_id: str,
+    mode: str,
+    player_name: str,
+    *,
+    owner_team: str = "",
+) -> dict[str, Any] | None:
+    league_context_id = str(league_context_id or "").strip()
+    if not league_context_id:
+        return None
+    context = get_league_context(session, league_context_id)
+    if not context:
+        return None
+    workflow = _ensure_workflow(context)
+    key = _workflow_key_for_mode(mode)
+    target = _normalize_workflow_target(player_name, owner_team=owner_team)
+    player_key = str(target.get("player_key") or "")
+    existing = [dict(x) for x in (workflow.get(key) or []) if isinstance(x, dict)]
+    if not any(str(x.get("player_key") or "") == player_key for x in existing):
+        existing.append(target)
+    workflow[key] = existing
+    context["workflow"] = workflow
+    return upsert_league_context(session, context)
+
+
+def remove_workflow_target(
+    session: dict[str, Any],
+    league_context_id: str,
+    mode: str,
+    player_name: str,
+) -> dict[str, Any] | None:
+    league_context_id = str(league_context_id or "").strip()
+    if not league_context_id:
+        return None
+    context = get_league_context(session, league_context_id)
+    if not context:
+        return None
+    workflow = _ensure_workflow(context)
+    key = _workflow_key_for_mode(mode)
+    remove_key = normalize_player_key(player_name)
+    existing = [dict(x) for x in (workflow.get(key) or []) if isinstance(x, dict)]
+    workflow[key] = [x for x in existing if str(x.get("player_key") or "") != remove_key]
+    context["workflow"] = workflow
+    return upsert_league_context(session, context)
+
+
+def migrate_global_pending_trade_targets(session: dict[str, Any]) -> bool:
+    """One-time merge of legacy pending_trade_* lists into active context workflow."""
+    store = ensure_fantasy_league_context_state(session)
+    migration = store.setdefault("legacy_migration", {"migrated_archive_ids": [], "archives_scanned_at": ""})
+    if not isinstance(migration, dict):
+        migration = {"migrated_archive_ids": [], "archives_scanned_at": ""}
+        store["legacy_migration"] = migration
+    if migration.get("pending_trade_keys_migrated"):
+        return False
+
+    acquire_raw = session.get("pending_trade_acquire_players") or []
+    away_raw = session.get("pending_trade_away_players") or []
+    acquire_names = [str(x).strip() for x in acquire_raw if str(x).strip()] if isinstance(acquire_raw, list) else []
+    away_names = [str(x).strip() for x in away_raw if str(x).strip()] if isinstance(away_raw, list) else []
+    if not acquire_names and not away_names:
+        migration["pending_trade_keys_migrated"] = True
+        return False
+
+    active_id = str(store.get("active_league_context_id") or "").strip()
+    if not active_id:
+        return False
+
+    context = get_league_context(session, active_id)
+    if not context:
+        return False
+
+    my_team = str(context.get("my_team_name") or "").strip()
+    for name in away_names:
+        add_workflow_target(session, active_id, TRADE_MODE_TRADE_AWAY, name, owner_team=my_team)
+    for name in acquire_names:
+        owner = ""
+        owner_rec = (context.get("ownership_map") or {}).get(normalize_player_key(name)) or {}
+        if isinstance(owner_rec, dict):
+            owner = str(owner_rec.get("owner_team") or "")
+        add_workflow_target(session, active_id, TRADE_MODE_ACQUIRE, name, owner_team=owner)
+
+    session.pop("pending_trade_acquire_players", None)
+    session.pop("pending_trade_away_players", None)
+    migration["pending_trade_keys_migrated"] = True
+    return True
+
+
+def set_trade_acquire_handoff(
+    session: dict[str, Any],
+    *,
+    league_context_id: str,
+    mode: str,
+    player_name: str,
+    owner_team: str = "",
+) -> None:
+    session[TRADE_HANDOFF_SESSION_KEY] = {
+        "league_context_id": str(league_context_id or "").strip(),
+        "mode": str(mode or "").strip(),
+        "player_name": str(player_name or "").strip(),
+        "owner_team": str(owner_team or "").strip(),
+        "target_section": "trade_analyzer",
+    }
+    session["_navigate_to_page"] = LINEUP_ASSISTANT_PAGE
+    session["_skip_page_restore_for"] = LINEUP_ASSISTANT_PAGE
+
+
+def consume_trade_acquire_handoff(session: dict[str, Any]) -> dict[str, Any] | None:
+    handoff = session.pop(TRADE_HANDOFF_SESSION_KEY, None)
+    if not isinstance(handoff, dict):
+        return None
+    owner_team = str(handoff.get("owner_team") or "").strip()
+    mode = str(handoff.get("mode") or "").strip()
+    if owner_team and mode == TRADE_MODE_ACQUIRE:
+        session["lineup_trade_other_team"] = owner_team
+    player_name = str(handoff.get("player_name") or "").strip()
+    if player_name:
+        if mode == TRADE_MODE_TRADE_AWAY:
+            session["lineup_trade_give_players"] = [player_name]
+        elif mode == TRADE_MODE_ACQUIRE:
+            session["lineup_trade_get_players"] = [player_name]
+    session["_lineup_focus_trade_analyzer"] = True
+    return handoff
+
+
 def create_league_context(
     *,
     league_context_id: str,
@@ -807,3 +998,4 @@ def apply_fantasy_league_context_disk_state(session: dict[str, Any], state: dict
     else:
         ensure_fantasy_league_context_state(session)
     migrate_legacy_archives_to_contexts(session)
+    migrate_global_pending_trade_targets(session)

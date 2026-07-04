@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import copy
-import re
-import unicodedata
 from typing import Any
 
 import pandas as pd
 
-from player_actions import dedupe_append_name, normalize_player_display_name, player_names_match
+from player_actions import player_names_match
 
 TRADE_FLOW_SESSION_KEY = "_player_trade_acquire_flow"
 TRADE_ACTION_ACQUIRE = "acquire"
@@ -53,6 +51,7 @@ def _append_context(
     is_user_team: bool,
     your_team: str,
     archive_id: str | None = None,
+    league_context_id: str = "",
 ) -> None:
     if not team_name:
         return
@@ -64,14 +63,77 @@ def _append_context(
         "is_user_team": bool(is_user_team),
         "your_team": your_team or team_name,
         "archive_id": archive_id,
+        "league_context_id": str(league_context_id or "").strip(),
     }
     if any(str(c.get("context_id") or "") == context_id for c in contexts):
         return
     contexts.append(row)
 
 
+def _resolve_league_context_id(session: dict[str, Any], roster_ctx: dict[str, Any] | None) -> str:
+    if roster_ctx:
+        league_context_id = str(roster_ctx.get("league_context_id") or "").strip()
+        if league_context_id:
+            return league_context_id
+        archive_id = str(roster_ctx.get("archive_id") or "").strip()
+        if archive_id:
+            try:
+                from fantasy_league_context import context_id_for_archive
+
+                return context_id_for_archive(archive_id)
+            except ImportError:
+                return f"archive:{archive_id}"
+    try:
+        from fantasy_league_context import get_active_league_context
+
+        active = get_active_league_context(session)
+        if active:
+            return str(active.get("league_context_id") or "").strip()
+    except ImportError:
+        pass
+    return ""
+
+
+def _collect_fantasy_league_context_rows(
+    session: dict[str, Any],
+    target: str,
+    contexts: list[dict[str, Any]],
+) -> None:
+    try:
+        from fantasy_league_context import list_league_contexts, normalize_player_key
+
+        target_key = normalize_player_key(target)
+        if not target_key:
+            return
+        for ctx in list_league_contexts(session):
+            ownership = ctx.get("ownership_map") or {}
+            if not isinstance(ownership, dict):
+                continue
+            owner = ownership.get(target_key)
+            if not isinstance(owner, dict):
+                continue
+            league_context_id = str(ctx.get("league_context_id") or "").strip()
+            owner_team = str(owner.get("owner_team") or "").strip()
+            if not league_context_id or not owner_team:
+                continue
+            source_draft_id = str((ctx.get("metadata") or {}).get("source_draft_id") or "").strip()
+            _append_context(
+                contexts,
+                context_id=f"flc:{league_context_id}:{owner_team}",
+                source="fantasy_league_context",
+                draft_label=str(ctx.get("display_name") or ctx.get("league_name") or "League"),
+                team_name=owner_team,
+                is_user_team=bool(owner.get("is_user_team")),
+                your_team=str(ctx.get("my_team_name") or ""),
+                archive_id=source_draft_id or None,
+                league_context_id=league_context_id,
+            )
+    except Exception:
+        pass
+
+
 def collect_player_roster_contexts(session: dict[str, Any], player_name: str) -> list[dict[str, Any]]:
-    """Find live, simulator, and saved-draft contexts where ``player_name`` is rostered."""
+    """Find live, simulator, saved-draft, and fantasy-league contexts where player is rostered."""
     target = _display_base(player_name)
     if not target:
         return []
@@ -130,23 +192,23 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
 
     try:
         from draft_archive_state import draft_type_display, list_draft_archives
+        from fantasy_league_context import context_id_for_archive
 
         for entry in list_draft_archives(session):
             archive_team = str(entry.get("team_name") or "").strip()
             players = entry.get("players") or []
             found = False
-            matched_name = ""
             for prow in players:
                 pname = _player_name_from_mapping(prow)
                 if pname and player_names_match(pname, target):
                     found = True
-                    matched_name = pname
                     break
             if not found:
                 continue
             archive_id = str(entry.get("draft_id") or "").strip()
             draft_name = str(entry.get("draft_name") or "Saved Draft").strip()
             dtype = draft_type_display(entry)
+            league_context_id = str(entry.get("league_context_id") or context_id_for_archive(archive_id))
             _append_context(
                 contexts,
                 context_id=f"archive:{archive_id}:{archive_team}",
@@ -156,11 +218,27 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
                 is_user_team=True,
                 your_team=archive_team,
                 archive_id=archive_id or None,
+                league_context_id=league_context_id,
             )
     except Exception:
         pass
 
-    return contexts
+    _collect_fantasy_league_context_rows(session, target, contexts)
+    return _dedupe_collected_contexts(contexts)
+
+
+def _dedupe_collected_contexts(contexts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prefer fantasy-league-context rows over live/sim duplicates for the same team slot."""
+    by_slot: dict[tuple[bool, str], dict[str, Any]] = {}
+    for ctx in contexts:
+        slot = (bool(ctx.get("is_user_team")), str(ctx.get("team_name") or ""))
+        existing = by_slot.get(slot)
+        if existing is None:
+            by_slot[slot] = ctx
+            continue
+        if not existing.get("league_context_id") and ctx.get("league_context_id"):
+            by_slot[slot] = ctx
+    return list(by_slot.values())
 
 
 def split_trade_acquire_contexts(contexts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -178,27 +256,95 @@ def format_roster_context_label(ctx: dict[str, Any]) -> str:
 
 
 def apply_roster_context(session: dict[str, Any], ctx: dict[str, Any]) -> None:
-    """Load the selected draft context into session state."""
-    if ctx.get("source") == "saved_archive" and ctx.get("archive_id"):
-        try:
+    """Load the selected draft / league context into session state."""
+    league_context_id = _resolve_league_context_id(session, ctx)
+    archive_id = str(ctx.get("archive_id") or "").strip()
+    try:
+        if archive_id:
+            from fantasy_league_context import activate_archive_league_context
+
+            activate_archive_league_context(session, archive_id)
+        elif league_context_id:
+            from fantasy_league_context import activate_league_context
+
+            activate_league_context(session, league_context_id)
+        elif ctx.get("source") == "saved_archive" and archive_id:
             from draft_archive_state import activate_draft_archive
 
-            activate_draft_archive(session, str(ctx["archive_id"]))
-        except Exception:
-            pass
+            activate_draft_archive(session, archive_id)
+    except Exception:
+        if ctx.get("source") == "saved_archive" and archive_id:
+            try:
+                from draft_archive_state import activate_draft_archive
+
+                activate_draft_archive(session, archive_id)
+            except Exception:
+                pass
     your_team = str(ctx.get("your_team") or ctx.get("team_name") or "").strip()
     if your_team:
         session["room_your_team"] = your_team
 
 
-def add_trade_flow_target(session: dict[str, Any], player_name: str, action_type: str) -> None:
+def add_trade_flow_target(
+    session: dict[str, Any],
+    player_name: str,
+    action_type: str,
+    *,
+    roster_ctx: dict[str, Any] | None = None,
+) -> str:
+    """Persist target to Fantasy League Context workflow. Returns league_context_id used."""
     display = _display_base(player_name)
+    league_context_id = _resolve_league_context_id(session, roster_ctx)
+    if not league_context_id:
+        return ""
+    owner_team = str((roster_ctx or {}).get("team_name") or "").strip()
     if action_type == TRADE_ACTION_TRADE_AWAY:
-        give = session.get("pending_trade_away_players", [])
-        session["pending_trade_away_players"] = dedupe_append_name(give, display)
-        return
-    acquire = session.get("pending_trade_acquire_players", [])
-    session["pending_trade_acquire_players"] = dedupe_append_name(acquire, display)
+        owner_team = str((roster_ctx or {}).get("your_team") or owner_team or _session_user_team(session)).strip()
+    try:
+        from fantasy_league_context import add_workflow_target
+
+        add_workflow_target(
+            session,
+            league_context_id,
+            action_type,
+            display,
+            owner_team=owner_team,
+        )
+    except ImportError:
+        return ""
+    return league_context_id
+
+
+def _finalize_trade_acquire(
+    session: dict[str, Any],
+    *,
+    player: str,
+    mode: str,
+    roster_ctx: dict[str, Any],
+) -> str:
+    apply_roster_context(session, roster_ctx)
+    league_context_id = add_trade_flow_target(session, player, mode, roster_ctx=roster_ctx)
+    label = "trade candidate" if mode == TRADE_ACTION_TRADE_AWAY else "acquire target"
+    if league_context_id:
+        try:
+            from fantasy_league_context import set_trade_acquire_handoff
+
+            set_trade_acquire_handoff(
+                session,
+                league_context_id=league_context_id,
+                mode=mode,
+                player_name=player,
+                owner_team=str(roster_ctx.get("team_name") or ""),
+            )
+        except ImportError:
+            pass
+        session.pop(TRADE_FLOW_SESSION_KEY, None)
+        return (
+            f"Loaded {format_roster_context_label(roster_ctx)} and added {player} as {label}. "
+            "Opening Fantasy Lineup Assistant."
+        )
+    session.pop(TRADE_FLOW_SESSION_KEY, None)
+    return f"Loaded {format_roster_context_label(roster_ctx)} but no league context to persist {label}."
 
 
 def _flow_candidates(trade_contexts: list[dict[str, Any]], acquire_contexts: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
@@ -233,11 +379,7 @@ def start_trade_acquire_flow(
     mode = TRADE_ACTION_TRADE_AWAY if trade_contexts else TRADE_ACTION_ACQUIRE
     candidates = _flow_candidates(trade_contexts, acquire_contexts, mode)
     if len(candidates) == 1:
-        ctx = candidates[0]
-        apply_roster_context(session, ctx)
-        add_trade_flow_target(session, display, mode)
-        label = "trade candidate" if mode == TRADE_ACTION_TRADE_AWAY else "acquire target"
-        return f"Loaded {format_roster_context_label(ctx)} and added {display} as {label}."
+        return _finalize_trade_acquire(session, player=display, mode=mode, roster_ctx=candidates[0])
 
     session[TRADE_FLOW_SESSION_KEY] = {
         "player": display,
@@ -267,12 +409,7 @@ def complete_trade_acquire_flow(session: dict[str, Any], *, mode: str | None = N
             session.pop(TRADE_FLOW_SESSION_KEY, None)
             return f"No draft context available for {player}."
         if len(candidates) == 1:
-            ctx = candidates[0]
-            apply_roster_context(session, ctx)
-            add_trade_flow_target(session, player, resolved_mode)
-            session.pop(TRADE_FLOW_SESSION_KEY, None)
-            label = "trade candidate" if resolved_mode == TRADE_ACTION_TRADE_AWAY else "acquire target"
-            return f"Loaded {format_roster_context_label(ctx)} and added {player} as {label}."
+            return _finalize_trade_acquire(session, player=player, mode=resolved_mode, roster_ctx=candidates[0])
         flow["step"] = "choose_context"
         flow["mode"] = resolved_mode
         flow["candidates"] = copy.deepcopy(candidates)
@@ -296,8 +433,4 @@ def complete_trade_acquire_flow(session: dict[str, Any], *, mode: str | None = N
         return "Choose which draft context to use."
 
     resolved_mode = resolved_mode or TRADE_ACTION_ACQUIRE
-    apply_roster_context(session, selected)
-    add_trade_flow_target(session, player, resolved_mode)
-    session.pop(TRADE_FLOW_SESSION_KEY, None)
-    label = "trade candidate" if resolved_mode == TRADE_ACTION_TRADE_AWAY else "acquire target"
-    return f"Loaded {format_roster_context_label(selected)} and added {player} as {label}."
+    return _finalize_trade_acquire(session, player=player, mode=resolved_mode, roster_ctx=selected)
