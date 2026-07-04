@@ -28,6 +28,16 @@ import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
 import app_tutorial
 import player_actions as plr_act
+from player_trade_context import (
+    TRADE_ACTION_ACQUIRE,
+    TRADE_ACTION_TRADE_AWAY,
+    TRADE_FLOW_SESSION_KEY,
+    complete_trade_acquire_flow,
+    format_roster_context_label,
+    player_has_roster_context,
+    start_trade_acquire_flow,
+)
+
 import projection_calibration as proj_cal
 import projection_validation as proj_val
 import projection_breakdown as proj_bd
@@ -10360,6 +10370,86 @@ def _player_display_name(selected_player, label_map) -> str:
     return fullname_base_from_label(sp) or sp
 
 
+def is_active_current_player(player, source_df=None) -> bool:
+    """Streamlit wrapper: default eligibility source is the loaded yearly table."""
+    df = source_df
+    if df is None or getattr(df, "empty", True):
+        try:
+            df = yearly_df
+        except NameError:
+            df = pd.DataFrame()
+    return plr_act.is_active_current_player(player, df)
+
+
+def _render_trade_acquire_flow_ui(*, key_prefix: str) -> None:
+    """Inline picker for multi-draft Trade / Acquire flows."""
+    flow = st.session_state.get(TRADE_FLOW_SESSION_KEY)
+    if not isinstance(flow, dict) or flow.get("key_prefix") != key_prefix:
+        return
+
+    player = str(flow.get("player") or "").strip()
+    step = str(flow.get("step") or "").strip()
+    if not player or not step:
+        return
+
+    st.markdown("##### Trade / Acquire")
+    st.caption(f"Resolving roster context for **{player}**.")
+
+    if step == "choose_mode":
+        choice = st.radio(
+            "Do you want to trade this player away or acquire this player?",
+            ["Trade away", "Acquire"],
+            key=f"{key_prefix}_trade_flow_mode",
+        )
+        if st.button("Continue", key=f"{key_prefix}_trade_flow_mode_continue"):
+            mode = TRADE_ACTION_TRADE_AWAY if choice == "Trade away" else TRADE_ACTION_ACQUIRE
+            msg = complete_trade_acquire_flow(st.session_state, mode=mode)
+            if msg:
+                st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+            st.rerun()
+        return
+
+    candidates = list(flow.get("candidates") or [])
+    if not candidates:
+        return
+
+    labels = [format_roster_context_label(ctx) for ctx in candidates]
+    context_ids = [str(ctx.get("context_id") or "") for ctx in candidates]
+    selected_label = st.selectbox(
+        "Which draft context should we use?",
+        labels,
+        key=f"{key_prefix}_trade_flow_context",
+    )
+    selected_idx = labels.index(selected_label) if selected_label in labels else 0
+    if st.button("Apply Trade / Acquire", key=f"{key_prefix}_trade_flow_apply"):
+        msg = complete_trade_acquire_flow(
+            st.session_state,
+            mode=str(flow.get("mode") or TRADE_ACTION_ACQUIRE),
+            context_id=context_ids[selected_idx],
+        )
+        if msg:
+            st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+        st.rerun()
+
+
+def _on_trade_acquire_flow_click(*, player_raw: str, key_prefix: str):
+    display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
+    if not is_active_current_player(display):
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = (
+            f"{display} is historical/inactive and cannot be added to a current trade workflow."
+        )
+        st.rerun()
+        return
+    msg = start_trade_acquire_flow(
+        st.session_state,
+        player_name=display,
+        key_prefix=key_prefix,
+    )
+    if msg:
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+    st.rerun()
+
+
 def _schedule_player_action_page_nav(target_page: str) -> None:
     """Same navigation path as sidebar, but skip restoring stale page snapshot."""
     tgt = get_sidebar_page_value(target_page)
@@ -10376,8 +10466,11 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
 
     display = _player_display_name(sp, label_map) or sp
     record_workflow_recent_player(display)
+    active_current = is_active_current_player(sp)
 
     if action == "Draft player to next pick":
+        if not active_current:
+            return f"{display} is historical/inactive and cannot be drafted into a current simulation.", None
         from draft_actions import can_draft_player, draft_player
 
         allowed, reason = can_draft_player(st.session_state, sp)
@@ -10389,6 +10482,8 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
         return str(result.get("message") or result.get("error") or "Could not draft."), None
 
     if action == "Queue player":
+        if not active_current:
+            return f"{display} is historical/inactive and cannot be added to the Draft Queue.", None
         q = st.session_state.get("draft_queue", [])
         if not isinstance(q, list):
             q = []
@@ -10426,6 +10521,8 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
         return msg, None
 
     if action == "Add to Watchlist":
+        if not active_current:
+            return f"{display} is historical/inactive and cannot be added to the Watchlist.", None
         from draft_state import add_player_to_watchlist
 
         st.session_state["pending_draft_assistant_player"] = display
@@ -10440,19 +10537,21 @@ def dispatch_player_action(selected_player, action, team_name, user_draft_team, 
             pass
         return f"Added {display} to Watchlist.", None
 
-    if action == "Add as trade target to acquire":
-        acquire = st.session_state.get("pending_trade_acquire_players", [])
-        acquire = plr_act.dedupe_append_name(acquire, display)
-        st.session_state["pending_trade_acquire_players"] = acquire
-        return f"Added {display} to trade targets (acquire).", None
-
-    if action == "Add as player to trade away":
-        give = st.session_state.get("pending_trade_away_players", [])
-        give = plr_act.dedupe_append_name(give, display)
-        st.session_state["pending_trade_away_players"] = give
-        return f"Added {display} to trade-away list.", None
+    if action in ("Add as trade target to acquire", "Add as player to trade away", "Trade / Acquire"):
+        if not active_current:
+            return f"{display} is historical/inactive and cannot be added to a current trade workflow.", None
+        msg = start_trade_acquire_flow(
+            st.session_state,
+            player_name=display,
+            key_prefix=f"dispatch|{display}",
+        )
+        if msg:
+            return msg, None
+        return "", None
 
     if action == "Simulate drafting this player":
+        if not active_current:
+            return f"{display} is historical/inactive and cannot be drafted into a current simulation.", None
         if not teams:
             return _NO_DRAFT_CONTEXT_MSG, None
         sim_table, msg = simulate_drafting_player(sp, team_name)
@@ -10500,8 +10599,7 @@ def _render_player_action_button_row(
     show_trend=True,
     show_watchlist=True,
     show_draft=False,
-    show_trade=False,
-    on_my_team=False,
+    show_trade_acquire=False,
     can_draft=False,
 ):
     """One-click player actions with stable button keys and shared dispatch."""
@@ -10537,11 +10635,8 @@ def _render_player_action_button_row(
     secondary = []
     if show_watchlist:
         secondary.append(("Add to Watchlist", "Add to Watchlist", "add_watchlist"))
-    if show_trade:
-        if on_my_team:
-            secondary.append(("Trade · Away", "Add as player to trade away", "trade_away"))
-        else:
-            secondary.append(("Trade · Acquire", "Add as trade target to acquire", "trade_acquire"))
+    if show_trade_acquire:
+        secondary.append(("Trade / Acquire", "Trade / Acquire", "trade_acquire_flow"))
     if show_draft and can_draft:
         secondary.append(("Draft this player", "Draft player to next pick", "draft_player"))
 
@@ -10549,13 +10644,22 @@ def _render_player_action_button_row(
         cols2 = st.columns(len(secondary))
         for col, (label, action, slug) in zip(cols2, secondary):
             with col:
-                st.button(
-                    label,
-                    key=f"plr_act_{act_suffix}_{slug}_button",
-                    use_container_width=True,
-                    on_click=_on_player_action_click,
-                    kwargs={**kwargs_base, "action": action},
-                )
+                if action == "Trade / Acquire":
+                    st.button(
+                        label,
+                        key=f"plr_act_{act_suffix}_{slug}_button",
+                        use_container_width=True,
+                        on_click=_on_trade_acquire_flow_click,
+                        kwargs={"player_raw": player_raw, "key_prefix": key_prefix},
+                    )
+                else:
+                    st.button(
+                        label,
+                        key=f"plr_act_{act_suffix}_{slug}_button",
+                        use_container_width=True,
+                        on_click=_on_player_action_click,
+                        kwargs={**kwargs_base, "action": action},
+                    )
 
 
 def player_action_menu(
@@ -10838,6 +10942,14 @@ def _on_simulate_draft_pick_click(
     lookup_name_col: str,
 ):
     """Button callback: store simulation result under a dedicated state key (not the button key)."""
+    if not is_active_current_player(player_raw):
+        st.session_state[state_key] = {
+            "player": str(player_raw).strip(),
+            "message": "Historical/inactive players cannot be drafted into current simulations.",
+            "no_context": True,
+            "table": pd.DataFrame(),
+        }
+        return
     result = build_draft_simulation_result(
         player_raw,
         team_name,
@@ -10855,6 +10967,14 @@ def _on_projection_breakdown_click(
     projection_lookup_name_col: str,
 ):
     """Button callback: queue projection bundle for the next render (never the button widget key)."""
+    if not is_active_current_player(player_raw):
+        st.session_state[dialog_state_key] = {
+            "player_name": str(player_raw).strip(),
+            "requested_player": str(player_raw).strip(),
+            "stabilized": False,
+            "method_notes": ["Historical/inactive players do not have current projection breakdowns."],
+        }
+        return
     bundle = assemble_projection_breakdown_bundle(
         player_raw,
         pool_row=None,
@@ -10923,30 +11043,40 @@ def player_quick_actions_popover(
             key=f"{key}_qa_player_pick",
         )
         sfx = _qa_key_suffix(f"{key}|{pick}")
-        on_my = player_on_fantasy_team(pick, team_for_draft) if team_for_draft else False
+        active_current = is_active_current_player(pick)
+        already_drafted = pick in _drafted_player_names_from_room()
         try:
             from draft_actions import can_draft_player
 
             draft_ok, _ = can_draft_player(st.session_state, pick)
         except Exception:
             draft_ok = False
-        can_draft = _player_draft_action_available() and draft_ok
+        can_draft = active_current and _player_draft_action_available() and draft_ok
+        show_trade_acquire = active_current and player_has_roster_context(st.session_state, pick)
+        flow_key_prefix = f"{key}_qa_{sfx}"
 
         _render_player_action_button_row(
             pick,
-            key_prefix=f"{key}_qa_{sfx}",
+            key_prefix=flow_key_prefix,
             label_map=label_map,
             team_name=team_for_draft,
             user_draft_team=user_draft_team,
-            show_queue=True,
+            show_queue=active_current and not already_drafted,
             show_comparison=True,
             show_trend=True,
-            show_watchlist=True,
-            show_draft=True,
-            show_trade=True,
-            on_my_team=on_my,
+            show_watchlist=active_current,
+            show_draft=active_current,
+            show_trade_acquire=show_trade_acquire,
             can_draft=can_draft,
         )
+        if not active_current:
+            st.caption("Current fantasy actions are hidden for historical/inactive players. Compare, Trends, and historical analytics remain available.")
+        elif already_drafted:
+            st.caption("Draft queue is hidden because this player is already drafted.")
+        elif active_current and not show_trade_acquire:
+            st.caption("Trade / Acquire is hidden because this player is not on an active or saved team roster.")
+
+        _render_trade_acquire_flow_ui(key_prefix=flow_key_prefix)
 
         sim_lookup_df = (
             projection_lookup_df
@@ -10963,43 +11093,32 @@ def player_quick_actions_popover(
 
         extra = st.columns(2)
         with extra[0]:
-            st.button(
-                "Simulate Draft Pick",
-                key=f"plr_act_{sfx}_simulate_draft_button",
-                on_click=_on_simulate_draft_pick_click,
-                kwargs={
-                    "state_key": sim_state_key,
-                    "player_raw": pick,
-                    "team_name": team_for_draft,
-                    "lookup_df": sim_lookup_df,
-                    "lookup_name_col": sim_lookup_col,
-                },
-            )
+            if active_current and has_draft_room_context():
+                st.button(
+                    "Simulate Draft Pick",
+                    key=f"plr_act_{sfx}_simulate_draft_button",
+                    on_click=_on_simulate_draft_pick_click,
+                    kwargs={
+                        "state_key": sim_state_key,
+                        "player_raw": pick,
+                        "team_name": team_for_draft,
+                        "lookup_df": sim_lookup_df,
+                        "lookup_name_col": sim_lookup_col,
+                    },
+                )
         with extra[1]:
-            st.button(
-                "Projection breakdown",
-                key=f"plr_act_{sfx}_projection_breakdown_button",
-                on_click=_on_projection_breakdown_click,
-                kwargs={
-                    "dialog_state_key": proj_dialog_key,
-                    "player_raw": pick,
-                    "projection_lookup_df": projection_lookup_df,
-                    "projection_lookup_name_col": projection_lookup_name_col,
-                },
-            )
-
-
-def is_active_recent_player(player_id, source_df):
-    """Active/recent = played in 2025/2026 if present, or within 1 season of latest dataset year."""
-    if source_df is None or source_df.empty or "playerID" not in source_df.columns or "yearID" not in source_df.columns:
-        return False
-    years = pd.to_numeric(source_df.loc[source_df["playerID"] == player_id, "yearID"], errors="coerce").dropna()
-    if years.empty:
-        return False
-    latest_player_year = int(years.max())
-    all_years_local = pd.to_numeric(source_df["yearID"], errors="coerce").dropna()
-    latest_dataset_year = int(all_years_local.max()) if not all_years_local.empty else latest_player_year
-    return latest_player_year in (2025, 2026) or latest_player_year >= latest_dataset_year - 1
+            if active_current:
+                st.button(
+                    "Projection breakdown",
+                    key=f"plr_act_{sfx}_projection_breakdown_button",
+                    on_click=_on_projection_breakdown_click,
+                    kwargs={
+                        "dialog_state_key": proj_dialog_key,
+                        "player_raw": pick,
+                        "projection_lookup_df": projection_lookup_df,
+                        "projection_lookup_name_col": projection_lookup_name_col,
+                    },
+                )
 
 
 def render_contextual_player_actions(
@@ -11015,12 +11134,10 @@ def render_contextual_player_actions(
 ):
     """Compact context-aware actions for Comparison and Significance selected players."""
     player_name = fullname_base_from_label(label)
-    active_recent = is_active_recent_player(player_id, source_df)
+    active_current = is_active_current_player({"playerID": player_id, "fullName": player_name}, source_df=source_df)
     already_drafted = player_name in _drafted_player_names_from_room()
-    active_available = active_recent and not already_drafted
-    teams = get_draft_room_team_options()
-    ownership_known = bool(team_name) and bool(teams)
-    on_my_team = player_on_fantasy_team(player_name, team_name) if ownership_known else False
+    active_available = active_current and not already_drafted
+    show_trade_acquire = active_current and player_has_roster_context(st.session_state, player_name)
     label_map = label_map or get_clean_player_label_map_yearly(source_df)
     try:
         from draft_actions import can_draft_player
@@ -11029,28 +11146,32 @@ def render_contextual_player_actions(
     except Exception:
         draft_ok = False
     act_id = _qa_key_suffix(f"{key_prefix}|{player_name}")
+    flow_key_prefix = f"ctx_{act_id}"
     with st.popover(f"Actions: {player_name}"):
-        st.caption("Active/recent player" if active_recent else "Historical player")
+        st.caption("Active/current player" if active_current else "Historical/inactive player")
         _render_player_action_button_row(
             label,
-            key_prefix=f"ctx_{act_id}",
+            key_prefix=flow_key_prefix,
             label_map=label_map,
             team_name=team_name,
             user_draft_team=team_name,
             show_queue=active_available,
             show_comparison=True,
             show_trend=True,
-            show_watchlist=True,
+            show_watchlist=active_current,
             show_draft=active_available and draft_ok,
-            show_trade=ownership_known and active_recent,
-            on_my_team=on_my_team,
+            show_trade_acquire=show_trade_acquire,
             can_draft=active_available and draft_ok,
         )
 
-        if not active_recent:
-            st.caption("Fantasy draft and trade actions are hidden for historical-only players.")
+        if not active_current:
+            st.caption("Watchlist, projection, draft, queue, and trade actions are hidden for historical/inactive players.")
         if already_drafted:
             st.caption("Draft queue is hidden because this player is already drafted.")
+        elif active_current and not show_trade_acquire:
+            st.caption("Trade / Acquire is hidden because this player is not on an active or saved team roster.")
+
+        _render_trade_acquire_flow_ui(key_prefix=flow_key_prefix)
 
         ctx_sim_key = f"ctx_{act_id}_draft_simulation_result"
         ctx_proj_key = f"ctx_{act_id}_projection_breakdown_pending"
@@ -11065,18 +11186,19 @@ def render_contextual_player_actions(
             else "fullName"
         )
 
-        st.button(
-            "Projection breakdown",
-            key=f"plr_act_{act_id}_projection_breakdown_button",
-            on_click=_on_projection_breakdown_click,
-            kwargs={
-                "dialog_state_key": ctx_proj_key,
-                "player_raw": player_name,
-                "projection_lookup_df": projection_lookup_df,
-                "projection_lookup_name_col": projection_lookup_name_col,
-            },
-        )
-        _maybe_show_projection_breakdown_dialog(ctx_proj_key)
+        if active_current:
+            st.button(
+                "Projection breakdown",
+                key=f"plr_act_{act_id}_projection_breakdown_button",
+                on_click=_on_projection_breakdown_click,
+                kwargs={
+                    "dialog_state_key": ctx_proj_key,
+                    "player_raw": player_name,
+                    "projection_lookup_df": projection_lookup_df,
+                    "projection_lookup_name_col": projection_lookup_name_col,
+                },
+            )
+            _maybe_show_projection_breakdown_dialog(ctx_proj_key)
 
         if active_available:
             st.button(
@@ -11094,8 +11216,6 @@ def render_contextual_player_actions(
             sim_result = st.session_state.get(ctx_sim_key)
             if isinstance(sim_result, dict):
                 render_draft_simulation_result(sim_result)
-        elif not ownership_known:
-            st.caption("Trade actions need a Draft Room team selected on Comparison Tool.")
 
 
 def clickable_player_draft_table(df, player_col="Player", team_name=None, key="clickable_draft_table", title="Clickable Draft Table"):
@@ -15226,7 +15346,7 @@ if active_page == "Comparison Tool":
             pass
 
     if selected_labels_compare:
-        st.caption("Context-aware actions: historical players only show historical/watchlist actions; active players show fantasy workflow actions.")
+        st.caption("Context-aware actions: historical players keep Compare and Trends; active players also get fantasy workflow actions.")
         action_cols = st.columns(min(3, len(selected_labels_compare)))
         for i, label in enumerate(selected_labels_compare):
             with action_cols[i % len(action_cols)]:
