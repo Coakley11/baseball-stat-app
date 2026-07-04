@@ -13499,9 +13499,9 @@ if not _submit_insight_run or not st.session_state.get("_ami_insight_render_succ
 if _submit_insight_run:
     st.session_state.pop("_ami_submit_render_insight_this_run", None)
 
-# Drop restored file_uploader widget keys only (restoring them crashes Streamlit).
+# Drop restored ephemeral widget keys (file_uploader / buttons — assigning them crashes Streamlit).
 for _ephemeral_key in list(st.session_state.keys()):
-    if pg_state._is_file_uploader_widget_key(_ephemeral_key):
+    if pg_state._is_file_uploader_widget_key(_ephemeral_key) or pg_state._is_ephemeral_widget_key(_ephemeral_key):
         st.session_state.pop(_ephemeral_key, None)
 
 if not pp.is_screenshot_mode(st):

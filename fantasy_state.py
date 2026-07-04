@@ -149,8 +149,20 @@ def is_fantasy_standings_state_key(key: str) -> bool:
     return k in STANDINGS_FILTER_KEYS or k.startswith("standings_")
 
 
+def _is_ephemeral_lineup_widget_key(key: str) -> bool:
+    try:
+        from page_state import _is_ephemeral_widget_key
+
+        return _is_ephemeral_widget_key(key)
+    except ImportError:
+        k = str(key or "")
+        return "_remove_trade_" in k or "_remove_acquire_" in k
+
+
 def is_fantasy_lineup_state_key(key: str) -> bool:
     k = str(key or "")
+    if _is_ephemeral_lineup_widget_key(k):
+        return False
     if k in LINEUP_FILTER_KEYS:
         return True
     return k.startswith("lineup_") and not k.startswith("lineup_context_")
@@ -571,6 +583,8 @@ def prepare_fantasy_section_filters(session: dict[str, Any], section: str) -> No
         if key in _draft_shared_filter_keys():
             continue
         if key in session:
+            continue
+        if _is_ephemeral_lineup_widget_key(key):
             continue
         if key in merged:
             session[key] = _normalize_filter_value(key, merged[key])

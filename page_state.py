@@ -183,6 +183,15 @@ def _is_ephemeral_widget_key(key: str) -> bool:
         for tag in ("_queue_", "_cmp_", "_tr_", "_da_", "_draft_", "_sim_", "_tacq_", "_taw_", "_proj_")
     ):
         return True
+    if "_remove_trade_" in k or "_remove_acquire_" in k:
+        return True
+    if k.startswith("lineup_trade_proposals_") and any(
+        tag in k
+        for tag in ("_analyze_", "_counter_", "_accept_", "_decline_", "_cancel_", "_propose_btn")
+    ):
+        return True
+    if k.endswith("_pending_remove_trade") or k.endswith("_pending_remove_acquire"):
+        return False
     return False
 
 
