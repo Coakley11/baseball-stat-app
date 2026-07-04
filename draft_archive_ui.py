@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from draft_archive_state import (
-    activate_draft_archive,
     clear_active_draft_archive,
     delete_draft_archive,
     draft_type_display,
@@ -16,7 +15,17 @@ from draft_archive_state import (
     rename_draft_archive,
     save_live_draft_team_archive,
     save_simulator_team_archive,
-    set_active_draft_archive,
+)
+from fantasy_league_context import (
+    activate_archive_league_context,
+    clear_active_league_context,
+    get_active_league_context,
+    get_league_context_for_archive,
+    league_context_coverage_badge,
+    league_context_type_badge,
+    league_team_count,
+    save_live_draft_league_context,
+    save_simulator_league_context,
 )
 
 SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
@@ -63,10 +72,26 @@ def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
         pass
 
 
-def _badge_html(entry: dict[str, Any]) -> str:
+def _draft_type_badge_html(entry: dict[str, Any]) -> str:
     label = draft_type_display(entry)
     css = "ld-archive-badge-live" if label == "Live Draft" else "ld-archive-badge-sim"
     return f'<span class="ld-archive-badge {css}">{label}</span>'
+
+
+def _context_badge_html(label: str, css_class: str) -> str:
+    if not label:
+        return ""
+    return f'<span class="ld-archive-badge {css_class}">{label}</span>'
+
+
+def _context_badges_html(session: dict[str, Any], entry: dict[str, Any]) -> str:
+    context = get_league_context_for_archive(session, entry)
+    parts = [
+        _draft_type_badge_html(entry),
+        _context_badge_html(league_context_coverage_badge(context), "ld-archive-badge-coverage"),
+        _context_badge_html(league_context_type_badge(context), "ld-archive-badge-context-type"),
+    ]
+    return "".join(p for p in parts if p)
 
 
 def render_active_saved_draft_chip(
@@ -78,13 +103,19 @@ def render_active_saved_draft_chip(
 ) -> None:
     """Compact active-draft indicator with link to the library."""
     active = get_active_draft_archive(session)
+    active_context = get_active_league_context(session)
     chip_left, chip_right = st.columns([4, 1])
     with chip_left:
         if active:
+            context = active_context or get_league_context_for_archive(session, active)
+            team_count = league_team_count(context, active)
+            coverage = league_context_coverage_badge(context)
             st.markdown(
                 f"**Active Saved Draft:** {active.get('draft_name', 'Saved Draft')} · "
-                f"**{draft_type_display(active)}** · {active.get('team_name', '')} · "
-                f"{len(active.get('players') or [])} players · "
+                f"**{draft_type_display(active)}** · {coverage} · "
+                f"{active.get('team_name', '')} · "
+                f"{team_count} team{'s' if team_count != 1 else ''} · "
+                f"{len(active.get('players') or [])} players on your roster · "
                 f"Updated {format_archive_modified(active)}",
                 unsafe_allow_html=False,
             )
@@ -103,11 +134,28 @@ def render_active_saved_draft_chip(
             st.rerun()
 
 
-def _render_post_save_actions(st: Any, session: dict[str, Any], entry: dict[str, Any], *, page_label_fn=None) -> None:
-    st.success(
-        f"Saved **{entry.get('draft_name')}** ({len(entry.get('players') or [])} players). "
-        "Set active for Standings and Lineup analysis."
-    )
+def _render_post_save_actions(
+    st: Any,
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    page_label_fn=None,
+    context: dict[str, Any] | None = None,
+    league_save: bool = False,
+) -> None:
+    context = context or get_league_context_for_archive(session, entry)
+    team_count = league_team_count(context, entry)
+    if league_save and context:
+        st.success(
+            f"Saved **{entry.get('draft_name')}** as a **{league_context_coverage_badge(context)}** "
+            f"({team_count} teams, {len(entry.get('players') or [])} players on your roster). "
+            "Set active for Standings and Lineup analysis."
+        )
+    else:
+        st.success(
+            f"Saved **{entry.get('draft_name')}** ({len(entry.get('players') or [])} players). "
+            "Set active for Standings and Lineup analysis."
+        )
     view_col, standings_col = st.columns(2)
     with view_col:
         if st.button(
@@ -138,32 +186,67 @@ def render_save_live_draft_team(
     cfg = dict(room.get("config") or {})
     if not team_name or team_name == "—":
         return
-    with st.expander("Save completed draft team", expanded=False):
+    with st.expander("Save completed draft", expanded=False):
         draft_name = st.text_input(
-            "Draft name",
+            "League context name",
             value=f"{cfg.get('league_name', 'Live Draft')} — {team_name}",
             key=f"{key_prefix}_name_input",
         )
-        if st.button("Save Draft Team", key=f"{key_prefix}_save_btn", type="secondary"):
-            try:
-                entry = save_live_draft_team_archive(
-                    session,
-                    room,
-                    team_name=team_name,
-                    draft_name=draft_name,
-                )
-                set_active_draft_archive(session, str(entry.get("draft_id") or ""))
-                _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="live_draft_archive_saved")
+        st.caption(
+            "**Save League Context** stores all team rosters from this live draft. "
+            "**Save my team only** keeps the legacy single-team snapshot."
+        )
+        save_col, legacy_col = st.columns(2)
+        with save_col:
+            if st.button("Save League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
                 try:
-                    from baseball_archive_activity import log_saved_draft_archived
+                    entry, context = save_live_draft_league_context(
+                        session,
+                        room,
+                        my_team_name=team_name,
+                        draft_name=draft_name,
+                    )
+                    _clear_fantasy_caches_on_archive_change(session)
+                    _persist_archive(session, st, reason="live_draft_league_context_saved")
+                    try:
+                        from baseball_archive_activity import log_saved_draft_archived
 
-                    log_saved_draft_archived(entry, session=session)
-                except ImportError:
-                    pass
-                _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
-            except Exception as exc:
-                st.error(f"Could not save draft team: {exc}")
+                        log_saved_draft_archived(entry, session=session)
+                    except ImportError:
+                        pass
+                    _render_post_save_actions(
+                        st,
+                        session,
+                        entry,
+                        page_label_fn=page_label_fn,
+                        context=context,
+                        league_save=True,
+                    )
+                except Exception as exc:
+                    st.error(f"Could not save league context: {exc}")
+        with legacy_col:
+            if st.button("Save my team only", key=f"{key_prefix}_save_team_btn", type="secondary"):
+                try:
+                    entry = save_live_draft_team_archive(
+                        session,
+                        room,
+                        team_name=team_name,
+                        draft_name=draft_name,
+                    )
+                    from draft_archive_state import set_active_draft_archive
+
+                    set_active_draft_archive(session, str(entry.get("draft_id") or ""))
+                    _clear_fantasy_caches_on_archive_change(session)
+                    _persist_archive(session, st, reason="live_draft_archive_saved")
+                    try:
+                        from baseball_archive_activity import log_saved_draft_archived
+
+                        log_saved_draft_archived(entry, session=session)
+                    except ImportError:
+                        pass
+                    _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
+                except Exception as exc:
+                    st.error(f"Could not save draft team: {exc}")
 
 
 def render_save_simulator_draft_team(
@@ -177,34 +260,69 @@ def render_save_simulator_draft_team(
 ) -> None:
     if not team_name or team_name == "—":
         return
-    with st.expander("Save draft team for Standings / Lineup", expanded=False):
-        st.caption("Save your team's roster from this mock draft without replacing the live board.")
+    with st.expander("Save mock draft league context", expanded=False):
+        st.caption(
+            "Save the full mock draft as a **Mock Draft Simulation** league context, "
+            "or save your team only as a legacy snapshot."
+        )
         draft_name = st.text_input(
-            "Draft name",
+            "League context name",
             value=f"Simulator — {team_name}",
             key=f"{key_prefix}_name_input",
         )
-        if st.button("Save Draft Team", key=f"{key_prefix}_save_btn", type="secondary"):
-            try:
-                entry = save_simulator_team_archive(
-                    session,
-                    board_df,
-                    team_name=team_name,
-                    draft_name=draft_name,
-                    config=dict(session.get("draft_shared_settings") or {}),
-                )
-                set_active_draft_archive(session, str(entry.get("draft_id") or ""))
-                _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="simulator_draft_archive_saved")
+        save_col, legacy_col = st.columns(2)
+        with save_col:
+            if st.button("Save Mock League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
                 try:
-                    from baseball_archive_activity import log_saved_draft_archived
+                    entry, context = save_simulator_league_context(
+                        session,
+                        board_df,
+                        my_team_name=team_name,
+                        draft_name=draft_name,
+                        config=dict(session.get("draft_shared_settings") or {}),
+                    )
+                    _clear_fantasy_caches_on_archive_change(session)
+                    _persist_archive(session, st, reason="simulator_league_context_saved")
+                    try:
+                        from baseball_archive_activity import log_saved_draft_archived
 
-                    log_saved_draft_archived(entry, session=session)
-                except ImportError:
-                    pass
-                _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
-            except Exception as exc:
-                st.error(f"Could not save draft team: {exc}")
+                        log_saved_draft_archived(entry, session=session)
+                    except ImportError:
+                        pass
+                    _render_post_save_actions(
+                        st,
+                        session,
+                        entry,
+                        page_label_fn=page_label_fn,
+                        context=context,
+                        league_save=True,
+                    )
+                except Exception as exc:
+                    st.error(f"Could not save mock league context: {exc}")
+        with legacy_col:
+            if st.button("Save my team only", key=f"{key_prefix}_save_team_btn", type="secondary"):
+                try:
+                    entry = save_simulator_team_archive(
+                        session,
+                        board_df,
+                        team_name=team_name,
+                        draft_name=draft_name,
+                        config=dict(session.get("draft_shared_settings") or {}),
+                    )
+                    from draft_archive_state import set_active_draft_archive
+
+                    set_active_draft_archive(session, str(entry.get("draft_id") or ""))
+                    _clear_fantasy_caches_on_archive_change(session)
+                    _persist_archive(session, st, reason="simulator_draft_archive_saved")
+                    try:
+                        from baseball_archive_activity import log_saved_draft_archived
+
+                        log_saved_draft_archived(entry, session=session)
+                    except ImportError:
+                        pass
+                    _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
+                except Exception as exc:
+                    st.error(f"Could not save draft team: {exc}")
 
 
 def _render_archive_actions(
@@ -213,11 +331,16 @@ def _render_archive_actions(
     entry: dict[str, Any],
     *,
     active_id: str,
+    active_context_id: str,
 ) -> None:
     draft_id = str(entry.get("draft_id") or "")
     if not draft_id:
         return
-    is_active = draft_id == active_id
+    context = get_league_context_for_archive(session, entry)
+    league_context_id = str((context or {}).get("league_context_id") or entry.get("league_context_id") or "").strip()
+    is_active = draft_id == active_id and (
+        not active_context_id or not league_context_id or league_context_id == active_context_id
+    )
     rename_val = st.text_input(
         "Rename",
         value=str(entry.get("draft_name") or ""),
@@ -228,22 +351,28 @@ def _render_archive_actions(
     btn1, btn2, btn3, btn4 = st.columns(4)
     with btn1:
         if st.button(
-            "Active" if is_active else "Set Active",
+            "Active" if is_active else "Set Active League Context",
             key=f"archive_active_{draft_id}",
             type="primary" if is_active else "secondary",
             disabled=is_active,
             use_container_width=True,
         ):
-            loaded = activate_draft_archive(session, draft_id)
-            if loaded:
+            loaded_entry, loaded_context = activate_archive_league_context(session, draft_id)
+            if loaded_entry:
                 _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="draft_archive_activated")
+                _persist_archive(session, st, reason="league_context_activated")
                 try:
                     from baseball_archive_activity import log_saved_draft_activated
 
-                    log_saved_draft_activated(entry, session=session, target_page="Saved Draft Library")
+                    log_saved_draft_activated(
+                        loaded_entry,
+                        session=session,
+                        target_page="Saved Draft Library",
+                    )
                 except ImportError:
                     pass
+                if loaded_context:
+                    st.toast(f"Active league context: {loaded_context.get('display_name', loaded_entry.get('draft_name'))}")
                 st.rerun()
     with btn2:
         if st.button("Rename", key=f"archive_rename_btn_{draft_id}", use_container_width=True):
@@ -295,6 +424,8 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
         }
         .ld-archive-badge-live { background: #1f4e79; color: #fff; }
         .ld-archive-badge-sim { background: #3d5a3d; color: #fff; }
+        .ld-archive-badge-coverage { background: #5b4b8a; color: #fff; }
+        .ld-archive-badge-context-type { background: #6b4f2a; color: #fff; }
         .ld-archive-card {
             border: 1px solid rgba(128,128,128,0.25);
             border-radius: 0.65rem;
@@ -312,11 +443,14 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
 
     archives = list_draft_archives(session)
     active = get_active_draft_archive(session)
+    active_context = get_active_league_context(session)
     active_id = str((active or {}).get("draft_id") or "")
+    active_context_id = str((active_context or {}).get("league_context_id") or "")
 
     st.caption(
-        "Keep multiple saved teams — current season roster, mock drafts, live draft results, and practice drafts. "
-        "Setting one **Active** tells **Standings Tracker** and **Lineup Assistant** which roster to analyze."
+        "Keep multiple saved teams and league contexts — current season roster, mock drafts, live draft results, "
+        "and practice drafts. Setting one **Active League Context** tells **Standings Tracker** and "
+        "**Lineup Assistant** which roster to analyze."
     )
 
     top_left, top_right = st.columns([3, 1])
@@ -325,6 +459,7 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
     with top_right:
         if active and st.button("Clear active draft", key="library_clear_active", use_container_width=True):
             clear_active_draft_archive(session)
+            clear_active_league_context(session)
             _clear_fantasy_caches_on_archive_change(session)
             _persist_archive(session, st, reason="draft_archive_cleared")
             st.rerun()
@@ -332,7 +467,7 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
     if not archives:
         st.info(
             "No saved drafts yet. Finish a **Live Draft Room** or **Draft Room Simulator** draft, "
-            "then use **Save Draft Team**."
+            "then use **Save League Context** or **Save Mock League Context**."
         )
         nav1, nav2 = st.columns(2)
         with nav1:
@@ -355,20 +490,32 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
 
     for entry in archives:
         draft_id = str(entry.get("draft_id") or "")
-        is_active = draft_id == active_id
+        context = get_league_context_for_archive(session, entry)
+        league_context_id = str((context or {}).get("league_context_id") or entry.get("league_context_id") or "")
+        is_active = draft_id == active_id and (
+            not active_context_id or not league_context_id or league_context_id == active_context_id
+        )
         card_class = "ld-archive-card ld-archive-active" if is_active else "ld-archive-card"
         player_n = len(entry.get("players") or [])
+        team_n = league_team_count(context, entry)
         title = str(entry.get("draft_name") or "Saved Draft")
         team = str(entry.get("team_name") or "—")
         modified = format_archive_modified(entry)
-        active_tag = " · **ACTIVE**" if is_active else ""
+        active_tag = " · **ACTIVE LEAGUE CONTEXT**" if is_active else ""
         st.markdown(
-            f'<div class="{card_class}">{_badge_html(entry)}'
+            f'<div class="{card_class}">{_context_badges_html(session, entry)}'
             f"<strong>{title}</strong>{active_tag}<br>"
-            f"<span style='opacity:0.85'>{team} · {player_n} players · Updated {modified}</span></div>",
+            f"<span style='opacity:0.85'>{team} · {team_n} team{'s' if team_n != 1 else ''} · "
+            f"{player_n} players on your roster · Updated {modified}</span></div>",
             unsafe_allow_html=True,
         )
-        _render_archive_actions(st, session, entry, active_id=active_id)
+        _render_archive_actions(
+            st,
+            session,
+            entry,
+            active_id=active_id,
+            active_context_id=active_context_id,
+        )
 
     st.divider()
     st.markdown("##### Analyze an active saved draft")

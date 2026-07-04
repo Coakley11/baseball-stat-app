@@ -88,6 +88,8 @@ def save_draft_archive(
     roster_rows: list[dict[str, Any]] | None = None,
     pick_rows: list[dict[str, Any]] | None = None,
     draft_id: str | None = None,
+    league_rosters: dict[str, dict[str, Any]] | None = None,
+    league_context_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist one saved draft team snapshot."""
     now = _utc_now_iso()
@@ -113,6 +115,10 @@ def save_draft_archive(
         "players": copy.deepcopy(roster_rows or []),
         "picks": copy.deepcopy(pick_rows or []),
     }
+    if league_rosters is not None:
+        entry["league_rosters"] = copy.deepcopy(league_rosters)
+    if league_context_id:
+        entry["league_context_id"] = str(league_context_id).strip()
     entries = _archive_list(session)
     replaced = False
     for i, existing in enumerate(entries):

@@ -36,13 +36,20 @@ from fantasy_league_context import (
     ensure_fantasy_league_context_state,
     get_active_league_context,
     get_league_context,
+    get_league_context_for_archive,
     has_full_league_rosters,
+    league_context_coverage_badge,
+    league_context_type_badge,
+    league_team_count,
     list_league_contexts,
     migrate_archive_to_league_context,
     migrate_legacy_archives_to_contexts,
     save_league_context,
+    save_live_draft_league_context,
+    save_simulator_league_context,
     set_active_league_context,
     upsert_league_context,
+    activate_archive_league_context,
 )
 
 
@@ -335,6 +342,71 @@ class FantasyLeagueContextPersistenceTests(unittest.TestCase):
         loaded = get_league_context(session, "live:wrapper01")
         assert loaded is not None
         self.assertEqual(loaded["display_name"], "Home League — Daniel")
+
+
+class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
+    def test_save_live_draft_league_context_full_league(self) -> None:
+        session: dict = {}
+        entry, context = save_live_draft_league_context(
+            session,
+            _live_room_fixture(),
+            my_team_name="Daniel",
+            draft_name="Home League — Daniel",
+        )
+        self.assertEqual(len(entry.get("league_rosters") or {}), 3)
+        self.assertEqual(entry.get("league_context_id"), context_id_for_archive(str(entry["draft_id"])))
+        self.assertTrue(has_full_league_rosters(context))
+        self.assertEqual(context["context_type"], CONTEXT_TYPE_LIVE_DRAFT_RESULT)
+        self.assertEqual(league_context_coverage_badge(context), "Full League Context")
+        active = get_active_league_context(session)
+        assert active is not None
+        self.assertEqual(active["league_context_id"], context["league_context_id"])
+
+    def test_save_simulator_league_context_mock_draft(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Round": 1},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2, "Round": 1},
+            ]
+        )
+        entry, context = save_simulator_league_context(
+            session,
+            board,
+            my_team_name="Daniel",
+            draft_name="Mock 2026",
+        )
+        self.assertEqual(len(entry.get("league_rosters") or {}), 2)
+        self.assertEqual(context["context_type"], CONTEXT_TYPE_MOCK_DRAFT_SIMULATION)
+        self.assertEqual(league_context_type_badge(context), "Mock Draft Simulation")
+        self.assertEqual(league_context_coverage_badge(context), "Full League Context")
+
+    def test_legacy_archive_badges(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Round": 1}])
+        entry = save_simulator_team_archive(session, board, team_name="Daniel")
+        migrate_legacy_archives_to_contexts(session)
+        context = get_league_context_for_archive(session, entry)
+        assert context is not None
+        self.assertEqual(league_context_coverage_badge(context), "My Team Only / Legacy")
+        self.assertEqual(league_context_type_badge(context), "Mock Draft Simulation")
+        self.assertEqual(league_team_count(context, entry), 1)
+
+    def test_activate_archive_league_context(self) -> None:
+        session: dict = {}
+        entry, _ = save_live_draft_league_context(
+            session,
+            _live_room_fixture(),
+            my_team_name="Daniel",
+        )
+        clear_active_league_context(session)
+        from draft_archive_state import clear_active_draft_archive
+
+        clear_active_draft_archive(session)
+        loaded_entry, loaded_context = activate_archive_league_context(session, str(entry["draft_id"]))
+        assert loaded_entry is not None
+        assert loaded_context is not None
+        self.assertEqual(get_active_league_context(session)["league_context_id"], loaded_context["league_context_id"])
 
 
 if __name__ == "__main__":

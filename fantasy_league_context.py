@@ -430,6 +430,7 @@ def create_league_context_from_live_room(
     league_name: str = "",
     display_name: str = "",
     league_context_id: str | None = None,
+    source_draft_id: str = "",
 ) -> dict[str, Any]:
     cfg = dict(room.get("config") or {})
     my_team = str(my_team_name or "").strip()
@@ -456,6 +457,7 @@ def create_league_context_from_live_room(
         },
         display_name=label,
         source=SOURCE_LIVE_DRAFT_ROOM,
+        source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
     return upsert_league_context(session, context)
@@ -470,6 +472,7 @@ def create_league_context_from_simulator_board(
     league_name: str = "",
     display_name: str = "",
     league_context_id: str | None = None,
+    source_draft_id: str = "",
 ) -> dict[str, Any]:
     cfg = dict(config or session.get("draft_shared_settings") or {})
     my_team = str(my_team_name or "").strip()
@@ -496,9 +499,179 @@ def create_league_context_from_simulator_board(
         },
         display_name=label,
         source=SOURCE_DRAFT_SIMULATOR,
+        source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
     return upsert_league_context(session, context)
+
+
+def get_league_context_for_archive(session: dict[str, Any], archive_entry: dict[str, Any]) -> dict[str, Any] | None:
+    draft_id = str(archive_entry.get("draft_id") or "").strip()
+    if not draft_id:
+        return None
+    linked_id = str(archive_entry.get("league_context_id") or "").strip()
+    if linked_id:
+        context = get_league_context(session, linked_id)
+        if context:
+            return context
+    return get_league_context(session, context_id_for_archive(draft_id))
+
+
+def league_context_coverage_badge(context: dict[str, Any] | None) -> str:
+    if has_full_league_rosters(context):
+        return "Full League Context"
+    return "My Team Only / Legacy"
+
+
+def league_context_type_badge(context: dict[str, Any] | None) -> str:
+    if not context:
+        return ""
+    context_type = str(context.get("context_type") or "")
+    if context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION:
+        return "Mock Draft Simulation"
+    if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
+        return "Live Draft Result"
+    if context_type == CONTEXT_TYPE_REAL_LEAGUE:
+        return "Real League"
+    return ""
+
+
+def league_team_count(context: dict[str, Any] | None, archive_entry: dict[str, Any] | None = None) -> int:
+    if context:
+        rosters = context.get("league_rosters") or {}
+        if isinstance(rosters, dict) and rosters:
+            return len(rosters)
+    if archive_entry:
+        rosters = archive_entry.get("league_rosters") or {}
+        if isinstance(rosters, dict) and rosters:
+            return len(rosters)
+    if archive_entry:
+        return 1 if str(archive_entry.get("team_name") or "").strip() else 0
+    return 0
+
+
+def save_live_draft_league_context(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    my_team_name: str,
+    draft_name: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Save full live-draft league context plus linked archive entry."""
+    from draft_archive_state import save_live_draft_team_archive
+
+    my_team = str(my_team_name or "").strip()
+    league_rosters = build_league_rosters_from_live_room(room, my_team)
+    cfg = dict(room.get("config") or {})
+    label = str(draft_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — {my_team}"
+    entry = save_live_draft_team_archive(
+        session,
+        room,
+        team_name=my_team,
+        draft_name=label,
+    )
+    draft_id = str(entry.get("draft_id") or "")
+    league_context_id = context_id_for_archive(draft_id)
+    entry = save_draft_archive_with_league_context(
+        session,
+        draft_id=draft_id,
+        league_rosters=league_rosters,
+        league_context_id=league_context_id,
+    )
+    context = create_league_context_from_live_room(
+        session,
+        room,
+        my_team_name=my_team,
+        display_name=label,
+        league_name=str(cfg.get("league_name") or "Live Draft"),
+        league_context_id=league_context_id,
+        source_draft_id=draft_id,
+    )
+    activate_league_context(session, league_context_id)
+    return entry, context
+
+
+def save_simulator_league_context(
+    session: dict[str, Any],
+    board_df: pd.DataFrame,
+    *,
+    my_team_name: str,
+    draft_name: str = "",
+    config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Save full mock-draft league context plus linked archive entry."""
+    from draft_archive_state import save_simulator_team_archive
+
+    my_team = str(my_team_name or "").strip()
+    cfg = dict(config or session.get("draft_shared_settings") or {})
+    league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
+    label = str(draft_name or "").strip() or f"Simulator — {my_team}"
+    entry = save_simulator_team_archive(
+        session,
+        board_df,
+        team_name=my_team,
+        draft_name=label,
+        config=cfg,
+    )
+    draft_id = str(entry.get("draft_id") or "")
+    league_context_id = context_id_for_archive(draft_id)
+    entry = save_draft_archive_with_league_context(
+        session,
+        draft_id=draft_id,
+        league_rosters=league_rosters,
+        league_context_id=league_context_id,
+    )
+    context = create_league_context_from_simulator_board(
+        session,
+        board_df,
+        my_team_name=my_team,
+        display_name=label,
+        config=cfg,
+        league_context_id=league_context_id,
+        source_draft_id=draft_id,
+    )
+    activate_league_context(session, league_context_id)
+    return entry, context
+
+
+def save_draft_archive_with_league_context(
+    session: dict[str, Any],
+    *,
+    draft_id: str,
+    league_rosters: dict[str, dict[str, Any]],
+    league_context_id: str,
+) -> dict[str, Any]:
+    """Attach league_rosters and league_context_id to an existing archive entry."""
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, get_draft_archive
+
+    draft_id = str(draft_id or "").strip()
+    entry = get_draft_archive(session, draft_id)
+    if not entry:
+        return {}
+    entry["league_rosters"] = copy.deepcopy(league_rosters)
+    entry["league_context_id"] = str(league_context_id or "").strip()
+    raw = session.get(DRAFT_ARCHIVE_KEY)
+    entries = [dict(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+    for i, existing in enumerate(entries):
+        if str(existing.get("draft_id") or "") == draft_id:
+            entries[i] = copy.deepcopy(entry)
+            break
+    session[DRAFT_ARCHIVE_KEY] = entries
+    return copy.deepcopy(entry)
+
+
+def activate_archive_league_context(session: dict[str, Any], draft_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Activate saved draft archive and linked Fantasy League Context."""
+    from draft_archive_state import activate_draft_archive
+
+    draft_id = str(draft_id or "").strip()
+    entry = activate_draft_archive(session, draft_id)
+    if not entry:
+        return None, None
+    migrate_legacy_archives_to_contexts(session)
+    league_context_id = str(entry.get("league_context_id") or context_id_for_archive(draft_id)).strip()
+    context = activate_league_context(session, league_context_id)
+    return entry, context
 
 
 def migrate_legacy_archives_to_contexts(session: dict[str, Any]) -> int:
