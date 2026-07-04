@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,16 +26,20 @@ from fantasy_trade_proposals import (
     STALE_TRADE_MESSAGE,
     TRADE_PROPOSAL_STATUS_ACCEPTED,
     TRADE_PROPOSAL_STATUS_CANCELED,
+    TRADE_PROPOSAL_STATUS_COUNTERED,
     TRADE_PROPOSAL_STATUS_DECLINED,
+    TRADE_PROPOSAL_STATUS_EXPIRED,
     TRADE_PROPOSAL_STATUS_PENDING,
     accept_trade_proposal,
     cancel_trade_proposal,
+    counter_trade_proposal,
     consume_trade_proposal_handoff,
     create_trade_proposal,
     decline_trade_proposal,
     get_incoming_trade_proposals,
     get_outgoing_trade_proposals,
     get_trade_notifications,
+    get_display_status,
     navigate_to_trade_proposal,
     recipient_view,
 )
@@ -55,6 +60,10 @@ def _board() -> pd.DataFrame:
         [
             {"Team": "Donny", "Player": "Player A", "Pick": 1},
             {"Team": "Team 2", "Player": "Player B", "Pick": 2},
+            {"Team": "Donny", "Player": "Player C", "Pick": 3},
+            {"Team": "Team 2", "Player": "Player D", "Pick": 4},
+            {"Team": "Donny", "Player": "Player E", "Pick": 5},
+            {"Team": "Team 2", "Player": "Player F", "Pick": 6},
         ]
     )
 
@@ -238,9 +247,102 @@ def main() -> None:
     stale_accept, stale_err = accept_trade_proposal(session_stale, str(stale_prop["proposal_id"]))
     if stale_accept is not None or stale_err != STALE_TRADE_MESSAGE:
         _fail(f"stale case failed: {stale_err!r}")
-    _ok("Stale case — accept blocked with expected message")
+    _ok("Stale case - accept blocked with expected message")
 
-    print("ALL TRADE PROPOSAL PHASE 2 SMOKE CHECKS PASSED")
+    # Phase 3: multi-player trade, counteroffers, expiration, and history.
+    session_multi: dict = {}
+    save_simulator_league_context(session_multi, _board(), my_team_name="Donny")
+    multi_prop, multi_err = create_trade_proposal(
+        session_multi,
+        proposer_team="Donny",
+        recipient_team="Team 2",
+        proposer_gives=["Player A", "Player C"],
+        proposer_receives=["Player B"],
+    )
+    if multi_err or not multi_prop:
+        _fail(f"multi-player propose failed: {multi_err}")
+    multi_accept, multi_accept_err = accept_trade_proposal(session_multi, str(multi_prop["proposal_id"]))
+    if multi_accept_err or not multi_accept:
+        _fail(f"multi-player accept failed: {multi_accept_err}")
+    multi_ctx = get_active_league_context(session_multi)
+    if multi_ctx is None:
+        _fail("no context after multi-player accept")
+    multi_owner = build_ownership_map(multi_ctx)
+    if multi_owner.get("player a", {}).get("owner_team") != "Team 2":
+        _fail("Player A not moved in multi-player accept")
+    if multi_owner.get("player c", {}).get("owner_team") != "Team 2":
+        _fail("Player C not moved in multi-player accept")
+    if multi_owner.get("player b", {}).get("owner_team") != "Donny":
+        _fail("Player B not moved in multi-player accept")
+    _ok("20. Phase 3 multi-player 2-for-1 accept updates all rosters")
+
+    session_counter: dict = {}
+    save_simulator_league_context(session_counter, _board(), my_team_name="Donny")
+    original, original_err = create_trade_proposal(
+        session_counter,
+        proposer_team="Donny",
+        recipient_team="Team 2",
+        proposer_gives=["Player A"],
+        proposer_receives=["Player B"],
+    )
+    if original_err or not original:
+        _fail(f"counter original propose failed: {original_err}")
+    counter, counter_err = counter_trade_proposal(
+        session_counter,
+        str(original["proposal_id"]),
+        countered_by_team="Team 2",
+        counter_gives=["Player B"],
+        counter_receives=["Player A", "Player C"],
+    )
+    if counter_err or not counter:
+        _fail(f"counteroffer failed: {counter_err}")
+    outgoing_original = get_outgoing_trade_proposals(session_counter, "Donny")
+    original_after = next((p for p in outgoing_original if p.get("proposal_id") == original["proposal_id"]), None)
+    if not original_after or original_after.get("status") != TRADE_PROPOSAL_STATUS_COUNTERED:
+        _fail("original proposal not marked countered")
+    counter_alerts = get_trade_notifications(session_counter, "Donny")
+    if not any(a.get("kind") == "counteroffer" and a.get("proposal_id") == counter["proposal_id"] for a in counter_alerts):
+        _fail(f"Donny missing counteroffer alert: {counter_alerts}")
+    blocked_original, blocked_err = accept_trade_proposal(session_counter, str(original["proposal_id"]))
+    if blocked_original is not None or "pending" not in str(blocked_err).lower():
+        _fail(f"countered original accepted or wrong error: {blocked_err}")
+    _ok("21. Phase 3 counteroffer links new proposal, closes original, and alerts proposer")
+
+    session_expiry: dict = {}
+    save_simulator_league_context(session_expiry, _board(), my_team_name="Donny")
+    expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).replace(microsecond=0).isoformat()
+    exp_prop, exp_err = create_trade_proposal(
+        session_expiry,
+        proposer_team="Donny",
+        recipient_team="Team 2",
+        proposer_gives=["Player A"],
+        proposer_receives=["Player B"],
+        expires_at=expired_at,
+    )
+    if exp_err or not exp_prop:
+        _fail(f"expired proposal create failed: {exp_err}")
+    exp_ctx = get_active_league_context(session_expiry)
+    if exp_ctx is None or get_display_status(exp_ctx, exp_prop) != TRADE_PROPOSAL_STATUS_EXPIRED:
+        _fail("expired display status wrong")
+    exp_accept, exp_accept_err = accept_trade_proposal(session_expiry, str(exp_prop["proposal_id"]))
+    if exp_accept is not None or "expired" not in str(exp_accept_err).lower():
+        _fail(f"expired trade accepted or wrong error: {exp_accept_err}")
+    exp_incoming = get_incoming_trade_proposals(session_expiry, "Team 2")
+    if exp_incoming[0].get("status") != TRADE_PROPOSAL_STATUS_EXPIRED:
+        _fail("expired status not persisted")
+    _ok("22. Phase 3 expiration blocks acceptance and persists expired status")
+
+    history = get_league_activity(get_active_league_context(session_counter))
+    history_summaries = [str(a.get("summary") or "") for a in history]
+    if not any("countered" in s.lower() for s in history_summaries):
+        _fail(f"countered trade missing from history: {history_summaries}")
+    exp_history = get_league_activity(get_active_league_context(session_expiry))
+    exp_summaries = [str(a.get("summary") or "") for a in exp_history]
+    if not any("expired" in s.lower() for s in exp_summaries):
+        _fail(f"expired trade missing from history: {exp_summaries}")
+    _ok("23. Phase 3 trade history records countered and expired statuses")
+
+    print("ALL TRADE PROPOSAL PHASE 2 + PHASE 3 SMOKE CHECKS PASSED")
 
 
 if __name__ == "__main__":

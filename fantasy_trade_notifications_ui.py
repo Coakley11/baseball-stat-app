@@ -52,11 +52,11 @@ def render_trade_notification_sidebar(st: Any, session: dict[str, Any]) -> None:
         pid = str(alert.get("proposal_id") or "")
         key = str(alert.get("alert_key") or pid)
         kind = str(alert.get("kind") or "")
-        if kind == "incoming":
+        if kind in ("incoming", "counteroffer"):
             st.sidebar.error(msg)
         elif kind in ("accepted",):
             st.sidebar.success(msg)
-        elif kind in ("declined", "canceled"):
+        elif kind in ("declined", "canceled", "countered", "expired"):
             st.sidebar.warning(msg)
         else:
             st.sidebar.info(msg)

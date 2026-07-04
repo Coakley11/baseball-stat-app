@@ -21,6 +21,8 @@ TRADE_PROPOSAL_STATUS_PENDING = "pending"
 TRADE_PROPOSAL_STATUS_ACCEPTED = "accepted"
 TRADE_PROPOSAL_STATUS_DECLINED = "declined"
 TRADE_PROPOSAL_STATUS_CANCELED = "canceled"
+TRADE_PROPOSAL_STATUS_COUNTERED = "countered"
+TRADE_PROPOSAL_STATUS_EXPIRED = "expired"
 TRADE_PROPOSAL_STATUS_STALE = "stale"
 TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_proposal_handoff"
 LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
@@ -31,6 +33,19 @@ STALE_TRADE_MESSAGE = (
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _parse_utc_datetime(raw: str) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _normalize_player_ref(player_name: str) -> dict[str, str]:
@@ -200,6 +215,59 @@ def _format_player_list(players: list[dict[str, Any]]) -> str:
     return ", ".join(names) if names else "—"
 
 
+def _trade_summary(proposal: dict[str, Any]) -> str:
+    proposer = str(proposal.get("proposer_team") or "").strip()
+    recipient = str(proposal.get("recipient_team") or "").strip()
+    gives_fmt = _format_player_list(proposal.get("proposer_gives") or [])
+    receives_fmt = _format_player_list(proposal.get("proposer_receives") or [])
+    return f"{proposer} traded {gives_fmt} to {recipient} for {receives_fmt}."
+
+
+def _record_trade_activity(context: dict[str, Any], proposal: dict[str, Any], action: str) -> None:
+    workflow = context.setdefault("workflow", {})
+    if not isinstance(workflow, dict):
+        workflow = {}
+        context["workflow"] = workflow
+    proposer = str(proposal.get("proposer_team") or "").strip()
+    recipient = str(proposal.get("recipient_team") or "").strip()
+    gives_fmt = _format_player_list(proposal.get("proposer_gives") or [])
+    receives_fmt = _format_player_list(proposal.get("proposer_receives") or [])
+    action_norm = str(action or "").strip()
+    labels = {
+        TRADE_PROPOSAL_STATUS_ACCEPTED: _trade_summary(proposal),
+        TRADE_PROPOSAL_STATUS_DECLINED: f"{recipient} declined {proposer}'s trade offer: {gives_fmt} for {receives_fmt}.",
+        TRADE_PROPOSAL_STATUS_CANCELED: f"{proposer} canceled trade offer to {recipient}: {gives_fmt} for {receives_fmt}.",
+        TRADE_PROPOSAL_STATUS_COUNTERED: f"{recipient} countered {proposer}'s trade offer.",
+        TRADE_PROPOSAL_STATUS_EXPIRED: f"Trade offer from {proposer} to {recipient} expired: {gives_fmt} for {receives_fmt}.",
+    }
+    activity = list(workflow.get("league_activity") or [])
+    activity.append(
+        {
+            "team_name": proposer,
+            "action": f"trade_{action_norm}",
+            "player_name": gives_fmt,
+            "counterparty": recipient,
+            "summary": labels.get(action_norm, _trade_summary(proposal)),
+            "proposal_id": str(proposal.get("proposal_id") or ""),
+            "recorded_at": _utc_now_iso(),
+        }
+    )
+    workflow["league_activity"] = activity[-100:]
+    context["workflow"] = workflow
+
+
+def is_trade_proposal_expired(proposal: dict[str, Any], *, now: datetime | None = None) -> bool:
+    if str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING) != TRADE_PROPOSAL_STATUS_PENDING:
+        return False
+    expires_at = _parse_utc_datetime(str(proposal.get("expires_at") or ""))
+    if expires_at is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc) >= expires_at
+
+
 def _alert_key(proposal_id: str, kind: str) -> str:
     return f"{proposal_id}:{kind}"
 
@@ -255,6 +323,8 @@ def get_display_status(context: dict[str, Any], proposal: dict[str, Any]) -> str
     status = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
     if status != TRADE_PROPOSAL_STATUS_PENDING:
         return status
+    if is_trade_proposal_expired(proposal):
+        return TRADE_PROPOSAL_STATUS_EXPIRED
     ok, _ = validate_proposal_for_acceptance(context, proposal)
     if not ok:
         return TRADE_PROPOSAL_STATUS_STALE
@@ -292,12 +362,13 @@ def get_trade_notifications(
             key = _alert_key(pid, "incoming")
             if key not in seen:
                 proposer = str(proposal.get("proposer_team") or "")
+                is_counter = bool(str(proposal.get("countered_from_proposal_id") or "").strip())
                 alerts.append(
                     {
                         "alert_key": key,
                         "proposal_id": pid,
-                        "kind": "incoming",
-                        "message": f"1 incoming trade offer from {proposer}",
+                        "kind": "counteroffer" if is_counter else "incoming",
+                        "message": f"Counteroffer from {proposer}" if is_counter else f"1 incoming trade offer from {proposer}",
                         "view_as_team": team,
                     }
                 )
@@ -342,15 +413,42 @@ def get_trade_notifications(
                         "view_as_team": team,
                     }
                 )
+        elif status == TRADE_PROPOSAL_STATUS_COUNTERED:
+            key = _alert_key(pid, "countered")
+            if key not in seen:
+                alerts.append(
+                    {
+                        "alert_key": key,
+                        "proposal_id": pid,
+                        "kind": "countered",
+                        "message": f"Trade countered by {recipient}",
+                        "view_as_team": team,
+                    }
+                )
+        elif status == TRADE_PROPOSAL_STATUS_EXPIRED:
+            key = _alert_key(pid, "expired")
+            if key not in seen:
+                alerts.append(
+                    {
+                        "alert_key": key,
+                        "proposal_id": pid,
+                        "kind": "expired",
+                        "message": f"Trade offer to {recipient} expired",
+                        "view_as_team": team,
+                    }
+                )
 
     return alerts
 
 
 def pending_incoming_count(session: dict[str, Any], team_name: str) -> int:
+    context = get_active_league_context(session)
+    if not context:
+        return 0
     return sum(
         1
         for p in get_incoming_trade_proposals(session, team_name)
-        if str(p.get("status") or "") == TRADE_PROPOSAL_STATUS_PENDING
+        if get_display_status(context, p) == TRADE_PROPOSAL_STATUS_PENDING
     )
 
 
@@ -373,6 +471,10 @@ def validate_proposal_players(
         return False, "Proposer and recipient must be different teams."
     if not proposer_gives or not proposer_receives:
         return False, "Trade must include at least one player on each side."
+    if len(proposer_gives) > 3 or len(proposer_receives) > 3:
+        return False, "Trade proposals support up to three players on each side."
+    if len(proposer_gives) + len(proposer_receives) > 5:
+        return False, "Trade proposals currently support up to five total players."
     for name in proposer_gives:
         owner = _player_owner(context, name)
         if owner != proposer:
@@ -387,6 +489,8 @@ def validate_proposal_players(
 def validate_proposal_for_acceptance(context: dict[str, Any], proposal: dict[str, Any]) -> tuple[bool, str]:
     if str(proposal.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
         return False, "This trade is no longer pending."
+    if is_trade_proposal_expired(proposal):
+        return False, "This trade proposal has expired."
     proposer = str(proposal.get("proposer_team") or "").strip()
     recipient = str(proposal.get("recipient_team") or "").strip()
     teams = _league_team_names(context)
@@ -408,6 +512,8 @@ def create_trade_proposal(
     proposer_gives: list[str],
     proposer_receives: list[str],
     verdict: str = "",
+    expires_at: str = "",
+    countered_from_proposal_id: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
     context = get_active_league_context(session)
     if not context:
@@ -442,6 +548,8 @@ def create_trade_proposal(
         "created_at": now,
         "updated_at": now,
         "responded_at": "",
+        "expires_at": str(expires_at or "").strip(),
+        "countered_from_proposal_id": str(countered_from_proposal_id or "").strip(),
         "verdict": str(verdict or "").strip(),
     }
     proposals = _ensure_trade_proposals_workflow(context)
@@ -485,22 +593,6 @@ def _execute_roster_swap(context: dict[str, Any], proposal: dict[str, Any]) -> b
         if not _add_player_to_team_roster(context, proposer, rec):
             return False
 
-    workflow = context.setdefault("workflow", {})
-    gives_fmt = _format_player_list(proposal.get("proposer_gives") or [])
-    receives_fmt = _format_player_list(proposal.get("proposer_receives") or [])
-    activity = list(workflow.get("league_activity") or [])
-    activity.append(
-        {
-            "team_name": proposer,
-            "action": "trade_completed",
-            "player_name": gives_fmt,
-            "counterparty": recipient,
-            "summary": f"{proposer} traded {gives_fmt} to {recipient} for {receives_fmt}.",
-            "recorded_at": _utc_now_iso(),
-        }
-    )
-    workflow["league_activity"] = activity[-50:]
-    context["workflow"] = workflow
     return True
 
 
@@ -530,6 +622,14 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
 
     ok, msg = validate_proposal_for_acceptance(context, proposal)
     if not ok:
+        if msg == "This trade proposal has expired.":
+            proposal["status"] = TRADE_PROPOSAL_STATUS_EXPIRED
+            proposal["updated_at"] = _utc_now_iso()
+            proposal["responded_at"] = proposal["updated_at"]
+            proposals[target_idx] = proposal
+            _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_EXPIRED)
+            upsert_league_context(session, context)
+            return None, msg
         if msg == STALE_TRADE_MESSAGE:
             proposal["status"] = TRADE_PROPOSAL_STATUS_STALE
             proposal["updated_at"] = _utc_now_iso()
@@ -545,6 +645,7 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
     proposal["updated_at"] = now
     proposal["responded_at"] = now
     proposals[target_idx] = proposal
+    _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_ACCEPTED)
     saved = upsert_league_context(session, context)
     return get_trade_proposal(saved, proposal_id), ""
 
@@ -577,6 +678,7 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     proposal["updated_at"] = now
     proposal["responded_at"] = now
     proposals[target_idx] = proposal
+    _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_DECLINED)
     saved = upsert_league_context(session, context)
     return get_trade_proposal(saved, proposal_id), ""
 
@@ -618,8 +720,93 @@ def cancel_trade_proposal(
     proposal["updated_at"] = now
     proposal["responded_at"] = now
     proposals[target_idx] = proposal
+    _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_CANCELED)
     saved = upsert_league_context(session, context)
     return get_trade_proposal(saved, proposal_id), ""
+
+
+def counter_trade_proposal(
+    session: dict[str, Any],
+    proposal_id: str,
+    *,
+    countered_by_team: str,
+    counter_gives: list[str],
+    counter_receives: list[str],
+    verdict: str = "",
+    expires_at: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    context = get_active_league_context(session)
+    if not context:
+        return None, "Set an active league context before countering a trade."
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    context = get_league_context(session, league_context_id)
+    if not context:
+        return None, "Active league context could not be loaded."
+
+    proposal_id = str(proposal_id or "").strip()
+    proposals = _ensure_trade_proposals_workflow(context)
+    target_idx = -1
+    original: dict[str, Any] | None = None
+    for idx, existing in enumerate(proposals):
+        if str(existing.get("proposal_id") or "") == proposal_id:
+            target_idx = idx
+            original = dict(existing)
+            break
+    if original is None:
+        return None, "Trade proposal not found."
+    if str(original.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
+        return None, "Only pending trades can be countered."
+    if is_trade_proposal_expired(original):
+        original["status"] = TRADE_PROPOSAL_STATUS_EXPIRED
+        original["updated_at"] = _utc_now_iso()
+        original["responded_at"] = original["updated_at"]
+        proposals[target_idx] = original
+        _record_trade_activity(context, original, TRADE_PROPOSAL_STATUS_EXPIRED)
+        upsert_league_context(session, context)
+        return None, "This trade proposal has expired."
+
+    proposer = str(original.get("proposer_team") or "").strip()
+    recipient = str(original.get("recipient_team") or "").strip()
+    team = str(countered_by_team or "").strip()
+    if team != recipient:
+        return None, "Only the receiving team can counter this offer."
+
+    gives = [str(x).strip() for x in counter_gives if str(x).strip()]
+    receives = [str(x).strip() for x in counter_receives if str(x).strip()]
+    ok, msg = validate_proposal_players(
+        context,
+        proposer_team=recipient,
+        recipient_team=proposer,
+        proposer_gives=gives,
+        proposer_receives=receives,
+    )
+    if not ok:
+        return None, msg
+
+    now = _utc_now_iso()
+    original["status"] = TRADE_PROPOSAL_STATUS_COUNTERED
+    original["updated_at"] = now
+    original["responded_at"] = now
+    proposals[target_idx] = original
+    _record_trade_activity(context, original, TRADE_PROPOSAL_STATUS_COUNTERED)
+
+    counter: dict[str, Any] = {
+        "proposal_id": f"tp:{uuid.uuid4().hex[:12]}",
+        "status": TRADE_PROPOSAL_STATUS_PENDING,
+        "proposer_team": recipient,
+        "recipient_team": proposer,
+        "proposer_gives": [_normalize_player_ref(n) for n in gives],
+        "proposer_receives": [_normalize_player_ref(n) for n in receives],
+        "created_at": now,
+        "updated_at": now,
+        "responded_at": "",
+        "expires_at": str(expires_at or "").strip(),
+        "countered_from_proposal_id": proposal_id,
+        "verdict": str(verdict or "").strip(),
+    }
+    proposals.append(counter)
+    saved = upsert_league_context(session, context)
+    return get_trade_proposal(saved, str(counter["proposal_id"])), ""
 
 
 def set_trade_proposal_handoff(

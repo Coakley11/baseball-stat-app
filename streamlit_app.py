@@ -22485,8 +22485,9 @@ if active_page == "Fantasy Lineup Assistant":
                         st.session_state["lineup_trade_get_players"] = pending_get
                     ensure_multiselect_state("lineup_trade_give_players", my_trade_players, pending_give or [])
                     ensure_multiselect_state("lineup_trade_get_players", other_trade_players, pending_get or [])
-                    give_players = st.multiselect("Players You Give Up", my_trade_players, key="lineup_trade_give_players")
-                    get_players = st.multiselect("Players You Receive", other_trade_players, key="lineup_trade_get_players")
+                    st.caption("Build 1-for-1, 2-for-1, 2-for-2, or 3-for-2 proposals. Keep the analyzer as evaluation only; roster changes happen only when a pending proposal is accepted.")
+                    give_players = st.multiselect("Players You Give Up (up to 3)", my_trade_players, key="lineup_trade_give_players")
+                    get_players = st.multiselect("Players You Receive (up to 3)", other_trade_players, key="lineup_trade_get_players")
                     verdict = ""
 
                     if give_players and get_players:

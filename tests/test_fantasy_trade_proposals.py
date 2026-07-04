@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -18,16 +19,20 @@ from fantasy_trade_proposals import (
     STALE_TRADE_MESSAGE,
     TRADE_PROPOSAL_STATUS_ACCEPTED,
     TRADE_PROPOSAL_STATUS_CANCELED,
+    TRADE_PROPOSAL_STATUS_COUNTERED,
     TRADE_PROPOSAL_STATUS_DECLINED,
+    TRADE_PROPOSAL_STATUS_EXPIRED,
     TRADE_PROPOSAL_STATUS_PENDING,
     accept_trade_proposal,
     cancel_trade_proposal,
+    counter_trade_proposal,
     consume_trade_proposal_handoff,
     create_trade_proposal,
     decline_trade_proposal,
     get_incoming_trade_proposals,
     get_outgoing_trade_proposals,
     get_trade_notifications,
+    get_display_status,
     mark_trade_notification_seen,
     navigate_to_trade_proposal,
     recipient_view,
@@ -47,8 +52,26 @@ def _league_board() -> pd.DataFrame:
     )
 
 
+def _multi_player_board() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"Team": "Donny", "Player": "Player A", "Pick": 1},
+            {"Team": "Team 2", "Player": "Player B", "Pick": 2},
+            {"Team": "Donny", "Player": "Player C", "Pick": 3},
+            {"Team": "Team 2", "Player": "Player D", "Pick": 4},
+            {"Team": "Donny", "Player": "Player E", "Pick": 5},
+            {"Team": "Team 2", "Player": "Player F", "Pick": 6},
+        ]
+    )
+
+
 def _seed_league(session: dict) -> dict:
     _, context = save_simulator_league_context(session, _league_board(), my_team_name="Donny")
+    return context
+
+
+def _seed_multi_player_league(session: dict) -> dict:
+    _, context = save_simulator_league_context(session, _multi_player_board(), my_team_name="Donny")
     return context
 
 
@@ -482,6 +505,152 @@ class TradeProposalPhase2Tests(unittest.TestCase):
         )
         self.assertTrue(get_trade_notifications(session, "Team 2"))
         self.assertFalse(get_trade_notifications(session, "Rivals"))
+
+
+class TradeProposalPhase3Tests(unittest.TestCase):
+    def test_accept_multi_player_trade_updates_all_rosters(self) -> None:
+        session: dict = {}
+        _seed_multi_player_league(session)
+        proposal, err = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A", "Player C"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+
+        accepted, accept_err = accept_trade_proposal(session, str(proposal["proposal_id"]))
+        self.assertEqual(accept_err, "")
+        assert accepted is not None
+        self.assertEqual(accepted["status"], TRADE_PROPOSAL_STATUS_ACCEPTED)
+
+        context = get_active_league_context(session)
+        assert context is not None
+        ownership = build_ownership_map(context)
+        self.assertEqual(ownership["player a"]["owner_team"], "Team 2")
+        self.assertEqual(ownership["player c"]["owner_team"], "Team 2")
+        self.assertEqual(ownership["player b"]["owner_team"], "Donny")
+
+    def test_rejects_over_limit_trade_shape(self) -> None:
+        session: dict = {}
+        _seed_multi_player_league(session)
+        proposal, err = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A", "Player C", "Player E"],
+            proposer_receives=["Player B", "Player D", "Player F"],
+        )
+        self.assertIsNone(proposal)
+        self.assertIn("five total players", err)
+
+    def test_counteroffer_closes_original_and_alerts_original_proposer(self) -> None:
+        session: dict = {}
+        _seed_multi_player_league(session)
+        original, err = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert original is not None
+
+        counter, counter_err = counter_trade_proposal(
+            session,
+            str(original["proposal_id"]),
+            countered_by_team="Team 2",
+            counter_gives=["Player B"],
+            counter_receives=["Player A", "Player C"],
+        )
+        self.assertEqual(counter_err, "")
+        assert counter is not None
+        self.assertEqual(counter["status"], TRADE_PROPOSAL_STATUS_PENDING)
+        self.assertEqual(counter["proposer_team"], "Team 2")
+        self.assertEqual(counter["recipient_team"], "Donny")
+        self.assertEqual(counter["countered_from_proposal_id"], original["proposal_id"])
+
+        outgoing = get_outgoing_trade_proposals(session, "Donny")
+        original_after = next(p for p in outgoing if p["proposal_id"] == original["proposal_id"])
+        self.assertEqual(original_after["status"], TRADE_PROPOSAL_STATUS_COUNTERED)
+
+        alerts = get_trade_notifications(session, "Donny")
+        self.assertTrue(any(a.get("kind") == "counteroffer" and a.get("proposal_id") == counter["proposal_id"] for a in alerts))
+
+    def test_countered_trade_cannot_be_accepted_later(self) -> None:
+        session: dict = {}
+        _seed_multi_player_league(session)
+        original, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert original is not None
+        counter_trade_proposal(
+            session,
+            str(original["proposal_id"]),
+            countered_by_team="Team 2",
+            counter_gives=["Player B"],
+            counter_receives=["Player A"],
+        )
+        accepted, err = accept_trade_proposal(session, str(original["proposal_id"]))
+        self.assertIsNone(accepted)
+        self.assertIn("no longer pending", err.lower())
+
+    def test_expired_trade_cannot_be_accepted_and_is_persisted(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).replace(microsecond=0).isoformat()
+        proposal, err = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+            expires_at=expired_at,
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        context = get_active_league_context(session)
+        assert context is not None
+        self.assertEqual(get_display_status(context, proposal), TRADE_PROPOSAL_STATUS_EXPIRED)
+
+        accepted, accept_err = accept_trade_proposal(session, str(proposal["proposal_id"]))
+        self.assertIsNone(accepted)
+        self.assertIn("expired", accept_err.lower())
+        incoming = get_incoming_trade_proposals(session, "Team 2")
+        self.assertEqual(incoming[0]["status"], TRADE_PROPOSAL_STATUS_EXPIRED)
+
+    def test_trade_history_records_non_accept_terminal_statuses(self) -> None:
+        session: dict = {}
+        _seed_multi_player_league(session)
+        declined, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        canceled, _ = create_trade_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player C"],
+            proposer_receives=["Player D"],
+        )
+        assert declined is not None and canceled is not None
+        decline_trade_proposal(session, str(declined["proposal_id"]))
+        cancel_trade_proposal(session, str(canceled["proposal_id"]), canceled_by_team="Donny")
+        context = get_active_league_context(session)
+        assert context is not None
+        summaries = [str(a.get("summary") or "") for a in get_league_activity(context)]
+        self.assertTrue(any("declined" in s.lower() for s in summaries))
+        self.assertTrue(any("canceled" in s.lower() for s in summaries))
 
 
 if __name__ == "__main__":
