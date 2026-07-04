@@ -19,6 +19,23 @@ LIVE_DRAFT_QUICK_NAV_PAGES: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+def _page_label(page_key: str, page_label_fn=None) -> str:
+    if callable(page_label_fn):
+        return str(page_label_fn(page_key))
+    return page_key
+
+
+def _page_icon(page_key: str, page_label_fn=None) -> str:
+    label = _page_label(page_key, page_label_fn)
+    first = label.split(" ", 1)[0].strip()
+    return first if first and first != page_key else ""
+
+
+def _with_page_icon(page_key: str, text: str, page_label_fn=None) -> str:
+    icon = _page_icon(page_key, page_label_fn)
+    return f"{icon} {text}".strip()
+
+
 def inject_live_draft_quick_nav_styles(st: Any) -> None:
     st.markdown(
         """
@@ -59,7 +76,7 @@ def inject_live_draft_quick_nav_styles(st: Any) -> None:
     )
 
 
-def render_live_draft_quick_nav(st: Any, session: dict[str, Any]) -> None:
+def render_live_draft_quick_nav(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     """Color-coded navigation tiles to related fantasy pages."""
     try:
         from shared_draft_context import prepare_canonical_scoring_context
@@ -85,7 +102,7 @@ def render_live_draft_quick_nav(st: Any, session: dict[str, Any]) -> None:
             with col:
                 col.markdown(
                     f'<div class="ld-quick-tile ld-quick-tile-{theme}">'
-                    f'<div class="ld-quick-tile-label">{label}</div>'
+                    f'<div class="ld-quick-tile-label">{_with_page_icon(page, label, page_label_fn)}</div>'
                     f'<div class="ld-quick-tile-sub">{subtitle}</div></div>',
                     unsafe_allow_html=True,
                 )
@@ -276,7 +293,13 @@ def apply_force_sync_on_return(session: dict[str, Any]) -> bool:
     return synced
 
 
-def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_page: str = "") -> None:
+def render_return_to_draft_sidebar(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    active_page: str = "",
+    page_label_fn=None,
+) -> None:
     """Prominent sidebar card to return to active live draft, completed draft, or simulator."""
     ctx = get_draft_return_context(session)
     if not ctx:
@@ -306,7 +329,7 @@ def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_p
 
         if kind in ("live_active", "live_lobby"):
             st.button(
-                "Return to Live Draft",
+                _with_page_icon("Live Draft Room", "Return to Live Draft", page_label_fn),
                 type="primary",
                 key="sidebar_return_live_draft_btn",
                 use_container_width=True,
@@ -315,7 +338,7 @@ def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_p
             )
         elif kind == "live_complete":
             st.button(
-                "Open Live Draft Room",
+                _with_page_icon("Live Draft Room", "Open Live Draft Room", page_label_fn),
                 key="sidebar_open_completed_draft_btn",
                 use_container_width=True,
                 on_click=on_return_to_live_draft,
@@ -323,7 +346,7 @@ def render_return_to_draft_sidebar(st: Any, session: dict[str, Any], *, active_p
             )
         elif kind == "simulator":
             st.button(
-                "Return to Draft Simulator",
+                _with_page_icon("Draft Room Simulator", "Return to Draft Simulator", page_label_fn),
                 type="primary",
                 key="sidebar_return_simulator_btn",
                 use_container_width=True,

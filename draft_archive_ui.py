@@ -23,6 +23,23 @@ SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 
 
+def _page_label(page_key: str, page_label_fn=None) -> str:
+    if callable(page_label_fn):
+        return str(page_label_fn(page_key))
+    return page_key
+
+
+def _page_icon(page_key: str, page_label_fn=None) -> str:
+    label = _page_label(page_key, page_label_fn)
+    first = label.split(" ", 1)[0].strip()
+    return first if first and first != page_key else ""
+
+
+def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
+    icon = _page_icon(page_key, page_label_fn)
+    return f"{icon} {text}".strip()
+
+
 def schedule_saved_draft_library_navigation(session: dict[str, Any]) -> None:
     session["_navigate_to_page"] = SAVED_DRAFT_LIBRARY_PAGE
 
@@ -52,7 +69,13 @@ def _badge_html(entry: dict[str, Any]) -> str:
     return f'<span class="ld-archive-badge {css}">{label}</span>'
 
 
-def render_active_saved_draft_chip(st: Any, session: dict[str, Any], *, key_prefix: str = "active_draft") -> None:
+def render_active_saved_draft_chip(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    key_prefix: str = "active_draft",
+    page_label_fn=None,
+) -> None:
     """Compact active-draft indicator with link to the library."""
     active = get_active_draft_archive(session)
     chip_left, chip_right = st.columns([4, 1])
@@ -71,23 +94,34 @@ def render_active_saved_draft_chip(st: Any, session: dict[str, Any], *, key_pref
                 "unless you set one active in the library."
             )
     with chip_right:
-        if st.button("Manage saved drafts", key=f"{key_prefix}_manage_btn", use_container_width=True):
+        if st.button(
+            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage saved drafts", page_label_fn),
+            key=f"{key_prefix}_manage_btn",
+            use_container_width=True,
+        ):
             schedule_saved_draft_library_navigation(session)
             st.rerun()
 
 
-def _render_post_save_actions(st: Any, session: dict[str, Any], entry: dict[str, Any]) -> None:
+def _render_post_save_actions(st: Any, session: dict[str, Any], entry: dict[str, Any], *, page_label_fn=None) -> None:
     st.success(
         f"Saved **{entry.get('draft_name')}** ({len(entry.get('players') or [])} players). "
         "Set active for Standings and Lineup analysis."
     )
     view_col, standings_col = st.columns(2)
     with view_col:
-        if st.button("View in Saved Draft Library", key=f"view_library_{entry.get('draft_id')}", type="primary"):
+        if st.button(
+            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "View in Saved Draft Library", page_label_fn),
+            key=f"view_library_{entry.get('draft_id')}",
+            type="primary",
+        ):
             schedule_saved_draft_library_navigation(session)
             st.rerun()
     with standings_col:
-        if st.button("Go to Standings Tracker", key=f"view_standings_{entry.get('draft_id')}"):
+        if st.button(
+            _nav_label("Fantasy Standings Tracker", "Go to Standings Tracker", page_label_fn),
+            key=f"view_standings_{entry.get('draft_id')}",
+        ):
             session["_navigate_to_page"] = "Fantasy Standings Tracker"
             st.rerun()
 
@@ -99,6 +133,7 @@ def render_save_live_draft_team(
     *,
     team_name: str,
     key_prefix: str = "live_draft_archive",
+    page_label_fn=None,
 ) -> None:
     cfg = dict(room.get("config") or {})
     if not team_name or team_name == "—":
@@ -126,7 +161,7 @@ def render_save_live_draft_team(
                     log_saved_draft_archived(entry, session=session)
                 except ImportError:
                     pass
-                _render_post_save_actions(st, session, entry)
+                _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
             except Exception as exc:
                 st.error(f"Could not save draft team: {exc}")
 
@@ -138,6 +173,7 @@ def render_save_simulator_draft_team(
     *,
     team_name: str,
     key_prefix: str = "sim_draft_archive",
+    page_label_fn=None,
 ) -> None:
     if not team_name or team_name == "—":
         return
@@ -166,7 +202,7 @@ def render_save_simulator_draft_team(
                     log_saved_draft_archived(entry, session=session)
                 except ImportError:
                     pass
-                _render_post_save_actions(st, session, entry)
+                _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
             except Exception as exc:
                 st.error(f"Could not save draft team: {exc}")
 
@@ -244,7 +280,7 @@ def _render_archive_actions(
                 st.rerun()
 
 
-def render_saved_draft_library_page(st: Any, session: dict[str, Any]) -> None:
+def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     """Dedicated management page for all saved draft teams."""
     st.markdown(
         """
@@ -300,11 +336,19 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any]) -> None:
         )
         nav1, nav2 = st.columns(2)
         with nav1:
-            if st.button("Open Live Draft Room", key="library_go_live", use_container_width=True):
+            if st.button(
+                _nav_label("Live Draft Room", "Open Live Draft Room", page_label_fn),
+                key="library_go_live",
+                use_container_width=True,
+            ):
                 session["_navigate_to_page"] = "Live Draft Room"
                 st.rerun()
         with nav2:
-            if st.button("Open Draft Room Simulator", key="library_go_sim", use_container_width=True):
+            if st.button(
+                _nav_label("Draft Room Simulator", "Open Draft Room Simulator", page_label_fn),
+                key="library_go_sim",
+                use_container_width=True,
+            ):
                 session["_navigate_to_page"] = "Draft Room Simulator"
                 st.rerun()
         return
@@ -330,7 +374,11 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any]) -> None:
     st.markdown("##### Analyze an active saved draft")
     go1, go2 = st.columns(2)
     with go1:
-        if st.button("Open Standings Tracker", key="library_open_standings", use_container_width=True):
+        if st.button(
+            _nav_label("Fantasy Standings Tracker", "Open Standings Tracker", page_label_fn),
+            key="library_open_standings",
+            use_container_width=True,
+        ):
             active = get_active_draft_archive(session)
             if active:
                 try:
@@ -346,6 +394,10 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any]) -> None:
             session["_navigate_to_page"] = "Fantasy Standings Tracker"
             st.rerun()
     with go2:
-        if st.button("Open Lineup Assistant", key="library_open_lineup", use_container_width=True):
+        if st.button(
+            _nav_label("Fantasy Lineup Assistant", "Open Lineup Assistant", page_label_fn),
+            key="library_open_lineup",
+            use_container_width=True,
+        ):
             session["_navigate_to_page"] = "Fantasy Lineup Assistant"
             st.rerun()

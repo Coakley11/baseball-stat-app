@@ -1541,7 +1541,24 @@ def draft_board_summary_for_team(
     }
 
 
-def render_active_draft_banner(st: Any, session: dict[str, Any]) -> None:
+def _page_label(page_key: str, page_label_fn=None) -> str:
+    if callable(page_label_fn):
+        return str(page_label_fn(page_key))
+    return page_key
+
+
+def _page_icon(page_key: str, page_label_fn=None) -> str:
+    label = _page_label(page_key, page_label_fn)
+    first = label.split(" ", 1)[0].strip()
+    return first if first and first != page_key else ""
+
+
+def _with_page_icon(page_key: str, text: str, page_label_fn=None) -> str:
+    icon = _page_icon(page_key, page_label_fn)
+    return f"{icon} {text}".strip()
+
+
+def render_active_draft_banner(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     """Global banner when a draft is active — visible on every page."""
     try:
         from live_draft_navigation import get_draft_return_context
@@ -1573,8 +1590,14 @@ def render_active_draft_banner(st: Any, session: dict[str, Any]) -> None:
     with col_msg:
         st.info(" · ".join(parts))
     with col_btn:
-        if st.button("Return to Draft", key="active_draft_return_btn", use_container_width=True):
-            session["_navigate_to_page"] = status.get("return_page") or "Draft Room Simulator"
+        return_page = status.get("return_page") or "Draft Room Simulator"
+        return_text = "Return to Live Draft" if return_page == "Live Draft Room" else "Return to Draft Simulator"
+        if st.button(
+            _with_page_icon(return_page, return_text, page_label_fn),
+            key="active_draft_return_btn",
+            use_container_width=True,
+        ):
+            session["_navigate_to_page"] = return_page
             st.rerun()
 
 

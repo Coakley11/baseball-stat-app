@@ -10616,9 +10616,9 @@ def _render_player_action_button_row(
     if show_queue:
         primary.append(("Add to Queue", "Queue player", "add_draft_queue"))
     if show_comparison and not on_comparison_page:
-        primary.append(("Send to Comparison", "Send to Comparison Tool", "send_comparison"))
+        primary.append((page_option_label("Comparison Tool"), "Send to Comparison Tool", "send_comparison"))
     if show_trend:
-        primary.append(("Send to Trends", "Send to Trend Page", "send_trends"))
+        primary.append((page_option_label("Trend Value"), "Send to Trend Page", "send_trends"))
 
     if primary:
         cols = st.columns(len(primary))
@@ -11656,7 +11656,7 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     try:
         from draft_room_state import render_active_draft_banner
 
-        render_active_draft_banner(st, st.session_state)
+        render_active_draft_banner(st, st.session_state, page_label_fn=page_option_label)
     except Exception:
         pass
     _workflow_normalize_draft_queue()
@@ -13297,7 +13297,7 @@ _record_sidebar_nav_trace(
 try:
     from live_draft_navigation import render_return_to_draft_sidebar
 
-    render_return_to_draft_sidebar(st, st.session_state, active_page=active_page)
+    render_return_to_draft_sidebar(st, st.session_state, active_page=active_page, page_label_fn=page_option_label)
 except Exception:
     try:
         from live_draft_state import has_active_live_draft
@@ -19086,6 +19086,7 @@ if active_page == "Draft Room Simulator":
                 st.session_state,
                 _session_draft_board_df(),
                 team_name=str(your_team or ""),
+                page_label_fn=page_option_label,
             )
         except ImportError:
             pass
@@ -21174,7 +21175,7 @@ if active_page == "Live Draft Room":
                 try:
                     from live_draft_navigation import render_live_draft_quick_nav
 
-                    render_live_draft_quick_nav(st, st.session_state)
+                    render_live_draft_quick_nav(st, st.session_state, page_label_fn=page_option_label)
                 except ImportError:
                     pass
                 st.markdown("##### Recommendations")
@@ -21413,7 +21414,7 @@ if active_page == "Live Draft Room":
             try:
                 from draft_archive_ui import render_save_live_draft_team
 
-                render_save_live_draft_team(st, st.session_state, room, team_name=_save_team)
+                render_save_live_draft_team(st, st.session_state, room, team_name=_save_team, page_label_fn=page_option_label)
             except ImportError:
                 if _save_team and _save_team != "—":
                     with st.expander("Save completed draft team", expanded=False):
@@ -21522,7 +21523,7 @@ if active_page == "Saved Draft Library":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    render_saved_draft_library_page(st, st.session_state)
+    render_saved_draft_library_page(st, st.session_state, page_label_fn=page_option_label)
     save_page_state(active_page)
     _page_perf_end(active_page)
     render_page_filters_debug(active_page)
@@ -21554,7 +21555,7 @@ if active_page == "Fantasy Standings Tracker":
     try:
         from draft_archive_ui import render_active_saved_draft_chip
 
-        render_active_saved_draft_chip(st, st.session_state, key_prefix="standings_archive")
+        render_active_saved_draft_chip(st, st.session_state, key_prefix="standings_archive", page_label_fn=page_option_label)
     except ImportError:
         pass
 
@@ -21924,7 +21925,7 @@ if active_page == "Fantasy Lineup Assistant":
     try:
         from draft_archive_ui import render_active_saved_draft_chip
 
-        render_active_saved_draft_chip(st, st.session_state, key_prefix="lineup_archive")
+        render_active_saved_draft_chip(st, st.session_state, key_prefix="lineup_archive", page_label_fn=page_option_label)
     except ImportError:
         pass
 
