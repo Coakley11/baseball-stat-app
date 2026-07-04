@@ -7164,6 +7164,41 @@ def build_position_aware_lineup(scored_df, *, slots=None, pos_col="Primary Posit
     }
 
 
+_ROSTER_SLOT_DISPLAY_ORDER = ("C", "1B", "2B", "3B", "SS", "OF", "UTIL")
+
+
+def _roster_position_slot_list(roster_df: pd.DataFrame) -> list[str]:
+    """Slot list derived from the roster's own positions (no invented defaults).
+
+    Used for mock drafts saved without roster-slot rules: every rostered position
+    becomes a slot so the position-aware builder can seat players without ever
+    reporting a 'missing' slot the league never had.
+    """
+    if roster_df is None or roster_df.empty:
+        return []
+    pos_col = None
+    for candidate in ("Primary Position", "Position", "primaryPos"):
+        if candidate in roster_df.columns:
+            pos_col = candidate
+            break
+    counts: dict[str, int] = {}
+    if pos_col is not None:
+        for val in roster_df[pos_col].tolist():
+            tokens = _split_primary_positions(val)
+            token = tokens[0] if tokens else "DH"
+            slot = "UTIL" if token in ("DH", "P", "SP", "RP") else token
+            counts[slot] = counts.get(slot, 0) + 1
+    if not counts:
+        counts = {"UTIL": len(roster_df)}
+    slot_list: list[str] = []
+    for slot in _ROSTER_SLOT_DISPLAY_ORDER:
+        slot_list.extend([slot] * counts.get(slot, 0))
+    for slot, n in counts.items():
+        if slot not in _ROSTER_SLOT_DISPLAY_ORDER:
+            slot_list.extend([slot] * n)
+    return slot_list
+
+
 def _lineup_team_rate(st_df, rate_col):
     """Combined rate for a subset (H/AB for BA; mean OBP if no PA weights)."""
     if st_df is None or st_df.empty:
@@ -13281,7 +13316,15 @@ try:
     enforce_hof_case_page_after_workspace(st)
 except ImportError:
     pass
-_consume_scheduled_navigation()
+_consumed_nav_target = _consume_scheduled_navigation()
+_record_sidebar_nav_trace(
+    "after_consume_scheduled_navigation",
+    consumed_target=_consumed_nav_target,
+    active_page_after=st.session_state.get("active_page"),
+    main_sidebar_page_after=st.session_state.get(MAIN_SIDEBAR_PAGE_KEY),
+    scheduled_nav_remaining=st.session_state.get("_navigate_to_page"),
+    skip_page_restore_for=st.session_state.get("_skip_page_restore_for"),
+)
 try:
     from fantasy_league_context import apply_pending_league_context_activation
 
@@ -22214,7 +22257,17 @@ if active_page == "Fantasy Lineup Assistant":
                 for _k, _v in _lu_diag.items():
                     st.text(f"{_k}: {_v}")
         with l3:
-            ensure_widget_state("lineup_bench_rows", 12)
+            _context_bench_default = 12
+            try:
+                from fantasy_league_context import get_active_league_context, resolve_context_bench_slot_count
+
+                _lineup_bench_ctx = get_active_league_context(st.session_state)
+                _ctx_bench = resolve_context_bench_slot_count(_lineup_bench_ctx)
+                if _ctx_bench is not None:
+                    _context_bench_default = max(3, min(25, int(_ctx_bench) or 3))
+            except ImportError:
+                pass
+            ensure_widget_state("lineup_bench_rows", _context_bench_default)
             bench_rows_to_show = st.slider(
                 "Bench rows to show",
                 min_value=3,
@@ -22224,21 +22277,58 @@ if active_page == "Fantasy Lineup Assistant":
                 on_change=fantasy_filter_changed,
             )
 
-        with st.expander("Starting lineup slots (optional)"):
-            ensure_widget_state("lineup_include_util", True)
-            use_util = st.checkbox(
-                "Include UTIL slot",
-                key="lineup_include_util",
-                help="Uncheck if your league has no UTIL. A custom slot list below replaces defaults when provided.",
-                on_change=fantasy_filter_changed,
+        _context_lineup_slots = None
+        _lineup_active_context = None
+        _context_has_slots = False
+        use_util = True
+        custom_slots_text = ""
+        try:
+            from fantasy_league_context import (
+                context_has_roster_slots,
+                get_active_league_context,
+                resolve_context_lineup_slots,
             )
-            custom_slots_text = st.text_input(
-                "Custom slot order (comma-separated)",
-                placeholder="e.g. C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL",
-                key="lineup_custom_slots",
-                help="Valid tokens: C, 1B, 2B, 3B, SS, OF, LF, CF, RF, UTIL. Leave blank for default order.",
-                on_change=fantasy_filter_changed,
+
+            _lineup_active_context = get_active_league_context(st.session_state)
+            _context_has_slots = context_has_roster_slots(_lineup_active_context)
+            if _context_has_slots:
+                _context_lineup_slots = resolve_context_lineup_slots(_lineup_active_context)
+        except ImportError:
+            pass
+
+        # A saved context with no roster-slot rules (e.g. a mock-draft simulation)
+        # must not be filled with a default 15-player lineup. Suppress positional
+        # completion checks and analyze category/value/balance only.
+        _context_no_slot_config = bool(_lineup_active_context) and not _context_has_slots
+
+        if _context_lineup_slots:
+            st.caption(
+                f"**Active league context slots ({len(_context_lineup_slots)}):** "
+                f"{', '.join(_context_lineup_slots)}. "
+                "Lineup needs and recommendations use this format — not the default 15-player template."
             )
+        elif _context_no_slot_config:
+            st.info(
+                "This mock draft was saved without roster-slot settings, so analysis focuses "
+                "on player value, category balance, and team strengths rather than missing "
+                "lineup positions."
+            )
+        else:
+            with st.expander("Starting lineup slots (optional)"):
+                ensure_widget_state("lineup_include_util", True)
+                use_util = st.checkbox(
+                    "Include UTIL slot",
+                    key="lineup_include_util",
+                    help="Uncheck if your league has no UTIL. A custom slot list below replaces defaults when provided.",
+                    on_change=fantasy_filter_changed,
+                )
+                custom_slots_text = st.text_input(
+                    "Custom slot order (comma-separated)",
+                    placeholder="e.g. C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL",
+                    key="lineup_custom_slots",
+                    help="Valid tokens: C, 1B, 2B, 3B, SS, OF, LF, CF, RF, UTIL. Leave blank for default order.",
+                    on_change=fantasy_filter_changed,
+                )
 
         custom_weights = None
         if lineup_format == "Points League":
@@ -22271,11 +22361,16 @@ if active_page == "Fantasy Lineup Assistant":
                 )
                 from page_perf_phases import session_perf_phase
 
-                _slot_list_preview = _parse_custom_lineup_slots(custom_slots_text)
-                if _slot_list_preview is None:
-                    _slot_list_preview = list(LINEUP_DEFAULT_HITTING_SLOTS)
-                    if not use_util:
-                        _slot_list_preview = [s for s in _slot_list_preview if s != "UTIL"]
+                if _context_lineup_slots:
+                    _slot_list_preview = list(_context_lineup_slots)
+                elif _context_no_slot_config:
+                    _slot_list_preview = _roster_position_slot_list(team_roster)
+                else:
+                    _slot_list_preview = _parse_custom_lineup_slots(custom_slots_text)
+                    if _slot_list_preview is None:
+                        _slot_list_preview = list(LINEUP_DEFAULT_HITTING_SLOTS)
+                        if not use_util:
+                            _slot_list_preview = [s for s in _slot_list_preview if s != "UTIL"]
                 _lineup_cache_key = lineup_scores_cache_key(
                     team=str(lineup_team),
                     lineup_format=str(lineup_format),
@@ -22292,17 +22387,29 @@ if active_page == "Fantasy Lineup Assistant":
                 scored = build_lineup_assistant_scores(team_roster, lineup_format, custom_weights)
             scored = scored.sort_values("Lineup Confidence", ascending=False)
 
-            slot_list = _parse_custom_lineup_slots(custom_slots_text)
-            if slot_list is None:
-                slot_list = list(LINEUP_DEFAULT_HITTING_SLOTS)
-                if not use_util:
-                    slot_list = [s for s in slot_list if s != "UTIL"]
+            if _context_lineup_slots:
+                slot_list = list(_context_lineup_slots)
+            elif _context_no_slot_config:
+                # No saved roster-slot rules: derive slots from the players actually
+                # on the roster so no fake missing positions are generated.
+                slot_list = _roster_position_slot_list(team_roster)
             else:
-                if not use_util:
+                slot_list = _parse_custom_lineup_slots(custom_slots_text)
+                if slot_list is None:
+                    slot_list = list(LINEUP_DEFAULT_HITTING_SLOTS)
+                    if not use_util:
+                        slot_list = [s for s in slot_list if s != "UTIL"]
+                elif not use_util:
                     slot_list = [s for s in slot_list if s != "UTIL"]
 
             lineup_pkg = build_position_aware_lineup(scored, slots=slot_list)
             starters = lineup_pkg["lineup_df"]
+
+            # Mock drafts without slot rules must not surface positional-completion
+            # warnings or invented roster needs.
+            if _context_no_slot_config:
+                lineup_pkg["slot_warnings"] = []
+                lineup_pkg["missing_slots"] = []
 
             for w in lineup_pkg["slot_warnings"]:
                 st.warning(w)

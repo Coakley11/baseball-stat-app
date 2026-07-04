@@ -51,8 +51,12 @@ from fantasy_league_context import (
     upsert_league_context,
     activate_archive_league_context,
     build_roster_stats_from_league_context,
+    context_has_roster_slots,
     league_context_roster_dataframe,
     league_rosters_cache_sig,
+    resolve_context_bench_slot_count,
+    resolve_context_lineup_slots,
+    resolve_context_open_position_needs,
 )
 
 
@@ -511,6 +515,92 @@ class FantasyLeagueContextRosterStatsTests(unittest.TestCase):
             active_archive_id="abc123",
         )
         self.assertNotEqual(key[:3], legacy_key[:3])
+
+
+class ContextRosterSlotResolutionTests(unittest.TestCase):
+    def test_five_slot_context_lineup_slots_exclude_bench_and_pitchers(self) -> None:
+        context = {
+            "roster_settings": {
+                "roster_slots": {"C": 1, "2B": 1, "OF": 2, "BN": 3},
+                "slot_instances": [],
+            }
+        }
+        slots = resolve_context_lineup_slots(context)
+        self.assertEqual(slots, ["C", "2B", "OF", "OF"])
+        self.assertEqual(resolve_context_bench_slot_count(context), 3)
+
+    def test_full_format_includes_util_not_bench(self) -> None:
+        context = {
+            "roster_settings": {
+                "roster_slots": {
+                    "C": 1,
+                    "1B": 1,
+                    "2B": 1,
+                    "3B": 1,
+                    "SS": 1,
+                    "OF": 3,
+                    "DH": 1,
+                    "BN": 5,
+                },
+                "slot_instances": [],
+            }
+        }
+        slots = resolve_context_lineup_slots(context)
+        self.assertEqual(slots, ["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL"])
+        self.assertEqual(resolve_context_bench_slot_count(context), 5)
+
+    def test_open_position_needs_respect_short_format(self) -> None:
+        context = {
+            "roster_settings": {
+                "roster_slots": {"C": 1, "OF": 2},
+                "slot_instances": [],
+            }
+        }
+        roster = pd.DataFrame(
+            [{"Player": "Judge", "Primary Position": "OF", "Team": "Daniel"}]
+        )
+        needs = resolve_context_open_position_needs(context, roster)
+        self.assertEqual(needs, ["C", "OF"])
+        self.assertNotIn("SS", needs)
+        self.assertNotIn("BN", needs)
+
+    def test_mock_draft_without_slot_config_reports_no_slots(self) -> None:
+        context = {
+            "context_type": CONTEXT_TYPE_MOCK_DRAFT_SIMULATION,
+            "roster_settings": {"roster_slots": {}, "slot_instances": []},
+        }
+        self.assertFalse(context_has_roster_slots(context))
+        self.assertIsNone(resolve_context_lineup_slots(context))
+        self.assertIsNone(resolve_context_bench_slot_count(context))
+        roster = pd.DataFrame([{"Player": "Judge", "Primary Position": "OF"}])
+        self.assertEqual(resolve_context_open_position_needs(context, roster), [])
+
+    def test_zero_count_slots_treated_as_no_slot_config(self) -> None:
+        context = {
+            "roster_settings": {
+                "roster_slots": {"C": 0, "OF": 0, "BN": 0},
+                "slot_instances": [],
+            }
+        }
+        self.assertFalse(context_has_roster_slots(context))
+
+    def test_context_with_slots_reports_true(self) -> None:
+        context = {
+            "roster_settings": {
+                "roster_slots": {"C": 1, "OF": 2},
+                "slot_instances": [],
+            }
+        }
+        self.assertTrue(context_has_roster_slots(context))
+
+    def test_context_with_only_slot_instances_reports_true(self) -> None:
+        context = {
+            "roster_settings": {
+                "roster_slots": {},
+                "slot_instances": [{"position": "OF", "label": "OF 1", "slot_index": 0}],
+            }
+        }
+        self.assertTrue(context_has_roster_slots(context))
 
 
 if __name__ == "__main__":

@@ -185,6 +185,18 @@ _STALE_RESUME_SESSION_FLAGS: tuple[str, ...] = (
 )
 
 
+def _pending_programmatic_navigation_active(session: dict[str, Any]) -> bool:
+    """True when a scheduled page change is queued but not yet consumed."""
+    target = str(session.get("_navigate_to_page") or "").strip()
+    if not target:
+        return False
+    skip_for = str(session.get("_skip_page_restore_for") or "").strip()
+    if skip_for and skip_for == target:
+        return True
+    current = str(session.get("active_page") or session.get("main_sidebar_page") or "").strip()
+    return bool(current and current != target)
+
+
 def reconcile_stale_resume_session_flags(st: Any, app_key: str) -> list[str]:
     """
     Drop stale resume/AMI session flags when the URL no longer carries resume params.
@@ -196,7 +208,10 @@ def reconcile_stale_resume_session_flags(st: Any, app_key: str) -> list[str]:
         return []
     cleared: list[str] = []
     key = _normalize_resume_app_key(app_key)
+    preserve_nav = _pending_programmatic_navigation_active(ss)
     for flag in (*_STALE_RESUME_SESSION_FLAGS, f"_suite_resume_launch_{key}"):
+        if preserve_nav and flag in ("_navigate_to_page", "_skip_page_restore_for"):
+            continue
         if flag in ss:
             ss.pop(flag, None)
             cleared.append(flag)

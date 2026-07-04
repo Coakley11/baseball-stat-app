@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from suite_cloud_state import save_cloud_full_session_with_result
+from suite_cloud_state import reconcile_stale_resume_session_flags, save_cloud_full_session_with_result
 
 
 class SaveCloudFullSessionWithResultTests(unittest.TestCase):
@@ -43,6 +43,37 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
         ok, err = save_cloud_full_session_with_result("baseball", {"active_page": "Home"})
         self.assertFalse(ok)
         self.assertEqual(err, "cloud_save_failed")
+
+
+class ReconcileStaleResumeFlagsTests(unittest.TestCase):
+    @patch("suite_cloud_state._ami_return_url_active", return_value=False)
+    def test_preserves_pending_saved_draft_library_navigation(self, _ami: object) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Fantasy Lineup Assistant",
+            "main_sidebar_page": "Fantasy Lineup Assistant",
+            "_navigate_to_page": "Saved Draft Library",
+            "_skip_page_restore_for": "Saved Draft Library",
+            "_suite_resume_launch_baseball": True,
+        }
+        cleared = reconcile_stale_resume_session_flags(st, "baseball")
+        self.assertNotIn("_navigate_to_page", cleared)
+        self.assertNotIn("_skip_page_restore_for", cleared)
+        self.assertEqual(st.session_state["_navigate_to_page"], "Saved Draft Library")
+        self.assertEqual(st.session_state["_skip_page_restore_for"], "Saved Draft Library")
+        self.assertIn("_suite_resume_launch_baseball", cleared)
+
+    @patch("suite_cloud_state._ami_return_url_active", return_value=False)
+    def test_clears_stale_navigate_to_page_when_already_on_target(self, _ami: object) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Saved Draft Library",
+            "main_sidebar_page": "Saved Draft Library",
+            "_navigate_to_page": "Saved Draft Library",
+        }
+        cleared = reconcile_stale_resume_session_flags(st, "baseball")
+        self.assertIn("_navigate_to_page", cleared)
+        self.assertNotIn("_navigate_to_page", st.session_state)
 
 
 if __name__ == "__main__":

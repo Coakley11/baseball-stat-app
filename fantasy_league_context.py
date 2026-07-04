@@ -643,6 +643,92 @@ def get_active_league_context(session: dict[str, Any]) -> dict[str, Any] | None:
     return get_league_context(session, active_id)
 
 
+def context_has_roster_slots(context: dict[str, Any] | None) -> bool:
+    """True when a saved context carries explicit roster-slot rules.
+
+    Live drafts and custom-slot drafts store roster_slots / slot_instances.
+    Mock-draft simulations saved without slot settings return False so callers
+    can skip positional completion checks instead of inventing a default format.
+    """
+    if not isinstance(context, dict):
+        return False
+    roster_settings = context.get("roster_settings")
+    if not isinstance(roster_settings, dict):
+        return False
+    roster_slots = roster_settings.get("roster_slots") or {}
+    if isinstance(roster_slots, dict) and any(
+        int(v or 0) > 0 for v in roster_slots.values()
+    ):
+        return True
+    slot_instances = roster_settings.get("slot_instances") or []
+    return bool(isinstance(slot_instances, list) and slot_instances)
+
+
+def resolve_context_draft_slot_config(context: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalized draft slot config from an active league context."""
+    if not context_has_roster_slots(context):
+        return {}
+    roster_settings = context.get("roster_settings") or {}
+    roster_slots = dict(roster_settings.get("roster_slots") or {})
+    slot_instances = list(roster_settings.get("slot_instances") or [])
+    raw = {"slots": roster_slots, "slot_instances": slot_instances}
+    try:
+        from live_draft_roster_slots import normalize_draft_slot_config
+
+        return normalize_draft_slot_config(raw)
+    except ImportError:
+        return raw
+
+
+def resolve_context_lineup_slots(context: dict[str, Any] | None) -> list[str] | None:
+    """Starter slot tokens for Lineup Assistant from active context roster settings."""
+    config = resolve_context_draft_slot_config(context)
+    if not config.get("slots") and not config.get("slot_instances"):
+        return None
+    try:
+        from live_draft_roster_slots import get_active_draft_roster_slots
+
+        instances = get_active_draft_roster_slots(config)
+    except ImportError:
+        return None
+    if not instances:
+        return None
+    lineup_slots: list[str] = []
+    for inst in instances:
+        pos = str(inst.get("position") or "").strip().upper()
+        if pos in ("BN", "P", "SP", "RP"):
+            continue
+        if pos == "DH":
+            pos = "UTIL"
+        lineup_slots.append(pos)
+    return lineup_slots or None
+
+
+def resolve_context_bench_slot_count(context: dict[str, Any] | None) -> int | None:
+    """BN slot count from active context, or None when context has no roster settings."""
+    config = resolve_context_draft_slot_config(context)
+    slots = config.get("slots")
+    if not isinstance(slots, dict) or not slots:
+        return None
+    return int(slots.get("BN", 0) or 0)
+
+
+def resolve_context_open_position_needs(
+    context: dict[str, Any] | None,
+    roster_df: Any,
+) -> list[str]:
+    """Open roster slot codes from active context (e.g. ['OF', 'SS'])."""
+    config = resolve_context_draft_slot_config(context)
+    if not config.get("slots") and not config.get("slot_instances"):
+        return []
+    try:
+        from live_draft_roster_slots import get_remaining_position_needs
+
+        return list(get_remaining_position_needs(roster_df, config) or [])
+    except ImportError:
+        return []
+
+
 def set_active_league_context(session: dict[str, Any], league_context_id: str | None) -> None:
     store = ensure_fantasy_league_context_state(session)
     if league_context_id:

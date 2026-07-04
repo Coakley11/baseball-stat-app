@@ -66,6 +66,7 @@ def schedule_saved_draft_library_navigation(
         session[SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY] = source
     session["_navigate_to_page"] = SAVED_DRAFT_LIBRARY_PAGE
     session["_skip_page_restore_for"] = SAVED_DRAFT_LIBRARY_PAGE
+    session["_suite_page_user_nav"] = True
 
 
 def schedule_return_from_saved_draft_library(session: dict[str, Any]) -> bool:
@@ -75,6 +76,7 @@ def schedule_return_from_saved_draft_library(session: dict[str, Any]) -> bool:
         return False
     session["_navigate_to_page"] = target
     session["_skip_page_restore_for"] = target
+    session["_suite_page_user_nav"] = True
     return True
 
 
@@ -84,6 +86,7 @@ def schedule_fantasy_analysis_navigation(session: dict[str, Any], target_page: s
         return False
     session["_navigate_to_page"] = target_page
     session["_skip_page_restore_for"] = target_page
+    session["_suite_page_user_nav"] = True
     return True
 
 

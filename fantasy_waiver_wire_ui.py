@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import pandas as pd
 
 from fantasy_league_context import (
+    context_has_roster_slots,
     get_active_league_context,
     league_context_coverage_badge,
     league_context_type_badge,
     league_context_roster_dataframe,
+    resolve_context_open_position_needs,
 )
 from fantasy_waiver_wire import (
     GLOBAL_WAIVER_FILTER_KEY,
@@ -78,8 +81,28 @@ def render_waiver_wire_page(
     waiver_pool = build_waiver_pool(player_pool, context)
     fantasy_format = str(context.get("fantasy_format") or session.get("room_format") or "5x5 Roto")
     needs = analyze_team_needs(my_roster, league_df, fantasy_format=fantasy_format)
+    _has_slots = context_has_roster_slots(context)
+    open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
 
     st.markdown("##### 1. Team Needs")
+    if _has_slots and open_slots:
+        slot_counts = Counter(open_slots)
+        slot_parts = []
+        for pos in ("C", "1B", "2B", "3B", "SS", "OF", "UTIL", "DH", "P", "BN"):
+            if pos not in slot_counts:
+                continue
+            n = slot_counts[pos]
+            slot_parts.append(f"**{pos}**" + (f" (×{n})" if n > 1 else ""))
+        st.caption(
+            "**Open roster slots (active league context):** "
+            + (", ".join(slot_parts) if slot_parts else ", ".join(open_slots))
+        )
+    elif not _has_slots:
+        st.info(
+            "This mock draft was saved without roster-slot settings, so analysis focuses "
+            "on player value, category balance, and team strengths rather than missing "
+            "lineup positions."
+        )
     need_cols = st.columns(3)
     with need_cols[0]:
         st.markdown("**Strengths**")
