@@ -21659,10 +21659,19 @@ if active_page == "Fantasy Standings Tracker":
                 build_roster_stats_from_archive,
                 get_active_draft_archive,
             )
+            from fantasy_league_context import (
+                build_roster_stats_from_league_context,
+                get_active_league_context,
+                has_full_league_rosters,
+                league_context_roster_dataframe,
+                league_rosters_cache_sig,
+            )
 
             active_archive = get_active_draft_archive(st.session_state)
+            active_league_context = get_active_league_context(st.session_state)
         except ImportError:
             active_archive = None
+            active_league_context = None
             archive_roster_dataframe = None  # type: ignore[assignment,misc]
 
         roster_stats = pd.DataFrame()
@@ -21670,6 +21679,14 @@ if active_page == "Fantasy Standings Tracker":
         _standings_team_ctx = ""
         _used_standings_cache = False
         _cache_key: tuple[Any, ...] = ()
+        _use_full_league_context = False
+        if active_league_context is not None:
+            try:
+                from fantasy_league_context import has_full_league_rosters as _has_full_league_rosters
+
+                _use_full_league_context = _has_full_league_rosters(active_league_context)
+            except ImportError:
+                pass
         try:
             from fantasy_perf_cache import (
                 _df_sig,
@@ -21681,11 +21698,18 @@ if active_page == "Fantasy Standings Tracker":
 
             _stats_sig = _df_sig(current_stats, extra=f"{stats_source}:{api_season}")
             st.session_state["_fantasy_current_hitter_stats_sig"] = _stats_sig
-            _draft_for_key = (
-                archive_roster_dataframe(active_archive)
-                if active_archive and archive_roster_dataframe is not None
-                else _session_draft_board_df()
-            )
+            if _use_full_league_context and active_league_context is not None:
+                _draft_for_key = league_context_roster_dataframe(active_league_context)
+                _league_context_id = str(active_league_context.get("league_context_id") or "")
+                _league_rosters_sig = league_rosters_cache_sig(active_league_context)
+            else:
+                _draft_for_key = (
+                    archive_roster_dataframe(active_archive)
+                    if active_archive and archive_roster_dataframe is not None
+                    else _session_draft_board_df()
+                )
+                _league_context_id = ""
+                _league_rosters_sig = ""
             _cache_key = standings_roster_cache_key(
                 st.session_state,
                 stats_source=str(stats_source),
@@ -21693,6 +21717,8 @@ if active_page == "Fantasy Standings Tracker":
                 scoring_format=str(scoring_format_tracker),
                 draft_table=_draft_for_key,
                 active_archive_id=str((active_archive or {}).get("draft_id") or ""),
+                league_context_id=_league_context_id,
+                league_rosters_sig=_league_rosters_sig,
             )
             _cache_key = _cache_key[:-1] + (_stats_sig,)
             _cached_roster, _cached_standings = get_cached_standings_results(st.session_state, _cache_key)
@@ -21705,7 +21731,9 @@ if active_page == "Fantasy Standings Tracker":
                 roster_stats = _cached_roster
                 standings = _cached_standings
                 _used_standings_cache = True
-                if active_archive:
+                if _use_full_league_context and active_league_context is not None:
+                    _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
+                elif active_archive:
                     _standings_team_ctx = str(active_archive.get("team_name") or "")
                 else:
                     _standings_team_ctx = str(st.session_state.get("room_your_team") or "")
@@ -21722,7 +21750,14 @@ if active_page == "Fantasy Standings Tracker":
                     return nullcontext()
 
             with session_perf_phase(st.session_state, "standings_calculations"):
-                if active_archive:
+                if _use_full_league_context and active_league_context is not None:
+                    roster_stats = build_roster_stats_from_league_context(
+                        active_league_context,
+                        current_stats,
+                        normalize_name_fn=normalize_player_name_for_merge,
+                    )
+                    _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
+                elif active_archive:
                     roster_stats = build_roster_stats_from_archive(
                         active_archive,
                         current_stats,
@@ -21756,7 +21791,18 @@ if active_page == "Fantasy Standings Tracker":
             except ImportError:
                 pass
 
-        if active_archive and not roster_stats.empty and not _used_standings_cache:
+        if (
+            _use_full_league_context
+            and active_league_context is not None
+            and not roster_stats.empty
+            and not _used_standings_cache
+        ):
+            _team_count = len(active_league_context.get("league_rosters") or {})
+            st.caption(
+                f"Scoring league context: **{active_league_context.get('display_name', 'Fantasy League')}** "
+                f"({_team_count} teams)."
+            )
+        elif active_archive and not roster_stats.empty and not _used_standings_cache:
             st.caption(
                 f"Scoring saved draft: **{active_archive.get('draft_name', 'Saved Draft')}** "
                 f"({active_archive.get('team_name', '')})."
@@ -21765,7 +21811,8 @@ if active_page == "Fantasy Standings Tracker":
             st.warning("Loaded saved draft has no roster players to score.")
 
         if not roster_stats.empty:
-            if not active_archive:
+            _show_multi_team_rosters = _use_full_league_context or not active_archive
+            if _show_multi_team_rosters:
                 st.subheader("Drafted Rosters With Current Stats")
             show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
             render_output_table(
@@ -21932,16 +21979,29 @@ if active_page == "Fantasy Lineup Assistant":
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
     try:
         from draft_archive_state import build_roster_stats_from_archive, get_active_draft_archive
+        from fantasy_league_context import (
+            build_roster_stats_from_league_context,
+            get_active_league_context,
+            has_full_league_rosters,
+        )
 
         _lineup_archive = get_active_draft_archive(st.session_state)
-        if _lineup_archive is not None and roster_stats.empty:
+        _lineup_context = get_active_league_context(st.session_state)
+        if roster_stats.empty:
             _cached_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats")
             if isinstance(_cached_hitter_stats, pd.DataFrame) and not _cached_hitter_stats.empty:
-                roster_stats = build_roster_stats_from_archive(
-                    _lineup_archive,
-                    _cached_hitter_stats,
-                    normalize_name_fn=normalize_player_name_for_merge,
-                )
+                if _lineup_context is not None and has_full_league_rosters(_lineup_context):
+                    roster_stats = build_roster_stats_from_league_context(
+                        _lineup_context,
+                        _cached_hitter_stats,
+                        normalize_name_fn=normalize_player_name_for_merge,
+                    )
+                elif _lineup_archive is not None:
+                    roster_stats = build_roster_stats_from_archive(
+                        _lineup_archive,
+                        _cached_hitter_stats,
+                        normalize_name_fn=normalize_player_name_for_merge,
+                    )
                 if not roster_stats.empty:
                     st.session_state["fantasy_current_roster_stats"] = roster_stats
     except ImportError:

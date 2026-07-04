@@ -50,6 +50,9 @@ from fantasy_league_context import (
     set_active_league_context,
     upsert_league_context,
     activate_archive_league_context,
+    build_roster_stats_from_league_context,
+    league_context_roster_dataframe,
+    league_rosters_cache_sig,
 )
 
 
@@ -407,6 +410,107 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         assert loaded_entry is not None
         assert loaded_context is not None
         self.assertEqual(get_active_league_context(session)["league_context_id"], loaded_context["league_context_id"])
+
+
+class FantasyLeagueContextRosterStatsTests(unittest.TestCase):
+    def test_league_context_roster_dataframe_multi_team(self) -> None:
+        session: dict = {}
+        _, context = save_live_draft_league_context(
+            session,
+            _live_room_fixture(),
+            my_team_name="Daniel",
+        )
+        df = league_context_roster_dataframe(context)
+        self.assertFalse(df.empty)
+        self.assertIn("Team", df.columns)
+        self.assertIn("Player", df.columns)
+        teams = set(df["Team"].astype(str).unique())
+        self.assertEqual(teams, {"Daniel", "Team 2", "Team 3"})
+
+    def test_build_roster_stats_from_league_context_multi_team(self) -> None:
+        session: dict = {}
+        _, context = save_live_draft_league_context(
+            session,
+            _live_room_fixture(),
+            my_team_name="Daniel",
+        )
+        stats = pd.DataFrame(
+            [
+                {"Player": "Aaron Judge", "HR": 20, "RBI": 50},
+                {"Player": "Juan Soto", "HR": 18, "RBI": 45},
+                {"Player": "Mike Trout", "HR": 15, "RBI": 40},
+            ]
+        )
+        merged = build_roster_stats_from_league_context(
+            context,
+            stats,
+            normalize_name_fn=lambda n: str(n or "").strip().lower(),
+        )
+        self.assertFalse(merged.empty)
+        self.assertGreaterEqual(merged["Team"].nunique(), 2)
+        self.assertEqual(int(merged.iloc[0]["HR"]), 20)
+        judge_row = merged[merged["Player"].astype(str) == "Aaron Judge"]
+        self.assertEqual(str(judge_row.iloc[0]["Team"]), "Daniel")
+        soto_row = merged[merged["Player"].astype(str) == "Juan Soto"]
+        self.assertEqual(str(soto_row.iloc[0]["Team"]), "Team 2")
+
+    def test_legacy_archive_still_single_team_via_archive_builder(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Round": 1}])
+        entry = save_simulator_team_archive(session, board, team_name="Daniel")
+        migrate_legacy_archives_to_contexts(session)
+        stats = pd.DataFrame([{"Player": "Aaron Judge", "HR": 20}])
+        from draft_archive_state import build_roster_stats_from_archive
+
+        merged = build_roster_stats_from_archive(
+            entry,
+            stats,
+            normalize_name_fn=lambda n: str(n or "").strip().lower(),
+        )
+        self.assertFalse(merged.empty)
+        self.assertEqual(merged["Team"].nunique(), 1)
+        self.assertEqual(str(merged.iloc[0]["Team"]), "Daniel")
+
+    def test_league_rosters_cache_sig_differs_by_context(self) -> None:
+        session: dict = {}
+        _, full_ctx = save_live_draft_league_context(session, _live_room_fixture(), my_team_name="Daniel")
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Round": 1}])
+        entry = save_simulator_team_archive(session, board, team_name="Daniel")
+        migrate_legacy_archives_to_contexts(session)
+        legacy_ctx = get_league_context_for_archive(session, entry)
+        assert legacy_ctx is not None
+        self.assertNotEqual(
+            league_rosters_cache_sig(full_ctx),
+            league_rosters_cache_sig(legacy_ctx),
+        )
+
+    def test_standings_cache_key_includes_league_context_id(self) -> None:
+        from fantasy_perf_cache import standings_roster_cache_key
+
+        session: dict = {}
+        _, context = save_live_draft_league_context(session, _live_room_fixture(), my_team_name="Daniel")
+        roster_df = league_context_roster_dataframe(context)
+        key = standings_roster_cache_key(
+            session,
+            stats_source="MLB API",
+            api_season=2026,
+            scoring_format="5x5 Roto",
+            draft_table=roster_df,
+            active_archive_id="abc123",
+            league_context_id=str(context.get("league_context_id") or ""),
+            league_rosters_sig=league_rosters_cache_sig(context),
+        )
+        self.assertEqual(key[0], context["league_context_id"])
+        self.assertTrue(key[1])
+        legacy_key = standings_roster_cache_key(
+            session,
+            stats_source="MLB API",
+            api_season=2026,
+            scoring_format="5x5 Roto",
+            draft_table=roster_df,
+            active_archive_id="abc123",
+        )
+        self.assertNotEqual(key[:3], legacy_key[:3])
 
 
 if __name__ == "__main__":

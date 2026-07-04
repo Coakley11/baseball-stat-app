@@ -28,8 +28,12 @@ def standings_roster_cache_key(
     scoring_format: str,
     draft_table: pd.DataFrame | None,
     active_archive_id: str = "",
+    league_context_id: str = "",
+    league_rosters_sig: str = "",
 ) -> tuple[Any, ...]:
     return (
+        str(league_context_id or ""),
+        str(league_rosters_sig or ""),
         str(active_archive_id or ""),
         _df_sig(draft_table, extra="draft"),
         str(stats_source or ""),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -203,6 +204,84 @@ def build_ownership_map(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "is_user_team": is_user_team,
             }
     return ownership
+
+
+def league_context_roster_dataframe(context: dict[str, Any]) -> pd.DataFrame:
+    """Normalize all league_rosters players into one DataFrame for Standings / cache."""
+    league_rosters = context.get("league_rosters") or {}
+    if not isinstance(league_rosters, dict):
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for team_name, team_entry in league_rosters.items():
+        if not isinstance(team_entry, dict):
+            continue
+        fantasy_team = str(team_entry.get("team_name") or team_name or "").strip()
+        for player in team_entry.get("players") or []:
+            if not isinstance(player, dict):
+                continue
+            player_name = str(player.get("player_name") or "").strip()
+            if not player_name:
+                continue
+            source = dict(player.get("source_row") or {})
+            row: dict[str, Any] = {
+                "Player": player_name,
+                "Team": fantasy_team,
+            }
+            positions = player.get("positions") or []
+            if positions:
+                row["Primary Position"] = str(positions[0])
+            elif source.get("Primary Position"):
+                row["Primary Position"] = str(source.get("Primary Position"))
+            for src_key, dst_key in (("Pick", "Pick"), ("Round", "Round"), ("pick", "Pick"), ("round", "Round")):
+                if src_key in source and dst_key not in row:
+                    row[dst_key] = source[src_key]
+            rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def build_roster_stats_from_league_context(
+    context: dict[str, Any],
+    current_stats: pd.DataFrame,
+    *,
+    normalize_name_fn,
+) -> pd.DataFrame:
+    """Merge every team's league_rosters players with current-season hitter stats."""
+    if current_stats is None or getattr(current_stats, "empty", True):
+        return pd.DataFrame()
+    drafted = league_context_roster_dataframe(context)
+    if drafted.empty or "Player" not in drafted.columns:
+        return pd.DataFrame()
+    work = drafted[drafted["Player"].astype(str).str.strip() != ""].copy()
+    work["Player Key"] = work["Player"].apply(normalize_name_fn)
+    stats = current_stats.copy()
+    if "Player Key" not in stats.columns:
+        name_col = "Player" if "Player" in stats.columns else stats.columns[0]
+        stats["Player Key"] = stats[name_col].apply(normalize_name_fn)
+    roster_stats = work.merge(stats, on="Player Key", how="left", suffixes=("", "_stats"))
+    if "Player_stats" in roster_stats.columns:
+        roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
+    return roster_stats
+
+
+def league_rosters_cache_sig(context: dict[str, Any] | None) -> str:
+    """Stable signature for league_rosters used in standings cache keys."""
+    if not context:
+        return ""
+    league_context_id = str(context.get("league_context_id") or "")
+    rosters = context.get("league_rosters") or {}
+    if not isinstance(rosters, dict):
+        return league_context_id
+    parts: list[str] = []
+    for team_name in sorted(rosters.keys()):
+        team_entry = rosters.get(team_name)
+        if not isinstance(team_entry, dict):
+            continue
+        players = team_entry.get("players") or []
+        parts.append(f"{team_name}:{len(players)}")
+    raw = f"{league_context_id}|{'|'.join(parts)}"
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
 def has_full_league_rosters(context: dict[str, Any] | None) -> bool:
