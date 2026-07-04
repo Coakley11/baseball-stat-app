@@ -360,6 +360,7 @@ def _empty_workflow() -> dict[str, list[Any]]:
         "acquire_targets": [],
         "add_targets": [],
         "drop_candidates": [],
+        "league_activity": [],
     }
 
 
@@ -369,11 +370,19 @@ TRADE_MODE_TRADE_AWAY = "trade_away"
 TRADE_MODE_ACQUIRE = "acquire"
 TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_handoff"
 LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
+PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY = "_pending_active_league_context_id"
+PENDING_ARCHIVE_ACTIVATION_KEY = "_pending_active_archive_id"
+LEAGUE_CONTEXT_SAVE_FLASH_KEY = "_league_context_save_flash"
 
 
 def _workflow_key_for_mode(mode: str) -> str:
-    if str(mode or "").strip() == TRADE_MODE_TRADE_AWAY:
+    mode_norm = str(mode or "").strip().lower()
+    if mode_norm in (TRADE_MODE_TRADE_AWAY, "trade_away"):
         return WORKFLOW_KEY_TRADE_CANDIDATES
+    if mode_norm == "add":
+        return "add_targets"
+    if mode_norm == "drop":
+        return "drop_candidates"
     return WORKFLOW_KEY_ACQUIRE_TARGETS
 
 
@@ -397,6 +406,7 @@ def _ensure_workflow(context: dict[str, Any]) -> dict[str, Any]:
         WORKFLOW_KEY_ACQUIRE_TARGETS,
         "add_targets",
         "drop_candidates",
+        "league_activity",
     ):
         if not isinstance(workflow.get(key), list):
             workflow[key] = []
@@ -525,8 +535,11 @@ def set_trade_acquire_handoff(
     player_name: str,
     owner_team: str = "",
 ) -> None:
+    league_context_id = str(league_context_id or "").strip()
+    if league_context_id:
+        schedule_league_context_activation(session, league_context_id)
     session[TRADE_HANDOFF_SESSION_KEY] = {
-        "league_context_id": str(league_context_id or "").strip(),
+        "league_context_id": league_context_id,
         "mode": str(mode or "").strip(),
         "player_name": str(player_name or "").strip(),
         "owner_team": str(owner_team or "").strip(),
@@ -638,6 +651,92 @@ def set_active_league_context(session: dict[str, Any], league_context_id: str | 
 
 def clear_active_league_context(session: dict[str, Any]) -> None:
     set_active_league_context(session, None)
+
+
+def schedule_league_context_activation(
+    session: dict[str, Any],
+    league_context_id: str,
+    *,
+    archive_id: str = "",
+) -> None:
+    """Defer room_your_team / archive alias sync until before widgets render."""
+    league_context_id = str(league_context_id or "").strip()
+    if league_context_id:
+        session[PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY] = league_context_id
+    archive_id = str(archive_id or "").strip()
+    if archive_id:
+        session[PENDING_ARCHIVE_ACTIVATION_KEY] = archive_id
+
+
+def _clear_fantasy_context_caches(session: dict[str, Any]) -> None:
+    try:
+        from fantasy_perf_cache import LINEUP_SCORES_CACHE_KEY, STANDINGS_ROSTER_CACHE_KEY
+
+        session.pop(STANDINGS_ROSTER_CACHE_KEY, None)
+        session.pop(LINEUP_SCORES_CACHE_KEY, None)
+    except ImportError:
+        pass
+
+
+def apply_pending_league_context_activation(session: dict[str, Any]) -> bool:
+    """Apply deferred league-context activation before Streamlit widgets instantiate."""
+    pending_ctx = str(session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None) or "").strip()
+    pending_archive = str(session.pop(PENDING_ARCHIVE_ACTIVATION_KEY, None) or "").strip()
+    if not pending_ctx and not pending_archive:
+        return False
+    if pending_ctx:
+        activate_league_context(session, pending_ctx)
+    elif pending_archive:
+        activate_archive_league_context(session, pending_archive)
+    _clear_fantasy_context_caches(session)
+    return True
+
+
+def stash_league_context_save_flash(
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+    league_save: bool = False,
+) -> None:
+    session[LEAGUE_CONTEXT_SAVE_FLASH_KEY] = {
+        "draft_id": str(entry.get("draft_id") or ""),
+        "draft_name": str(entry.get("draft_name") or ""),
+        "team_count": league_team_count(context, entry),
+        "player_count": len(entry.get("players") or []),
+        "league_save": bool(league_save),
+        "coverage": league_context_coverage_badge(context),
+    }
+
+
+def pop_league_context_save_flash(session: dict[str, Any]) -> dict[str, Any] | None:
+    flash = session.pop(LEAGUE_CONTEXT_SAVE_FLASH_KEY, None)
+    return dict(flash) if isinstance(flash, dict) else None
+
+
+def schedule_active_context_resync(session: dict[str, Any]) -> bool:
+    """Re-apply active league context aliases before fantasy page navigation."""
+    context = get_active_league_context(session)
+    if context:
+        archive_id = str((context.get("metadata") or {}).get("source_draft_id") or "").strip()
+        schedule_league_context_activation(
+            session,
+            str(context.get("league_context_id") or ""),
+            archive_id=archive_id,
+        )
+        return True
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        active = get_active_draft_archive(session)
+    except ImportError:
+        active = None
+    if active:
+        draft_id = str(active.get("draft_id") or "").strip()
+        if draft_id:
+            schedule_league_context_activation(session, context_id_for_archive(draft_id), archive_id=draft_id)
+            return True
+    return False
 
 
 def _sync_legacy_archive_aliases(session: dict[str, Any], context: dict[str, Any] | None) -> None:
@@ -826,6 +925,7 @@ def save_live_draft_league_context(
     *,
     my_team_name: str,
     draft_name: str = "",
+    defer_activation: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Save full live-draft league context plus linked archive entry."""
     from draft_archive_state import save_live_draft_team_archive
@@ -857,7 +957,10 @@ def save_live_draft_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
-    activate_league_context(session, league_context_id)
+    if defer_activation:
+        schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
+    else:
+        activate_league_context(session, league_context_id)
     return entry, context
 
 
@@ -868,6 +971,7 @@ def save_simulator_league_context(
     my_team_name: str,
     draft_name: str = "",
     config: dict[str, Any] | None = None,
+    defer_activation: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Save full mock-draft league context plus linked archive entry."""
     from draft_archive_state import save_simulator_team_archive
@@ -900,7 +1004,10 @@ def save_simulator_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
-    activate_league_context(session, league_context_id)
+    if defer_activation:
+        schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
+    else:
+        activate_league_context(session, league_context_id)
     return entry, context
 
 
@@ -930,11 +1037,25 @@ def save_draft_archive_with_league_context(
     return copy.deepcopy(entry)
 
 
-def activate_archive_league_context(session: dict[str, Any], draft_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def activate_archive_league_context(
+    session: dict[str, Any],
+    draft_id: str,
+    *,
+    defer_activation: bool = False,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Activate saved draft archive and linked Fantasy League Context."""
-    from draft_archive_state import activate_draft_archive
+    from draft_archive_state import activate_draft_archive, get_draft_archive
 
     draft_id = str(draft_id or "").strip()
+    if defer_activation:
+        entry = get_draft_archive(session, draft_id)
+        if not entry:
+            return None, None
+        migrate_legacy_archives_to_contexts(session)
+        league_context_id = str(entry.get("league_context_id") or context_id_for_archive(draft_id)).strip()
+        schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
+        context = get_league_context(session, league_context_id)
+        return entry, context
     entry = activate_draft_archive(session, draft_id)
     if not entry:
         return None, None

@@ -255,15 +255,24 @@ def format_roster_context_label(ctx: dict[str, Any]) -> str:
     return f"{ctx.get('draft_label', 'Draft')} — {ctx.get('team_name', 'Team')}"
 
 
-def apply_roster_context(session: dict[str, Any], ctx: dict[str, Any]) -> None:
+def apply_roster_context(session: dict[str, Any], ctx: dict[str, Any], *, defer_activation: bool = True) -> None:
     """Load the selected draft / league context into session state."""
     league_context_id = _resolve_league_context_id(session, ctx)
     archive_id = str(ctx.get("archive_id") or "").strip()
     try:
+        if defer_activation:
+            from fantasy_league_context import context_id_for_archive, schedule_league_context_activation
+
+            if archive_id:
+                ctx_id = league_context_id or context_id_for_archive(archive_id)
+                schedule_league_context_activation(session, ctx_id, archive_id=archive_id)
+            elif league_context_id:
+                schedule_league_context_activation(session, league_context_id)
+            return
         if archive_id:
             from fantasy_league_context import activate_archive_league_context
 
-            activate_archive_league_context(session, archive_id)
+            activate_archive_league_context(session, archive_id, defer_activation=False)
         elif league_context_id:
             from fantasy_league_context import activate_league_context
 
@@ -273,16 +282,13 @@ def apply_roster_context(session: dict[str, Any], ctx: dict[str, Any]) -> None:
 
             activate_draft_archive(session, archive_id)
     except Exception:
-        if ctx.get("source") == "saved_archive" and archive_id:
+        if not defer_activation and ctx.get("source") == "saved_archive" and archive_id:
             try:
                 from draft_archive_state import activate_draft_archive
 
                 activate_draft_archive(session, archive_id)
             except Exception:
                 pass
-    your_team = str(ctx.get("your_team") or ctx.get("team_name") or "").strip()
-    if your_team:
-        session["room_your_team"] = your_team
 
 
 def add_trade_flow_target(

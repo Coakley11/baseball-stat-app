@@ -24,11 +24,16 @@ from fantasy_league_context import (
     league_context_coverage_badge,
     league_context_type_badge,
     league_team_count,
+    pop_league_context_save_flash,
     save_live_draft_league_context,
     save_simulator_league_context,
+    schedule_active_context_resync,
+    stash_league_context_save_flash,
 )
 
 SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
+FANTASY_STANDINGS_PAGE = "Fantasy Standings Tracker"
+FANTASY_LINEUP_PAGE = "Fantasy Lineup Assistant"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 
 
@@ -51,6 +56,16 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
 
 def schedule_saved_draft_library_navigation(session: dict[str, Any]) -> None:
     session["_navigate_to_page"] = SAVED_DRAFT_LIBRARY_PAGE
+    session["_skip_page_restore_for"] = SAVED_DRAFT_LIBRARY_PAGE
+
+
+def schedule_fantasy_analysis_navigation(session: dict[str, Any], target_page: str) -> bool:
+    """Activate/resync active league context, then navigate before widgets render on next run."""
+    if not schedule_active_context_resync(session):
+        return False
+    session["_navigate_to_page"] = target_page
+    session["_skip_page_restore_for"] = target_page
+    return True
 
 
 def _persist_archive(session: dict[str, Any], st: Any, *, reason: str) -> None:
@@ -167,11 +182,31 @@ def _render_post_save_actions(
             st.rerun()
     with standings_col:
         if st.button(
-            _nav_label("Fantasy Standings Tracker", "Go to Standings Tracker", page_label_fn),
+            _nav_label(FANTASY_STANDINGS_PAGE, "Go to Standings Tracker", page_label_fn),
             key=f"view_standings_{entry.get('draft_id')}",
         ):
-            session["_navigate_to_page"] = "Fantasy Standings Tracker"
-            st.rerun()
+            if schedule_fantasy_analysis_navigation(session, FANTASY_STANDINGS_PAGE):
+                st.rerun()
+            else:
+                st.warning("Set an active league context first.")
+
+
+def render_league_context_save_flash(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+    """Show deferred post-save success after league context save + rerun."""
+    flash = pop_league_context_save_flash(session)
+    if not flash:
+        return
+    draft_id = str(flash.get("draft_id") or "")
+    entry = {"draft_id": draft_id, "draft_name": flash.get("draft_name")}
+    context = get_league_context_for_archive(session, entry) if draft_id else None
+    _render_post_save_actions(
+        st,
+        session,
+        entry,
+        page_label_fn=page_label_fn,
+        context=context,
+        league_save=bool(flash.get("league_save")),
+    )
 
 
 def render_save_live_draft_team(
@@ -205,6 +240,7 @@ def render_save_live_draft_team(
                         room,
                         my_team_name=team_name,
                         draft_name=draft_name,
+                        defer_activation=True,
                     )
                     _clear_fantasy_caches_on_archive_change(session)
                     _persist_archive(session, st, reason="live_draft_league_context_saved")
@@ -214,14 +250,8 @@ def render_save_live_draft_team(
                         log_saved_draft_archived(entry, session=session)
                     except ImportError:
                         pass
-                    _render_post_save_actions(
-                        st,
-                        session,
-                        entry,
-                        page_label_fn=page_label_fn,
-                        context=context,
-                        league_save=True,
-                    )
+                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save league context: {exc}")
         with legacy_col:
@@ -233,9 +263,14 @@ def render_save_live_draft_team(
                         team_name=team_name,
                         draft_name=draft_name,
                     )
-                    from draft_archive_state import set_active_draft_archive
+                    from fantasy_league_context import context_id_for_archive, schedule_league_context_activation
 
-                    set_active_draft_archive(session, str(entry.get("draft_id") or ""))
+                    draft_id = str(entry.get("draft_id") or "")
+                    schedule_league_context_activation(
+                        session,
+                        context_id_for_archive(draft_id),
+                        archive_id=draft_id,
+                    )
                     _clear_fantasy_caches_on_archive_change(session)
                     _persist_archive(session, st, reason="live_draft_archive_saved")
                     try:
@@ -244,7 +279,8 @@ def render_save_live_draft_team(
                         log_saved_draft_archived(entry, session=session)
                     except ImportError:
                         pass
-                    _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
+                    stash_league_context_save_flash(session, entry, league_save=False)
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save draft team: {exc}")
 
@@ -280,6 +316,7 @@ def render_save_simulator_draft_team(
                         my_team_name=team_name,
                         draft_name=draft_name,
                         config=dict(session.get("draft_shared_settings") or {}),
+                        defer_activation=True,
                     )
                     _clear_fantasy_caches_on_archive_change(session)
                     _persist_archive(session, st, reason="simulator_league_context_saved")
@@ -289,14 +326,8 @@ def render_save_simulator_draft_team(
                         log_saved_draft_archived(entry, session=session)
                     except ImportError:
                         pass
-                    _render_post_save_actions(
-                        st,
-                        session,
-                        entry,
-                        page_label_fn=page_label_fn,
-                        context=context,
-                        league_save=True,
-                    )
+                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save mock league context: {exc}")
         with legacy_col:
@@ -309,9 +340,14 @@ def render_save_simulator_draft_team(
                         draft_name=draft_name,
                         config=dict(session.get("draft_shared_settings") or {}),
                     )
-                    from draft_archive_state import set_active_draft_archive
+                    from fantasy_league_context import context_id_for_archive, schedule_league_context_activation
 
-                    set_active_draft_archive(session, str(entry.get("draft_id") or ""))
+                    draft_id = str(entry.get("draft_id") or "")
+                    schedule_league_context_activation(
+                        session,
+                        context_id_for_archive(draft_id),
+                        archive_id=draft_id,
+                    )
                     _clear_fantasy_caches_on_archive_change(session)
                     _persist_archive(session, st, reason="simulator_draft_archive_saved")
                     try:
@@ -320,7 +356,8 @@ def render_save_simulator_draft_team(
                         log_saved_draft_archived(entry, session=session)
                     except ImportError:
                         pass
-                    _render_post_save_actions(st, session, entry, page_label_fn=page_label_fn)
+                    stash_league_context_save_flash(session, entry, league_save=False)
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save draft team: {exc}")
 
@@ -357,7 +394,11 @@ def _render_archive_actions(
             disabled=is_active,
             use_container_width=True,
         ):
-            loaded_entry, loaded_context = activate_archive_league_context(session, draft_id)
+            loaded_entry, loaded_context = activate_archive_league_context(
+                session,
+                draft_id,
+                defer_activation=True,
+            )
             if loaded_entry:
                 _clear_fantasy_caches_on_archive_change(session)
                 _persist_archive(session, st, reason="league_context_activated")
@@ -367,12 +408,14 @@ def _render_archive_actions(
                     log_saved_draft_activated(
                         loaded_entry,
                         session=session,
-                        target_page="Saved Draft Library",
+                        target_page=SAVED_DRAFT_LIBRARY_PAGE,
                     )
                 except ImportError:
                     pass
                 if loaded_context:
-                    st.toast(f"Active league context: {loaded_context.get('display_name', loaded_entry.get('draft_name'))}")
+                    st.session_state["_league_context_activation_toast"] = (
+                        f"Active league context: {loaded_context.get('display_name', loaded_entry.get('draft_name'))}"
+                    )
                 st.rerun()
     with btn2:
         if st.button("Rename", key=f"archive_rename_btn_{draft_id}", use_container_width=True):
@@ -411,6 +454,23 @@ def _render_archive_actions(
 
 def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     """Dedicated management page for all saved draft teams."""
+    toast_msg = session.pop("_league_context_activation_toast", None)
+    if toast_msg:
+        st.toast(str(toast_msg))
+    flash = pop_league_context_save_flash(session)
+    if flash:
+        if flash.get("league_save"):
+            st.success(
+                f"Saved **{flash.get('draft_name')}** as a **{flash.get('coverage')}** "
+                f"({flash.get('team_count')} teams, {flash.get('player_count')} players on your roster). "
+                "Set active for Standings and Lineup analysis."
+            )
+        else:
+            st.success(
+                f"Saved **{flash.get('draft_name')}** ({flash.get('player_count')} players). "
+                "Set active for Standings and Lineup analysis."
+            )
+
     st.markdown(
         """
         <style>
@@ -522,29 +582,33 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
     go1, go2 = st.columns(2)
     with go1:
         if st.button(
-            _nav_label("Fantasy Standings Tracker", "Open Standings Tracker", page_label_fn),
+            _nav_label(FANTASY_STANDINGS_PAGE, "Open Fantasy Standings Tracker", page_label_fn),
             key="library_open_standings",
             use_container_width=True,
         ):
-            active = get_active_draft_archive(session)
-            if active:
-                try:
-                    from baseball_archive_activity import log_saved_draft_activated
+            if not get_active_league_context(session) and not get_active_draft_archive(session):
+                st.warning("Set an **Active League Context** first.")
+            elif schedule_fantasy_analysis_navigation(session, FANTASY_STANDINGS_PAGE):
+                active = get_active_draft_archive(session)
+                if active:
+                    try:
+                        from baseball_archive_activity import log_saved_draft_activated
 
-                    log_saved_draft_activated(
-                        active,
-                        session=session,
-                        target_page="Fantasy Standings Tracker",
-                    )
-                except ImportError:
-                    pass
-            session["_navigate_to_page"] = "Fantasy Standings Tracker"
-            st.rerun()
+                        log_saved_draft_activated(
+                            active,
+                            session=session,
+                            target_page=FANTASY_STANDINGS_PAGE,
+                        )
+                    except ImportError:
+                        pass
+                st.rerun()
     with go2:
         if st.button(
-            _nav_label("Fantasy Lineup Assistant", "Open Lineup Assistant", page_label_fn),
+            _nav_label(FANTASY_LINEUP_PAGE, "Open Fantasy Lineup Assistant", page_label_fn),
             key="library_open_lineup",
             use_container_width=True,
         ):
-            session["_navigate_to_page"] = "Fantasy Lineup Assistant"
-            st.rerun()
+            if not get_active_league_context(session) and not get_active_draft_archive(session):
+                st.warning("Set an **Active League Context** first.")
+            elif schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
+                st.rerun()

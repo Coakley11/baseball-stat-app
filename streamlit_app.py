@@ -1969,6 +1969,11 @@ PAGE_GUIDES = {
         "when": "Each scoring period with current stats loaded from Standings Tracker.",
         "outputs": "Starters by slot, bench list, diagnosis, and trade ideas.",
     },
+    "Waiver Wire / Add-Drop Center": {
+        "purpose": "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner.",
+        "when": "In-season with an Active League Context from Saved Draft Library.",
+        "outputs": "Waiver-eligible players, recommended adds/drops, pending moves, and league activity log.",
+    },
 }
 
 
@@ -11840,6 +11845,7 @@ PAGE_OPTIONS = [
     "Saved Draft Library",
     "Fantasy Standings Tracker",
     "Fantasy Lineup Assistant",
+    "Waiver Wire / Add-Drop Center",
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
@@ -11864,6 +11870,7 @@ PAGE_OPTION_LABELS = {
     "Saved Draft Library": "📁 Saved Draft Library",
     "Fantasy Standings Tracker": "📊 Fantasy Standings Tracker",
     "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
+    "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire / Add-Drop Center",
 }
 _PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
 
@@ -11934,6 +11941,7 @@ PAGE_STATE_DEBUG_PREFIXES = {
     "Live Draft Room": ("live_draft_", "live_slot_"),
     "Fantasy Standings Tracker": ("standings_",),
     "Fantasy Lineup Assistant": ("lineup_",),
+    "Waiver Wire / Add-Drop Center": ("waiver_",),
     "ML Predictions": ("ml_",),
 }
 
@@ -13252,6 +13260,12 @@ try:
 except ImportError:
     pass
 _consume_scheduled_navigation()
+try:
+    from fantasy_league_context import apply_pending_league_context_activation
+
+    apply_pending_league_context_activation(st.session_state)
+except ImportError:
+    pass
 
 try:
     from draft_lab_resume import apply_baseball_suite_resume, apply_draft_lab_resume
@@ -15335,6 +15349,14 @@ if active_page == "Comparison Tool":
             )
         except Exception:
             pass
+    try:
+        from fantasy_waiver_wire import filter_unrostered_players
+
+        comparison_projection_lookup = filter_unrostered_players(
+            st.session_state, comparison_projection_lookup, name_col="fullName"
+        )
+    except ImportError:
+        pass
 
     comparison_card_pool = build_profile_draft_metrics_pool(
         sync_team=comparison_action_team,
@@ -16112,6 +16134,12 @@ if active_page == "Trend Value":
         _canonical_trend_pool = get_cached_unified_projection_pool_live()
         trend_value_df = merge_canonical_projections(trend_value_df, _canonical_trend_pool)
     except Exception:
+        pass
+    try:
+        from fantasy_waiver_wire import filter_unrostered_players
+
+        trend_value_df = filter_unrostered_players(st.session_state, trend_value_df, name_col="fullName")
+    except ImportError:
         pass
     trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)
     trend_value_df = filter_players_by_fantasy_position(trend_value_df, trend_position_filter)
@@ -16991,6 +17019,12 @@ if active_page == "Fantasy Sleepers & Busts":
         fantasy_df = merge_canonical_projections(fantasy_df, _canonical_sleeper_pool)
         fantasy_df = merge_canonical_draft_metrics(fantasy_df, _canonical_sleeper_pool)
     except Exception:
+        pass
+    try:
+        from fantasy_waiver_wire import filter_unrostered_players
+
+        fantasy_df = filter_unrostered_players(st.session_state, fantasy_df, name_col="fullName")
+    except ImportError:
         pass
 
     latest_cols = ["playerID", "primaryHistoricalTeamName", "primaryTeamName", "primaryLeague", "careerPrimaryPos", "primaryPos", "yearID", "birthYear", "birthMonth", "birthDay"]
@@ -18005,6 +18039,12 @@ if active_page == "Draft Assistant Simulator":
         # Remove every player who is already off the board:
         # players on other rosters + players on my roster.
         available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
+        try:
+            from fantasy_waiver_wire import filter_unrostered_players
+
+            available = filter_unrostered_players(st.session_state, available, name_col="fullName")
+        except ImportError:
+            pass
 
         _live_draft_room = st.session_state.get("live_draft_room")
         _score_room = (
@@ -19097,8 +19137,9 @@ if active_page == "Draft Room Simulator":
             "Lineup-style tables by fantasy team: projections plus model/market scores."
         )
         try:
-            from draft_archive_ui import render_save_simulator_draft_team
+            from draft_archive_ui import render_league_context_save_flash, render_save_simulator_draft_team
 
+            render_league_context_save_flash(st, st.session_state, page_label_fn=page_option_label)
             render_save_simulator_draft_team(
                 st,
                 st.session_state,
@@ -21430,8 +21471,9 @@ if active_page == "Live Draft Room":
                 st.caption(picks_txt)
             _save_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
             try:
-                from draft_archive_ui import render_save_live_draft_team
+                from draft_archive_ui import render_league_context_save_flash, render_save_live_draft_team
 
+                render_league_context_save_flash(st, st.session_state, page_label_fn=page_option_label)
                 render_save_live_draft_team(st, st.session_state, room, team_name=_save_team, page_label_fn=page_option_label)
             except ImportError:
                 if _save_team and _save_team != "—":
@@ -22535,6 +22577,29 @@ if active_page == "Fantasy Lineup Assistant":
     render_page_filters_debug(active_page)
 
 
+if active_page == "Waiver Wire / Add-Drop Center":
+    from fantasy_waiver_wire_ui import render_waiver_wire_page
+
+    _page_perf_start(active_page)
+    render_section_header(
+        "🔄 Waiver Wire / Add-Drop Center",
+        "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner from your Active League Context.",
+    )
+    render_page_guide(active_page)
+    apply_pending_page_transfer(active_page)
+    try:
+        from draft_archive_ui import render_active_saved_draft_chip
+
+        render_active_saved_draft_chip(st, st.session_state, key_prefix="waiver_archive", page_label_fn=page_option_label)
+    except ImportError:
+        pass
+    _waiver_pool = get_cached_unified_projection_pool_live()
+    render_waiver_wire_page(st, st.session_state, player_pool=_waiver_pool, page_label_fn=page_option_label)
+    save_page_state(active_page)
+    _page_perf_end(active_page)
+    render_page_filters_debug(active_page)
+
+
 def valuation_filter_changed():
     try:
         from shared_draft_context import on_draft_settings_changed
@@ -22893,6 +22958,12 @@ if active_page == "Valuation":
             selected_player=sel_name,
         )
     except Exception:
+        pass
+    try:
+        from fantasy_waiver_wire import filter_unrostered_players
+
+        valuation_df = filter_unrostered_players(st.session_state, valuation_df, name_col="fullName")
+    except ImportError:
         pass
 
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)
