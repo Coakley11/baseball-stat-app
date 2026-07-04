@@ -671,6 +671,8 @@ def _draft_lab_column_kind(col):
         return "int"
     if name in {"Market Rank", "Model Rank", "FantasyPros Rank", "ADP Rank", "Current Rank"} or low.endswith(" rank"):
         return "int"
+    if name in ("Projection Confidence", "Projection Confidence Score"):
+        return "confidence"
     if "fantasy edge" in low:
         return "edge"
     if low.endswith("probability") or "percent" in low or low.endswith(" pct") or name == "Projection Confidence Score":
@@ -713,8 +715,14 @@ def format_draft_lab_table(df, for_export=False):
     if df is None or df.empty:
         return df
     try:
-        from draft_score_display import prepare_draft_scores_for_display
+        from draft_score_display import (
+            normalize_projection_confidence_column,
+            normalize_projection_warning_column,
+            prepare_draft_scores_for_display,
+        )
 
+        df = normalize_projection_confidence_column(df)
+        df = normalize_projection_warning_column(df)
         df = prepare_draft_scores_for_display(df)
     except ImportError:
         pass
@@ -728,6 +736,13 @@ def format_draft_lab_table(df, for_export=False):
             out[col] = vals.round(0).astype("Int64")
         elif kind == "edge":
             out[col] = vals.apply(fmt_fantasy_edge) if for_export else vals.round(1)
+        elif kind == "confidence":
+            try:
+                from draft_score_display import fmt_confidence_score
+
+                out[col] = vals.apply(fmt_confidence_score)
+            except ImportError:
+                out[col] = vals.round(2)
         elif kind == "score2":
             out[col] = vals.apply(fmt_score_2) if for_export else vals.round(2)
         elif kind == "percent":
@@ -19597,8 +19612,14 @@ if active_page == "Draft Simulation Test Mode":
                 "Round", "Pick", "Fantasy Team", "fullName", "Primary Position", "Team",
                 "Model Rank", "Market Rank", "Fantasy Edge", "Expected Fantasy Value", "Projection Confidence",
                 "Scarcity Score", "Draft Fit Score", "Decision Score", "Roster Need At Pick",
-                "Why This Pick", "Projection Warning",
+                "Pick Verdict", "Why This Pick", "Projection Warning",
             ]
+        try:
+            from draft_lab_analysis import enrich_draft_board_pick_verdicts
+
+            lab_draft = enrich_draft_board_pick_verdicts(lab_draft, config=dict(_ctx.get("config") or {}))
+        except ImportError:
+            pass
         draft_board = lab_draft[[c for c in draft_show_cols if c in lab_draft.columns]].rename(columns={
             "fullName": "Player",
             "Team": "MLB Team",
@@ -19610,8 +19631,11 @@ if active_page == "Draft Simulation Test Mode":
             if FANTASY_EDGE_HELP:
                 st.caption(f"**Fantasy Edge:** {FANTASY_EDGE_HELP}")
             try:
+                from draft_lab_analysis import draft_lab_table_readme_markdown
                 from draft_score_display import ROSTER_FIT_CONTEXT_NOTES
 
+                with st.expander("How To Read This Table", expanded=False):
+                    st.markdown(draft_lab_table_readme_markdown())
                 st.caption(
                     "**Player Grade** (0–100) = overall player quality. "
                     "**Decision Score** (0–100) = recommendation strength at that pick. "
@@ -19621,7 +19645,7 @@ if active_page == "Draft Simulation Test Mode":
             except ImportError:
                 pass
             render_output_table(
-                format_draft_lab_table(clean_ui_columns(draft_board)),
+                clean_ui_columns(draft_board),
                 key="draft_lab_board",
                 file_name="draft_simulation_board.csv",
                 display_rows=80,
@@ -21050,7 +21074,7 @@ if active_page == "Live Draft Room":
                 st.caption("No picks yet.")
             else:
                 render_output_table(
-                    format_draft_lab_table(clean_ui_columns(board_df)),
+                    clean_ui_columns(board_df),
                     key="live_draft_board",
                     file_name="live_draft_board.csv",
                     display_rows=80,

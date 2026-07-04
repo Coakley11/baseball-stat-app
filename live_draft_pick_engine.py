@@ -45,41 +45,119 @@ def _safe_float(val: Any) -> float | None:
         return None
 
 
+def _display_decision_score(val: Any) -> float | None:
+    n = _safe_float(val)
+    if n is None:
+        return None
+    return n * 100.0 if n <= 1.5 else n
+
+
+def _display_player_grade(val: Any) -> float | None:
+    n = _safe_float(val)
+    if n is None:
+        return None
+    return n * 100.0 if n <= 1.5 else n
+
+
+def _position_bucket(pos: str) -> str:
+    p = str(pos or "").strip().upper()
+    if p in ("BN", "BENCH"):
+        return "Bench"
+    if p in ("DH", "UTIL"):
+        return "UTIL"
+    return p
+
+
+def _category_list(row: dict[str, Any]) -> list[str]:
+    cats = row.get("strong_categories_at_pick")
+    if isinstance(cats, list):
+        return [str(c).strip() for c in cats if str(c).strip()]
+    if isinstance(cats, str) and cats.strip():
+        return [c.strip() for c in cats.replace("/", ",").split(",") if c.strip()]
+    return []
+
+
+def build_pick_verdict(
+    row: Any,
+    *,
+    gaps: list[str] | None = None,
+    pick_no: int | None = None,
+) -> str:
+    """Short user-facing verdict explaining why this player was chosen over alternatives."""
+    if hasattr(row, "to_dict"):
+        data = row.to_dict()
+    else:
+        data = dict(row or {})
+    pos = str(data.get("Primary Position") or "")
+    bucket = _position_bucket(pos)
+    gap_list = [str(g).strip() for g in (gaps or []) if str(g).strip()]
+    pick = int(pick_no) if pick_no is not None else int(_safe_float(data.get("Pick")) or 0)
+    market = _safe_float(data.get("Market Rank"))
+    edge = _safe_float(data.get("Fantasy Edge"))
+    dec = _display_decision_score(data.get("Decision Score") or data.get("decision_score_at_pick"))
+    fit = _safe_float(data.get("Draft Fit Score") or data.get("roster_fit_score_at_pick"))
+    scarcity = _safe_float(data.get("Scarcity Score") or data.get("scarcity_score_at_pick"))
+    grade = _display_player_grade(data.get("Expected Fantasy Value"))
+    cats = _category_list(data)
+
+    if pick and market and market - pick >= 20:
+        edge_txt = f" (+{int(round(edge))} Fantasy Edge)" if edge and edge > 0 else ""
+        return f"Selected {int(round(market - pick))} spots after ADP{edge_txt}."
+
+    if edge is not None and edge >= 15:
+        return f"Selected {int(round(edge))} spots of value vs market (+{int(round(edge))} Fantasy Edge)."
+
+    if dec is not None and dec >= 90:
+        return f"Best Decision Score available ({dec:.2f})."
+
+    if cats and edge is not None and edge >= 8:
+        cat_txt = "/".join(cats[:2])
+        return f"Added projected {cat_txt} impact (+{int(round(edge))} Fantasy Edge)."
+
+    if grade is not None and grade >= 85:
+        return f"Highest player grade remaining ({grade:.0f})."
+
+    if gap_list and (pos in gap_list or bucket in gap_list):
+        if scarcity is not None and scarcity >= 0.70:
+            return f"Filled final {pos or bucket} slot before scarcity increased."
+        if fit is not None:
+            return f"Filled {pos or bucket} need with {fit:.2f} roster-fit score."
+        return f"Filled remaining {pos or bucket} need."
+
+    if scarcity is not None and scarcity >= 0.75:
+        label = pos or "hitters"
+        return f"Highest scarcity score among remaining {label}."
+
+    if cats:
+        return f"Improved weakest category: {cats[0].lower()}."
+
+    if bucket == "Bench":
+        return "Added bench depth."
+
+    if bucket == "UTIL":
+        return "Filled utility slot."
+
+    if dec is not None and dec >= 75:
+        return f"Strong Decision Score ({dec:.2f}) vs alternatives."
+
+    if edge is not None and edge > 0:
+        return f"Positive Fantasy Edge (+{int(round(edge))})."
+
+    if fit is not None and fit >= 0.65:
+        return f"Solid roster-fit score ({fit:.2f}) at this pick."
+
+    return "Balanced value pick at this slot."
+
+
 def build_structured_pick_verdict(
     row: dict[str, Any],
     *,
     pick_source: str,
     gaps: list[str] | None = None,
 ) -> str:
-    """User-facing pick verdict — source label plus decision-support prose."""
-    label = normalize_pick_source_label(pick_source)
-    pos = str(row.get("Primary Position") or "")
-    gap_list = list(gaps or [])
-    clauses: list[str] = []
-    if gap_list and pos and pos in gap_list:
-        clauses.append(f"Filled remaining {pos} need")
-    elif row.get("position_need_at_pick"):
-        clauses.append(f"Filled remaining {pos} need")
-    cats = row.get("strong_categories_at_pick")
-    if isinstance(cats, list) and cats:
-        clauses.append(f"improved {'/'.join(str(c) for c in cats[:2])} production")
-    elif isinstance(cats, str) and cats.strip():
-        clauses.append(f"improved {cats} production")
-    dec = _safe_float(row.get("Decision Score")) or _safe_float(row.get("decision_score_at_pick"))
-    if dec is not None:
-        if dec >= 0.75:
-            clauses.append("Strong decision")
-        elif dec >= 0.55:
-            clauses.append("Solid decision")
-        else:
-            clauses.append("Lower decision score relative to alternatives")
-    fit = _safe_float(row.get("Draft Fit Score")) or _safe_float(row.get("roster_fit_score_at_pick"))
-    if fit is not None and fit >= 0.72 and not (gap_list and pos in gap_list):
-        if not any("Filled" in c for c in clauses):
-            clauses.append("Strong roster fit without an open positional need")
-    if not clauses:
-        clauses.append("Added projected value to the roster")
-    return f"{label}: {'. '.join(clauses[:3])}."
+    """User-facing pick verdict for live draft board rows."""
+    pick_no = int(_safe_float(row.get("Pick")) or 0) or None
+    return build_pick_verdict(row, gaps=gaps, pick_no=pick_no)
 
 
 def live_draft_bump_sync_revision(room: dict[str, Any], event: str = "pick") -> None:

@@ -199,16 +199,22 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         enriched = enrich_lab_draft_metrics(out, pd.DataFrame(), _minimal_config())
         self.assertAlmostEqual(float(enriched.iloc[0]["Decision Score"]), 0.91)
 
-    def test_structured_pick_verdict_includes_source_label(self) -> None:
+    def test_structured_pick_verdict_uses_short_value_prose(self) -> None:
         from live_draft_pick_engine import build_structured_pick_verdict
 
         text = build_structured_pick_verdict(
-            {"Primary Position": "OF", "Decision Score": 0.82, "strong_categories_at_pick": ["HR", "RBI"]},
+            {
+                "Pick": 50,
+                "Primary Position": "OF",
+                "Market Rank": 145,
+                "Fantasy Edge": 31,
+                "Decision Score": 0.82,
+            },
             pick_source="Draft Assistant Pick",
             gaps=["OF", "OF"],
         )
-        self.assertTrue(text.startswith("Draft Assistant Pick:"))
-        self.assertIn("OF", text)
+        self.assertNotIn("Draft Assistant Pick:", text)
+        self.assertIn("ADP", text)
 
     def test_session_slot_count_preserves_zero(self) -> None:
         session = {"live_slot_3b": 0, "live_slot_dh": 0, "live_slot_bench": 0}

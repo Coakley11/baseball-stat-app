@@ -23,6 +23,28 @@ FANTASY_EDGE_HELP = (
     "Higher means better draft value."
 )
 
+DRAFT_LAB_TABLE_README = """
+**Projection Confidence** measures projection stability and reliability.
+
+Higher values mean larger sample sizes, more stable performance, and lower volatility.  
+Lower values mean injury uncertainty, role uncertainty, smaller samples, or higher volatility.
+
+Examples: **0.95** = Very High Confidence · **0.80** = High Confidence · **0.60** = Moderate Confidence · **0.40** = Low Confidence
+
+---
+
+**Scarcity Score** measures how difficult it is to replace this player's production later.
+
+Higher scores mean fewer comparable players remain, the position is drying up, or there is a larger talent drop-off.  
+Lower scores mean many alternatives remain.
+
+Examples: **0.90** = Highly Scarce · **0.50** = Moderate Scarcity · **0.10** = Easily Replaceable
+"""
+
+
+def draft_lab_table_readme_markdown() -> str:
+    return DRAFT_LAB_TABLE_README.strip()
+
 
 def _num(val: Any) -> float:
     return float(pd.to_numeric(val, errors="coerce"))
@@ -193,9 +215,34 @@ def draft_lab_board_display_columns() -> list[str]:
         "Draft Fit Score",
         "Decision Score",
         "Roster Need At Pick",
+        "Pick Verdict",
         "Why This Pick",
         "Projection Warning",
     ]
+
+
+def enrich_draft_board_pick_verdicts(
+    draft_df: pd.DataFrame,
+    *,
+    config: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Backfill short Pick Verdict prose for post-draft audit rows."""
+    if draft_df is None or draft_df.empty:
+        return draft_df
+    try:
+        from live_draft_pick_engine import build_pick_verdict
+    except ImportError:
+        return draft_df
+    out = draft_df.copy()
+    targets = roster_position_targets(config)
+    verdicts: list[str] = []
+    for _, row in out.sort_values("Pick").iterrows():
+        pick_no = int(_num(row.get("Pick")))
+        team = str(row.get("Fantasy Team") or "")
+        gaps_before = _gaps_before_pick(team, pick_no, out, targets)
+        verdicts.append(build_pick_verdict(row, gaps=gaps_before, pick_no=pick_no))
+    out["Pick Verdict"] = verdicts
+    return out
 
 
 def _rank_value_delta(row: pd.Series) -> float:

@@ -137,6 +137,10 @@ def apply_stabilized_counting_projections(pool: pd.DataFrame, projection_source:
     ).clip(0, 1)
     stable_veteran = (years >= 3) & (consistency >= 0.58) & (volatility < 0.48)
     injury_risk = (projected_g < avg_g * 0.82) | (durability < 0.55)
+    age_vals = _num(out, "Age", np.nan)
+    age_regression = (age_vals >= 33) & (volatility >= 0.45)
+    role_uncertainty = (years < 2) & (playing_time_strength < 0.55)
+    limited_playing_time = (playing_time_strength < 0.50) & ~very_limited_data
     star_protected = (
         (elite_star_score >= 0.82)
         & (consistency >= 0.65)
@@ -164,18 +168,25 @@ def apply_stabilized_counting_projections(pool: pd.DataFrame, projection_source:
         default="Risky Projection",
     )
     out["Projection Warning"] = np.select(
-        [very_limited_data, limited_data & ~star_protected, volatility >= 0.70],
         [
-            "Small sample: projection heavily regressed and capped",
-            "Limited data: projection regressed toward recent averages",
-            "Volatile profile: projection confidence reduced",
+            injury_risk,
+            very_limited_data,
+            limited_playing_time,
+            volatility >= 0.70,
+            age_regression,
+            role_uncertainty,
+            limited_data & ~star_protected,
+        ],
+        [
+            "Injury Risk",
+            "Small Sample Size",
+            "Limited Playing Time",
+            "High Volatility",
+            "Age Regression Risk",
+            "Role Uncertainty",
+            "Small Sample Size",
         ],
         default="",
-    )
-    out.loc[star_protected, "Projection Warning"] = np.where(
-        out.loc[star_protected, "Projection Warning"].astype(str).str.strip() == "",
-        "Star-tier profile: lighter regression and softer ceiling",
-        out.loc[star_protected, "Projection Warning"],
     )
     out["Volatility Score"] = volatility.round(4)
     out["Star Protected"] = star_protected.astype(bool)

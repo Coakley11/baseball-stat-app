@@ -64,7 +64,7 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(fmt_ml_projection_score(89.07), "89.07")
 
     def test_roster_fit_not_scaled(self) -> None:
-        self.assertEqual(fmt_roster_fit_score(1.70), "1.7")
+        self.assertEqual(fmt_roster_fit_score(1.70), "1.70")
         self.assertEqual(fmt_roster_fit_score(0.88), "0.88")
 
     def test_ml_projection_score_scales_to_100(self) -> None:

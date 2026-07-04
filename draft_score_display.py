@@ -6,6 +6,7 @@ are unchanged. Call ``prepare_draft_scores_for_display`` only at display/export 
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -156,16 +157,102 @@ def fmt_valuation_score(val: Any) -> str:
     return _fmt_hundred_scale(val)
 
 
+def _round_half_up_2(val: float) -> float:
+    return math.floor(float(val) * 100 + 0.5) / 100
+
+
 def fmt_roster_fit_score(val: Any) -> str:
-    """Format raw Draft Fit Score (unscaled)."""
+    """Format raw Draft Fit Score (unscaled) with exactly two decimals."""
     n = _num(val)
     if n is None:
         return ""
-    rounded = round(n, 2)
-    text = f"{rounded:.2f}"
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
+    return f"{_round_half_up_2(n):.2f}"
+
+
+def fmt_confidence_score(val: Any) -> str:
+    """Format projection confidence (0–1) as two-decimal numeric display."""
+    n = _num(val)
+    if n is None:
+        return "—"
+    if n > 1.5:
+        n = n / 100.0
+    return f"{_round_half_up_2(float(n)):.2f}"
+
+
+def _scale_to_display_100(val: Any) -> float | None:
+    n = _num(val)
+    if n is None:
+        return None
+    if n <= 1.5:
+        return round(n * 100.0, 2)
+    return round(n, 2)
+
+
+def normalize_projection_confidence_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce Projection Confidence to numeric 0–1 for audit tables."""
+    if df is None or getattr(df, "empty", True):
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    score_col = "Projection Confidence Score"
+    conf_col = "Projection Confidence"
+    if score_col in out.columns:
+        numeric = pd.to_numeric(out[score_col], errors="coerce")
+        if conf_col not in out.columns:
+            out[conf_col] = numeric
+        else:
+            text_vals = out[conf_col].astype(str).str.strip()
+            mapped = pd.to_numeric(out[conf_col], errors="coerce")
+            label_map = {"high confidence": 0.85, "medium confidence": 0.65, "risky projection": 0.40}
+            for idx, raw in text_vals.items():
+                if pd.notna(mapped.get(idx)):
+                    continue
+                mapped.at[idx] = label_map.get(raw.lower(), np.nan)
+            out[conf_col] = numeric.where(numeric.notna(), mapped)
+    elif conf_col in out.columns:
+        mapped = pd.to_numeric(out[conf_col], errors="coerce")
+        text_vals = out[conf_col].astype(str).str.strip()
+        label_map = {"high confidence": 0.85, "medium confidence": 0.65, "risky projection": 0.40}
+        for idx, raw in text_vals.items():
+            if pd.notna(mapped.get(idx)):
+                continue
+            mapped.at[idx] = label_map.get(raw.lower(), np.nan)
+        out[conf_col] = mapped
+    return out
+
+
+def normalize_projection_warning_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Map legacy warning prose to short audit labels."""
+    if df is None or getattr(df, "empty", True) or "Projection Warning" not in df.columns:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    short_map = {
+        "small sample: projection heavily regressed and capped": "Small Sample Size",
+        "limited data: projection regressed toward recent averages": "Small Sample Size",
+        "volatile profile: projection confidence reduced": "High Volatility",
+        "star-tier profile: lighter regression and softer ceiling": "",
+        "injury risk": "Injury Risk",
+        "limited playing time": "Limited Playing Time",
+        "high volatility": "High Volatility",
+        "small sample size": "Small Sample Size",
+        "age regression risk": "Age Regression Risk",
+        "role uncertainty": "Role Uncertainty",
+    }
+
+    def _shorten(val: Any) -> str:
+        raw = str(val or "").strip()
+        if not raw:
+            return "—"
+        key = raw.lower()
+        if key in short_map:
+            mapped = short_map[key]
+            return mapped if mapped else "—"
+        for prefix, label in short_map.items():
+            if key.startswith(prefix.split(":")[0]):
+                return label or "—"
+        return raw if raw in short_map.values() else raw
+
+    out["Projection Warning"] = out["Projection Warning"].map(_shorten)
+    return out
 
 
 def fmt_relative_draft_grade(val: Any) -> str:
@@ -204,15 +291,23 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     for col in list(out.columns):
         if col not in SCALE_TO_DISPLAY_100:
             continue
-        out[col] = pd.to_numeric(out[col], errors="coerce") * 100.0
+        series = pd.to_numeric(out[col], errors="coerce")
+        scaled = series.copy()
+        needs_scale = series.notna() & (series <= 1.5)
+        scaled.loc[needs_scale] = series.loc[needs_scale] * 100.0
+        out[col] = scaled
     rename = {k: v for k, v in COLUMN_RENAME_MAP.items() if k in out.columns}
     if rename:
         out = out.rename(columns=rename)
     for col in (DISPLAY_PLAYER_GRADE, DISPLAY_PICK_SCORE, DISPLAY_RELATIVE_GRADE, "ML Projection Score", "Average Player Grade", "Total Player Grade"):
         if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce").round(4)
+            out[col] = pd.to_numeric(out[col], errors="coerce").apply(
+                lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
+            )
     if DISPLAY_ROSTER_FIT in out.columns:
-        out[DISPLAY_ROSTER_FIT] = pd.to_numeric(out[DISPLAY_ROSTER_FIT], errors="coerce").round(4)
+        out[DISPLAY_ROSTER_FIT] = pd.to_numeric(out[DISPLAY_ROSTER_FIT], errors="coerce").apply(
+            lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
+        )
     return out
 
 
