@@ -12,6 +12,8 @@ from draft_ui import (
     format_queue_player_label,
     lookup_player_draft_meta,
     on_confirm_convert_simulator_to_live,
+    seed_sim_convert_settings_from_canonical,
+    sim_convert_canonical_defaults,
 )
 
 
@@ -142,6 +144,22 @@ class TestSimulatorConvertSettings(unittest.TestCase):
         trace = session.get("_start_live_draft_trace") or {}
         self.assertTrue(trace.get("confirm_convert_clicked"))
         self.assertEqual(trace.get("start_live_draft_mode"), "simulator")
+
+    def test_seed_sim_convert_settings_from_canonical(self) -> None:
+        from shared_draft_context import CANONICAL_SETTINGS_KEY
+
+        session = {
+            CANONICAL_SETTINGS_KEY: {
+                "lookback_window": 5,
+                "projection_style": "Aggressive / Upside",
+            }
+        }
+        lookback, style = sim_convert_canonical_defaults(session)
+        self.assertEqual(lookback, 5)
+        self.assertEqual(style, "Aggressive / Upside")
+        seed_sim_convert_settings_from_canonical(session)
+        self.assertEqual(session["sim_convert_live_draft_proj_window"], 5)
+        self.assertEqual(session["sim_convert_live_draft_proj_style"], "Aggressive / Upside")
 
 
 if __name__ == "__main__":

@@ -18209,13 +18209,6 @@ if active_page == "Draft Assistant Simulator":
                     )
             except ImportError:
                 recs["Why this pick"] = ""
-        _featured_card_count = int(not best_fit.empty) + int(
-            not best_value.empty
-            and (
-                best_fit.empty
-                or recommendation_player_id(best_value.iloc[0]) != recommendation_player_id(best_fit.iloc[0])
-            )
-        )
         try:
             from baseball_activity import log_draft_assistant_session
 
@@ -18353,7 +18346,7 @@ if active_page == "Draft Assistant Simulator":
             "Why this pick",
         ]
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
-        recs_display = add_recommendation_rank_column(recs_display, start_rank=_featured_card_count + 1)
+        recs_display = add_recommendation_rank_column(recs_display, start_rank=1)
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
         if "Pick Score" in recs_display.columns:
             recs_display = recs_display.rename(columns={"Pick Score": "Decision Score"})
@@ -20357,9 +20350,13 @@ if active_page == "Live Draft Room":
             on_cancel_simulator_convert_panel,
             on_confirm_convert_simulator_to_live,
             record_start_live_draft_diagnostics,
+            seed_sim_convert_settings_from_canonical,
+            sim_convert_canonical_defaults,
         )
 
         record_start_live_draft_diagnostics(st.session_state, convert_confirmation_rendered=True)
+        seed_sim_convert_settings_from_canonical(st.session_state)
+        _canonical_proj_window, _canonical_proj_style = sim_convert_canonical_defaults(st.session_state)
         _sim_summary = build_simulator_to_live_summary(st.session_state)
         _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
         _live_proj_window_options = [3, 4, 5]
@@ -20368,8 +20365,16 @@ if active_page == "Live Draft Room":
             _live_timer_options,
             _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0],
         )
-        validate_state_option("sim_convert_live_draft_proj_window", _live_proj_window_options, 3)
-        validate_state_option("sim_convert_live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+        validate_state_option(
+            "sim_convert_live_draft_proj_window",
+            _live_proj_window_options,
+            _canonical_proj_window,
+        )
+        validate_state_option(
+            "sim_convert_live_draft_proj_style",
+            list(PROJECTION_STYLE_OPTIONS),
+            _canonical_proj_style,
+        )
         validate_state_option(
             "sim_convert_live_draft_auto_rule",
             LIVE_DRAFT_AUTO_RULES,

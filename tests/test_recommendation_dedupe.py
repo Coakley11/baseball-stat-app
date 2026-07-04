@@ -92,6 +92,17 @@ class TestRecommendationDedupe(unittest.TestCase):
         ranked_display = add_recommendation_rank_column(df, start_rank=3)
         self.assertEqual(ranked_display["Rank"].tolist(), [3, 4])
 
+    def test_ranked_head_includes_featured_players(self):
+        ranked = _rows(
+            ("1", "Shohei Ohtani", 95),
+            ("2", "Aaron Judge", 90),
+            ("3", "Juan Soto", 88),
+        )
+        table = ranked.head(3)
+        self.assertEqual(table["playerID"].tolist(), ["1", "2", "3"])
+        ranked_display = add_recommendation_rank_column(table, start_rank=1)
+        self.assertEqual(ranked_display["Rank"].tolist(), [1, 2, 3])
+
 
 if __name__ == "__main__":
     unittest.main()

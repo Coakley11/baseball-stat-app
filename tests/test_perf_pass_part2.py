@@ -67,6 +67,22 @@ class LiveDraftCacheKeyTests(unittest.TestCase):
         key_b = live_draft_ui_cache_key(session_b, room, top_n=10, team="Team A")
         self.assertEqual(key_a, key_b)
 
+    def test_projection_settings_change_busts_recommendation_cache(self) -> None:
+        from shared_draft_context import CANONICAL_SETTINGS_KEY
+
+        room = {
+            "current_pick_index": 3,
+            "draft_board": [{"Pick": 1}, {"Pick": 2}],
+            "config": {"slots": {"OF": 3}, "fantasy_format": "5x5 Roto"},
+            "rosters": {"Team A": []},
+            "meta": {"sync": {"revision": 1}},
+        }
+        session_a: dict = {CANONICAL_SETTINGS_KEY: {"lookback_window": 3, "projection_style": "Balanced"}}
+        session_b: dict = {CANONICAL_SETTINGS_KEY: {"lookback_window": 5, "projection_style": "Aggressive / Upside"}}
+        key_a = live_draft_ui_cache_key(session_a, room, top_n=10, team="Team A")
+        key_b = live_draft_ui_cache_key(session_b, room, top_n=10, team="Team A")
+        self.assertNotEqual(key_a, key_b)
+
 
 class FantasyPerfCacheTests(unittest.TestCase):
     def test_standings_results_round_trip(self) -> None:

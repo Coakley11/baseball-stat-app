@@ -393,6 +393,27 @@ def inject_live_draft_room_styles(st: Any) -> None:
             font-size: 0.82rem; color: #64748b; line-height: 1.45;
             margin-bottom: 6px;
         }
+        .ld-rec-detail-grid { margin-top: 2px; }
+        .ld-rec-detail-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            margin-bottom: 8px;
+        }
+        .ld-rec-detail-cell { flex: 1 1 150px; min-width: 130px; }
+        .ld-rec-detail-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ld-rec-detail-value {
+            font-size: 0.82rem;
+            color: #1e293b;
+            line-height: 1.4;
+            margin-top: 2px;
+        }
         .ld-draft-complete-banner {
             background: linear-gradient(135deg, #ecfdf5 0%, #dbeafe 100%);
             border: 2px solid #22c55e;
@@ -807,33 +828,28 @@ def build_rec_card_detail_body(
     category_needs: list[str] | None = None,
     rank: int = 0,
 ) -> str:
-    """Expanded analytics for Why Recommended."""
-    lines: list[str] = []
-    pos = str(row.get("Primary Position") or "—")
+    """Expanded analytics for Why Recommended — compact grid without repeating card facts."""
+    cells: list[tuple[str, str]] = []
     insight = build_draft_insight_expander_text(
-        row, badges=badges, strengths=strengths, gaps=gaps, rank=rank
+        row, badges=badges, strengths=None, gaps=gaps, rank=rank, skip_survival=True
     )
     if insight:
-        lines.append(f"**Recommendation:** {insight}")
+        cells.append(("Recommendation", insight))
 
-    if strengths:
-        lines.append(f"**Category impact:** Strengthens {', '.join(strengths)}.")
     if category_needs:
-        lines.append(f"**Team needs:** {', '.join(str(c) for c in category_needs[:4])}.")
+        cells.append(("Team needs", ", ".join(str(c) for c in category_needs[:4])))
 
+    pos = str(row.get("Primary Position") or "—")
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
     if pd.notna(scarcity) and float(scarcity) >= 0.5:
-        lines.append(f"**Scarcity:** {pos} tier is thinning ({float(scarcity):.2f} scarcity score).")
+        cells.append(("Scarcity", f"{pos} tier thinning ({float(scarcity):.2f})"))
 
-    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
     mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
     mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
-    if pd.notna(edge):
-        sign = "+" if float(edge) > 0 else ""
-        market_line = f"**Market value:** Fantasy Edge {sign}{int(round(float(edge)))}"
-        if pd.notna(mkt) and pd.notna(mdl):
-            market_line += f" (model {int(round(float(mdl)))} vs market {int(round(float(mkt)))})"
-        lines.append(market_line + ".")
+    if pd.notna(mkt) and pd.notna(mdl):
+        cells.append(
+            ("Market value", f"Model {int(round(float(mdl)))} vs market {int(round(float(mkt)))}")
+        )
 
     fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
     dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
@@ -841,9 +857,11 @@ def build_rec_card_detail_body(
         fit_txt = f"{float(fit):.0%}" if pd.notna(fit) else "—"
         roster_txt = f"{float(dfs):.2f}" if pd.notna(dfs) else "—"
         if gaps and pos in gaps:
-            lines.append(f"**Roster fit:** Positional fit {fit_txt}; roster fit score {roster_txt} for open {pos} slot.")
+            cells.append(
+                ("Roster fit", f"Positional fit {fit_txt}; roster fit {roster_txt} for open {pos}")
+            )
         else:
-            lines.append(f"**Roster fit:** Positional fit {fit_txt}; roster fit score {roster_txt}.")
+            cells.append(("Roster fit", f"Positional fit {fit_txt}; roster fit {roster_txt}"))
 
     risk = pd.to_numeric(row.get("Risk Penalty", np.nan), errors="coerce")
     conf = pd.to_numeric(row.get("Projection Confidence", np.nan), errors="coerce")
@@ -851,13 +869,21 @@ def build_rec_card_detail_body(
         risk_txt = "lower" if pd.notna(risk) and float(risk) <= 0.35 else "moderate"
         if pd.notna(conf) and float(conf) >= 0.65:
             risk_txt = "low"
-        lines.append(f"**Risk level:** {risk_txt} projection volatility.")
+        cells.append(("Risk level", f"{risk_txt} projection volatility"))
 
-    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
-    if pd.notna(surv):
-        lines.append(f"**Availability:** ~{int(round(float(surv) * 100))}% chance still on the board at your next pick.")
+    if not cells:
+        return "Balanced upside and availability at this pick."
 
-    return "\n\n".join(lines)
+    row_html: list[str] = []
+    for i in range(0, len(cells), 3):
+        chunk = cells[i : i + 3]
+        row_cells = "".join(
+            f'<div class="ld-rec-detail-cell"><div class="ld-rec-detail-label">{label}</div>'
+            f'<div class="ld-rec-detail-value">{value}</div></div>'
+            for label, value in chunk
+        )
+        row_html.append(f'<div class="ld-rec-detail-row">{row_cells}</div>')
+    return f'<div class="ld-rec-detail-grid">{"".join(row_html)}</div>'
 
 
 def _rec_action_guidance(surv: float | None, rank: int) -> str:
@@ -879,6 +905,7 @@ def build_draft_insight_text(
     strengths: list[str] | None = None,
     gaps: list[str] | None = None,
     rank: int = 0,
+    skip_survival: bool = False,
 ) -> str:
     """Non-redundant guidance below badges — never restates badge labels."""
     badge_labels = " ".join(label for label, _css in (badges or []))
@@ -889,7 +916,7 @@ def build_draft_insight_text(
         parts.append(f"Strengthens {' and '.join(strengths)}.")
 
     surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
-    if pd.notna(surv):
+    if not skip_survival and pd.notna(surv):
         pct = int(round(float(surv) * 100))
         if float(surv) < 0.25:
             parts.append("High risk if passed — unlikely to reach your next pick.")
@@ -946,10 +973,11 @@ def build_draft_insight_expander_text(
     strengths: list[str] | None = None,
     gaps: list[str] | None = None,
     rank: int = 0,
+    skip_survival: bool = False,
 ) -> str:
     """Longer draft guidance for the Draft Insight expander (no duplicate stats)."""
     lead = build_draft_insight_text(
-        row, badges=badges, strengths=strengths, gaps=gaps, rank=rank
+        row, badges=badges, strengths=strengths, gaps=gaps, rank=rank, skip_survival=skip_survival
     )
     if lead:
         return lead
@@ -1256,7 +1284,7 @@ def render_live_draft_rec_cards(
         except ImportError:
             headline = tier_lbl
         explanation = build_draft_insight_text(
-            r, badges=badges, strengths=strengths, gaps=gaps, rank=i
+            r, badges=badges, strengths=None, gaps=gaps, rank=i
         )
         badge_html = "".join(
             f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
@@ -1449,7 +1477,8 @@ def render_live_draft_rec_cards(
                             gaps=gaps,
                             category_needs=category_needs,
                             rank=i,
-                        )
+                        ),
+                        unsafe_allow_html=True,
                     )
 
 

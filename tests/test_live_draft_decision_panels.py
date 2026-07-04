@@ -416,6 +416,39 @@ class RecCardBadgeTests(unittest.TestCase):
         self.assertNotIn("second best", lower)
         self.assertTrue("strengthens" in lower or "42%" in text or "scarcity" in lower)
 
+    def test_rec_card_detail_body_compact_without_card_duplicates(self) -> None:
+        from live_draft_room_ui import build_rec_card_detail_body
+
+        row = pd.Series(
+            {
+                "fullName": "Player A",
+                "Primary Position": "SS",
+                "Fantasy Edge": 14,
+                "Market Rank": 18,
+                "Model Rank": 6,
+                "Positional Fit": 0.82,
+                "Draft Fit Score": 0.91,
+                "Scarcity Score": 0.72,
+                "Survival Probability": 0.42,
+                "Risk Penalty": 0.2,
+                "Projection Confidence": 0.7,
+            }
+        )
+        html = build_rec_card_detail_body(
+            row,
+            strengths=["HR", "SB"],
+            gaps=["SS"],
+            category_needs=["HR", "SB"],
+            rank=1,
+        )
+        self.assertIn("ld-rec-detail-grid", html)
+        self.assertIn("Market value", html)
+        self.assertIn("Model 6 vs market 18", html)
+        self.assertNotIn("Fantasy Edge", html)
+        self.assertNotIn("Strengthens", html)
+        self.assertNotIn("Availability", html)
+        self.assertNotIn("42%", html)
+
 
 if __name__ == "__main__":
     unittest.main()

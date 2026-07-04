@@ -54,7 +54,14 @@ def live_draft_ui_cache_key(
             for t, players in (room.get("rosters") or {}).items()
         )
     )
-    return (idx, board_len, team_s, int(top_n), slots_key, rev, scoring, roster_sig)
+    pool_sig: tuple[Any, ...] = ()
+    try:
+        from shared_draft_context import draft_pool_kwargs_from_session
+
+        pool_sig = tuple(sorted(draft_pool_kwargs_from_session(session).items()))
+    except ImportError:
+        pass
+    return (idx, board_len, team_s, int(top_n), slots_key, rev, scoring, roster_sig, pool_sig)
 
 
 def available_pool_cache_key(room: dict[str, Any]) -> tuple[Any, ...]:

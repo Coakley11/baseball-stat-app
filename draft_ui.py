@@ -1195,10 +1195,30 @@ def copy_sim_convert_settings_to_live(session: dict[str, Any]) -> None:
             session[dst] = session[src]
 
 
+def sim_convert_canonical_defaults(session: dict[str, Any]) -> tuple[int, str]:
+    """Projection window/style defaults for simulator-to-live convert from canonical draft settings."""
+    from shared_draft_context import read_canonical_draft_settings
+
+    canonical = read_canonical_draft_settings(session)
+    lookback = int(canonical["lookback_window"])
+    if lookback not in (3, 4, 5):
+        lookback = max(3, min(5, lookback))
+    style = str(canonical["projection_style"])
+    return lookback, style
+
+
+def seed_sim_convert_settings_from_canonical(session: dict[str, Any]) -> None:
+    """Seed convert-panel projection widgets from draft_shared_settings when unset."""
+    lookback, style = sim_convert_canonical_defaults(session)
+    session.setdefault("sim_convert_live_draft_proj_window", lookback)
+    session.setdefault("sim_convert_live_draft_proj_style", style)
+
+
 def on_open_simulator_convert_panel() -> None:
     import streamlit as st
 
     record_start_live_draft_diagnostics(st.session_state, convert_simulator_clicked=True)
+    seed_sim_convert_settings_from_canonical(st.session_state)
     st.session_state["_simulator_to_live_show_confirm"] = True
 
 

@@ -718,6 +718,7 @@ def pop_league_context_save_flash(session: dict[str, Any]) -> dict[str, Any] | N
 
 def schedule_active_context_resync(session: dict[str, Any]) -> bool:
     """Re-apply active league context aliases before fantasy page navigation."""
+    migrate_legacy_archives_to_contexts(session)
     context = get_active_league_context(session)
     if context:
         archive_id = str((context.get("metadata") or {}).get("source_draft_id") or "").strip()
