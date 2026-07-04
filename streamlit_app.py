@@ -22752,7 +22752,7 @@ if active_page == "Waiver Wire / Add-Drop Center":
     _page_perf_start(active_page)
     render_section_header(
         "🔄 Waiver Wire / Add-Drop Center",
-        "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner from your Active League Context.",
+        "Improve your active fantasy team using current-season category performance, waiver pool adds, and paired add/drop planning.",
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -22762,8 +22762,16 @@ if active_page == "Waiver Wire / Add-Drop Center":
         render_active_saved_draft_chip(st, st.session_state, key_prefix="waiver_archive", page_label_fn=page_option_label)
     except ImportError:
         pass
-    _waiver_pool = get_cached_unified_projection_pool_live()
-    render_waiver_wire_page(st, st.session_state, player_pool=_waiver_pool, page_label_fn=page_option_label)
+    _waiver_current_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+    _waiver_roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame())
+    render_waiver_wire_page(
+        st,
+        st.session_state,
+        current_stats_pool=_waiver_current_stats,
+        league_roster_stats=_waiver_roster_stats,
+        normalize_name_fn=normalize_player_name_for_merge,
+        page_label_fn=page_option_label,
+    )
     save_page_state(active_page)
     _page_perf_end(active_page)
     render_page_filters_debug(active_page)

@@ -31,6 +31,7 @@ class DraftArchiveNavigationTests(unittest.TestCase):
         self.assertTrue(schedule_fantasy_analysis_navigation(session, FANTASY_STANDINGS_PAGE))
         self.assertEqual(session["_navigate_to_page"], FANTASY_STANDINGS_PAGE)
         self.assertEqual(session["_skip_page_restore_for"], FANTASY_STANDINGS_PAGE)
+        self.assertTrue(session.get("_suite_page_user_nav"))
         self.assertIn(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, session)
         apply_pending_league_context_activation(session)
         self.assertEqual(session.get("room_your_team"), "Daniel")
