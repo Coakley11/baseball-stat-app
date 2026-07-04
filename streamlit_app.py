@@ -22008,6 +22008,13 @@ if active_page == "Fantasy Lineup Assistant":
         pass
 
     try:
+        from fantasy_trade_proposals import consume_trade_proposal_handoff
+
+        consume_trade_proposal_handoff(st.session_state)
+    except ImportError:
+        pass
+
+    try:
         from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
 
         _lineup_team_hdr = active_fantasy_team_label(st.session_state) or get_active_fantasy_team(st.session_state)
@@ -22442,16 +22449,16 @@ if active_page == "Fantasy Lineup Assistant":
                         .dropna().astype(str).unique()
                     )
 
+                    def _persist_trade_plan(_session, _st, *, reason: str) -> None:
+                        try:
+                            from baseball_persistent_state import force_save_baseball_state
+
+                            force_save_baseball_state(_st, reason=reason)
+                        except Exception:
+                            pass
+
                     try:
                         from fantasy_trade_plan_ui import render_trade_plan_section
-
-                        def _persist_trade_plan(_session, _st, *, reason: str) -> None:
-                            try:
-                                from baseball_persistent_state import force_save_baseball_state
-
-                                force_save_baseball_state(_st, reason=reason)
-                            except Exception:
-                                pass
 
                         workflow_give, workflow_get = render_trade_plan_section(
                             st,
@@ -22473,6 +22480,7 @@ if active_page == "Fantasy Lineup Assistant":
                     ensure_multiselect_state("lineup_trade_get_players", other_trade_players, pending_get or [])
                     give_players = st.multiselect("Players You Give Up", my_trade_players, key="lineup_trade_give_players")
                     get_players = st.multiselect("Players You Receive", other_trade_players, key="lineup_trade_get_players")
+                    verdict = ""
 
                     if give_players and get_players:
                         trade_eval, verdict, weighted_gain = evaluate_trade(
@@ -22510,6 +22518,23 @@ if active_page == "Fantasy Lineup Assistant":
                                 )
                         except Exception:
                             pass
+
+                    try:
+                        from fantasy_trade_proposals_ui import render_trade_proposals_section
+
+                        render_trade_proposals_section(
+                            st,
+                            st.session_state,
+                            my_team=my_team_trade,
+                            other_team=other_team_trade,
+                            give_players=give_players,
+                            get_players=get_players,
+                            verdict=str(verdict or ""),
+                            persist_fn=_persist_trade_plan,
+                            key_prefix="lineup_trade_proposals",
+                        )
+                    except ImportError:
+                        pass
 
                     st.markdown("##### Generate Trade Ideas")
                     st.caption(

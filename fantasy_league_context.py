@@ -361,6 +361,7 @@ def _empty_workflow() -> dict[str, list[Any]]:
         "add_targets": [],
         "drop_candidates": [],
         "league_activity": [],
+        "trade_proposals": [],
     }
 
 
@@ -407,6 +408,7 @@ def _ensure_workflow(context: dict[str, Any]) -> dict[str, Any]:
         "add_targets",
         "drop_candidates",
         "league_activity",
+        "trade_proposals",
     ):
         if not isinstance(workflow.get(key), list):
             workflow[key] = []
