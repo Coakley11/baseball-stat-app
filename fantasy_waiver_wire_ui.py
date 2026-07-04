@@ -118,6 +118,17 @@ def _render_add_player_card(
                 st.rerun()
 
 
+def _on_waiver_filter_changed() -> None:
+    """Persist waiver global filter toggle to baseball workspace state."""
+    try:
+        import streamlit as st
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="waiver_filter_changed")
+    except Exception:
+        pass
+
+
 def render_waiver_wire_page(
     st: Any,
     session: dict[str, Any],
@@ -162,6 +173,7 @@ def render_waiver_wire_page(
             "When enabled, draft tools exclude players already rostered in the active league context. "
             "Turn off to analyze the full player universe."
         ),
+        on_change=_on_waiver_filter_changed,
     )
 
     league_df = league_roster_stats.copy() if league_roster_stats is not None and not league_roster_stats.empty else pd.DataFrame()

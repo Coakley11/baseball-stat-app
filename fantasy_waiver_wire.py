@@ -523,6 +523,13 @@ def add_pending_move_pair(
     session[WAIVER_PENDING_PAIRS_KEY] = pairs[-20:]
     add_pending_move(session, TRADE_MODE_ADD, add_name)
     add_pending_move(session, TRADE_MODE_DROP, drop_name)
+    try:
+        import streamlit as st
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="waiver_pending_pair")
+    except Exception:
+        pass
     return True
 
 

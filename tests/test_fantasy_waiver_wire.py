@@ -227,5 +227,31 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertEqual(len(table), 2)
 
 
+class WaiverFilterPersistenceTests(unittest.TestCase):
+    def test_waiver_filter_in_workflow_disk_roundtrip(self) -> None:
+        from unittest.mock import MagicMock
+
+        from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
+
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Waiver Wire / Add-Drop Center",
+            "main_sidebar_page": "Waiver Wire / Add-Drop Center",
+            "page_filter_state": {},
+            "use_active_league_context_waiver_filter": True,
+        }
+        blob = build_baseball_disk_state(st)
+        self.assertTrue(blob.get("use_active_league_context_waiver_filter"))
+
+        st2 = MagicMock()
+        st2.session_state = {
+            "active_page": "Waiver Wire / Add-Drop Center",
+            "main_sidebar_page": "Waiver Wire / Add-Drop Center",
+            "page_filter_state": {},
+        }
+        apply_baseball_disk_state(st2, blob)
+        self.assertTrue(st2.session_state.get("use_active_league_context_waiver_filter"))
+
+
 if __name__ == "__main__":
     unittest.main()
