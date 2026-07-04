@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import pandas as pd
+
 from draft_actions import can_draft_player, draft_action_context, draft_button_diagnostics, draft_player
 
 PENDING_MANUAL_PICK_KEY = "_pending_manual_draft_pick"
@@ -117,7 +119,9 @@ def _ensure_draft_player_meta_lookup(session: dict[str, Any]) -> dict[str, dict[
         try:
             from draft_ami_helpers import build_undrafted_player_lookup
 
-            merged.update(build_undrafted_player_lookup(pool))
+            pool_lookup = build_undrafted_player_lookup(pool)
+            for key, val in pool_lookup.items():
+                merged.setdefault(str(key).lower(), val)
         except ImportError:
             pass
     session[DRAFT_PLAYER_META_LOOKUP_KEY] = merged
@@ -520,6 +524,19 @@ def draft_disabled_hint(reason: str) -> str:
     return text[:80] if text else "Cannot draft"
 
 
+def _meta_field(row: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        if key not in row:
+            continue
+        val = row.get(key)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        text = str(val).strip()
+        if text and text.lower() != "nan":
+            return text
+    return None
+
+
 def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[str, str]:
     """Best-effort position + MLB team for queue display."""
     name = str(player_name or "").strip()
@@ -529,26 +546,32 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
     target = name.lower()
 
     def _from_row(row: dict[str, Any]) -> dict[str, str]:
-        pos = str(
-            row.get("eligible_positions")
-            or row.get("Eligible Positions")
-            or row.get("Primary Position")
-            or row.get("primaryPos")
-            or row.get("displayPosition")
-            or row.get("position")
-            or row.get("Position")
+        pos = (
+            _meta_field(
+                row,
+                "eligible_positions",
+                "Eligible Positions",
+                "Primary Position",
+                "primaryPos",
+                "displayPosition",
+                "position",
+                "Position",
+            )
             or "—"
-        ).strip() or "—"
-        team = str(
-            row.get("Team")
-            or row.get("team")
-            or row.get("teamAbbrev")
-            or row.get("teamName")
-            or row.get("displayTeam")
-            or row.get("primaryTeamName")
-            or row.get("Franchise")
+        )
+        team = (
+            _meta_field(
+                row,
+                "Team",
+                "team",
+                "teamAbbrev",
+                "teamName",
+                "displayTeam",
+                "primaryTeamName",
+                "Franchise",
+            )
             or "—"
-        ).strip() or "—"
+        )
         return {"position": pos, "team": team}
 
     def _match_pool(pool: Any) -> dict[str, str] | None:
@@ -569,9 +592,15 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
         if isinstance(cached, dict):
             cpos = str(cached.get("position") or "—").strip() or "—"
             cteam = str(cached.get("team") or "—").strip() or "—"
+            if cpos.lower() == "nan":
+                cpos = "—"
+            if cteam.lower() == "nan":
+                cteam = "—"
             if cteam != "—":
-                return {"position": cpos, "team": cteam}
-            if cpos != "—":
+                if cpos != "—":
+                    return {"position": cpos, "team": cteam}
+                meta["team"] = cteam
+            elif cpos != "—":
                 meta["position"] = cpos
 
     try:
@@ -581,10 +610,12 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
         if board is not None and not getattr(board, "empty", True):
             hit = _match_pool(board)
             if hit and hit.get("team") != "—":
-                cache_queue_player_meta(session, name, hit)
-                return hit
-            if hit and hit.get("position") != "—":
-                meta = hit
+                if hit.get("position") != "—":
+                    cache_queue_player_meta(session, name, hit)
+                    return hit
+                meta["team"] = hit["team"]
+            elif hit and hit.get("position") != "—":
+                meta["position"] = hit["position"]
     except Exception:
         pass
 
@@ -592,10 +623,12 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
     if pool is not None:
         hit = _match_pool(pool)
         if hit and hit.get("team") != "—":
-            cache_queue_player_meta(session, name, hit)
-            return hit
-        if hit and hit.get("position") != "—" and meta.get("position") == "—":
-            meta = hit
+            if hit.get("position") != "—":
+                cache_queue_player_meta(session, name, hit)
+                return hit
+            meta["team"] = hit["team"]
+        elif hit and hit.get("position") != "—" and meta.get("position") == "—":
+            meta["position"] = hit["position"]
 
     lookup = _ensure_draft_player_meta_lookup(session)
     row = lookup.get(target) or lookup.get(name)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pandas as pd
@@ -181,6 +182,120 @@ def freeze_slot_instances_on_config(config: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def _normalize_pos_token(token: str) -> str:
+    t = str(token or "").upper().strip()
+    if t in ("LF", "CF", "RF"):
+        return "OF"
+    if t in ("SP", "RP"):
+        return "P"
+    return t
+
+
+def _split_position_tokens(primary_val: Any) -> list[str]:
+    if primary_val is None or (isinstance(primary_val, float) and pd.isna(primary_val)):
+        return []
+    s = str(primary_val).upper().replace(" ", "")
+    parts = re.split(r"[,/\+]", s)
+    out = [_normalize_pos_token(p.strip()) for p in parts if p.strip()]
+    if not out:
+        out = [_normalize_pos_token(str(primary_val))]
+    return list(dict.fromkeys(out))
+
+
+def _player_position_tokens(row: pd.Series) -> list[str]:
+    tokens: list[str] = []
+    for col in ("Primary Position", "Position", "Eligibility", "Positions"):
+        if col in row.index:
+            tokens.extend(_split_position_tokens(row.get(col)))
+    if isinstance(row.get("_position_tokens"), list):
+        tokens.extend(_normalize_pos_token(str(t)) for t in row.get("_position_tokens") if str(t).strip())
+    tokens = list(dict.fromkeys(tokens))
+    return tokens or ["DH"]
+
+
+def _eligible_for_draft_slot(pos_tokens: list[str], position_code: str) -> bool:
+    slot = "UTIL" if position_code == "DH" else position_code
+    if slot == "BN":
+        return True
+    if slot == "P":
+        return any(p in ("P", "SP", "RP") for p in pos_tokens)
+    if slot == "UTIL":
+        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
+    if slot == "OF":
+        return any(p == "OF" for p in pos_tokens)
+    if slot in ("C", "1B", "2B", "3B", "SS"):
+        if pos_tokens == ["DH"]:
+            return False
+        if slot in pos_tokens:
+            return True
+        if slot == "1B" and "3B" in pos_tokens:
+            return True
+        if slot == "3B" and "1B" in pos_tokens:
+            return True
+        if slot == "2B" and "SS" in pos_tokens:
+            return True
+        if slot == "SS" and "2B" in pos_tokens:
+            return True
+    return False
+
+
+def assign_roster_to_slot_instances(
+    roster_df: pd.DataFrame | None,
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Assign drafted players to host slot instances in canonical order."""
+    slots = get_active_draft_roster_slots(config)
+    if not slots:
+        return {"lines": [], "filled": 0, "target": 0, "gaps": [], "open_positions": []}
+
+    df = roster_df.copy() if roster_df is not None and not roster_df.empty else pd.DataFrame()
+    if not df.empty:
+        df = df.reset_index(drop=True)
+        df["_pos_tokens"] = df.apply(_player_position_tokens, axis=1)
+        if "Expected Fantasy Value" in df.columns:
+            df["_slot_score"] = pd.to_numeric(df["Expected Fantasy Value"], errors="coerce").fillna(0.0)
+        else:
+            df["_slot_score"] = 0.0
+    assigned: set[int] = set()
+    lines: list[dict[str, Any]] = []
+    gaps: list[str] = []
+
+    for slot in slots:
+        pos = str(slot.get("position") or "")
+        label = str(slot.get("label") or pos)
+        best_ix: int | None = None
+        best_score = -1.0
+        if not df.empty:
+            for ix in df.index:
+                if ix in assigned:
+                    continue
+                toks = df.at[ix, "_pos_tokens"]
+                if not isinstance(toks, list):
+                    toks = []
+                if not _eligible_for_draft_slot(toks, pos):
+                    continue
+                score = float(df.at[ix, "_slot_score"] or 0.0)
+                if score > best_score:
+                    best_score = score
+                    best_ix = int(ix)
+        is_filled = best_ix is not None
+        if is_filled:
+            assigned.add(best_ix)
+        else:
+            gaps.append(pos)
+        lines.append({"label": label, "position": pos, "filled": is_filled})
+
+    open_labels = sorted({ln["label"] for ln in lines if not ln["filled"]})
+    filled_total = sum(1 for ln in lines if ln["filled"])
+    return {
+        "lines": lines,
+        "filled": filled_total,
+        "target": len(slots),
+        "gaps": gaps,
+        "open_positions": open_labels,
+    }
+
+
 def get_filled_position_counts(roster_df: pd.DataFrame | None) -> dict[str, int]:
     """How many drafted players per Primary Position on one team."""
     if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
@@ -196,27 +311,7 @@ def get_remaining_position_needs(
     config: dict[str, Any] | None,
 ) -> list[str]:
     """Open slot position codes — duplicates preserved (e.g. three OF needs → ['OF','OF','OF'])."""
-    slots = get_active_draft_roster_slots(config)
-    if not slots:
-        return []
-    counts = get_filled_position_counts(roster_df)
-    remaining = dict(counts)
-    needs: list[str] = []
-    for slot in slots:
-        pos = str(slot.get("position") or "")
-        if pos == "BN":
-            left = max(0, int(remaining.get(pos, 0) or 0))
-            if left > 0:
-                remaining[pos] = left - 1
-            else:
-                needs.append(pos)
-            continue
-        left = int(remaining.get(pos, 0) or 0)
-        if left > 0:
-            remaining[pos] = left - 1
-        else:
-            needs.append(pos)
-    return needs
+    return list(assign_roster_to_slot_instances(roster_df, config).get("gaps") or [])
 
 
 def get_league_remaining_demand(room: dict[str, Any] | None, config: dict[str, Any] | None) -> dict[str, int]:

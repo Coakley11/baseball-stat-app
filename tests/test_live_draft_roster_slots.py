@@ -293,6 +293,67 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         self.assertEqual(session["live_slot_bench"], 0)
         self.assertEqual(session["live_slot_c"], 1)
 
+    def test_full_fifteen_player_roster_fills_util_and_bench(self) -> None:
+        cfg = freeze_slot_instances_on_config(
+            {
+                "slots": {
+                    "C": 1,
+                    "1B": 1,
+                    "2B": 1,
+                    "3B": 1,
+                    "SS": 1,
+                    "OF": 3,
+                    "DH": 1,
+                    "P": 0,
+                    "BN": 5,
+                }
+            }
+        )
+        roster = pd.DataFrame(
+            [
+                {"fullName": "C1", "Primary Position": "C"},
+                {"fullName": "B1", "Primary Position": "1B"},
+                {"fullName": "B2", "Primary Position": "2B"},
+                {"fullName": "B3", "Primary Position": "3B"},
+                {"fullName": "SS1", "Primary Position": "SS"},
+                {"fullName": "OF1", "Primary Position": "OF"},
+                {"fullName": "OF2", "Primary Position": "OF"},
+                {"fullName": "OF3", "Primary Position": "OF"},
+                {"fullName": "UTIL1", "Primary Position": "SS"},
+                {"fullName": "BN1", "Primary Position": "1B"},
+                {"fullName": "BN2", "Primary Position": "2B"},
+                {"fullName": "BN3", "Primary Position": "3B"},
+                {"fullName": "BN4", "Primary Position": "OF"},
+                {"fullName": "BN5", "Primary Position": "C"},
+            ]
+        )
+        checklist = build_roster_checklist(roster, cfg)
+        self.assertEqual(checklist["filled"], 14)
+        self.assertEqual(checklist["target"], 14)
+        self.assertEqual(checklist["gaps"], [])
+        labels = [ln["label"] for ln in checklist["lines"]]
+        self.assertIn("UTIL", labels)
+        self.assertIn("BN 1", labels)
+        self.assertTrue(all(ln["filled"] for ln in checklist["lines"]))
+
+    def test_util_filled_by_non_dh_overflow_hitter(self) -> None:
+        cfg = freeze_slot_instances_on_config(
+            {"slots": {"C": 1, "1B": 1, "2B": 0, "3B": 0, "SS": 1, "OF": 1, "DH": 1, "P": 0, "BN": 0}}
+        )
+        roster = pd.DataFrame(
+            [
+                {"fullName": "C1", "Primary Position": "C"},
+                {"fullName": "B1", "Primary Position": "1B"},
+                {"fullName": "SS1", "Primary Position": "SS"},
+                {"fullName": "OF1", "Primary Position": "OF"},
+                {"fullName": "Extra", "Primary Position": "SS"},
+            ]
+        )
+        checklist = build_roster_checklist(roster, cfg)
+        util_line = next(ln for ln in checklist["lines"] if ln["label"] == "UTIL")
+        self.assertTrue(util_line["filled"])
+        self.assertEqual(checklist["filled"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

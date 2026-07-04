@@ -74,6 +74,23 @@ class TestLookupPlayerDraftMeta(unittest.TestCase):
         meta = lookup_player_draft_meta(session, "Aaron Judge")
         self.assertEqual(meta["team"], "NYY")
 
+    def test_nan_primary_position_does_not_display_as_nan(self) -> None:
+        import math
+
+        import pandas as pd
+
+        session = {
+            "draft_room_player_pool": pd.DataFrame(
+                [{"fullName": "Mystery Player", "Primary Position": math.nan, "Team": "NYY"}]
+            ),
+            "_ami_undrafted_pool_lookup": {
+                "mystery player": {"player": "Mystery Player", "Primary Position": "OF"},
+            },
+        }
+        meta = lookup_player_draft_meta(session, "Mystery Player")
+        self.assertNotEqual(meta["position"].lower(), "nan")
+        self.assertEqual(meta["position"], "OF")
+
 
 class TestSimulatorConvertSettings(unittest.TestCase):
     def test_assess_incomplete_when_keys_missing(self) -> None:
