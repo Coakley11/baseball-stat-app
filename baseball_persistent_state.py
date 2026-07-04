@@ -129,6 +129,7 @@ _WORKFLOW_KEYS = (
     "_queue_player_meta",
     "draft_archive_teams",
     "active_draft_archive_id",
+    "fantasy_league_context_state",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
@@ -927,6 +928,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         from fantasy_state import apply_cloud_fantasy_state_if_allowed
 
         apply_cloud_fantasy_state_if_allowed(ss, state)
+    except ImportError:
+        pass
+
+    try:
+        from fantasy_league_context import apply_fantasy_league_context_disk_state
+
+        apply_fantasy_league_context_disk_state(ss, state)
     except ImportError:
         pass
 
