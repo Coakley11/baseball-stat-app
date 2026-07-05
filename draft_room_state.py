@@ -132,12 +132,36 @@ def ensure_live_draft_synced_to_canonical_board(
         return diag
 
     try:
+        meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
+        sync_meta = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
+        rev = str(sync_meta.get("revision") or room.get("revision") or "").strip()
+        last_rev = str(session.get("_canonical_live_sync_revision") or "").strip()
+        before_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        if rev and rev == last_rev and before_picks >= live_picks:
+            diag["skipped"] = True
+            diag["skip_reason"] = "revision_unchanged"
+            diag["canonical_pick_count_after"] = before_picks
+            diag["assistant_roster_source"] = "live_draft_room"
+            session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+            return diag
+    except Exception:
+        pass
+
+    try:
         out = sync_live_draft_room_to_canonical_board(session, room)
         diag["ok"] = True
         diag["canonical_pick_count_after"] = table_pick_count(out)
         diag["last_sync_ts"] = session.get("_canonical_draft_last_live_sync")
         diag["last_sync_reason"] = reason
         session["_canonical_draft_last_sync_reason"] = reason
+        try:
+            meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
+            sync_meta = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
+            rev = str(sync_meta.get("revision") or room.get("revision") or "").strip()
+            if rev:
+                session["_canonical_live_sync_revision"] = rev
+        except Exception:
+            pass
         if diag["canonical_pick_count_after"] >= live_picks:
             diag["assistant_roster_source"] = "live_draft_room"
         else:

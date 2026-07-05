@@ -1988,13 +1988,13 @@ PAGE_GUIDES = {
         "outputs": "Ranked available players with plain-language reasons.",
     },
     "Draft Lab / Simulation": {
-        "purpose": "Run a polished four-team fantasy draft lab using the app's Draft Assistant-style scoring.",
-        "when": "For portfolio demos, draft strategy testing, or comparing team-building outcomes.",
-        "outputs": "Snake draft results, rosters, team rankings, best/questionable picks, position gaps, exports, and trade ideas.",
+        "purpose": "Run a four-team mock draft with Draft Assistant-style pick logic and post-draft analysis.",
+        "when": "When you want to practice draft strategy or compare how different approaches build rosters.",
+        "outputs": "Draft board, team rosters, team rankings, best/questionable picks, position gaps, and exports.",
     },
     "Live Draft Room": {
         "purpose": "Run a configurable live snake draft in your browser with timers, manual picks, and auto-pick rules.",
-        "when": "Mock drafts, portfolio demos, or testing draft-room flow before multi-user sync is added.",
+        "when": "Mock drafts or testing draft-room flow before multi-user sync is added.",
         "outputs": "Live draft board, team rosters, recommendations, exports, and optional handoff to Draft Simulation analysis.",
     },
     "Saved Draft Library": {
@@ -2010,7 +2010,7 @@ PAGE_GUIDES = {
     "Fantasy Lineup Assistant": {
         "purpose": "Start/sit guidance and position-valid recommended lineups.",
         "when": "Each scoring period with current stats loaded from Standings Tracker.",
-        "outputs": "Starters by slot, bench list, diagnosis, and trade ideas.",
+        "outputs": "Starters by slot, bench list, and lineup diagnosis.",
     },
     "Waiver Wire / Add-Drop Center": {
         "purpose": "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner.",
@@ -7301,6 +7301,7 @@ def lineup_diagnosis_report(
     *,
     missing_slots=None,
     slot_warnings=None,
+    league_roster_df=None,
 ):
     """Build category strength summary and recommendation rows from current roster stats (no new formulas on raw MLB stats)."""
     out = {
@@ -7506,13 +7507,33 @@ def lineup_diagnosis_report(
         if agg:
             worst_pos = min(agg, key=agg.get)
             best_pos = max(agg, key=agg.get)
+            slot_benchmark = None
+            league_df = league_roster_df
+            if league_df is not None and not getattr(league_df, "empty", True):
+                league_grp = "Fantasy slot" if "Fantasy slot" in league_df.columns else (
+                    "Primary Position" if "Primary Position" in league_df.columns else None
+                )
+                if league_grp and "Team" in league_df.columns:
+                    slot_team_totals: list[float] = []
+                    for _, tdf in league_df.groupby(league_df["Team"].astype(str), sort=False):
+                        g = tdf[tdf[league_grp].astype(str) == str(worst_pos)]
+                        if g.empty:
+                            continue
+                        tot = 0.0
+                        for c in ["HR", "RBI", "R"]:
+                            if c in g.columns:
+                                tot += pd.to_numeric(g[c], errors="coerce").fillna(0).sum()
+                        slot_team_totals.append(tot)
+                    if slot_team_totals:
+                        slot_benchmark = float(sum(slot_team_totals) / len(slot_team_totals))
             if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
                 try:
                     from fantasy_actionable_recommendations import plain_position_weakness_note
 
                     label = "Fantasy slot" if grp_col == "Fantasy slot" else "position"
                     out["position_note"] = plain_position_weakness_note(
-                        worst_pos, agg[worst_pos], best_pos, agg[best_pos], grp_label=label
+                        worst_pos, agg[worst_pos], best_pos, agg[best_pos], grp_label=label,
+                        benchmark=slot_benchmark,
                     )
                 except ImportError:
                     label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
@@ -13184,7 +13205,17 @@ def render_contextual_page_nav(
     """
     source = normalize_page_key(source_page)
     registry = getattr(pg_xfer, "CONTEXTUAL_NAV_REGISTRY", {})
-    entries = registry.get((source, placement_key), [])
+    lookup_source = source
+    try:
+        from draft_lab_state import DRAFT_LAB_PAGE, DRAFT_LAB_PAGE_LEGACY
+
+        if source == DRAFT_LAB_PAGE:
+            lookup_source = DRAFT_LAB_PAGE_LEGACY
+    except ImportError:
+        pass
+    entries = registry.get((lookup_source, placement_key), [])
+    if not entries:
+        entries = registry.get((source, placement_key), [])
     if not entries:
         return
 
@@ -13422,6 +13453,7 @@ def _align_active_page_from_sidebar() -> None:
 
 
 # Page navigation: consume scheduled navigation FIRST, then workspace sync, then sidebar radio.
+st.session_state.pop("_shared_draft_prep_sig", None)
 st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
 st.session_state["_suite_nav_scheduled_target_before"] = st.session_state.get("_navigate_to_page")
 _record_sidebar_nav_trace("run_start_before_consume")
@@ -19608,7 +19640,7 @@ if active_page == DRAFT_LAB_PAGE:
 
     render_section_header(
         "🧪 Draft Lab / Simulation",
-        "A portfolio-style fantasy draft lab: four teams, snake format, Draft Assistant-style decisions, post-draft analysis, exports, and trade ideas.",
+        "Four-team snake mock draft with Draft Assistant-style decisions, post-draft analysis, and exports.",
         compact=True,
     )
     render_page_guide(active_page)
@@ -19743,7 +19775,7 @@ if active_page == DRAFT_LAB_PAGE:
         except ImportError:
             _t_sim = 0.0
         with st.spinner("Building draft pool and simulating 60 picks..."):
-            lab_pool = build_unified_draft_player_pool(
+            lab_pool = get_cached_unified_projection_pool(
                 yearly_df,
                 lab_market_df,
                 draft_window=lab_window,
@@ -20510,7 +20542,7 @@ if active_page == "Live Draft Room":
             except Exception:
                 pass
             with st.spinner("Building player pool and draft room..."):
-                pool_live = build_unified_draft_player_pool(
+                pool_live = get_cached_unified_projection_pool(
                     yearly_df,
                     market_df_live,
                     draft_window=int(live_proj_window),
@@ -22974,7 +23006,61 @@ if active_page == "Fantasy Lineup Assistant":
                 rate_col=rate_for_diag,
                 missing_slots=lineup_pkg["missing_slots"],
                 slot_warnings=lineup_pkg["slot_warnings"],
+                league_roster_df=roster_stats,
             )
+
+            _outlook_line = ""
+            _strength_cats: list[str] = []
+            _weakness_cats: list[str] = []
+            _cat_ranks: dict[str, int] = {}
+            _cat_values: dict[str, float] = {}
+            _n_teams = 0
+            _needs: dict = {}
+            _waiver_pool = pd.DataFrame()
+            try:
+                from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
+
+                _my_team_df = roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)] if "Team" in roster_stats.columns else roster_stats
+                if not _my_team_df.empty:
+                    _needs = analyze_current_team_needs(_my_team_df, roster_stats)
+                    _cat_ranks = dict(_needs.get("category_ranks") or {})
+                    _cat_values = dict(_needs.get("category_values") or {})
+                    _n_teams = int(_needs.get("n_teams") or 0)
+                _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+                _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+                _pool = merge_current_season_stats(_hit, _pit)
+                from fantasy_league_context import get_active_league_context
+
+                _ctx = get_active_league_context(st.session_state)
+                _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
+                from fantasy_actionable_recommendations import (
+                    league_strength_categories,
+                    league_weakness_categories,
+                    team_outlook_summary,
+                )
+
+                _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                if _needs.get("strengths"):
+                    _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
+                if _needs.get("weaknesses"):
+                    _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
+                _outlook, _confidence, _stars = team_outlook_summary(
+                    strong_cats=_strength_cats,
+                    weak_cats=_weakness_cats,
+                    category_ranks=_cat_ranks,
+                    n_teams=_n_teams,
+                )
+                _outlook_line = f"**Team Outlook:** {_outlook} · **Confidence:** {_confidence} · {_stars}"
+            except Exception:
+                pass
+
+            if diag.get("position_note") and "Weakest Position" in str(diag.get("position_note") or ""):
+                with st.container(border=True):
+                    st.markdown(str(diag["position_note"]))
+            if _outlook_line:
+                with st.container(border=True):
+                    st.markdown(_outlook_line)
 
             if not diag["hitting_table"].empty:
                 ht_disp = diag["hitting_table"].copy()
@@ -22993,42 +23079,32 @@ if active_page == "Fantasy Lineup Assistant":
                 st.markdown("##### Pitching snapshot (full roster — if columns exist)")
                 st.dataframe(diag["pitching_table"], width="stretch", hide_index=True)
 
-            cA, cB = st.columns(2)
-            _cat_ranks: dict[str, int] = {}
-            _n_teams = 0
-            _needs: dict = {}
-            try:
-                from fantasy_waiver_wire import analyze_current_team_needs
 
-                _my_team_df = roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)] if "Team" in roster_stats.columns else roster_stats
-                if not _my_team_df.empty:
-                    _needs = analyze_current_team_needs(_my_team_df, roster_stats)
-                    _cat_ranks = dict(_needs.get("category_ranks") or {})
-                    _n_teams = int(_needs.get("n_teams") or 0)
-            except Exception:
-                pass
+            cA, cB = st.columns(2)
             try:
                 from fantasy_actionable_recommendations import (
                     build_team_actionable_summary,
                     format_category_rank_line,
                     format_category_weakness_line,
-                    league_strength_categories,
-                    league_weakness_categories,
                     plain_lineup_archetype,
                 )
 
-                _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else list(diag.get("strongest") or [])
-                _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else list(diag.get("weakest") or [])
-                if _needs.get("strengths"):
-                    _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
-                if _needs.get("weaknesses"):
-                    _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
                 strength_lines = [
-                    format_category_rank_line(cat, _cat_ranks.get(cat), n_teams=_n_teams)
+                    format_category_rank_line(
+                        cat,
+                        _cat_ranks.get(cat),
+                        n_teams=_n_teams,
+                        value=_cat_values.get(cat),
+                    )
                     for cat in _strength_cats
                 ]
                 weakness_lines = [
-                    format_category_weakness_line(cat, _cat_ranks.get(cat), n_teams=_n_teams)
+                    format_category_weakness_line(
+                        cat,
+                        _cat_ranks.get(cat),
+                        n_teams=_n_teams,
+                        value=_cat_values.get(cat),
+                    )
                     for cat in _weakness_cats
                 ]
                 _rate_label = "OBP" if rate_for_diag == "OBP" else "AVG"
@@ -23039,10 +23115,10 @@ if active_page == "Fantasy Lineup Assistant":
                     weak_cats=_weakness_cats,
                 )
             except ImportError:
-                _strength_cats = list(diag.get("strongest") or [])
-                _weakness_cats = list(diag.get("weakest") or [])
-                strength_lines = list(_strength_cats)
-                weakness_lines = list(_weakness_cats)
+                _strength_cats = []
+                _weakness_cats = []
+                strength_lines = []
+                weakness_lines = []
                 _archetype = str(diag.get("archetype") or "")
             with cA:
                 st.markdown("**Strengths**")
@@ -23051,8 +23127,6 @@ if active_page == "Fantasy Lineup Assistant":
                         st.markdown(line)
                 else:
                     st.markdown("_—_")
-                if diag.get("strongest_detail") and _strength_cats:
-                    st.caption(diag["strongest_detail"])
             with cB:
                 st.markdown("**Weaknesses**")
                 if weakness_lines:
@@ -23060,32 +23134,53 @@ if active_page == "Fantasy Lineup Assistant":
                         st.markdown(line)
                 else:
                     st.markdown("_—_")
-                if diag.get("weakest_detail") and _weakness_cats:
-                    st.caption(diag["weakest_detail"])
             if _archetype:
                 st.markdown(_archetype)
             try:
                 from fantasy_actionable_recommendations import build_team_actionable_summary
 
-                for _action_line in build_team_actionable_summary(
+                _action_lines = build_team_actionable_summary(
                     strong_cats=_strength_cats,
                     weak_cats=_weakness_cats,
-                    strongest_detail=str(diag.get("strongest_detail") or ""),
-                    weakest_detail=str(diag.get("weakest_detail") or ""),
                     position_note=str(diag.get("position_note") or ""),
-                ):
+                    needs=_needs,
+                    waiver_pool=_waiver_pool,
+                    league_rosters=roster_stats,
+                    my_team=str(lineup_team or ""),
+                )
+                for _action_line in _action_lines:
                     st.markdown(_action_line)
+                if _action_lines:
+                    act_w, act_t = st.columns(2)
+                    with act_w:
+                        if st.button("Open Waiver Wire", key="lineup_open_waiver_wire_btn", use_container_width=True):
+                            navigate_to_page("Waiver Wire / Add-Drop Center")
+                    with act_t:
+                        if st.button("Open Trade Analyzer", key="lineup_open_trade_analyzer_btn", use_container_width=True):
+                            st.session_state["lineup_trade_analyzer_open"] = True
+                            st.rerun()
             except ImportError:
                 pass
             if diag.get("balance_label"):
                 st.caption(diag["balance_label"])
-            if diag.get("position_note"):
-                st.caption(diag["position_note"])
 
             rec_df = pd.DataFrame(diag.get("recommendations") or [])
-            if not rec_df.empty:
+            if not rec_df.empty and not _waiver_pool.empty and _needs:
+                try:
+                    from fantasy_actionable_recommendations import enrich_recommendations_with_waiver_targets
+
+                    enriched = enrich_recommendations_with_waiver_targets(
+                        rec_df.to_dict(orient="records"),
+                        _waiver_pool,
+                        needs=_needs,
+                    )
+                    rec_df = pd.DataFrame(enriched)
+                except ImportError:
+                    pass
+            elif not rec_df.empty:
                 try:
                     from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
+                    from fantasy_actionable_recommendations import enrich_recommendations_with_waiver_targets
 
                     _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
                     _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
@@ -23096,8 +23191,6 @@ if active_page == "Fantasy Lineup Assistant":
                     _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
                     _my_roster = scored[scored["Team"].astype(str) == str(lineup_team)] if "Team" in scored.columns else scored
                     _needs = analyze_current_team_needs(_my_roster, roster_stats) if not _my_roster.empty else {}
-                    from fantasy_actionable_recommendations import enrich_recommendations_with_waiver_targets
-
                     enriched = enrich_recommendations_with_waiver_targets(
                         rec_df.to_dict(orient="records"),
                         _waiver_pool,
@@ -23123,6 +23216,8 @@ if active_page == "Fantasy Lineup Assistant":
             )
 
             st.divider()
+            if st.session_state.pop("lineup_trade_analyzer_open", False):
+                st.success("Trade Analyzer opened — use the tools below to evaluate deals.")
             st.subheader("🔁 Trade Analyzer / Roster Move Assistant")
             st.caption(
                 "Use this section after reviewing start/sit recommendations. It evaluates proposed trades and suggests roster moves using current stats, standings, and category needs."

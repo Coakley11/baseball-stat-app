@@ -51,15 +51,15 @@ class WidgetKeyGuardTests(unittest.TestCase):
         weaknesses = league_weakness_categories(ranks, n_teams=4)
         self.assertEqual(strengths[0], "HR")
         self.assertEqual(weaknesses[0], "SB")
-        self.assertIn("#1st of 4", format_category_rank_line("HR", 1, n_teams=4))
-        self.assertIn("#4th of 4", format_category_weakness_line("SB", 4, n_teams=4))
+        self.assertIn("1st of 4 teams", format_category_rank_line("HR", 1, n_teams=4, value=53))
+        self.assertIn("4th of 4 teams", format_category_weakness_line("SB", 4, n_teams=4, value=12))
         archetype = plain_lineup_archetype(
             {},
             rate_label="AVG",
             strong_cats=strengths,
             weak_cats=weaknesses,
         )
-        self.assertIn("primary risk", archetype.lower())
+        self.assertIn("upgrade spots", archetype.lower())
         self.assertNotIn("clear strength", archetype.lower())
 
     def test_sync_draft_lab_session_before_save_does_not_mutate_widget_keys(self) -> None:

@@ -125,6 +125,51 @@ def get_cached_lineup_scores(session: dict[str, Any], cache_key: tuple[Any, ...]
     return None
 
 
+WAIVER_ANALYSIS_CACHE_KEY = "_fantasy_waiver_analysis_cache"
+
+
+def waiver_analysis_cache_key(
+    *,
+    context_id: str,
+    my_team: str,
+    stats_sig: str,
+    league_sig: str,
+    categories: tuple[str, ...],
+) -> tuple[Any, ...]:
+    return (
+        str(context_id or ""),
+        str(my_team or ""),
+        str(stats_sig or ""),
+        str(league_sig or ""),
+        tuple(str(c) for c in categories),
+    )
+
+
+def get_cached_waiver_analysis(session: dict[str, Any], cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
+    entry = session.get(WAIVER_ANALYSIS_CACHE_KEY)
+    if isinstance(entry, dict) and entry.get("key") == cache_key:
+        payload = entry.get("payload")
+        if isinstance(payload, dict):
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "waiver_wire_analysis", hit=True)
+            except ImportError:
+                pass
+            return payload
+    return None
+
+
+def store_waiver_analysis(session: dict[str, Any], cache_key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+    try:
+        from page_perf_phases import record_cache_event
+
+        record_cache_event(session, "waiver_wire_analysis", hit=False)
+    except ImportError:
+        pass
+    session[WAIVER_ANALYSIS_CACHE_KEY] = {"key": cache_key, "payload": payload}
+
+
 def store_lineup_scores(session: dict[str, Any], cache_key: tuple[Any, ...], scored: pd.DataFrame) -> None:
     try:
         from page_perf_phases import record_cache_event

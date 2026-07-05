@@ -479,6 +479,20 @@ def prepare_shared_draft_context(
     """Before widgets on a draft page: canonical always wins."""
     if active_page and not force_mirror and not is_draft_sync_page(active_page):
         return
+    try:
+        cur = read_canonical_draft_settings(session)
+        sig = (
+            str(active_page or ""),
+            bool(force_mirror),
+            str(cur.get("lookback_window") or ""),
+            str(cur.get("projection_style") or ""),
+            str(cur.get("fantasy_format") or ""),
+        )
+        if session.get("_shared_draft_prep_sig") == sig and not force_mirror:
+            return
+        session["_shared_draft_prep_sig"] = sig
+    except Exception:
+        pass
     apply_draft_shared_settings_to_widgets(
         session,
         active_page=active_page,

@@ -1421,6 +1421,14 @@ def force_autosave(
             "music_coach_send",
             "team_change",
             "nba_settings_change",
+            "simulator_league_context_saved",
+            "live_draft_league_context_saved",
+            "manual_save_library_sync",
+            "league_context_activated",
+            "draft_archive_saved",
+            "draft_archive_renamed",
+            "draft_archive_duplicated",
+            "draft_archive_deleted",
         )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True

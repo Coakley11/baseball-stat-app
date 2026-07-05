@@ -286,6 +286,7 @@ def analyze_current_team_needs(
             val = _category_value_for_team(my_roster, cat)
             if val is not None:
                 my_totals[cat] = val
+    result["category_values"] = dict(my_totals)
 
     for cat in available:
         if cat not in my_totals:

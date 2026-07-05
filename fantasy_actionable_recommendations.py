@@ -13,22 +13,55 @@ def _ordinal(n: int) -> str:
     return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
-def format_category_rank_line(cat: str, rank: int | None, *, n_teams: int = 0) -> str:
-    if not rank:
-        return f"🟢 {cat}"
-    suffix = _ordinal(int(rank))
-    if n_teams > 1:
-        return f"🟢 {cat} (#{rank}{suffix} of {n_teams})"
-    return f"🟢 {cat} (#{rank}{suffix})"
+def _format_category_value(cat: str, val: float | None) -> str:
+    if val is None:
+        return "—"
+    if cat in ("AVG", "OBP", "SLG", "OPS"):
+        return f"{float(val):.3f}".lstrip("0") if float(val) < 1 else f"{float(val):.3f}"
+    if cat in ("ERA", "WHIP"):
+        return f"{float(val):.2f}"
+    return f"{int(round(float(val))):,}"
 
 
-def format_category_weakness_line(cat: str, rank: int | None, *, n_teams: int = 0) -> str:
+def format_league_rank_phrase(rank: int | None, *, n_teams: int = 0) -> str:
     if not rank:
-        return f"🔴 {cat}"
+        return ""
     suffix = _ordinal(int(rank))
     if n_teams > 1:
-        return f"🔴 {cat} (#{rank}{suffix} of {n_teams})"
-    return f"🔴 {cat} (#{rank}{suffix})"
+        return f"{int(rank)}{suffix} of {n_teams} teams"
+    return f"{int(rank)}{suffix}"
+
+
+def format_category_rank_line(
+    cat: str,
+    rank: int | None,
+    *,
+    n_teams: int = 0,
+    value: float | None = None,
+) -> str:
+    rank_phrase = format_league_rank_phrase(rank, n_teams=n_teams)
+    val_text = _format_category_value(cat, value)
+    if rank_phrase and value is not None:
+        return f"🟢 **{cat}** — {val_text} ({rank_phrase})"
+    if rank_phrase:
+        return f"🟢 **{cat}** ({rank_phrase})"
+    return f"🟢 **{cat}**"
+
+
+def format_category_weakness_line(
+    cat: str,
+    rank: int | None,
+    *,
+    n_teams: int = 0,
+    value: float | None = None,
+) -> str:
+    rank_phrase = format_league_rank_phrase(rank, n_teams=n_teams)
+    val_text = _format_category_value(cat, value)
+    if rank_phrase and value is not None:
+        return f"🔴 **{cat}** — {val_text} ({rank_phrase})"
+    if rank_phrase:
+        return f"🔴 **{cat}** ({rank_phrase})"
+    return f"🔴 **{cat}**"
 
 
 def league_strength_categories(
@@ -66,39 +99,107 @@ def plain_lineup_archetype(
     strong_cats: tuple[str, ...] | list[str] | None = None,
     weak_cats: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    """Translate internal strength ratios into user-facing lineup summary."""
+    """Translate league category ranks into user-facing lineup summary."""
     strong_set = {str(c).upper() for c in (strong_cats or [])}
     weak_set = {str(c).upper() for c in (weak_cats or [])}
     rate_key = "OBP" if rate_label == "OBP" else "AVG"
-    parts: list[str] = []
-    if strong_set or weak_set:
-        if "HR" in strong_set and "SB" not in strong_set:
-            parts.append("This roster has **strong power production**.")
-        elif "SB" in strong_set and "HR" not in strong_set:
-            parts.append("This roster is **speed-first** with lighter power.")
-        elif "HR" in strong_set and "SB" in strong_set:
-            parts.append("This roster has a **balanced power and speed** mix.")
+    if strong_set and not weak_set:
+        return f"This roster has clear strengths in **{', '.join(sorted(strong_set))}**."
+    if weak_set and not strong_set:
+        return f"This roster needs help in **{', '.join(sorted(weak_set))}**."
+    if strong_set and weak_set:
+        return (
+            f"This roster has several strengths (**{', '.join(sorted(strong_set))}**) "
+            f"but still has upgrade spots in **{', '.join(sorted(weak_set))}**."
+        )
     hr_s = float(strengths.get("HR") or 0.5)
     sb_s = float(strengths.get("SB") or 0.5)
     rk = float(strengths.get(rate_key) or strengths.get("AVG") or strengths.get("OBP") or 0.5)
-    if not parts:
-        if hr_s > 0.65 and sb_s < 0.35:
-            parts.append("This lineup leans on **power** more than **speed**.")
-        elif sb_s > 0.65 and hr_s < 0.35:
-            parts.append("This lineup is **speed-first** with lighter power.")
-        elif hr_s > 0.55 and sb_s > 0.55:
-            parts.append("This lineup has a **balanced power and speed** mix.")
-    if rate_key in weak_set or "AVG" in weak_set and rate_key == "AVG" or "OBP" in weak_set and rate_key == "OBP":
-        parts.append(f"**{rate_label}** is the primary risk area in league standings.")
-    elif rate_key in strong_set:
-        parts.append(f"**{rate_label}** is a clear strength in league standings.")
-    elif rk < 0.38 and rate_key not in strong_set:
-        parts.append(f"**{rate_label}** is a soft spot relative to counting stats.")
-    elif rk > 0.68 and rate_key not in weak_set:
-        parts.append(f"**{rate_label}** is a clear strength for this group.")
-    if not parts:
-        return "Category production is fairly mixed across HR, RBI, R, SB, and rate stats."
-    return " ".join(parts)
+    if hr_s > 0.65 and sb_s < 0.35:
+        return "This lineup leans on **power** more than **speed**."
+    if sb_s > 0.65 and hr_s < 0.35:
+        return "This lineup is **speed-first** with lighter power."
+    if hr_s > 0.55 and sb_s > 0.55:
+        return "This lineup has a **balanced power and speed** mix."
+    if rk < 0.38:
+        return f"**{rate_label}** is the primary risk area in league standings."
+    if rk > 0.68:
+        return f"**{rate_label}** is a clear strength for this group."
+    return "Category production is fairly mixed across HR, RBI, R, SB, and rate stats."
+
+
+def _waiver_target_names(
+    waiver_pool: pd.DataFrame | None,
+    needs: dict[str, Any] | None,
+    *,
+    limit: int = 3,
+) -> list[str]:
+    if waiver_pool is None or getattr(waiver_pool, "empty", True):
+        return []
+    try:
+        from fantasy_waiver_wire import recommend_adds_current
+
+        adds = recommend_adds_current(waiver_pool, needs or {})
+        if adds.empty:
+            return []
+        for col in ("Player", "fullName"):
+            if col in adds.columns:
+                return [str(x).strip() for x in adds[col].astype(str).head(int(limit)).tolist() if str(x).strip()]
+    except ImportError:
+        pass
+    return []
+
+
+def _trade_target_names(
+    league_rosters: pd.DataFrame | None,
+    *,
+    my_team: str = "",
+    weak_cats: list[str] | None = None,
+    limit: int = 3,
+) -> list[str]:
+    if league_rosters is None or getattr(league_rosters, "empty", True):
+        return []
+    df = league_rosters.copy()
+    if "Team" not in df.columns:
+        return []
+    others = df[df["Team"].astype(str) != str(my_team or "")]
+    if others.empty:
+        return []
+    weak = [str(c).upper() for c in (weak_cats or []) if str(c).strip()]
+    sort_cols: list[str] = []
+    for cat in weak + ["HR", "RBI", "R"]:
+        if cat in others.columns and cat not in sort_cols:
+            sort_cols.append(cat)
+    if not sort_cols:
+        return []
+    primary = sort_cols[0]
+    ranked = others.copy()
+    ranked["_sort_val"] = pd.to_numeric(ranked[primary], errors="coerce").fillna(0)
+    ranked = ranked.sort_values("_sort_val", ascending=False)
+    names: list[str] = []
+    name_col = "Player" if "Player" in ranked.columns else "fullName"
+    if name_col not in ranked.columns:
+        return []
+    for name in ranked[name_col].astype(str).tolist():
+        clean = str(name).strip()
+        if clean and clean not in names:
+            names.append(clean)
+        if len(names) >= int(limit):
+            break
+    return names
+
+
+def _trade_target_hint(weak_cats: list[str]) -> str:
+    weak = weak_cats[0] if weak_cats else "balance"
+    hints = {
+        "HR": "25+ HR pace · middle-order hitter · RBI producer",
+        "RBI": "100+ RBI pace · run producer · lineup anchor",
+        "R": "leadoff/top-of-order · 80+ R pace",
+        "SB": "20+ SB pace · everyday role",
+        "AVG": "high-contact bat · .280+ AVG pace",
+        "OBP": "OBP-first bat · table-setter profile",
+    }
+    return hints.get(str(weak).upper(), f"upgrade **{weak}** without giving up your best categories")
 
 
 def build_team_actionable_summary(
@@ -108,24 +209,40 @@ def build_team_actionable_summary(
     strongest_detail: str = "",
     weakest_detail: str = "",
     position_note: str = "",
+    needs: dict[str, Any] | None = None,
+    waiver_pool: pd.DataFrame | None = None,
 ) -> list[str]:
-    """Short actionable blocks for lineup / team analysis pages."""
+    """Short actionable blocks for lineup / team analysis pages (league ranks only)."""
     lines: list[str] = []
+    cat_values = dict((needs or {}).get("category_values") or {})
     if strong_cats:
-        detail = strongest_detail.strip() or f"Your best categories are **{', '.join(strong_cats)}**."
-        lines.append(f"**Biggest strength:** {detail}")
+        top = strong_cats[0]
+        val = cat_values.get(top)
+        val_bit = f" ({_format_category_value(top, val)})" if val is not None else ""
+        lines.append(f"**Biggest strength:** **{top}**{val_bit} leads your league profile.")
     if weak_cats:
-        detail = weakest_detail.strip() or f"**{', '.join(weak_cats)}** lag the rest of the league."
-        lines.append(f"**Biggest weakness:** {detail}")
-        lines.append(
-            "**Best waiver strategy:** Target players who lift "
-            + ", ".join(weak_cats[:2])
-            + " without giving up your strongest categories."
-        )
+        weak = weak_cats[0]
+        val = cat_values.get(weak)
+        val_bit = f" ({_format_category_value(weak, val)})" if val is not None else ""
+        lines.append(f"**Biggest weakness:** **{weak}**{val_bit} is your clearest upgrade area.")
+        targets = _waiver_target_names(waiver_pool, needs, limit=3)
+        if targets:
+            why = ", ".join(weak_cats[:2])
+            lines.append(
+                "**Best waiver strategy:** Recommended targets: "
+                + ", ".join(f"**{name}**" for name in targets)
+                + f" — {why} upside · everyday role."
+            )
+        else:
+            lines.append(
+                "**Best waiver strategy:** Target players who lift "
+                + ", ".join(weak_cats[:2])
+                + " without giving up your strongest categories."
+            )
         trade_from = strong_cats[0] if strong_cats else "surplus counting stats"
-        trade_for = weak_cats[0] if weak_cats else "balance"
         lines.append(
-            f"**Best trade strategy:** Trade excess **{trade_from}** production for **{trade_for}** if you can do it without losing RBI or runs."
+            f"**Best trade strategy:** Trade excess **{trade_from}** production for **{weak}**. "
+            f"Trade profile: {_trade_target_hint(weak_cats)}."
         )
     elif position_note:
         lines.append(f"**Next move:** {position_note}")
@@ -134,10 +251,45 @@ def build_team_actionable_summary(
 
 def plain_balance_label(cv: float) -> str:
     if cv >= 28:
-        return "**Unbalanced:** a few categories carry most of the value; others lag behind."
+        return "This roster relies on a few categories for most of its value; other areas lag behind."
     if cv <= 12:
-        return "**Balanced:** category production is spread evenly across the lineup."
-    return "**Moderately tilted:** clear strengths with identifiable soft spots to upgrade."
+        return "Category production is spread fairly evenly across the lineup."
+    return "This roster has several strengths but still has a few areas that could be upgraded."
+
+
+def team_outlook_summary(
+    *,
+    strong_cats: list[str],
+    weak_cats: list[str],
+    category_ranks: dict[str, int] | None = None,
+    n_teams: int = 0,
+) -> tuple[str, str, str]:
+    """Return (outlook label, confidence label, star display)."""
+    ranks = dict(category_ranks or {})
+    n = int(n_teams or 0) or (max(ranks.values()) if ranks else 0)
+    if not ranks or n <= 1:
+        return "Mixed", "Low", "⭐⭐☆☆☆"
+    best = min(int(ranks.get(c, n)) for c in ranks)
+    worst = max(int(ranks.get(c, 1)) for c in ranks)
+    spread = worst - best
+    if best == 1 and worst <= max(2, n // 2):
+        outlook = "Strong"
+    elif worst >= n and best >= n - 1:
+        outlook = "Needs work"
+    elif spread <= 1:
+        outlook = "Balanced"
+    else:
+        outlook = "Mixed"
+    if n <= 2:
+        confidence = "Low"
+    elif spread <= 1:
+        confidence = "High"
+    elif spread == 2:
+        confidence = "Medium"
+    else:
+        confidence = "Medium"
+    stars = {"Strong": "⭐⭐⭐⭐☆", "Balanced": "⭐⭐⭐☆☆", "Mixed": "⭐⭐⭐☆☆", "Needs work": "⭐⭐☆☆☆"}
+    return outlook, confidence, stars.get(outlook, "⭐⭐⭐☆☆")
 
 
 def plain_position_weakness_note(
@@ -147,11 +299,14 @@ def plain_position_weakness_note(
     best_val: float,
     *,
     grp_label: str = "position",
+    benchmark: float | None = None,
 ) -> str:
+    bench_line = f"\n\nLeague benchmark: **{benchmark:.0f}**" if benchmark is not None else ""
     return (
-        f"**Weakest {grp_label}: {worst_pos}** — current contribution **{worst_val:.0f}** HR+R+RBI. "
-        f"**Strongest: {best_pos}** at **{best_val:.0f}**. "
-        f"Consider upgrading **{worst_pos}** through the waiver wire or a trade."
+        f"**Weakest Position**\n\n"
+        f"**{worst_pos}**\n\n"
+        f"Current contribution: **{worst_val:.0f}** HR+R+RBI{bench_line}\n\n"
+        f"Recommendation: Upgrade **{worst_pos}** through the waiver wire or a trade."
     )
 
 
@@ -165,27 +320,16 @@ def enrich_recommendations_with_waiver_targets(
     """Attach specific waiver player names to category-repair recommendations."""
     if not recs or waiver_pool is None or getattr(waiver_pool, "empty", True):
         return recs
-    try:
-        from fantasy_waiver_wire import recommend_adds_current
-
-        adds = recommend_adds_current(waiver_pool, needs or {})
-        names = []
-        if not adds.empty:
-            for col in ("Player", "fullName"):
-                if col in adds.columns:
-                    names = adds[col].astype(str).head(int(limit)).tolist()
-                    break
-        if not names:
-            return recs
-        names_text = ", ".join(names)
-        out: list[dict[str, Any]] = []
-        for row in recs:
-            item = dict(row)
-            detail = str(item.get("Detail") or "")
-            label = str(item.get("Label") or "")
-            if label in {"Need", "Target profile", "Category repair"} and "Recommended targets" not in detail:
-                item["Detail"] = f"{detail} Recommended targets: **{names_text}**."
-            out.append(item)
-        return out
-    except ImportError:
+    names = _waiver_target_names(waiver_pool, needs, limit=limit)
+    if not names:
         return recs
+    names_text = ", ".join(names)
+    out: list[dict[str, Any]] = []
+    for row in recs:
+        item = dict(row)
+        detail = str(item.get("Detail") or "")
+        label = str(item.get("Label") or "")
+        if label in {"Need", "Target profile", "Category repair"} and "Recommended targets" not in detail:
+            item["Detail"] = f"{detail} Recommended targets: **{names_text}**."
+        out.append(item)
+    return out

@@ -273,16 +273,18 @@ def _record_save_diag(
     after: dict[str, int],
     persist_ok: bool,
     entry: dict[str, Any] | None = None,
+    probe_cloud: bool = True,
 ) -> None:
     cloud_readback: dict[str, Any] = {}
-    try:
-        from workflow_persist_guard import probe_cloud_workflow_for_workspace
-        from suite_workspace import get_active_workspace_id
+    if probe_cloud:
+        try:
+            from workflow_persist_guard import probe_cloud_workflow_for_workspace
+            from suite_workspace import get_active_workspace_id
 
-        ws_id = str(get_active_workspace_id(type("_St", (), {"session_state": session})()))
-        cloud_readback = probe_cloud_workflow_for_workspace(ws_id)
-    except Exception:
-        pass
+            ws_id = str(get_active_workspace_id(type("_St", (), {"session_state": session})()))
+            cloud_readback = probe_cloud_workflow_for_workspace(ws_id)
+        except Exception:
+            pass
     session["_draft_library_save_diag"] = {
         "reason": reason,
         "persist_ok": persist_ok,
@@ -311,6 +313,25 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     except ImportError:
         pass
     try:
+        from suite_user_persistence import clear_workspace_autosave_block
+
+        clear_workspace_autosave_block(st, "baseball")
+    except ImportError:
+        try:
+            from suite_user_persistence import _autosave_block_key
+
+            session.pop(_autosave_block_key("baseball"), None)
+            session.pop("_suite_autosave_block_reason", None)
+        except ImportError:
+            pass
+    probe_cloud = False
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        probe_cloud = bool(developer_mode_checkbox_enabled(st=st))
+    except Exception:
+        pass
+    try:
         from baseball_persistent_state import force_save_baseball_state
 
         ok = bool(force_save_baseball_state(st, reason=reason))
@@ -318,16 +339,29 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
         session["_draft_archive_persist_error"] = f"{type(exc).__name__}: {exc}"
         ok = False
     after = _workflow_counts(session)
-    _record_save_diag(session, reason=reason, before=before, after=after, persist_ok=ok, entry=entry)
+    _record_save_diag(
+        session,
+        reason=reason,
+        before=before,
+        after=after,
+        persist_ok=ok,
+        entry=entry,
+        probe_cloud=probe_cloud,
+    )
     return ok
 
 
 def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
     try:
-        from fantasy_perf_cache import LINEUP_SCORES_CACHE_KEY, STANDINGS_ROSTER_CACHE_KEY
+        from fantasy_perf_cache import (
+            LINEUP_SCORES_CACHE_KEY,
+            STANDINGS_ROSTER_CACHE_KEY,
+            WAIVER_ANALYSIS_CACHE_KEY,
+        )
 
         session.pop(STANDINGS_ROSTER_CACHE_KEY, None)
         session.pop(LINEUP_SCORES_CACHE_KEY, None)
+        session.pop(WAIVER_ANALYSIS_CACHE_KEY, None)
     except ImportError:
         pass
 
@@ -484,15 +518,22 @@ def render_save_live_draft_team(
                     defer_activation=True,
                 )
                 _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
-                session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
-                try:
-                    from baseball_archive_activity import log_saved_draft_archived
+                persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
+                if isinstance(session.get("_draft_library_save_diag"), dict):
+                    session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
+                if not persist_ok:
+                    st.error(
+                        "Saved to this session, but cloud/disk persist failed. "
+                        "Open **Persistence diagnostics** on Saved Draft Library (Developer Mode) before refreshing."
+                    )
+                else:
+                    try:
+                        from baseball_archive_activity import log_saved_draft_archived
 
-                    log_saved_draft_archived(entry, session=session)
-                except ImportError:
-                    pass
-                stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                        log_saved_draft_archived(entry, session=session)
+                    except ImportError:
+                        pass
+                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not save active league context: {exc}")
@@ -531,15 +572,22 @@ def render_save_simulator_draft_team(
                     defer_activation=True,
                 )
                 _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
-                session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
-                try:
-                    from baseball_archive_activity import log_saved_draft_archived
+                persist_ok = _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
+                if isinstance(session.get("_draft_library_save_diag"), dict):
+                    session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
+                if not persist_ok:
+                    st.error(
+                        "Saved to this session, but cloud/disk persist failed. "
+                        "Open **Persistence diagnostics** on Saved Draft Library (Developer Mode) before refreshing."
+                    )
+                else:
+                    try:
+                        from baseball_archive_activity import log_saved_draft_archived
 
-                    log_saved_draft_archived(entry, session=session)
-                except ImportError:
-                    pass
-                stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                        log_saved_draft_archived(entry, session=session)
+                    except ImportError:
+                        pass
+                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not save active league context: {exc}")
@@ -579,14 +627,13 @@ def _render_archive_actions(
             args=(LIVE_DRAFT_PAGE, f"archive_open_live_{draft_id}", "open_live_draft_room"),
         )
     with room_col2:
-        sim_target = DRAFT_LAB_PAGE if draft_type != "live_draft_room" else DRAFT_SIMULATOR_PAGE
-        sim_label = "Open Draft Lab / Simulation" if sim_target == DRAFT_LAB_PAGE else "Open Draft Room Simulator"
+        sim_target = DRAFT_SIMULATOR_PAGE
         st.button(
-            sim_label,
+            "Go to Draft Room Simulator",
             key=f"archive_open_lab_{draft_id}",
             use_container_width=True,
             on_click=_on_click_navigate_to_page,
-            args=(sim_target, f"archive_open_lab_{draft_id}", "open_draft_lab"),
+            args=(sim_target, f"archive_open_lab_{draft_id}", "go_to_draft_room_simulator"),
         )
     btn1, btn2, btn3, btn4 = st.columns(4)
     with btn1:
@@ -770,11 +817,11 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
             )
         with nav2:
             st.button(
-                _nav_label(DRAFT_LAB_PAGE, "Open Draft Lab / Simulation", page_label_fn),
-                key="library__go_draft_lab_btn",
+                _nav_label(DRAFT_SIMULATOR_PAGE, "Go to Draft Room Simulator", page_label_fn),
+                key="library__go_draft_simulator_btn",
                 use_container_width=True,
                 on_click=_on_click_navigate_to_page,
-                args=(DRAFT_LAB_PAGE, "library__go_draft_lab_btn", "open_draft_lab"),
+                args=(DRAFT_SIMULATOR_PAGE, "library__go_draft_simulator_btn", "go_to_draft_room_simulator"),
             )
         return
 

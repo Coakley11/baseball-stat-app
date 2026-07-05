@@ -218,9 +218,60 @@ def render_waiver_wire_page(
                 names = set(my_roster.get("Player", my_roster.get("fullName", pd.Series())).astype(str))
                 my_roster = league_df[league_df[name_col].astype(str).isin(names)].copy()
 
-    waiver_pool = build_waiver_pool(stats_pool, context)
     waiver_cats = waiver_categories_for_context(context)
-    needs = analyze_current_team_needs(my_roster, league_df, categories=waiver_cats)
+    ctx_id = str(context.get("context_id") or context.get("draft_id") or context.get("display_name") or "")
+    stats_sig = str(len(stats_pool)) + ":" + str(tuple(stats_pool.columns[:8].tolist()))
+    league_sig = str(len(league_df)) + ":" + str(my_team)
+    cache_key = None
+    cached_payload = None
+    try:
+        from fantasy_perf_cache import (
+            get_cached_waiver_analysis,
+            store_waiver_analysis,
+            waiver_analysis_cache_key,
+        )
+
+        cache_key = waiver_analysis_cache_key(
+            context_id=ctx_id,
+            my_team=my_team,
+            stats_sig=stats_sig,
+            league_sig=league_sig,
+            categories=tuple(waiver_cats),
+        )
+        cached_payload = get_cached_waiver_analysis(session, cache_key)
+    except ImportError:
+        pass
+
+    if cached_payload:
+        needs = dict(cached_payload.get("needs") or {})
+        waiver_pool = cached_payload.get("waiver_pool")
+        if not isinstance(waiver_pool, pd.DataFrame):
+            waiver_pool = pd.DataFrame()
+        adds_cached = cached_payload.get("adds")
+        adds = adds_cached.copy() if isinstance(adds_cached, pd.DataFrame) else pd.DataFrame()
+        drops_cached = cached_payload.get("drops")
+        drops = drops_cached.copy() if isinstance(drops_cached, pd.DataFrame) else pd.DataFrame()
+    else:
+        needs = analyze_current_team_needs(my_roster, league_df, categories=waiver_cats)
+        waiver_pool = build_waiver_pool(stats_pool, context)
+        adds = recommend_adds_current(waiver_pool, needs, limit=15)
+        drops = recommend_drops_current(my_roster, limit=15, categories=waiver_cats)
+        if cache_key is not None:
+            try:
+                from fantasy_perf_cache import store_waiver_analysis
+
+                store_waiver_analysis(
+                    session,
+                    cache_key,
+                    {
+                        "needs": needs,
+                        "waiver_pool": waiver_pool.copy() if not waiver_pool.empty else waiver_pool,
+                        "adds": adds.copy() if not adds.empty else adds,
+                        "drops": drops.copy() if not drops.empty else drops,
+                    },
+                )
+            except ImportError:
+                pass
     try:
         _has_slots = context_has_roster_slots(context)
         open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
@@ -240,7 +291,6 @@ def render_waiver_wire_page(
         st.caption(line)
 
     st.markdown("##### 1. Top Recommended Adds")
-    adds = recommend_adds_current(waiver_pool, needs, limit=15)
     if adds.empty:
         st.info("No waiver recommendations yet — load current-season stats and check your league context.")
     else:
@@ -252,7 +302,6 @@ def render_waiver_wire_page(
             _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}", on_plan_add=_plan_add)
 
     st.markdown("##### 2. Recommended Drops")
-    drops = recommend_drops_current(my_roster, limit=15, categories=waiver_cats)
     if drops.empty:
         st.info("No drop candidates on your roster yet.")
     else:
