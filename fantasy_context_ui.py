@@ -23,6 +23,20 @@ def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
     return bool(session.get(GLOBAL_WAIVER_FILTER_KEY))
 
 
+def render_fantasy_context_sync_required(st: Any, session: dict[str, Any], *, page_name: str) -> bool:
+    """Return False when sync is off — caller should stop rendering the fantasy workflow."""
+    if fantasy_context_sync_enabled(session):
+        return True
+    st.warning("**Fantasy Context Sync Disabled**")
+    st.info(
+        f"**{page_name}** requires an active synced fantasy league.\n\n"
+        "Go to **Saved Draft Library** and enable:\n\n"
+        f"☑ {FANTASY_CONTEXT_SYNC_LABEL}\n\n"
+        "before using this page."
+    )
+    return False
+
+
 def _on_sync_changed(st: Any) -> None:
     try:
         from baseball_persistent_state import force_save_baseball_state

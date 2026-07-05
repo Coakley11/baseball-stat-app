@@ -168,6 +168,8 @@ def _is_ephemeral_widget_key(key: str) -> bool:
     if _is_file_uploader_widget_key(key):
         return True
     k = str(key)
+    if k in ("standings_refresh_mlb_stats",):
+        return True
     if k.endswith("_button") or k.endswith("_btn"):
         if k in ("ml_predictions_refresh_button",):
             return False
@@ -224,6 +226,9 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "_start_live_draft_mode",
     "_live_draft_start_feedback",
     "_start_live_draft_trace",
+    "standings_refresh_mlb_stats",
+    "_standings_refresh_mlb_stats_requested",
+    "_fantasy_stats_refresh_requested",
 })
 
 

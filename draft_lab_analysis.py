@@ -628,6 +628,7 @@ def analyze_draft_lab_results(
             totals["Projected OPS"] = float(np.average(ops.dropna(), weights=weights.loc[ops.notna()])) if ops.notna().any() else np.nan
         else:
             totals["Projected OPS"] = np.nan
+        totals["Average Expected Fantasy Value"] = _col_mean(g, "Expected Fantasy Value")
         totals["Average Fantasy Edge"] = _col_mean(g, "Fantasy Edge")
         totals["Average Scarcity Score"] = _col_mean(g, "Scarcity Score")
 

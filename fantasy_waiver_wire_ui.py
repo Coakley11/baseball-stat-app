@@ -9,12 +9,10 @@ import pandas as pd
 
 from fantasy_league_context import (
     build_roster_stats_from_league_context,
-    context_has_roster_slots,
     get_active_league_context,
     has_full_league_rosters,
     league_context_coverage_badge,
     league_context_type_badge,
-    resolve_context_open_position_needs,
 )
 from fantasy_waiver_wire import (
     WAIVER_PLANNER_ADD_KEY,
@@ -165,9 +163,11 @@ def render_waiver_wire_page(
         f"My team: **{context.get('my_team_name', '—')}**"
     )
     try:
-        from fantasy_context_ui import render_fantasy_context_badge
+        from fantasy_context_ui import render_fantasy_context_badge, render_fantasy_context_sync_required
 
         render_fantasy_context_badge(st, session)
+        if not render_fantasy_context_sync_required(st, session, page_name="Waiver Wire / Add-Drop Center"):
+            return
     except ImportError:
         pass
 
@@ -218,53 +218,33 @@ def render_waiver_wire_page(
     _has_slots = context_has_roster_slots(context)
     open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
 
-    st.markdown("##### 1. League Category Rankings")
+    st.markdown("##### League snapshot")
     rank_lines = format_league_rank_lines(needs, categories=waiver_cats)
     if rank_lines:
-        st.markdown(" · ".join(rank_lines))
-    else:
-        st.caption("Category ranks will appear after league rosters are merged with current-season stats.")
-
-    if _has_slots and open_slots:
-        slot_counts = Counter(open_slots)
-        slot_parts = []
-        for pos in ("C", "1B", "2B", "3B", "SS", "OF", "UTIL", "DH", "P", "BN"):
-            if pos not in slot_counts:
-                continue
-            n = slot_counts[pos]
-            slot_parts.append(f"**{pos}**" + (f" (×{n})" if n > 1 else ""))
-        st.caption(
-            "**Open roster slots (active league context):** "
-            + (", ".join(slot_parts) if slot_parts else ", ".join(open_slots))
-        )
-    elif not _has_slots:
-        st.info(
-            "This mock draft was saved without roster-slot settings, so waiver analysis focuses "
-            "on current stats and category balance rather than missing lineup positions."
-        )
-
+        st.caption(" · ".join(rank_lines))
     cat_table = build_category_standings_table(needs, categories=waiver_cats)
     if not cat_table.empty:
-        st.dataframe(cat_table, use_container_width=True, hide_index=True)
+        with st.expander("Category ranks", expanded=False):
+            st.dataframe(cat_table, use_container_width=True, hide_index=True)
+    for line in build_weakness_narrative(needs)[:2]:
+        st.caption(line)
 
-    sum_cols = st.columns(3)
-    with sum_cols[0]:
-        st.markdown("**Strongest categories**")
-        st.write(", ".join(needs.get("strengths") or []) or "—")
-    with sum_cols[1]:
-        st.markdown("**Weakest categories**")
-        st.write(", ".join(needs.get("weaknesses") or []) or "—")
-    with sum_cols[2]:
-        st.markdown("**Biggest opportunities**")
-        st.write(", ".join(needs.get("targets") or []) or "—")
+    st.markdown("##### 1. Top Recommended Adds")
+    adds = recommend_adds_current(waiver_pool, needs, limit=15)
+    if adds.empty:
+        st.info("No waiver recommendations yet — load current-season stats and check your league context.")
+    else:
+        def _plan_add(name: str) -> None:
+            session[WAIVER_PLANNER_ADD_KEY] = name
+            _on_planner_pick_changed()
 
-    st.markdown("##### 2. Team Weakness Analysis")
-    for line in build_weakness_narrative(needs):
-        st.markdown(line)
+        for i, (_, row) in enumerate(adds.head(15).iterrows()):
+            _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}", on_plan_add=_plan_add)
 
-    st.markdown("##### 3. My Roster")
-    if my_roster.empty:
-        st.info("No roster players found for your team in the active league context.")
+    st.markdown("##### 2. Recommended Drops")
+    drops = recommend_drops_current(my_roster, limit=15, categories=waiver_cats)
+    if drops.empty:
+        st.info("No drop candidates on your roster yet.")
     else:
         selected_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or "").strip()
 
@@ -272,75 +252,43 @@ def render_waiver_wire_page(
             session[WAIVER_PLANNER_DROP_KEY] = name
             _on_planner_pick_changed()
 
-        for i, (_, row) in enumerate(my_roster.iterrows()):
+        for i, (_, row) in enumerate(drops.head(15).iterrows()):
             name = str(row.get("Player") or row.get("fullName") or "")
-            is_selected = name == selected_drop
-            label = "Selected To Drop" if is_selected else "Select To Drop"
+            label = "Selected To Drop" if name == selected_drop else "Plan Drop"
             _render_player_card(
                 st,
                 row,
-                key_prefix=f"waiver_roster_{i}",
+                key_prefix=f"waiver_drop_{i}",
                 button_label=label,
                 on_click=_select_drop,
+                subtitle=str(row.get("Why Drop") or ""),
             )
-        if selected_drop:
-            st.success(f"**{selected_drop}** is queued as your drop in the planner below.")
 
-    st.markdown("##### 4. Recommended Adds")
-    adds = recommend_adds_current(waiver_pool, needs)
-    if adds.empty:
-        st.info("No waiver recommendations yet — widen the player pool or load more current-season stats.")
-    else:
-
-        def _plan_add(name: str) -> None:
-            session[WAIVER_PLANNER_ADD_KEY] = name
-            _on_planner_pick_changed()
-
-        for i, (_, row) in enumerate(adds.head(6).iterrows()):
-            _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}", on_plan_add=_plan_add)
-
-        if session.get(WAIVER_PLANNER_ADD_KEY):
-            st.success(f"**{session[WAIVER_PLANNER_ADD_KEY]}** is queued in the Add/Drop planner below.")
-
-    st.markdown("##### 5. Search Waiver Pool")
-    st.caption(f"{len(waiver_pool)} waiver-eligible players (current pool minus active league rosters).")
-    pool_names = _player_names(waiver_pool)
+    st.markdown("##### 3. Available Player Pool")
+    st.caption(f"{len(waiver_pool)} waiver-eligible players. Search and sort in the table — use **Plan Add** cards above or the planner below.")
     search_query = st.text_input(
         "Search available players",
         key="waiver_pool_search",
         placeholder="Type a player name…",
     )
-    filtered_names = filter_waiver_names_by_search(pool_names, search_query)
-    if search_query and not filtered_names:
-        st.caption("No players match that search.")
-    elif filtered_names:
-        st.caption(f"Showing {min(len(filtered_names), 25)} of {len(filtered_names)} matches.")
-        show_names = filtered_names[:25]
-        pick_cols = st.columns(min(3, len(show_names)))
-        for i, pname in enumerate(show_names):
-            with pick_cols[i % len(pick_cols)]:
-                if st.button(f"Plan Add: {pname}", key=f"waiver_search_plan_{i}"):
-                    session[WAIVER_PLANNER_ADD_KEY] = pname
-                    _on_planner_pick_changed()
-                    st.rerun()
-
     if waiver_pool.empty:
         st.info("Waiver pool is empty for this context.")
     else:
-        extra = waiver_pool.copy()
-        targets = list(needs.get("targets") or [])
-        from fantasy_waiver_wire import categories_helped_by_player
+        pool_view = waiver_pool.copy()
+        if search_query:
+            names = _player_names(pool_view)
+            keep = set(filter_waiver_names_by_search(names, search_query))
+            name_col = "Player" if "Player" in pool_view.columns else "fullName"
+            if name_col in pool_view.columns:
+                pool_view = pool_view[pool_view[name_col].astype(str).isin(keep)]
+        disp_cols = [c for c in waiver_display_stat_columns(pool_view) if c in pool_view.columns]
+        extra_cols = [c for c in ("Team", "Primary Position", "Position", "MLB Team") if c in pool_view.columns]
+        for c in extra_cols:
+            if c not in disp_cols:
+                disp_cols.insert(0, c)
+        st.dataframe(pool_view[disp_cols].head(150), use_container_width=True, hide_index=True)
 
-        extra["Categories Helped"] = [
-            ", ".join(categories_helped_by_player(row, targets)) or "Balance"
-            for _, row in extra.iterrows()
-        ]
-        disp_cols = waiver_display_stat_columns(extra)
-        if "Categories Helped" in extra.columns:
-            disp_cols.append("Categories Helped")
-        st.dataframe(extra[disp_cols].head(40), use_container_width=True, hide_index=True)
-
-    st.markdown("##### 6. Add / Drop Planner")
+    st.markdown("##### 4. Manual Add / Drop Actions")
     st.caption("Select an add target and a drop from your roster, then save as a pending move.")
     planner_add = str(session.get(WAIVER_PLANNER_ADD_KEY) or "").strip()
     planner_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or "").strip()
@@ -398,7 +346,7 @@ def render_waiver_wire_page(
             session.pop(WAIVER_PLANNER_DROP_KEY, None)
             st.rerun()
 
-    st.markdown("##### 7. Pending Add/Drop Moves")
+    st.markdown("##### Pending Add/Drop Moves")
     pairs = get_pending_move_pairs(session)
     if not pairs:
         st.caption("No pending add/drop pairs yet.")
@@ -409,16 +357,6 @@ def render_waiver_wire_page(
             impact_txt = ", ".join(pair.get("category_impact") or []) or "—"
             st.markdown(f"**Add:** {add_name}  ·  **Drop:** {drop_name}")
             st.caption(f"Category impact: {impact_txt}")
-            if st.button("Remove pair", key=f"waiver_rm_pair_{i}"):
+            if st.button("Remove pair", key=f"waiver_rm_pair_{i}_btn"):
                 remove_pending_move_pair(session, i)
                 st.rerun()
-
-    st.markdown("##### 8. Drop Candidates (current-season)")
-    drops = recommend_drops_current(my_roster, categories=waiver_cats)
-    if drops.empty:
-        st.info("No drop candidates on your roster yet.")
-    else:
-        drop_cols = waiver_display_stat_columns(drops)
-        if "Why Drop" in drops.columns:
-            drop_cols.append("Why Drop")
-        st.dataframe(drops[drop_cols], use_container_width=True, hide_index=True)

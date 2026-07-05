@@ -258,7 +258,7 @@ def _render_post_save_actions(
     with view_col:
         if st.button(
             _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "View in Saved Draft Library", page_label_fn),
-            key=f"view_library_{entry.get('draft_id')}",
+            key=f"view_library_{entry.get('draft_id')}_btn",
             type="primary",
         ):
             schedule_saved_draft_library_navigation(session)

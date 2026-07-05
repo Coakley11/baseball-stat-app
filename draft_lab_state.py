@@ -89,7 +89,14 @@ def apply_pending_draft_lab_widget_keys(session: dict[str, Any]) -> bool:
 def prepare_draft_lab_page_widgets(session: dict[str, Any]) -> None:
     """Apply pending handoff then seed any missing widget keys before render."""
     apply_pending_draft_lab_widget_keys(session)
+    try:
+        from shared_draft_context import apply_draft_shared_settings_to_widgets
+
+        apply_draft_shared_settings_to_widgets(session, active_page=DRAFT_LAB_PAGE)
+    except ImportError:
+        pass
     ensure_draft_lab_widget_keys(session)
+    prepare_draft_lab_results_hydration(session)
 
 
 def _page_snapshot(session: dict[str, Any]) -> dict[str, Any]:
@@ -258,3 +265,93 @@ def sync_draft_lab_session_before_save(session: dict[str, Any]) -> None:
                 block[key] = session[key]
     if block:
         pf[DRAFT_LAB_PAGE] = block
+    sync_draft_lab_results_state(session)
+
+
+DRAFT_LAB_PERSISTED_STATE_KEY = "draft_lab_persisted_state"
+
+
+def _records_to_df(records: Any):
+    import pandas as pd
+
+    if not isinstance(records, list) or not records:
+        return pd.DataFrame()
+    try:
+        return pd.DataFrame(records)
+    except Exception:
+        return pd.DataFrame()
+
+
+def sync_draft_lab_results_state(session: dict[str, Any]) -> None:
+    """Snapshot draft lab simulation outputs for cloud/disk restore."""
+    results = session.get("draft_lab_results")
+    if not isinstance(results, dict):
+        return
+    draft = results.get("draft")
+    if draft is None or getattr(draft, "empty", True):
+        return
+    try:
+        from fantasy_in_season_state import _df_records as _serialize_records
+    except ImportError:
+        def _serialize_records(df, *, limit: int = 5000):
+            if df is None or getattr(df, "empty", True):
+                return []
+            return df.head(int(limit)).to_dict(orient="records")
+
+    blob: dict[str, Any] = {
+        "schema_version": 1,
+        "draft_records": _serialize_records(draft, limit=5000),
+        "team_summary_records": _serialize_records(results.get("team_summary"), limit=64),
+        "strengths_records": _serialize_records(results.get("strengths"), limit=64),
+        "pick_analysis_records": _serialize_records(results.get("pick_analysis"), limit=500),
+        "gaps_records": _serialize_records(results.get("gaps"), limit=200),
+        "trades_records": _serialize_records(results.get("trades"), limit=64),
+        "actual_summary_records": _serialize_records(results.get("actual_summary"), limit=64),
+        "analysis_context": results.get("analysis_context") if isinstance(results.get("analysis_context"), dict) else {},
+        "handoff": results.get("handoff") if isinstance(results.get("handoff"), dict) else {},
+        "widget_settings": {k: session.get(k) for k in DRAFT_LAB_SNAPSHOT_KEYS if k in session},
+    }
+    session[DRAFT_LAB_PERSISTED_STATE_KEY] = blob
+
+
+def hydrate_draft_lab_results_state(session: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
+    """Restore draft_lab_results from persisted blob when session results are empty."""
+    if isinstance(session.get("draft_lab_results"), dict):
+        draft = session["draft_lab_results"].get("draft")
+        if draft is not None and not getattr(draft, "empty", True):
+            return False
+    blob: dict[str, Any] | None = None
+    if isinstance(state, dict):
+        if isinstance(state.get(DRAFT_LAB_PERSISTED_STATE_KEY), dict):
+            blob = state.get(DRAFT_LAB_PERSISTED_STATE_KEY)
+        elif state.get("draft_records") is not None:
+            blob = state
+    if blob is None:
+        raw = session.get(DRAFT_LAB_PERSISTED_STATE_KEY)
+        blob = raw if isinstance(raw, dict) else None
+    if not isinstance(blob, dict) or not blob.get("draft_records"):
+        return False
+    draft_df = _records_to_df(blob.get("draft_records"))
+    if draft_df.empty:
+        return False
+    session["draft_lab_results"] = {
+        "draft": draft_df,
+        "team_summary": _records_to_df(blob.get("team_summary_records")),
+        "strengths": _records_to_df(blob.get("strengths_records")),
+        "pick_analysis": _records_to_df(blob.get("pick_analysis_records")),
+        "gaps": _records_to_df(blob.get("gaps_records")),
+        "trades": _records_to_df(blob.get("trades_records")),
+        "actual_summary": _records_to_df(blob.get("actual_summary_records")),
+        "analysis_context": dict(blob.get("analysis_context") or {}),
+        "handoff": dict(blob.get("handoff") or {}),
+    }
+    for key, val in dict(blob.get("widget_settings") or {}).items():
+        if key not in session and val is not None:
+            session[key] = val
+    session[DRAFT_LAB_PERSISTED_STATE_KEY] = blob
+    session["_draft_lab_restored"] = True
+    return True
+
+
+def prepare_draft_lab_results_hydration(session: dict[str, Any]) -> bool:
+    return hydrate_draft_lab_results_state(session)

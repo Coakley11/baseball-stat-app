@@ -35,7 +35,7 @@ COLUMN_RENAME_MAP: dict[str, str] = {
     COL_DRAFT_RANK: DISPLAY_DRAFT_RANK,
     "Average Expected Fantasy Value": "Average Player Grade",
     "Total Expected Fantasy Value": "Total Player Grade",
-    "Total Projected Fantasy Value": "Total Player Grade",
+    "Total Projected Fantasy Value": "Total Projected Value",
     "Average Draft Fit Score": "Average Roster Fit Score",
     "Draft Fit Rank": "Roster Fit Rank",
 }

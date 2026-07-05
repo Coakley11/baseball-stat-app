@@ -131,6 +131,7 @@ _WORKFLOW_KEYS = (
     "active_draft_archive_id",
     "fantasy_league_context_state",
     "fantasy_in_season_state",
+    "draft_lab_persisted_state",
     "use_active_league_context_waiver_filter",
     "_waiver_pending_move_pairs",
     "waiver_planner_add_pick",
@@ -425,6 +426,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
         from fantasy_in_season_state import sync_fantasy_in_season_state
 
         sync_fantasy_in_season_state(ss, reason=save_reason)
+    except ImportError:
+        pass
+    try:
+        from draft_lab_state import sync_draft_lab_results_state
+
+        sync_draft_lab_results_state(ss)
     except ImportError:
         pass
     try:
@@ -979,6 +986,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         from fantasy_in_season_state import hydrate_fantasy_in_season_to_session
 
         hydrate_fantasy_in_season_to_session(ss, state)
+    except ImportError:
+        pass
+
+    try:
+        from draft_lab_state import hydrate_draft_lab_results_state
+
+        hydrate_draft_lab_results_state(ss, state)
     except ImportError:
         pass
 
