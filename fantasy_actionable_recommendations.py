@@ -133,13 +133,27 @@ def _waiver_target_names(
     needs: dict[str, Any] | None,
     *,
     limit: int = 3,
+    context: dict[str, Any] | None = None,
 ) -> list[str]:
     if waiver_pool is None or getattr(waiver_pool, "empty", True):
+        return []
+    pool = waiver_pool.copy()
+    if context:
+        try:
+            from fantasy_waiver_wire import rostered_player_names
+
+            rostered = rostered_player_names(context)
+            name_col = "Player" if "Player" in pool.columns else "fullName"
+            if rostered and name_col in pool.columns:
+                pool = pool[~pool[name_col].astype(str).str.strip().isin(rostered)]
+        except ImportError:
+            pass
+    if pool.empty:
         return []
     try:
         from fantasy_waiver_wire import recommend_adds_current
 
-        adds = recommend_adds_current(waiver_pool, needs or {})
+        adds = recommend_adds_current(pool, needs or {}, limit=int(limit))
         if adds.empty:
             return []
         for col in ("Player", "fullName"):
@@ -213,6 +227,7 @@ def build_team_actionable_summary(
     waiver_pool: pd.DataFrame | None = None,
     league_rosters: pd.DataFrame | None = None,
     my_team: str = "",
+    league_context: dict[str, Any] | None = None,
 ) -> list[str]:
     """Short actionable blocks for lineup / team analysis pages (league ranks only)."""
     lines: list[str] = []
@@ -229,7 +244,7 @@ def build_team_actionable_summary(
         val = cat_values.get(weak)
         val_bit = f" ({_format_category_value(weak, val)})" if val is not None else ""
         lines.append(f"**Biggest weakness:** **{weak}**{val_bit} is your clearest upgrade area.")
-        targets = _waiver_target_names(waiver_pool, needs, limit=3)
+        targets = _waiver_target_names(waiver_pool, needs, limit=3, context=league_context)
         if targets:
             why = ", ".join(weak_cats[:2])
             lines.append(
@@ -239,9 +254,7 @@ def build_team_actionable_summary(
             )
         else:
             lines.append(
-                "**Best waiver strategy:** Target players who lift "
-                + ", ".join(weak_cats[:2])
-                + " without giving up your strongest categories."
+                "**Best waiver strategy:** No strong waiver upgrades are currently available in this league."
             )
         trade_from = strong_cats[0] if strong_cats else "surplus counting stats"
         trade_targets = _trade_target_names(
@@ -268,6 +281,39 @@ def plain_balance_label(cv: float) -> str:
     if cv <= 12:
         return "Category production is spread fairly evenly across the lineup."
     return "This roster has several strengths but still has a few areas that could be upgraded."
+
+
+def team_outlook_explanation(
+    *,
+    strong_cats: list[str] | None = None,
+    weak_cats: list[str] | None = None,
+    category_ranks: dict[str, int] | None = None,
+    n_teams: int = 0,
+) -> list[str]:
+    """Plain bullets explaining why outlook is Strong / Mixed / etc."""
+    lines: list[str] = []
+    ranks = dict(category_ranks or {})
+    n = int(n_teams or 0) or (max(ranks.values()) if ranks else 0)
+    strengths = list(strong_cats or [])
+    weaknesses = list(weak_cats or [])
+    if not strengths and ranks and n > 1:
+        ordered = sorted(ranks.items(), key=lambda kv: (int(kv[1]), kv[0]))
+        strengths = [cat for cat, r in ordered[:2] if int(r) <= max(1, n // 2)]
+    if not weaknesses and ranks and n > 1:
+        ordered = sorted(ranks.items(), key=lambda kv: (-int(kv[1]), kv[0]))
+        weaknesses = [cat for cat, r in ordered[:2] if int(r) > max(2, n // 2)]
+    if strengths:
+        lines.append("**Strengths driving outlook:** " + ", ".join(f"**{c}**" for c in strengths[:3]))
+    if weaknesses:
+        detail = []
+        for cat in weaknesses[:3]:
+            rank = ranks.get(cat)
+            if rank and n > 1:
+                detail.append(f"**{cat}** ({_ordinal(int(rank))} of {n} teams)")
+            else:
+                detail.append(f"**{cat}**")
+        lines.append("**Concerns:** " + ", ".join(detail))
+    return lines
 
 
 def team_outlook_confidence_help() -> str:

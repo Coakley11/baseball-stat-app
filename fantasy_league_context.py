@@ -1082,6 +1082,7 @@ def save_simulator_league_context(
     config: dict[str, Any] | None = None,
     defer_activation: bool = False,
     draft_id: str | None = None,
+    reuse_session_draft_id: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Save full mock-draft league context plus linked archive entry."""
     from draft_archive_state import save_simulator_team_archive

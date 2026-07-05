@@ -170,6 +170,55 @@ def store_waiver_analysis(session: dict[str, Any], cache_key: tuple[Any, ...], p
     session[WAIVER_ANALYSIS_CACHE_KEY] = {"key": cache_key, "payload": payload}
 
 
+LINEUP_DIAGNOSIS_CACHE_KEY = "_fantasy_lineup_diagnosis_cache"
+
+
+def lineup_diagnosis_cache_key(
+    *,
+    context_id: str,
+    team: str,
+    roster_sig: str,
+    stats_sig: str,
+    lineup_format: str,
+    rate_col: str,
+    missing_slots: tuple[str, ...],
+) -> tuple[Any, ...]:
+    return (
+        str(context_id or ""),
+        str(team or ""),
+        str(roster_sig or ""),
+        str(stats_sig or ""),
+        str(lineup_format or ""),
+        str(rate_col or ""),
+        tuple(str(s) for s in missing_slots),
+    )
+
+
+def get_cached_lineup_diagnosis(session: dict[str, Any], cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
+    entry = session.get(LINEUP_DIAGNOSIS_CACHE_KEY)
+    if isinstance(entry, dict) and entry.get("key") == cache_key:
+        payload = entry.get("payload")
+        if isinstance(payload, dict):
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "lineup_diagnosis_bundle", hit=True)
+            except ImportError:
+                pass
+            return payload
+    return None
+
+
+def store_lineup_diagnosis(session: dict[str, Any], cache_key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+    try:
+        from page_perf_phases import record_cache_event
+
+        record_cache_event(session, "lineup_diagnosis_bundle", hit=False)
+    except ImportError:
+        pass
+    session[LINEUP_DIAGNOSIS_CACHE_KEY] = {"key": cache_key, "payload": payload}
+
+
 def store_lineup_scores(session: dict[str, Any], cache_key: tuple[Any, ...], scored: pd.DataFrame) -> None:
     try:
         from page_perf_phases import record_cache_event

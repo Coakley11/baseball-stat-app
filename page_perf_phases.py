@@ -152,3 +152,15 @@ def render_perf_report(st: Any, session: dict[str, Any]) -> None:
         st.markdown("**All phases**")
         for phase, sec in sorted(timings.items(), key=lambda kv: kv[1], reverse=True):
             st.text(f"{phase}: {sec:.3f}s")
+        save_diag = session.get("_draft_library_save_diag")
+        if isinstance(save_diag, dict) and save_diag.get("save_request_received"):
+            st.markdown("**Last save trace**")
+            st.text(f"source: {save_diag.get('save_source') or '—'}")
+            st.text(f"draft_id: {save_diag.get('draft_id') or '—'}")
+            st.text(
+                f"counts: {save_diag.get('draft_archive_count_before')} → {save_diag.get('draft_archive_count_after')}"
+            )
+            st.text(
+                f"cloud/disk: {save_diag.get('cloud_write_success')}/{save_diag.get('disk_write_success')} "
+                f"readback: {save_diag.get('draft_in_cloud')}/{save_diag.get('draft_in_disk')}"
+            )

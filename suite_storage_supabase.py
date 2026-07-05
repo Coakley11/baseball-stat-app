@@ -263,6 +263,16 @@ def _merge_full_session_preserve_richer_draft(
         for key in ("draft_room_state", "draft_room_table"):
             if isinstance(prior.get(key), dict):
                 merged[key] = prior[key]
+    try:
+        from workflow_persist_guard import PROTECTED_WORKFLOW_PERSIST_KEYS, workflow_richness
+
+        for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+            prior_val = prior.get(key)
+            incoming_val = merged.get(key)
+            if workflow_richness(key, prior_val) > workflow_richness(key, incoming_val):
+                merged[key] = prior_val
+    except ImportError:
+        pass
     return merged
 
 

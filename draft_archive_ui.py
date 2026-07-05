@@ -96,7 +96,32 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
             st.json(nav_rows)
         if isinstance(save_diag, dict) and save_diag:
             st.markdown("**Save diagnostics**")
+            try:
+                from draft_library_save_trace import save_trace_checklist
+
+                for label, status, detail in save_trace_checklist(save_diag):
+                    icon = {"pass": "✅", "fail": "❌", "warn": "⚠️", "pending": "⏳"}.get(status, "•")
+                    line = f"{icon} **{label}**"
+                    if detail:
+                        line += f" — {detail}"
+                    st.markdown(line)
+            except ImportError:
+                pass
             st.json(save_diag)
+        load_diag = session.get("_draft_library_load_diag")
+        if isinstance(load_diag, dict) and load_diag:
+            st.markdown("**Library load diagnostics**")
+            st.markdown(
+                f"Session: **{int(load_diag.get('library_load_count_session') or 0)}** drafts · "
+                f"Disk: **{int(load_diag.get('library_load_count_disk') or 0)}** · "
+                f"Cloud: **{int(load_diag.get('library_load_count_cloud') or 0)}** · "
+                f"Restore: **{load_diag.get('restore_source') or '—'}**"
+            )
+            st.json(load_diag)
+        restore_diag = session.get("_draft_library_restore_diag")
+        if isinstance(restore_diag, dict) and restore_diag:
+            st.markdown("**Restore diagnostics**")
+            st.json(restore_diag)
         if diag.get("cloud_enabled"):
             cloud_probe = probe_cloud_workflow_for_workspace(ws_id)
             if cloud_probe.get("row_found"):
@@ -276,6 +301,21 @@ def _record_save_diag(
     entry: dict[str, Any] | None = None,
     probe_cloud: bool = True,
 ) -> None:
+    try:
+        from draft_library_save_trace import finalize_save_trace
+
+        finalize_save_trace(
+            session,
+            reason=reason,
+            before=before,
+            after=after,
+            persist_ok=persist_ok,
+            entry=entry,
+            probe_cloud=probe_cloud,
+        )
+        return
+    except ImportError:
+        pass
     cloud_readback: dict[str, Any] = {}
     if probe_cloud:
         try:
@@ -348,7 +388,7 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     else:
         session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
     count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
-    persist_ok = bool(ok and session_has_entry) or (session_has_entry and count_increased)
+    persist_ok = bool(session_has_entry and (ok or count_increased or bool(entry_id)))
     if session_has_entry and not ok:
         try:
             session.pop("_suite_autosave_fp::baseball", None)
@@ -374,11 +414,13 @@ def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
             LINEUP_SCORES_CACHE_KEY,
             STANDINGS_ROSTER_CACHE_KEY,
             WAIVER_ANALYSIS_CACHE_KEY,
+            LINEUP_DIAGNOSIS_CACHE_KEY,
         )
 
         session.pop(STANDINGS_ROSTER_CACHE_KEY, None)
         session.pop(LINEUP_SCORES_CACHE_KEY, None)
         session.pop(WAIVER_ANALYSIS_CACHE_KEY, None)
+        session.pop(LINEUP_DIAGNOSIS_CACHE_KEY, None)
     except ImportError:
         pass
 
@@ -526,6 +568,17 @@ def render_save_live_draft_team(
         )
         if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
             try:
+                try:
+                    from draft_library_save_trace import begin_save_trace
+
+                    begin_save_trace(
+                        session,
+                        source="live_draft_room",
+                        reason="live_draft_league_context_saved",
+                        draft_name=draft_name,
+                    )
+                except ImportError:
+                    pass
                 counts_before = _workflow_counts(session)
                 entry, context = save_live_draft_league_context(
                     session,
@@ -534,6 +587,9 @@ def render_save_live_draft_team(
                     draft_name=draft_name,
                     defer_activation=True,
                 )
+                if not list_draft_archives(session):
+                    st.error("Save did not update Saved Draft Library — check Developer Mode persistence diagnostics.")
+                    return
                 _clear_fantasy_caches_on_archive_change(session)
                 persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
                 if isinstance(session.get("_draft_library_save_diag"), dict):
@@ -589,6 +645,17 @@ def render_save_simulator_draft_team(
                 if filled.empty:
                     st.error("No drafted players found — add picks to the board before saving.")
                     return
+                try:
+                    from draft_library_save_trace import begin_save_trace
+
+                    begin_save_trace(
+                        session,
+                        source="draft_room_simulator",
+                        reason="simulator_league_context_saved",
+                        draft_name=draft_name,
+                    )
+                except ImportError:
+                    pass
                 counts_before = _workflow_counts(session)
                 entry, context = save_simulator_league_context(
                     session,
@@ -597,7 +664,11 @@ def render_save_simulator_draft_team(
                     draft_name=draft_name,
                     config=dict(session.get("draft_shared_settings") or {}),
                     defer_activation=True,
+                    reuse_session_draft_id=False,
                 )
+                if not list_draft_archives(session):
+                    st.error("Save did not update Saved Draft Library — check Developer Mode persistence diagnostics.")
+                    return
                 _clear_fantasy_caches_on_archive_change(session)
                 persist_ok = _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
                 if isinstance(session.get("_draft_library_save_diag"), dict):
@@ -677,6 +748,18 @@ def _render_archive_actions(
                 defer_activation=True,
             )
             if loaded_entry:
+                try:
+                    from draft_library_save_trace import record_restore_trace
+
+                    record_restore_trace(
+                        session,
+                        draft_id=draft_id,
+                        entry=loaded_entry,
+                        context=loaded_context,
+                        action="activate",
+                    )
+                except ImportError:
+                    pass
                 _clear_fantasy_caches_on_archive_change(session)
                 _persist_archive(session, st, reason="league_context_activated")
                 try:
@@ -731,6 +814,25 @@ def _render_archive_actions(
 
 def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     """Dedicated management page for all saved draft teams."""
+    try:
+        from page_perf_phases import session_perf_phase
+
+        perf_ctx = session_perf_phase(session, "saved_draft_library_load")
+    except ImportError:
+        from contextlib import nullcontext
+
+        perf_ctx = nullcontext()
+    with perf_ctx:
+        try:
+            from draft_library_save_trace import record_library_load_trace
+
+            record_library_load_trace(session)
+        except ImportError:
+            pass
+        _render_saved_draft_library_page_body(st, session, page_label_fn=page_label_fn)
+
+
+def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     toast_msg = session.pop("_league_context_activation_toast", None)
     if toast_msg:
         st.toast(str(toast_msg))

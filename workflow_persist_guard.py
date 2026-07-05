@@ -374,9 +374,17 @@ def summarize_cloud_workflow_blob(blob: dict[str, Any] | None) -> dict[str, Any]
             "has_fantasy_league_context_state": False,
             "active_draft_archive_id": "",
             "state_key_count": 0,
+            "draft_ids": [],
         }
     archives = blob.get(DRAFT_ARCHIVE_KEY)
     flc = blob.get(LEAGUE_CONTEXT_STATE_KEY)
+    draft_ids: list[str] = []
+    if isinstance(archives, list):
+        draft_ids = [
+            str(row.get("draft_id") or "").strip()
+            for row in archives
+            if isinstance(row, dict) and str(row.get("draft_id") or "").strip()
+        ]
     return {
         "draft_archive_count": count_draft_archives(archives),
         "league_context_count": count_league_contexts(flc),
@@ -384,6 +392,7 @@ def summarize_cloud_workflow_blob(blob: dict[str, Any] | None) -> dict[str, Any]
         "has_fantasy_league_context_state": _league_context_store_nonempty(flc),
         "active_draft_archive_id": str(blob.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
         "state_key_count": len(blob),
+        "draft_ids": draft_ids,
     }
 
 

@@ -45,3 +45,24 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
         obp_val = float((needs.get("category_values") or {}).get("OBP") or 0)
         self.assertLess(obp_val, 1.0)
         self.assertAlmostEqual(obp_val, 0.330, places=3)
+
+    def test_build_team_actionable_summary_no_waiver_pool_shows_unavailable(self) -> None:
+        lines = build_team_actionable_summary(
+            strong_cats=["OBP"],
+            weak_cats=["HR"],
+            needs={"weaknesses": ["HR"]},
+            waiver_pool=pd.DataFrame(),
+        )
+        self.assertTrue(any("No strong waiver upgrades" in line for line in lines))
+
+    def test_team_outlook_explanation_lists_strengths_and_concerns(self) -> None:
+        from fantasy_actionable_recommendations import team_outlook_explanation
+
+        lines = team_outlook_explanation(
+            strong_cats=["OBP", "SB"],
+            weak_cats=["HR", "RBI"],
+            category_ranks={"OBP": 2, "SB": 2, "HR": 4, "RBI": 4},
+            n_teams=4,
+        )
+        self.assertTrue(any("Strengths driving outlook" in line for line in lines))
+        self.assertTrue(any("Concerns" in line for line in lines))

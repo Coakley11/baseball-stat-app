@@ -7329,7 +7329,11 @@ def lineup_diagnosis_report(
                 continue
             n = ms_counts[k]
             parts.append(f"**{k}**" + (f" (×{n})" if n > 1 else ""))
-        out["slot_gaps"] = "**Required slot(s) still open:** " + ", ".join(parts) + "."
+        out["slot_gaps"] = (
+            "**Lineup analysis is from a partial roster.** Open slots still need players: "
+            + ", ".join(parts)
+            + "."
+        )
 
     if full_team_df is None or full_team_df.empty:
         out["archetype"] = "Add roster stats to run a lineup diagnosis."
@@ -12090,6 +12094,7 @@ PAGE_OPTION_LABELS = {
     "Fantasy Standings Tracker": "📊 Fantasy Standings Tracker",
     "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
     "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire / Add-Drop Center",
+    "Trade Analyzer / Roster Move Assistant": "🔁 Trade Analyzer / Roster Move Assistant",
 }
 _PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
 
@@ -23017,41 +23022,118 @@ if active_page == "Fantasy Lineup Assistant":
             _n_teams = 0
             _needs: dict = {}
             _waiver_pool = pd.DataFrame()
+            _ctx = None
             try:
-                from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
-
-                _my_team_df = roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)] if "Team" in roster_stats.columns else roster_stats
-                if not _my_team_df.empty:
-                    _needs = analyze_current_team_needs(_my_team_df, roster_stats)
-                    _cat_ranks = dict(_needs.get("category_ranks") or {})
-                    _cat_values = dict(_needs.get("category_values") or {})
-                    _n_teams = int(_needs.get("n_teams") or 0)
-                _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
-                _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
-                _pool = merge_current_season_stats(_hit, _pit)
                 from fantasy_league_context import get_active_league_context
 
                 _ctx = get_active_league_context(st.session_state)
-                _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
-                from fantasy_actionable_recommendations import (
-                    league_strength_categories,
-                    league_weakness_categories,
-                    team_outlook_summary,
-                )
+                _ctx_id = str((_ctx or {}).get("league_context_id") or "")
+                _roster_sig = ""
+                try:
+                    from fantasy_perf_cache import _df_sig
 
-                _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
-                _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
-                if _needs.get("strengths"):
-                    _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
-                if _needs.get("weaknesses"):
-                    _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
-                _outlook, _confidence, _stars = team_outlook_summary(
-                    strong_cats=_strength_cats,
-                    weak_cats=_weakness_cats,
-                    category_ranks=_cat_ranks,
-                    n_teams=_n_teams,
-                )
-                _outlook_line = f"**Team Outlook:** {_outlook} · **Confidence:** {_confidence} · {_stars}"
+                    _roster_sig = _df_sig(roster_stats, extra=str(lineup_team or ""))
+                except ImportError:
+                    _roster_sig = str(len(roster_stats))
+                _stats_sig = str(st.session_state.get("_fantasy_current_hitter_stats_sig") or "")
+                _diag_cache_key = None
+                try:
+                    from fantasy_perf_cache import (
+                        get_cached_lineup_diagnosis,
+                        lineup_diagnosis_cache_key,
+                        store_lineup_diagnosis,
+                    )
+
+                    _diag_cache_key = lineup_diagnosis_cache_key(
+                        context_id=_ctx_id,
+                        team=str(lineup_team or ""),
+                        roster_sig=_roster_sig,
+                        stats_sig=_stats_sig,
+                        lineup_format=str(lineup_format or ""),
+                        rate_col=str(rate_for_diag or ""),
+                        missing_slots=tuple(str(s) for s in (lineup_pkg.get("missing_slots") or [])),
+                    )
+                    _cached_diag = get_cached_lineup_diagnosis(st.session_state, _diag_cache_key)
+                except ImportError:
+                    _cached_diag = None
+                    _diag_cache_key = None
+
+                if isinstance(_cached_diag, dict):
+                    _needs = dict(_cached_diag.get("needs") or {})
+                    _cat_ranks = dict(_cached_diag.get("category_ranks") or {})
+                    _cat_values = dict(_cached_diag.get("category_values") or {})
+                    _n_teams = int(_cached_diag.get("n_teams") or 0)
+                    _strength_cats = list(_cached_diag.get("strength_cats") or [])
+                    _weakness_cats = list(_cached_diag.get("weakness_cats") or [])
+                    _outlook_line = str(_cached_diag.get("outlook_line") or "")
+                    _pool_df = _cached_diag.get("waiver_pool")
+                    if isinstance(_pool_df, pd.DataFrame):
+                        _waiver_pool = _pool_df.copy()
+                else:
+                    try:
+                        from page_perf_phases import session_perf_phase
+
+                        _diag_phase = session_perf_phase(st.session_state, "lineup_diagnosis_bundle")
+                    except ImportError:
+                        from contextlib import nullcontext
+
+                        _diag_phase = nullcontext()
+                    with _diag_phase:
+                        from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
+
+                        _my_team_df = (
+                            roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)]
+                            if "Team" in roster_stats.columns
+                            else roster_stats
+                        )
+                        if not _my_team_df.empty:
+                            _needs = analyze_current_team_needs(_my_team_df, roster_stats)
+                            _cat_ranks = dict(_needs.get("category_ranks") or {})
+                            _cat_values = dict(_needs.get("category_values") or {})
+                            _n_teams = int(_needs.get("n_teams") or 0)
+                        _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+                        _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+                        _pool = merge_current_season_stats(_hit, _pit)
+                        _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
+                        from fantasy_actionable_recommendations import (
+                            league_strength_categories,
+                            league_weakness_categories,
+                            team_outlook_summary,
+                        )
+
+                        _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                        _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                        if _needs.get("strengths"):
+                            _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
+                        if _needs.get("weaknesses"):
+                            _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
+                        _outlook, _confidence, _stars = team_outlook_summary(
+                            strong_cats=_strength_cats,
+                            weak_cats=_weakness_cats,
+                            category_ranks=_cat_ranks,
+                            n_teams=_n_teams,
+                        )
+                        _outlook_line = f"**Team Outlook:** {_outlook} · **Confidence:** {_confidence} · {_stars}"
+                    if _diag_cache_key is not None:
+                        try:
+                            from fantasy_perf_cache import store_lineup_diagnosis
+
+                            store_lineup_diagnosis(
+                                st.session_state,
+                                _diag_cache_key,
+                                {
+                                    "needs": _needs,
+                                    "category_ranks": _cat_ranks,
+                                    "category_values": _cat_values,
+                                    "n_teams": _n_teams,
+                                    "strength_cats": _strength_cats,
+                                    "weakness_cats": _weakness_cats,
+                                    "outlook_line": _outlook_line,
+                                    "waiver_pool": _waiver_pool.copy() if not _waiver_pool.empty else pd.DataFrame(),
+                                },
+                            )
+                        except ImportError:
+                            pass
             except Exception:
                 pass
 
@@ -23064,8 +23146,18 @@ if active_page == "Fantasy Lineup Assistant":
                 with st.container(border=True):
                     st.markdown(_outlook_line)
                     try:
-                        from fantasy_actionable_recommendations import team_outlook_confidence_help
+                        from fantasy_actionable_recommendations import (
+                            team_outlook_confidence_help,
+                            team_outlook_explanation,
+                        )
 
+                        for _why_line in team_outlook_explanation(
+                            strong_cats=_strength_cats,
+                            weak_cats=_weakness_cats,
+                            category_ranks=_cat_ranks,
+                            n_teams=_n_teams,
+                        ):
+                            st.markdown(_why_line)
                         st.caption(team_outlook_confidence_help())
                     except ImportError:
                         pass
@@ -23174,7 +23266,11 @@ if active_page == "Fantasy Lineup Assistant":
                         if st.button("Open Waiver Wire", key="lineup_open_waiver_wire_btn", use_container_width=True):
                             navigate_to_page("Waiver Wire / Add-Drop Center")
                     with act_t:
-                        if st.button("Open Trade Analyzer", key="lineup_open_trade_analyzer_btn", use_container_width=True):
+                        if st.button(
+                            page_option_label("Trade Analyzer / Roster Move Assistant"),
+                            key="lineup_open_trade_analyzer_btn",
+                            use_container_width=True,
+                        ):
                             st.session_state["lineup_trade_analyzer_open"] = True
                             st.rerun()
                     with act_s:

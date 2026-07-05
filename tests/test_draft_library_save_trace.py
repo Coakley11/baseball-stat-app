@@ -1,0 +1,104 @@
+"""Regression tests for Saved Draft Library save / restore tracing."""
+
+from __future__ import annotations
+
+import unittest
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+
+from draft_archive_state import DRAFT_ARCHIVE_KEY, list_draft_archives
+from draft_library_save_trace import (
+    begin_save_trace,
+    draft_id_in_archives,
+    finalize_save_trace,
+    record_library_load_trace,
+    record_restore_trace,
+    save_trace_checklist,
+)
+from fantasy_league_context import save_simulator_league_context
+
+
+def _mock_board(picks: int = 12) -> pd.DataFrame:
+    rows = []
+    for i in range(picks):
+        rows.append(
+            {
+                "Pick": i + 1,
+                "Team": "Daniel" if i % 2 == 0 else "Rival",
+                "Player": f"Player {i + 1}",
+                "Position": "OF",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+class DraftLibrarySaveTraceTests(unittest.TestCase):
+    def test_begin_and_finalize_save_trace(self) -> None:
+        session: dict = {"room_your_team": "Daniel", "draft_shared_settings": {}}
+        begin_save_trace(session, source="draft_room_simulator", reason="simulator_league_context_saved")
+        entry, _ctx = save_simulator_league_context(session, _mock_board(), my_team_name="Daniel", defer_activation=True)
+        before = {"draft_archive_count": 0, "league_context_count": 0}
+        after = {"draft_archive_count": len(list_draft_archives(session)), "league_context_count": 1}
+        diag = finalize_save_trace(
+            session,
+            reason="simulator_league_context_saved",
+            before=before,
+            after=after,
+            persist_ok=True,
+            entry=entry,
+            cloud_write_ok=True,
+            disk_write_ok=True,
+            probe_cloud=False,
+        )
+        self.assertTrue(diag.get("save_request_received"))
+        self.assertTrue(diag.get("draft_id"))
+        self.assertEqual(int(diag.get("draft_archive_count_after") or 0), 1)
+        checklist = save_trace_checklist(diag)
+        labels = [row[0] for row in checklist]
+        self.assertIn("Save request received", labels)
+        self.assertIn("Archive id written", labels)
+        self.assertIn("Persist OK (overall)", labels)
+
+    def test_draft_id_in_archives(self) -> None:
+        archives = [{"draft_id": "abc123", "draft_name": "Test"}]
+        self.assertTrue(draft_id_in_archives("abc123", archives))
+        self.assertFalse(draft_id_in_archives("missing", archives))
+
+    def test_record_library_and_restore_trace(self) -> None:
+        session: dict = {"_suite_restore_pick_source": "disk"}
+        load = record_library_load_trace(session)
+        self.assertIn("library_load_count_session", load)
+        restore = record_restore_trace(
+            session,
+            draft_id="d1",
+            entry={"draft_id": "d1", "draft_name": "Mock", "players": ["A", "B"]},
+            context={"league_context_id": "lc1"},
+        )
+        self.assertEqual(restore.get("draft_id"), "d1")
+        self.assertEqual(restore.get("restore_source"), "disk")
+
+    @patch("workflow_persist_guard.probe_cloud_workflow_for_workspace", return_value={"draft_archive_count": 1, "draft_ids": ["x1"], "row_found": True})
+    @patch("draft_library_save_trace.probe_disk_workflow_for_workspace", return_value={"draft_archive_count": 1, "disk_found": True})
+    def test_finalize_marks_cloud_readback(self, _disk: MagicMock, _cloud: MagicMock) -> None:
+        session: dict = {
+            "_draft_library_save_diag": {"save_request_received": True, "steps": ["save_request_received"]},
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "T", "players": []}],
+            "_suite_persist_last_save_cloud": True,
+            "_suite_persist_last_save_disk": True,
+        }
+        diag = finalize_save_trace(
+            session,
+            reason="simulator_league_context_saved",
+            before={"draft_archive_count": 0, "league_context_count": 0},
+            after={"draft_archive_count": 1, "league_context_count": 1},
+            persist_ok=True,
+            entry={"draft_id": "x1", "draft_name": "T"},
+            probe_cloud=True,
+        )
+        self.assertTrue(diag.get("draft_in_session"))
+        self.assertIn("cloud_readback_has_archive", diag.get("steps") or [])
+
+
+if __name__ == "__main__":
+    unittest.main()
