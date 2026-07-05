@@ -13527,6 +13527,12 @@ _record_sidebar_nav_trace(
     requested_page=active_page,
 )
 render_scheduled_navigation_diagnostics()
+try:
+    from baseball_account_sidebar import render_developer_auth_badge
+
+    render_developer_auth_badge(st)
+except Exception:
+    pass
 
 try:
     from live_draft_navigation import render_return_to_draft_sidebar
