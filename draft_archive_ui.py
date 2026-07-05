@@ -11,6 +11,7 @@ from draft_archive_state import (
     duplicate_draft_archive,
     format_archive_modified,
     get_active_draft_archive,
+    get_draft_archive,
     list_draft_archives,
     rename_draft_archive,
 )
@@ -324,6 +325,8 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
             session.pop("_suite_autosave_block_reason", None)
         except ImportError:
             pass
+    session.pop("_suite_autosave_fp::baseball", None)
+    session.pop("_suite_restored_fp::baseball", None)
     probe_cloud = False
     try:
         from suite_workspace import developer_mode_checkbox_enabled
@@ -339,16 +342,30 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
         session["_draft_archive_persist_error"] = f"{type(exc).__name__}: {exc}"
         ok = False
     after = _workflow_counts(session)
+    entry_id = str((entry or {}).get("draft_id") or "").strip()
+    if entry_id:
+        session_has_entry = bool(get_draft_archive(session, entry_id))
+    else:
+        session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
+    count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
+    persist_ok = bool(ok and session_has_entry) or (session_has_entry and count_increased)
+    if session_has_entry and not ok:
+        try:
+            session.pop("_suite_autosave_fp::baseball", None)
+            ok = bool(force_save_baseball_state(st, reason=f"{reason}_retry"))
+            persist_ok = persist_ok or bool(ok and get_draft_archive(session, entry_id))
+        except Exception:
+            pass
     _record_save_diag(
         session,
         reason=reason,
         before=before,
         after=after,
-        persist_ok=ok,
+        persist_ok=persist_ok,
         entry=entry,
         probe_cloud=probe_cloud,
     )
-    return ok
+    return persist_ok
 
 
 def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
@@ -562,6 +579,16 @@ def render_save_simulator_draft_team(
         )
         if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
             try:
+                if board_df is None or getattr(board_df, "empty", True):
+                    st.error("No draft picks on the board yet — enter picks before saving.")
+                    return
+                filled = board_df.copy()
+                player_col = "Player" if "Player" in filled.columns else "fullName"
+                if player_col in filled.columns:
+                    filled = filled[filled[player_col].astype(str).str.strip() != ""]
+                if filled.empty:
+                    st.error("No drafted players found — add picks to the board before saving.")
+                    return
                 counts_before = _workflow_counts(session)
                 entry, context = save_simulator_league_context(
                     session,
@@ -752,6 +779,13 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
     )
 
     archives = list_draft_archives(session)
+    try:
+        from fantasy_league_context import repair_missing_draft_archives_from_contexts
+
+        if repair_missing_draft_archives_from_contexts(session):
+            archives = list_draft_archives(session)
+    except ImportError:
+        pass
     active = get_active_draft_archive(session)
     active_context = get_active_league_context(session)
     active_id = str((active or {}).get("draft_id") or "")

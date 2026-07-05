@@ -204,16 +204,20 @@ def _trade_target_hint(weak_cats: list[str]) -> str:
 
 def build_team_actionable_summary(
     *,
-    strong_cats: list[str],
-    weak_cats: list[str],
+    strong_cats: list[str] | None = None,
+    weak_cats: list[str] | None = None,
     strongest_detail: str = "",
     weakest_detail: str = "",
     position_note: str = "",
     needs: dict[str, Any] | None = None,
     waiver_pool: pd.DataFrame | None = None,
+    league_rosters: pd.DataFrame | None = None,
+    my_team: str = "",
 ) -> list[str]:
     """Short actionable blocks for lineup / team analysis pages (league ranks only)."""
     lines: list[str] = []
+    strong_cats = list(strong_cats or [])
+    weak_cats = list(weak_cats or [])
     cat_values = dict((needs or {}).get("category_values") or {})
     if strong_cats:
         top = strong_cats[0]
@@ -240,10 +244,19 @@ def build_team_actionable_summary(
                 + " without giving up your strongest categories."
             )
         trade_from = strong_cats[0] if strong_cats else "surplus counting stats"
-        lines.append(
+        trade_targets = _trade_target_names(
+            league_rosters,
+            my_team=str(my_team or ""),
+            weak_cats=weak_cats,
+            limit=3,
+        )
+        trade_line = (
             f"**Best trade strategy:** Trade excess **{trade_from}** production for **{weak}**. "
             f"Trade profile: {_trade_target_hint(weak_cats)}."
         )
+        if trade_targets:
+            trade_line += " Potential targets: " + ", ".join(f"**{name}**" for name in trade_targets) + "."
+        lines.append(trade_line)
     elif position_note:
         lines.append(f"**Next move:** {position_note}")
     return lines
@@ -255,6 +268,13 @@ def plain_balance_label(cv: float) -> str:
     if cv <= 12:
         return "Category production is spread fairly evenly across the lineup."
     return "This roster has several strengths but still has a few areas that could be upgraded."
+
+
+def team_outlook_confidence_help() -> str:
+    return (
+        "Confidence reflects category balance, positional coverage, and how consistent your league "
+        "rankings are across categories (tighter spread = higher confidence)."
+    )
 
 
 def team_outlook_summary(

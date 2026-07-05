@@ -23055,14 +23055,32 @@ if active_page == "Fantasy Lineup Assistant":
             except Exception:
                 pass
 
-            if diag.get("position_note") and "Weakest Position" in str(diag.get("position_note") or ""):
+            if diag.get("slot_gaps"):
+                st.warning(str(diag["slot_gaps"]))
+            elif diag.get("position_note") and "Weakest Position" in str(diag.get("position_note") or ""):
                 with st.container(border=True):
                     st.markdown(str(diag["position_note"]))
             if _outlook_line:
                 with st.container(border=True):
                     st.markdown(_outlook_line)
+                    try:
+                        from fantasy_actionable_recommendations import team_outlook_confidence_help
 
-            if not diag["hitting_table"].empty:
+                        st.caption(team_outlook_confidence_help())
+                    except ImportError:
+                        pass
+
+            if _needs:
+                try:
+                    from fantasy_waiver_wire import build_category_action_table
+
+                    _cat_action = build_category_action_table(_needs)
+                    if not _cat_action.empty:
+                        st.markdown("##### Category standings vs league")
+                        st.dataframe(_cat_action, width="stretch", hide_index=True)
+                except ImportError:
+                    pass
+            elif not diag["hitting_table"].empty:
                 ht_disp = diag["hitting_table"].copy()
                 if "Rel. strength (0–100)" in ht_disp.columns:
                     rel_vals = pd.to_numeric(ht_disp["Rel. strength (0–100)"], errors="coerce")
@@ -23151,7 +23169,7 @@ if active_page == "Fantasy Lineup Assistant":
                 for _action_line in _action_lines:
                     st.markdown(_action_line)
                 if _action_lines:
-                    act_w, act_t = st.columns(2)
+                    act_w, act_t, act_s = st.columns(3)
                     with act_w:
                         if st.button("Open Waiver Wire", key="lineup_open_waiver_wire_btn", use_container_width=True):
                             navigate_to_page("Waiver Wire / Add-Drop Center")
@@ -23159,8 +23177,12 @@ if active_page == "Fantasy Lineup Assistant":
                         if st.button("Open Trade Analyzer", key="lineup_open_trade_analyzer_btn", use_container_width=True):
                             st.session_state["lineup_trade_analyzer_open"] = True
                             st.rerun()
-            except ImportError:
-                pass
+                    with act_s:
+                        if st.button("Open Standings Tracker", key="lineup_open_standings_btn", use_container_width=True):
+                            navigate_to_page("Fantasy Standings Tracker")
+            except Exception as exc:
+                if developer_mode_enabled():
+                    st.caption(f"Action summary unavailable: {type(exc).__name__}: {exc}")
             if diag.get("balance_label"):
                 st.caption(diag["balance_label"])
 

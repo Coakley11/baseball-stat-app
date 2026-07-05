@@ -86,6 +86,7 @@ def waiver_categories_for_context(context: dict[str, Any] | None) -> tuple[str, 
 
 
 LOWER_IS_BETTER_CATEGORIES = frozenset({"ERA", "WHIP"})
+RATE_CATEGORIES = frozenset({"AVG", "OBP", "SLG", "OPS", "BA"})
 WAIVER_PENDING_PAIRS_KEY = "_waiver_pending_move_pairs"
 WAIVER_PLANNER_ADD_KEY = "waiver_planner_add_pick"
 WAIVER_PLANNER_DROP_KEY = "waiver_planner_drop_pick"
@@ -230,9 +231,7 @@ def _category_value_for_team(subset: pd.DataFrame, category: str) -> float | Non
     vals = pd.to_numeric(subset[col], errors="coerce")
     if not vals.notna().any():
         return None
-    if category in LOWER_IS_BETTER_CATEGORIES:
-        return float(vals.mean())
-    if category == "AVG":
+    if category in LOWER_IS_BETTER_CATEGORIES or category in RATE_CATEGORIES:
         return float(vals.mean())
     return float(vals.sum())
 
@@ -287,6 +286,12 @@ def analyze_current_team_needs(
             if val is not None:
                 my_totals[cat] = val
     result["category_values"] = dict(my_totals)
+    league_values_by_cat: dict[str, list[float]] = {}
+    for cat in available:
+        league_values_by_cat[cat] = [
+            team_totals[t].get(cat, 0.0) for t in team_totals if cat in team_totals.get(t, {})
+        ]
+    result["team_totals_by_category"] = league_values_by_cat
 
     for cat in available:
         if cat not in my_totals:
@@ -342,6 +347,62 @@ def build_category_standings_table(
                     else "Weakness" if cat in (needs.get("weaknesses") or [])
                     else "Middle"
                 ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_category_action_table(
+    needs: dict[str, Any],
+    *,
+    categories: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    """Lineup diagnosis table: team value, league rank, best team, gap to improve."""
+    ranks = dict(needs.get("category_ranks") or {})
+    values = dict(needs.get("category_values") or {})
+    team_totals = dict(needs.get("team_totals_by_category") or {})
+    if not ranks:
+        return pd.DataFrame()
+    n_teams = int(needs.get("n_teams") or 0) or max(ranks.values(), default=0)
+    rows: list[dict[str, Any]] = []
+    for cat in (categories or WAIVER_HITTER_CATEGORIES):
+        if cat not in ranks:
+            continue
+        rank = int(ranks[cat])
+        my_val = values.get(cat)
+        league_vals = team_totals.get(cat) or []
+        league_best = None
+        gap = None
+        if league_vals:
+            nums = [float(v) for v in league_vals if v is not None]
+            if nums:
+                lower_better = cat in LOWER_IS_BETTER_CATEGORIES
+                league_best = min(nums) if lower_better else max(nums)
+                if my_val is not None:
+                    gap = (float(my_val) - league_best) if lower_better else (league_best - float(my_val))
+        rank_label = f"{rank}{_ordinal_suffix(rank)}"
+        if n_teams > 1:
+            rank_label = f"{rank_label} of {n_teams} teams"
+        val_display = my_val
+        if cat in RATE_CATEGORIES and my_val is not None:
+            val_display = f"{float(my_val):.3f}".lstrip("0") if float(my_val) < 1 else f"{float(my_val):.3f}"
+        elif my_val is not None:
+            val_display = int(round(float(my_val)))
+        best_display = league_best
+        if cat in RATE_CATEGORIES and league_best is not None:
+            best_display = f"{float(league_best):.3f}".lstrip("0") if float(league_best) < 1 else f"{float(league_best):.3f}"
+        gap_display = gap
+        if gap is not None and cat in RATE_CATEGORIES:
+            gap_display = f"{float(gap):.3f}".lstrip("0") if abs(float(gap)) < 1 else f"{float(gap):.3f}"
+        elif gap is not None:
+            gap_display = int(round(float(gap)))
+        rows.append(
+            {
+                "Category": cat,
+                "Your Team": val_display,
+                "League Rank": rank_label,
+                "League Best": best_display if best_display is not None else "—",
+                "Gap To Improve": gap_display if gap_display is not None else "—",
             }
         )
     return pd.DataFrame(rows)
