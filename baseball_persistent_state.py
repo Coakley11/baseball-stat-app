@@ -688,6 +688,11 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         active = resume_page
         overwrite_source = "scheduled_navigation_preserved"
         ss["_suite_page_overwrite_source"] = overwrite_source
+    consumed_target = str(ss.get("_suite_nav_consumed_target") or "").strip()
+    if consumed_target:
+        active = consumed_target
+        overwrite_source = "nav_consumed_preserved"
+        ss["_suite_page_overwrite_source"] = overwrite_source
     if active:
         # Only clear widget keys and restore from snapshot when navigating to a
         # different page (or on fresh-session startup where pre_restore_session_page
@@ -699,7 +704,11 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             _clear_page_widget_keys(ss, active)
         ss["active_page"] = active
         ss["main_sidebar_page"] = active
-        ss["_navigate_to_page"] = active
+        pending_nav = str(ss.get("_navigate_to_page") or "").strip()
+        if pending_nav and pending_nav != active:
+            pass
+        else:
+            ss["_navigate_to_page"] = active
         ss["_suite_last_persisted_page"] = active
         ss.pop("_suite_cloud_target_page", None)
         if page_actually_changed:

@@ -12,6 +12,7 @@ from draft_archive_ui import (
     SAVED_DRAFT_LIBRARY_PAGE,
     SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY,
     schedule_fantasy_analysis_navigation,
+    schedule_page_navigation,
     schedule_return_from_saved_draft_library,
     schedule_saved_draft_library_navigation,
 )

@@ -12569,6 +12569,16 @@ def render_page_state_debug(page_name: str):
             st.caption("No matching widget keys in session state yet.")
 
 
+def _pending_scheduled_navigation() -> bool:
+    """True when a programmatic page change is queued for this rerun."""
+    try:
+        from suite_cloud_state import _pending_programmatic_navigation_active
+
+        return _pending_programmatic_navigation_active(st.session_state)
+    except ImportError:
+        return bool(str(st.session_state.get("_navigate_to_page") or "").strip())
+
+
 def _consume_scheduled_navigation():
     """
     Apply a page change before the sidebar radio is drawn.
@@ -12589,7 +12599,35 @@ def _consume_scheduled_navigation():
     if target and target in _PAGE_OPTION_SET:
         st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
         st.session_state["active_page"] = target
+        st.session_state["_suite_nav_consumed_this_run"] = True
+        st.session_state["_suite_nav_consumed_target"] = target
     return target
+
+
+def render_scheduled_navigation_diagnostics() -> None:
+    """Developer Mode: visible end-to-end navigation trace for button/sidebar debugging."""
+    if pp.is_screenshot_mode(st) or not developer_mode_enabled():
+        return
+    with st.sidebar.expander("Navigation diagnostics", expanded=True):
+        st.caption("Scheduled navigation trace for this rerun.")
+        rows = {
+            "active_page_before_click": st.session_state.get("_suite_nav_active_page_before"),
+            "scheduled_target_at_run_start": st.session_state.get("_suite_nav_scheduled_target_before"),
+            "_navigate_to_page": st.session_state.get("_navigate_to_page"),
+            "_suite_page_user_nav": st.session_state.get("_suite_page_user_nav"),
+            "_skip_page_restore_for": st.session_state.get("_skip_page_restore_for"),
+            "consumed_target_this_run": st.session_state.get("_suite_nav_consumed_target"),
+            "after_workspace_restore": st.session_state.get("_suite_post_restore_active_page"),
+            "page_overwrite_source": st.session_state.get("_suite_page_overwrite_source"),
+            "main_sidebar_page": st.session_state.get(MAIN_SIDEBAR_PAGE_KEY),
+            "final_active_page": st.session_state.get("active_page"),
+            "nav_phase": st.session_state.get("_suite_sidebar_nav_phase"),
+        }
+        st.dataframe(
+            pd.DataFrame([{"key": k, "value": v} for k, v in rows.items()]),
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def navigate_to_page(target_page, transfer_payload=None, *, source_page=None, from_callback=False):
@@ -13297,10 +13335,30 @@ def _align_active_page_from_sidebar() -> None:
         )
 
 
-# Page navigation: authoritative workspace sync, then consume scheduled navigation BEFORE sidebar radio.
+# Page navigation: consume scheduled navigation FIRST, then workspace sync, then sidebar radio.
+st.session_state.pop("_suite_nav_consumed_this_run", None)
+st.session_state.pop("_suite_nav_consumed_target", None)
 st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
-_record_sidebar_nav_trace("run_start_before_align")
-_align_active_page_from_sidebar()
+st.session_state["_suite_nav_scheduled_target_before"] = st.session_state.get("_navigate_to_page")
+_record_sidebar_nav_trace("run_start_before_consume")
+_consumed_nav_target = _consume_scheduled_navigation()
+_record_sidebar_nav_trace(
+    "after_consume_scheduled_navigation",
+    consumed_target=_consumed_nav_target,
+    active_page_after=st.session_state.get("active_page"),
+    main_sidebar_page_after=st.session_state.get(MAIN_SIDEBAR_PAGE_KEY),
+    scheduled_nav_remaining=st.session_state.get("_navigate_to_page"),
+    skip_page_restore_for=st.session_state.get("_skip_page_restore_for"),
+)
+if not _consumed_nav_target and not _pending_scheduled_navigation():
+    _record_sidebar_nav_trace("run_start_before_align")
+    _align_active_page_from_sidebar()
+else:
+    _record_sidebar_nav_trace(
+        "align_skipped",
+        rerun_source="pending_programmatic_nav",
+        consumed_target=_consumed_nav_target,
+    )
 try:
     from baseball_persistent_state import prepare_baseball_workspace
 
@@ -13458,6 +13516,7 @@ _record_sidebar_nav_trace(
     rerun_source="sidebar_render",
     requested_page=active_page,
 )
+render_scheduled_navigation_diagnostics()
 
 try:
     from live_draft_navigation import render_return_to_draft_sidebar

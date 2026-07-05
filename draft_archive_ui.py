@@ -107,6 +107,15 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
     return f"{icon} {text}".strip()
 
 
+def schedule_page_navigation(session: dict[str, Any], target_page: str) -> None:
+    """Navigate to any sidebar page on the next rerun (single-click, restore-safe)."""
+    session["_navigate_to_page"] = target_page
+    session["_skip_page_restore_for"] = target_page
+    session["_suite_page_user_nav"] = True
+    session["main_sidebar_page"] = target_page
+    session["active_page"] = target_page
+
+
 def schedule_saved_draft_library_navigation(
     session: dict[str, Any],
     *,
@@ -116,9 +125,7 @@ def schedule_saved_draft_library_navigation(
     source = str(return_page or session.get("active_page") or "").strip()
     if source and source != SAVED_DRAFT_LIBRARY_PAGE:
         session[SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY] = source
-    session["_navigate_to_page"] = SAVED_DRAFT_LIBRARY_PAGE
-    session["_skip_page_restore_for"] = SAVED_DRAFT_LIBRARY_PAGE
-    session["_suite_page_user_nav"] = True
+    schedule_page_navigation(session, SAVED_DRAFT_LIBRARY_PAGE)
 
 
 def schedule_return_from_saved_draft_library(session: dict[str, Any]) -> bool:
@@ -126,9 +133,7 @@ def schedule_return_from_saved_draft_library(session: dict[str, Any]) -> bool:
     target = str(session.pop(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY, None) or "").strip()
     if not target or target == SAVED_DRAFT_LIBRARY_PAGE:
         return False
-    session["_navigate_to_page"] = target
-    session["_skip_page_restore_for"] = target
-    session["_suite_page_user_nav"] = True
+    schedule_page_navigation(session, target)
     return True
 
 
@@ -136,9 +141,7 @@ def schedule_fantasy_analysis_navigation(session: dict[str, Any], target_page: s
     """Activate/resync active league context, then navigate before widgets render on next run."""
     if not schedule_active_context_resync(session):
         return False
-    session["_navigate_to_page"] = target_page
-    session["_skip_page_restore_for"] = target_page
-    session["_suite_page_user_nav"] = True
+    schedule_page_navigation(session, target_page)
     return True
 
 

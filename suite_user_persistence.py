@@ -736,7 +736,7 @@ def sync_workspace_protocol(
         )
         return False
 
-    if st.session_state.get("_suite_page_user_nav"):
+    if st.session_state.get("_suite_page_user_nav") or st.session_state.get("_suite_nav_consumed_this_run"):
         reason = "user page navigation — workspace sync skipped"
         _mark_user_nav_sync_skipped(st, reason)
         _record_startup_restore_diagnostics(
