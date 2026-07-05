@@ -1284,24 +1284,56 @@ def board_team_names_match(table: Any, expected_teams: list[str]) -> bool:
     return board_teams == exp[: len(board_teams)] and len(board_teams) == len(exp)
 
 
-def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
-    """Rebuild snake board from room_team_names / room_rounds (preserves no picks)."""
+def _simulator_team_names(session: dict[str, Any]) -> list[str]:
+    team_count = int(session.get("room_team_count") or 2)
     team_lines = str(session.get("room_team_names") or "")
     teams = [x.strip() for x in team_lines.splitlines() if x.strip()]
+    if len(teams) < team_count:
+        teams += [f"Team {i}" for i in range(len(teams) + 1, team_count + 1)]
+    teams = teams[:team_count]
     if not teams:
         teams = [str(session.get("room_your_team") or "Team 1"), "Team 2"]
+    return teams
+
+
+def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
+    """Rebuild snake board from room_team_names / room_rounds (preserves no picks)."""
+    teams = _simulator_team_names(session)
     rounds = int(session.get("room_rounds") or 20)
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
     table = build_snake_board(teams, rounds=rounds)
     return apply_programmatic_board_update(session, table, reason="rebuild_board_teams")
 
 
+def ensure_simulator_board_for_settings(session: dict[str, Any]) -> pd.DataFrame:
+    """
+    Guarantee an open practice board when no picks are logged.
+
+    League-setup edits mark the room locally dirty; an empty persisted blob must
+    still be rebuilt to team_count * rounds rows (otherwise UI shows 'Board is full').
+    """
+    if effective_board_pick_count(session) > 0:
+        return ensure_runtime_draft_board(session)
+    teams = _simulator_team_names(session)
+    rounds = int(session.get("room_rounds") or 20)
+    expected_rows = len(teams) * rounds
+    table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    if (
+        not table.empty
+        and len(table) == expected_rows
+        and board_team_names_match(table, teams)
+        and open_pick_row_options(table)
+    ):
+        return table
+    session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
+    board = build_snake_board(teams, rounds=rounds)
+    return apply_programmatic_board_update(session, board, reason="ensure_simulator_board")
+
+
 def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
     """Fresh snake board — Start New Draft."""
-    team_lines = str(session.get("room_team_names") or "")
-    teams = [x.strip() for x in team_lines.splitlines() if x.strip()]
-    if not teams:
-        teams = [str(session.get("room_your_team") or "Team 1"), "Team 2"]
+    clear_draft_room_local_edit(session)
+    teams = _simulator_team_names(session)
     rounds = int(session.get("room_rounds") or 20)
     table = build_snake_board(teams, rounds=rounds)
     out = apply_programmatic_board_update(session, table, reason="reset_canonical_board")
@@ -1312,10 +1344,11 @@ def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 
 def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     """Option B: clear practice board only; Live Draft Room record stays if present."""
+    clear_draft_room_local_edit(session)
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
     session.pop("draft_room_board_editor_cache", None)
     session.pop("draft_room_board_editor_seed", None)
-    out = reset_canonical_draft_board(session)
+    out = ensure_simulator_board_for_settings(session)
     set_canonical_draft_meta(
         session,
         mode=ACTIVE_DRAFT_MODE_MANUAL,

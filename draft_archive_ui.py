@@ -108,12 +108,14 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
 
 
 def schedule_page_navigation(session: dict[str, Any], target_page: str) -> None:
-    """Navigate to any sidebar page on the next rerun (single-click, restore-safe)."""
+    """Direct navigation fallback: set every page key before st.rerun()."""
+    session["active_page"] = target_page
+    session["main_sidebar_page"] = target_page
     session["_navigate_to_page"] = target_page
     session["_skip_page_restore_for"] = target_page
     session["_suite_page_user_nav"] = True
-    session["main_sidebar_page"] = target_page
-    session["active_page"] = target_page
+    session["_suite_nav_consumed_this_run"] = True
+    session["_suite_nav_consumed_target"] = target_page
 
 
 def schedule_saved_draft_library_navigation(

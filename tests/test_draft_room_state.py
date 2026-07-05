@@ -754,6 +754,32 @@ class TestBoardTeamSync(unittest.TestCase):
         out = rebuild_simulator_board_for_teams(session)
         self.assertTrue(board_team_names_match(out, ["Daniel", "Team 2"]))
 
+    def test_ensure_simulator_board_rebuilds_when_dirty_and_empty(self) -> None:
+        from draft_room_state import (
+            DRAFT_ROOM_DIRTY_KEY,
+            ensure_simulator_board_for_settings,
+            open_pick_row_options,
+            table_pick_count,
+        )
+
+        session = {
+            "room_team_count": 4,
+            "room_rounds": 5,
+            "room_team_names": "A\nB\nC\nD",
+            DRAFT_ROOM_DIRTY_KEY: True,
+            DRAFT_ROOM_TABLE_KEY: {
+                "_persist_schema": 1,
+                "table_records": [],
+                "table_columns": [],
+                "pick_count": 0,
+            },
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+        }
+        out = ensure_simulator_board_for_settings(session)
+        self.assertEqual(len(out), 20)
+        self.assertEqual(table_pick_count(out), 0)
+        self.assertEqual(len(open_pick_row_options(out)), 20)
+
 
 class TestDeleteActiveDraft(unittest.TestCase):
     def test_delete_active_draft_clears_board_and_live(self) -> None:

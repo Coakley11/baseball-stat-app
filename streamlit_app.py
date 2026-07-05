@@ -12610,7 +12610,17 @@ def render_scheduled_navigation_diagnostics() -> None:
         return
     with st.sidebar.expander("Navigation diagnostics", expanded=True):
         st.caption("Scheduled navigation trace for this rerun.")
+        try:
+            from suite_deploy_marker import GIT_COMMIT_SHORT, resolve_commit_source
+
+            deploy_commit = GIT_COMMIT_SHORT
+            deploy_source = resolve_commit_source()
+        except ImportError:
+            deploy_commit = "unknown"
+            deploy_source = "unknown"
         rows = {
+            "deploy_commit": deploy_commit,
+            "deploy_commit_source": deploy_source,
             "active_page_before_click": st.session_state.get("_suite_nav_active_page_before"),
             "scheduled_target_at_run_start": st.session_state.get("_suite_nav_scheduled_target_before"),
             "_navigate_to_page": st.session_state.get("_navigate_to_page"),
@@ -18770,6 +18780,12 @@ if active_page == "Draft Room Simulator":
             # refresh restores the user's settings rather than reverting to defaults.
             save_page_state("Draft Room Simulator")
             force_save_baseball_state(st, reason="draft_room_settings_changed")
+            try:
+                from draft_room_state import ensure_simulator_board_for_settings
+
+                ensure_simulator_board_for_settings(st.session_state)
+            except Exception:
+                pass
             _record_settings_onchange("Draft Room Simulator", "_draft_room_settings_changed", "draft_room_settings_changed")
 
         with st.expander("Projection style (advanced)", expanded=False):
@@ -18934,11 +18950,13 @@ if active_page == "Draft Room Simulator":
         from draft_room_state import (
             draft_room_restore_stats,
             effective_board_pick_count,
+            ensure_simulator_board_for_settings,
             is_draft_room_locally_dirty,
             prepare_draft_room_state,
         )
 
         prepare_draft_room_state(st.session_state)
+        ensure_simulator_board_for_settings(st.session_state)
         _canonical_pick_count = draft_room_restore_stats(st.session_state).get("pick_count", 0)
     except Exception:
         _canonical_pick_count = 0
@@ -18961,26 +18979,8 @@ if active_page == "Draft Room Simulator":
         if is_draft_room_locally_dirty is not None
         else False
     )
-    try:
-        from draft_room_state import board_team_names_match, rebuild_simulator_board_for_teams
-    except ImportError:
-        def board_team_names_match(_table, _teams):  # type: ignore[misc]
-            return True
 
-        def rebuild_simulator_board_for_teams(_session):  # type: ignore[misc]
-            return pd.DataFrame()
-
-    if (
-        _canonical_pick_count == 0
-        and _effective_picks == 0
-        and (not has_real_picks)
-        and (not _locally_dirty)
-        and (
-            len(current_table) != total_picks
-            or not board_team_names_match(current_table, room_team_names)
-        )
-    ):
-        rebuild_simulator_board_for_teams(st.session_state)
+    edited_draft = _session_draft_board_df()
 
     with dr_tab_board:
         st.subheader("Live draft board")
