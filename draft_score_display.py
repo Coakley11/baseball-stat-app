@@ -67,8 +67,8 @@ SCORE_TOOLTIPS: dict[str, str] = {
     ),
     DISPLAY_DRAFT_RANK: "Rank within this draft room (1 = best relative grade).",
     "Draft Lab Team Score": (
-        "Combined projected roster strength: the sum of each drafted player's value score. "
-        "Higher scores indicate stronger projected teams in this simulation."
+        "Sum of each drafted player's Player Grade under the active projection settings. "
+        "Used only to compare teams within this simulation."
     ),
 }
 SCORE_TOOLTIPS["Average Roster Fit Score"] = SCORE_TOOLTIPS[DISPLAY_ROSTER_FIT]

@@ -33,6 +33,9 @@ from fantasy_league_context import (
 SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
 FANTASY_STANDINGS_PAGE = "Fantasy Standings Tracker"
 FANTASY_LINEUP_PAGE = "Fantasy Lineup Assistant"
+LIVE_DRAFT_PAGE = "Live Draft Room"
+DRAFT_LAB_PAGE = "Draft Lab / Simulation"
+DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 
@@ -81,9 +84,18 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
             rb = [f"{k} ({rsources.get(k, '?')})" for k in restore_merged]
             st.caption(f"Restore merge recovered: {', '.join(rb)}")
         nav_diag = session.get("_draft_library_nav_diag")
+        save_diag = session.get("_draft_library_save_diag")
         if isinstance(nav_diag, dict) and nav_diag:
             st.markdown("**Navigation diagnostics**")
-            st.json(nav_diag)
+            nav_rows = dict(nav_diag)
+            nav_rows.setdefault("active_page_after", str(session.get("active_page") or ""))
+            nav_rows.setdefault("main_sidebar_page_after", str(session.get("main_sidebar_page") or ""))
+            nav_rows.setdefault("_navigate_to_page_after", str(session.get("_navigate_to_page") or ""))
+            nav_rows.setdefault("_suite_page_user_nav", bool(session.get("_suite_page_user_nav")))
+            st.json(nav_rows)
+        if isinstance(save_diag, dict) and save_diag:
+            st.markdown("**Save diagnostics**")
+            st.json(save_diag)
         if diag.get("cloud_enabled"):
             cloud_probe = probe_cloud_workflow_for_workspace(ws_id)
             if cloud_probe.get("row_found"):
@@ -115,22 +127,112 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
     return f"{icon} {text}".strip()
 
 
+def _workflow_counts(session: dict[str, Any]) -> dict[str, int]:
+    try:
+        from workflow_persist_guard import workflow_counts_from_session
+
+        return workflow_counts_from_session(session)
+    except ImportError:
+        return {
+            "draft_archive_count": len(list_draft_archives(session)),
+            "league_context_count": len(list_league_contexts(session)),
+        }
+
+
+def _record_library_nav_diag(
+    session: dict[str, Any],
+    *,
+    button: str,
+    button_key: str,
+    target_page: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    from datetime import datetime, timezone
+
+    payload: dict[str, Any] = {
+        "button": button,
+        "button_key": button_key,
+        "target_page": target_page,
+        "active_page_before": str(session.get("active_page") or ""),
+        "_navigate_to_page_before": str(session.get("_navigate_to_page") or ""),
+        "scheduled_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if isinstance(extra, dict):
+        payload.update(extra)
+    session["_draft_library_nav_diag"] = payload
+
+
+def _on_click_navigate_to_page(target_page: str, button_key: str = "", button: str = "") -> None:
+    """Streamlit on_click — runs before sidebar widgets on the next rerun."""
+    import streamlit as st
+
+    session = st.session_state
+    _record_library_nav_diag(
+        session,
+        button=button or button_key or "navigate",
+        button_key=button_key,
+        target_page=target_page,
+    )
+    schedule_page_navigation(session, target_page)
+
+
+def _on_click_saved_draft_library(return_page: str, button_key: str, button: str) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    counts = _workflow_counts(session)
+    session["_draft_library_nav_active_before"] = str(session.get("active_page") or "")
+    _record_library_nav_diag(
+        session,
+        button=button,
+        button_key=button_key,
+        target_page=SAVED_DRAFT_LIBRARY_PAGE,
+        extra={
+            "draft_archive_count": int(counts.get("draft_archive_count") or 0),
+            "league_context_count": int(counts.get("league_context_count") or 0),
+        },
+    )
+    schedule_saved_draft_library_navigation(
+        session,
+        return_page=return_page or str(session.get("active_page") or ""),
+    )
+
+
+def _on_click_return_from_saved_draft_library(button_key: str) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    target = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
+    if not schedule_return_from_saved_draft_library(session):
+        return
+    _record_library_nav_diag(
+        session,
+        button="return_from_library",
+        button_key=button_key,
+        target_page=target,
+    )
+
+
 def schedule_page_navigation(session: dict[str, Any], target_page: str) -> None:
-    """Navigate immediately — sidebar radio reads these keys on the same rerun."""
+    """Queue programmatic navigation — consumed before sidebar radio on the next rerun."""
     target = str(target_page or "").strip()
     if not target:
         return
-    session["active_page"] = target
     session["_navigate_to_page"] = target
-    session["main_sidebar_page"] = target
     session["_skip_page_restore_for"] = target
     session["_suite_page_user_nav"] = True
-    session["_suite_nav_consumed_this_run"] = True
-    session["_suite_nav_consumed_target"] = target
+    session.pop("_suite_cloud_target_page", None)
+    prior = session.get("_draft_library_nav_diag")
+    if not isinstance(prior, dict):
+        prior = {}
     session["_draft_library_nav_diag"] = {
+        **prior,
         "target_page": target,
-        "active_page_before": str(session.get("_draft_library_nav_active_before") or session.get("active_page") or ""),
-        "scheduled_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "active_page_before": str(
+            session.get("_draft_library_nav_active_before") or session.get("active_page") or ""
+        ),
+        "_navigate_to_page": target,
+        "_suite_page_user_nav": True,
     }
 
 
@@ -163,15 +265,61 @@ def schedule_fantasy_analysis_navigation(session: dict[str, Any], target_page: s
     return True
 
 
-def _persist_archive(session: dict[str, Any], st: Any, *, reason: str) -> bool:
+def _record_save_diag(
+    session: dict[str, Any],
+    *,
+    reason: str,
+    before: dict[str, int],
+    after: dict[str, int],
+    persist_ok: bool,
+    entry: dict[str, Any] | None = None,
+) -> None:
+    cloud_readback: dict[str, Any] = {}
+    try:
+        from workflow_persist_guard import probe_cloud_workflow_for_workspace
+        from suite_workspace import get_active_workspace_id
+
+        ws_id = str(get_active_workspace_id(type("_St", (), {"session_state": session})()))
+        cloud_readback = probe_cloud_workflow_for_workspace(ws_id)
+    except Exception:
+        pass
+    session["_draft_library_save_diag"] = {
+        "reason": reason,
+        "persist_ok": persist_ok,
+        "draft_archive_count_before": int(before.get("draft_archive_count") or 0),
+        "draft_archive_count_after": int(after.get("draft_archive_count") or 0),
+        "league_context_count_before": int(before.get("league_context_count") or 0),
+        "league_context_count_after": int(after.get("league_context_count") or 0),
+        "cloud_readback_drafts": int(cloud_readback.get("draft_archive_count") or 0),
+        "cloud_readback_contexts": int(cloud_readback.get("league_context_count") or 0),
+        "draft_id": str((entry or {}).get("draft_id") or ""),
+        "draft_name": str((entry or {}).get("draft_name") or ""),
+        "restore_source": str(
+            session.get("_suite_persist_last_restore_source")
+            or session.get("_suite_restore_pick_source")
+            or "session"
+        ),
+    }
+
+
+def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: dict[str, Any] | None = None) -> bool:
+    before = _workflow_counts(session)
+    try:
+        from workflow_persist_guard import mark_workflow_persist_authoritative
+
+        mark_workflow_persist_authoritative(session)
+    except ImportError:
+        pass
     try:
         from baseball_persistent_state import force_save_baseball_state
 
-        force_save_baseball_state(st, reason=reason)
-        return True
+        ok = bool(force_save_baseball_state(st, reason=reason))
     except Exception as exc:
         session["_draft_archive_persist_error"] = f"{type(exc).__name__}: {exc}"
-        return False
+        ok = False
+    after = _workflow_counts(session)
+    _record_save_diag(session, reason=reason, before=before, after=after, persist_ok=ok, entry=entry)
+    return ok
 
 
 def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
@@ -234,24 +382,13 @@ def render_active_saved_draft_chip(
             "No active saved draft selected. Standings and Lineup use the **Draft Room** board "
             "unless you set one active in the library."
         )
-    if st.button(
+    st.button(
         _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage saved drafts", page_label_fn),
         key=f"{key_prefix}__manage_saved_drafts_btn",
         use_container_width=True,
-    ):
-        session["_draft_library_nav_active_before"] = str(session.get("active_page") or "")
-        session["_draft_library_nav_diag"] = {
-            "button": "manage_saved_drafts",
-            "target_page": SAVED_DRAFT_LIBRARY_PAGE,
-            "active_page_before": session["_draft_library_nav_active_before"],
-            "draft_archive_count": len(list_draft_archives(session)),
-            "league_context_count": len(list_league_contexts(session)),
-        }
-        schedule_saved_draft_library_navigation(
-            session,
-            return_page=str(session.get("active_page") or ""),
-        )
-        st.rerun()
+        on_click=_on_click_saved_draft_library,
+        args=(str(session.get("active_page") or ""), f"{key_prefix}__manage_saved_drafts_btn", "manage_saved_drafts"),
+    )
 
 
 def _render_post_save_actions(
@@ -278,13 +415,13 @@ def _render_post_save_actions(
         )
     view_col, standings_col = st.columns(2)
     with view_col:
-        if st.button(
+        st.button(
             _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "View in Saved Draft Library", page_label_fn),
             key=f"view_library_{entry.get('draft_id')}_btn",
             type="primary",
-        ):
-            schedule_saved_draft_library_navigation(session)
-            st.rerun()
+            on_click=_on_click_saved_draft_library,
+            args=("", f"view_library_{entry.get('draft_id')}_btn", "view_in_saved_draft_library"),
+        )
     with standings_col:
         if st.button(
             _nav_label(FANTASY_STANDINGS_PAGE, "Go to Standings Tracker", page_label_fn),
@@ -338,6 +475,7 @@ def render_save_live_draft_team(
         )
         if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
             try:
+                counts_before = _workflow_counts(session)
                 entry, context = save_live_draft_league_context(
                     session,
                     room,
@@ -346,7 +484,8 @@ def render_save_live_draft_team(
                     defer_activation=True,
                 )
                 _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="live_draft_league_context_saved")
+                _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
+                session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
                 try:
                     from baseball_archive_activity import log_saved_draft_archived
 
@@ -382,6 +521,7 @@ def render_save_simulator_draft_team(
         )
         if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
             try:
+                counts_before = _workflow_counts(session)
                 entry, context = save_simulator_league_context(
                     session,
                     board_df,
@@ -391,7 +531,8 @@ def render_save_simulator_draft_team(
                     defer_activation=True,
                 )
                 _clear_fantasy_caches_on_archive_change(session)
-                _persist_archive(session, st, reason="simulator_league_context_saved")
+                _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
+                session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
                 try:
                     from baseball_archive_activity import log_saved_draft_archived
 
@@ -427,6 +568,26 @@ def _render_archive_actions(
         label_visibility="collapsed",
         placeholder="Draft name",
     )
+    draft_type = str(entry.get("draft_type") or "")
+    room_col1, room_col2 = st.columns(2)
+    with room_col1:
+        st.button(
+            _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", None),
+            key=f"archive_open_live_{draft_id}",
+            use_container_width=True,
+            on_click=_on_click_navigate_to_page,
+            args=(LIVE_DRAFT_PAGE, f"archive_open_live_{draft_id}", "open_live_draft_room"),
+        )
+    with room_col2:
+        sim_target = DRAFT_LAB_PAGE if draft_type != "live_draft_room" else DRAFT_SIMULATOR_PAGE
+        sim_label = "Open Draft Lab / Simulation" if sim_target == DRAFT_LAB_PAGE else "Open Draft Room Simulator"
+        st.button(
+            sim_label,
+            key=f"archive_open_lab_{draft_id}",
+            use_container_width=True,
+            on_click=_on_click_navigate_to_page,
+            args=(sim_target, f"archive_open_lab_{draft_id}", "open_draft_lab"),
+        )
     btn1, btn2, btn3, btn4 = st.columns(4)
     with btn1:
         if st.button(
@@ -567,13 +728,13 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
 
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:
-        if st.button(
+        st.button(
             _nav_label(return_page, f"Return to {return_page}", page_label_fn),
             key="library_return_to_workflow",
             use_container_width=False,
-        ):
-            schedule_return_from_saved_draft_library(session)
-            st.rerun()
+            on_click=_on_click_return_from_saved_draft_library,
+            args=("library_return_to_workflow",),
+        )
 
     top_left, top_mid, top_right = st.columns([2, 2, 1])
     with top_left:
@@ -600,21 +761,21 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
         )
         nav1, nav2 = st.columns(2)
         with nav1:
-            if st.button(
-                _nav_label("Live Draft Room", "Open Live Draft Room", page_label_fn),
+            st.button(
+                _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", page_label_fn),
                 key="library__go_live_draft_room_btn",
                 use_container_width=True,
-            ):
-                schedule_page_navigation(session, "Live Draft Room")
-                st.rerun()
+                on_click=_on_click_navigate_to_page,
+                args=(LIVE_DRAFT_PAGE, "library__go_live_draft_room_btn", "open_live_draft_room"),
+            )
         with nav2:
-            if st.button(
-                _nav_label("Draft Room Simulator", "Open Draft Room Simulator", page_label_fn),
-                key="library__go_draft_simulator_btn",
+            st.button(
+                _nav_label(DRAFT_LAB_PAGE, "Open Draft Lab / Simulation", page_label_fn),
+                key="library__go_draft_lab_btn",
                 use_container_width=True,
-            ):
-                schedule_page_navigation(session, "Draft Room Simulator")
-                st.rerun()
+                on_click=_on_click_navigate_to_page,
+                args=(DRAFT_LAB_PAGE, "library__go_draft_lab_btn", "open_draft_lab"),
+            )
         return
 
     for entry in archives:

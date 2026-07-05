@@ -694,6 +694,7 @@ def _draft_lab_column_kind(col):
         return "percent"
     if name in {
         "Player Grade", "Pick Score", "Total Player Grade", "Average Player Grade",
+        "Draft Lab Team Score",
         "Relative Draft Grade",
         "Expected Fantasy Value", "Total Projected Fantasy Value", "Decision Score", "Draft Fit Score",
         "Positional Fit", "Recommendation Score", "Sleeper Score",
@@ -12672,6 +12673,8 @@ def _consume_scheduled_navigation():
     if target and target in _PAGE_OPTION_SET:
         st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
         st.session_state["active_page"] = target
+        st.session_state["_skip_page_restore_for"] = target
+        st.session_state["_suite_page_user_nav"] = True
         st.session_state["_suite_nav_consumed_this_run"] = True
         st.session_state["_suite_nav_consumed_target"] = target
     return target
@@ -13419,12 +13422,11 @@ def _align_active_page_from_sidebar() -> None:
 
 
 # Page navigation: consume scheduled navigation FIRST, then workspace sync, then sidebar radio.
-st.session_state.pop("_suite_nav_consumed_this_run", None)
-st.session_state.pop("_suite_nav_consumed_target", None)
 st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
 st.session_state["_suite_nav_scheduled_target_before"] = st.session_state.get("_navigate_to_page")
 _record_sidebar_nav_trace("run_start_before_consume")
 _consumed_nav_target = _consume_scheduled_navigation()
+st.session_state["_suite_post_consume_active_page"] = st.session_state.get("active_page")
 _record_sidebar_nav_trace(
     "after_consume_scheduled_navigation",
     consumed_target=_consumed_nav_target,
@@ -13525,9 +13527,13 @@ try:
     enforce_hof_case_page_after_workspace(st)
 except ImportError:
     pass
-_consumed_nav_target = _consume_scheduled_navigation()
+st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
+if isinstance(st.session_state.get("_draft_library_nav_diag"), dict):
+    st.session_state["_draft_library_nav_diag"]["active_page_after_rerun"] = st.session_state.get("active_page")
+    st.session_state["_draft_library_nav_diag"]["main_sidebar_page_after"] = st.session_state.get(MAIN_SIDEBAR_PAGE_KEY)
+    st.session_state["_draft_library_nav_diag"]["consumed_target"] = _consumed_nav_target
 _record_sidebar_nav_trace(
-    "after_consume_scheduled_navigation",
+    "after_workspace_and_resume",
     consumed_target=_consumed_nav_target,
     active_page_after=st.session_state.get("active_page"),
     main_sidebar_page_after=st.session_state.get(MAIN_SIDEBAR_PAGE_KEY),
@@ -20056,13 +20062,14 @@ if active_page == DRAFT_LAB_PAGE:
         if active_lab_tab == _lab_tab_options[2]:
             st.subheader("Final Team Rankings")
             try:
-                from draft_lab_analysis import DRAFT_LAB_TEAM_SCORE_HELP
+                from draft_lab_analysis import DRAFT_LAB_TEAM_SCORE_HELP, build_draft_lab_team_score_breakdown
 
                 st.markdown(DRAFT_LAB_TEAM_SCORE_HELP)
             except ImportError:
+                build_draft_lab_team_score_breakdown = None  # type: ignore[misc, assignment]
                 st.caption(
-                    "Draft Lab Team Score is the sum of each drafted player's projected value. "
-                    "Higher scores indicate stronger projected rosters."
+                    "Draft Lab Team Score is the sum of each player's Player Grade under the active projection settings. "
+                    "Higher scores indicate stronger projected rosters within this simulation."
                 )
             team_analysis = safe_merge_dataframes(lab_team_summary, lab_strengths, "Fantasy Team", how="left")
             if is_dataframe_empty(team_analysis):
@@ -20075,6 +20082,32 @@ if active_page == DRAFT_LAB_PAGE:
                     display_rows=20,
                     style_cols=["Average Player Grade", "Draft Lab Team Score", "Average Fantasy Edge", "Average Scarcity Score"],
                 )
+            if (
+                build_draft_lab_team_score_breakdown is not None
+                and not is_dataframe_empty(lab_draft)
+                and _lab_teams
+            ):
+                default_team = str(_lab_teams[0])
+                with st.expander("Team Score Details", expanded=False):
+                    detail_team = st.selectbox(
+                        "Team",
+                        _lab_teams,
+                        index=0,
+                        key="draft_lab_team_score_detail_team",
+                    )
+                    total_score, breakdown = build_draft_lab_team_score_breakdown(
+                        lab_draft,
+                        str(detail_team or default_team),
+                    )
+                    st.markdown(f"**Draft Lab Team Score = {total_score:.2f}**")
+                    st.caption(
+                        "Built from each player's **Player Grade** (Expected Fantasy Value under active settings). "
+                        "Contributions sum to the team total above."
+                    )
+                    if not is_dataframe_empty(breakdown):
+                        st.dataframe(breakdown, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No player grades available for this team.")
             if lab_gaps is not None and not lab_gaps.empty:
                 st.subheader("Roster Needs Analysis")
                 st.caption("Roster needs from host-configured draft slots only.")

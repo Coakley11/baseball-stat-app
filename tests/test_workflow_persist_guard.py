@@ -16,6 +16,7 @@ from workflow_persist_guard import (
     merge_protected_workflow_into_save,
     merge_protected_workflow_on_restore,
     probe_cloud_workflow_for_workspace,
+    should_keep_session_workflow_over_blob,
 )
 
 
@@ -110,6 +111,15 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
         self.assertEqual(len(session[DRAFT_ARCHIVE_KEY]), 1)
         self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_id"], "restore01")
+
+    def test_should_keep_session_workflow_over_empty_blob(self) -> None:
+        session_archives = [{"draft_id": "a1"}, {"draft_id": "a2"}]
+        self.assertTrue(
+            should_keep_session_workflow_over_blob(DRAFT_ARCHIVE_KEY, session_archives, [])
+        )
+        self.assertFalse(
+            should_keep_session_workflow_over_blob(DRAFT_ARCHIVE_KEY, [], session_archives)
+        )
 
     def test_build_saved_draft_library_diagnostics(self) -> None:
         session = {

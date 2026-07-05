@@ -66,6 +66,28 @@ def count_league_contexts(val: Any) -> int:
     return len(contexts) if isinstance(contexts, dict) else 0
 
 
+def workflow_richness(key: str, val: Any) -> int:
+    """Higher means richer workflow snapshot (used to prefer session over stale blobs)."""
+    if key == DRAFT_ARCHIVE_KEY:
+        return count_draft_archives(val)
+    if key == LEAGUE_CONTEXT_STATE_KEY:
+        return count_league_contexts(val)
+    if key == ACTIVE_DRAFT_ARCHIVE_KEY:
+        return 1 if str(val or "").strip() else 0
+    return 0
+
+
+def should_keep_session_workflow_over_blob(key: str, session_val: Any, blob_val: Any) -> bool:
+    """Keep in-memory workflow data when it is at least as rich as an incoming blob field."""
+    if key not in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        return False
+    session_score = workflow_richness(key, session_val)
+    if session_score <= 0:
+        return False
+    blob_score = workflow_richness(key, blob_val)
+    return session_score >= blob_score
+
+
 def _session_allows_workflow_clear(session: dict[str, Any], save_reason: str) -> bool:
     if session.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
         return True
@@ -313,6 +335,9 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     except ImportError:
         pass
 
+    save_diag = session.get("_draft_library_save_diag")
+    nav_diag = session.get("_draft_library_nav_diag")
+
     return {
         "account_email": account_email,
         "account_external_id": account_external_id,
@@ -335,6 +360,8 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "workflow_restore_merged_keys": restore_merged,
         "workflow_restore_merge_sources": restore_merge_sources,
         "cloud_enabled": cloud_enabled,
+        "save_diag": save_diag if isinstance(save_diag, dict) else {},
+        "nav_diag": nav_diag if isinstance(nav_diag, dict) else {},
     }
 
 

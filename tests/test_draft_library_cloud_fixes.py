@@ -138,12 +138,11 @@ class ManageSavedDraftsNavigationTests(unittest.TestCase):
     def test_schedule_page_navigation_sets_navigation_intent_only(self) -> None:
         session = {"active_page": "Fantasy Standings Tracker", "main_sidebar_page": "Fantasy Standings Tracker"}
         schedule_page_navigation(session, SAVED_DRAFT_LIBRARY_PAGE)
-        self.assertEqual(session["active_page"], SAVED_DRAFT_LIBRARY_PAGE)
+        self.assertEqual(session["active_page"], "Fantasy Standings Tracker")
         self.assertEqual(session["main_sidebar_page"], "Fantasy Standings Tracker")
         self.assertEqual(session["_navigate_to_page"], SAVED_DRAFT_LIBRARY_PAGE)
+        self.assertEqual(session["_skip_page_restore_for"], SAVED_DRAFT_LIBRARY_PAGE)
         self.assertTrue(session.get("_suite_page_user_nav"))
-        self.assertFalse(session.get("_suite_nav_consumed_this_run"))
-        self.assertEqual(session.get("_suite_nav_consumed_target"), SAVED_DRAFT_LIBRARY_PAGE)
 
     def test_manage_saved_drafts_path_has_archives_available(self) -> None:
         session: dict = {"active_page": "Fantasy Standings Tracker"}

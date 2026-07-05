@@ -24,9 +24,10 @@ FANTASY_EDGE_HELP = (
 )
 
 DRAFT_LAB_TEAM_SCORE_HELP = (
-    "**Draft Lab Team Score** summarizes projected roster strength for each simulated team. "
-    "It is the **sum of each drafted player's projected value** using the active projection window, "
-    "format, and style. Higher scores mean a stronger projected roster — teams are ranked by this total."
+    "**Draft Lab Team Score** is the sum of each drafted player's **Player Grade** (projected fantasy value) "
+    "under the active projection settings — projection style (Balanced / Conservative / Aggressive), "
+    "projection window, scoring format, and ML blend. Higher scores indicate stronger projected rosters. "
+    "The score is used only for comparing teams within this simulation."
 )
 
 DRAFT_LAB_TABLE_README = """
@@ -664,3 +665,47 @@ def analyze_draft_lab_results(
 
     actual_summary = pd.DataFrame()
     return team_summary, pd.DataFrame(strengths_rows), pd.DataFrame(pick_rows), pd.DataFrame(gap_rows), actual_summary
+
+
+def _player_grade_display_value(val: Any) -> float:
+    n = _num(val)
+    if n <= 1.5:
+        return n * 100.0
+    return n
+
+
+def build_draft_lab_team_score_breakdown(
+    draft_df: pd.DataFrame,
+    team_name: str,
+    *,
+    top_n: int = 20,
+) -> tuple[float, pd.DataFrame]:
+    """Per-player Player Grade contributions that sum to Draft Lab Team Score."""
+    if draft_df is None or draft_df.empty or not str(team_name or "").strip():
+        return 0.0, pd.DataFrame()
+    team_col = "Fantasy Team" if "Fantasy Team" in draft_df.columns else "Team"
+    if team_col not in draft_df.columns:
+        return 0.0, pd.DataFrame()
+    subset = draft_df[draft_df[team_col].astype(str) == str(team_name)].copy()
+    if subset.empty:
+        return 0.0, pd.DataFrame()
+    grade_col = "Expected Fantasy Value" if "Expected Fantasy Value" in subset.columns else "Player Grade"
+    if grade_col not in subset.columns:
+        return 0.0, pd.DataFrame()
+    name_col = "fullName" if "fullName" in subset.columns else "Player"
+    rows: list[dict[str, Any]] = []
+    for _, row in subset.iterrows():
+        contrib = _player_grade_display_value(row.get(grade_col))
+        rows.append(
+            {
+                "Player": str(row.get(name_col) or row.get("Player") or "—"),
+                "Player Grade": round(contrib, 2),
+                "Pick": row.get("Pick") or row.get("Overall Pick") or "",
+            }
+        )
+    breakdown = pd.DataFrame(rows)
+    if breakdown.empty:
+        return 0.0, breakdown
+    breakdown = breakdown.sort_values("Player Grade", ascending=False).head(int(top_n))
+    total = float(sum(_player_grade_display_value(v) for v in subset[grade_col]))
+    return round(total, 2), breakdown.reset_index(drop=True)
