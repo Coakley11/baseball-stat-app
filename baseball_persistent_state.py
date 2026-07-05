@@ -132,6 +132,8 @@ _WORKFLOW_KEYS = (
     "fantasy_league_context_state",
     "use_active_league_context_waiver_filter",
     "_waiver_pending_move_pairs",
+    "waiver_planner_add_pick",
+    "waiver_planner_drop_pick",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"

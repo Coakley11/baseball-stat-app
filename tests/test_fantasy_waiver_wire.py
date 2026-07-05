@@ -20,20 +20,29 @@ from fantasy_league_context import (
 from fantasy_waiver_wire import (
     TRADE_MODE_ADD,
     TRADE_MODE_DROP,
+    WAIVER_PLANNER_ADD_KEY,
+    WAIVER_PLANNER_DROP_KEY,
     add_pending_move,
     add_pending_move_pair,
     analyze_current_team_needs,
     analyze_team_needs,
+    build_add_recommendation_explanation,
     build_category_standings_table,
     build_waiver_pool,
     build_weakness_narrative,
     compute_add_drop_category_impact,
+    filter_waiver_names_by_search,
+    format_current_stat_line,
+    format_league_rank_lines,
+    fantasy_format_includes_pitching,
     get_pending_add_targets,
     get_pending_move_pairs,
+    merge_current_season_stats,
     recommend_adds_current,
     record_league_activity,
     recommend_adds,
     rostered_player_names,
+    waiver_categories_for_context,
 )
 
 
@@ -225,6 +234,99 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         needs = {"category_ranks": {"HR": 3, "RBI": 5}, "strengths": ["HR"], "weaknesses": ["RBI"], "n_teams": 6}
         table = build_category_standings_table(needs)
         self.assertEqual(len(table), 2)
+
+    def test_format_league_rank_lines(self) -> None:
+        needs = {"category_ranks": {"HR": 6, "RBI": 5, "SB": 2}}
+        lines = format_league_rank_lines(needs)
+        self.assertTrue(any("HR" in line and "6th" in line for line in lines))
+        self.assertTrue(any("RBI" in line and "5th" in line for line in lines))
+
+    def test_merge_current_season_stats_combines_pitchers(self) -> None:
+        hitters = pd.DataFrame([{"Player Key": "judge", "Player": "Aaron Judge", "HR": 20}])
+        pitchers = pd.DataFrame([{"Player Key": "cole", "Player": "Gerrit Cole", "W": 5, "K": 80}])
+        merged = merge_current_season_stats(hitters, pitchers)
+        self.assertEqual(len(merged), 2)
+        self.assertIn("W", merged.columns)
+
+    def test_hitter_only_format_excludes_pitching(self) -> None:
+        ctx = {"fantasy_format": "5x5 Roto"}
+        cats = waiver_categories_for_context(ctx)
+        self.assertIn("HR", cats)
+        self.assertNotIn("SV", cats)
+        self.assertFalse(fantasy_format_includes_pitching("5x5 Roto", ctx))
+
+    def test_pitcher_categories_only_when_format_includes_pitching(self) -> None:
+        ctx = {"fantasy_format": "9x9 Roto", "metadata": {"includes_pitching": True}}
+        cats = waiver_categories_for_context(ctx)
+        self.assertIn("SV", cats)
+        league = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Cole", "W": 2, "SV": 0, "K": 40, "ERA": 4.50, "WHIP": 1.30},
+                {"Team": "Rivals", "Player": "Ohtani", "W": 6, "SV": 0, "K": 90, "ERA": 2.80, "WHIP": 0.95},
+            ]
+        )
+        my_team = league[league["Team"] == "Daniel"]
+        needs = analyze_current_team_needs(my_team, league, categories=cats)
+        self.assertIn("W", needs["category_ranks"])
+        self.assertIn("W", needs["weaknesses"])
+
+    def test_recommend_adds_current_pitching_explanation(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {"Player": "Closer Ace", "SV": 12, "K": 30, "ERA": 2.10, "WHIP": 0.90},
+                {"Player": "Weak Arm", "SV": 1, "K": 10, "ERA": 5.50, "WHIP": 1.60},
+            ]
+        )
+        needs = {
+            "targets": ["SV", "K"],
+            "weaknesses": ["SV"],
+            "category_ranks": {"SV": 6, "K": 5},
+        }
+        rec = recommend_adds_current(pool, needs, limit=1)
+        self.assertEqual(str(rec.iloc[0]["Player"]), "Closer Ace")
+        explanation = build_add_recommendation_explanation(rec.iloc[0], needs)
+        self.assertIn("SV", explanation)
+        self.assertIn("6th", explanation)
+
+    def test_filter_waiver_names_by_search(self) -> None:
+        names = ["Aaron Judge", "Juan Soto", "Mike Trout"]
+        self.assertEqual(filter_waiver_names_by_search(names, "judge"), ["Aaron Judge"])
+        self.assertEqual(filter_waiver_names_by_search(names, ""), names)
+
+    def test_format_current_stat_line_pitcher(self) -> None:
+        row = pd.Series({"Primary Position": "P", "W": 5, "SV": 10, "K": 70, "ERA": 3.20, "WHIP": 1.05})
+        line = format_current_stat_line(row)
+        self.assertIn("W 5", line)
+        self.assertIn("SV 10", line)
+
+
+class WaiverPlannerPersistenceTests(unittest.TestCase):
+    def test_planner_picks_in_workflow_disk_roundtrip(self) -> None:
+        from unittest.mock import MagicMock
+
+        from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
+
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Waiver Wire / Add-Drop Center",
+            "main_sidebar_page": "Waiver Wire / Add-Drop Center",
+            "page_filter_state": {},
+            WAIVER_PLANNER_ADD_KEY: "Mike Trout",
+            WAIVER_PLANNER_DROP_KEY: "Aaron Judge",
+        }
+        blob = build_baseball_disk_state(st)
+        self.assertEqual(blob.get(WAIVER_PLANNER_ADD_KEY), "Mike Trout")
+        self.assertEqual(blob.get(WAIVER_PLANNER_DROP_KEY), "Aaron Judge")
+
+        st2 = MagicMock()
+        st2.session_state = {
+            "active_page": "Waiver Wire / Add-Drop Center",
+            "main_sidebar_page": "Waiver Wire / Add-Drop Center",
+            "page_filter_state": {},
+        }
+        apply_baseball_disk_state(st2, blob)
+        self.assertEqual(st2.session_state.get(WAIVER_PLANNER_ADD_KEY), "Mike Trout")
+        self.assertEqual(st2.session_state.get(WAIVER_PLANNER_DROP_KEY), "Aaron Judge")
 
 
 class WaiverFilterPersistenceTests(unittest.TestCase):

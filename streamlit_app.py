@@ -6382,6 +6382,16 @@ def normalize_uploaded_stat_columns(df):
             rename_map[c] = "SLG"
         elif lc in ["ops"]:
             rename_map[c] = "OPS"
+        elif lc in ["w", "wins"]:
+            rename_map[c] = "W"
+        elif lc in ["sv", "saves", "s"]:
+            rename_map[c] = "SV"
+        elif lc in ["k", "so", "strikeouts", "strike_outs"]:
+            rename_map[c] = "K"
+        elif lc in ["era"]:
+            rename_map[c] = "ERA"
+        elif lc in ["whip"]:
+            rename_map[c] = "WHIP"
         elif lc in ["ab", "at bats", "at_bats"]:
             rename_map[c] = "AB"
         elif lc in ["h", "hits"]:
@@ -6393,7 +6403,7 @@ def normalize_uploaded_stat_columns(df):
         out = out.rename(columns={"fullName": "Player"})
     if "Player" in out.columns:
         out["Player Key"] = out["Player"].apply(normalize_player_name_for_merge)
-    for c in ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "AB", "H", "BB"]:
+    for c in ["HR", "RBI", "R", "SB", "BB", "BA", "OBP", "SLG", "OPS", "AB", "H", "BB", "W", "SV", "K", "ERA", "WHIP"]:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
     return out
@@ -7906,6 +7916,64 @@ def fetch_mlb_api_hitter_stats(season=2026):
 
 
 
+
+
+@st.cache_data(ttl=60 * 30, show_spinner=False)
+def fetch_mlb_api_pitcher_stats(season=2026):
+    """Fetch current-season MLB pitcher stats from the public MLB Stats API."""
+    import requests
+
+    url = "https://statsapi.mlb.com/api/v1/stats"
+    params = {
+        "stats": "season",
+        "group": "pitching",
+        "playerPool": "ALL",
+        "season": int(season),
+        "sportIds": 1,
+        "limit": 5000,
+        "hydrate": "person",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        raise RuntimeError(f"Could not fetch MLB pitcher stats: {e}")
+
+    rows = []
+    for split in payload.get("stats", [{}])[0].get("splits", []):
+        player = split.get("player", {}) or {}
+        stat = split.get("stat", {}) or {}
+        rows.append({
+            "Player": player.get("fullName", ""),
+            "Player Key": normalize_player_name_for_merge(player.get("fullName", "")),
+            "MLBAM ID": player.get("id", None),
+            "MLB Team": (split.get("team", {}) or {}).get("name", ""),
+            "Primary Position": (player.get("primaryPosition", {}) or {}).get("abbreviation", "P"),
+            "G": stat.get("gamesPlayed", np.nan),
+            "W": stat.get("wins", np.nan),
+            "SV": stat.get("saves", np.nan),
+            "K": stat.get("strikeOuts", np.nan),
+            "ERA": stat.get("era", np.nan),
+            "WHIP": stat.get("whip", np.nan),
+            "IP": stat.get("inningsPitched", np.nan),
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    for c in ["G", "W", "SV", "K", "ERA", "WHIP", "IP"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    if "Primary Position" in df.columns:
+        df["Primary Position"] = df["Primary Position"].replace({
+            "SP": "P", "RP": "P", "TWP": "P",
+        }).fillna("P")
+
+    return df
 
 
 def build_clean_player_label_map_from_ids(df):
@@ -21735,6 +21803,7 @@ if active_page == "Fantasy Standings Tracker":
 
     stats_file = None
     current_stats = pd.DataFrame()
+    pitcher_stats = pd.DataFrame()
     api_season = 2026
 
     if stats_source == "MLB API Auto-Fetch":
@@ -21777,21 +21846,73 @@ if active_page == "Fantasy Standings Tracker":
 
     if stats_source == "MLB API Auto-Fetch":
         try:
+            from fantasy_league_context import get_active_league_context
+            from fantasy_waiver_wire import fantasy_format_includes_pitching
+
+            _standings_ctx = get_active_league_context(st.session_state)
+            _standings_fmt = str(
+                (_standings_ctx or {}).get("fantasy_format")
+                or st.session_state.get("standings_scoring_format")
+                or "5x5 Roto"
+            )
+            _include_pitching = fantasy_format_includes_pitching(_standings_fmt, _standings_ctx)
+        except ImportError:
+            _include_pitching = False
+
+        try:
             current_stats = fetch_mlb_api_hitter_stats(api_season)
-            if current_stats.empty:
-                st.warning("MLB API returned no hitter stats for the selected season. Try uploading a CSV instead.")
-            else:
+            pitcher_stats = fetch_mlb_api_pitcher_stats(api_season) if _include_pitching else pd.DataFrame()
+            if current_stats.empty and pitcher_stats.empty:
+                st.warning("MLB API returned no stats for the selected season. Try uploading a CSV instead.")
+            elif _include_pitching and not pitcher_stats.empty:
+                parts = []
+                if not current_stats.empty:
+                    parts.append(f"{len(current_stats)} hitter rows")
+                parts.append(f"{len(pitcher_stats)} pitcher rows")
+                st.success(f"Loaded {' and '.join(parts)} from the MLB Stats API for {api_season}.")
+            elif not current_stats.empty:
                 st.success(f"Loaded {len(current_stats)} hitter stat rows from the MLB Stats API for {api_season}.")
         except Exception as e:
             st.error(f"MLB API fetch failed: {e}")
             st.info("You can still use this page by switching Current Stats Source to Upload CSV.")
+            pitcher_stats = pd.DataFrame()
 
     elif stats_file is not None:
         current_stats = read_uploaded_table_cached(stats_file.getvalue(), getattr(stats_file, "name", "uploaded_stats.csv"))
         current_stats = normalize_uploaded_stat_columns(current_stats)
+        pitcher_stats = pd.DataFrame()
 
     if not current_stats.empty:
         st.session_state["_fantasy_current_hitter_stats"] = current_stats.copy()
+    if not pitcher_stats.empty:
+        st.session_state["_fantasy_current_pitcher_stats"] = pitcher_stats.copy()
+
+    try:
+        from fantasy_waiver_wire import fantasy_format_includes_pitching, merge_current_season_stats
+
+        _merge_ctx = None
+        try:
+            from fantasy_league_context import get_active_league_context
+
+            _merge_ctx = get_active_league_context(st.session_state)
+        except ImportError:
+            pass
+        _merge_fmt = str(
+            (_merge_ctx or {}).get("fantasy_format")
+            or st.session_state.get("standings_scoring_format")
+            or "5x5 Roto"
+        )
+        if fantasy_format_includes_pitching(_merge_fmt, _merge_ctx):
+            merged_current_stats = merge_current_season_stats(
+                st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame()),
+                st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame()),
+            )
+        else:
+            merged_current_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame()).copy()
+    except ImportError:
+        merged_current_stats = current_stats.copy() if not current_stats.empty else pd.DataFrame()
+
+    if not merged_current_stats.empty:
         try:
             from draft_archive_state import (
                 archive_roster_dataframe,
@@ -21835,7 +21956,7 @@ if active_page == "Fantasy Standings Tracker":
             )
             from page_perf_phases import session_perf_phase
 
-            _stats_sig = _df_sig(current_stats, extra=f"{stats_source}:{api_season}")
+            _stats_sig = _df_sig(merged_current_stats, extra=f"{stats_source}:{api_season}")
             st.session_state["_fantasy_current_hitter_stats_sig"] = _stats_sig
             if _use_full_league_context and active_league_context is not None:
                 _draft_for_key = league_context_roster_dataframe(active_league_context)
@@ -21892,14 +22013,14 @@ if active_page == "Fantasy Standings Tracker":
                 if _use_full_league_context and active_league_context is not None:
                     roster_stats = build_roster_stats_from_league_context(
                         active_league_context,
-                        current_stats,
+                        merged_current_stats,
                         normalize_name_fn=normalize_player_name_for_merge,
                     )
                     _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
                 elif active_archive:
                     roster_stats = build_roster_stats_from_archive(
                         active_archive,
-                        current_stats,
+                        merged_current_stats,
                         normalize_name_fn=normalize_player_name_for_merge,
                     )
                     _standings_team_ctx = str(active_archive.get("team_name") or "")
@@ -21915,7 +22036,7 @@ if active_page == "Fantasy Standings Tracker":
                         drafted = draft_table[draft_table["Player"].astype(str).str.strip() != ""].copy()
                         drafted["Player Key"] = drafted["Player"].apply(normalize_player_name_for_merge)
                         roster_stats = drafted.merge(
-                            current_stats, on="Player Key", how="left", suffixes=("", "_stats")
+                            merged_current_stats, on="Player Key", how="left", suffixes=("", "_stats")
                         )
                         if "Player_stats" in roster_stats.columns:
                             roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
@@ -21953,7 +22074,7 @@ if active_page == "Fantasy Standings Tracker":
             _show_multi_team_rosters = _use_full_league_context or not active_archive
             if _show_multi_team_rosters:
                 st.subheader("Drafted Rosters With Current Stats")
-            show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS"]
+            show_cols = ["Team", "Player", "Primary Position", "HR", "RBI", "R", "SB", "BA", "OPS", "OBP"]
             render_output_table(
                 format_fantasy_standings_table(
                     format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))
@@ -22762,7 +22883,20 @@ if active_page == "Waiver Wire / Add-Drop Center":
         render_active_saved_draft_chip(st, st.session_state, key_prefix="waiver_archive", page_label_fn=page_option_label)
     except ImportError:
         pass
-    _waiver_current_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+    _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_waiver_wire import fantasy_format_includes_pitching, merge_current_season_stats
+
+        _waiver_ctx = get_active_league_context(st.session_state)
+        _waiver_fmt = str((_waiver_ctx or {}).get("fantasy_format") or "5x5 Roto")
+        if fantasy_format_includes_pitching(_waiver_fmt, _waiver_ctx):
+            _waiver_pitcher_stats = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+            _waiver_current_stats = merge_current_season_stats(_waiver_hitter_stats, _waiver_pitcher_stats)
+        else:
+            _waiver_current_stats = _waiver_hitter_stats
+    except ImportError:
+        _waiver_current_stats = _waiver_hitter_stats
     _waiver_roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame())
     render_waiver_wire_page(
         st,

@@ -29,30 +29,61 @@ TRADE_MODE_ADD = "add"
 TRADE_MODE_DROP = "drop"
 
 ROTO_CATEGORIES = ("HR", "RBI", "SB", "AVG", "R", "S", "K", "ERA", "WHIP")
-WAIVER_CURRENT_CATEGORIES: tuple[str, ...] = (
-    "HR",
-    "RBI",
-    "R",
-    "SB",
-    "AVG",
-    "W",
-    "SV",
-    "K",
-    "ERA",
-    "WHIP",
-)
+WAIVER_HITTER_CATEGORIES: tuple[str, ...] = ("HR", "RBI", "R", "SB", "AVG", "OPS", "OBP")
+WAIVER_PITCHING_CATEGORIES: tuple[str, ...] = ("W", "SV", "K", "ERA", "WHIP")
+WAIVER_CURRENT_CATEGORIES: tuple[str, ...] = WAIVER_HITTER_CATEGORIES
+HITTER_ONLY_FORMATS = frozenset({"5x5 roto", "points league", ""})
 CURRENT_STAT_ALIASES: dict[str, tuple[str, ...]] = {
     "HR": ("HR",),
     "RBI": ("RBI",),
     "R": ("R",),
     "SB": ("SB",),
     "AVG": ("BA", "AVG"),
+    "OPS": ("OPS",),
+    "OBP": ("OBP",),
     "W": ("W",),
     "SV": ("SV", "S"),
     "K": ("K", "SO"),
     "ERA": ("ERA",),
     "WHIP": ("WHIP",),
 }
+
+
+def fantasy_format_includes_pitching(
+    fantasy_format: str,
+    context: dict[str, Any] | None = None,
+) -> bool:
+    """True only when the active league format explicitly includes pitching categories."""
+    if context:
+        meta = context.get("metadata") or {}
+        if meta.get("includes_pitching") is True:
+            return True
+        if meta.get("pitching_categories"):
+            return True
+    fmt = str(fantasy_format or "").strip().lower()
+    if fmt in HITTER_ONLY_FORMATS:
+        return False
+    pitching_tokens = ("pitch", "era", "whip", "saves", "9x9", "10x10", "8x8", "6x6")
+    return any(tok in fmt for tok in pitching_tokens)
+
+
+def waiver_categories_for_context(context: dict[str, Any] | None) -> tuple[str, ...]:
+    """Resolve waiver categories from the active league context fantasy format."""
+    fmt = str((context or {}).get("fantasy_format") or "5x5 Roto").strip()
+    fmt_l = fmt.lower()
+    if fmt_l == "points league":
+        cats: list[str] = ["HR", "RBI", "R", "SB", "AVG", "OPS"]
+    elif fmt_l == "5x5 roto":
+        cats = ["HR", "RBI", "R", "SB", "AVG"]
+    else:
+        cats = list(WAIVER_HITTER_CATEGORIES)
+    if fantasy_format_includes_pitching(fmt, context):
+        for cat in WAIVER_PITCHING_CATEGORIES:
+            if cat not in cats:
+                cats.append(cat)
+    return tuple(cats)
+
+
 LOWER_IS_BETTER_CATEGORIES = frozenset({"ERA", "WHIP"})
 WAIVER_PENDING_PAIRS_KEY = "_waiver_pending_move_pairs"
 WAIVER_PLANNER_ADD_KEY = "waiver_planner_add_pick"
@@ -203,6 +234,8 @@ def _category_value_for_team(subset: pd.DataFrame, category: str) -> float | Non
 def analyze_current_team_needs(
     my_roster: pd.DataFrame,
     league_rosters_df: pd.DataFrame,
+    *,
+    categories: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Category strengths/weaknesses from current-season stat columns (not projections)."""
     result: dict[str, Any] = {
@@ -220,7 +253,7 @@ def analyze_current_team_needs(
 
     available = [
         cat
-        for cat in WAIVER_CURRENT_CATEGORIES
+        for cat in (categories or WAIVER_HITTER_CATEGORIES)
         if _resolve_current_stat_col(league_rosters_df, cat) or _resolve_current_stat_col(my_roster, cat)
     ]
     result["available_categories"] = available
@@ -275,14 +308,18 @@ def analyze_current_team_needs(
     return result
 
 
-def build_category_standings_table(needs: dict[str, Any]) -> pd.DataFrame:
+def build_category_standings_table(
+    needs: dict[str, Any],
+    *,
+    categories: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
     """One row per category with current league rank."""
     ranks = needs.get("category_ranks") or {}
     if not ranks:
         return pd.DataFrame()
     n_teams = int(needs.get("n_teams") or 0) or max(ranks.values())
     rows = []
-    for cat in WAIVER_CURRENT_CATEGORIES:
+    for cat in (categories or WAIVER_HITTER_CATEGORIES):
         if cat not in ranks:
             continue
         rank = int(ranks[cat])
@@ -290,6 +327,7 @@ def build_category_standings_table(needs: dict[str, Any]) -> pd.DataFrame:
             {
                 "Category": cat,
                 "Your rank": rank,
+                "League rank": f"{rank}{_ordinal_suffix(rank)}",
                 "League teams": n_teams,
                 "Status": (
                     "Strength" if cat in (needs.get("strengths") or [])
@@ -299,6 +337,124 @@ def build_category_standings_table(needs: dict[str, Any]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def format_league_rank_lines(
+    needs: dict[str, Any],
+    *,
+    categories: tuple[str, ...] | None = None,
+) -> list[str]:
+    """Compact rank lines: HR: 6th, RBI: 5th."""
+    ranks = needs.get("category_ranks") or {}
+    lines: list[str] = []
+    for cat in (categories or WAIVER_HITTER_CATEGORIES):
+        if cat not in ranks:
+            continue
+        rank = int(ranks[cat])
+        lines.append(f"**{cat}:** {rank}{_ordinal_suffix(rank)}")
+    return lines
+
+
+def merge_current_season_stats(
+    hitter_df: pd.DataFrame | None,
+    pitcher_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Combine hitter and pitcher current-season rows on Player Key."""
+    hitters = hitter_df.copy() if hitter_df is not None and not hitter_df.empty else pd.DataFrame()
+    pitchers = pitcher_df.copy() if pitcher_df is not None and not pitcher_df.empty else pd.DataFrame()
+    if hitters.empty and pitchers.empty:
+        return pd.DataFrame()
+    if hitters.empty:
+        return pitchers.reset_index(drop=True)
+    if pitchers.empty:
+        return hitters.reset_index(drop=True)
+    if "Player Key" not in hitters.columns and "Player" in hitters.columns:
+        hitters["Player Key"] = hitters["Player"].astype(str).str.strip().str.lower()
+    if "Player Key" not in pitchers.columns and "Player" in pitchers.columns:
+        pitchers["Player Key"] = pitchers["Player"].astype(str).str.strip().str.lower()
+    pitcher_cols = [c for c in pitchers.columns if c not in hitters.columns or c in ("Player Key", "Player")]
+    merged = hitters.merge(
+        pitchers[pitcher_cols],
+        on="Player Key",
+        how="outer",
+        suffixes=("", "_pit"),
+    )
+    for col in ("Player", "MLB Team", "Primary Position"):
+        pit_col = f"{col}_pit"
+        if col in merged.columns and pit_col in merged.columns:
+            merged[col] = merged[col].fillna(merged[pit_col])
+            merged = merged.drop(columns=[pit_col])
+    if "Player" not in merged.columns and "Player_pit" in merged.columns:
+        merged["Player"] = merged["Player_pit"]
+    return merged.reset_index(drop=True)
+
+
+def _is_pitcher_row(row: pd.Series) -> bool:
+    pos = str(row.get("Primary Position") or row.get("Position") or "").upper()
+    if pos in ("P", "SP", "RP"):
+        return True
+    for col in ("W", "SV", "ERA", "WHIP"):
+        if col in row.index and pd.notna(row.get(col)):
+            if col in ("ERA", "WHIP") or float(pd.to_numeric(row.get(col), errors="coerce") or 0) > 0:
+                return True
+    return False
+
+
+def format_current_stat_line(row: pd.Series) -> str:
+    """One-line current stats for waiver cards (hitter or pitcher)."""
+    if _is_pitcher_row(row):
+        parts: list[str] = []
+        for label, col in (("W", "W"), ("SV", "SV"), ("K", "K"), ("ERA", "ERA"), ("WHIP", "WHIP")):
+            if col in row.index and pd.notna(row.get(col)):
+                val = pd.to_numeric(row.get(col), errors="coerce")
+                if pd.notna(val):
+                    parts.append(f"{label} {float(val):.2f}" if label in ("ERA", "WHIP") else f"{label} {int(val)}")
+        return " · ".join(parts) if parts else "Pitcher — current stats loaded"
+    parts: list[str] = []
+    for label, cols in (
+        ("HR", ("HR",)),
+        ("RBI", ("RBI",)),
+        ("R", ("R",)),
+        ("SB", ("SB",)),
+        ("AVG", ("BA", "AVG")),
+        ("OPS", ("OPS",)),
+    ):
+        for col in cols:
+            if col in row.index and pd.notna(row.get(col)):
+                val = row.get(col)
+                if label == "AVG":
+                    parts.append(f"AVG {float(val):.3f}")
+                elif isinstance(val, float):
+                    parts.append(f"{label} {val:.0f}" if label != "OPS" else f"OPS {val:.3f}")
+                break
+    return " · ".join(parts) if parts else "Current stats loaded"
+
+
+def build_add_recommendation_explanation(player_row: pd.Series, needs: dict[str, Any]) -> str:
+    """Waiver-specific explanation with league rank context — not draft metrics."""
+    targets = list(needs.get("targets") or needs.get("weaknesses") or [])
+    ranks = needs.get("category_ranks") or {}
+    helped = categories_helped_by_player(player_row, targets)
+    if helped and ranks:
+        rank_nums = [
+            f"{int(ranks[cat])}{_ordinal_suffix(int(ranks[cat]))}"
+            for cat in helped[:4]
+            if cat in ranks
+        ]
+        if rank_nums:
+            cats = helped[:4]
+            if len(cats) == 2:
+                cats_text = f"{cats[0]} and {cats[1]}"
+            else:
+                cats_text = ", ".join(cats)
+            if len(rank_nums) == 2:
+                ranks_text = f"{rank_nums[0]} and {rank_nums[1]}"
+            else:
+                ranks_text = ", ".join(rank_nums)
+            return f"Improves **{cats_text}** where your team currently ranks **{ranks_text}**."
+    if helped:
+        return f"Improves **{', '.join(helped[:4])}** based on current-season production."
+    return "Solid current-season upgrade for roster balance."
 
 
 def build_weakness_narrative(needs: dict[str, Any]) -> list[str]:
@@ -404,7 +560,7 @@ def recommend_adds_current(
     pool["_waiver_add_score"] = score
     pool = pool.sort_values("_waiver_add_score", ascending=False)
     top = pool.head(limit).copy()
-    top["Why Add"] = [_current_need_explanation(row, needs) for _, row in top.iterrows()]
+    top["Why Add"] = [build_add_recommendation_explanation(row, needs) for _, row in top.iterrows()]
     top["Categories Helped"] = [
         ", ".join(categories_helped_by_player(row, targets)) or "Balance"
         for _, row in top.iterrows()
@@ -419,15 +575,37 @@ def recommend_drops_current(
     my_roster: pd.DataFrame,
     *,
     limit: int = 6,
+    categories: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     if my_roster is None or my_roster.empty:
         return pd.DataFrame()
     roster = my_roster.copy()
     score = pd.Series(0.0, index=roster.index)
-    for cat, weight in (("HR", 0.2), ("RBI", 0.18), ("R", 0.12), ("SB", 0.1), ("AVG", 0.15), ("OPS", 0.1)):
+    drop_weights: tuple[tuple[str, float], ...] = (
+        ("HR", 0.16),
+        ("RBI", 0.14),
+        ("R", 0.1),
+        ("SB", 0.08),
+        ("AVG", 0.12),
+        ("OPS", 0.1),
+        ("OBP", 0.08),
+        ("W", 0.1),
+        ("SV", 0.12),
+        ("K", 0.08),
+        ("ERA", 0.05),
+        ("WHIP", 0.05),
+    )
+    active_cats = set(categories or WAIVER_HITTER_CATEGORIES)
+    for cat, weight in drop_weights:
+        if cat not in active_cats:
+            continue
         col = _resolve_current_stat_col(roster, cat)
         if col:
-            score += pd.to_numeric(roster[col], errors="coerce").fillna(0) * weight
+            vals = pd.to_numeric(roster[col], errors="coerce").fillna(0)
+            if cat in LOWER_IS_BETTER_CATEGORIES:
+                score += (1.0 / (vals + 0.01)) * weight
+            else:
+                score += vals * weight
     roster["_drop_score"] = score
     roster = roster.sort_values("_drop_score", ascending=True)
     top = roster.head(limit).copy()
@@ -464,7 +642,7 @@ def compute_add_drop_category_impact(
     *,
     categories: list[str] | None = None,
 ) -> list[str]:
-    cats = list(categories or WAIVER_CURRENT_CATEGORIES)
+    cats = list(categories or WAIVER_HITTER_CATEGORIES)
     impacts: list[str] = []
     for cat in cats:
         probe = add_row if add_row is not None else drop_row
@@ -544,11 +722,20 @@ def remove_pending_move_pair(session: dict[str, Any], index: int) -> bool:
     return True
 
 
+def filter_waiver_names_by_search(names: list[str], query: str) -> list[str]:
+    """Case-insensitive substring filter for searchable waiver picker."""
+    q = str(query or "").strip().lower()
+    if not q:
+        return list(names)
+    return [n for n in names if q in str(n).lower()]
+
+
 def waiver_display_stat_columns(df: pd.DataFrame, *, pitcher: bool = False) -> list[str]:
     base = ["Player", "MLB Team", "Primary Position"]
     if pitcher:
         return [c for c in base + ["W", "SV", "K", "ERA", "WHIP"] if c in df.columns]
-    return [c for c in base + ["HR", "RBI", "R", "SB", "BA", "AVG", "OPS"] if c in df.columns]
+    hitter_cols = ["HR", "RBI", "R", "SB", "BA", "AVG", "OPS", "W", "SV", "K", "ERA", "WHIP"]
+    return [c for c in base + hitter_cols if c in df.columns]
 
 
 def analyze_team_needs(
