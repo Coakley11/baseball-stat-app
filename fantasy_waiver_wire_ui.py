@@ -17,7 +17,6 @@ from fantasy_league_context import (
     resolve_context_open_position_needs,
 )
 from fantasy_waiver_wire import (
-    GLOBAL_WAIVER_FILTER_KEY,
     WAIVER_PLANNER_ADD_KEY,
     WAIVER_PLANNER_DROP_KEY,
     add_pending_move_pair,
@@ -165,6 +164,12 @@ def render_waiver_wire_page(
         f"{league_context_type_badge(context)} · "
         f"My team: **{context.get('my_team_name', '—')}**"
     )
+    try:
+        from fantasy_context_ui import render_fantasy_context_badge
+
+        render_fantasy_context_badge(st, session)
+    except ImportError:
+        pass
 
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
@@ -179,15 +184,12 @@ def render_waiver_wire_page(
         "not projections, ADP, Fantasy Edge, or draft-risk metrics."
     )
 
-    st.checkbox(
-        "Use Active League Context Across Draft Pages",
-        key=GLOBAL_WAIVER_FILTER_KEY,
-        help=(
-            "When enabled, draft tools exclude players already rostered in the active league context. "
-            "Turn off to analyze the full player universe."
-        ),
-        on_change=_on_waiver_filter_changed,
-    )
+    try:
+        from fantasy_in_season_state import prepare_fantasy_in_season_hydration
+
+        prepare_fantasy_in_season_hydration(session)
+    except ImportError:
+        pass
 
     league_df = league_roster_stats.copy() if league_roster_stats is not None and not league_roster_stats.empty else pd.DataFrame()
     if league_df.empty and normalize_name_fn is not None:

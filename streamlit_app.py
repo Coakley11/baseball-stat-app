@@ -7457,31 +7457,41 @@ def lineup_diagnosis_report(
     if "HR" in strengths and "SB" in strengths:
         hr_s, sb_s = strengths["HR"], strengths["SB"]
         if hr_s > 0.65 and sb_s < 0.35:
-            z_parts.append("power-heavy but light on speed")
+            z_parts.append("power-heavy")
         elif sb_s > 0.65 and hr_s < 0.35:
-            z_parts.append("speed-focused with lighter power")
+            z_parts.append("speed-focused")
         elif hr_s > 0.55 and sb_s > 0.55:
-            z_parts.append("balanced power/speed shape")
+            z_parts.append("balanced power/speed")
     rk_key = "OBP" if rate_label == "OBP" else "AVG"
     if rk_key in strengths:
         rk = strengths[rk_key]
         if rk < 0.38:
-            z_parts.append("rate stats skew soft vs counting totals")
+            z_parts.append("soft rate stats")
         elif rk > 0.68:
-            z_parts.append("strong rate support vs counting totals")
-    out["archetype"] = (
-        "This lineup: **" + "**, **".join(z_parts) + "** (shown starters vs full-team stat mix)."
-        if z_parts
-        else "No extreme skew across HR/R/RBI/SB/" + rate_label + " among these starters — profile is fairly mixed."
-    )
+            z_parts.append("strong rate stats")
+    try:
+        from fantasy_actionable_recommendations import plain_lineup_archetype
+
+        out["archetype"] = plain_lineup_archetype(strengths, rate_label=rate_label)
+    except ImportError:
+        out["archetype"] = (
+            "This lineup: **" + "**, **".join(z_parts) + "** (shown starters vs full-team stat mix)."
+            if z_parts
+            else "No extreme skew across HR/R/RBI/SB/" + rate_label + " among these starters — profile is fairly mixed."
+        )
 
     cv = float(hit_tbl["Rel. strength (0–100)"].std()) if len(hit_tbl) > 1 else 0.0
-    if cv >= 28:
-        out["balance_label"] = f"**Unbalanced:** category spread index {cv:.0f} (big gaps between best and worst cats)."
-    elif cv <= 12:
-        out["balance_label"] = f"**Balanced:** spread index {cv:.0f} — strengths are spread across categories."
-    else:
-        out["balance_label"] = f"**Moderately tilted:** spread index {cv:.0f} — clear strengths with identifiable soft cats."
+    try:
+        from fantasy_actionable_recommendations import plain_balance_label
+
+        out["balance_label"] = plain_balance_label(cv)
+    except ImportError:
+        if cv >= 28:
+            out["balance_label"] = "**Unbalanced:** category spread is wide — big gaps between best and worst areas."
+        elif cv <= 12:
+            out["balance_label"] = "**Balanced:** strengths are spread across categories."
+        else:
+            out["balance_label"] = "**Moderately tilted:** clear strengths with identifiable soft categories."
 
     if "Fantasy slot" in st_df.columns or "Primary Position" in st_df.columns:
         grp_col = "Fantasy slot" if "Fantasy slot" in st_df.columns else "Primary Position"
@@ -7496,11 +7506,19 @@ def lineup_diagnosis_report(
             worst_pos = min(agg, key=agg.get)
             best_pos = max(agg, key=agg.get)
             if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
-                label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
-                out["position_note"] = (
-                    f"**Position weakness ({label}):** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
-                    f"vs **{best_pos}** (**{agg[best_pos]:.0f}**). Consider upgrading that slot via add/drop or trade."
-                )
+                try:
+                    from fantasy_actionable_recommendations import plain_position_weakness_note
+
+                    label = "Fantasy slot" if grp_col == "Fantasy slot" else "position"
+                    out["position_note"] = plain_position_weakness_note(
+                        worst_pos, agg[worst_pos], best_pos, agg[best_pos], grp_label=label
+                    )
+                except ImportError:
+                    label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
+                    out["position_note"] = (
+                        f"**Position weakness ({label}):** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
+                        f"vs **{best_pos}** (**{agg[best_pos]:.0f}**). Consider upgrading that slot via add/drop or trade."
+                    )
             else:
                 out["position_note"] = "**Position shape:** HR+R+RBI is fairly even across starter slots in this set."
 
@@ -18439,7 +18457,8 @@ if active_page == "Draft Assistant Simulator":
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
         featured_ids = collect_featured_player_ids(best_fit, best_value)
-        recs = remaining_recommendations(recs_ranked, featured_ids, limit=int(draft_top_n))
+        recs = recs_ranked.head(int(draft_top_n)).copy()
+        recs_for_ami = remaining_recommendations(recs_ranked, featured_ids, limit=int(draft_top_n))
         if "Why this pick" not in recs.columns and not recs.empty:
             try:
                 from live_draft_room_ui import build_draft_assistant_why_this_pick
@@ -18493,7 +18512,7 @@ if active_page == "Draft Assistant Simulator":
             cache_draft_assistant_ami_context(
                 st.session_state,
                 page="Draft Assistant Simulator",
-                recs_df=recs,
+                recs_df=recs_for_ami if not recs_for_ami.empty else recs,
                 current_pick=int(current_pick),
                 draft_round=int(draft_summary["current_round"]),
                 my_roster=my_roster,
@@ -18598,6 +18617,13 @@ if active_page == "Draft Assistant Simulator":
         recs_display = recs[[c for c in rec_cols if c in recs.columns]].rename(columns={"fullName": "Player"})
         recs_display = add_recommendation_rank_column(recs_display, start_rank=1)
         recs_display = format_fantasy_table(clean_ui_columns(recs_display))
+        if developer_mode_enabled() and not best_fit.empty and not recs.empty:
+            _card_pick = str(best_fit.iloc[0].get("fullName") or "")
+            _table_pick = str(recs.iloc[0].get("Player") or recs.iloc[0].get("fullName") or "")
+            st.caption(
+                f"Top pick diagnostic — card: **{_card_pick or '—'}** · table #1: **{_table_pick or '—'}** · "
+                f"match: **{'Yes' if _card_pick and _card_pick == _table_pick else 'No'}**"
+            )
         if "Pick Score" in recs_display.columns:
             recs_display = recs_display.rename(columns={"Pick Score": "Decision Score"})
         st.caption(
@@ -21885,6 +21911,20 @@ if active_page == "Fantasy Standings Tracker":
     _page_perf_start(active_page)
     prepare_fantasy_standings_page(st.session_state)
     prepare_fantasy_standings_filters(st.session_state)
+    try:
+        from fantasy_in_season_state import prepare_fantasy_in_season_hydration
+
+        if prepare_fantasy_in_season_hydration(st.session_state):
+            _restored_at = str(st.session_state.get("_fantasy_standings_stats_loaded_at") or "")[:19]
+            st.caption(f"Restored saved in-season stats from workspace (last loaded {_restored_at or 'earlier'}).")
+    except ImportError:
+        pass
+    try:
+        from fantasy_context_ui import render_fantasy_context_badge
+
+        render_fantasy_context_badge(st, st.session_state)
+    except ImportError:
+        pass
 
     render_section_header(
         "📊 Fantasy Standings Tracker",
@@ -21943,6 +21983,7 @@ if active_page == "Fantasy Standings Tracker":
     current_stats = pd.DataFrame()
     pitcher_stats = pd.DataFrame()
     api_season = 2026
+    _should_fetch_api = False
 
     if stats_source == "MLB API Auto-Fetch":
         validate_number_state("standings_api_season", 2026, min_value=2020, max_value=2035)
@@ -21954,12 +21995,47 @@ if active_page == "Fantasy Standings Tracker":
             key="standings_api_season",
             on_change=fantasy_filter_changed,
         )
+        _restored_stats = False
+        try:
+            from fantasy_in_season_state import has_restored_in_season_stats
+
+            _restored_stats = has_restored_in_season_stats(st.session_state)
+        except ImportError:
+            pass
+        if _restored_stats and not st.session_state.get("_fantasy_stats_refresh_requested"):
+            current_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+            if not isinstance(current_stats, pd.DataFrame):
+                current_stats = pd.DataFrame()
+            pitcher_stats = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+            if not isinstance(pitcher_stats, pd.DataFrame):
+                pitcher_stats = pd.DataFrame()
+            if not current_stats.empty or not pitcher_stats.empty:
+                st.caption("Using saved stats from your workspace. Click **Refresh MLB stats** to pull a new API snapshot.")
+        if st.button("Refresh MLB stats", key="standings_refresh_mlb_stats"):
+            st.session_state["_fantasy_stats_refresh_requested"] = True
+            st.rerun()
+        _should_fetch_api = bool(
+            st.session_state.get("_fantasy_stats_refresh_requested")
+            or not _restored_stats
+            or not (
+                isinstance(st.session_state.get("_fantasy_current_hitter_stats"), pd.DataFrame)
+                and not st.session_state.get("_fantasy_current_hitter_stats").empty
+            )
+        )
     elif stats_source == "Upload CSV":
         stats_file = st.file_uploader(
             "Upload current-season hitter stats CSV",
             type=["csv"],
         )
         st.caption("Include player names plus HR, RBI, R, SB, BA, OPS (or similar columns).")
+
+    if stats_source == "MLB API Auto-Fetch" and not _should_fetch_api:
+        current_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+        if not isinstance(current_stats, pd.DataFrame):
+            current_stats = pd.DataFrame()
+        pitcher_stats = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+        if not isinstance(pitcher_stats, pd.DataFrame):
+            pitcher_stats = pd.DataFrame()
 
     draft_import_for_standings = None
     with st.expander("Optional: import draft board (if Draft Room is empty)", expanded=False):
@@ -21982,7 +22058,7 @@ if active_page == "Fantasy Standings Tracker":
         except Exception as e:
             st.error(f"Could not read draft board upload: {e}")
 
-    if stats_source == "MLB API Auto-Fetch":
+    if stats_source == "MLB API Auto-Fetch" and _should_fetch_api:
         try:
             from fantasy_league_context import get_active_league_context
             from fantasy_waiver_wire import fantasy_format_includes_pitching
@@ -22000,6 +22076,7 @@ if active_page == "Fantasy Standings Tracker":
         try:
             current_stats = fetch_mlb_api_hitter_stats(api_season)
             pitcher_stats = fetch_mlb_api_pitcher_stats(api_season) if _include_pitching else pd.DataFrame()
+            st.session_state.pop("_fantasy_stats_refresh_requested", None)
             if current_stats.empty and pitcher_stats.empty:
                 st.warning("MLB API returned no stats for the selected season. Try uploading a CSV instead.")
             elif _include_pitching and not pitcher_stats.empty:
@@ -22235,6 +22312,13 @@ if active_page == "Fantasy Standings Tracker":
 
             st.session_state["_fantasy_standings_stats_loaded_at"] = datetime.now(_tz.utc).isoformat()
             st.session_state["_fantasy_standings_stats_source"] = stats_source
+            try:
+                from fantasy_in_season_state import sync_fantasy_in_season_state
+
+                sync_fantasy_in_season_state(st.session_state, reason="standings_computed")
+                force_save_baseball_state(st, reason="fantasy_in_season_snapshot")
+            except ImportError:
+                pass
             _standings_needs_ctx = (
                 summarize_team_category_needs(standings, _standings_team_ctx)
                 if _standings_team_ctx and not standings.empty
@@ -22337,6 +22421,18 @@ if active_page == "Fantasy Lineup Assistant":
     _page_perf_start(active_page)
     prepare_fantasy_lineup_page(st.session_state)
     prepare_fantasy_lineup_filters(st.session_state)
+    try:
+        from fantasy_in_season_state import prepare_fantasy_in_season_hydration
+
+        prepare_fantasy_in_season_hydration(st.session_state)
+    except ImportError:
+        pass
+    try:
+        from fantasy_context_ui import render_fantasy_context_badge
+
+        render_fantasy_context_badge(st, st.session_state)
+    except ImportError:
+        pass
 
     try:
         from fantasy_league_context import consume_trade_acquire_handoff
@@ -22785,12 +22881,51 @@ if active_page == "Fantasy Lineup Assistant":
                 st.dataframe(diag["pitching_table"], width="stretch", hide_index=True)
 
             cA, cB = st.columns(2)
+            _cat_ranks: dict[str, int] = {}
+            _n_teams = 0
+            try:
+                from fantasy_waiver_wire import analyze_current_team_needs
+
+                _my_team_df = roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)] if "Team" in roster_stats.columns else roster_stats
+                if not _my_team_df.empty:
+                    _needs = analyze_current_team_needs(_my_team_df, roster_stats)
+                    _cat_ranks = dict(_needs.get("category_ranks") or {})
+                    _n_teams = int(_needs.get("n_teams") or 0)
+            except Exception:
+                pass
+            try:
+                from fantasy_actionable_recommendations import (
+                    format_category_rank_line,
+                    format_category_weakness_line,
+                )
+
+                strength_lines = [
+                    format_category_rank_line(cat, _cat_ranks.get(cat), n_teams=_n_teams)
+                    for cat in (diag.get("strongest") or [])
+                ]
+                weakness_lines = [
+                    format_category_weakness_line(cat, _cat_ranks.get(cat), n_teams=_n_teams)
+                    for cat in (diag.get("weakest") or [])
+                ]
+            except ImportError:
+                strength_lines = list(diag.get("strongest") or [])
+                weakness_lines = list(diag.get("weakest") or [])
             with cA:
-                st.markdown("**Strongest:** " + ", ".join(diag["strongest"]) if diag["strongest"] else "_—_")
+                st.markdown("**Strengths**")
+                if strength_lines:
+                    for line in strength_lines:
+                        st.markdown(line)
+                else:
+                    st.markdown("_—_")
                 if diag.get("strongest_detail"):
                     st.caption(diag["strongest_detail"])
             with cB:
-                st.markdown("**Weakest:** " + ", ".join(diag["weakest"]) if diag["weakest"] else "_—_")
+                st.markdown("**Weaknesses**")
+                if weakness_lines:
+                    for line in weakness_lines:
+                        st.markdown(line)
+                else:
+                    st.markdown("_—_")
                 if diag.get("weakest_detail"):
                     st.caption(diag["weakest_detail"])
             if diag.get("archetype"):
@@ -22802,6 +22937,28 @@ if active_page == "Fantasy Lineup Assistant":
 
             rec_df = pd.DataFrame(diag.get("recommendations") or [])
             if not rec_df.empty:
+                try:
+                    from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
+
+                    _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+                    _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+                    _pool = merge_current_season_stats(_hit, _pit)
+                    from fantasy_league_context import get_active_league_context
+
+                    _ctx = get_active_league_context(st.session_state)
+                    _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
+                    _my_roster = scored[scored["Team"].astype(str) == str(lineup_team)] if "Team" in scored.columns else scored
+                    _needs = analyze_current_team_needs(_my_roster, roster_stats) if not _my_roster.empty else {}
+                    from fantasy_actionable_recommendations import enrich_recommendations_with_waiver_targets
+
+                    enriched = enrich_recommendations_with_waiver_targets(
+                        rec_df.to_dict(orient="records"),
+                        _waiver_pool,
+                        needs=_needs,
+                    )
+                    rec_df = pd.DataFrame(enriched)
+                except ImportError:
+                    pass
                 st.subheader("Actionable Recommendations")
                 st.caption("Concrete next steps — trades, adds, and category repairs for your weakest areas.")
                 st.dataframe(rec_df, width="stretch", hide_index=True)

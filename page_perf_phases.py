@@ -123,11 +123,15 @@ def render_perf_report(st: Any, session: dict[str, Any]) -> None:
     if not isinstance(ns, dict):
         return
     timings = dict(ns.get("timings") or {})
-    if not timings:
-        return
     with st.sidebar.expander("Page performance", expanded=False):
         st.text(f"page: {ns.get('page', '')}")
-        top = top_slow_phases(session, limit=3)
+        page_total = float(timings.get("page_render_total") or 0.0)
+        if page_total > 0:
+            st.text(f"Page render time: {page_total:.3f}s")
+        for label in ("cloud_hydration", "cloud_read", "cloud_write", "data_build"):
+            if label in timings:
+                st.text(f"{label.replace('_', ' ').title()}: {float(timings[label]):.3f}s")
+        top = top_slow_phases(session, limit=10)
         if top:
             st.markdown("**Top slow paths**")
             for i, (name, sec) in enumerate(top, start=1):

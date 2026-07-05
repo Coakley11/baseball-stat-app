@@ -103,6 +103,21 @@ class TestRecommendationDedupe(unittest.TestCase):
         ranked_display = add_recommendation_rank_column(table, start_rank=1)
         self.assertEqual(ranked_display["Rank"].tolist(), [1, 2, 3])
 
+    def test_top_pick_matches_table_first_row(self) -> None:
+        """Draft Assistant table row #1 must match the top ranked recommendation."""
+        ranked = _rows(
+            ("1", "Shohei Ohtani", 95),
+            ("2", "Aaron Judge", 90),
+            ("3", "Juan Soto", 88),
+        )
+        best_fit = ranked.head(1)
+        table = ranked.head(3)
+        self.assertEqual(
+            recommendation_player_id(best_fit.iloc[0]),
+            recommendation_player_id(table.iloc[0]),
+        )
+        self.assertEqual(str(best_fit.iloc[0]["fullName"]), str(table.iloc[0]["fullName"]))
+
 
 if __name__ == "__main__":
     unittest.main()

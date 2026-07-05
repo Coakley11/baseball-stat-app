@@ -598,6 +598,14 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
 
     _render_persistence_diagnostics(st, session)
 
+    try:
+        from fantasy_context_ui import render_fantasy_context_library_block
+
+        render_fantasy_context_library_block(st, session, active_context=active_context)
+        st.divider()
+    except ImportError:
+        pass
+
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:
         if st.button(

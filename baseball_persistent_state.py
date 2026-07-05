@@ -130,6 +130,7 @@ _WORKFLOW_KEYS = (
     "draft_archive_teams",
     "active_draft_archive_id",
     "fantasy_league_context_state",
+    "fantasy_in_season_state",
     "use_active_league_context_waiver_filter",
     "_waiver_pending_move_pairs",
     "waiver_planner_add_pick",
@@ -420,6 +421,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
             except Exception:
                 state[key] = ss[key]
     save_reason = str(ss.get("_suite_pending_save_reason") or "autosave")
+    try:
+        from fantasy_in_season_state import sync_fantasy_in_season_state
+
+        sync_fantasy_in_season_state(ss, reason=save_reason)
+    except ImportError:
+        pass
     try:
         from workflow_persist_guard import merge_protected_workflow_into_save
 
@@ -965,6 +972,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         from fantasy_league_context import apply_fantasy_league_context_disk_state
 
         apply_fantasy_league_context_disk_state(ss, state)
+    except ImportError:
+        pass
+
+    try:
+        from fantasy_in_season_state import hydrate_fantasy_in_season_to_session
+
+        hydrate_fantasy_in_season_to_session(ss, state)
     except ImportError:
         pass
 
