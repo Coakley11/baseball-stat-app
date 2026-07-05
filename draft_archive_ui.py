@@ -108,16 +108,15 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
 
 
 def schedule_page_navigation(session: dict[str, Any], target_page: str) -> None:
-    """Eager page navigation before st.rerun() — survives workspace restore."""
+    """Queue navigation for next run. Do not touch widget-backed keys (e.g. main_sidebar_page)."""
     target = str(target_page or "").strip()
     if not target:
         return
     session["active_page"] = target
-    session["main_sidebar_page"] = target
     session["_navigate_to_page"] = target
     session["_skip_page_restore_for"] = target
     session["_suite_page_user_nav"] = True
-    session["_suite_nav_consumed_this_run"] = True
+    session["_suite_nav_consumed_this_run"] = False
     session["_suite_nav_consumed_target"] = target
 
 

@@ -273,7 +273,7 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     if not target_page and resume.startswith("bb:live_draft:"):
         target_page = "Live Draft Room"
     if not target_page and resume.startswith("bb:draft_lab:"):
-        target_page = "Draft Simulation Test Mode"
+        target_page = "Draft Lab / Simulation"
     if not target_page and resume.startswith("bb:hof_case:"):
         target_page = "Career Totals"
     if not target_page and resume.startswith("bb:saved_draft:"):

@@ -545,8 +545,16 @@ DRAFT_FOCUS_PAGES = frozenset({
     "Live Draft Room",
     "Draft Assistant Simulator",
     "Fantasy Draft Assistant",
-    "Draft Simulation Test Mode",
+    "Draft Lab / Simulation",
 })
+
+try:
+    from draft_lab_state import DRAFT_LAB_PAGE, DRAFT_LAB_PAGE_LEGACY
+except ImportError:
+    DRAFT_LAB_PAGE = "Draft Lab / Simulation"
+    DRAFT_LAB_PAGE_LEGACY = "Draft Simulation Test Mode"
+
+_PAGE_LEGACY_ALIASES = {DRAFT_LAB_PAGE_LEGACY: DRAFT_LAB_PAGE}
 
 
 def _streamlit_script_run_ctx_active() -> bool:
@@ -611,7 +619,14 @@ def fmt_fantasy_edge(x):
     x = pd.to_numeric(x, errors="coerce")
     if pd.isna(x):
         return ""
-    return f"{x:+.1f}"
+    return f"{int(round(x)):+d}"
+
+
+def fmt_score_1(x):
+    x = pd.to_numeric(x, errors="coerce")
+    if pd.isna(x):
+        return ""
+    return f"{x:.1f}".rstrip("0").rstrip(".")
 
 
 def fmt_player_grade_display(x):
@@ -711,7 +726,7 @@ def _draft_lab_column_kind(col):
 
 
 def format_draft_lab_table(df, for_export=False):
-    """Polished numeric formatting for Draft Simulation Test Mode tables and exports."""
+    """Polished numeric formatting for Draft Lab / Simulation tables and exports."""
     if df is None or df.empty:
         return df
     try:
@@ -735,7 +750,7 @@ def format_draft_lab_table(df, for_export=False):
         if kind == "int":
             out[col] = vals.round(0).astype("Int64")
         elif kind == "edge":
-            out[col] = vals.apply(fmt_fantasy_edge) if for_export else vals.round(1)
+            out[col] = vals.apply(fmt_fantasy_edge)
         elif kind == "confidence":
             try:
                 from draft_score_display import fmt_confidence_score
@@ -744,7 +759,19 @@ def format_draft_lab_table(df, for_export=False):
             except ImportError:
                 out[col] = vals.round(2)
         elif kind == "score2":
-            out[col] = vals.apply(fmt_score_2) if for_export else vals.round(2)
+            if "roster fit" in str(col).lower():
+                try:
+                    from draft_score_display import fmt_roster_fit_score
+
+                    out[col] = vals.apply(fmt_roster_fit_score)
+                except ImportError:
+                    out[col] = vals.round(2)
+            elif "decision score" in str(col).lower() or str(col) == "Decision Score":
+                out[col] = vals.apply(fmt_score_2)
+            elif "player grade" in str(col).lower() or "expected fantasy" in str(col).lower():
+                out[col] = vals.apply(fmt_score_1)
+            else:
+                out[col] = vals.apply(fmt_score_2) if for_export else vals.round(2)
         elif kind == "percent":
             out[col] = vals.apply(fmt_percent_1)
         elif kind == "rate":
@@ -1959,7 +1986,7 @@ PAGE_GUIDES = {
         "when": "While drafting, after picks are entered in Draft Room.",
         "outputs": "Ranked available players with plain-language reasons.",
     },
-    "Draft Simulation Test Mode": {
+    "Draft Lab / Simulation": {
         "purpose": "Run a polished four-team fantasy draft lab using the app's Draft Assistant-style scoring.",
         "when": "For portfolio demos, draft strategy testing, or comparing team-building outcomes.",
         "outputs": "Snake draft results, rosters, team rankings, best/questionable picks, position gaps, exports, and trade ideas.",
@@ -7385,7 +7412,11 @@ def lineup_diagnosis_report(
         raw = strengths.get(cat, 0.5)
         rel = 50.0 if mx <= mn else (raw - mn) / (mx - mn) * 100.0
         rel_list.append(rel)
-    hit_tbl["Rel. strength (0–100)"] = np.round(rel_list, 1)
+    rel_std = float(np.std(rel_list)) if rel_list else 0.0
+    if mx <= mn or rel_std < 5.0:
+        hit_tbl["Rel. strength (0–100)"] = np.nan
+    else:
+        hit_tbl["Rel. strength (0–100)"] = np.round(rel_list, 1)
 
     ranked = hit_tbl.sort_values("Rel. strength (0–100)", ascending=False).reset_index(drop=True)
     out["strongest"] = ranked.head(2)["Category"].tolist()
@@ -9207,26 +9238,35 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
         chosen["Pick"] = pick["Pick"]
         chosen["Fantasy Team"] = team
         chosen["Roster Need At Pick"] = ", ".join(gaps[:4]) if gaps else "Depth / best value"
-        why = []
-        efv = pd.to_numeric(chosen.get("Expected Fantasy Value"), errors="coerce")
-        if pd.notna(efv) and efv >= 0.80:
-            why.append("elite projected fantasy value")
-        elif pd.notna(efv) and efv >= 0.65:
-            why.append("strong projected fantasy value")
+        why_parts: list[str] = []
         mr = pd.to_numeric(chosen.get("Model Rank"), errors="coerce")
         if pd.notna(mr) and mr <= 30:
-            why.append("high model rank")
+            why_parts.append("high model rank")
         if pd.to_numeric(chosen.get("Roster Need Score", 0), errors="coerce") >= 0.50 and gaps:
-            why.append(f"fills roster need ({', '.join(gaps[:2])})")
+            why_parts.append(f"filled a need at {'/'.join(gaps[:2])}")
+        efv = pd.to_numeric(chosen.get("Expected Fantasy Value"), errors="coerce")
+        if pd.notna(efv) and efv >= 0.80:
+            why_parts.append("projected elite category production")
+        elif pd.notna(efv) and efv >= 0.65:
+            why_parts.append("projected strong category production")
+        edge = pd.to_numeric(chosen.get("Fantasy Edge"), errors="coerce")
+        if pd.notna(edge) and edge >= 12:
+            why_parts.append("excellent value relative to ADP")
+        elif pd.notna(edge) and edge >= 5:
+            why_parts.append("solid value vs market")
+        fit = pd.to_numeric(chosen.get("Draft Fit Score", 0), errors="coerce")
+        if pd.notna(fit) and fit >= 1.10 and gaps:
+            why_parts.append("improved category balance")
+        elif pd.notna(fit) and fit >= 0.95 and gaps:
+            why_parts.append("fit an open roster need")
         if pd.to_numeric(chosen.get("Scarcity Score", 0), errors="coerce") >= 0.60:
-            why.append(f"scarce {chosen.get('Primary Position')} value")
-        if pd.to_numeric(chosen.get("Trend Signal", 0), errors="coerce") >= 0.65:
-            why.append("positive trend signal")
-        if pd.to_numeric(chosen.get("Sleeper Score", 0), errors="coerce") >= 0.70:
-            why.append("small sleeper/value boost")
-        if pd.to_numeric(chosen.get("Draft Fit Score", 0), errors="coerce") >= 0.72:
-            why.append("strong roster fit for roster")
-        chosen["Why This Pick"] = "Selected because he had " + ", ".join(why[:4]) + "." if why else "Selected as the best balanced option by projected value and model rank."
+            why_parts.append(f"scarce {chosen.get('Primary Position')} value remaining")
+        if why_parts:
+            lead = why_parts[0].capitalize()
+            rest = ", ".join(why_parts[1:3])
+            chosen["Why This Pick"] = f"{lead}, {rest}." if rest else f"{lead}."
+        else:
+            chosen["Why This Pick"] = "Best balanced value at this pick."
         draft_rows.append(chosen.to_dict())
         rosters[team].append(chosen.to_dict())
         available = available[available["playerID"] != chosen["playerID"]].copy()
@@ -11973,7 +12013,7 @@ PAGE_OPTIONS = [
     "Fantasy Sleepers & Busts",
     "Draft Room Simulator",
     "Draft Assistant Simulator",
-    "Draft Simulation Test Mode",
+    "Draft Lab / Simulation",
     "Live Draft Room",
     "Saved Draft Library",
     "Fantasy Standings Tracker",
@@ -11998,7 +12038,7 @@ PAGE_OPTION_LABELS = {
     "Fantasy Sleepers & Busts": "💎 Fantasy Sleepers & Busts",
     "Draft Room Simulator": "🧾 Draft Room Simulator",
     "Draft Assistant Simulator": "🧩 Draft Assistant Simulator",
-    "Draft Simulation Test Mode": "🧪 Draft Simulation Test Mode",
+    "Draft Lab / Simulation": "🧪 Draft Lab / Simulation",
     "Live Draft Room": "📡 Live Draft Room",
     "Saved Draft Library": "📁 Saved Draft Library",
     "Fantasy Standings Tracker": "📊 Fantasy Standings Tracker",
@@ -12020,6 +12060,7 @@ def get_sidebar_page_label(page_key: str) -> str:
 def normalize_page_key(value) -> str:
     """Map sidebar/session values back to canonical page keys."""
     key = str(value or "").strip()
+    key = _PAGE_LEGACY_ALIASES.get(key, key)
     if key in _PAGE_OPTION_SET:
         return key
     return _PAGE_LABEL_TO_KEY.get(key, "Historical Explorer")
@@ -12070,7 +12111,7 @@ PAGE_STATE_DEBUG_PREFIXES = {
     "Fantasy Sleepers & Busts": ("fantasy_market_", "sleeper_", "fantasy_pts_"),
     "Draft Assistant Simulator": ("draft_", "fantasy_draft_"),
     "Draft Room Simulator": ("draft_room_", "room_"),
-    "Draft Simulation Test Mode": ("draft_lab_",),
+    "Draft Lab / Simulation": ("draft_lab_",),
     "Live Draft Room": ("live_draft_", "live_slot_"),
     "Fantasy Standings Tracker": ("standings_",),
     "Fantasy Lineup Assistant": ("lineup_",),
@@ -12758,7 +12799,7 @@ _PAGE_TRANSFER_ALLOWED_KEYS = {
         "draft_use_ml_blend", "draft_ml_blend_weight", "draft_ml_min_games_signal",
         "draft_assistant_synced_team", "room_your_team",
     }),
-    "Draft Simulation Test Mode": frozenset({
+    "Draft Lab / Simulation": frozenset({
         "draft_lab_window", "draft_lab_format", "draft_lab_scoring_type", "draft_lab_projection_style",
         "draft_lab_picks_per_team",
     }),
@@ -13399,7 +13440,7 @@ _active_page_for_prep = str(st.session_state.get("active_page") or "")
 _DRAFT_BOARD_PAGES = frozenset({
     "Draft Room Simulator",
     "Draft Assistant Simulator",
-    "Draft Simulation Test Mode",
+    "Draft Lab / Simulation",
     "Fantasy Sleepers & Busts",
     "Live Draft Room",
 })
@@ -19237,13 +19278,6 @@ if active_page == "Draft Room Simulator":
                     picks = int(result.get("saved_pick_count") or 0)
                     disk_n = result.get("disk_payload_pick_count")
                     cloud_n = result.get("cloud_payload_pick_count")
-                    lib_drafts = int(result.get("saved_drafts") or 0)
-                    lib_contexts = int(result.get("league_contexts") or 0)
-                    lib_note = (
-                        f" Draft Library: {lib_drafts} saved draft(s), {lib_contexts} league context(s)."
-                        if result.get("library_sync")
-                        else ""
-                    )
                     if (
                         result.get("saved")
                         and result.get("saved_cloud")
@@ -19256,7 +19290,6 @@ if active_page == "Draft Room Simulator":
                             f"payload: {cloud_n}). "
                             f"Cloud: {result.get('cloud_timestamp_before') or '—'} → "
                             f"{result.get('cloud_timestamp_after') or result.get('supabase_row_updated_at_after_write') or '—'}"
-                            f"{lib_note}"
                         )
                     elif result.get("saved") and picks > 0 and result.get("direct_cloud_save_attempted"):
                         cloud_key = result.get("cloud_app_key") or result.get("cloud_target_app_id") or "—"
@@ -19266,13 +19299,11 @@ if active_page == "Draft Room Simulator":
                             f"(readback={result.get('supabase_row_pick_count_after_write')}, "
                             f"payload={cloud_n}, key=`{cloud_key}`, workspace=`{ws}`). "
                             f"Error: {result.get('cloud_write_error') or result.get('error') or 'unknown'}"
-                            f"{lib_note}"
                         )
                     elif result.get("saved") and picks > 0:
                         st.warning(
                             f"Saved {picks} pick(s) to disk only (disk payload: {disk_n}). "
                             f"Cloud error: {result.get('error') or 'unknown'}"
-                            f"{lib_note}"
                         )
                     else:
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
@@ -19510,11 +19541,11 @@ if active_page == "Draft Room Simulator":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Draft Simulation Test Mode":
+if active_page == DRAFT_LAB_PAGE:
     _page_perf_start(active_page)
 
     render_section_header(
-        "🧪 Draft Simulation Test Mode",
+        "🧪 Draft Lab / Simulation",
         "A portfolio-style fantasy draft lab: four teams, snake format, Draft Assistant-style decisions, post-draft analysis, exports, and trade ideas.",
         compact=True,
     )
@@ -19579,16 +19610,16 @@ if active_page == "Draft Simulation Test Mode":
 
                 on_draft_settings_changed(
                     st.session_state,
-                    source_page="Draft Simulation Test Mode",
+                    source_page=DRAFT_LAB_PAGE,
                     lookback_key="draft_lab_window",
                     style_key="draft_lab_projection_style",
                     format_key="draft_lab_scoring_type",
                 )
             except ImportError:
                 pass
-            save_page_state("Draft Simulation Test Mode")
+            save_page_state("Draft Lab / Simulation")
             force_save_baseball_state(st, reason="draft_sim_settings_changed")
-            _record_settings_onchange("Draft Simulation Test Mode", "_draft_sim_setting_changed", "draft_sim_settings_changed")
+            _record_settings_onchange("Draft Lab / Simulation", "_draft_sim_setting_changed", "draft_sim_settings_changed")
 
         validate_state_option("draft_lab_window", _lab_window_options, 3)
         lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
@@ -19849,6 +19880,26 @@ if active_page == "Draft Simulation Test Mode":
                 display_rows=80,
                 style_cols=["Fantasy Edge", "Player Grade", "Scarcity Score", "Roster Fit Score", "Decision Score"],
             )
+            try:
+                from draft_lab_analysis import draft_lab_board_advanced_columns
+
+                adv_cols = draft_lab_board_advanced_columns()
+                adv_df = lab_draft[[c for c in adv_cols if c in lab_draft.columns]].rename(columns={
+                    "fullName": "Player",
+                    "Team": "MLB Team",
+                    "Fantasy Team": "Draft Team",
+                })
+                if not adv_df.empty:
+                    with st.expander("Advanced pick details", expanded=False):
+                        render_output_table(
+                            clean_ui_columns(format_draft_lab_table(adv_df.copy())),
+                            key="draft_lab_board_advanced",
+                            file_name="draft_simulation_board_advanced.csv",
+                            display_rows=80,
+                            style_cols=["Scarcity Score", "Roster Fit Score", "Decision Score"],
+                        )
+            except ImportError:
+                pass
             if developer_mode_enabled():
                 with st.expander("Draft Scoring Breakdown", expanded=False):
                     st.caption("Pick-level component contributions from the draft scoring engine.")
@@ -19991,7 +20042,7 @@ if active_page == "Draft Simulation Test Mode":
             except Exception as e:
                 st.info(f"Excel export is unavailable in this environment ({e}). CSV export is ready above.")
         render_contextual_page_nav(
-            "Draft Simulation Test Mode",
+            "Draft Lab / Simulation",
             "after_results",
             label="Send draft settings to…",
         )
@@ -21750,7 +21801,7 @@ if active_page == "Live Draft Room":
                 if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
                     _analyze_payload = pg_xfer.build_transfer(st.session_state, "live_to_draft_lab", {})
                     request_contextual_page(
-                        "Draft Simulation Test Mode",
+                        "Draft Lab / Simulation",
                         _analyze_payload,
                         source_page="Live Draft Room",
                     )
@@ -22718,6 +22769,10 @@ if active_page == "Fantasy Lineup Assistant":
 
             if not diag["hitting_table"].empty:
                 ht_disp = diag["hitting_table"].copy()
+                if "Rel. strength (0–100)" in ht_disp.columns:
+                    rel_vals = pd.to_numeric(ht_disp["Rel. strength (0–100)"], errors="coerce")
+                    if rel_vals.isna().all() or rel_vals.nunique(dropna=True) <= 1:
+                        ht_disp = ht_disp.drop(columns=["Rel. strength (0–100)"])
                 mask_rate = ht_disp["Category"].isin(["AVG", "OBP"])
                 ht_disp.loc[mask_rate, "Lineup total"] = pd.to_numeric(ht_disp.loc[mask_rate, "Lineup total"], errors="coerce").round(3)
                 ht_disp.loc[~mask_rate, "Lineup total"] = pd.to_numeric(ht_disp.loc[~mask_rate, "Lineup total"], errors="coerce").round(0).astype("Int64")

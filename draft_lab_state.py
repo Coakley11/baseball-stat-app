@@ -5,7 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-DRAFT_LAB_PAGE = "Draft Simulation Test Mode"
+DRAFT_LAB_PAGE = "Draft Lab / Simulation"
+DRAFT_LAB_PAGE_LEGACY = "Draft Simulation Test Mode"
 
 # Post-draft results tabs (no Trade Simulator — trade ideas stay in exports only).
 DRAFT_LAB_RESULT_TABS: tuple[str, ...] = (

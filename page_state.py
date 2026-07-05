@@ -114,6 +114,14 @@ PAGE_STATE_REGISTRY = {
         ],
         "prefixes": ["draft_lab_"],
     },
+    "Draft Lab / Simulation": {
+        "exact": [
+            "draft_lab_window", "draft_lab_scoring_type", "draft_lab_format",
+            "draft_lab_projection_style", "draft_lab_picks_per_team", "draft_lab_roster_team",
+            "draft_lab_results",
+        ],
+        "prefixes": ["draft_lab_"],
+    },
     "Live Draft Room": {
         "exact": [
             "live_draft_room", "live_draft_league_name", "live_draft_team_count", "live_draft_num_teams",

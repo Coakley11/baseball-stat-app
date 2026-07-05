@@ -323,12 +323,13 @@ def build_category_standings_table(
         if cat not in ranks:
             continue
         rank = int(ranks[cat])
+        rank_label = f"{rank}{_ordinal_suffix(rank)}"
+        if n_teams > 1:
+            rank_label = f"{rank_label} of {n_teams}"
         rows.append(
             {
                 "Category": cat,
-                "Your rank": rank,
-                "League rank": f"{rank}{_ordinal_suffix(rank)}",
-                "League teams": n_teams,
+                "Rank": rank_label,
                 "Status": (
                     "Strength" if cat in (needs.get("strengths") or [])
                     else "Weakness" if cat in (needs.get("weaknesses") or [])
@@ -427,7 +428,7 @@ def format_current_stat_line(row: pd.Series) -> str:
                 elif isinstance(val, float):
                     parts.append(f"{label} {val:.0f}" if label != "OPS" else f"OPS {val:.3f}")
                 break
-    return " · ".join(parts) if parts else "Current stats loaded"
+    return " • ".join(parts) if parts else "Current stats loaded"
 
 
 def build_add_recommendation_explanation(player_row: pd.Series, needs: dict[str, Any]) -> str:
@@ -436,24 +437,17 @@ def build_add_recommendation_explanation(player_row: pd.Series, needs: dict[str,
     ranks = needs.get("category_ranks") or {}
     helped = categories_helped_by_player(player_row, targets)
     if helped and ranks:
-        rank_nums = [
-            f"{int(ranks[cat])}{_ordinal_suffix(int(ranks[cat]))}"
+        rank_bits = [
+            f"{cat} {int(ranks[cat])}{_ordinal_suffix(int(ranks[cat]))}"
             for cat in helped[:4]
             if cat in ranks
         ]
-        if rank_nums:
-            cats = helped[:4]
-            if len(cats) == 2:
-                cats_text = f"{cats[0]} and {cats[1]}"
-            else:
-                cats_text = ", ".join(cats)
-            if len(rank_nums) == 2:
-                ranks_text = f"{rank_nums[0]} and {rank_nums[1]}"
-            else:
-                ranks_text = ", ".join(rank_nums)
-            return f"Improves **{cats_text}** where your team currently ranks **{ranks_text}**."
+        cats_text = ", ".join(helped[:4])
+        if rank_bits:
+            return f"Helps: **{cats_text}**. Current team ranks: **{' • '.join(rank_bits)}**."
+        return f"Helps: **{cats_text}**."
     if helped:
-        return f"Improves **{', '.join(helped[:4])}** based on current-season production."
+        return f"Helps: **{', '.join(helped[:4])}** based on current-season production."
     return "Solid current-season upgrade for roster balance."
 
 

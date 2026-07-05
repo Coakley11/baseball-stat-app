@@ -53,7 +53,7 @@ class TestBaseballDraftActivity(unittest.TestCase):
         _app, event, *_rest = record_mock.call_args[0]
         kwargs = record_mock.call_args[1]
         self.assertEqual(event, "draft_analysis_created")
-        self.assertEqual(kwargs["page"], "Draft Simulation Test Mode")
+        self.assertEqual(kwargs["page"], "Draft Lab / Simulation")
         self.assertEqual(kwargs["metrics"]["teams"], ["Daniel", "Ariel"])
 
     @patch("baseball_draft_activity.log_completed_live_draft")
@@ -77,16 +77,16 @@ class TestBaseballDraftActivity(unittest.TestCase):
         metrics = live_draft_activity_metrics(
             _sample_room(),
             activity_type="draft_analysis_created",
-            feature="Draft Simulation Test Mode",
+            feature="Draft Lab / Simulation",
         )
         url = build_resume_action_url(
             "baseball",
             resume_key="bb:draft_lab:ROOM-ABC123",
-            page="Draft Simulation Test Mode",
+            page="Draft Lab / Simulation",
             metrics=metrics,
             base_url="https://example.test",
         )
-        self.assertIn("suite_page=Draft+Simulation+Test+Mode", url)
+        self.assertIn("suite_page=Draft+Lab+%2F+Simulation", url)
         self.assertIn("suite_draft_room=ROOM-ABC123", url)
         self.assertIn("suite_resume=bb%3Adraft_lab%3AROOM-ABC123", url)
 
@@ -104,15 +104,15 @@ class TestBaseballDraftActivity(unittest.TestCase):
                 self.query_params = _QP(
                     {
                         "suite_resume": "bb:draft_lab:team:ROOM-ABC123",
-                        "suite_page": "Draft Simulation Test Mode",
+                        "suite_page": "Draft Lab / Simulation",
                         "suite_draft_room": "ROOM-ABC123",
                     }
                 )
 
         st = _ST()
-        _apply_baseball(st, "bb:draft_lab:team:ROOM-ABC123", "Draft Simulation Test Mode")
+        _apply_baseball(st, "bb:draft_lab:team:ROOM-ABC123", "Draft Lab / Simulation")
         self.assertEqual(st.session_state.get("_suite_resume_draft_room"), "ROOM-ABC123")
-        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Lab / Simulation")
 
 
     @patch("suite_activity_client.record_activity")

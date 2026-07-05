@@ -47,8 +47,8 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:draft_prep", "Draft Simulation"),
     ("bb:draft", "Draft Simulation"),
     ("bb:live_draft:", "Live Draft Room"),
-    ("bb:draft_lab:", "Draft Simulation Test Mode"),
-    ("bb:draft_lab", "Draft Simulation Test Mode"),
+    ("bb:draft_lab:", "Draft Lab / Simulation"),
+    ("bb:draft_lab", "Draft Lab / Simulation"),
     ("bb:hof_case:", "Career Totals"),
     ("baseball:projections", "ML Projections"),
     ("bb:proj", "ML Projections"),
@@ -414,10 +414,10 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("bb:draft_lab:team:"):
             metrics["draft_room_id"] = key.split(":", 3)[-1].strip()
             metrics["draft_section"] = "team_analysis"
-            page = "Draft Simulation Test Mode"
+            page = "Draft Lab / Simulation"
         elif key.startswith("bb:draft_lab:"):
             metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
-            page = "Draft Simulation Test Mode"
+            page = "Draft Lab / Simulation"
         elif key.startswith("bb:hof_case:"):
             slug = key.split(":", 2)[-1].strip()
             metrics["hof_case_mode"] = True

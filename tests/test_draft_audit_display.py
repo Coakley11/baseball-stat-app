@@ -98,8 +98,8 @@ class PickVerdictTests(unittest.TestCase):
             "Primary Position": "OF",
         }
         text = build_pick_verdict(row, pick_no=50)
-        self.assertIn("95 spots after ADP", text)
-        self.assertIn("+31 Fantasy Edge", text)
+        self.assertIn("Major value pick", text)
+        self.assertIn("+95", text)
 
     def test_position_need_with_roster_fit(self) -> None:
         row = {
@@ -109,7 +109,7 @@ class PickVerdictTests(unittest.TestCase):
             "Scarcity Score": 0.55,
         }
         text = build_pick_verdict(row, gaps=["OF"], pick_no=8)
-        self.assertIn("Filled OF need with 1.72 roster-fit score", text)
+        self.assertIn("Best positional fit available", text)
 
     def test_no_generic_strong_decision_prefix(self) -> None:
         row = {

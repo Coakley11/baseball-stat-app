@@ -111,19 +111,13 @@ def _render_add_player_card(
     on_plan_add,
 ) -> None:
     why = str(row.get("Why Add") or "")
-    helped = str(row.get("Categories Helped") or "")
-    subtitle_parts = []
-    if helped:
-        subtitle_parts.append(f"Categories helped: **{helped}**")
-    if why:
-        subtitle_parts.append(why)
     _render_player_card(
         st,
         row,
         key_prefix=key_prefix,
         button_label="Plan Add",
         on_click=on_plan_add,
-        subtitle=" · ".join(subtitle_parts),
+        subtitle=why,
     )
 
 

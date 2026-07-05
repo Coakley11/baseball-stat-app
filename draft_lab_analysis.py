@@ -199,24 +199,31 @@ def draft_lab_roster_team_options(teams: list[str]) -> list[str]:
 
 
 def draft_lab_board_display_columns() -> list[str]:
+    """Primary columns shown by default in the post-draft audit board."""
     return [
         "Round",
         "Pick",
         "Fantasy Team",
         "fullName",
         "Primary Position",
+        "Fantasy Edge",
+        "Expected Fantasy Value",
+        "Draft Fit Score",
+        "Decision Score",
+        "Pick Verdict",
+        "Why This Pick",
+    ]
+
+
+def draft_lab_board_advanced_columns() -> list[str]:
+    """Advanced audit columns — shown in expander."""
+    return [
         "Team",
         "Model Rank",
         "Market Rank",
-        "Fantasy Edge",
-        "Expected Fantasy Value",
         "Projection Confidence",
         "Scarcity Score",
-        "Draft Fit Score",
-        "Decision Score",
         "Roster Need At Pick",
-        "Pick Verdict",
-        "Why This Pick",
         "Projection Warning",
     ]
 

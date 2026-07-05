@@ -101,35 +101,38 @@ def build_pick_verdict(
     cats = _category_list(data)
 
     if pick and market and market - pick >= 20:
-        edge_txt = f" (+{int(round(edge))} Fantasy Edge)" if edge and edge > 0 else ""
-        return f"Selected {int(round(market - pick))} spots after ADP{edge_txt}."
+        edge_txt = f" (+{int(round(edge))} vs market)" if edge and edge > 0 else ""
+        return f"Major value pick (+{int(round(market - pick))} vs ADP){edge_txt}."
+
+    if edge is not None and edge >= 30:
+        return f"Major value pick (+{int(round(edge))} vs market)."
 
     if edge is not None and edge >= 15:
-        return f"Selected {int(round(edge))} spots of value vs market (+{int(round(edge))} Fantasy Edge)."
+        return f"Value pick (+{int(round(edge))} vs market)."
 
     if dec is not None and dec >= 90:
-        return f"Best Decision Score available ({dec:.2f})."
-
-    if cats and edge is not None and edge >= 8:
-        cat_txt = "/".join(cats[:2])
-        return f"Added projected {cat_txt} impact (+{int(round(edge))} Fantasy Edge)."
-
-    if grade is not None and grade >= 85:
-        return f"Highest player grade remaining ({grade:.0f})."
+        return "Highest Decision Score available."
 
     if gap_list and (pos in gap_list or bucket in gap_list):
         if scarcity is not None and scarcity >= 0.70:
-            return f"Filled final {pos or bucket} slot before scarcity increased."
-        if fit is not None:
-            return f"Filled {pos or bucket} need with {fit:.2f} roster-fit score."
-        return f"Filled remaining {pos or bucket} need."
+            return f"Best positional fit before scarcity increased ({pos or bucket})."
+        if fit is not None and fit >= 1.0:
+            return "Best positional fit available."
+        return f"Filled {pos or bucket} need."
+
+    if cats and edge is not None and edge >= 8:
+        cat_txt = "/".join(cats[:2])
+        return f"Added projected {cat_txt} impact (+{int(round(edge))} vs market)."
+
+    if grade is not None and grade >= 85:
+        return f"Highest player grade remaining ({grade:.1f})."
 
     if scarcity is not None and scarcity >= 0.75:
         label = pos or "hitters"
-        return f"Highest scarcity score among remaining {label}."
+        return f"Highest scarcity among remaining {label}."
 
     if cats:
-        return f"Improved weakest category: {cats[0].lower()}."
+        return f"Improved weakest category: {cats[0]}."
 
     if bucket == "Bench":
         return "Added bench depth."
@@ -138,13 +141,13 @@ def build_pick_verdict(
         return "Filled utility slot."
 
     if dec is not None and dec >= 75:
-        return f"Strong Decision Score ({dec:.2f}) vs alternatives."
+        return f"Strong Decision Score ({dec:.1f})."
 
     if edge is not None and edge > 0:
-        return f"Positive Fantasy Edge (+{int(round(edge))})."
+        return f"Positive edge (+{int(round(edge))} vs market)."
 
-    if fit is not None and fit >= 0.65:
-        return f"Solid roster-fit score ({fit:.2f}) at this pick."
+    if fit is not None and fit >= 1.0:
+        return f"Strong roster fit ({fit:.2f})."
 
     return "Balanced value pick at this slot."
 

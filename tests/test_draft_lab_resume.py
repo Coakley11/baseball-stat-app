@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+from draft_lab_state import DRAFT_LAB_PAGE, DRAFT_LAB_PAGE_LEGACY
 from draft_lab_resume import (
     DRAFT_LAB_RESUME_COMPLETED_KEY,
     DRAFT_LAB_RESUME_ERROR_KEY,
@@ -81,31 +82,31 @@ class TestDraftLabResume(unittest.TestCase):
     def test_suite_page_query_schedules_draft_lab_not_historical(self) -> None:
         st = _ST(
             {
-                "suite_page": "Draft Simulation Test Mode",
+                "suite_page": "Draft Lab / Simulation",
                 "suite_draft_room": "ROOM-ABC123",
                 "suite_resume": "bb:draft_lab:team:ROOM-ABC123",
             }
         )
         apply_suite_resume_launch(st, "baseball")
-        self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
-        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("active_page"), "Draft Lab / Simulation")
+        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Lab / Simulation")
         self.assertNotEqual(st.session_state.get("active_page"), "Historical Explorer")
         self.assertTrue(st.session_state.get("_suite_page_user_nav"))
 
     def test_bb_draft_lab_resume_key_opens_draft_lab(self) -> None:
         st = _ST({"suite_resume": "bb:draft_lab:ROOM-XYZ"})
         _apply_baseball(st, "bb:draft_lab:ROOM-XYZ", "")
-        self.assertEqual(st.session_state["_navigate_to_page"], "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state["_navigate_to_page"], "Draft Lab / Simulation")
         self.assertEqual(st.session_state["_suite_resume_draft_room"], "ROOM-XYZ")
 
     def test_pending_query_survives_auth_rerun(self) -> None:
-        st = _ST({"suite_page": "Draft Simulation Test Mode", "suite_draft_room": "ROOM-1"})
+        st = _ST({"suite_page": "Draft Lab / Simulation", "suite_draft_room": "ROOM-1"})
         apply_suite_resume_launch(st, "baseball")
-        self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("active_page"), "Draft Lab / Simulation")
         capture_pending_resume_query(st, "baseball")
         st.query_params = _QP({})
         apply_suite_resume_launch(st, "baseball")
-        self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("active_page"), "Draft Lab / Simulation")
         self.assertTrue(st.session_state.get("_suite_resume_launch_baseball"))
 
     def test_rebuild_from_completed_room_in_session(self) -> None:
@@ -132,7 +133,7 @@ class TestDraftLabResume(unittest.TestCase):
         self.assertEqual(str(loaded.get("draft_room_id") or "").upper(), "DRAFTID1")
 
     def test_suite_draft_room_query_rebuilds_results(self) -> None:
-        st = _ST({"suite_page": "Draft Simulation Test Mode", "suite_draft_room": "DRAFTID2"})
+        st = _ST({"suite_page": "Draft Lab / Simulation", "suite_draft_room": "DRAFTID2"})
         st.session_state["live_draft_room"] = _completed_room("DRAFTID2")
         st.session_state["_suite_pending_draft_lab_resume"] = True
 
@@ -185,7 +186,7 @@ class TestDraftLabResume(unittest.TestCase):
         url = build_resume_action_url(
             "baseball",
             resume_key="bb:draft_lab:team:ROOM-ABC123",
-            page="Draft Simulation Test Mode",
+            page="Draft Lab / Simulation",
             metrics={
                 "draft_room_id": "ROOM-ABC123",
                 "draft_section": "team_analysis",
@@ -193,21 +194,28 @@ class TestDraftLabResume(unittest.TestCase):
             },
             base_url="https://example.test",
         )
-        self.assertIn("suite_page=Draft+Simulation+Test+Mode", url)
+        self.assertIn("suite_page=Draft+Lab+%2F+Simulation", url)
         self.assertIn("suite_draft_room=ROOM-ABC123", url)
         self.assertIn("suite_draft_section=team_analysis", url)
 
+    def test_schedule_draft_lab_resume_navigation_does_not_touch_main_sidebar_page(self) -> None:
+        st = _ST()
+        st.session_state["main_sidebar_page"] = "Historical Explorer"
+        schedule_draft_lab_resume_navigation(st, page=DRAFT_LAB_PAGE, room_id="R1")
+        self.assertEqual(st.session_state["main_sidebar_page"], "Historical Explorer")
+        self.assertEqual(st.session_state["_navigate_to_page"], DRAFT_LAB_PAGE)
+
     def test_schedule_sets_skip_page_restore(self) -> None:
         st = _ST()
-        schedule_draft_lab_resume_navigation(st, page="Draft Simulation Test Mode", room_id="R1")
-        self.assertEqual(st.session_state["_skip_page_restore_for"], "Draft Simulation Test Mode")
+        schedule_draft_lab_resume_navigation(st, page="Draft Lab / Simulation", room_id="R1")
+        self.assertEqual(st.session_state["_skip_page_restore_for"], "Draft Lab / Simulation")
 
     def test_finalize_clears_forced_navigation(self) -> None:
         st = _ST()
         st.session_state["_suite_pending_draft_lab_resume"] = True
-        st.session_state["_navigate_to_page"] = "Draft Simulation Test Mode"
-        st.session_state["_skip_page_restore_for"] = "Draft Simulation Test Mode"
-        st.session_state[PENDING_RESUME_QUERY_KEY] = {"suite_page": "Draft Simulation Test Mode"}
+        st.session_state["_navigate_to_page"] = "Draft Lab / Simulation"
+        st.session_state["_skip_page_restore_for"] = "Draft Lab / Simulation"
+        st.session_state[PENDING_RESUME_QUERY_KEY] = {"suite_page": "Draft Lab / Simulation"}
         finalize_draft_lab_resume(st, applied=True)
         self.assertTrue(draft_lab_resume_consumed(st.session_state))
         self.assertFalse(forced_page_active(st.session_state))
@@ -215,7 +223,7 @@ class TestDraftLabResume(unittest.TestCase):
 
     def test_user_can_navigate_away_after_resume(self) -> None:
         st = _ST()
-        schedule_draft_lab_resume_navigation(st, page="Draft Simulation Test Mode", room_id="R1")
+        schedule_draft_lab_resume_navigation(st, page="Draft Lab / Simulation", room_id="R1")
         st.session_state["live_draft_room"] = _completed_room("R1")
 
         def _push(_room: dict) -> bool:
@@ -237,13 +245,13 @@ class TestDraftLabResume(unittest.TestCase):
     def test_suite_resume_launch_does_not_reforce_after_completed(self) -> None:
         st = _ST(
             {
-                "suite_page": "Draft Simulation Test Mode",
+                "suite_page": "Draft Lab / Simulation",
                 "suite_draft_room": "ROOM-ABC123",
                 "suite_resume": "bb:draft_lab:team:ROOM-ABC123",
             }
         )
         apply_suite_resume_launch(st, "baseball")
-        self.assertEqual(st.session_state.get("active_page"), "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("active_page"), "Draft Lab / Simulation")
         st.session_state[DRAFT_LAB_RESUME_COMPLETED_KEY] = True
         st.session_state["active_page"] = "Live Draft Room"
         st.session_state["main_sidebar_page"] = "Live Draft Room"
@@ -277,12 +285,12 @@ class TestDraftLabResume(unittest.TestCase):
     def test_reapply_pending_after_auth_clears_url(self) -> None:
         st = _ST()
         st.session_state[PENDING_RESUME_QUERY_KEY] = {
-            "suite_page": "Draft Simulation Test Mode",
+            "suite_page": "Draft Lab / Simulation",
             "suite_draft_room": "ROOM-9",
             "suite_resume": "bb:draft_lab:team:ROOM-9",
         }
         self.assertTrue(reapply_pending_baseball_resume(st))
-        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Simulation Test Mode")
+        self.assertEqual(st.session_state.get("_navigate_to_page"), "Draft Lab / Simulation")
 
     def test_apply_baseball_suite_resume_hydrates_room(self) -> None:
         st = _ST()

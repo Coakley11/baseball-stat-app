@@ -298,19 +298,19 @@ def log_draft_analysis_created(
         room,
         session=session,
         activity_type="draft_analysis_created",
-        feature="Draft Simulation Test Mode",
+        feature="Draft Lab / Simulation",
     )
     resume_key = f"bb:draft_lab:team:{rid}" if rid else "bb:draft_lab"
     metrics["draft_section"] = "team_analysis"
     resume_title = "Continue Draft Analysis"
     _record_draft_event(
         "draft_analysis_created",
-        page="Draft Simulation Test Mode",
+        page="Draft Lab / Simulation",
         metrics=metrics,
         summary="Draft analysis ready" + (f" — {matchup}" if matchup else ""),
         resume_key=resume_key,
         resume_title=resume_title,
-        resume_subtitle=matchup or "Draft Simulation Test Mode",
+        resume_subtitle=matchup or "Draft Lab / Simulation",
         session=session,
     )
 
@@ -334,14 +334,14 @@ def log_draft_analysis_attempted(
         room,
         session=session,
         activity_type="draft_analysis_attempted",
-        feature="Draft Simulation Test Mode",
+        feature="Draft Lab / Simulation",
     )
     err = str(error or "").strip()
     if err:
         metrics["analysis_error"] = err[:240]
     _record_draft_event(
         "draft_analysis_attempted",
-        page="Draft Simulation Test Mode",
+        page="Draft Lab / Simulation",
         metrics=metrics,
         summary="Draft analysis incomplete" + (f" — {matchup}" if matchup else ""),
         resume_key=f"bb:live_draft:{rid}" if rid else "bb:live_draft",

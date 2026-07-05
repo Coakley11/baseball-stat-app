@@ -9,13 +9,23 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from draft_lab_state import has_pending_draft_lab_handoff
+    from draft_lab_state import DRAFT_LAB_PAGE, DRAFT_LAB_PAGE_LEGACY, has_pending_draft_lab_handoff
 except ImportError:
+    DRAFT_LAB_PAGE = "Draft Lab / Simulation"
+    DRAFT_LAB_PAGE_LEGACY = "Draft Simulation Test Mode"
+
     def has_pending_draft_lab_handoff(_session: dict[str, Any]) -> bool:
         return False
 
 PENDING_RESUME_QUERY_KEY = "_suite_pending_resume_query"
-DRAFT_LAB_RESUME_PAGE = "Draft Simulation Test Mode"
+DRAFT_LAB_RESUME_PAGE = DRAFT_LAB_PAGE
+_DRAFT_LAB_PAGE_NAMES = frozenset({DRAFT_LAB_PAGE, DRAFT_LAB_PAGE_LEGACY})
+
+
+def _is_draft_lab_page(name: str) -> bool:
+    return str(name or "").strip() in _DRAFT_LAB_PAGE_NAMES
+
+
 DRAFT_LAB_RESUME_ERROR_KEY = "_draft_lab_resume_error"
 DRAFT_LAB_RESUME_DIAG_KEY = "_draft_lab_resume_last_diag"
 DRAFT_LAB_RESUME_COMPLETED_KEY = "_draft_lab_resume_completed"
@@ -101,9 +111,9 @@ def finalize_draft_lab_resume(st: Any, *, applied: bool = True) -> None:
         except ImportError:
             ss["_suite_last_consumed_resume_key"] = resume_key
     ss.pop("_suite_pending_draft_lab_resume", None)
-    if str(ss.get("_navigate_to_page") or "").strip() == DRAFT_LAB_RESUME_PAGE:
+    if _is_draft_lab_page(str(ss.get("_navigate_to_page") or "")):
         ss.pop("_navigate_to_page", None)
-    if str(ss.get("_skip_page_restore_for") or "").strip() == DRAFT_LAB_RESUME_PAGE:
+    if _is_draft_lab_page(str(ss.get("_skip_page_restore_for") or "")):
         ss.pop("_skip_page_restore_for", None)
     _clear_pending_resume_query_draft_lab(ss)
     clear_resume_query_params(st)
@@ -334,6 +344,8 @@ def _apply_draft_section_preference(session: dict[str, Any], section: str) -> No
 def schedule_draft_lab_resume_navigation(st: Any, *, page: str, room_id: str = "", section: str = "") -> None:
     """Force target draft page to win over default Historical Explorer restore."""
     target = str(page or DRAFT_LAB_RESUME_PAGE).strip() or DRAFT_LAB_RESUME_PAGE
+    if _is_draft_lab_page(target):
+        target = DRAFT_LAB_PAGE
     ss = st.session_state
     pending = pending_resume_query(st)
     resume_key = str(pending.get("suite_resume") or "").strip()
@@ -351,9 +363,6 @@ def schedule_draft_lab_resume_navigation(st: Any, *, page: str, room_id: str = "
     if draft_lab_resume_consumed(ss) and not resume_requested(ss) and not fresh:
         return
     mark_resume_requested(ss)
-    ss["_navigate_to_page"] = target
-    ss["active_page"] = target
-    ss["main_sidebar_page"] = target
     if room_id:
         ss["_suite_resume_draft_room"] = str(room_id).strip()
     if section:
@@ -365,10 +374,11 @@ def schedule_draft_lab_resume_navigation(st: Any, *, page: str, room_id: str = "
     except ImportError:
         pass
     ss["_navigate_to_page"] = target
-    ss["_skip_page_restore_for"] = target
     ss["active_page"] = target
-    ss["main_sidebar_page"] = target
+    ss["_skip_page_restore_for"] = target
     ss["_suite_page_user_nav"] = True
+    ss["_suite_nav_consumed_this_run"] = False
+    ss["_suite_nav_consumed_target"] = target
     ss["active_page_source"] = "suite_resume_launch"
 
 
