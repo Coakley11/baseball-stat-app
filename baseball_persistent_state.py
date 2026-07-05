@@ -641,9 +641,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         if key == "page_filter_state" and isinstance(val, dict):
             continue
         try:
-            from workflow_persist_guard import should_keep_session_workflow_over_blob
+            from workflow_persist_guard import (
+                PROTECTED_WORKFLOW_PERSIST_KEYS,
+                should_keep_session_workflow_over_blob,
+            )
 
-            if should_keep_session_workflow_over_blob(key, ss.get(key), val):
+            if key in PROTECTED_WORKFLOW_PERSIST_KEYS and should_keep_session_workflow_over_blob(
+                key, ss.get(key), val
+            ):
                 continue
         except ImportError:
             pass

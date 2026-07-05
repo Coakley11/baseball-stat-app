@@ -381,12 +381,13 @@ def enrich_recommendations_with_waiver_targets(
     waiver_pool: pd.DataFrame | None,
     *,
     needs: dict[str, Any] | None = None,
+    league_context: dict[str, Any] | None = None,
     limit: int = 3,
 ) -> list[dict[str, Any]]:
     """Attach specific waiver player names to category-repair recommendations."""
     if not recs or waiver_pool is None or getattr(waiver_pool, "empty", True):
         return recs
-    names = _waiver_target_names(waiver_pool, needs, limit=limit)
+    names = _waiver_target_names(waiver_pool, needs, limit=limit, context=league_context)
     if not names:
         return recs
     names_text = ", ".join(names)

@@ -594,6 +594,30 @@ def pick_restore_session(
             disk_ts,
         )
 
+    try:
+        from workflow_persist_guard import PROTECTED_WORKFLOW_PERSIST_KEYS, workflow_richness
+
+        cloud_wf = sum(workflow_richness(k, cloud_state.get(k)) for k in PROTECTED_WORKFLOW_PERSIST_KEYS)
+        disk_wf = sum(workflow_richness(k, disk_state.get(k)) for k in PROTECTED_WORKFLOW_PERSIST_KEYS)
+        if disk_wf > cloud_wf:
+            return RestorePickResult(
+                disk_state,
+                "disk",
+                "disk richer saved drafts / league contexts",
+                cloud_ts,
+                disk_ts,
+            )
+        if cloud_wf > disk_wf:
+            return RestorePickResult(
+                cloud_state,
+                "cloud",
+                "cloud richer saved drafts / league contexts",
+                cloud_ts,
+                disk_ts,
+            )
+    except ImportError:
+        pass
+
     if cloud_first and cloud_state:
         return RestorePickResult(
             cloud_state,

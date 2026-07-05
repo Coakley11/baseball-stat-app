@@ -177,6 +177,33 @@ def render_waiver_wire_page(
     except ImportError:
         pass
 
+    def _nav_label(page_key: str) -> str:
+        if callable(page_label_fn):
+            return str(page_label_fn(page_key))
+        return page_key
+
+    cols = st.columns(2)
+    nav_lineup = cols[0]
+    nav_standings = cols[1] if len(cols) > 1 else cols[0]
+    with nav_lineup:
+        if st.button(_nav_label("Fantasy Lineup Assistant"), key="waiver_open_lineup_btn", use_container_width=True):
+            try:
+                from draft_archive_ui import schedule_fantasy_analysis_navigation, FANTASY_LINEUP_PAGE
+
+                if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
+                    st.rerun()
+            except ImportError:
+                pass
+    with nav_standings:
+        if st.button(_nav_label("Fantasy Standings Tracker"), key="waiver_open_standings_btn", use_container_width=True):
+            try:
+                from draft_archive_ui import schedule_fantasy_analysis_navigation, FANTASY_STANDINGS_PAGE
+
+                if schedule_fantasy_analysis_navigation(session, FANTASY_STANDINGS_PAGE):
+                    st.rerun()
+            except ImportError:
+                pass
+
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
         st.warning(

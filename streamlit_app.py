@@ -2079,6 +2079,25 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
     chart_df = chart_df.dropna(subset=[value_col]).sort_values(value_col, ascending=False).head(top_n)
     if chart_df.empty:
         return
+    try:
+        from player_photos import render_top_n_leaderboard_bar_chart
+
+        people_df = st.session_state.get("people_df")
+        if not isinstance(people_df, pd.DataFrame):
+            people_df = None
+        render_top_n_leaderboard_bar_chart(
+            st,
+            chart_df,
+            name_col,
+            value_col,
+            title,
+            top_n=top_n,
+            people_df=people_df,
+            use_api=False,
+        )
+        return
+    except ImportError:
+        pass
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.barh(chart_df[name_col], chart_df[value_col])
     ax.set_title(title)
@@ -7330,7 +7349,8 @@ def lineup_diagnosis_report(
             n = ms_counts[k]
             parts.append(f"**{k}**" + (f" (×{n})" if n > 1 else ""))
         out["slot_gaps"] = (
-            "**Lineup analysis is from a partial roster.** Open slots still need players: "
+            "**Roster is not yet complete.** Analysis is based on currently assigned players. "
+            "Open roster slots: "
             + ", ".join(parts)
             + "."
         )
@@ -23257,24 +23277,25 @@ if active_page == "Fantasy Lineup Assistant":
                     waiver_pool=_waiver_pool,
                     league_rosters=roster_stats,
                     my_team=str(lineup_team or ""),
+                    league_context=_ctx if isinstance(_ctx, dict) else None,
                 )
                 for _action_line in _action_lines:
                     st.markdown(_action_line)
                 if _action_lines:
-                    act_w, act_t, act_s = st.columns(3)
+                    act_w, act_s = st.columns(2)
                     with act_w:
-                        if st.button("Open Waiver Wire", key="lineup_open_waiver_wire_btn", use_container_width=True):
-                            navigate_to_page("Waiver Wire / Add-Drop Center")
-                    with act_t:
                         if st.button(
-                            page_option_label("Trade Analyzer / Roster Move Assistant"),
-                            key="lineup_open_trade_analyzer_btn",
+                            page_option_label("Waiver Wire / Add-Drop Center"),
+                            key="lineup_open_waiver_wire_btn",
                             use_container_width=True,
                         ):
-                            st.session_state["lineup_trade_analyzer_open"] = True
-                            st.rerun()
+                            navigate_to_page("Waiver Wire / Add-Drop Center")
                     with act_s:
-                        if st.button("Open Standings Tracker", key="lineup_open_standings_btn", use_container_width=True):
+                        if st.button(
+                            page_option_label("Fantasy Standings Tracker"),
+                            key="lineup_open_standings_btn",
+                            use_container_width=True,
+                        ):
                             navigate_to_page("Fantasy Standings Tracker")
             except Exception as exc:
                 if developer_mode_enabled():

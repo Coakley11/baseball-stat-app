@@ -355,6 +355,14 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "restore_source": restore_source,
         "restore_source_label": restore_label,
         "restore_at": restore_at,
+        "auth_mode": "signed_in" if authenticated else "local_demo",
+        "cloud_write_expected": bool(cloud_enabled and authenticated),
+        "restore_cloud_vs_demo_note": (
+            "Restore source is cloud, but you are in local/demo mode — empty cloud can overwrite "
+            "disk saves unless workflow protection is active."
+            if restore_source == "cloud" and not authenticated
+            else ""
+        ),
         "workflow_merge_keys": merged_keys,
         "workflow_merge_sources": merge_sources,
         "workflow_restore_merged_keys": restore_merged,

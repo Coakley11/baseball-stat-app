@@ -1091,7 +1091,10 @@ def save_simulator_league_context(
     cfg = dict(config or session.get("draft_shared_settings") or {})
     league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
     label = str(draft_name or "").strip() or f"Simulator — {my_team}"
-    resolved_draft_id = str(draft_id or resolve_simulator_library_draft_id(session) or "").strip() or None
+    if reuse_session_draft_id and not draft_id:
+        resolved_draft_id = str(resolve_simulator_library_draft_id(session) or "").strip() or None
+    else:
+        resolved_draft_id = str(draft_id or "").strip() or None
     entry = save_simulator_team_archive(
         session,
         board_df,

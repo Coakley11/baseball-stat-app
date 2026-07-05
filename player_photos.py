@@ -774,6 +774,81 @@ def adp_display(row: Any) -> str:
     return "—"
 
 
+def inject_leaderboard_bar_chart_styles(st: Any) -> None:
+    _safe_markdown(
+        st,
+        """
+        <style>
+        .bb-lb-chart { margin: 8px 0 16px 0; }
+        .bb-lb-row {
+            display: grid;
+            grid-template-columns: 36px minmax(120px, 1.2fr) minmax(80px, 2fr) auto;
+            gap: 10px;
+            align-items: center;
+            margin: 6px 0;
+        }
+        .bb-lb-photo img, .bb-lb-photo .bb-queue-placeholder {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1px solid rgba(26, 95, 191, 0.25);
+            background: #edf2f7;
+        }
+        .bb-lb-name { font-weight: 600; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .bb-lb-bar-wrap { background: rgba(128,128,128,0.15); border-radius: 6px; height: 14px; overflow: hidden; }
+        .bb-lb-bar { background: #1a5fbf; height: 100%; border-radius: 6px; min-width: 2px; }
+        .bb-lb-val { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 0.9rem; text-align: right; min-width: 48px; }
+        </style>
+        """,
+    )
+
+
+def render_top_n_leaderboard_bar_chart(
+    st: Any,
+    df: pd.DataFrame,
+    name_col: str,
+    value_col: str,
+    title: str,
+    *,
+    top_n: int = 10,
+    people_df: pd.DataFrame | None = None,
+    use_api: bool = False,
+) -> None:
+    """HTML top-N horizontal bar chart with player headshots."""
+    if df is None or df.empty or value_col not in df.columns or name_col not in df.columns:
+        return
+    chart_df = df[[name_col, value_col]].copy()
+    chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce")
+    chart_df = chart_df.dropna(subset=[value_col]).sort_values(value_col, ascending=False).head(int(top_n))
+    if chart_df.empty:
+        return
+    inject_leaderboard_bar_chart_styles(st)
+    max_val = float(chart_df[value_col].max() or 1.0)
+    rows_html: list[str] = []
+    for _, row in chart_df.iterrows():
+        name = str(row[name_col] or "").strip()
+        val = float(row[value_col])
+        photo_info = get_player_photo_info(full_name=name, row=row, people_df=people_df, use_api=use_api, image_size=64)
+        head = render_queue_headshot_html(photo_info, size=32)
+        pct = max(2.0, 100.0 * val / max_val) if max_val > 0 else 2.0
+        if value_col in ("AVG", "OBP", "SLG", "OPS", "BA"):
+            val_text = f"{val:.3f}".lstrip("0")
+        elif value_col in ("ERA", "WHIP"):
+            val_text = f"{val:.2f}"
+        else:
+            val_text = f"{val:,.0f}" if abs(val - round(val)) < 0.01 else f"{val:.1f}"
+        rows_html.append(
+            f'<div class="bb-lb-row">'
+            f'<div class="bb-lb-photo">{head}</div>'
+            f'<div class="bb-lb-name">{name}</div>'
+            f'<div class="bb-lb-bar-wrap"><div class="bb-lb-bar" style="width:{pct:.1f}%;"></div></div>'
+            f'<div class="bb-lb-val">{val_text}</div>'
+            f"</div>"
+        )
+    _safe_markdown(st, f'<div class="bb-lb-chart"><div style="font-weight:700;margin-bottom:8px;">{title}</div>{"".join(rows_html)}</div>')
+
+
 def render_queue_headshot_html(photo_info: dict[str, Any], *, size: int = 36) -> str:
     url = str(photo_info.get("headshot_url") or "").strip()
     label = str(photo_info.get("full_name") or "Player").strip()

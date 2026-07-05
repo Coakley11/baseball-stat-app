@@ -151,6 +151,11 @@ def build_waiver_pool(
     """Available players = active pool minus anyone rostered in the league context."""
     if player_pool is None or getattr(player_pool, "empty", True):
         return pd.DataFrame()
+    if not context:
+        return pd.DataFrame()
+    league_rosters = context.get("league_rosters") or {}
+    if not isinstance(league_rosters, dict) or len(league_rosters) < 1:
+        return pd.DataFrame()
     pool = player_pool.copy()
     name_col = _player_name_col(pool)
     if name_col not in pool.columns:

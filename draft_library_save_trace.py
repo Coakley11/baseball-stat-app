@@ -362,3 +362,61 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
         )
     _row("Persist OK (overall)", bool(diag.get("persist_ok")))
     return rows
+
+
+def record_save_failure_trace(
+    session: dict[str, Any],
+    *,
+    reason: str,
+    error: str = "",
+    before: dict[str, int] | None = None,
+) -> None:
+    """Capture partial trace when save aborts before persist."""
+    counts = before or _workflow_counts(session)
+    diag = dict(session.get(DRAFT_LIBRARY_SAVE_DIAG_KEY) or {})
+    diag.update(
+        {
+            "reason": reason,
+            "persist_ok": False,
+            "save_error": str(error or ""),
+            "draft_archive_count_before": int(counts.get("draft_archive_count") or 0),
+            "draft_archive_count_after": int(_workflow_counts(session).get("draft_archive_count") or 0),
+            "league_context_count_before": int(counts.get("league_context_count") or 0),
+            "league_context_count_after": int(_workflow_counts(session).get("league_context_count") or 0),
+            "finalized_at": _utc_now(),
+        }
+    )
+    session[DRAFT_LIBRARY_SAVE_DIAG_KEY] = diag
+
+
+def render_save_trace_inline(st: Any, session: dict[str, Any], *, title: str = "Save trace") -> None:
+    """Show last save diagnostics on the save panel (simulator / live draft)."""
+    diag = session.get(DRAFT_LIBRARY_SAVE_DIAG_KEY)
+    if not isinstance(diag, dict) or not diag:
+        return
+    with st.expander(title, expanded=True):
+        st.markdown(
+            f"**Counts:** drafts {diag.get('draft_archive_count_before', '—')} → "
+            f"{diag.get('draft_archive_count_after', '—')} · contexts "
+            f"{diag.get('league_context_count_before', '—')} → "
+            f"{diag.get('league_context_count_after', '—')}"
+        )
+        st.markdown(
+            f"**Persist:** ok={diag.get('persist_ok')} · cloud={diag.get('cloud_write_success')} · "
+            f"disk={diag.get('disk_write_success')} · readback drafts "
+            f"session/disk/cloud={diag.get('draft_in_session')}/"
+            f"{diag.get('draft_in_disk')}/{diag.get('draft_in_cloud')}"
+        )
+        if diag.get("save_error"):
+            st.error(str(diag["save_error"]))
+        if diag.get("cloud_blocked_reason"):
+            st.caption(f"Cloud blocked: {diag['cloud_blocked_reason']}")
+        if diag.get("persist_error"):
+            st.caption(f"Persist error: {diag['persist_error']}")
+        for label, status, detail in save_trace_checklist(diag):
+            icon = {"pass": "✅", "fail": "❌", "warn": "⚠️", "pending": "⏳"}.get(status, "•")
+            line = f"{icon} **{label}**"
+            if detail:
+                line += f" — {detail}"
+            st.markdown(line)
+        st.json(diag)
