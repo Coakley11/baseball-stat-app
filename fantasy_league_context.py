@@ -792,7 +792,7 @@ def stash_league_context_save_flash(
         "draft_id": str(entry.get("draft_id") or ""),
         "draft_name": str(entry.get("draft_name") or ""),
         "team_count": league_team_count(context, entry),
-        "player_count": len(entry.get("players") or []),
+        "player_count": archive_my_team_player_count(entry, context=context),
         "league_save": bool(league_save),
         "coverage": league_context_coverage_badge(context),
     }
@@ -1012,6 +1012,33 @@ def league_team_count(context: dict[str, Any] | None, archive_entry: dict[str, A
             return len(rosters)
     if archive_entry:
         return 1 if str(archive_entry.get("team_name") or "").strip() else 0
+    return 0
+
+
+def archive_my_team_player_count(
+    archive_entry: dict[str, Any] | None,
+    *,
+    context: dict[str, Any] | None = None,
+) -> int:
+    """Count players on the saved user's fantasy team (matches library card logic)."""
+    entry = dict(archive_entry or {})
+    ctx = context if isinstance(context, dict) else None
+    team = str(entry.get("team_name") or (ctx or {}).get("my_team_name") or "").strip()
+    direct = [p for p in (entry.get("players") or []) if isinstance(p, dict)]
+    if direct:
+        return len(direct)
+    rosters: dict[str, Any] = {}
+    if ctx:
+        rosters = dict(ctx.get("league_rosters") or {})
+    if not rosters:
+        rosters = dict(entry.get("league_rosters") or {})
+    if team and isinstance(rosters.get(team), dict):
+        team_players = rosters[team].get("players") or []
+        return len([p for p in team_players if isinstance(p, dict)])
+    for roster in rosters.values():
+        if isinstance(roster, dict) and roster.get("is_user_team"):
+            team_players = roster.get("players") or []
+            return len([p for p in team_players if isinstance(p, dict)])
     return 0
 
 

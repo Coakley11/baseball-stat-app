@@ -46,6 +46,18 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
         self.assertLess(obp_val, 1.0)
         self.assertAlmostEqual(obp_val, 0.330, places=3)
 
+    def test_archive_my_team_player_count_uses_league_rosters(self) -> None:
+        from fantasy_league_context import archive_my_team_player_count
+
+        entry = {"team_name": "Daniel", "players": []}
+        context = {
+            "my_team_name": "Daniel",
+            "league_rosters": {
+                "Daniel": {"players": [{"Player": "A"}, {"Player": "B"}, {"Player": "C"}], "is_user_team": True},
+            },
+        }
+        self.assertEqual(archive_my_team_player_count(entry, context=context), 3)
+
     def test_team_outlook_explanation_shows_full_rank_phrase(self) -> None:
         lines = team_outlook_explanation(
             strong_cats=["OBP"],

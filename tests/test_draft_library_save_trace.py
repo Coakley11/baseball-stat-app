@@ -115,6 +115,29 @@ class DraftLibrarySaveTraceTests(unittest.TestCase):
         self.assertTrue(diag.get("draft_in_session"))
         self.assertIn("cloud_readback_has_archive", diag.get("steps") or [])
 
+    @patch("draft_library_save_trace.save_persist_mode_context", return_value={"cloud_write_expected": False, "auth_mode": "local_demo", "demo_disk_only_ok": True, "cloud_blocked_reason": ""})
+    @patch("workflow_persist_guard.probe_cloud_workflow_for_workspace", return_value={"draft_archive_count": 0, "draft_ids": [], "row_found": False})
+    @patch("draft_library_save_trace.probe_disk_workflow_for_workspace", return_value={"draft_archive_count": 1, "disk_found": True})
+    def test_finalize_demo_mode_skips_cloud_failure(self, _disk: MagicMock, _cloud: MagicMock, _mode: MagicMock) -> None:
+        session: dict = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "T", "players": []}],
+            "_suite_persist_last_save_cloud": False,
+            "_suite_persist_last_save_disk": True,
+        }
+        diag = finalize_save_trace(
+            session,
+            reason="simulator_league_context_saved",
+            before={"draft_archive_count": 0, "league_context_count": 0},
+            after={"draft_archive_count": 1, "league_context_count": 1},
+            persist_ok=False,
+            entry={"draft_id": "x1", "draft_name": "T"},
+            probe_cloud=True,
+        )
+        self.assertTrue(diag.get("draft_in_session"))
+        self.assertTrue(diag.get("persist_ok"))
+        checklist = dict((label, status) for label, status, _ in save_trace_checklist(diag))
+        self.assertEqual(checklist.get("Cloud write"), "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

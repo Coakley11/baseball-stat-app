@@ -17,6 +17,7 @@ from draft_archive_state import (
 )
 from fantasy_league_context import (
     activate_archive_league_context,
+    archive_my_team_player_count,
     clear_active_league_context,
     get_active_league_context,
     get_league_context_for_archive,
@@ -40,6 +41,14 @@ DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 _DRAFT_SAVE_UI_FLASH_KEY = "_draft_save_ui_flash"
+_PAGE_ICONS: dict[str, str] = {
+    SAVED_DRAFT_LIBRARY_PAGE: "📁",
+    FANTASY_STANDINGS_PAGE: "📊",
+    FANTASY_LINEUP_PAGE: "🧠",
+    LIVE_DRAFT_PAGE: "📡",
+    DRAFT_LAB_PAGE: "🧪",
+    DRAFT_SIMULATOR_PAGE: "🧾",
+}
 
 
 def _set_draft_save_ui_flash(session: dict[str, Any], *, level: str, message: str) -> None:
@@ -185,16 +194,15 @@ def _execute_simulator_league_context_save(
         _set_draft_save_ui_flash(session, level="error", message=f"Could not save active league context: {exc}")
 
 
-def _on_simulator_save_click(*, team_name: str, key_prefix: str) -> None:
+def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
     import streamlit as st
 
     _execute_simulator_league_context_save(
         st,
         st.session_state,
-        team_name=team_name,
-        key_prefix=key_prefix,
+        team_name=str(team_name or ""),
+        key_prefix=str(key_prefix or ""),
     )
-    st.rerun()
 
 
 def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
@@ -303,9 +311,12 @@ def _page_label(page_key: str, page_label_fn=None) -> str:
 
 
 def _page_icon(page_key: str, page_label_fn=None) -> str:
-    label = _page_label(page_key, page_label_fn)
-    first = label.split(" ", 1)[0].strip()
-    return first if first and first != page_key else ""
+    if callable(page_label_fn):
+        label = _page_label(page_key, page_label_fn)
+        first = label.split(" ", 1)[0].strip()
+        if first and first != page_key:
+            return first
+    return str(_PAGE_ICONS.get(str(page_key or ""), "") or "")
 
 
 def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
@@ -545,6 +556,10 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     entry_id = str((entry or {}).get("draft_id") or "").strip()
     if entry_id:
         session_has_entry = bool(get_draft_archive(session, entry_id))
+        if not session_has_entry:
+            from draft_library_save_trace import draft_id_in_archives
+
+            session_has_entry = draft_id_in_archives(entry_id, list_draft_archives(session))
     else:
         session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
     count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
@@ -626,7 +641,7 @@ def render_active_saved_draft_chip(
             f"**{draft_type_display(active)}** · {coverage} · "
             f"{active.get('team_name', '')} · "
             f"{team_count} team{'s' if team_count != 1 else ''} · "
-            f"{len(active.get('players') or [])} players on your roster · "
+            f"{archive_my_team_player_count(active, context=context)} players on your roster · "
             f"Updated {format_archive_modified(active)}",
             unsafe_allow_html=False,
         )
@@ -655,15 +670,16 @@ def _render_post_save_actions(
 ) -> None:
     context = context or get_league_context_for_archive(session, entry)
     team_count = league_team_count(context, entry)
+    player_count = archive_my_team_player_count(entry, context=context)
     if league_save and context:
         st.success(
             f"Saved **{entry.get('draft_name')}** as a **{league_context_coverage_badge(context)}** "
-            f"({team_count} teams, {len(entry.get('players') or [])} players on your roster). "
+            f"({team_count} teams, {player_count} players on your roster). "
             "Set active for Standings and Lineup analysis."
         )
     else:
         st.success(
-            f"Saved **{entry.get('draft_name')}** ({len(entry.get('players') or [])} players). "
+            f"Saved **{entry.get('draft_name')}** ({player_count} players). "
             "Set active for Standings and Lineup analysis."
         )
     view_col, standings_col = st.columns(2)
@@ -692,7 +708,9 @@ def render_league_context_save_flash(st: Any, session: dict[str, Any], *, page_l
     if not flash:
         return
     draft_id = str(flash.get("draft_id") or "")
-    entry = {"draft_id": draft_id, "draft_name": flash.get("draft_name")}
+    entry = get_draft_archive(session, draft_id) if draft_id else None
+    if not isinstance(entry, dict):
+        entry = {"draft_id": draft_id, "draft_name": flash.get("draft_name")}
     context = get_league_context_for_archive(session, entry) if draft_id else None
     _render_post_save_actions(
         st,
@@ -856,20 +874,19 @@ def _render_archive_actions(
     room_col1, room_col2 = st.columns(2)
     with room_col1:
         st.button(
-            _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", None),
+            _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", page_label_fn),
             key=f"archive_open_live_{draft_id}",
             use_container_width=True,
             on_click=_on_click_navigate_to_page,
             args=(LIVE_DRAFT_PAGE, f"archive_open_live_{draft_id}", "open_live_draft_room"),
         )
     with room_col2:
-        sim_target = DRAFT_SIMULATOR_PAGE
         st.button(
-            "Go to Draft Room Simulator",
+            _nav_label(DRAFT_SIMULATOR_PAGE, "Go to Draft Room Simulator", page_label_fn),
             key=f"archive_open_lab_{draft_id}",
             use_container_width=True,
             on_click=_on_click_navigate_to_page,
-            args=(sim_target, f"archive_open_lab_{draft_id}", "go_to_draft_room_simulator"),
+            args=(DRAFT_SIMULATOR_PAGE, f"archive_open_lab_{draft_id}", "go_to_draft_room_simulator"),
         )
     btn1, btn2, btn3, btn4 = st.columns(4)
     with btn1:
@@ -1107,7 +1124,7 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
             not active_context_id or not league_context_id or league_context_id == active_context_id
         )
         card_class = "ld-archive-card ld-archive-active" if is_active else "ld-archive-card"
-        player_n = len(entry.get("players") or [])
+        player_n = archive_my_team_player_count(entry, context=context)
         team_n = league_team_count(context, entry)
         title = str(entry.get("draft_name") or "Saved Draft")
         team = str(entry.get("team_name") or "—")

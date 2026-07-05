@@ -1320,6 +1320,34 @@ def _simulator_team_names(session: dict[str, Any]) -> list[str]:
     return teams
 
 
+def simulator_roster_view_team_options(
+    session: dict[str, Any],
+    board_df: Any | None = None,
+) -> list[str]:
+    """All fantasy teams for Draft Room roster-view selector (settings + board)."""
+    configured = _simulator_team_names(session)
+    teams: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        clean = str(name or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            teams.append(clean)
+
+    for name in configured:
+        _add(name)
+    df = board_df
+    if df is None:
+        df = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    if df is not None and not getattr(df, "empty", True):
+        team_col = "Fantasy Team" if "Fantasy Team" in df.columns else "Team"
+        if team_col in df.columns:
+            for name in df[team_col].astype(str).tolist():
+                _add(name)
+    return teams or configured
+
+
 def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
     """Rebuild snake board from room_team_names / room_rounds (preserves no picks)."""
     teams = _simulator_team_names(session)

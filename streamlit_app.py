@@ -19512,11 +19512,17 @@ if active_page == "Draft Room Simulator":
             pass
 
         view_col1, view_col2 = st.columns([1, 2])
+        try:
+            from draft_room_state import simulator_roster_view_team_options
+
+            _roster_team_options = simulator_roster_view_team_options(st.session_state, _session_draft_board_df())
+        except ImportError:
+            _roster_team_options = list(room_team_names)
         with view_col1:
             roster_team_to_view = st.selectbox(
                 "Team to View",
-                room_team_names,
-                index=room_team_names.index(your_team) if your_team in room_team_names else 0,
+                _roster_team_options,
+                index=_roster_team_options.index(your_team) if your_team in _roster_team_options else 0,
                 key="draft_room_roster_team_to_view"
             )
         with view_col2:
@@ -19531,7 +19537,7 @@ if active_page == "Draft Room Simulator":
 
         if st.session_state.get("draft_room_roster_view_requested", False):
             if show_all_rosters:
-                for _team_name in room_team_names:
+                for _team_name in _roster_team_options:
                     _roster_view = build_draft_room_roster_view(draft_results, _team_name)
                     st.markdown(f"#### {_team_name} Roster")
                     if _roster_view.empty:

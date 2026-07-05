@@ -93,6 +93,8 @@ def probe_persisted_draft_id(
             from draft_archive_state import get_draft_archive, list_draft_archives
 
             out["in_session"] = bool(get_draft_archive(session, target))
+            if not out["in_session"]:
+                out["in_session"] = draft_id_in_archives(target, list_draft_archives(session))
             out["session_count"] = len(list_draft_archives(session))
         except ImportError:
             pass
@@ -117,6 +119,28 @@ def probe_persisted_draft_id(
     except ImportError:
         pass
     return out
+
+
+def save_persist_mode_context(session: dict[str, Any]) -> dict[str, Any]:
+    """Whether cloud persistence is expected for this session."""
+    authenticated = False
+    cloud_enabled = False
+    try:
+        from suite_auth import is_authenticated
+        from suite_storage_config import cloud_storage_enabled
+
+        cloud_enabled = bool(cloud_storage_enabled())
+        authenticated = bool(is_authenticated(session))
+    except ImportError:
+        pass
+    cloud_expected = bool(cloud_enabled and authenticated)
+    blocked = str(session.get("_suite_autosave_cloud_blocked_reason") or "").strip()
+    return {
+        "cloud_write_expected": cloud_expected,
+        "auth_mode": "signed_in" if authenticated else "local_demo",
+        "cloud_blocked_reason": blocked,
+        "demo_disk_only_ok": not cloud_expected,
+    }
 
 
 def record_save_button_click(
@@ -217,6 +241,7 @@ def finalize_save_trace(
 ) -> dict[str, Any]:
     """Complete save trace with persist + readback verification."""
     diag = dict(session.get(DRAFT_LIBRARY_SAVE_DIAG_KEY) or {})
+    mode = save_persist_mode_context(session)
     steps = list(diag.get("steps") or [])
     draft_id = str((entry or {}).get("draft_id") or "")
     league_context_id = str((entry or {}).get("league_context_id") or "")
@@ -246,7 +271,14 @@ def finalize_save_trace(
     if draft_id:
         draft_probe = probe_persisted_draft_id(draft_id, workspace_id=ws, session=session)
 
-    in_session = bool(draft_probe.get("in_session")) if draft_probe else bool(draft_id)
+    in_session = bool(draft_probe.get("in_session"))
+    if not in_session and isinstance(session, dict) and draft_id:
+        try:
+            from draft_archive_state import list_draft_archives
+
+            in_session = draft_id_in_archives(draft_id, list_draft_archives(session))
+        except ImportError:
+            pass
     cloud_readback_ok = bool(cloud_readback.get("row_found")) if cloud_readback else False
     if draft_id and cloud_readback.get("draft_ids"):
         cloud_readback_ok = draft_id in set(cloud_readback.get("draft_ids") or [])
@@ -254,7 +286,10 @@ def finalize_save_trace(
     if cloud_write_ok:
         steps.append("cloud_write_success")
     elif cloud_write_ok is False:
-        steps.append("cloud_write_failed")
+        if mode.get("demo_disk_only_ok"):
+            steps.append("cloud_write_skipped_demo")
+        else:
+            steps.append("cloud_write_failed")
     if disk_write_ok:
         steps.append("disk_write_success")
     elif disk_write_ok is False:
@@ -266,10 +301,14 @@ def finalize_save_trace(
     if draft_probe.get("in_cloud") or cloud_readback_ok:
         steps.append("cloud_readback_has_archive")
 
+    disk_only_ok = bool(mode.get("demo_disk_only_ok")) and bool(disk_write_ok) and bool(in_session or draft_probe.get("in_disk"))
+    effective_persist_ok = bool(persist_ok) or disk_only_ok
+
     payload: dict[str, Any] = {
         **diag,
+        **mode,
         "reason": str(reason or diag.get("reason") or ""),
-        "persist_ok": bool(persist_ok),
+        "persist_ok": effective_persist_ok,
         "draft_id": draft_id,
         "league_context_id": league_context_id,
         "draft_name": str((entry or {}).get("draft_name") or diag.get("draft_name_requested") or ""),
@@ -283,7 +322,7 @@ def finalize_save_trace(
         "cloud_readback_contexts": int(cloud_readback.get("league_context_count") or 0),
         "cloud_readback_ok": bool(cloud_readback_ok),
         "disk_readback_drafts": int(disk_readback.get("draft_archive_count") or 0),
-        "draft_in_session": bool(draft_probe.get("in_session")),
+        "draft_in_session": bool(in_session),
         "draft_in_disk": bool(draft_probe.get("in_disk")),
         "draft_in_cloud": bool(draft_probe.get("in_cloud")),
         "restore_source": str(
@@ -400,8 +439,13 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
         f"{before} → {after}",
     )
     cloud_ok = diag.get("cloud_write_success")
+    cloud_expected = bool(diag.get("cloud_write_expected"))
     if cloud_ok is not None:
-        _row("Cloud write", bool(cloud_ok), str(diag.get("last_save_reason") or ""))
+        if cloud_ok is False and not cloud_expected:
+            detail = str(diag.get("cloud_blocked_reason") or "not signed in (local/demo mode)")
+            _row("Cloud write", None, f"Skipped — {detail}")
+        else:
+            _row("Cloud write", bool(cloud_ok), str(diag.get("last_save_reason") or ""))
     disk_ok = diag.get("disk_write_success")
     if disk_ok is not None:
         _row("Disk write", bool(disk_ok))
@@ -412,12 +456,18 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
     )
     if diag.get("draft_in_disk") is not None:
         _row("Disk readback has archive", bool(diag.get("draft_in_disk")))
-    if diag.get("cloud_readback_ok") is not None or diag.get("draft_in_cloud") is not None:
+    if cloud_expected and (diag.get("cloud_readback_ok") is not None or diag.get("draft_in_cloud") is not None):
         in_cloud = bool(diag.get("draft_in_cloud"))
         _row(
             "Cloud readback has archive",
             in_cloud if diag.get("draft_in_cloud") is not None else bool(diag.get("cloud_readback_ok")),
             f"cloud drafts={diag.get('cloud_readback_drafts', '—')}",
+        )
+    elif not cloud_expected and diag.get("cloud_write_success") is False:
+        _row(
+            "Cloud readback has archive",
+            None,
+            "Not required in local/demo mode — disk is source of truth until signed in",
         )
     _row("Persist OK (overall)", bool(diag.get("persist_ok")))
     return rows
@@ -521,6 +571,15 @@ def render_save_trace_inline(
             f"session/disk/cloud={diag.get('draft_in_session')}/"
             f"{diag.get('draft_in_disk')}/{diag.get('draft_in_cloud')}"
         )
+        if diag.get("demo_disk_only_ok") and diag.get("disk_write_success"):
+            st.info(
+                "Saved locally on **disk** in local/demo mode. Cloud sync is unavailable until you sign in; "
+                "disk is the source of truth for refresh in this mode."
+            )
+        elif not diag.get("cloud_write_expected") and diag.get("cloud_write_success") is False:
+            st.info(
+                "Cloud write skipped — not signed in. A successful **disk** save is valid in demo/local mode."
+            )
         if diag.get("save_error"):
             st.error(str(diag["save_error"]))
         if diag.get("cloud_blocked_reason"):
