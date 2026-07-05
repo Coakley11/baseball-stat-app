@@ -50,6 +50,7 @@ class TestDraftLabWidgetSeeding(unittest.TestCase):
             },
             "draft_lab_window": 5,
         }
+        ensure_draft_lab_widget_keys(session)
         sync_draft_lab_session_before_save(session)
         self.assertEqual(session["draft_lab_scoring_type"], "Points League")
         pg.save_page_state(session, DRAFT_LAB_PAGE, session["page_filter_state"])
@@ -59,6 +60,7 @@ class TestDraftLabWidgetSeeding(unittest.TestCase):
         self.assertIn("draft_lab_projection_style", snap)
         self.assertIn("draft_lab_picks_per_team", snap)
         self.assertIn("draft_lab_roster_team", snap)
+        self.assertEqual(session.get("_draft_lab_picks_per_team_value"), snap.get("draft_lab_picks_per_team"))
 
 
 class TestDraftLabResultTabs(unittest.TestCase):

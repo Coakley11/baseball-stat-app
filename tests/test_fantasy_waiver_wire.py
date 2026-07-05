@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -353,6 +354,86 @@ class WaiverFilterPersistenceTests(unittest.TestCase):
         }
         apply_baseball_disk_state(st2, blob)
         self.assertTrue(st2.session_state.get("use_active_league_context_waiver_filter"))
+
+
+class WaiverWireUiRenderTests(unittest.TestCase):
+    def _stats_pool(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"Player": "Mike Trout", "HR": 15, "RBI": 40, "R": 35, "SB": 5, "BA": 0.280},
+                {"Player": "Aaron Judge", "HR": 20, "RBI": 50, "R": 40, "SB": 3, "BA": 0.290},
+            ]
+        )
+
+    def _mock_st(self) -> MagicMock:
+        from unittest.mock import MagicMock
+
+        st = MagicMock()
+        st.warning = MagicMock()
+        st.caption = MagicMock()
+        st.markdown = MagicMock()
+        st.info = MagicMock()
+        st.dataframe = MagicMock()
+        st.expander = MagicMock(
+            return_value=MagicMock(
+                __enter__=MagicMock(return_value=MagicMock()),
+                __exit__=MagicMock(return_value=False),
+            )
+        )
+        st.container = MagicMock(
+            return_value=MagicMock(
+                __enter__=MagicMock(return_value=MagicMock()),
+                __exit__=MagicMock(return_value=False),
+            )
+        )
+        st.columns = MagicMock(return_value=[MagicMock(), MagicMock(), MagicMock()])
+        st.button = MagicMock(return_value=False)
+        st.rerun = MagicMock()
+        return st
+
+    def test_render_with_active_context_without_roster_slots(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from fantasy_context_ui import active_league_context_badge_text
+        from fantasy_waiver_wire_ui import render_waiver_wire_page
+
+        session: dict = {}
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2},
+            ]
+        )
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        st = self._mock_st()
+        with patch("fantasy_waiver_wire_ui.recommend_adds_current", return_value=pd.DataFrame()), patch(
+            "fantasy_waiver_wire_ui.recommend_drops_current", return_value=pd.DataFrame()
+        ):
+            render_waiver_wire_page(st, session, current_stats_pool=self._stats_pool())
+        badge = active_league_context_badge_text(session)
+        self.assertIn("Active", badge)
+
+    def test_render_with_roster_slots_context(self) -> None:
+        from unittest.mock import patch
+
+        from fantasy_league_context import context_has_roster_slots
+        from fantasy_waiver_wire_ui import render_waiver_wire_page
+
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        _, context = save_simulator_league_context(session, board, my_team_name="Daniel")
+        context["roster_settings"] = {"roster_slots": {"OF": 3, "1B": 1}}
+        from fantasy_league_context import ensure_fantasy_league_context_state
+
+        store = ensure_fantasy_league_context_state(session)
+        ctx_id = str(context.get("league_context_id") or "")
+        store["contexts"][ctx_id] = context
+        self.assertTrue(context_has_roster_slots(context))
+        st = self._mock_st()
+        with patch("fantasy_waiver_wire_ui.recommend_adds_current", return_value=pd.DataFrame()), patch(
+            "fantasy_waiver_wire_ui.recommend_drops_current", return_value=pd.DataFrame()
+        ):
+            render_waiver_wire_page(st, session, current_stats_pool=self._stats_pool())
 
 
 if __name__ == "__main__":

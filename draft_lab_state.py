@@ -32,6 +32,17 @@ DRAFT_LAB_WIDGET_DEFAULTS: dict[str, Any] = {
 
 DRAFT_LAB_SNAPSHOT_KEYS = tuple(DRAFT_LAB_WIDGET_DEFAULTS.keys())
 
+# Non-widget canonical copies — safe to mutate during save/sync after widgets render.
+DRAFT_LAB_CANONICAL_VALUE_KEYS: dict[str, str] = {
+    "draft_lab_window": "_draft_lab_window_value",
+    "draft_lab_scoring_type": "_draft_lab_scoring_type_value",
+    "draft_lab_format": "_draft_lab_format_value",
+    "draft_lab_projection_style": "_draft_lab_projection_style_value",
+    "draft_lab_picks_per_team": "_draft_lab_picks_per_team_value",
+    "draft_lab_roster_team": "_draft_lab_roster_team_value",
+    "draft_lab_active_tab": "_draft_lab_active_tab_value",
+}
+
 PENDING_DRAFT_LAB_HANDOFF_KEY = "_pending_draft_lab_handoff"
 DRAFT_LAB_HANDOFF_WIDGET_KEYS: tuple[str, ...] = (
     "draft_lab_window",
@@ -199,6 +210,52 @@ def _coerce_roster_view(val: Any, options: list[str]) -> str:
     return options[0] if options else "All Teams"
 
 
+def _coerce_draft_lab_widget_value(key: str, raw: Any, session: dict[str, Any]) -> Any:
+    """Coerce a draft-lab widget value without writing back to session."""
+    roster_options = draft_lab_roster_view_options(session)
+    if key == "draft_lab_window":
+        return _coerce_window(raw)
+    if key in ("draft_lab_scoring_type", "draft_lab_format"):
+        return _coerce_format(raw)
+    if key == "draft_lab_projection_style":
+        return str(raw or DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_projection_style"])
+    if key == "draft_lab_picks_per_team":
+        return _coerce_picks(raw)
+    if key == "draft_lab_roster_team":
+        return _coerce_roster_view(raw, roster_options)
+    if key == "draft_lab_active_tab":
+        tab = str(raw or DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_active_tab"]).strip()
+        return tab if tab in DRAFT_LAB_RESULT_TABS else DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_active_tab"]
+    return raw
+
+
+def _read_draft_lab_widget_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    """Read coerced draft-lab widget values without mutating widget-backed session keys."""
+    snap = _page_snapshot(session)
+    out: dict[str, Any] = {}
+    for key in DRAFT_LAB_SNAPSHOT_KEYS:
+        if key in session:
+            raw = session[key]
+        elif key in snap:
+            raw = snap[key]
+        elif key == "draft_lab_picks_per_team":
+            raw = _handoff_picks(session) or DRAFT_LAB_WIDGET_DEFAULTS[key]
+        elif key == "draft_lab_scoring_type" and session.get("room_format"):
+            raw = session.get("room_format")
+        elif key == "draft_lab_projection_style":
+            raw = session.get("fantasy_draft_projection_style") or DRAFT_LAB_WIDGET_DEFAULTS[key]
+        else:
+            raw = DRAFT_LAB_WIDGET_DEFAULTS.get(key)
+        out[key] = _coerce_draft_lab_widget_value(key, raw, session)
+    return out
+
+
+def _write_canonical_draft_lab_values(session: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    for widget_key, canonical_key in DRAFT_LAB_CANONICAL_VALUE_KEYS.items():
+        if widget_key in snapshot:
+            session[canonical_key] = snapshot[widget_key]
+
+
 def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
     """Populate missing draft-lab widget keys from page snapshot, then defaults."""
     snap = _page_snapshot(session)
@@ -240,33 +297,38 @@ def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
         if picks is None:
             picks = snap.get("draft_lab_picks_per_team", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_picks_per_team"])
         session["draft_lab_picks_per_team"] = _coerce_picks(picks)
-    else:
-        session["draft_lab_picks_per_team"] = _coerce_picks(session["draft_lab_picks_per_team"])
 
     if "draft_lab_roster_team" not in session:
         session["draft_lab_roster_team"] = _coerce_roster_view(
             snap.get("draft_lab_roster_team", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_roster_team"]),
             roster_options,
         )
-    else:
-        session["draft_lab_roster_team"] = _coerce_roster_view(session["draft_lab_roster_team"], roster_options)
+
+    if "draft_lab_active_tab" not in session:
+        pref = str(session.get("draft_lab_preferred_tab") or snap.get("draft_lab_active_tab") or "").strip()
+        if pref in DRAFT_LAB_RESULT_TABS:
+            session["draft_lab_active_tab"] = pref
+        else:
+            session["draft_lab_active_tab"] = DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_active_tab"]
 
 
 def sync_draft_lab_session_before_save(session: dict[str, Any]) -> None:
-    ensure_draft_lab_widget_keys(session)
+    """Persist draft-lab settings/results without mutating widget-backed session keys."""
+    snapshot = _read_draft_lab_widget_snapshot(session)
+    _write_canonical_draft_lab_values(session, snapshot)
     pf = session.get("page_filter_state")
     if not isinstance(pf, dict):
-        return
+        pf = {}
+        session["page_filter_state"] = pf
     block = dict(pf.get(DRAFT_LAB_PAGE) or {})
-    for key in DRAFT_LAB_SNAPSHOT_KEYS:
-        if key in session:
-            try:
-                block[key] = copy.deepcopy(session[key])
-            except Exception:
-                block[key] = session[key]
+    for key, val in snapshot.items():
+        try:
+            block[key] = copy.deepcopy(val)
+        except Exception:
+            block[key] = val
     if block:
         pf[DRAFT_LAB_PAGE] = block
-    sync_draft_lab_results_state(session)
+    sync_draft_lab_results_state(session, widget_snapshot=snapshot)
 
 
 DRAFT_LAB_PERSISTED_STATE_KEY = "draft_lab_persisted_state"
@@ -283,7 +345,11 @@ def _records_to_df(records: Any):
         return pd.DataFrame()
 
 
-def sync_draft_lab_results_state(session: dict[str, Any]) -> None:
+def sync_draft_lab_results_state(
+    session: dict[str, Any],
+    *,
+    widget_snapshot: dict[str, Any] | None = None,
+) -> None:
     """Snapshot draft lab simulation outputs for cloud/disk restore."""
     results = session.get("draft_lab_results")
     if not isinstance(results, dict):
@@ -291,6 +357,7 @@ def sync_draft_lab_results_state(session: dict[str, Any]) -> None:
     draft = results.get("draft")
     if draft is None or getattr(draft, "empty", True):
         return
+    widget_settings = widget_snapshot if isinstance(widget_snapshot, dict) else _read_draft_lab_widget_snapshot(session)
     try:
         from fantasy_in_season_state import _df_records as _serialize_records
     except ImportError:
@@ -311,8 +378,9 @@ def sync_draft_lab_results_state(session: dict[str, Any]) -> None:
         "analysis_context": results.get("analysis_context") if isinstance(results.get("analysis_context"), dict) else {},
         "handoff": results.get("handoff") if isinstance(results.get("handoff"), dict) else {},
         "source": str(results.get("source") or "").strip(),
-        "widget_settings": {k: session.get(k) for k in DRAFT_LAB_SNAPSHOT_KEYS if k in session},
-        "active_tab": str(session.get("draft_lab_active_tab") or "").strip(),
+        "widget_settings": dict(widget_settings),
+        "picks_per_team": widget_settings.get("draft_lab_picks_per_team"),
+        "active_tab": str(widget_settings.get("draft_lab_active_tab") or session.get("draft_lab_active_tab") or "").strip(),
         "preferred_tab": str(session.get("draft_lab_preferred_tab") or "").strip(),
         "team_names": list(session.get("_draft_lab_team_names") or []),
     }

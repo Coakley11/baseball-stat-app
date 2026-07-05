@@ -62,6 +62,38 @@ class WidgetKeyGuardTests(unittest.TestCase):
         self.assertIn("primary risk", archetype.lower())
         self.assertNotIn("clear strength", archetype.lower())
 
+    def test_sync_draft_lab_session_before_save_does_not_mutate_widget_keys(self) -> None:
+        import pandas as pd
+
+        from draft_lab_state import DRAFT_LAB_PAGE, sync_draft_lab_session_before_save
+
+        session = {
+            "page_filter_state": {DRAFT_LAB_PAGE: {}},
+            "draft_lab_window": 3,
+            "draft_lab_scoring_type": "5x5 Roto",
+            "draft_lab_format": "5x5 Roto",
+            "draft_lab_projection_style": "Balanced",
+            "draft_lab_picks_per_team": 99,
+            "draft_lab_roster_team": "All Teams",
+            "draft_lab_active_tab": "Team Analysis",
+            "draft_lab_results": {
+                "draft": pd.DataFrame([{"Fantasy Team": "Team A", "Pick": 1}]),
+                "team_summary": pd.DataFrame(),
+                "strengths": pd.DataFrame(),
+                "pick_analysis": pd.DataFrame(),
+                "gaps": pd.DataFrame(),
+                "trades": pd.DataFrame(),
+                "actual_summary": pd.DataFrame(),
+            },
+        }
+        before = dict(session)
+        sync_draft_lab_session_before_save(session)
+        self.assertEqual(session["draft_lab_picks_per_team"], before["draft_lab_picks_per_team"])
+        self.assertEqual(session["draft_lab_active_tab"], before["draft_lab_active_tab"])
+        self.assertEqual(session.get("_draft_lab_picks_per_team_value"), 25)
+        snap = session["page_filter_state"][DRAFT_LAB_PAGE]
+        self.assertEqual(snap.get("draft_lab_picks_per_team"), 25)
+
 
 if __name__ == "__main__":
     unittest.main()

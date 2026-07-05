@@ -9,10 +9,12 @@ import pandas as pd
 
 from fantasy_league_context import (
     build_roster_stats_from_league_context,
+    context_has_roster_slots,
     get_active_league_context,
     has_full_league_rosters,
     league_context_coverage_badge,
     league_context_type_badge,
+    resolve_context_open_position_needs,
 )
 from fantasy_waiver_wire import (
     WAIVER_PLANNER_ADD_KEY,
@@ -213,8 +215,12 @@ def render_waiver_wire_page(
     waiver_pool = build_waiver_pool(stats_pool, context)
     waiver_cats = waiver_categories_for_context(context)
     needs = analyze_current_team_needs(my_roster, league_df, categories=waiver_cats)
-    _has_slots = context_has_roster_slots(context)
-    open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
+    try:
+        _has_slots = context_has_roster_slots(context)
+        open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
+    except Exception:
+        _has_slots = False
+        open_slots = []
 
     st.markdown("##### League snapshot")
     rank_lines = format_league_rank_lines(needs, categories=waiver_cats)
