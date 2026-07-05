@@ -294,11 +294,31 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertEqual(filter_waiver_names_by_search(names, "judge"), ["Aaron Judge"])
         self.assertEqual(filter_waiver_names_by_search(names, ""), names)
 
-    def test_format_current_stat_line_pitcher(self) -> None:
-        row = pd.Series({"Primary Position": "P", "W": 5, "SV": 10, "K": 70, "ERA": 3.20, "WHIP": 1.05})
+    def test_format_current_stat_line_includes_obp(self) -> None:
+        row = pd.Series({"OBP": 0.410, "OPS": 0.950, "HR": 20, "RBI": 55, "R": 60, "SB": 5, "BA": 0.290})
         line = format_current_stat_line(row)
-        self.assertIn("W 5", line)
-        self.assertIn("SV 10", line)
+        self.assertIn("OBP", line)
+        self.assertIn("OPS", line)
+        self.assertIn("HR", line)
+
+    def test_format_projected_stat_line_reads_proj_columns(self) -> None:
+        from fantasy_waiver_wire import format_projected_stat_line
+
+        row = pd.Series(
+            {
+                "proj_BA": 0.285,
+                "proj_OBP": 0.380,
+                "proj_OPS": 0.900,
+                "proj_HR": 35,
+                "proj_RBI": 90,
+                "proj_R": 95,
+                "proj_SB": 12,
+            }
+        )
+        line = format_projected_stat_line(row)
+        self.assertIn("AVG", line)
+        self.assertIn("OBP", line)
+        self.assertIn("HR", line)
 
 
 class WaiverPlannerPersistenceTests(unittest.TestCase):

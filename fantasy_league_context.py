@@ -1223,6 +1223,75 @@ def migrate_legacy_archives_to_contexts(session: dict[str, Any]) -> int:
     return created
 
 
+def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Rebuild a minimal saved-draft row when league context survived but archive row did not."""
+    meta = context.get("metadata") or {}
+    draft_id = str(meta.get("source_draft_id") or "").strip()
+    if not draft_id:
+        return None
+    my_team = str(context.get("my_team_name") or "").strip()
+    draft_name = str(context.get("display_name") or context.get("league_name") or "Saved Draft").strip()
+    league_rosters = context.get("league_rosters") or {}
+    players: list[dict[str, Any]] = []
+    if isinstance(league_rosters, dict) and my_team:
+        team_entry = league_rosters.get(my_team) or {}
+        if isinstance(team_entry, dict):
+            for player in team_entry.get("players") or []:
+                if isinstance(player, dict):
+                    players.append(dict(player))
+    context_type = str(context.get("context_type") or "")
+    draft_type = "live_draft_room" if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT else "simulator"
+    now = str(meta.get("updated_at") or meta.get("created_at") or _utc_now_iso())
+    return {
+        "draft_id": draft_id,
+        "draft_name": draft_name,
+        "team_name": my_team,
+        "draft_type": draft_type,
+        "players": players,
+        "league_rosters": copy.deepcopy(league_rosters) if isinstance(league_rosters, dict) else {},
+        "league_context_id": str(context.get("league_context_id") or context_id_for_archive(draft_id)),
+        "created_at": str(meta.get("created_at") or now),
+        "updated_at": now,
+        "repaired_from_context": True,
+    }
+
+
+def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
+    """Restore archive list entries from league contexts when restore wiped draft_archive_teams."""
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, get_draft_archive
+
+    store = ensure_fantasy_league_context_state(session)
+    contexts = store.get("contexts") or {}
+    if not isinstance(contexts, dict):
+        return 0
+    raw = session.get(DRAFT_ARCHIVE_KEY)
+    entries = [dict(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+    existing_ids = {str(e.get("draft_id") or "").strip() for e in entries if str(e.get("draft_id") or "").strip()}
+    repaired: list[dict[str, Any]] = []
+    for context in contexts.values():
+        if not isinstance(context, dict):
+            continue
+        stub = _archive_stub_from_league_context(context)
+        if not stub:
+            continue
+        draft_id = str(stub.get("draft_id") or "").strip()
+        if not draft_id or draft_id in existing_ids or get_draft_archive(session, draft_id):
+            continue
+        repaired.append(stub)
+        existing_ids.add(draft_id)
+    if not repaired:
+        return 0
+    session[DRAFT_ARCHIVE_KEY] = entries + repaired
+    try:
+        from workflow_persist_guard import mark_workflow_persist_authoritative
+
+        mark_workflow_persist_authoritative(session)
+    except ImportError:
+        pass
+    session["_draft_archives_repaired_from_contexts"] = len(repaired)
+    return len(repaired)
+
+
 def apply_fantasy_league_context_disk_state(session: dict[str, Any], state: dict[str, Any]) -> None:
     """Restore league context store from disk/cloud and run legacy archive migration."""
     blob = state.get(FANTASY_LEAGUE_CONTEXT_STATE_KEY)
@@ -1232,3 +1301,7 @@ def apply_fantasy_league_context_disk_state(session: dict[str, Any], state: dict
         ensure_fantasy_league_context_state(session)
     migrate_legacy_archives_to_contexts(session)
     migrate_global_pending_trade_targets(session)
+    try:
+        repair_missing_draft_archives_from_contexts(session)
+    except Exception:
+        pass

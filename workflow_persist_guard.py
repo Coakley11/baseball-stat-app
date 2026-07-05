@@ -77,7 +77,7 @@ def _session_workflow_authoritative(session: dict[str, Any], key: str) -> bool:
     if key not in session:
         return False
     if key == DRAFT_ARCHIVE_KEY:
-        return True
+        return _draft_archive_nonempty(session.get(key))
     if key == LEAGUE_CONTEXT_STATE_KEY:
         return _league_context_store_nonempty(session.get(key))
     return True
@@ -171,6 +171,57 @@ def merge_protected_workflow_into_save(
     return state
 
 
+def merge_protected_workflow_on_restore(
+    session: dict[str, Any],
+    incoming_state: dict[str, Any] | None = None,
+    *,
+    app_id: str = "baseball",
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """After restore, prefer the richest draft archive / league context source."""
+    incoming_state = incoming_state if isinstance(incoming_state, dict) else {}
+    disk_state = _load_disk_workflow_snapshot(app_id)
+    cloud_state = _load_cloud_workflow_snapshot(app_id, st) if st is not None else {}
+    merged_keys: list[str] = []
+    merge_sources: dict[str, str] = {}
+
+    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        if protected_workflow_nonempty(key, session.get(key)):
+            continue
+        candidates: list[tuple[str, Any]] = [
+            ("incoming", incoming_state.get(key)),
+            ("disk", disk_state.get(key)),
+            ("cloud", cloud_state.get(key)),
+        ]
+        best_val: Any = None
+        best_source = ""
+        best_count = -1
+        for source, val in candidates:
+            if not protected_workflow_nonempty(key, val):
+                continue
+            count = count_draft_archives(val) if key == DRAFT_ARCHIVE_KEY else count_league_contexts(val)
+            if key == ACTIVE_DRAFT_ARCHIVE_KEY:
+                count = 1 if str(val or "").strip() else 0
+            if count > best_count:
+                best_val = val
+                best_source = source
+                best_count = count
+        if best_val is None:
+            continue
+        try:
+            restored = copy.deepcopy(best_val)
+        except Exception:
+            restored = best_val
+        session[key] = restored
+        merged_keys.append(key)
+        merge_sources[key] = best_source
+
+    if merged_keys:
+        session["_suite_workflow_restore_merged_keys"] = merged_keys
+        session["_suite_workflow_restore_merge_sources"] = merge_sources
+    return session
+
+
 def workflow_counts_from_session(session: dict[str, Any]) -> dict[str, int]:
     draft_archive_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     league_context_count = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
@@ -251,6 +302,8 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     restore_at = str(session.get("_suite_persist_last_restore_at") or "")
     merged_keys = list(session.get("_suite_workflow_persist_merged_keys") or [])
     merge_sources = dict(session.get("_suite_workflow_persist_merge_sources") or {})
+    restore_merged = list(session.get("_suite_workflow_restore_merged_keys") or [])
+    restore_merge_sources = dict(session.get("_suite_workflow_restore_merge_sources") or {})
 
     cloud_enabled = False
     try:
@@ -279,6 +332,8 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "restore_at": restore_at,
         "workflow_merge_keys": merged_keys,
         "workflow_merge_sources": merge_sources,
+        "workflow_restore_merged_keys": restore_merged,
+        "workflow_restore_merge_sources": restore_merge_sources,
         "cloud_enabled": cloud_enabled,
     }
 

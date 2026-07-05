@@ -128,19 +128,27 @@ def render_perf_report(st: Any, session: dict[str, Any]) -> None:
         page_total = float(timings.get("page_render_total") or 0.0)
         if page_total > 0:
             st.text(f"Page render time: {page_total:.3f}s")
-        for label in ("cloud_hydration", "cloud_read", "cloud_write", "data_build"):
+        data_build = float(timings.get("data_build") or 0.0)
+        if data_build > 0:
+            st.text(f"Data build time: {data_build:.3f}s")
+        for label in ("cloud_hydration", "cloud_read", "cloud_write"):
             if label in timings:
-                st.text(f"{label.replace('_', ' ').title()}: {float(timings[label]):.3f}s")
-        top = top_slow_phases(session, limit=10)
-        if top:
-            st.markdown("**Top slow paths**")
-            for i, (name, sec) in enumerate(top, start=1):
-                st.text(f"{i}. {name}: {sec:.3f}s")
+                title = label.replace("_", " ").title()
+                st.text(f"{title}: {float(timings[label]):.3f}s")
         audit = cache_audit_summary(session)
         if audit:
-            st.markdown("**Cache audit**")
+            st.markdown("**Cache hit rate**")
             for label, counts in sorted(audit.items()):
-                st.text(f"{label}: hit={counts['hit']} miss={counts['miss']}")
+                hits = int(counts.get("hit") or 0)
+                misses = int(counts.get("miss") or 0)
+                total = hits + misses
+                pct = (100.0 * hits / total) if total else 0.0
+                st.text(f"{label}: {pct:.0f}% ({hits}/{total})")
+        top = top_slow_phases(session, limit=10)
+        if top:
+            st.markdown("**Top 10 slowest functions**")
+            for i, (name, sec) in enumerate(top, start=1):
+                st.text(f"{i}. {name}: {sec:.3f}s")
         st.markdown("**All phases**")
         for phase, sec in sorted(timings.items(), key=lambda kv: kv[1], reverse=True):
             st.text(f"{phase}: {sec:.3f}s")

@@ -9,56 +9,56 @@ from draft_lab_state import DRAFT_LAB_PAGE, DRAFT_LAB_RESULT_TABS, ensure_draft_
 
 
 class TestDraftLabWidgetSeeding(unittest.TestCase):
-    def test_ensure_seeds_all_keys_from_defaults(self) -> None:
+    def test_ensure_seeds_page_only_keys(self) -> None:
         session: dict = {"page_filter_state": {}}
         ensure_draft_lab_widget_keys(session)
         for key in (
-            "draft_lab_window",
-            "draft_lab_scoring_type",
-            "draft_lab_projection_style",
             "draft_lab_picks_per_team",
             "draft_lab_roster_team",
+            "draft_lab_active_tab",
         ):
             self.assertIn(key, session)
 
-    def test_ensure_restores_from_page_snapshot(self) -> None:
+    def test_ensure_restores_page_only_keys_from_snapshot(self) -> None:
         session = {
             "page_filter_state": {
                 DRAFT_LAB_PAGE: {
-                    "draft_lab_window": 5,
-                    "draft_lab_scoring_type": "Points League",
-                    "draft_lab_projection_style": "Conservative",
                     "draft_lab_picks_per_team": 20,
                     "draft_lab_roster_team": "Team B",
+                    "draft_lab_active_tab": "Team Analysis",
                 }
             }
         }
         ensure_draft_lab_widget_keys(session)
-        self.assertEqual(session["draft_lab_window"], 5)
-        self.assertEqual(session["draft_lab_scoring_type"], "Points League")
-        self.assertEqual(session["draft_lab_projection_style"], "Conservative")
         self.assertEqual(session["draft_lab_picks_per_team"], 20)
         self.assertEqual(session["draft_lab_roster_team"], "Team B")
+        self.assertEqual(session["draft_lab_active_tab"], "Team Analysis")
 
     def test_save_page_state_after_onchange_seeds_full_snapshot(self) -> None:
         """Simulate on_change: only the changed widget is in session; others must still save."""
+        from shared_draft_context import write_canonical_draft_settings
+
         session = {
             "page_filter_state": {
                 DRAFT_LAB_PAGE: {
-                    "draft_lab_scoring_type": "Points League",
+                    "draft_lab_picks_per_team": 20,
                 }
             },
             "draft_lab_window": 5,
+            "draft_lab_scoring_type": "Points League",
         }
+        write_canonical_draft_settings(
+            session,
+            lookback_window=5,
+            fantasy_format="Points League",
+            source_page="Draft Lab / Simulation",
+        )
         ensure_draft_lab_widget_keys(session)
         sync_draft_lab_session_before_save(session)
         self.assertEqual(session["draft_lab_scoring_type"], "Points League")
         pg.save_page_state(session, DRAFT_LAB_PAGE, session["page_filter_state"])
         snap = session["page_filter_state"][DRAFT_LAB_PAGE]
-        self.assertEqual(snap["draft_lab_window"], 5)
-        self.assertEqual(snap.get("draft_lab_format") or snap.get("draft_lab_scoring_type"), "Points League")
-        self.assertIn("draft_lab_projection_style", snap)
-        self.assertIn("draft_lab_picks_per_team", snap)
+        self.assertEqual(snap.get("draft_lab_picks_per_team"), 20)
         self.assertIn("draft_lab_roster_team", snap)
         self.assertEqual(session.get("_draft_lab_picks_per_team_value"), snap.get("draft_lab_picks_per_team"))
 

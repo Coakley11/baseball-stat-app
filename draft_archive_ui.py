@@ -22,6 +22,7 @@ from fantasy_league_context import (
     league_context_coverage_badge,
     league_context_type_badge,
     league_team_count,
+    list_league_contexts,
     pop_league_context_save_flash,
     save_live_draft_league_context,
     save_simulator_league_context,
@@ -74,6 +75,15 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
             sources = diag.get("workflow_merge_sources") or {}
             bits = [f"{k} ({sources.get(k, '?')})" for k in merged]
             st.caption(f"Partial-save protection restored: {', '.join(bits)}")
+        restore_merged = diag.get("workflow_restore_merged_keys") or []
+        if restore_merged:
+            rsources = diag.get("workflow_restore_merge_sources") or {}
+            rb = [f"{k} ({rsources.get(k, '?')})" for k in restore_merged]
+            st.caption(f"Restore merge recovered: {', '.join(rb)}")
+        nav_diag = session.get("_draft_library_nav_diag")
+        if isinstance(nav_diag, dict) and nav_diag:
+            st.markdown("**Navigation diagnostics**")
+            st.json(nav_diag)
         if diag.get("cloud_enabled"):
             cloud_probe = probe_cloud_workflow_for_workspace(ws_id)
             if cloud_probe.get("row_found"):
@@ -106,16 +116,22 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
 
 
 def schedule_page_navigation(session: dict[str, Any], target_page: str) -> None:
-    """Queue navigation for next run. Do not touch widget-backed keys (e.g. main_sidebar_page)."""
+    """Navigate immediately — sidebar radio reads these keys on the same rerun."""
     target = str(target_page or "").strip()
     if not target:
         return
     session["active_page"] = target
     session["_navigate_to_page"] = target
+    session["main_sidebar_page"] = target
     session["_skip_page_restore_for"] = target
     session["_suite_page_user_nav"] = True
-    session["_suite_nav_consumed_this_run"] = False
+    session["_suite_nav_consumed_this_run"] = True
     session["_suite_nav_consumed_target"] = target
+    session["_draft_library_nav_diag"] = {
+        "target_page": target,
+        "active_page_before": str(session.get("_draft_library_nav_active_before") or session.get("active_page") or ""),
+        "scheduled_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+    }
 
 
 def schedule_saved_draft_library_navigation(
@@ -223,6 +239,14 @@ def render_active_saved_draft_chip(
         key=f"{key_prefix}__manage_saved_drafts_btn",
         use_container_width=True,
     ):
+        session["_draft_library_nav_active_before"] = str(session.get("active_page") or "")
+        session["_draft_library_nav_diag"] = {
+            "button": "manage_saved_drafts",
+            "target_page": SAVED_DRAFT_LIBRARY_PAGE,
+            "active_page_before": session["_draft_library_nav_active_before"],
+            "draft_archive_count": len(list_draft_archives(session)),
+            "league_context_count": len(list_league_contexts(session)),
+        }
         schedule_saved_draft_library_navigation(
             session,
             return_page=str(session.get("active_page") or ""),

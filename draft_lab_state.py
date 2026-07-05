@@ -30,6 +30,13 @@ DRAFT_LAB_WIDGET_DEFAULTS: dict[str, Any] = {
     "draft_lab_active_tab": "Draft Board",
 }
 
+# Lab-only keys persisted in page_filter_state — shared trio lives in draft_shared_settings.
+DRAFT_LAB_PAGE_ONLY_KEYS: tuple[str, ...] = (
+    "draft_lab_picks_per_team",
+    "draft_lab_roster_team",
+    "draft_lab_active_tab",
+)
+
 DRAFT_LAB_SNAPSHOT_KEYS = tuple(DRAFT_LAB_WIDGET_DEFAULTS.keys())
 
 # Non-widget canonical copies — safe to mutate during save/sync after widgets render.
@@ -104,7 +111,7 @@ def prepare_draft_lab_page_widgets(session: dict[str, Any]) -> None:
     try:
         from shared_draft_context import apply_draft_shared_settings_to_widgets
 
-        apply_draft_shared_settings_to_widgets(session, active_page=DRAFT_LAB_PAGE)
+        apply_draft_shared_settings_to_widgets(session, active_page=DRAFT_LAB_PAGE, force_all_pages=True)
     except ImportError:
         pass
     ensure_draft_lab_widget_keys(session)
@@ -233,17 +240,32 @@ def _read_draft_lab_widget_snapshot(session: dict[str, Any]) -> dict[str, Any]:
     """Read coerced draft-lab widget values without mutating widget-backed session keys."""
     snap = _page_snapshot(session)
     out: dict[str, Any] = {}
-    for key in DRAFT_LAB_SNAPSHOT_KEYS:
+    try:
+        from shared_draft_context import read_canonical_draft_settings
+
+        canonical = read_canonical_draft_settings(session)
+        out["draft_lab_window"] = _coerce_window(canonical.get("lookback_window"))
+        out["draft_lab_scoring_type"] = _coerce_format(canonical.get("fantasy_format"))
+        out["draft_lab_format"] = out["draft_lab_scoring_type"]
+        out["draft_lab_projection_style"] = str(
+            canonical.get("projection_style") or DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_projection_style"]
+        )
+    except ImportError:
+        for key in ("draft_lab_window", "draft_lab_scoring_type", "draft_lab_format", "draft_lab_projection_style"):
+            if key in session:
+                raw = session[key]
+            elif key in snap:
+                raw = snap[key]
+            else:
+                raw = DRAFT_LAB_WIDGET_DEFAULTS.get(key)
+            out[key] = _coerce_draft_lab_widget_value(key, raw, session)
+    for key in DRAFT_LAB_PAGE_ONLY_KEYS:
         if key in session:
             raw = session[key]
         elif key in snap:
             raw = snap[key]
         elif key == "draft_lab_picks_per_team":
             raw = _handoff_picks(session) or DRAFT_LAB_WIDGET_DEFAULTS[key]
-        elif key == "draft_lab_scoring_type" and session.get("room_format"):
-            raw = session.get("room_format")
-        elif key == "draft_lab_projection_style":
-            raw = session.get("fantasy_draft_projection_style") or DRAFT_LAB_WIDGET_DEFAULTS[key]
         else:
             raw = DRAFT_LAB_WIDGET_DEFAULTS.get(key)
         out[key] = _coerce_draft_lab_widget_value(key, raw, session)
@@ -257,40 +279,9 @@ def _write_canonical_draft_lab_values(session: dict[str, Any], snapshot: dict[st
 
 
 def ensure_draft_lab_widget_keys(session: dict[str, Any]) -> None:
-    """Populate missing draft-lab widget keys from page snapshot, then defaults."""
+    """Populate missing draft-lab widget keys before first render (never coerce after widgets exist)."""
     snap = _page_snapshot(session)
     roster_options = draft_lab_roster_view_options(session)
-
-    if "draft_lab_scoring_type" not in session:
-        if "draft_lab_scoring_type" in snap:
-            session["draft_lab_scoring_type"] = _coerce_format(snap["draft_lab_scoring_type"])
-        elif "draft_lab_format" in snap:
-            session["draft_lab_scoring_type"] = _coerce_format(snap["draft_lab_format"])
-        elif session.get("room_format"):
-            session["draft_lab_scoring_type"] = _coerce_format(session.get("room_format"))
-        else:
-            session["draft_lab_scoring_type"] = DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_scoring_type"]
-
-    if "draft_lab_format" not in session:
-        if "draft_lab_format" in snap:
-            session["draft_lab_format"] = _coerce_format(snap["draft_lab_format"])
-        else:
-            session["draft_lab_format"] = session["draft_lab_scoring_type"]
-
-    if "draft_lab_window" not in session:
-        session["draft_lab_window"] = _coerce_window(
-            snap.get("draft_lab_window", session.get("draft_lab_window", DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_window"]))
-        )
-
-    if "draft_lab_projection_style" not in session:
-        style = snap.get("draft_lab_projection_style")
-        if style is not None:
-            session["draft_lab_projection_style"] = str(style)
-        else:
-            session["draft_lab_projection_style"] = str(
-                session.get("fantasy_draft_projection_style")
-                or DRAFT_LAB_WIDGET_DEFAULTS["draft_lab_projection_style"]
-            )
 
     if "draft_lab_picks_per_team" not in session:
         picks = _handoff_picks(session)
@@ -321,7 +312,10 @@ def sync_draft_lab_session_before_save(session: dict[str, Any]) -> None:
         pf = {}
         session["page_filter_state"] = pf
     block = dict(pf.get(DRAFT_LAB_PAGE) or {})
-    for key, val in snapshot.items():
+    for key in DRAFT_LAB_PAGE_ONLY_KEYS:
+        val = snapshot.get(key)
+        if val is None:
+            continue
         try:
             block[key] = copy.deepcopy(val)
         except Exception:

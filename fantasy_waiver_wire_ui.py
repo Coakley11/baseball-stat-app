@@ -27,6 +27,7 @@ from fantasy_waiver_wire import (
     compute_add_drop_category_impact,
     filter_waiver_names_by_search,
     format_current_stat_line,
+    format_projected_stat_line,
     format_league_rank_lines,
     get_pending_move_pairs,
     my_team_roster_dataframe,
@@ -92,7 +93,12 @@ def _render_player_card(
         with c_body:
             st.markdown(f"**{name}**")
             st.caption(f"{team} · {pos}")
-            st.caption(format_current_stat_line(row))
+            current_line = format_current_stat_line(row)
+            if current_line:
+                st.caption(f"Current: {current_line}")
+            projected_line = format_projected_stat_line(row)
+            if projected_line:
+                st.caption(f"Projected: {projected_line}")
             if subtitle:
                 st.caption(subtitle)
         with c_action:

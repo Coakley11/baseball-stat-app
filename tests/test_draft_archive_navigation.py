@@ -58,12 +58,13 @@ class DraftArchiveNavigationTests(unittest.TestCase):
 
 
 class SavedDraftLibraryNavigationTests(unittest.TestCase):
-    def test_schedule_page_navigation_does_not_touch_main_sidebar_page(self) -> None:
+    def test_schedule_page_navigation_sets_sidebar_immediately(self) -> None:
         session = {"main_sidebar_page": "Fantasy Standings Tracker", "active_page": "Fantasy Standings Tracker"}
         schedule_page_navigation(session, SAVED_DRAFT_LIBRARY_PAGE)
-        self.assertEqual(session["main_sidebar_page"], "Fantasy Standings Tracker")
+        self.assertEqual(session["main_sidebar_page"], SAVED_DRAFT_LIBRARY_PAGE)
+        self.assertEqual(session["active_page"], SAVED_DRAFT_LIBRARY_PAGE)
         self.assertEqual(session["_navigate_to_page"], SAVED_DRAFT_LIBRARY_PAGE)
-        self.assertFalse(session.get("_suite_nav_consumed_this_run"))
+        self.assertTrue(session.get("_suite_nav_consumed_this_run"))
 
     def test_schedule_saved_draft_library_navigation_sets_target_and_return(self) -> None:
         session = {"active_page": FANTASY_LINEUP_PAGE}

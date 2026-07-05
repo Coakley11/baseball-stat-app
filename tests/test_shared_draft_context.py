@@ -102,10 +102,11 @@ class TestCanonicalDraftSettings(unittest.TestCase):
 
     def test_research_pages_not_draft_sync(self) -> None:
         self.assertFalse(is_draft_sync_page("Historical Explorer"))
-        self.assertFalse(is_draft_sync_page("Trend Value"))
+        self.assertTrue(is_draft_sync_page("Trend Value"))
+        self.assertTrue(is_draft_sync_page("Draft Lab / Simulation"))
         session = {"draft_window": 3, GLOBAL_WINDOW_KEY: 5}
         prepare_shared_draft_context(session, active_page="Historical Explorer", force_mirror=True)
-        self.assertEqual(session["draft_window"], 3)
+        self.assertEqual(session["draft_window"], 5)
 
     def test_shared_keys_excluded_from_page_snapshots(self) -> None:
         self.assertTrue(is_draft_shared_session_key("draft_window"))
@@ -182,6 +183,23 @@ class TestCanonicalDraftSettings(unittest.TestCase):
         self.assertTrue(kw["use_ml_blend"])
         self.assertEqual(kw["ml_blend_weight"], 0.18)
         self.assertEqual(kw["ml_min_games_for_signal"], 60)
+
+    def test_draft_assistant_change_propagates_to_draft_lab(self) -> None:
+        session: dict = {"draft_lab_window": 3, "draft_lab_projection_style": "Balanced", "draft_lab_scoring_type": "5x5 Roto"}
+        write_canonical_draft_settings(
+            session,
+            lookback_window=5,
+            projection_style="Conservative",
+            fantasy_format="Points League",
+            source_page="Draft Assistant Simulator",
+        )
+        apply_draft_shared_settings_to_widgets(session, active_page="Draft Lab / Simulation", force_all_pages=True)
+        self.assertEqual(session["draft_lab_window"], 5)
+        self.assertEqual(session["draft_lab_projection_style"], "Conservative")
+        self.assertEqual(session["draft_lab_scoring_type"], "Points League")
+
+    def test_draft_lab_is_sync_page(self) -> None:
+        self.assertTrue(is_draft_sync_page("Draft Lab / Simulation"))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from workflow_persist_guard import (
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
     build_saved_draft_library_diagnostics,
     merge_protected_workflow_into_save,
+    merge_protected_workflow_on_restore,
     probe_cloud_workflow_for_workspace,
 )
 
@@ -87,6 +88,28 @@ class WorkflowPersistGuardTests(unittest.TestCase):
             out = merge_protected_workflow_into_save(state, session, save_reason="waiver_filter_changed")
 
         self.assertEqual(len(out[LEAGUE_CONTEXT_STATE_KEY]["contexts"]), 1)
+
+    def test_empty_session_archives_merge_from_disk_on_save(self) -> None:
+        persisted = {DRAFT_ARCHIVE_KEY: [{"draft_id": "abc123", "draft_name": "Home League"}]}
+        session = {DRAFT_ARCHIVE_KEY: []}
+        state = {DRAFT_ARCHIVE_KEY: []}
+
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=persisted):
+            out = merge_protected_workflow_into_save(state, session, save_reason="page_change")
+
+        self.assertEqual(len(out[DRAFT_ARCHIVE_KEY]), 1)
+
+    def test_restore_merge_recover_archives_from_disk(self) -> None:
+        incoming = {DRAFT_ARCHIVE_KEY: []}
+        disk = {DRAFT_ARCHIVE_KEY: [{"draft_id": "restore01", "draft_name": "Recovered"}]}
+        session: dict = {DRAFT_ARCHIVE_KEY: []}
+
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=disk):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value={}):
+                merge_protected_workflow_on_restore(session, incoming)
+
+        self.assertEqual(len(session[DRAFT_ARCHIVE_KEY]), 1)
+        self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_id"], "restore01")
 
     def test_build_saved_draft_library_diagnostics(self) -> None:
         session = {

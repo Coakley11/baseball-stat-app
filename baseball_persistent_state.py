@@ -645,6 +645,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         except Exception:
             ss[key] = val
 
+    try:
+        from workflow_persist_guard import merge_protected_workflow_on_restore
+
+        merge_protected_workflow_on_restore(ss, state, st=st)
+    except ImportError:
+        pass
+
     blob_page = str(state.get("active_page") or "").strip()
     session_page_after_blob = str(ss.get("active_page") or "").strip()
     last_persisted = str(ss.get("_suite_last_persisted_page") or "").strip()

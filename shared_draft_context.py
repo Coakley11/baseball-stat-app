@@ -66,6 +66,10 @@ DRAFT_SYNC_PAGES: frozenset[str] = frozenset(
         "Draft Assistant Simulator",
         "Draft Room Simulator",
         "Draft Simulation Test Mode",
+        "Draft Lab / Simulation",
+        "Comparison Tool",
+        "Trend Value",
+        "Valuation",
         "Fantasy Sleepers & Busts",
         "Fantasy Lineup Assistant",
         "Fantasy Standings Tracker",
@@ -473,11 +477,12 @@ def prepare_shared_draft_context(
     force_mirror: bool = False,
 ) -> None:
     """Before widgets on a draft page: canonical always wins."""
-    if active_page and not is_draft_sync_page(active_page):
+    if active_page and not force_mirror and not is_draft_sync_page(active_page):
         return
     apply_draft_shared_settings_to_widgets(
         session,
         active_page=active_page,
+        force_all_pages=bool(force_mirror),
     )
 
 

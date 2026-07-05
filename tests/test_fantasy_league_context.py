@@ -603,5 +603,43 @@ class ContextRosterSlotResolutionTests(unittest.TestCase):
         self.assertTrue(context_has_roster_slots(context))
 
 
+class DraftArchiveRepairTests(unittest.TestCase):
+    def test_repair_missing_archives_from_contexts(self) -> None:
+        from draft_archive_state import DRAFT_ARCHIVE_KEY, list_draft_archives
+        from fantasy_league_context import FANTASY_LEAGUE_CONTEXT_STATE_KEY, repair_missing_draft_archives_from_contexts
+
+        session = {
+            DRAFT_ARCHIVE_KEY: [],
+            FANTASY_LEAGUE_CONTEXT_STATE_KEY: {
+                "contexts": {
+                    "archive:draft99": {
+                        "league_context_id": "archive:draft99",
+                        "display_name": "2026 Main League",
+                        "my_team_name": "Daniel",
+                        "context_type": "mock_draft_simulation",
+                        "league_rosters": {
+                            "Daniel": {
+                                "team_name": "Daniel",
+                                "players": [{"player_name": "Aaron Judge", "player_key": "aaron judge"}],
+                            }
+                        },
+                        "metadata": {
+                            "source_draft_id": "draft99",
+                            "created_at": "2026-07-05T00:00:00+00:00",
+                            "updated_at": "2026-07-05T00:00:00+00:00",
+                        },
+                    }
+                },
+                "active_league_context_id": "archive:draft99",
+            },
+        }
+        repaired = repair_missing_draft_archives_from_contexts(session)
+        self.assertEqual(repaired, 1)
+        archives = list_draft_archives(session)
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0]["draft_id"], "draft99")
+        self.assertTrue(archives[0].get("repaired_from_context"))
+
+
 if __name__ == "__main__":
     unittest.main()

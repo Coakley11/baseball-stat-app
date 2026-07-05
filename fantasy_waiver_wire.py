@@ -419,22 +419,65 @@ def format_current_stat_line(row: pd.Series) -> str:
         return " · ".join(parts) if parts else "Pitcher — current stats loaded"
     parts: list[str] = []
     for label, cols in (
+        ("AVG", ("BA", "AVG")),
+        ("OBP", ("OBP",)),
+        ("OPS", ("OPS",)),
         ("HR", ("HR",)),
         ("RBI", ("RBI",)),
         ("R", ("R",)),
         ("SB", ("SB",)),
-        ("AVG", ("BA", "AVG")),
-        ("OPS", ("OPS",)),
     ):
         for col in cols:
             if col in row.index and pd.notna(row.get(col)):
                 val = row.get(col)
-                if label == "AVG":
-                    parts.append(f"AVG {float(val):.3f}")
+                if label in ("AVG", "OBP", "OPS"):
+                    parts.append(f"{label} {float(val):.3f}")
                 elif isinstance(val, float):
-                    parts.append(f"{label} {val:.0f}" if label != "OPS" else f"OPS {val:.3f}")
+                    parts.append(f"{label} {val:.0f}")
+                else:
+                    parts.append(f"{label} {val}")
                 break
-    return " • ".join(parts) if parts else "Current stats loaded"
+    return " · ".join(parts) if parts else "Current stats loaded"
+
+
+def format_projected_stat_line(row: pd.Series) -> str:
+    """One-line projected stats for waiver cards when projection columns exist."""
+    if _is_pitcher_row(row):
+        parts: list[str] = []
+        for label, cols in (
+            ("W", ("proj_W", "Projected W")),
+            ("SV", ("proj_SV", "Projected SV")),
+            ("K", ("proj_K", "Projected K")),
+            ("ERA", ("proj_ERA", "Projected ERA")),
+            ("WHIP", ("proj_WHIP", "Projected WHIP")),
+        ):
+            for col in cols:
+                if col in row.index and pd.notna(row.get(col)):
+                    val = pd.to_numeric(row.get(col), errors="coerce")
+                    if pd.notna(val):
+                        parts.append(f"{label} {float(val):.2f}" if label in ("ERA", "WHIP") else f"{label} {int(val)}")
+                    break
+        return " · ".join(parts) if parts else ""
+    parts: list[str] = []
+    for label, cols in (
+        ("AVG", ("proj_BA", "proj_AVG", "Projected AVG")),
+        ("OBP", ("proj_OBP", "Projected OBP")),
+        ("OPS", ("proj_OPS", "Projected OPS")),
+        ("HR", ("proj_HR", "Projected HR")),
+        ("RBI", ("proj_RBI", "Projected RBI")),
+        ("R", ("proj_R", "Projected R")),
+        ("SB", ("proj_SB", "Projected SB")),
+    ):
+        for col in cols:
+            if col in row.index and pd.notna(row.get(col)):
+                val = pd.to_numeric(row.get(col), errors="coerce")
+                if pd.notna(val):
+                    if label in ("AVG", "OBP", "OPS"):
+                        parts.append(f"{label} {float(val):.3f}")
+                    else:
+                        parts.append(f"{label} {int(round(float(val)))}")
+                break
+    return " · ".join(parts) if parts else ""
 
 
 def build_add_recommendation_explanation(player_row: pd.Series, needs: dict[str, Any]) -> str:
@@ -731,11 +774,25 @@ def filter_waiver_names_by_search(names: list[str], query: str) -> list[str]:
 
 
 def waiver_display_stat_columns(df: pd.DataFrame, *, pitcher: bool = False) -> list[str]:
-    base = ["Player", "MLB Team", "Primary Position"]
+    base = ["Player", "MLB Team", "Team", "Primary Position", "Position"]
     if pitcher:
-        return [c for c in base + ["W", "SV", "K", "ERA", "WHIP"] if c in df.columns]
-    hitter_cols = ["HR", "RBI", "R", "SB", "BA", "AVG", "OPS", "W", "SV", "K", "ERA", "WHIP"]
-    return [c for c in base + hitter_cols if c in df.columns]
+        current = ["W", "SV", "K", "ERA", "WHIP"]
+        projected = ["proj_W", "proj_SV", "proj_K", "proj_ERA", "proj_WHIP"]
+    else:
+        current = ["AVG", "BA", "OBP", "OPS", "HR", "RBI", "R", "SB"]
+        projected = [
+            "proj_BA",
+            "proj_AVG",
+            "proj_OBP",
+            "proj_OPS",
+            "proj_HR",
+            "proj_RBI",
+            "proj_R",
+            "proj_SB",
+        ]
+    score_cols = ["Why Add", "Why Drop", "Categories Helped", "_waiver_add_score"]
+    ordered = base + current + projected + score_cols
+    return [c for c in ordered if c in df.columns]
 
 
 def analyze_team_needs(
