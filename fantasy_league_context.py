@@ -873,6 +873,12 @@ def upsert_league_context(session: dict[str, Any], context: dict[str, Any]) -> d
         contexts = {}
         store["contexts"] = contexts
     contexts[league_context_id] = copy.deepcopy(context)
+    try:
+        from workflow_persist_guard import mark_workflow_persist_authoritative
+
+        mark_workflow_persist_authoritative(session)
+    except ImportError:
+        pass
     return copy.deepcopy(context)
 
 

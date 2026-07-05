@@ -419,7 +419,20 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
                 state[key] = copy.deepcopy(ss[key])
             except Exception:
                 state[key] = ss[key]
-    save_reason = str(ss.pop("_suite_pending_save_reason", None) or "autosave")
+    save_reason = str(ss.get("_suite_pending_save_reason") or "autosave")
+    try:
+        from workflow_persist_guard import merge_protected_workflow_into_save
+
+        state = merge_protected_workflow_into_save(
+            state,
+            ss,
+            app_id=APP_ID,
+            st=st,
+            save_reason=save_reason,
+        )
+    except ImportError:
+        pass
+    ss.pop("_suite_pending_save_reason", None)
     state["baseball_workspace_state"] = _build_workspace_envelope(st, state, save_reason=save_reason)
     try:
         from draft_room_state import enrich_save_payload_with_draft_room, sanitize_state_dict_for_json as sanitize_draft_room

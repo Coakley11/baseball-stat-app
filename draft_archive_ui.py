@@ -38,6 +38,58 @@ SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 
 
+def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    try:
+        from workflow_persist_guard import build_saved_draft_library_diagnostics, probe_cloud_workflow_for_workspace
+    except ImportError:
+        return
+
+    diag = build_saved_draft_library_diagnostics(session)
+    with st.expander("Persistence diagnostics", expanded=False):
+        account_bits = []
+        if diag.get("authenticated"):
+            if diag.get("account_email"):
+                account_bits.append(str(diag["account_email"]))
+            elif diag.get("account_external_id"):
+                account_bits.append(str(diag["account_external_id"]))
+            if diag.get("account_user_id"):
+                account_bits.append(f"id `{diag['account_user_id']}`")
+        else:
+            account_bits.append("Not signed in (local/demo mode)")
+        st.markdown(f"**Account:** {' · '.join(account_bits)}")
+        ws_label = str(diag.get("workspace_label") or diag.get("workspace_id") or "—")
+        ws_id = str(diag.get("workspace_id") or "—")
+        st.markdown(f"**Workspace:** {ws_label} (`{ws_id}`)")
+        st.markdown(
+            f"**Counts (session):** {int(diag.get('draft_archive_count') or 0)} saved drafts · "
+            f"{int(diag.get('league_context_count') or 0)} league contexts"
+        )
+        st.markdown(f"**Restore source:** {diag.get('restore_source_label') or '—'}")
+        if diag.get("restore_at"):
+            st.caption(f"Last restore: {diag['restore_at']}")
+        if diag.get("cloud_app_key"):
+            st.caption(f"Cloud app key: `{diag['cloud_app_key']}`")
+        if diag.get("local_state_path"):
+            st.caption(f"Disk path: `{diag['local_state_path']}`")
+        merged = diag.get("workflow_merge_keys") or []
+        if merged:
+            sources = diag.get("workflow_merge_sources") or {}
+            bits = [f"{k} ({sources.get(k, '?')})" for k in merged]
+            st.caption(f"Partial-save protection restored: {', '.join(bits)}")
+        if diag.get("cloud_enabled"):
+            cloud_probe = probe_cloud_workflow_for_workspace(ws_id)
+            if cloud_probe.get("row_found"):
+                st.markdown(
+                    f"**Cloud blob:** {int(cloud_probe.get('draft_archive_count') or 0)} drafts · "
+                    f"{int(cloud_probe.get('league_context_count') or 0)} league contexts "
+                    f"(updated {cloud_probe.get('updated_at') or '—'})"
+                )
+            else:
+                st.caption("Cloud: no baseball row for this workspace key.")
+        elif not diag.get("cloud_enabled"):
+            st.caption("Cloud storage not configured in this deployment.")
+
+
 def _page_label(page_key: str, page_label_fn=None) -> str:
     if callable(page_label_fn):
         return str(page_label_fn(page_key))
@@ -538,6 +590,8 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
         "**Lineup Assistant** which roster to analyze."
     )
 
+    _render_persistence_diagnostics(st, session)
+
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:
         if st.button(
@@ -548,9 +602,16 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
             schedule_return_from_saved_draft_library(session)
             st.rerun()
 
-    top_left, top_right = st.columns([3, 1])
+    top_left, top_mid, top_right = st.columns([2, 2, 1])
     with top_left:
         st.metric("Saved drafts", len(archives))
+    with top_mid:
+        try:
+            from fantasy_league_context import list_league_contexts
+
+            st.metric("League contexts", len(list_league_contexts(session)))
+        except ImportError:
+            st.metric("League contexts", 0)
     with top_right:
         if active and st.button("Clear active draft", key="library_clear_active", use_container_width=True):
             clear_active_draft_archive(session)

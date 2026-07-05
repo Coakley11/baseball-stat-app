@@ -29,6 +29,12 @@ def _archive_list(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _set_archive_list(session: dict[str, Any], entries: list[dict[str, Any]]) -> None:
     session[DRAFT_ARCHIVE_KEY] = entries
+    try:
+        from workflow_persist_guard import mark_workflow_persist_authoritative
+
+        mark_workflow_persist_authoritative(session)
+    except ImportError:
+        pass
 
 
 def list_draft_archives(session: dict[str, Any]) -> list[dict[str, Any]]:
