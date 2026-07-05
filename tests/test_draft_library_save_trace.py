@@ -9,11 +9,13 @@ import pandas as pd
 
 from draft_archive_state import DRAFT_ARCHIVE_KEY, list_draft_archives
 from draft_library_save_trace import (
+    DRAFT_SAVE_BUTTON_TRACE_KEY,
     begin_save_trace,
     draft_id_in_archives,
     finalize_save_trace,
     record_library_load_trace,
     record_restore_trace,
+    record_save_button_click,
     save_trace_checklist,
 )
 from fantasy_league_context import save_simulator_league_context
@@ -77,6 +79,20 @@ class DraftLibrarySaveTraceTests(unittest.TestCase):
         )
         self.assertEqual(restore.get("draft_id"), "d1")
         self.assertEqual(restore.get("restore_source"), "disk")
+
+    def test_record_save_button_click_writes_trace_before_persist(self) -> None:
+        session: dict = {"room_your_team": "Daniel", "sim_draft_archive_name_input": "Mock League"}
+        payload = record_save_button_click(
+            session,
+            source="draft_room_simulator",
+            team_name="Daniel",
+            key_prefix="sim_draft_archive",
+            reason="simulator_league_context_saved",
+        )
+        self.assertTrue(payload.get("save_requested"))
+        self.assertTrue(session.get(DRAFT_SAVE_BUTTON_TRACE_KEY, {}).get("save_requested"))
+        self.assertEqual(session[DRAFT_SAVE_BUTTON_TRACE_KEY].get("archive_count_before"), 0)
+        self.assertTrue(session.get("_draft_library_save_diag", {}).get("save_request_received"))
 
     @patch("workflow_persist_guard.probe_cloud_workflow_for_workspace", return_value={"draft_archive_count": 1, "draft_ids": ["x1"], "row_found": True})
     @patch("draft_library_save_trace.probe_disk_workflow_for_workspace", return_value={"draft_archive_count": 1, "disk_found": True})

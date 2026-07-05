@@ -39,6 +39,162 @@ DRAFT_LAB_PAGE = "Draft Lab / Simulation"
 DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
+_DRAFT_SAVE_UI_FLASH_KEY = "_draft_save_ui_flash"
+
+
+def _set_draft_save_ui_flash(session: dict[str, Any], *, level: str, message: str) -> None:
+    session[_DRAFT_SAVE_UI_FLASH_KEY] = {"level": str(level or "info"), "message": str(message or "")}
+
+
+def _pop_draft_save_ui_flash(session: dict[str, Any]) -> dict[str, str] | None:
+    flash = session.pop(_DRAFT_SAVE_UI_FLASH_KEY, None)
+    return flash if isinstance(flash, dict) else None
+
+
+def _execute_simulator_league_context_save(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    team_name: str,
+    key_prefix: str,
+) -> None:
+    """Run simulator league-context save (Streamlit on_click callback body)."""
+    draft_name = str(session.get(f"{key_prefix}_name_input") or f"Simulator — {team_name}")
+    session["_draft_save_trace_expand"] = True
+    try:
+        from draft_library_save_trace import (
+            finalize_save_trace,
+            record_save_button_click,
+            record_save_failure_trace,
+            resolve_simulator_board_df,
+        )
+
+        record_save_button_click(
+            session,
+            source="draft_room_simulator",
+            team_name=team_name,
+            key_prefix=key_prefix,
+            reason="simulator_league_context_saved",
+        )
+    except ImportError:
+        resolve_simulator_board_df = lambda _s: None  # type: ignore[assignment,misc]
+        record_save_failure_trace = None  # type: ignore[assignment,misc]
+        finalize_save_trace = None  # type: ignore[assignment,misc]
+
+    counts_before = _workflow_counts(session)
+    board_df = resolve_simulator_board_df(session)
+
+    def _fail(error: str, *, user_message: str) -> None:
+        try:
+            if record_save_failure_trace is not None:
+                record_save_failure_trace(
+                    session,
+                    reason="simulator_league_context_saved",
+                    error=error,
+                    before=counts_before,
+                )
+        except Exception:
+            pass
+        _set_draft_save_ui_flash(session, level="error", message=user_message)
+
+    if board_df is None or getattr(board_df, "empty", True):
+        _fail("No draft picks on the board yet", user_message="No draft picks on the board yet — enter picks before saving.")
+        return
+
+    filled = board_df.copy()
+    player_col = "Player" if "Player" in filled.columns else "fullName"
+    if player_col in filled.columns:
+        filled = filled[filled[player_col].astype(str).str.strip() != ""]
+    if filled.empty:
+        _fail(
+            "No drafted players found on board",
+            user_message="No drafted players found — add picks to the board before saving.",
+        )
+        return
+
+    try:
+        entry, context = save_simulator_league_context(
+            session,
+            board_df,
+            my_team_name=team_name,
+            draft_name=draft_name,
+            config=dict(session.get("draft_shared_settings") or {}),
+            defer_activation=True,
+            reuse_session_draft_id=False,
+        )
+        counts_after_save = _workflow_counts(session)
+        if not list_draft_archives(session):
+            try:
+                if record_save_failure_trace is not None:
+                    record_save_failure_trace(
+                        session,
+                        reason="simulator_league_context_saved",
+                        error="Session library empty after save_simulator_league_context",
+                        before=counts_before,
+                    )
+                if finalize_save_trace is not None:
+                    finalize_save_trace(
+                        session,
+                        reason="simulator_league_context_saved",
+                        before=counts_before,
+                        after=counts_after_save,
+                        persist_ok=False,
+                        entry=entry if isinstance(entry, dict) else None,
+                        probe_cloud=True,
+                    )
+            except Exception:
+                pass
+            _set_draft_save_ui_flash(
+                session,
+                level="error",
+                message="Save did not update Saved Draft Library — see save diagnostics below.",
+            )
+            return
+
+        _clear_fantasy_caches_on_archive_change(session)
+        persist_ok = _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
+        if isinstance(session.get("_draft_library_save_diag"), dict):
+            session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
+        if not persist_ok:
+            _set_draft_save_ui_flash(
+                session,
+                level="error",
+                message=(
+                    "Saved to this session, but cloud/disk persist failed. "
+                    "Review **Save Diagnostics** below before refreshing."
+                ),
+            )
+        else:
+            try:
+                from baseball_archive_activity import log_saved_draft_archived
+
+                log_saved_draft_archived(entry, session=session)
+            except ImportError:
+                pass
+            stash_league_context_save_flash(session, entry, context=context, league_save=True)
+    except Exception as exc:
+        try:
+            if record_save_failure_trace is not None:
+                record_save_failure_trace(
+                    session,
+                    reason="simulator_league_context_saved",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        except Exception:
+            pass
+        _set_draft_save_ui_flash(session, level="error", message=f"Could not save active league context: {exc}")
+
+
+def _on_simulator_save_click(*, team_name: str, key_prefix: str) -> None:
+    import streamlit as st
+
+    _execute_simulator_league_context_save(
+        st,
+        st.session_state,
+        team_name=team_name,
+        key_prefix=key_prefix,
+    )
+    st.rerun()
 
 
 def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
@@ -639,145 +795,28 @@ def render_save_simulator_draft_team(
         return
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
     with st.expander("Save Active League Context", expanded=expand_save):
+        flash = _pop_draft_save_ui_flash(session)
+        if flash and flash.get("message"):
+            if flash.get("level") == "error":
+                st.error(str(flash["message"]))
+            else:
+                st.info(str(flash["message"]))
         st.caption(
             "Saves the full mock draft as **Active League Context** (all teams), "
             "ready for Standings, Lineup, and Waiver workflows."
         )
-        draft_name = st.text_input(
+        st.text_input(
             "League name",
             value=f"Simulator — {team_name}",
             key=f"{key_prefix}_name_input",
         )
-        if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
-            try:
-                counts_before = _workflow_counts(session)
-                if board_df is None or getattr(board_df, "empty", True):
-                    try:
-                        from draft_library_save_trace import begin_save_trace, record_save_failure_trace
-
-                        begin_save_trace(
-                            session,
-                            source="draft_room_simulator",
-                            reason="simulator_league_context_saved",
-                            draft_name=draft_name,
-                        )
-                        record_save_failure_trace(
-                            session,
-                            reason="simulator_league_context_saved",
-                            error="No draft picks on the board yet",
-                            before=counts_before,
-                        )
-                    except ImportError:
-                        pass
-                    st.error("No draft picks on the board yet — enter picks before saving.")
-                    session["_draft_save_trace_expand"] = True
-                    st.rerun()
-                    return
-                filled = board_df.copy()
-                player_col = "Player" if "Player" in filled.columns else "fullName"
-                if player_col in filled.columns:
-                    filled = filled[filled[player_col].astype(str).str.strip() != ""]
-                if filled.empty:
-                    try:
-                        from draft_library_save_trace import begin_save_trace, record_save_failure_trace
-
-                        begin_save_trace(
-                            session,
-                            source="draft_room_simulator",
-                            reason="simulator_league_context_saved",
-                            draft_name=draft_name,
-                        )
-                        record_save_failure_trace(
-                            session,
-                            reason="simulator_league_context_saved",
-                            error="No drafted players found on board",
-                            before=counts_before,
-                        )
-                    except ImportError:
-                        pass
-                    st.error("No drafted players found — add picks to the board before saving.")
-                    session["_draft_save_trace_expand"] = True
-                    st.rerun()
-                    return
-                try:
-                    from draft_library_save_trace import begin_save_trace
-
-                    begin_save_trace(
-                        session,
-                        source="draft_room_simulator",
-                        reason="simulator_league_context_saved",
-                        draft_name=draft_name,
-                    )
-                except ImportError:
-                    pass
-                entry, context = save_simulator_league_context(
-                    session,
-                    board_df,
-                    my_team_name=team_name,
-                    draft_name=draft_name,
-                    config=dict(session.get("draft_shared_settings") or {}),
-                    defer_activation=True,
-                    reuse_session_draft_id=False,
-                )
-                counts_after_save = _workflow_counts(session)
-                if not list_draft_archives(session):
-                    try:
-                        from draft_library_save_trace import finalize_save_trace, record_save_failure_trace
-
-                        record_save_failure_trace(
-                            session,
-                            reason="simulator_league_context_saved",
-                            error="Session library empty after save_simulator_league_context",
-                            before=counts_before,
-                        )
-                        finalize_save_trace(
-                            session,
-                            reason="simulator_league_context_saved",
-                            before=counts_before,
-                            after=counts_after_save,
-                            persist_ok=False,
-                            entry=entry if isinstance(entry, dict) else None,
-                            probe_cloud=True,
-                        )
-                    except ImportError:
-                        pass
-                    st.error("Save did not update Saved Draft Library — see save diagnostics below.")
-                    session["_draft_save_trace_expand"] = True
-                    st.rerun()
-                    return
-                _clear_fantasy_caches_on_archive_change(session)
-                persist_ok = _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
-                if isinstance(session.get("_draft_library_save_diag"), dict):
-                    session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
-                if not persist_ok:
-                    st.error(
-                        "Saved to this session, but cloud/disk persist failed. "
-                        "Review **Save Diagnostics** below before refreshing."
-                    )
-                else:
-                    try:
-                        from baseball_archive_activity import log_saved_draft_archived
-
-                        log_saved_draft_archived(entry, session=session)
-                    except ImportError:
-                        pass
-                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
-                session["_draft_save_trace_expand"] = True
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not save active league context: {exc}")
-                try:
-                    from draft_library_save_trace import record_save_failure_trace
-
-                    record_save_failure_trace(
-                        session,
-                        reason="simulator_league_context_saved",
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                except ImportError:
-                    pass
-                session["_draft_save_trace_expand"] = True
-                st.rerun()
+        st.button(
+            "Save Active League Context",
+            key=f"{key_prefix}_save_league_btn",
+            type="primary",
+            on_click=_on_simulator_save_click,
+            kwargs={"team_name": team_name, "key_prefix": key_prefix},
+        )
         try:
             from draft_library_save_trace import render_save_trace_inline
 

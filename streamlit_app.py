@@ -23159,6 +23159,13 @@ if active_page == "Fantasy Lineup Assistant":
 
             if diag.get("slot_gaps"):
                 st.warning(str(diag["slot_gaps"]))
+                if lineup_pkg.get("missing_slots"):
+                    if st.button(
+                        "View Waiver Options For Open Positions",
+                        key="lineup_open_waiver_for_open_slots_btn",
+                        use_container_width=False,
+                    ):
+                        navigate_to_page("Waiver Wire / Add-Drop Center")
             elif diag.get("position_note") and "Weakest Position" in str(diag.get("position_note") or ""):
                 with st.container(border=True):
                     st.markdown(str(diag["position_note"]))
@@ -23168,28 +23175,53 @@ if active_page == "Fantasy Lineup Assistant":
                     try:
                         from fantasy_actionable_recommendations import (
                             team_outlook_confidence_help,
+                            team_outlook_confidence_reasons,
                             team_outlook_explanation,
+                            team_outlook_summary,
                         )
 
                         for _why_line in team_outlook_explanation(
                             strong_cats=_strength_cats,
                             weak_cats=_weakness_cats,
                             category_ranks=_cat_ranks,
+                            category_values=_cat_values,
                             n_teams=_n_teams,
+                            missing_slots=list(lineup_pkg.get("missing_slots") or []),
                         ):
                             st.markdown(_why_line)
+                        _, _confidence_label, _ = team_outlook_summary(
+                            strong_cats=_strength_cats,
+                            weak_cats=_weakness_cats,
+                            category_ranks=_cat_ranks,
+                            n_teams=_n_teams,
+                        )
+                        _conf_reasons = team_outlook_confidence_reasons(
+                            confidence=_confidence_label,
+                            category_ranks=_cat_ranks,
+                            n_teams=_n_teams,
+                            missing_slots=list(lineup_pkg.get("missing_slots") or []),
+                            roster_complete=not bool(lineup_pkg.get("missing_slots")),
+                        )
+                        if _conf_reasons and _confidence_label:
+                            st.markdown(f"**Why confidence is {_confidence_label.lower()}:**")
+                            for _conf_line in _conf_reasons:
+                                st.markdown(f"- {_conf_line}")
                         st.caption(team_outlook_confidence_help())
                     except ImportError:
                         pass
 
             if _needs:
                 try:
-                    from fantasy_waiver_wire import build_category_action_table
+                    from fantasy_waiver_wire import build_category_action_table, style_category_action_table
 
                     _cat_action = build_category_action_table(_needs)
                     if not _cat_action.empty:
                         st.markdown("##### Category standings vs league")
-                        st.dataframe(_cat_action, width="stretch", hide_index=True)
+                        st.dataframe(
+                            style_category_action_table(_cat_action),
+                            width="stretch",
+                            hide_index=True,
+                        )
                 except ImportError:
                     pass
             elif not diag["hitting_table"].empty:

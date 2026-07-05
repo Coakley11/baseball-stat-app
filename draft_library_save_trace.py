@@ -8,6 +8,7 @@ from typing import Any
 DRAFT_LIBRARY_SAVE_DIAG_KEY = "_draft_library_save_diag"
 DRAFT_LIBRARY_LOAD_DIAG_KEY = "_draft_library_load_diag"
 DRAFT_LIBRARY_RESTORE_DIAG_KEY = "_draft_library_restore_diag"
+DRAFT_SAVE_BUTTON_TRACE_KEY = "_draft_save_button_trace"
 
 
 def _utc_now() -> str:
@@ -116,6 +117,64 @@ def probe_persisted_draft_id(
     except ImportError:
         pass
     return out
+
+
+def record_save_button_click(
+    session: dict[str, Any],
+    *,
+    source: str,
+    team_name: str = "",
+    key_prefix: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    """First write on save button click — proves callback executed."""
+    save_reason = str(reason or "").strip() or f"{source.replace(' ', '_')}_saved"
+    counts = _workflow_counts(session)
+    ws = _workspace_id(session)
+    draft_id = str(
+        session.get("active_draft_archive_id")
+        or session.get("simulator_session_library_draft_id")
+        or session.get("_simulator_session_library_draft_id")
+        or ""
+    ).strip()
+    payload = {
+        "save_requested": True,
+        "requested_at": _utc_now(),
+        "workspace_id": ws,
+        "team_name": str(team_name or ""),
+        "draft_id": draft_id,
+        "archive_count_before": int(counts.get("draft_archive_count") or 0),
+        "context_count_before": int(counts.get("league_context_count") or 0),
+        "source": str(source or ""),
+        "key_prefix": str(key_prefix or ""),
+    }
+    session[DRAFT_SAVE_BUTTON_TRACE_KEY] = payload
+    begin_save_trace(
+        session,
+        source=source,
+        reason=save_reason,
+        draft_name=str(session.get(f"{key_prefix}_name_input") or ""),
+    )
+    session[DRAFT_LIBRARY_SAVE_DIAG_KEY] = {
+        **dict(session.get(DRAFT_LIBRARY_SAVE_DIAG_KEY) or {}),
+        **payload,
+        "save_request_received": True,
+        "save_source": source,
+        "draft_archive_count_before": payload["archive_count_before"],
+        "league_context_count_before": payload["context_count_before"],
+    }
+    return payload
+
+
+def resolve_simulator_board_df(session: dict[str, Any]):
+    """Load canonical draft board from session inside save callback."""
+    try:
+        from draft_room_state import ensure_runtime_draft_board, prepare_draft_room_state
+
+        prepare_draft_room_state(session)
+        return ensure_runtime_draft_board(session)
+    except Exception:
+        return None
 
 
 def begin_save_trace(
@@ -423,14 +482,30 @@ def render_save_trace_inline(
     if deploy_ref:
         st.caption(f"Deployed build marker: `{deploy_ref}`")
 
+    btn_trace = session.get(DRAFT_SAVE_BUTTON_TRACE_KEY)
+    if isinstance(btn_trace, dict) and btn_trace.get("save_requested"):
+        st.markdown("**Save button click trace**")
+        with st.container(border=True):
+            st.markdown(
+                f"✅ **Save requested** at `{btn_trace.get('requested_at') or '—'}` · "
+                f"workspace `{btn_trace.get('workspace_id') or '—'}` · "
+                f"draft_id `{btn_trace.get('draft_id') or '—'}` · "
+                f"archives before **{btn_trace.get('archive_count_before', 0)}**"
+            )
+            st.json(btn_trace)
+
     diag = session.get(DRAFT_LIBRARY_SAVE_DIAG_KEY)
     has_trace = isinstance(diag, dict) and (
         diag.get("save_request_received") or diag.get("finalized_at") or diag.get("save_error")
     )
-    if not has_trace:
+    if not has_trace and not (isinstance(btn_trace, dict) and btn_trace.get("save_requested")):
         st.info("No save trace yet — click **Save Active League Context**.")
         return
+    if not has_trace:
+        st.warning("Save button fired, but full pipeline trace was not finalized yet.")
+        return
 
+    diag = diag if isinstance(diag, dict) else {}
     with st.container(border=True):
         if source:
             st.caption(f"Source: **{source}** · reason: `{diag.get('reason') or '—'}`")

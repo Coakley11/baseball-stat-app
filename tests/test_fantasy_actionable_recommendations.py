@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from fantasy_actionable_recommendations import build_team_actionable_summary
+from fantasy_actionable_recommendations import build_team_actionable_summary, team_outlook_explanation
 from fantasy_waiver_wire import analyze_current_team_needs
 
 
@@ -46,6 +46,19 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
         self.assertLess(obp_val, 1.0)
         self.assertAlmostEqual(obp_val, 0.330, places=3)
 
+    def test_team_outlook_explanation_shows_full_rank_phrase(self) -> None:
+        lines = team_outlook_explanation(
+            strong_cats=["OBP"],
+            weak_cats=["HR", "RBI"],
+            category_ranks={"OBP": 1, "HR": 4, "RBI": 4},
+            category_values={"OBP": 0.351, "HR": 180, "RBI": 700},
+            n_teams=4,
+        )
+        joined = "\n".join(lines)
+        self.assertIn("4th of 4 teams", joined)
+        self.assertNotIn("(th of 4 teams)", joined)
+        self.assertIn(".351", joined)
+
     def test_build_team_actionable_summary_no_waiver_pool_shows_unavailable(self) -> None:
         lines = build_team_actionable_summary(
             strong_cats=["OBP"],
@@ -56,8 +69,6 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
         self.assertTrue(any("No strong waiver upgrades" in line for line in lines))
 
     def test_team_outlook_explanation_lists_strengths_and_concerns(self) -> None:
-        from fantasy_actionable_recommendations import team_outlook_explanation
-
         lines = team_outlook_explanation(
             strong_cats=["OBP", "SB"],
             weak_cats=["HR", "RBI"],

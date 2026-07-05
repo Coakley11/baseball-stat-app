@@ -408,9 +408,35 @@ def build_category_action_table(
                 "League Rank": rank_label,
                 "League Best": best_display if best_display is not None else "—",
                 "Gap To Improve": gap_display if gap_display is not None else "—",
+                "Status": (
+                    "Strength" if cat in (needs.get("strengths") or [])
+                    else "Weakness" if cat in (needs.get("weaknesses") or [])
+                    else "Middle"
+                ),
             }
         )
     return pd.DataFrame(rows)
+
+
+def style_category_action_table(df: pd.DataFrame):
+    """Green strengths / red weaknesses for lineup category table."""
+    if df is None or getattr(df, "empty", True) or "Status" not in df.columns:
+        return df
+
+    def _row_style(row: pd.Series):
+        status = str(row.get("Status") or "")
+        if status == "Strength":
+            return ["background-color: #dcfce7"] * len(row)
+        if status == "Weakness":
+            return ["background-color: #fee2e2"] * len(row)
+        return [""] * len(row)
+
+    styled = df.style.apply(_row_style, axis=1)
+    try:
+        styled = styled.hide(subset=["Status"], axis="columns")
+    except Exception:
+        pass
+    return styled
 
 
 def format_league_rank_lines(

@@ -9,7 +9,7 @@ import pandas as pd
 
 def _ordinal(n: int) -> str:
     if 10 <= (n % 100) <= 20:
-        return f"{n}th"
+        return "th"
     return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
@@ -128,15 +128,48 @@ def plain_lineup_archetype(
     return "Category production is fairly mixed across HR, RBI, R, SB, and rate stats."
 
 
-def _waiver_target_names(
+def _read_projected_stat(row: pd.Series, cat: str) -> float | None:
+    for col in (f"proj_{cat}", f"Projected {cat}", cat):
+        if col in row.index and pd.notna(row.get(col)):
+            val = pd.to_numeric(row.get(col), errors="coerce")
+            if pd.notna(val):
+                return float(val)
+    return None
+
+
+def format_waiver_target_gain_lines(
+    row: pd.Series,
+    *,
+    weak_cats: list[str] | None = None,
+    extra_cats: tuple[str, ...] = ("HR", "RBI", "R", "SB"),
+) -> list[str]:
+    """Projected counting-stat lines for waiver recommendations (e.g. +12 HR)."""
+    lines: list[str] = []
+    show_cats: list[str] = []
+    for cat in list(weak_cats or []) + list(extra_cats):
+        key = str(cat).upper()
+        if key not in show_cats:
+            show_cats.append(key)
+    for cat in show_cats[:4]:
+        val = _read_projected_stat(row, cat)
+        if val is None:
+            continue
+        if cat in ("AVG", "OBP", "SLG", "OPS", "ERA", "WHIP"):
+            lines.append(f"+{_format_category_value(cat, val)} {cat}")
+        else:
+            lines.append(f"+{int(round(val))} {cat}")
+    return lines
+
+
+def _waiver_target_rows(
     waiver_pool: pd.DataFrame | None,
     needs: dict[str, Any] | None,
     *,
     limit: int = 3,
     context: dict[str, Any] | None = None,
-) -> list[str]:
+) -> pd.DataFrame:
     if waiver_pool is None or getattr(waiver_pool, "empty", True):
-        return []
+        return pd.DataFrame()
     pool = waiver_pool.copy()
     if context:
         try:
@@ -149,18 +182,31 @@ def _waiver_target_names(
         except ImportError:
             pass
     if pool.empty:
-        return []
+        return pd.DataFrame()
     try:
         from fantasy_waiver_wire import recommend_adds_current
 
         adds = recommend_adds_current(pool, needs or {}, limit=int(limit))
-        if adds.empty:
-            return []
-        for col in ("Player", "fullName"):
-            if col in adds.columns:
-                return [str(x).strip() for x in adds[col].astype(str).head(int(limit)).tolist() if str(x).strip()]
+        return adds.copy() if adds is not None and not adds.empty else pd.DataFrame()
     except ImportError:
-        pass
+        return pd.DataFrame()
+
+
+def _waiver_target_names(
+    waiver_pool: pd.DataFrame | None,
+    needs: dict[str, Any] | None,
+    *,
+    limit: int = 3,
+    context: dict[str, Any] | None = None,
+) -> list[str]:
+    if waiver_pool is None or getattr(waiver_pool, "empty", True):
+        return []
+    adds = _waiver_target_rows(waiver_pool, needs, limit=int(limit), context=context)
+    if adds.empty:
+        return []
+    for col in ("Player", "fullName"):
+        if col in adds.columns:
+            return [str(x).strip() for x in adds[col].astype(str).head(int(limit)).tolist() if str(x).strip()]
     return []
 
 
@@ -244,8 +290,21 @@ def build_team_actionable_summary(
         val = cat_values.get(weak)
         val_bit = f" ({_format_category_value(weak, val)})" if val is not None else ""
         lines.append(f"**Biggest weakness:** **{weak}**{val_bit} is your clearest upgrade area.")
-        targets = _waiver_target_names(waiver_pool, needs, limit=3, context=league_context)
-        if targets:
+        add_rows = _waiver_target_rows(waiver_pool, needs, limit=3, context=league_context)
+        if not add_rows.empty:
+            lines.append("**Best waiver strategy:** Recommended targets:")
+            name_col = "Player" if "Player" in add_rows.columns else "fullName"
+            for _, row in add_rows.iterrows():
+                pname = str(row.get(name_col) or row.get("Player") or "").strip()
+                if not pname:
+                    continue
+                gain_lines = format_waiver_target_gain_lines(row, weak_cats=weak_cats)
+                block = f"**{pname}**"
+                if gain_lines:
+                    block += "\n" + "\n".join(gain_lines)
+                lines.append(block)
+        elif _waiver_target_names(waiver_pool, needs, limit=1, context=league_context):
+            targets = _waiver_target_names(waiver_pool, needs, limit=3, context=league_context)
             why = ", ".join(weak_cats[:2])
             lines.append(
                 "**Best waiver strategy:** Recommended targets: "
@@ -288,11 +347,14 @@ def team_outlook_explanation(
     strong_cats: list[str] | None = None,
     weak_cats: list[str] | None = None,
     category_ranks: dict[str, int] | None = None,
+    category_values: dict[str, float] | None = None,
     n_teams: int = 0,
+    missing_slots: list[str] | None = None,
 ) -> list[str]:
     """Plain bullets explaining why outlook is Strong / Mixed / etc."""
     lines: list[str] = []
     ranks = dict(category_ranks or {})
+    values = dict(category_values or {})
     n = int(n_teams or 0) or (max(ranks.values()) if ranks else 0)
     strengths = list(strong_cats or [])
     weaknesses = list(weak_cats or [])
@@ -303,17 +365,82 @@ def team_outlook_explanation(
         ordered = sorted(ranks.items(), key=lambda kv: (-int(kv[1]), kv[0]))
         weaknesses = [cat for cat, r in ordered[:2] if int(r) > max(2, n // 2)]
     if strengths:
-        lines.append("**Strengths driving outlook:** " + ", ".join(f"**{c}**" for c in strengths[:3]))
+        strength_bits: list[str] = []
+        for cat in strengths[:3]:
+            val = values.get(cat)
+            rank_phrase = format_league_rank_phrase(ranks.get(cat), n_teams=n)
+            if val is not None:
+                strength_bits.append(f"• Strong **{cat}** ({_format_category_value(cat, val)}{f', {rank_phrase}' if rank_phrase else ''})")
+            elif rank_phrase:
+                strength_bits.append(f"• Strong **{cat}** ({rank_phrase})")
+            else:
+                strength_bits.append(f"• Strong **{cat}**")
+        lines.append("**Strengths driving outlook:**\n" + "\n".join(strength_bits))
     if weaknesses:
-        detail = []
+        concern_bits: list[str] = []
         for cat in weaknesses[:3]:
             rank = ranks.get(cat)
-            if rank and n > 1:
-                detail.append(f"**{cat}** ({_ordinal(int(rank))} of {n} teams)")
+            rank_phrase = format_league_rank_phrase(rank, n_teams=n) if rank and n > 1 else ""
+            val = values.get(cat)
+            if rank_phrase and val is not None:
+                concern_bits.append(f"• **{cat}** ({_format_category_value(cat, val)}, {rank_phrase})")
+            elif rank_phrase:
+                concern_bits.append(f"• **{cat}** ({rank_phrase})")
             else:
-                detail.append(f"**{cat}**")
-        lines.append("**Concerns:** " + ", ".join(detail))
+                concern_bits.append(f"• **{cat}**")
+        lines.append("**Concerns:**\n" + "\n".join(concern_bits))
+    open_slots = list(missing_slots or [])
+    if open_slots:
+        from collections import Counter
+
+        ms_counts = Counter(open_slots)
+        slot_parts: list[str] = []
+        for slot in ("C", "1B", "2B", "3B", "SS", "OF", "UTIL"):
+            if slot in ms_counts:
+                cnt = ms_counts[slot]
+                slot_parts.append(slot + (f" (×{cnt})" if cnt > 1 else ""))
+        if slot_parts:
+            slot_line = f"• Several roster slots still open ({', '.join(slot_parts)})"
+            if lines and lines[-1].startswith("**Concerns:**"):
+                lines[-1] = lines[-1] + "\n" + slot_line
+            else:
+                lines.append(f"**Concerns:**\n{slot_line}")
     return lines
+
+
+def team_outlook_confidence_reasons(
+    *,
+    confidence: str = "",
+    category_ranks: dict[str, int] | None = None,
+    n_teams: int = 0,
+    missing_slots: list[str] | None = None,
+    roster_complete: bool = True,
+) -> list[str]:
+    """Short bullets explaining why confidence is High / Medium / Low."""
+    reasons: list[str] = []
+    ranks = dict(category_ranks or {})
+    n = int(n_teams or 0) or (max(ranks.values()) if ranks else 0)
+    if missing_slots or not roster_complete:
+        reasons.append("Partial roster — lineup slots are not fully filled")
+    if missing_slots:
+        reasons.append("Open slots remain — category totals may shift as you add players")
+    if ranks and n > 1:
+        spread = max(int(v) for v in ranks.values()) - min(int(v) for v in ranks.values())
+        if spread <= 1:
+            reasons.append("Rankings are consistent across categories")
+        elif spread == 2:
+            reasons.append("Rankings are mostly consistent with a few outliers")
+        else:
+            reasons.append("Category rankings vary widely — harder to predict overall outlook")
+    if not reasons:
+        label = str(confidence or "Medium").strip().lower()
+        if label == "high":
+            reasons.append("Category balance and league ranks are tightly clustered")
+        elif label == "low":
+            reasons.append("Limited league context or incomplete roster data")
+        else:
+            reasons.append("Mixed signals across categories and roster coverage")
+    return reasons
 
 
 def team_outlook_confidence_help() -> str:

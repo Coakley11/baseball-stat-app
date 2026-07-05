@@ -136,6 +136,12 @@ _WORKFLOW_KEYS = (
     "_waiver_pending_move_pairs",
     "waiver_planner_add_pick",
     "waiver_planner_drop_pick",
+    "_draft_library_save_diag",
+    "_draft_library_load_diag",
+    "_draft_library_restore_diag",
+    "_draft_save_button_trace",
+    "_draft_save_trace_expand",
+    "_draft_save_ui_flash",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"
