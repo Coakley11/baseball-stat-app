@@ -364,7 +364,7 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         self.assertEqual(entry.get("league_context_id"), context_id_for_archive(str(entry["draft_id"])))
         self.assertTrue(has_full_league_rosters(context))
         self.assertEqual(context["context_type"], CONTEXT_TYPE_LIVE_DRAFT_RESULT)
-        self.assertEqual(league_context_coverage_badge(context), "Full League Context")
+        self.assertEqual(league_context_coverage_badge(context), "Active League Context")
         active = get_active_league_context(session)
         assert active is not None
         self.assertEqual(active["league_context_id"], context["league_context_id"])
@@ -386,7 +386,7 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         self.assertEqual(len(entry.get("league_rosters") or {}), 2)
         self.assertEqual(context["context_type"], CONTEXT_TYPE_MOCK_DRAFT_SIMULATION)
         self.assertEqual(league_context_type_badge(context), "Mock Draft Simulation")
-        self.assertEqual(league_context_coverage_badge(context), "Full League Context")
+        self.assertEqual(league_context_coverage_badge(context), "Active League Context")
 
     def test_legacy_archive_badges(self) -> None:
         session: dict = {}
@@ -395,7 +395,7 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         migrate_legacy_archives_to_contexts(session)
         context = get_league_context_for_archive(session, entry)
         assert context is not None
-        self.assertEqual(league_context_coverage_badge(context), "My Team Only / Legacy")
+        self.assertEqual(league_context_coverage_badge(context), "Incomplete — re-save as full league")
         self.assertEqual(league_context_type_badge(context), "Mock Draft Simulation")
         self.assertEqual(league_team_count(context, entry), 1)
 

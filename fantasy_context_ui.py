@@ -1,40 +1,35 @@
-"""Fantasy league context sync UI — Saved Draft Library + page badges."""
+"""Active League Context display + research-page sync toggle (Saved Draft Library)."""
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
-from fantasy_waiver_wire import GLOBAL_WAIVER_FILTER_KEY
+# Persisted session key (legacy name retained for cloud/disk compatibility).
+FANTASY_RESEARCH_SYNC_KEY = "use_active_league_context_waiver_filter"
 
-FANTASY_CONTEXT_SYNC_LABEL = "Sync fantasy pages to this league"
-FANTASY_CONTEXT_SYNC_HELP = (
-    "When enabled, Standings, Lineup Assistant, Waiver Wire, Trade Analyzer, and "
-    "Fantasy Assistant use your **Active League Context** (rosters, team, category ranks)."
+FANTASY_RESEARCH_SYNC_LABEL = "Sync active league context to research pages"
+FANTASY_RESEARCH_SYNC_HELP = (
+    "When enabled, research pages filter recommendations using your **Active League Context** "
+    "(rostered players are treated as unavailable)."
 )
 
-_SYNC_PAGES = (
-    "Fantasy Standings Tracker",
-    "Fantasy Lineup Assistant",
-    "Waiver Wire / Add-Drop Center",
+RESEARCH_SYNC_PAGES: tuple[str, ...] = (
+    "Comparison Tool",
+    "Trend Value",
+    "Valuation",
+    "Fantasy Sleepers & Busts",
+    "Draft Assistant Simulator",
 )
 
 
+def research_league_sync_enabled(session: dict[str, Any]) -> bool:
+    """True when research pages should use Active League Context for league-aware filtering."""
+    return bool(session.get(FANTASY_RESEARCH_SYNC_KEY))
+
+
+# Backward-compatible aliases
 def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
-    return bool(session.get(GLOBAL_WAIVER_FILTER_KEY))
-
-
-def render_fantasy_context_sync_required(st: Any, session: dict[str, Any], *, page_name: str) -> bool:
-    """Return False when sync is off — caller should stop rendering the fantasy workflow."""
-    if fantasy_context_sync_enabled(session):
-        return True
-    st.warning("**Fantasy Context Sync Disabled**")
-    st.info(
-        f"**{page_name}** requires an active synced fantasy league.\n\n"
-        "Go to **Saved Draft Library** and enable:\n\n"
-        f"☑ {FANTASY_CONTEXT_SYNC_LABEL}\n\n"
-        "before using this page."
-    )
-    return False
+    return research_league_sync_enabled(session)
 
 
 def _on_sync_changed(st: Any) -> None:
@@ -46,39 +41,77 @@ def _on_sync_changed(st: Any) -> None:
         pass
 
 
-def render_fantasy_context_sync_control(st: Any, session: dict[str, Any], *, key: str = "library_fantasy_context_sync") -> None:
-    """Primary control — belongs on Saved Draft Library, not Waiver Wire."""
+def render_fantasy_context_sync_control(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    key: str = "library_fantasy_context_sync",
+) -> None:
+    """Research-page sync toggle — Saved Draft Library only."""
     st.markdown("##### Fantasy Context Sync")
     st.checkbox(
-        FANTASY_CONTEXT_SYNC_LABEL,
-        key=GLOBAL_WAIVER_FILTER_KEY,
-        help=FANTASY_CONTEXT_SYNC_HELP,
+        FANTASY_RESEARCH_SYNC_LABEL,
+        key=FANTASY_RESEARCH_SYNC_KEY,
+        help=FANTASY_RESEARCH_SYNC_HELP,
         on_change=_on_sync_changed,
     )
     st.caption(
-        "Affected pages: Fantasy Standings Tracker, Fantasy Lineup Assistant, "
-        "Waiver Wire / Add-Drop Center, Trade Analyzer, Fantasy Assistant."
+        "Affected pages: "
+        + ", ".join(RESEARCH_SYNC_PAGES)
+        + ". When enabled, recommendations and analysis become league-aware. "
+        "When disabled, those pages operate in general MLB mode."
+    )
+    st.caption(
+        "**Not affected:** Fantasy Standings, Lineup Assistant, Waiver Wire, Trade tools — "
+        "those always use **Active League Context** when one is set. Draft Lab stays independent."
     )
 
 
-def fantasy_context_badge_text(session: dict[str, Any]) -> str:
-    synced = fantasy_context_sync_enabled(session)
+def active_league_context_badge_text(session: dict[str, Any]) -> str:
+    """Fantasy workflow pages — sync checkbox is irrelevant here."""
     try:
         from fantasy_league_context import get_active_league_context
 
         ctx = get_active_league_context(session)
     except ImportError:
         ctx = None
-    if synced and isinstance(ctx, dict):
+    if isinstance(ctx, dict):
         name = str(ctx.get("display_name") or ctx.get("my_team_name") or "Active League").strip()
-        return f"Fantasy Context: **{name}** (Synced)"
-    if synced:
-        return "Fantasy Context: **Active League** (Synced)"
-    return "Fantasy Context: **General MLB Mode**"
+        return f"Active League Context: **{name}** · ✓ Active"
+    return "Active League Context: **Not set** — choose one in Saved Draft Library"
+
+
+def research_sync_badge_text(session: dict[str, Any]) -> str:
+    """Research pages — show whether league-aware mode is on."""
+    if not research_league_sync_enabled(session):
+        return "Research mode: **General MLB** (sync off)"
+    try:
+        from fantasy_league_context import get_active_league_context
+
+        ctx = get_active_league_context(session)
+    except ImportError:
+        ctx = None
+    if isinstance(ctx, dict):
+        name = str(ctx.get("display_name") or ctx.get("my_team_name") or "Active League").strip()
+        return f"Research mode: **League-aware** · {name}"
+    return "Research mode: **League-aware** (no active league — set one in Saved Draft Library)"
+
+
+def render_active_league_context_badge(st: Any, session: dict[str, Any]) -> None:
+    st.caption(active_league_context_badge_text(session))
+
+
+def render_research_sync_badge(st: Any, session: dict[str, Any]) -> None:
+    st.caption(research_sync_badge_text(session))
 
 
 def render_fantasy_context_badge(st: Any, session: dict[str, Any]) -> None:
-    st.caption(fantasy_context_badge_text(session))
+    """Default badge for in-season fantasy pages."""
+    render_active_league_context_badge(st, session)
+
+
+# Backward-compatible alias for tests and callers.
+fantasy_context_badge_text = active_league_context_badge_text
 
 
 def render_fantasy_context_library_block(
@@ -87,12 +120,12 @@ def render_fantasy_context_library_block(
     *,
     active_context: dict[str, Any] | None,
 ) -> None:
-    """Show active league summary + sync toggle on Saved Draft Library."""
+    """Active league summary + research sync toggle on Saved Draft Library."""
+    st.markdown("##### Active League Context")
     if active_context:
-        st.markdown(
-            f"**Active League:** {active_context.get('display_name', 'League')} · "
-            f"My team: **{active_context.get('my_team_name', '—')}**"
-        )
+        name = str(active_context.get("display_name") or "League").strip()
+        team = str(active_context.get("my_team_name") or "—").strip()
+        st.markdown(f"**{name}** · My team: **{team}** · ✓ Active")
     else:
-        st.info("No **Active League Context** selected. Set one from a saved draft below.")
+        st.info("No **Active League Context** yet. Save a draft room or live draft below, then click **Set Active League Context**.")
     render_fantasy_context_sync_control(st, session)

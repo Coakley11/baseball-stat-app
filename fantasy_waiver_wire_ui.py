@@ -163,11 +163,9 @@ def render_waiver_wire_page(
         f"My team: **{context.get('my_team_name', '—')}**"
     )
     try:
-        from fantasy_context_ui import render_fantasy_context_badge, render_fantasy_context_sync_required
+        from fantasy_context_ui import render_active_league_context_badge
 
-        render_fantasy_context_badge(st, session)
-        if not render_fantasy_context_sync_required(st, session, page_name="Waiver Wire / Add-Drop Center"):
-            return
+        render_active_league_context_badge(st, session)
     except ImportError:
         pass
 

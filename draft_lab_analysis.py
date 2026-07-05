@@ -23,6 +23,12 @@ FANTASY_EDGE_HELP = (
     "Higher means better draft value."
 )
 
+DRAFT_LAB_TEAM_SCORE_HELP = (
+    "**Draft Lab Team Score** summarizes projected roster strength for each simulated team. "
+    "It is the **sum of each drafted player's projected value** using the active projection window, "
+    "format, and style. Higher scores mean a stronger projected roster — teams are ranked by this total."
+)
+
 DRAFT_LAB_TABLE_README = """
 **Projection Confidence** measures projection stability and reliability.
 

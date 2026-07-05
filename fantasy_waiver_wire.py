@@ -22,6 +22,7 @@ from fantasy_league_context import (
 
 WAIVER_WIRE_PAGE = "Waiver Wire / Add-Drop Center"
 GLOBAL_WAIVER_FILTER_KEY = "use_active_league_context_waiver_filter"
+FANTASY_RESEARCH_SYNC_KEY = GLOBAL_WAIVER_FILTER_KEY
 WORKFLOW_KEY_ADD_TARGETS = "add_targets"
 WORKFLOW_KEY_DROP_CANDIDATES = "drop_candidates"
 WORKFLOW_KEY_LEAGUE_ACTIVITY = "league_activity"
@@ -105,8 +106,13 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def research_league_sync_enabled(session: dict[str, Any]) -> bool:
+    """When ON, research pages exclude active-league rostered players."""
+    return bool(session.get(FANTASY_RESEARCH_SYNC_KEY))
+
+
 def waiver_filter_enabled(session: dict[str, Any]) -> bool:
-    return bool(session.get(GLOBAL_WAIVER_FILTER_KEY))
+    return research_league_sync_enabled(session)
 
 
 def rostered_player_keys(context: dict[str, Any] | None) -> set[str]:
@@ -165,8 +171,8 @@ def filter_unrostered_players(
     *,
     name_col: str | None = None,
 ) -> pd.DataFrame:
-    """Exclude active-league rostered players when global waiver filter is ON."""
-    if not waiver_filter_enabled(session):
+    """Exclude active-league rostered players when research sync is ON."""
+    if not research_league_sync_enabled(session):
         return df
     context = get_active_league_context(session)
     if context is None or df is None or getattr(df, "empty", True):

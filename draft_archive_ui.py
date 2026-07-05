@@ -13,8 +13,6 @@ from draft_archive_state import (
     get_active_draft_archive,
     list_draft_archives,
     rename_draft_archive,
-    save_live_draft_team_archive,
-    save_simulator_team_archive,
 )
 from fantasy_league_context import (
     activate_archive_league_context,
@@ -311,61 +309,30 @@ def render_save_live_draft_team(
             key=f"{key_prefix}_name_input",
         )
         st.caption(
-            "**Save League Context** stores all team rosters from this live draft. "
-            "**Save my team only** keeps the legacy single-team snapshot."
+            "Saves **Active League Context** with all team rosters from this live draft, "
+            "then activates it for fantasy workflows."
         )
-        save_col, legacy_col = st.columns(2)
-        with save_col:
-            if st.button("Save League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
+        if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
+            try:
+                entry, context = save_live_draft_league_context(
+                    session,
+                    room,
+                    my_team_name=team_name,
+                    draft_name=draft_name,
+                    defer_activation=True,
+                )
+                _clear_fantasy_caches_on_archive_change(session)
+                _persist_archive(session, st, reason="live_draft_league_context_saved")
                 try:
-                    entry, context = save_live_draft_league_context(
-                        session,
-                        room,
-                        my_team_name=team_name,
-                        draft_name=draft_name,
-                        defer_activation=True,
-                    )
-                    _clear_fantasy_caches_on_archive_change(session)
-                    _persist_archive(session, st, reason="live_draft_league_context_saved")
-                    try:
-                        from baseball_archive_activity import log_saved_draft_archived
+                    from baseball_archive_activity import log_saved_draft_archived
 
-                        log_saved_draft_archived(entry, session=session)
-                    except ImportError:
-                        pass
-                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not save league context: {exc}")
-        with legacy_col:
-            if st.button("Save my team only", key=f"{key_prefix}_save_team_btn", type="secondary"):
-                try:
-                    entry = save_live_draft_team_archive(
-                        session,
-                        room,
-                        team_name=team_name,
-                        draft_name=draft_name,
-                    )
-                    from fantasy_league_context import context_id_for_archive, schedule_league_context_activation
-
-                    draft_id = str(entry.get("draft_id") or "")
-                    schedule_league_context_activation(
-                        session,
-                        context_id_for_archive(draft_id),
-                        archive_id=draft_id,
-                    )
-                    _clear_fantasy_caches_on_archive_change(session)
-                    _persist_archive(session, st, reason="live_draft_archive_saved")
-                    try:
-                        from baseball_archive_activity import log_saved_draft_archived
-
-                        log_saved_draft_archived(entry, session=session)
-                    except ImportError:
-                        pass
-                    stash_league_context_save_flash(session, entry, league_save=False)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not save draft team: {exc}")
+                    log_saved_draft_archived(entry, session=session)
+                except ImportError:
+                    pass
+                stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save active league context: {exc}")
 
 
 def render_save_simulator_draft_team(
@@ -379,70 +346,38 @@ def render_save_simulator_draft_team(
 ) -> None:
     if not team_name or team_name == "—":
         return
-    with st.expander("Save mock draft league context", expanded=False):
+    with st.expander("Save Active League Context", expanded=False):
         st.caption(
-            "Save the full mock draft as a **Mock Draft Simulation** league context, "
-            "or save your team only as a legacy snapshot."
+            "Saves the full mock draft as **Active League Context** (all teams), "
+            "ready for Standings, Lineup, and Waiver workflows."
         )
         draft_name = st.text_input(
-            "League context name",
+            "League name",
             value=f"Simulator — {team_name}",
             key=f"{key_prefix}_name_input",
         )
-        save_col, legacy_col = st.columns(2)
-        with save_col:
-            if st.button("Save Mock League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
+        if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
+            try:
+                entry, context = save_simulator_league_context(
+                    session,
+                    board_df,
+                    my_team_name=team_name,
+                    draft_name=draft_name,
+                    config=dict(session.get("draft_shared_settings") or {}),
+                    defer_activation=True,
+                )
+                _clear_fantasy_caches_on_archive_change(session)
+                _persist_archive(session, st, reason="simulator_league_context_saved")
                 try:
-                    entry, context = save_simulator_league_context(
-                        session,
-                        board_df,
-                        my_team_name=team_name,
-                        draft_name=draft_name,
-                        config=dict(session.get("draft_shared_settings") or {}),
-                        defer_activation=True,
-                    )
-                    _clear_fantasy_caches_on_archive_change(session)
-                    _persist_archive(session, st, reason="simulator_league_context_saved")
-                    try:
-                        from baseball_archive_activity import log_saved_draft_archived
+                    from baseball_archive_activity import log_saved_draft_archived
 
-                        log_saved_draft_archived(entry, session=session)
-                    except ImportError:
-                        pass
-                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not save mock league context: {exc}")
-        with legacy_col:
-            if st.button("Save my team only", key=f"{key_prefix}_save_team_btn", type="secondary"):
-                try:
-                    entry = save_simulator_team_archive(
-                        session,
-                        board_df,
-                        team_name=team_name,
-                        draft_name=draft_name,
-                        config=dict(session.get("draft_shared_settings") or {}),
-                    )
-                    from fantasy_league_context import context_id_for_archive, schedule_league_context_activation
-
-                    draft_id = str(entry.get("draft_id") or "")
-                    schedule_league_context_activation(
-                        session,
-                        context_id_for_archive(draft_id),
-                        archive_id=draft_id,
-                    )
-                    _clear_fantasy_caches_on_archive_change(session)
-                    _persist_archive(session, st, reason="simulator_draft_archive_saved")
-                    try:
-                        from baseball_archive_activity import log_saved_draft_archived
-
-                        log_saved_draft_archived(entry, session=session)
-                    except ImportError:
-                        pass
-                    stash_league_context_save_flash(session, entry, league_save=False)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not save draft team: {exc}")
+                    log_saved_draft_archived(entry, session=session)
+                except ImportError:
+                    pass
+                stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save active league context: {exc}")
 
 
 def _render_archive_actions(
@@ -591,9 +526,9 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
     active_context_id = str((active_context or {}).get("league_context_id") or "")
 
     st.caption(
-        "Keep multiple saved teams and league contexts — current season roster, mock drafts, live draft results, "
-        "and practice drafts. Setting one **Active League Context** tells **Standings Tracker** and "
-        "**Lineup Assistant** which roster to analyze."
+        "Keep multiple saved drafts and league contexts — mock drafts, live draft results, and uploaded leagues. "
+        "Setting one **Active League Context** powers **Standings**, **Lineup**, **Waiver Wire**, and trade tools. "
+        "Use **Fantasy Context Sync** below to make research pages league-aware."
     )
 
     _render_persistence_diagnostics(st, session)

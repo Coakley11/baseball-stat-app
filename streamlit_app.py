@@ -10465,6 +10465,12 @@ def live_draft_push_analysis_to_session(room):
         log_draft_analysis_created(room, session=st.session_state, lab_state=st.session_state.get("draft_lab_results"))
     except Exception:
         pass
+    try:
+        from draft_lab_state import persist_draft_lab_results
+
+        persist_draft_lab_results(st.session_state, st, reason="draft_lab_live_analysis_complete")
+    except ImportError:
+        pass
     return True
 
 
@@ -15528,6 +15534,12 @@ if active_page == "Comparison Tool":
         pass
     render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
     render_page_guide(active_page)
+    try:
+        from fantasy_context_ui import render_research_sync_badge
+
+        render_research_sync_badge(st, st.session_state)
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
     clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
@@ -16287,6 +16299,12 @@ if active_page == "Trend Value":
     except Exception as exc:
         st.error(f"Trend deploy marker failed to load: {exc}")
     render_page_guide(active_page)
+    try:
+        from fantasy_context_ui import render_research_sync_badge
+
+        render_research_sync_badge(st, st.session_state)
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
     try:
         from trend_state import prepare_trend_top_filters
@@ -17025,6 +17043,12 @@ if active_page == "Fantasy Sleepers & Busts":
         "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
     )
     render_page_guide(active_page)
+    try:
+        from fantasy_context_ui import render_research_sync_badge
+
+        render_research_sync_badge(st, st.session_state)
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -17928,6 +17952,12 @@ if active_page == "Draft Assistant Simulator":
         compact=True,
     )
     render_page_guide(active_page)
+    try:
+        from fantasy_context_ui import render_research_sync_badge
+
+        render_research_sync_badge(st, st.session_state)
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -19741,6 +19771,12 @@ if active_page == DRAFT_LAB_PAGE:
                 "trades": lab_trades,
                 "analysis_context": sim_ctx,
             }
+            try:
+                from draft_lab_state import persist_draft_lab_results
+
+                persist_draft_lab_results(st.session_state, st, reason="draft_lab_simulation_complete")
+            except ImportError:
+                pass
         try:
             from page_perf import perf_end
 
@@ -19839,7 +19875,11 @@ if active_page == DRAFT_LAB_PAGE:
                 else:
                     w2.metric("Average Player Grade", "—")
             elif "Total Projected Fantasy Value" in sorted_summary.columns:
-                w2.metric("Total Projected Value", fmt_score_2(float(winner["Total Projected Fantasy Value"]) * 100 if float(winner["Total Projected Fantasy Value"]) <= 1.5 else float(winner["Total Projected Fantasy Value"])))
+                _team_score = pd.to_numeric(winner.get("Total Projected Fantasy Value"), errors="coerce")
+                if pd.notna(_team_score):
+                    w2.metric("Draft Lab Team Score", fmt_score_2(float(_team_score)))
+                else:
+                    w2.metric("Draft Lab Team Score", "—")
             w3.metric("Total Picks", f"{len(lab_draft):,}")
             w4.metric("Teams", str(team_count) if team_count is not None else "—")
             w5.metric("Picks / Team", str(picks_per_team) if picks_per_team is not None else "—")
@@ -19857,7 +19897,27 @@ if active_page == DRAFT_LAB_PAGE:
         else:
             st.info("Actual 2026 stats are not available in the current dataset, so the app is ranking teams using projected fantasy value instead.")
 
-        tabs = st.tabs(list(DRAFT_LAB_RESULT_TABS))
+        _lab_tab_options = list(DRAFT_LAB_RESULT_TABS)
+        _pref_tab = str(st.session_state.get("draft_lab_preferred_tab") or "").strip()
+        if _pref_tab in _lab_tab_options and st.session_state.get("draft_lab_active_tab") not in _lab_tab_options:
+            st.session_state["draft_lab_active_tab"] = _pref_tab
+
+        def _draft_lab_tab_changed() -> None:
+            try:
+                from draft_lab_state import persist_draft_lab_results
+
+                persist_draft_lab_results(st.session_state, st, reason="draft_lab_tab_changed")
+            except ImportError:
+                pass
+
+        active_lab_tab = st.radio(
+            "Draft Lab results",
+            _lab_tab_options,
+            horizontal=True,
+            key="draft_lab_active_tab",
+            label_visibility="collapsed",
+            on_change=_draft_lab_tab_changed,
+        )
 
         _ctx = analysis_context_from_session(st.session_state, lab_state)
         if lab_analysis_ctx:
@@ -19885,7 +19945,7 @@ if active_page == DRAFT_LAB_PAGE:
             "Team": "MLB Team",
             "Fantasy Team": "Draft Team",
         })
-        with tabs[0]:
+        if active_lab_tab == _lab_tab_options[0]:
             st.subheader("Full Draft Pick Order")
             st.caption(format_snake_draft_caption(_lab_teams) if _lab_teams else "Snake draft order follows configured teams.")
             if FANTASY_EDGE_HELP:
@@ -19964,7 +20024,7 @@ if active_page == DRAFT_LAB_PAGE:
             "proj_BA": "Projected AVG",
             "proj_OPS": "Projected OPS",
         })
-        with tabs[1]:
+        if active_lab_tab == _lab_tab_options[1]:
             st.subheader("Team Rosters")
             _roster_options = draft_lab_roster_view_options(st.session_state)
             team_view = st.selectbox("View Team", _roster_options, key="draft_lab_roster_team")
@@ -19993,18 +20053,27 @@ if active_page == DRAFT_LAB_PAGE:
                 style_cols=["Player Grade", "Fantasy Edge"],
             )
 
-        with tabs[2]:
+        if active_lab_tab == _lab_tab_options[2]:
             st.subheader("Final Team Rankings")
+            try:
+                from draft_lab_analysis import DRAFT_LAB_TEAM_SCORE_HELP
+
+                st.markdown(DRAFT_LAB_TEAM_SCORE_HELP)
+            except ImportError:
+                st.caption(
+                    "Draft Lab Team Score is the sum of each drafted player's projected value. "
+                    "Higher scores indicate stronger projected rosters."
+                )
             team_analysis = safe_merge_dataframes(lab_team_summary, lab_strengths, "Fantasy Team", how="left")
             if is_dataframe_empty(team_analysis):
                 st.info("Team ranking data is not available yet. Run the draft simulation.")
             else:
                 render_output_table(
-                    clean_ui_columns(team_analysis),
+                    clean_ui_columns(format_team_projected_totals_table(team_analysis.copy(), for_export=False)),
                     key="draft_lab_team_analysis",
                     file_name="draft_simulation_team_analysis.csv",
                     display_rows=20,
-                    style_cols=["Average Player Grade", "Total Projected Value", "Average Fantasy Edge", "Average Scarcity Score"],
+                    style_cols=["Average Player Grade", "Draft Lab Team Score", "Average Fantasy Edge", "Average Scarcity Score"],
                 )
             if lab_gaps is not None and not lab_gaps.empty:
                 st.subheader("Roster Needs Analysis")
@@ -20020,7 +20089,7 @@ if active_page == DRAFT_LAB_PAGE:
                     style_cols=["Actual Draft Score"],
                 )
 
-        with tabs[3]:
+        if active_lab_tab == _lab_tab_options[3]:
             st.subheader("Best, Good, and Questionable Picks")
             st.caption("Each team has exactly one Best Pick. Questionable picks are shown only when supported by reach, value, or roster-fit evidence.")
             render_output_table(
@@ -20042,7 +20111,7 @@ if active_page == DRAFT_LAB_PAGE:
                 except ImportError:
                     pass
 
-        with tabs[4]:
+        if active_lab_tab == _lab_tab_options[4]:
             st.subheader("Export Draft Lab")
             export_frames = build_draft_lab_export_frames(
                 format_draft_lab_table(draft_board.copy(), for_export=True),
@@ -20078,6 +20147,12 @@ if active_page == DRAFT_LAB_PAGE:
             label="Send draft settings to…",
         )
 
+    try:
+        from draft_lab_state import sync_draft_lab_session_before_save
+
+        sync_draft_lab_session_before_save(st.session_state)
+    except ImportError:
+        pass
     _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
@@ -22433,14 +22508,11 @@ if active_page == "Fantasy Lineup Assistant":
     except ImportError:
         pass
     try:
-        from fantasy_context_ui import render_fantasy_context_badge, render_fantasy_context_sync_required
+        from fantasy_context_ui import render_active_league_context_badge
 
-        render_fantasy_context_badge(st, st.session_state)
-        _lineup_sync_ok = render_fantasy_context_sync_required(
-            st, st.session_state, page_name="Fantasy Lineup Assistant"
-        )
+        render_active_league_context_badge(st, st.session_state)
     except ImportError:
-        _lineup_sync_ok = True
+        pass
 
     try:
         from fantasy_league_context import consume_trade_acquire_handoff
@@ -22471,10 +22543,6 @@ if active_page == "Fantasy Lineup Assistant":
         _lineup_title,
         "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch.",
     )
-    if not _lineup_sync_ok:
-        save_page_state(active_page)
-        _page_perf_end(active_page)
-        st.stop()
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
@@ -23317,6 +23385,12 @@ if active_page == "Valuation":
 
     render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
     render_page_guide(active_page)
+    try:
+        from fantasy_context_ui import render_research_sync_badge
+
+        render_research_sync_badge(st, st.session_state)
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
 
     _value_lag_options = [3, 4, 5]

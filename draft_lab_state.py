@@ -27,6 +27,7 @@ DRAFT_LAB_WIDGET_DEFAULTS: dict[str, Any] = {
     "draft_lab_projection_style": "Balanced",
     "draft_lab_picks_per_team": 15,
     "draft_lab_roster_team": "All Teams",
+    "draft_lab_active_tab": "Draft Board",
 }
 
 DRAFT_LAB_SNAPSHOT_KEYS = tuple(DRAFT_LAB_WIDGET_DEFAULTS.keys())
@@ -299,7 +300,7 @@ def sync_draft_lab_results_state(session: dict[str, Any]) -> None:
             return df.head(int(limit)).to_dict(orient="records")
 
     blob: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "draft_records": _serialize_records(draft, limit=5000),
         "team_summary_records": _serialize_records(results.get("team_summary"), limit=64),
         "strengths_records": _serialize_records(results.get("strengths"), limit=64),
@@ -309,9 +310,24 @@ def sync_draft_lab_results_state(session: dict[str, Any]) -> None:
         "actual_summary_records": _serialize_records(results.get("actual_summary"), limit=64),
         "analysis_context": results.get("analysis_context") if isinstance(results.get("analysis_context"), dict) else {},
         "handoff": results.get("handoff") if isinstance(results.get("handoff"), dict) else {},
+        "source": str(results.get("source") or "").strip(),
         "widget_settings": {k: session.get(k) for k in DRAFT_LAB_SNAPSHOT_KEYS if k in session},
+        "active_tab": str(session.get("draft_lab_active_tab") or "").strip(),
+        "preferred_tab": str(session.get("draft_lab_preferred_tab") or "").strip(),
+        "team_names": list(session.get("_draft_lab_team_names") or []),
     }
     session[DRAFT_LAB_PERSISTED_STATE_KEY] = blob
+
+
+def persist_draft_lab_results(session: dict[str, Any], st_obj: Any, *, reason: str) -> None:
+    """Write Draft Lab simulation outputs to session blob and cloud/disk."""
+    sync_draft_lab_results_state(session)
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st_obj, reason=reason)
+    except Exception:
+        pass
 
 
 def hydrate_draft_lab_results_state(session: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
@@ -334,6 +350,7 @@ def hydrate_draft_lab_results_state(session: dict[str, Any], state: dict[str, An
     draft_df = _records_to_df(blob.get("draft_records"))
     if draft_df.empty:
         return False
+    source = str(blob.get("source") or "").strip()
     session["draft_lab_results"] = {
         "draft": draft_df,
         "team_summary": _records_to_df(blob.get("team_summary_records")),
@@ -344,10 +361,17 @@ def hydrate_draft_lab_results_state(session: dict[str, Any], state: dict[str, An
         "actual_summary": _records_to_df(blob.get("actual_summary_records")),
         "analysis_context": dict(blob.get("analysis_context") or {}),
         "handoff": dict(blob.get("handoff") or {}),
+        **({"source": source} if source else {}),
     }
     for key, val in dict(blob.get("widget_settings") or {}).items():
         if key not in session and val is not None:
             session[key] = val
+    active_tab = str(blob.get("active_tab") or blob.get("preferred_tab") or "").strip()
+    if active_tab in DRAFT_LAB_RESULT_TABS:
+        session["draft_lab_active_tab"] = active_tab
+    team_names = blob.get("team_names")
+    if isinstance(team_names, list) and team_names:
+        session["_draft_lab_team_names"] = [str(x) for x in team_names]
     session[DRAFT_LAB_PERSISTED_STATE_KEY] = blob
     session["_draft_lab_restored"] = True
     return True

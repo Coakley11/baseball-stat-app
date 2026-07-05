@@ -146,10 +146,10 @@ class FantasyInSeasonPersistenceTests(unittest.TestCase):
         self.assertFalse(ss.get("fantasy_current_roster_stats", pd.DataFrame()).empty)
         self.assertFalse(ss.get("_fantasy_current_hitter_stats", pd.DataFrame()).empty)
 
-        from fantasy_context_ui import fantasy_context_badge_text
+        from fantasy_context_ui import active_league_context_badge_text
 
-        badge = fantasy_context_badge_text(ss)
-        self.assertIn("Synced", badge)
+        badge = active_league_context_badge_text(ss)
+        self.assertIn("Active", badge)
         self.assertIn("2026 Main League", badge)
 
 if __name__ == "__main__":

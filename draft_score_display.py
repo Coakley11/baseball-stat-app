@@ -35,7 +35,7 @@ COLUMN_RENAME_MAP: dict[str, str] = {
     COL_DRAFT_RANK: DISPLAY_DRAFT_RANK,
     "Average Expected Fantasy Value": "Average Player Grade",
     "Total Expected Fantasy Value": "Total Player Grade",
-    "Total Projected Fantasy Value": "Total Projected Value",
+    "Total Projected Fantasy Value": "Draft Lab Team Score",
     "Average Draft Fit Score": "Average Roster Fit Score",
     "Draft Fit Rank": "Roster Fit Rank",
 }
@@ -66,6 +66,10 @@ SCORE_TOOLTIPS: dict[str, str] = {
         "How this team's draft compares with other teams in the current draft room."
     ),
     DISPLAY_DRAFT_RANK: "Rank within this draft room (1 = best relative grade).",
+    "Draft Lab Team Score": (
+        "Combined projected roster strength: the sum of each drafted player's value score. "
+        "Higher scores indicate stronger projected teams in this simulation."
+    ),
 }
 SCORE_TOOLTIPS["Average Roster Fit Score"] = SCORE_TOOLTIPS[DISPLAY_ROSTER_FIT]
 
@@ -299,7 +303,15 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     rename = {k: v for k, v in COLUMN_RENAME_MAP.items() if k in out.columns}
     if rename:
         out = out.rename(columns=rename)
-    for col in (DISPLAY_PLAYER_GRADE, DISPLAY_PICK_SCORE, DISPLAY_RELATIVE_GRADE, "ML Projection Score", "Average Player Grade", "Total Player Grade"):
+    for col in (
+        DISPLAY_PLAYER_GRADE,
+        DISPLAY_PICK_SCORE,
+        DISPLAY_RELATIVE_GRADE,
+        "ML Projection Score",
+        "Average Player Grade",
+        "Total Player Grade",
+        "Draft Lab Team Score",
+    ):
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce").apply(
                 lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
