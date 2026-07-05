@@ -560,7 +560,8 @@ def render_save_live_draft_team(
     cfg = dict(room.get("config") or {})
     if not team_name or team_name == "—":
         return
-    with st.expander("Save completed draft", expanded=False):
+    expand_save = bool(session.pop("_draft_save_trace_expand", False))
+    with st.expander("Save completed draft", expanded=expand_save):
         draft_name = st.text_input(
             "League context name",
             value=f"{cfg.get('league_name', 'Live Draft')} — {team_name}",
@@ -570,12 +571,6 @@ def render_save_live_draft_team(
             "Saves **Active League Context** with all team rosters from this live draft, "
             "then activates it for fantasy workflows."
         )
-        try:
-            from draft_library_save_trace import render_save_trace_inline
-
-            render_save_trace_inline(st, session, title="Last save trace (Developer Mode)")
-        except ImportError:
-            pass
         if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
             try:
                 try:
@@ -617,9 +612,18 @@ def render_save_live_draft_team(
                     except ImportError:
                         pass
                     stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                session["_draft_save_trace_expand"] = True
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not save active league context: {exc}")
+                session["_draft_save_trace_expand"] = True
+                st.rerun()
+        try:
+            from draft_library_save_trace import render_save_trace_inline
+
+            render_save_trace_inline(st, session, source="Live Draft Room")
+        except ImportError:
+            pass
 
 
 def render_save_simulator_draft_team(
@@ -633,17 +637,12 @@ def render_save_simulator_draft_team(
 ) -> None:
     if not team_name or team_name == "—":
         return
-    with st.expander("Save Active League Context", expanded=False):
+    expand_save = bool(session.pop("_draft_save_trace_expand", False))
+    with st.expander("Save Active League Context", expanded=expand_save):
         st.caption(
             "Saves the full mock draft as **Active League Context** (all teams), "
             "ready for Standings, Lineup, and Waiver workflows."
         )
-        try:
-            from draft_library_save_trace import render_save_trace_inline
-
-            render_save_trace_inline(st, session, title="Last save trace (Developer Mode)")
-        except ImportError:
-            pass
         draft_name = st.text_input(
             "League name",
             value=f"Simulator — {team_name}",
@@ -671,6 +670,7 @@ def render_save_simulator_draft_team(
                     except ImportError:
                         pass
                     st.error("No draft picks on the board yet — enter picks before saving.")
+                    session["_draft_save_trace_expand"] = True
                     st.rerun()
                     return
                 filled = board_df.copy()
@@ -696,6 +696,7 @@ def render_save_simulator_draft_team(
                     except ImportError:
                         pass
                     st.error("No drafted players found — add picks to the board before saving.")
+                    session["_draft_save_trace_expand"] = True
                     st.rerun()
                     return
                 try:
@@ -740,7 +741,8 @@ def render_save_simulator_draft_team(
                         )
                     except ImportError:
                         pass
-                    st.error("Save did not update Saved Draft Library — see save trace above.")
+                    st.error("Save did not update Saved Draft Library — see save diagnostics below.")
+                    session["_draft_save_trace_expand"] = True
                     st.rerun()
                     return
                 _clear_fantasy_caches_on_archive_change(session)
@@ -750,7 +752,7 @@ def render_save_simulator_draft_team(
                 if not persist_ok:
                     st.error(
                         "Saved to this session, but cloud/disk persist failed. "
-                        "Open **Persistence diagnostics** on Saved Draft Library (Developer Mode) before refreshing."
+                        "Review **Save Diagnostics** below before refreshing."
                     )
                 else:
                     try:
@@ -760,9 +762,32 @@ def render_save_simulator_draft_team(
                     except ImportError:
                         pass
                     stash_league_context_save_flash(session, entry, context=context, league_save=True)
+                session["_draft_save_trace_expand"] = True
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not save active league context: {exc}")
+                try:
+                    from draft_library_save_trace import record_save_failure_trace
+
+                    record_save_failure_trace(
+                        session,
+                        reason="simulator_league_context_saved",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                except ImportError:
+                    pass
+                session["_draft_save_trace_expand"] = True
+                st.rerun()
+        try:
+            from draft_library_save_trace import render_save_trace_inline
+
+            render_save_trace_inline(
+                st,
+                session,
+                source="Draft Room Simulator · Rosters tab",
+            )
+        except ImportError:
+            pass
 
 
 def _render_archive_actions(

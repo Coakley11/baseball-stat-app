@@ -389,12 +389,51 @@ def record_save_failure_trace(
     session[DRAFT_LIBRARY_SAVE_DIAG_KEY] = diag
 
 
-def render_save_trace_inline(st: Any, session: dict[str, Any], *, title: str = "Save trace") -> None:
-    """Show last save diagnostics on the save panel (simulator / live draft)."""
+def render_save_trace_inline(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    title: str = "Save Diagnostics / Last Save Trace",
+    source: str = "",
+) -> None:
+    """Always-visible save diagnostics directly under the save button."""
+    st.markdown(f"##### {title}")
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        dev_on = bool(developer_mode_checkbox_enabled(st=st))
+    except Exception:
+        dev_on = False
+    if dev_on:
+        st.caption("Developer Mode is **ON** — cloud readback probes are enabled on save.")
+    else:
+        st.caption(
+            "Developer Mode is **off**. This panel still shows every save attempt; turn on Developer Mode "
+            "in the sidebar for deeper cloud/disk probes on **Saved Draft Library**."
+        )
+    deploy_ref = ""
+    try:
+        from pathlib import Path
+
+        marker = Path(__file__).resolve().parent / "deploy_commit.txt"
+        if marker.is_file():
+            deploy_ref = str(marker.read_text(encoding="utf-8").splitlines()[0].split("#")[0].strip())
+    except Exception:
+        pass
+    if deploy_ref:
+        st.caption(f"Deployed build marker: `{deploy_ref}`")
+
     diag = session.get(DRAFT_LIBRARY_SAVE_DIAG_KEY)
-    if not isinstance(diag, dict) or not diag:
+    has_trace = isinstance(diag, dict) and (
+        diag.get("save_request_received") or diag.get("finalized_at") or diag.get("save_error")
+    )
+    if not has_trace:
+        st.info("No save trace yet — click **Save Active League Context**.")
         return
-    with st.expander(title, expanded=True):
+
+    with st.container(border=True):
+        if source:
+            st.caption(f"Source: **{source}** · reason: `{diag.get('reason') or '—'}`")
         st.markdown(
             f"**Counts:** drafts {diag.get('draft_archive_count_before', '—')} → "
             f"{diag.get('draft_archive_count_after', '—')} · contexts "
@@ -413,10 +452,12 @@ def render_save_trace_inline(st: Any, session: dict[str, Any], *, title: str = "
             st.caption(f"Cloud blocked: {diag['cloud_blocked_reason']}")
         if diag.get("persist_error"):
             st.caption(f"Persist error: {diag['persist_error']}")
+        st.markdown("**Checklist**")
         for label, status, detail in save_trace_checklist(diag):
             icon = {"pass": "✅", "fail": "❌", "warn": "⚠️", "pending": "⏳"}.get(status, "•")
             line = f"{icon} **{label}**"
             if detail:
                 line += f" — {detail}"
             st.markdown(line)
+        st.markdown("**Raw trace JSON**")
         st.json(diag)
