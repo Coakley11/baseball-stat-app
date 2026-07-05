@@ -108,14 +108,17 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
 
 
 def schedule_page_navigation(session: dict[str, Any], target_page: str) -> None:
-    """Direct navigation fallback: set every page key before st.rerun()."""
-    session["active_page"] = target_page
-    session["main_sidebar_page"] = target_page
-    session["_navigate_to_page"] = target_page
-    session["_skip_page_restore_for"] = target_page
+    """Eager page navigation before st.rerun() — survives workspace restore."""
+    target = str(target_page or "").strip()
+    if not target:
+        return
+    session["active_page"] = target
+    session["main_sidebar_page"] = target
+    session["_navigate_to_page"] = target
+    session["_skip_page_restore_for"] = target
     session["_suite_page_user_nav"] = True
     session["_suite_nav_consumed_this_run"] = True
-    session["_suite_nav_consumed_target"] = target_page
+    session["_suite_nav_consumed_target"] = target
 
 
 def schedule_saved_draft_library_navigation(
@@ -147,13 +150,15 @@ def schedule_fantasy_analysis_navigation(session: dict[str, Any], target_page: s
     return True
 
 
-def _persist_archive(session: dict[str, Any], st: Any, *, reason: str) -> None:
+def _persist_archive(session: dict[str, Any], st: Any, *, reason: str) -> bool:
     try:
         from baseball_persistent_state import force_save_baseball_state
 
         force_save_baseball_state(st, reason=reason)
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        session["_draft_archive_persist_error"] = f"{type(exc).__name__}: {exc}"
+        return False
 
 
 def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
@@ -198,37 +203,34 @@ def render_active_saved_draft_chip(
     """Compact active-draft indicator with link to the library."""
     active = get_active_draft_archive(session)
     active_context = get_active_league_context(session)
-    chip_left, chip_right = st.columns([4, 1])
-    with chip_left:
-        if active:
-            context = active_context or get_league_context_for_archive(session, active)
-            team_count = league_team_count(context, active)
-            coverage = league_context_coverage_badge(context)
-            st.markdown(
-                f"**Active Saved Draft:** {active.get('draft_name', 'Saved Draft')} · "
-                f"**{draft_type_display(active)}** · {coverage} · "
-                f"{active.get('team_name', '')} · "
-                f"{team_count} team{'s' if team_count != 1 else ''} · "
-                f"{len(active.get('players') or [])} players on your roster · "
-                f"Updated {format_archive_modified(active)}",
-                unsafe_allow_html=False,
-            )
-        else:
-            st.caption(
-                "No active saved draft selected. Standings and Lineup use the **Draft Room** board "
-                "unless you set one active in the library."
-            )
-    with chip_right:
-        if st.button(
-            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage saved drafts", page_label_fn),
-            key=f"{key_prefix}_manage_btn",
-            use_container_width=True,
-        ):
-            schedule_saved_draft_library_navigation(
-                session,
-                return_page=str(session.get("active_page") or ""),
-            )
-            st.rerun()
+    if active:
+        context = active_context or get_league_context_for_archive(session, active)
+        team_count = league_team_count(context, active)
+        coverage = league_context_coverage_badge(context)
+        st.markdown(
+            f"**Active Saved Draft:** {active.get('draft_name', 'Saved Draft')} · "
+            f"**{draft_type_display(active)}** · {coverage} · "
+            f"{active.get('team_name', '')} · "
+            f"{team_count} team{'s' if team_count != 1 else ''} · "
+            f"{len(active.get('players') or [])} players on your roster · "
+            f"Updated {format_archive_modified(active)}",
+            unsafe_allow_html=False,
+        )
+    else:
+        st.caption(
+            "No active saved draft selected. Standings and Lineup use the **Draft Room** board "
+            "unless you set one active in the library."
+        )
+    if st.button(
+        _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage saved drafts", page_label_fn),
+        key=f"{key_prefix}__manage_saved_drafts_btn",
+        use_container_width=True,
+    ):
+        schedule_saved_draft_library_navigation(
+            session,
+            return_page=str(session.get("active_page") or ""),
+        )
+        st.rerun()
 
 
 def _render_post_save_actions(
@@ -634,18 +636,18 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
         with nav1:
             if st.button(
                 _nav_label("Live Draft Room", "Open Live Draft Room", page_label_fn),
-                key="library_go_live",
+                key="library__go_live_draft_room_btn",
                 use_container_width=True,
             ):
-                session["_navigate_to_page"] = "Live Draft Room"
+                schedule_page_navigation(session, "Live Draft Room")
                 st.rerun()
         with nav2:
             if st.button(
                 _nav_label("Draft Room Simulator", "Open Draft Room Simulator", page_label_fn),
-                key="library_go_sim",
+                key="library__go_draft_simulator_btn",
                 use_container_width=True,
             ):
-                session["_navigate_to_page"] = "Draft Room Simulator"
+                schedule_page_navigation(session, "Draft Room Simulator")
                 st.rerun()
         return
 

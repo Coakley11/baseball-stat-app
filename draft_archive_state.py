@@ -172,6 +172,7 @@ def save_simulator_team_archive(
     team_name: str,
     draft_name: str = "",
     config: dict[str, Any] | None = None,
+    draft_id: str | None = None,
 ) -> dict[str, Any]:
     cfg = dict(config or session.get("draft_shared_settings") or {})
     picks = _board_rows_for_team(board_df, team_name)
@@ -185,6 +186,7 @@ def save_simulator_team_archive(
         config=cfg,
         roster_rows=players,
         pick_rows=picks,
+        draft_id=draft_id,
     )
 
 

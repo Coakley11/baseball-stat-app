@@ -68,6 +68,27 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(merged.get("active_page"), "Historical Explorer")
         self.assertEqual(merged["draft_room_state"]["pick_count"], 3)
 
+    def test_merge_does_not_replace_filled_picks_with_empty_row_slots(self) -> None:
+        """Prior empty 30-slot board must not clobber incoming 20 filled picks."""
+        empty_slots = {
+            "_persist_schema": 1,
+            "table_records": [
+                {"Round": 1, "Pick": i + 1, "Team": "Team A", "Player": ""}
+                for i in range(30)
+            ],
+            "table_columns": ["Round", "Pick", "Team", "Player"],
+            "pick_count": 0,
+        }
+        prior = {
+            "active_page": "Draft Room Simulator",
+            "draft_room_state": empty_slots,
+            "draft_room_table": empty_slots,
+        }
+        incoming = _full_session(20)
+        merged = _merge_full_session_preserve_richer_draft(prior, incoming)
+        self.assertEqual(merged["draft_room_state"]["pick_count"], 20)
+        self.assertEqual(merged["draft_room_state"]["table_records"][0]["Player"], "Player 1")
+
     def test_load_current_states_uses_richest_row_per_app(self) -> None:
         fake_rows = [
             {

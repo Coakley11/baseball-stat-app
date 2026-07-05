@@ -6452,6 +6452,10 @@ def format_post_draft_roster_grades(df):
     if "Average Fantasy Edge" in out.columns:
         out["Average Fantasy Edge"] = out["Average Fantasy Edge"].apply(lambda v: fmt_trim(v, 2))
 
+    # Average player grade: two decimals, no trailing zeros.
+    if "Average Player Grade" in out.columns:
+        out["Average Player Grade"] = out["Average Player Grade"].apply(lambda v: fmt_trim(v, 2))
+
     if "Average Roster Fit Score" in out.columns:
         out["Average Roster Fit Score"] = out["Average Roster Fit Score"].apply(lambda v: fmt_trim(v, 2))
     elif "Average Draft Fit Score" in out.columns:
@@ -6460,6 +6464,10 @@ def format_post_draft_roster_grades(df):
     # Relative draft grade: 2 decimals on 0–100 scale (never round to 0/1).
     if "Relative Draft Grade" in out.columns:
         out["Relative Draft Grade"] = out["Relative Draft Grade"].apply(lambda v: fmt_trim(v, 2))
+
+    # Hide team total — keep average grade only.
+    if "Total Player Grade" in out.columns:
+        out = out.drop(columns=["Total Player Grade"])
 
     # Draft rank and player count as integers.
     for c in ["Draft Rank", "Draft Room Rank", "Players Drafted"]:
@@ -19229,6 +19237,13 @@ if active_page == "Draft Room Simulator":
                     picks = int(result.get("saved_pick_count") or 0)
                     disk_n = result.get("disk_payload_pick_count")
                     cloud_n = result.get("cloud_payload_pick_count")
+                    lib_drafts = int(result.get("saved_drafts") or 0)
+                    lib_contexts = int(result.get("league_contexts") or 0)
+                    lib_note = (
+                        f" Draft Library: {lib_drafts} saved draft(s), {lib_contexts} league context(s)."
+                        if result.get("library_sync")
+                        else ""
+                    )
                     if (
                         result.get("saved")
                         and result.get("saved_cloud")
@@ -19241,18 +19256,23 @@ if active_page == "Draft Room Simulator":
                             f"payload: {cloud_n}). "
                             f"Cloud: {result.get('cloud_timestamp_before') or '—'} → "
                             f"{result.get('cloud_timestamp_after') or result.get('supabase_row_updated_at_after_write') or '—'}"
+                            f"{lib_note}"
                         )
                     elif result.get("saved") and picks > 0 and result.get("direct_cloud_save_attempted"):
+                        cloud_key = result.get("cloud_app_key") or result.get("cloud_target_app_id") or "—"
+                        ws = result.get("active_workspace_id") or "—"
                         st.warning(
                             f"Saved {picks} pick(s) to disk; cloud readback failed "
                             f"(readback={result.get('supabase_row_pick_count_after_write')}, "
-                            f"payload={cloud_n}). "
+                            f"payload={cloud_n}, key=`{cloud_key}`, workspace=`{ws}`). "
                             f"Error: {result.get('cloud_write_error') or result.get('error') or 'unknown'}"
+                            f"{lib_note}"
                         )
                     elif result.get("saved") and picks > 0:
                         st.warning(
                             f"Saved {picks} pick(s) to disk only (disk payload: {disk_n}). "
                             f"Cloud error: {result.get('error') or 'unknown'}"
+                            f"{lib_note}"
                         )
                     else:
                         st.error(f"Save failed: {result.get('error') or 'unknown'}")
@@ -19411,7 +19431,9 @@ if active_page == "Draft Room Simulator":
         st.caption(
             "**Relative Draft Grade** (0–100) compares teams within this draft room only. "
             "**Draft Rank** shows placement (#1 of N). "
-            "**Player Grade** and **Roster Fit Score** are per-player metrics."
+            "**Average Player Grade** is the mean player grade per team. "
+            "**Average Roster Fit Score** uses **1.00 as neutral** — above 1.00 means stronger roster fit, "
+            "below 1.00 means weaker fit."
         )
         completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
         if completed_picks.empty:
@@ -19460,11 +19482,11 @@ if active_page == "Draft Room Simulator":
             grades_df = grades_df.sort_values("Draft Room Rank")
 
             render_output_table(
-                format_post_draft_roster_grades(format_fantasy_table(clean_ui_columns(grades_df))),
+                format_post_draft_roster_grades(clean_ui_columns(grades_df)),
                 key="draft_room_roster_grades",
                 file_name="draft_room_roster_grades.csv",
                 display_rows=30,
-                style_cols=["Average Fantasy Edge", "Relative Draft Grade"],
+                style_cols=["Average Fantasy Edge", "Average Player Grade", "Average Roster Fit Score", "Relative Draft Grade"],
             )
 
             if your_team in grades_df["Fantasy Team"].values:

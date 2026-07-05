@@ -496,6 +496,7 @@ def save_cloud_full_session(
             ts_key, blob_key = _full_session_cache_keys(app_key)
             ss[blob_key] = copy.deepcopy(state)
             ss[ts_key] = _utc_now_iso()
+            ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
         return True
     except Exception:
         return False
@@ -515,7 +516,8 @@ def save_cloud_full_session_with_result(
         if not ok:
             return False, "cloud_save_failed"
         if min_draft_pick_count is not None and int(min_draft_pick_count) > 0:
-            cloud_after, _ = load_cloud_full_session(app_id)
+            invalidate_cloud_full_session_cache(app_id)
+            cloud_after, _ = load_cloud_full_session(app_id, force=True)
             readback = 0
             try:
                 from draft_room_state import draft_room_restore_stats

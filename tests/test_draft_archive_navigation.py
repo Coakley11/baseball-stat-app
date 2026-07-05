@@ -61,6 +61,8 @@ class SavedDraftLibraryNavigationTests(unittest.TestCase):
     def test_schedule_saved_draft_library_navigation_sets_target_and_return(self) -> None:
         session = {"active_page": FANTASY_LINEUP_PAGE}
         schedule_saved_draft_library_navigation(session)
+        self.assertEqual(session["active_page"], SAVED_DRAFT_LIBRARY_PAGE)
+        self.assertEqual(session["main_sidebar_page"], SAVED_DRAFT_LIBRARY_PAGE)
         self.assertEqual(session["_navigate_to_page"], SAVED_DRAFT_LIBRARY_PAGE)
         self.assertEqual(session["_skip_page_restore_for"], SAVED_DRAFT_LIBRARY_PAGE)
         self.assertEqual(session[SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY], FANTASY_LINEUP_PAGE)

@@ -202,8 +202,15 @@ def _merge_state_metrics(scoped_app_key: str, incoming: dict[str, Any] | None) -
 
 
 def _draft_pick_count_from_session_blob(full_session: dict[str, Any] | None) -> int:
+    """Filled player picks only — not empty board row slots."""
     if not isinstance(full_session, dict):
         return 0
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        return int(draft_room_restore_stats(full_session).get("pick_count") or 0)
+    except ImportError:
+        pass
     for key in ("draft_room_state", "draft_room_table"):
         blob = full_session.get(key)
         if not isinstance(blob, dict):
@@ -215,7 +222,14 @@ def _draft_pick_count_from_session_blob(full_session: dict[str, Any] | None) -> 
             pass
         records = blob.get("table_records")
         if isinstance(records, list):
-            return len(records)
+            filled = 0
+            for row in records:
+                if not isinstance(row, dict):
+                    continue
+                player = str(row.get("Player") or row.get("player") or "").strip()
+                if player and player.lower() not in {"none", "nan", "<na>"}:
+                    filled += 1
+            return filled
     return 0
 
 

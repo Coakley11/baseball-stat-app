@@ -172,9 +172,13 @@ def merge_protected_workflow_into_save(
 
 
 def workflow_counts_from_session(session: dict[str, Any]) -> dict[str, int]:
+    draft_archive_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    league_context_count = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
     return {
-        "draft_archive_count": count_draft_archives(session.get(DRAFT_ARCHIVE_KEY)),
-        "league_context_count": count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY)),
+        "draft_archive_count": draft_archive_count,
+        "league_context_count": league_context_count,
+        "saved_drafts": draft_archive_count,
+        "league_contexts": league_context_count,
     }
 
 
@@ -268,6 +272,8 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "local_state_path": local_state_path,
         "draft_archive_count": counts["draft_archive_count"],
         "league_context_count": counts["league_context_count"],
+        "saved_drafts": counts["saved_drafts"],
+        "league_contexts": counts["league_contexts"],
         "restore_source": restore_source,
         "restore_source_label": restore_label,
         "restore_at": restore_at,

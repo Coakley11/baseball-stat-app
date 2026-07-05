@@ -20,6 +20,7 @@ from draft_archive_state import (
 )
 
 FANTASY_LEAGUE_CONTEXT_STATE_KEY = "fantasy_league_context_state"
+SIMULATOR_SESSION_LIBRARY_DRAFT_KEY = "_simulator_session_library_draft_id"
 SCHEMA_VERSION = 1
 
 CONTEXT_TYPE_REAL_LEAGUE = "real_league"
@@ -1059,6 +1060,19 @@ def save_live_draft_league_context(
     return entry, context
 
 
+def resolve_simulator_library_draft_id(session: dict[str, Any]) -> str | None:
+    """Reuse the in-session simulator library draft when updating after board save."""
+    draft_id = str(session.get(SIMULATOR_SESSION_LIBRARY_DRAFT_KEY) or "").strip()
+    if draft_id and get_draft_archive(session, draft_id):
+        return draft_id
+    active_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if active_id:
+        entry = get_draft_archive(session, active_id)
+        if entry and str(entry.get("draft_type") or "") == DRAFT_TYPE_SIMULATOR:
+            return active_id
+    return None
+
+
 def save_simulator_league_context(
     session: dict[str, Any],
     board_df: pd.DataFrame,
@@ -1067,6 +1081,7 @@ def save_simulator_league_context(
     draft_name: str = "",
     config: dict[str, Any] | None = None,
     defer_activation: bool = False,
+    draft_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Save full mock-draft league context plus linked archive entry."""
     from draft_archive_state import save_simulator_team_archive
@@ -1075,14 +1090,17 @@ def save_simulator_league_context(
     cfg = dict(config or session.get("draft_shared_settings") or {})
     league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
     label = str(draft_name or "").strip() or f"Simulator — {my_team}"
+    resolved_draft_id = str(draft_id or resolve_simulator_library_draft_id(session) or "").strip() or None
     entry = save_simulator_team_archive(
         session,
         board_df,
         team_name=my_team,
         draft_name=label,
         config=cfg,
+        draft_id=resolved_draft_id,
     )
     draft_id = str(entry.get("draft_id") or "")
+    session[SIMULATOR_SESSION_LIBRARY_DRAFT_KEY] = draft_id
     league_context_id = context_id_for_archive(draft_id)
     entry = save_draft_archive_with_league_context(
         session,
@@ -1114,7 +1132,7 @@ def save_draft_archive_with_league_context(
     league_context_id: str,
 ) -> dict[str, Any]:
     """Attach league_rosters and league_context_id to an existing archive entry."""
-    from draft_archive_state import DRAFT_ARCHIVE_KEY, get_draft_archive
+    from draft_archive_state import _archive_list, _set_archive_list, get_draft_archive
 
     draft_id = str(draft_id or "").strip()
     entry = get_draft_archive(session, draft_id)
@@ -1122,13 +1140,12 @@ def save_draft_archive_with_league_context(
         return {}
     entry["league_rosters"] = copy.deepcopy(league_rosters)
     entry["league_context_id"] = str(league_context_id or "").strip()
-    raw = session.get(DRAFT_ARCHIVE_KEY)
-    entries = [dict(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+    entries = _archive_list(session)
     for i, existing in enumerate(entries):
         if str(existing.get("draft_id") or "") == draft_id:
             entries[i] = copy.deepcopy(entry)
             break
-    session[DRAFT_ARCHIVE_KEY] = entries
+    _set_archive_list(session, entries)
     return copy.deepcopy(entry)
 
 

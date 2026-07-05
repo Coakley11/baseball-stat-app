@@ -3445,8 +3445,18 @@ def save_draft_board_direct_to_cloud(
         return trace
 
     try:
-        from suite_cloud_state import load_cloud_full_session, save_cloud_full_session_with_result, session_page_summary
+        from suite_cloud_state import (
+            invalidate_cloud_full_session_cache,
+            load_cloud_full_session,
+            save_cloud_full_session_with_result,
+            session_page_summary,
+        )
         from baseball_persistent_state import build_baseball_disk_state
+        from suite_workspace import workspace_persistence_meta
+
+        ws_meta = workspace_persistence_meta("baseball", st=st)
+        trace["active_workspace_id"] = ws_meta.get("active_workspace_id")
+        trace["cloud_app_key"] = ws_meta.get("cloud_app_key")
 
         cloud_before, ts_before = load_cloud_full_session("baseball")
         trace["cloud_timestamp_before"] = ts_before
@@ -3516,7 +3526,8 @@ def save_draft_board_direct_to_cloud(
             session.pop("_suite_persist_last_cloud_error", None)
 
         _attach_cloud_boundary_diagnostics(trace)
-        cloud_after, ts_after = load_cloud_full_session("baseball")
+        invalidate_cloud_full_session_cache("baseball")
+        cloud_after, ts_after = load_cloud_full_session("baseball", force=True)
         trace["cloud_timestamp_after"] = ts_after or trace.get("supabase_row_updated_at_after_write")
         trace["cloud_timestamp_changed"] = bool(
             ts_after
@@ -3545,6 +3556,59 @@ def save_draft_board_direct_to_cloud(
     except Exception as exc:
         trace["error"] = f"{type(exc).__name__}: {exc}"
         trace["cloud_write_error"] = trace["error"]
+    return trace
+
+
+def sync_draft_library_from_simulator_board(
+    st: Any,
+    session: dict[str, Any],
+    board: Any,
+    *,
+    reason: str = "manual_save_library_sync",
+) -> dict[str, Any]:
+    """Upsert Draft Library archive + league context from a simulator board save."""
+    trace: dict[str, Any] = {
+        "library_sync": False,
+        "saved_drafts": 0,
+        "league_contexts": 0,
+        "library_sync_error": "",
+    }
+    pick_count = table_pick_count(board)
+    if pick_count <= 0:
+        trace["library_sync_skipped"] = "no_picks"
+        return trace
+    team = str(session.get("room_your_team") or session.get("draft_room_participant_team") or "").strip()
+    if not team or team == "—":
+        trace["library_sync_skipped"] = "no_team"
+        return trace
+    board_df = board if isinstance(board, pd.DataFrame) else None
+    if board_df is None:
+        trace["library_sync_skipped"] = "board_not_dataframe"
+        return trace
+    try:
+        from fantasy_league_context import save_simulator_league_context
+        from workflow_persist_guard import workflow_counts_from_session
+
+        draft_name = str(session.get("_simulator_library_draft_name") or f"Simulator — {team}")
+        entry, _context = save_simulator_league_context(
+            session,
+            board_df,
+            my_team_name=team,
+            draft_name=draft_name,
+            config=dict(session.get("draft_shared_settings") or {}),
+            defer_activation=True,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason=reason)
+        counts = workflow_counts_from_session(session)
+        trace["library_sync"] = True
+        trace["saved_drafts"] = int(counts.get("draft_archive_count") or 0)
+        trace["league_contexts"] = int(counts.get("league_context_count") or 0)
+        trace["library_draft_id"] = entry.get("draft_id")
+        session["_simulator_library_draft_name"] = entry.get("draft_name") or draft_name
+    except Exception as exc:
+        trace["library_sync_error"] = f"{type(exc).__name__}: {exc}"
     return trace
 
 
@@ -3655,6 +3719,8 @@ def _save_draft_board_now_impl(
         for key in (
             "cloud_target_user_id",
             "cloud_target_app_id",
+            "cloud_app_key",
+            "active_workspace_id",
             "cloud_write_error",
             "cloud_row_count",
             "cloud_row_pick_counts",
@@ -3687,6 +3753,20 @@ def _save_draft_board_now_impl(
                 trace["error"] = direct.get("error")
                 trace["cloud_write_error"] = direct.get("cloud_write_error") or direct.get("error")
             session["_suite_persist_last_save_cloud"] = False
+
+        library_trace = sync_draft_library_from_simulator_board(
+            st, session, board, reason="manual_save_library_sync"
+        )
+        for key in (
+            "library_sync",
+            "saved_drafts",
+            "league_contexts",
+            "library_draft_id",
+            "library_sync_error",
+            "library_sync_skipped",
+        ):
+            if key in library_trace:
+                trace[key] = library_trace[key]
 
     if trace.get("saved") and pick_count > 0:
         sync_editor_seed(session, board, force_reset=True)
