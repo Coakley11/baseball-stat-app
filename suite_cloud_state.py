@@ -15,6 +15,18 @@ from typing import Any, Literal
 
 FULL_SESSION_KEY = "full_session"
 
+DRAFT_LIBRARY_CLOUD_SAVE_REASONS = frozenset({
+    "manual_save_library_sync",
+    "draft_archive_saved",
+    "draft_archive_renamed",
+    "draft_archive_duplicated",
+    "draft_archive_deleted",
+    "draft_archive_cleared",
+})
+
+DRAFT_LIBRARY_WRITE_TIMEOUT_SEC = 25.0
+DRAFT_LIBRARY_WRITE_ATTEMPTS = 2
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -480,6 +492,37 @@ def save_cloud_full_session(
     return ok
 
 
+def is_draft_library_cloud_save_reason(reason: str) -> bool:
+    """True when a Saved Draft Library action should use the small cloud payload."""
+    raw = str(reason or "").strip()
+    if not raw:
+        return False
+    if raw in DRAFT_LIBRARY_CLOUD_SAVE_REASONS:
+        return True
+    base = raw[:-6] if raw.endswith("_retry") else raw
+    return base in DRAFT_LIBRARY_CLOUD_SAVE_REASONS
+
+
+def _draft_library_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Compact durable blob: saved drafts + active draft only (no 28MB app state)."""
+    try:
+        from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+    except ImportError:
+        from workflow_persist_guard import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+
+    slice_out: dict[str, Any] = {}
+    archives = state.get(DRAFT_ARCHIVE_KEY)
+    if isinstance(archives, list) and archives:
+        slice_out[DRAFT_ARCHIVE_KEY] = copy.deepcopy(archives)
+    active_id = str(state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if active_id:
+        slice_out[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
+    page = str(state.get("active_page") or "").strip()
+    if page:
+        slice_out["active_page"] = page
+    return slice_out
+
+
 def _workflow_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
     """Smaller full_session blob with draft library / league context keys only."""
     try:
@@ -518,6 +561,10 @@ def _attempt_cloud_metrics_save(
     summary: str,
     metrics: dict[str, Any],
     write_label: str,
+    skip_metrics_merge: bool = False,
+    direct_upsert: bool = False,
+    request_timeout_sec: float | None = None,
+    write_attempts: int | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
     result_fn = getattr(storage, "save_current_state_with_result", None)
     if callable(result_fn):
@@ -526,6 +573,10 @@ def _attempt_cloud_metrics_save(
             page=page or "",
             summary=summary or "Last session",
             metrics=metrics,
+            skip_metrics_merge=skip_metrics_merge,
+            direct_upsert=direct_upsert,
+            request_timeout_sec=request_timeout_sec,
+            write_attempts=write_attempts,
         )
         if isinstance(result, dict) and result.get("ok"):
             out = dict(result)
@@ -551,6 +602,79 @@ def _attempt_cloud_metrics_save(
         metrics=metrics,
     )
     return True, "", {"write_mode": "post", "write_label": write_label}
+
+
+def save_cloud_draft_library_with_details(
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    page: str = "",
+    summary: str = "",
+) -> tuple[bool, str, str]:
+    """Persist saved-draft library keys only — fast, small cloud write for Save Draft."""
+    if not state:
+        return False, "empty_state", ""
+    try:
+        from suite_storage_config import cloud_storage_enabled
+    except ImportError:
+        return False, "cloud_storage_config_unavailable", ""
+    if not cloud_storage_enabled():
+        return False, "cloud_storage_disabled", ""
+    storage: Any | None = None
+    app_key = ""
+    try:
+        storage, _ = _import_storage()
+        app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+        draft_slice = _draft_library_slice_from_state(state)
+        try:
+            from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+        except ImportError:
+            from workflow_persist_guard import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+        if not draft_slice.get(DRAFT_ARCHIVE_KEY) and not draft_slice.get(ACTIVE_DRAFT_ARCHIVE_KEY):
+            return False, "empty_draft_library_slice", app_key
+        payload = {FULL_SESSION_KEY: draft_slice}
+        estimate_fn = getattr(storage, "estimate_metrics_payload_bytes", None)
+        if callable(estimate_fn):
+            payload_bytes = int(estimate_fn(payload))
+        else:
+            from suite_app_current_state_health import estimate_json_bytes
+
+            payload_bytes = estimate_json_bytes(payload)
+
+        ok, detail, result = _attempt_cloud_metrics_save(
+            storage,
+            app_key,
+            page=page,
+            summary=summary or "Saved Draft Library",
+            metrics=payload,
+            write_label="draft_library_slice",
+            skip_metrics_merge=True,
+            direct_upsert=True,
+            request_timeout_sec=DRAFT_LIBRARY_WRITE_TIMEOUT_SEC,
+            write_attempts=DRAFT_LIBRARY_WRITE_ATTEMPTS,
+        )
+        ss = _streamlit_session()
+        if ss is not None:
+            ss["_suite_last_cloud_payload_bytes"] = payload_bytes
+            ss["_suite_last_cloud_write_mode"] = str((result or {}).get("write_mode") or "")
+            ss["_suite_cloud_write_used_draft_library_slice"] = True
+            ss.pop("_suite_cloud_write_used_workflow_fallback", None)
+        if not ok:
+            return False, detail, app_key
+
+        if ss is not None:
+            ts_key, blob_key = _full_session_cache_keys(app_key)
+            ss[blob_key] = copy.deepcopy(draft_slice)
+            ss[ts_key] = _utc_now_iso()
+            ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
+        return True, "", app_key
+    except Exception as exc:
+        try:
+            if storage is not None:
+                app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+        except Exception:
+            app_key = app_key or ""
+        return False, f"{type(exc).__name__}: {exc}", app_key
 
 
 def save_cloud_full_session_with_details(

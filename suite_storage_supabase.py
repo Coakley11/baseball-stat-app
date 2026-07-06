@@ -328,6 +328,7 @@ _DEFAULT_WRITE_REQUEST_ATTEMPTS = 5
 _DEFAULT_REQUEST_BACKOFF_SEC = 0.5
 _DEFAULT_REQUEST_TIMEOUT_SEC = 15
 _MAX_REQUEST_TIMEOUT_SEC = 120
+_DRAFT_LIBRARY_WRITE_TIMEOUT_SEC = 25.0
 
 
 def estimate_metrics_payload_bytes(metrics: dict[str, Any] | None) -> int:
@@ -368,6 +369,7 @@ def _request(
     json_body: Any = None,
     prefer: str = "return=minimal",
     max_attempts: int = _DEFAULT_REQUEST_ATTEMPTS,
+    timeout_sec: float | None = None,
 ) -> Any:
     last_exc: RuntimeError | None = None
     attempts = max(1, int(max_attempts or 1))
@@ -380,6 +382,7 @@ def _request(
                 params=params,
                 json_body=json_body,
                 prefer=prefer,
+                timeout_sec=timeout_sec,
             )
         except RuntimeError as exc:
             last_exc = exc
@@ -399,6 +402,7 @@ def _request_once(
     params: dict[str, str] | None = None,
     json_body: Any = None,
     prefer: str = "return=minimal",
+    timeout_sec: float | None = None,
 ) -> Any:
     import requests  # lazy import — available in all suite apps
 
@@ -429,15 +433,24 @@ def _request_once(
             return hit[1]
 
     url = f"{config.url}/rest/v1/{path}"
-    timeout_sec = _request_timeout_sec(json_body)
-    response = requests.request(
-        method,
-        url,
-        headers=_headers(config, prefer=prefer),
-        params=params,
-        json=json_body,
-        timeout=timeout_sec,
+    effective_timeout = (
+        float(timeout_sec)
+        if timeout_sec is not None
+        else _request_timeout_sec(json_body)
     )
+    try:
+        response = requests.request(
+            method,
+            url,
+            headers=_headers(config, prefer=prefer),
+            params=params,
+            json=json_body,
+            timeout=effective_timeout,
+        )
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError(
+            f"Supabase {method} {path} timed out after {effective_timeout:.0f}s"
+        ) from exc
     if response.status_code >= 400:
         detail = response.text[:500]
         raise RuntimeError(f"Supabase {method} {path} failed ({response.status_code}): {detail}")
@@ -689,13 +702,16 @@ def save_current_state_with_result(
     summary: str = "",
     metrics: dict[str, Any] | None = None,
     skip_metrics_merge: bool = False,
+    direct_upsert: bool = False,
+    request_timeout_sec: float | None = None,
+    write_attempts: int | None = None,
 ) -> dict[str, Any]:
     """Persist app state and report write mode (PATCH when a row already exists)."""
     logical_app = normalize_app_key(app)
     app_key = _scoped_storage_app(app)
     if logical_app not in ACTIVE_APP_KEYS:
         return {"ok": False, "write_mode": "skipped", "error": "inactive_app"}
-    if skip_metrics_merge:
+    if skip_metrics_merge or direct_upsert:
         merged_metrics = dict(metrics or {})
     else:
         merged_metrics = _merge_state_metrics(app_key, metrics)
@@ -711,7 +727,8 @@ def save_current_state_with_result(
         body["user_id"] = uid
     payload_bytes = estimate_metrics_payload_bytes(merged_metrics)
     write_mode = "post"
-    write_attempts = _DEFAULT_WRITE_REQUEST_ATTEMPTS
+    attempts = max(1, int(write_attempts or _DEFAULT_WRITE_REQUEST_ATTEMPTS))
+    timeout_sec = request_timeout_sec
 
     def _write_post() -> None:
         _request(
@@ -719,7 +736,8 @@ def save_current_state_with_result(
             _TABLE_STATE,
             json_body=body,
             prefer="resolution=merge-duplicates,return=minimal",
-            max_attempts=write_attempts,
+            max_attempts=attempts,
+            timeout_sec=timeout_sec,
         )
 
     def _write_patch(patch_params: dict[str, str]) -> None:
@@ -729,10 +747,19 @@ def save_current_state_with_result(
             params=patch_params,
             json_body=body,
             prefer="return=minimal",
-            max_attempts=write_attempts,
+            max_attempts=attempts,
+            timeout_sec=timeout_sec,
         )
 
     try:
+        if direct_upsert:
+            write_mode = "direct_upsert"
+            _write_post()
+            return {
+                "ok": True,
+                "write_mode": write_mode,
+                "payload_bytes": payload_bytes,
+            }
         params: dict[str, str] = {"select": "app", "app": f"eq.{app_key}"}
         if uid:
             params["user_id"] = f"eq.{uid}"

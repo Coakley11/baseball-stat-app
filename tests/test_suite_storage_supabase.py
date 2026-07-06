@@ -71,6 +71,25 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(out, [{"app": "baseball"}])
         self.assertEqual(mock_once.call_count, 3)
 
+    def test_save_current_state_direct_upsert_skips_prewrite_get(self) -> None:
+        with patch("suite_storage_supabase._cloud_user_id", return_value=None):
+            with patch("suite_storage_supabase._request") as mock_req:
+                result = save_current_state_with_result(
+                    "baseball",
+                    page="Saved Draft Library",
+                    summary="test",
+                    metrics={"full_session": _full_session(1)},
+                    direct_upsert=True,
+                    request_timeout_sec=25.0,
+                    write_attempts=2,
+                    skip_metrics_merge=True,
+                )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("write_mode"), "direct_upsert")
+        mock_req.assert_called_once()
+        self.assertEqual(mock_req.call_args.kwargs.get("timeout_sec"), 25.0)
+        self.assertEqual(mock_req.call_args.args[0], "POST")
+
     def test_save_current_state_direct_upsert_after_transient_get(self) -> None:
         with patch("suite_storage_supabase._cloud_user_id", return_value=None):
             with patch("suite_storage_supabase._merge_state_metrics", return_value={"full_session": _full_session(1)}):

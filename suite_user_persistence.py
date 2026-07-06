@@ -1513,11 +1513,20 @@ def force_autosave(
             st.session_state["_suite_persist_last_cloud_error"] = cloud_error
         else:
             try:
-                from suite_cloud_state import save_cloud_full_session_with_details
-
-                saved_cloud, cloud_error, cloud_app_key = save_cloud_full_session_with_details(
-                    app_id, state, page=page, summary=summary
+                from suite_cloud_state import (
+                    is_draft_library_cloud_save_reason,
+                    save_cloud_draft_library_with_details,
+                    save_cloud_full_session_with_details,
                 )
+
+                if is_draft_library_cloud_save_reason(reason):
+                    saved_cloud, cloud_error, cloud_app_key = save_cloud_draft_library_with_details(
+                        app_id, state, page=page, summary=summary
+                    )
+                else:
+                    saved_cloud, cloud_error, cloud_app_key = save_cloud_full_session_with_details(
+                        app_id, state, page=page, summary=summary
+                    )
                 if cloud_app_key:
                     st.session_state["_suite_last_cloud_app_key"] = cloud_app_key
             except ImportError:
