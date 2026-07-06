@@ -1,4 +1,4 @@
-# deploy-bump: 2026-07-03-live-draft-polish-c0e5d8e (forces Streamlit Cloud full redeploy)
+# deploy-bump: 2026-07-06-reboot-backend-health (forces Streamlit Cloud full redeploy)
 streamlit
 pandas
 numpy

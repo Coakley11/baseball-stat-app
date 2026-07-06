@@ -13656,7 +13656,7 @@ try:
 
     apply_baseball_suite_resume(st)
     apply_draft_lab_resume(st)
-except ImportError:
+except Exception:
     pass
 
 try:

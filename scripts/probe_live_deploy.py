@@ -31,6 +31,18 @@ def fetch_body(url: str, max_bytes: int = 20000) -> tuple[int, str]:
     return int(resp.status), body
 
 
+def backend_health_ok(base_url: str) -> tuple[bool, str]:
+    """True when Streamlit Python process is serving /_stcore/health (not just CDN shell)."""
+    url = base_url.rstrip("/") + "/_stcore/health"
+    try:
+        status, body = fetch_body(url, max_bytes=500)
+        snippet = body.strip()[:80]
+        ok = status == 200 and snippet.lower() == "ok"
+        return ok, snippet
+    except Exception as exc:
+        return False, f"{type(exc).__name__}:{exc}"
+
+
 def main() -> int:
     print(f"expected_deploy_commit={EXPECTED}")
     try:
@@ -52,7 +64,18 @@ def main() -> int:
         except Exception as exc:
             print(f"probe url={url} error={type(exc).__name__}:{exc}")
 
-    return 0
+    ok, snippet = backend_health_ok(BASEBALL_URL)
+    print(f"backend_stcore_health_ok={ok} body={snippet!r}")
+    try:
+        status, body = fetch_body(BASEBALL_URL.rstrip("/") + "/healthz", max_bytes=200)
+        print(f"platform_healthz status={status} body={body.strip()[:80]!r}")
+    except Exception as exc:
+        print(f"platform_healthz error={type(exc).__name__}:{exc}")
+
+    if not ok:
+        print("ACTION: Streamlit Cloud Manage app -> Reboot app (backend not serving _stcore/health).")
+
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
