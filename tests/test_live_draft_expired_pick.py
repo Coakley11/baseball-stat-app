@@ -105,7 +105,7 @@ class ManualRecoveryTests(unittest.TestCase):
         session: dict = {"live_draft_room": _room()}
         room = session["live_draft_room"]
 
-        def _apply(room_obj, row, verdict="Manual pick"):
+        def _apply(room_obj, row, verdict="Manual pick", **kwargs):
             room_obj["draft_board"].append(row)
             room_obj["current_pick_index"] = 5
             return True, "Drafted Jose Ramirez to Daniel."

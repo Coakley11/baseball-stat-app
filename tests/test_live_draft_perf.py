@@ -17,6 +17,7 @@ from live_draft_perf import (
     record_live_draft_action,
     recent_live_draft_actions,
     summarize_live_draft_phases,
+    summarize_pick_commit_phases,
 )
 from live_draft_state import LIVE_DRAFT_PREPARE_FP_KEY, prepare_live_draft_state
 
@@ -102,6 +103,43 @@ class LiveDraftPerfTests(unittest.TestCase):
         names = [name for name, _ in top]
         self.assertIn("live_draft_recommendations", names)
         self.assertNotIn("other_page", names)
+
+    def test_summarize_pick_commit_phases(self) -> None:
+        session = {
+            "_page_perf_ns": {
+                "timings": {
+                    "live_draft_pick_canonical_patch": 0.12,
+                    "live_draft_pick_make_pick": 0.03,
+                    "live_draft_pick_commit": 0.15,
+                }
+            }
+        }
+        phases = summarize_pick_commit_phases(session, limit=5)
+        names = [name for name, _ in phases]
+        self.assertIn("live_draft_pick_canonical_patch", names)
+        self.assertNotIn("live_draft_pick_commit", names)
+
+    def test_patch_canonical_uses_session_blob_without_deepcopy(self) -> None:
+        from live_draft_state import (
+            LIVE_DRAFT_ROOM_KEY,
+            LIVE_DRAFT_STATE_KEY,
+            patch_canonical_live_draft_pick_fields,
+            room_to_persist_dict,
+        )
+        from live_draft_pick_engine import live_draft_make_pick
+
+        room = _sample_room()
+        session: dict = {
+            LIVE_DRAFT_ROOM_KEY: room,
+            LIVE_DRAFT_STATE_KEY: room_to_persist_dict(room),
+        }
+        pool_ref = id(session[LIVE_DRAFT_STATE_KEY].get("pool_records"))
+        player = {"playerID": "of1", "fullName": "Outfield Star", "Primary Position": "OF"}
+        live_draft_make_pick(room, player, enrich_pick_context=False)
+        patch_canonical_live_draft_pick_fields(session, room, reason="test_pick", local_edit=True)
+        blob = session[LIVE_DRAFT_STATE_KEY]
+        self.assertEqual(id(blob.get("pool_records")), pool_ref)
+        self.assertEqual(len(blob.get("draft_board") or []), 1)
 
     def test_prepare_short_circuits_on_second_call(self) -> None:
         session: dict = {

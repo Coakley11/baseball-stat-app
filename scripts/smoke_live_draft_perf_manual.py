@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 
 MAX_QUEUE_MS = 50.0
-MAX_DRAFT_MS = 1200.0
+MAX_DRAFT_MS = 300.0
 MAX_PREPARE_TOTAL_MS = 100.0
 
 

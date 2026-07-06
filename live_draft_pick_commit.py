@@ -90,66 +90,114 @@ def persist_applied_pick(
 ) -> PickCommitResult:
     """Persist a pick already applied to the in-memory room (make_pick already ran)."""
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, write_canonical_live_draft_state
-    except ImportError as exc:
-        return PickCommitResult(
-            ok=False,
-            message=str(exc),
-            error="import_failed",
-            commit_path="unknown",
-            board_size_before=board_size_before or 0,
-            board_size_after=len(room.get("draft_board") or []),
-            current_pick_index_before=idx_before or 0,
-            current_pick_index_after=int(room.get("current_pick_index") or 0),
+        from live_draft_perf import (
+            PHASE_PICK_CANONICAL_FULL,
+            PHASE_PICK_CANONICAL_PATCH,
+            PHASE_PICK_DEFER_FLAGS,
+            PHASE_PICK_PERSIST,
+            PHASE_PICK_SHARED_COMMIT,
+            live_draft_perf_action,
         )
-
-    board_before = board_size_before if board_size_before is not None else len(room.get("draft_board") or [])
-    idx_b = idx_before if idx_before is not None else int(room.get("current_pick_index") or 0) - 1
-    idx_a = int(room.get("current_pick_index") or 0)
-    board_after = len(room.get("draft_board") or [])
-
-    try:
-        from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
-
-        mp = is_multiplayer_draft_active(session)
     except ImportError:
-        mp = False
+        live_draft_perf_action = None  # type: ignore[assignment,misc]
+        PHASE_PICK_PERSIST = "live_draft_pick_persist"  # type: ignore[misc]
+        PHASE_PICK_SHARED_COMMIT = "live_draft_pick_shared_commit"  # type: ignore[misc]
+        PHASE_PICK_DEFER_FLAGS = "live_draft_pick_defer_flags"  # type: ignore[misc]
+        PHASE_PICK_CANONICAL_PATCH = "live_draft_pick_canonical_patch"  # type: ignore[misc]
+        PHASE_PICK_CANONICAL_FULL = "live_draft_pick_canonical_full"  # type: ignore[misc]
 
-    commit_path = "shared_room" if mp else "single_user"
-    session[LIVE_DRAFT_ROOM_KEY] = room
-
-    if mp:
-        rev = expected_revision if expected_revision is not None else sync_expected_revision(session)
-        ok_commit, commit_msg, _saved = commit_shared_room_state(
-            session,
-            room,
-            pick_already_applied=True,
-            expected_revision=rev,
-        )
-        if not ok_commit:
+    def _persist_body() -> PickCommitResult:
+        try:
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, write_canonical_live_draft_state
+        except ImportError as exc:
             return PickCommitResult(
                 ok=False,
-                message=commit_msg or "Could not sync pick to shared room.",
-                error="shared_commit_failed",
-                commit_path=commit_path,
-                board_size_before=board_before,
-                board_size_after=len((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_board") or []),
-                current_pick_index_before=idx_b,
-                current_pick_index_after=int((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("current_pick_index") or idx_b),
-                expected_revision=rev,
+                message=str(exc),
+                error="import_failed",
+                commit_path="unknown",
+                board_size_before=board_size_before or 0,
+                board_size_after=len(room.get("draft_board") or []),
+                current_pick_index_before=idx_before or 0,
+                current_pick_index_after=int(room.get("current_pick_index") or 0),
             )
-    else:
-        pass
 
-    try:
-        from live_draft_state import (
-            defer_live_draft_pick_activity,
-            invalidate_live_draft_prepare_cache,
-            mark_live_draft_board_sync_pending,
-        )
+        board_before = board_size_before if board_size_before is not None else len(room.get("draft_board") or [])
+        idx_b = idx_before if idx_before is not None else int(room.get("current_pick_index") or 0) - 1
+        idx_a = int(room.get("current_pick_index") or 0)
+        board_after = len(room.get("draft_board") or [])
 
-        invalidate_live_draft_prepare_cache(session, reason=f"pick:{source}")
+        try:
+            from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
+
+            mp = is_multiplayer_draft_active(session)
+        except ImportError:
+            mp = False
+
+        commit_path = "shared_room" if mp else "single_user"
+        session[LIVE_DRAFT_ROOM_KEY] = room
+
         if mp:
+            rev = expected_revision if expected_revision is not None else sync_expected_revision(session)
+            if live_draft_perf_action is not None:
+                with live_draft_perf_action(session, "shared_commit", phase=PHASE_PICK_SHARED_COMMIT):
+                    ok_commit, commit_msg, _saved = commit_shared_room_state(
+                        session,
+                        room,
+                        pick_already_applied=True,
+                        expected_revision=rev,
+                    )
+            else:
+                ok_commit, commit_msg, _saved = commit_shared_room_state(
+                    session,
+                    room,
+                    pick_already_applied=True,
+                    expected_revision=rev,
+                )
+            if not ok_commit:
+                return PickCommitResult(
+                    ok=False,
+                    message=commit_msg or "Could not sync pick to shared room.",
+                    error="shared_commit_failed",
+                    commit_path=commit_path,
+                    board_size_before=board_before,
+                    board_size_after=len((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_board") or []),
+                    current_pick_index_before=idx_b,
+                    current_pick_index_after=int((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("current_pick_index") or idx_b),
+                    expected_revision=rev,
+                )
+        else:
+            pass
+
+        try:
+            from live_draft_state import (
+                defer_live_draft_pick_activity,
+                invalidate_live_draft_prepare_cache,
+                mark_live_draft_board_sync_pending,
+            )
+
+            invalidate_live_draft_prepare_cache(session, reason=f"pick:{source}")
+            if mp:
+                try:
+                    from draft_room_state import sync_live_draft_room_to_canonical_board
+
+                    sync_live_draft_room_to_canonical_board(session, room)
+                except ImportError:
+                    pass
+                try:
+                    from baseball_draft_activity import after_live_draft_pick_committed
+
+                    after_live_draft_pick_committed(session, room)
+                except Exception:
+                    pass
+            else:
+                if live_draft_perf_action is not None:
+                    with live_draft_perf_action(session, "defer_flags", phase=PHASE_PICK_DEFER_FLAGS):
+                        mark_live_draft_board_sync_pending(session, reason=source)
+                        defer_live_draft_pick_activity(session, room, source=source)
+                else:
+                    mark_live_draft_board_sync_pending(session, reason=source)
+                    defer_live_draft_pick_activity(session, room, source=source)
+        except ImportError:
             try:
                 from draft_room_state import sync_live_draft_room_to_canonical_board
 
@@ -162,62 +210,63 @@ def persist_applied_pick(
                 after_live_draft_pick_committed(session, room)
             except Exception:
                 pass
+
+        if mp:
+            if live_draft_perf_action is not None:
+                with live_draft_perf_action(session, "canonical_full", phase=PHASE_PICK_CANONICAL_FULL):
+                    write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
+            else:
+                write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
         else:
-            mark_live_draft_board_sync_pending(session, reason=source)
-            defer_live_draft_pick_activity(session, room, source=source)
-    except ImportError:
-        try:
-            from draft_room_state import sync_live_draft_room_to_canonical_board
+            try:
+                from live_draft_state import patch_canonical_live_draft_pick_fields
 
-            sync_live_draft_room_to_canonical_board(session, room)
-        except ImportError:
-            pass
-        try:
-            from baseball_draft_activity import after_live_draft_pick_committed
+                if live_draft_perf_action is not None:
+                    with live_draft_perf_action(session, "canonical_patch", phase=PHASE_PICK_CANONICAL_PATCH):
+                        patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
+                else:
+                    patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
+            except ImportError:
+                if live_draft_perf_action is not None:
+                    with live_draft_perf_action(session, "canonical_full", phase=PHASE_PICK_CANONICAL_FULL):
+                        write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+                else:
+                    write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+        if mp:
+            try:
+                from live_draft_state import clear_live_draft_local_edit
 
-            after_live_draft_pick_committed(session, room)
-        except Exception:
-            pass
+                clear_live_draft_local_edit(session)
+            except ImportError:
+                pass
+            try:
+                from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
 
-    if mp:
-        write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
-    else:
-        try:
-            from live_draft_state import patch_canonical_live_draft_pick_fields
+                record_multiplayer_sync_diagnostics(
+                    session,
+                    room=room,
+                    last_pick_source=source,
+                    last_shared_write_ok=True,
+                )
+            except ImportError:
+                pass
 
-            patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
-        except ImportError:
-            write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
-    if mp:
-        try:
-            from live_draft_state import clear_live_draft_local_edit
+        return PickCommitResult(
+            ok=True,
+            message="Pick saved.",
+            error="",
+            commit_path=commit_path,
+            board_size_before=board_before,
+            board_size_after=board_after,
+            current_pick_index_before=idx_b,
+            current_pick_index_after=idx_a,
+            expected_revision=expected_revision,
+        )
 
-            clear_live_draft_local_edit(session)
-        except ImportError:
-            pass
-        try:
-            from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
-
-            record_multiplayer_sync_diagnostics(
-                session,
-                room=room,
-                last_pick_source=source,
-                last_shared_write_ok=True,
-            )
-        except ImportError:
-            pass
-
-    return PickCommitResult(
-        ok=True,
-        message="Pick saved.",
-        error="",
-        commit_path=commit_path,
-        board_size_before=board_before,
-        board_size_after=board_after,
-        current_pick_index_before=idx_b,
-        current_pick_index_after=idx_a,
-        expected_revision=expected_revision,
-    )
+    if live_draft_perf_action is not None:
+        with live_draft_perf_action(session, "persist", phase=PHASE_PICK_PERSIST):
+            return _persist_body()
+    return _persist_body()
 
 
 def commit_manual_live_pick(
@@ -230,34 +279,87 @@ def commit_manual_live_pick(
 ) -> PickCommitResult:
     """Apply make_pick then persist — manual draft path."""
     try:
-        from draft_commit_diagnostics import record_draft_commit_diagnostics
-
-        record_draft_commit_diagnostics(
-            session,
-            commit_function_entered=True,
-            manual_pick_commit_path="commit_manual_live_pick",
+        from live_draft_perf import (
+            PHASE_PICK_CACHE_INVALIDATE,
+            PHASE_PICK_COMMIT_DIAG,
+            PHASE_PICK_MAKE_PICK,
+            PHASE_PICK_SYNC_REVISION,
+            PHASE_PICK_VERDICT_PREP,
+            live_draft_perf_action,
         )
     except ImportError:
-        pass
+        live_draft_perf_action = None  # type: ignore[assignment,misc]
+        PHASE_PICK_COMMIT_DIAG = "live_draft_pick_commit_diag"  # type: ignore[misc]
+        PHASE_PICK_SYNC_REVISION = "live_draft_pick_sync_revision"  # type: ignore[misc]
+        PHASE_PICK_VERDICT_PREP = "live_draft_pick_verdict_prep"  # type: ignore[misc]
+        PHASE_PICK_MAKE_PICK = "live_draft_pick_make_pick"  # type: ignore[misc]
+        PHASE_PICK_CACHE_INVALIDATE = "live_draft_pick_cache_invalidate"  # type: ignore[misc]
+
+    def _diag(**fields: Any) -> None:
+        try:
+            from draft_commit_diagnostics import record_draft_commit_diagnostics
+
+            if live_draft_perf_action is not None:
+                with live_draft_perf_action(session, "commit_diag", phase=PHASE_PICK_COMMIT_DIAG):
+                    record_draft_commit_diagnostics(session, **fields)
+            else:
+                record_draft_commit_diagnostics(session, **fields)
+        except ImportError:
+            pass
+
+    _diag(
+        commit_function_entered=True,
+        manual_pick_commit_path="commit_manual_live_pick",
+    )
     board_before = len(room.get("draft_board") or [])
     idx_before = int(room.get("current_pick_index") or 0)
-    try:
-        from live_draft_pick_engine import build_structured_pick_verdict, normalize_pick_source_label
 
-        source_label = normalize_pick_source_label(source)
-        verdict_text = verdict or build_structured_pick_verdict(dict(player_row), pick_source=source_label)
-    except ImportError:
-        source_label = str(source or "Manual Pick")
-        verdict_text = verdict or f"Draft ({source})"
-    expected_revision = sync_expected_revision(session)
+    if live_draft_perf_action is not None:
+        with live_draft_perf_action(session, "verdict_prep", phase=PHASE_PICK_VERDICT_PREP):
+            try:
+                from live_draft_pick_engine import build_structured_pick_verdict, normalize_pick_source_label
 
-    ok, msg = live_draft_make_pick(
-        room,
-        player_row,
-        verdict=verdict_text,
-        pick_source=source_label,
-        snapshot=dict(player_row),
-    )
+                source_label = normalize_pick_source_label(source)
+                verdict_text = verdict or build_structured_pick_verdict(dict(player_row), pick_source=source_label)
+            except ImportError:
+                source_label = str(source or "Manual Pick")
+                verdict_text = verdict or f"Draft ({source})"
+    else:
+        try:
+            from live_draft_pick_engine import build_structured_pick_verdict, normalize_pick_source_label
+
+            source_label = normalize_pick_source_label(source)
+            verdict_text = verdict or build_structured_pick_verdict(dict(player_row), pick_source=source_label)
+        except ImportError:
+            source_label = str(source or "Manual Pick")
+            verdict_text = verdict or f"Draft ({source})"
+
+    if live_draft_perf_action is not None:
+        with live_draft_perf_action(session, "sync_revision", phase=PHASE_PICK_SYNC_REVISION):
+            expected_revision = sync_expected_revision(session)
+    else:
+        expected_revision = sync_expected_revision(session)
+
+    if live_draft_perf_action is not None:
+        with live_draft_perf_action(session, "make_pick", phase=PHASE_PICK_MAKE_PICK):
+            ok, msg = live_draft_make_pick(
+                room,
+                player_row,
+                verdict=verdict_text,
+                pick_source=source_label,
+                snapshot=dict(player_row),
+                session=session,
+                enrich_pick_context=False,
+            )
+    else:
+        ok, msg = live_draft_make_pick(
+            room,
+            player_row,
+            verdict=verdict_text,
+            pick_source=source_label,
+            snapshot=dict(player_row),
+            enrich_pick_context=False,
+        )
     if not ok:
         result = PickCommitResult(
             ok=False,
@@ -269,35 +371,37 @@ def commit_manual_live_pick(
             current_pick_index_before=idx_before,
             current_pick_index_after=idx_before,
         )
-        try:
-            from draft_commit_diagnostics import record_draft_commit_diagnostics
-
-            record_draft_commit_diagnostics(session, commit_function_returned=True, manual_pick_success=False, manual_pick_error=msg)
-        except ImportError:
-            pass
+        _diag(commit_function_returned=True, manual_pick_success=False, manual_pick_error=msg)
         return result
 
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
         session[LIVE_DRAFT_ROOM_KEY] = room
-        try:
-            from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+        if live_draft_perf_action is not None:
+            with live_draft_perf_action(session, "cache_invalidate", phase=PHASE_PICK_CACHE_INVALIDATE):
+                try:
+                    from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
 
-            invalidate_live_draft_ui_caches(session)
-            invalidate_draft_assistant_scoring_cache(session)
-        except ImportError:
-            session.pop("_live_draft_rec_cache", None)
-        from draft_commit_diagnostics import record_draft_commit_diagnostics
+                    invalidate_live_draft_ui_caches(session)
+                    invalidate_draft_assistant_scoring_cache(session)
+                except ImportError:
+                    session.pop("_live_draft_rec_cache", None)
+        else:
+            try:
+                from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
 
-        record_draft_commit_diagnostics(
-            session,
+                invalidate_live_draft_ui_caches(session)
+                invalidate_draft_assistant_scoring_cache(session)
+            except ImportError:
+                session.pop("_live_draft_rec_cache", None)
+        _diag(
             local_optimistic_update_applied=True,
             board_size_after=len(room.get("draft_board") or []),
             current_pick_index_after=int(room.get("current_pick_index") or 0),
         )
         if str(source).startswith("rec_card") or session.get("_rec_card_commit_in_flight"):
-            record_draft_commit_diagnostics(session, rec_card_commit_started=True)
+            _diag(rec_card_commit_started=True)
     except ImportError:
         pass
 
@@ -324,13 +428,11 @@ def commit_manual_live_pick(
     if persisted.ok:
         persisted.message = msg
         try:
-            from draft_commit_diagnostics import record_draft_commit_diagnostics
-
             updates: dict[str, Any] = {}
             if session.pop("_rec_card_commit_in_flight", None):
                 updates["rec_card_commit_success"] = True
             if updates:
-                record_draft_commit_diagnostics(session, **updates)
+                _diag(**updates)
             try:
                 from live_draft_room_ui import record_rec_card_diagnostics
 
@@ -340,18 +442,12 @@ def commit_manual_live_pick(
                 pass
         except ImportError:
             pass
-    try:
-        from draft_commit_diagnostics import record_draft_commit_diagnostics
-
-        record_draft_commit_diagnostics(
-            session,
-            commit_function_returned=True,
-            manual_pick_success=persisted.ok,
-            manual_pick_error=None if persisted.ok else persisted.message,
-            manual_pick_commit_path=persisted.commit_path,
-        )
-    except ImportError:
-        pass
+    _diag(
+        commit_function_returned=True,
+        manual_pick_success=persisted.ok,
+        manual_pick_error=None if persisted.ok else persisted.message,
+        manual_pick_commit_path=persisted.commit_path,
+    )
     return persisted
 
 

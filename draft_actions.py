@@ -1251,13 +1251,6 @@ def _draft_live(
     result["ok"] = True
     result["message"] = commit.message if commit.message != "Pick saved." else f"Drafted {player_name}."
     session.pop("_live_draft_manual_pick_in_flight", None)
-    try:
-        from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
-
-        invalidate_live_draft_ui_caches(session)
-        invalidate_draft_assistant_scoring_cache(session)
-    except ImportError:
-        session.pop("_live_draft_rec_cache", None)
     if clear_safe_mode_after_successful_pick is not None:
         clear_safe_mode_after_successful_pick(session, room)
     if set_live_draft_pick_notice is not None:

@@ -29,6 +29,28 @@ PHASE_REC_SECTION = "live_draft_rec_section"
 PHASE_ROSTER_SECTION = "live_draft_roster_section"
 PHASE_SECTION_NAV = "live_draft_section_nav"
 
+# Pick-commit sub-phases (slice 2 — profile before optimize).
+PHASE_PICK_COMMIT_DIAG = "live_draft_pick_commit_diag"
+PHASE_PICK_SYNC_REVISION = "live_draft_pick_sync_revision"
+PHASE_PICK_VERDICT_PREP = "live_draft_pick_verdict_prep"
+PHASE_PICK_MAKE_PICK = "live_draft_pick_make_pick"
+PHASE_PICK_BOARD_MUTATION = "live_draft_pick_board_mutation"
+PHASE_PICK_ROSTER_MUTATION = "live_draft_pick_roster_mutation"
+PHASE_PICK_PICK_ENRICH = "live_draft_pick_enrich"
+PHASE_PICK_CACHE_INVALIDATE = "live_draft_pick_cache_invalidate"
+PHASE_PICK_PERSIST = "live_draft_pick_persist"
+PHASE_PICK_SHARED_COMMIT = "live_draft_pick_shared_commit"
+PHASE_PICK_DEFER_FLAGS = "live_draft_pick_defer_flags"
+PHASE_PICK_ROOM_SERIALIZE = "live_draft_pick_room_serialize"
+PHASE_PICK_CANONICAL_PATCH = "live_draft_pick_canonical_patch"
+PHASE_PICK_CANONICAL_FULL = "live_draft_pick_canonical_full"
+PHASE_PICK_PAGE_FILTER_SYNC = "live_draft_pick_page_filter_sync"
+PHASE_PICK_RECONCILE = "live_draft_pick_reconcile"
+PHASE_PICK_ACTIVITY = "live_draft_pick_activity"
+PHASE_PICK_CLOUD_HOOK = "live_draft_pick_cloud_hook"
+
+_PICK_COMMIT_PHASE_PREFIX = "live_draft_pick_"
+
 
 def _dev_enabled(session: dict[str, Any]) -> bool:
     try:
@@ -154,6 +176,29 @@ def render_live_draft_perf_section(st: Any, session: dict[str, Any]) -> None:
         if detail:
             bits.append(detail)
         st.text(" · ".join(bits))
+
+
+def summarize_pick_commit_phases(session: dict[str, Any], *, limit: int = 24) -> list[tuple[str, float]]:
+    """Pick-commit sub-phases from the shared perf namespace (ms, descending)."""
+    ns = session.get("_page_perf_ns")
+    if not isinstance(ns, dict):
+        return []
+    timings = dict(ns.get("timings") or {})
+    ranked = [
+        (name, float(sec) * 1000.0)
+        for name, sec in timings.items()
+        if name.startswith(_PICK_COMMIT_PHASE_PREFIX) and name != PHASE_PICK_COMMIT
+    ]
+    ranked.sort(key=lambda kv: kv[1], reverse=True)
+    return ranked[: max(1, int(limit))]
+
+
+def pick_commit_phase_total_ms(session: dict[str, Any]) -> float:
+    ns = session.get("_page_perf_ns")
+    if not isinstance(ns, dict):
+        return 0.0
+    timings = dict(ns.get("timings") or {})
+    return sum(float(sec) * 1000.0 for name, sec in timings.items() if name.startswith(_PICK_COMMIT_PHASE_PREFIX))
 
 
 def summarize_live_draft_phases(session: dict[str, Any], *, limit: int = 10) -> list[tuple[str, float]]:

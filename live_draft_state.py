@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -71,7 +72,33 @@ def _current_workspace_id(session: dict[str, Any]) -> str:
         return ""
 
 
-def _stamp_live_draft_owner(session: dict[str, Any], blob: dict[str, Any]) -> None:
+def _auth_enabled_via_env() -> bool:
+    env = os.environ.get("SUITE_AUTH_ENABLED", "").strip().lower()
+    return env in ("1", "true", "yes", "on")
+
+
+def _stamp_live_draft_owner_from_session(session: dict[str, Any], blob: dict[str, Any]) -> None:
+    """Pick hot path — copy cached owner fields without importing suite_auth/Streamlit."""
+    uid = str(session.get("_suite_auth_user_id") or "").strip()
+    if uid:
+        blob[LIVE_DRAFT_OWNER_AUTH_KEY] = uid
+    ext = str(session.get("_suite_auth_external_id") or "").strip()
+    if ext:
+        blob[LIVE_DRAFT_OWNER_EXTERNAL_KEY] = ext
+    ws = str(
+        session.get("_suite_active_workspace_id")
+        or session.get("active_workspace_id")
+        or session.get("suite_active_workspace_id")
+        or ""
+    ).strip()
+    if ws:
+        blob[LIVE_DRAFT_OWNER_WORKSPACE_KEY] = ws
+
+
+def _stamp_live_draft_owner(session: dict[str, Any], blob: dict[str, Any], *, fast: bool = False) -> None:
+    if fast or not _auth_enabled_via_env():
+        _stamp_live_draft_owner_from_session(session, blob)
+        return
     auth_uid = _current_auth_user_id(session)
     if auth_uid:
         blob[LIVE_DRAFT_OWNER_AUTH_KEY] = auth_uid
@@ -751,7 +778,12 @@ def clear_live_draft_local_edit(session: dict[str, Any]) -> None:
     session.pop(LIVE_DRAFT_LOCAL_EDIT_TS_KEY, None)
 
 
-def _sync_page_filter_live_draft_block(session: dict[str, Any], *, blob: dict[str, Any] | None = None) -> None:
+def _sync_page_filter_live_draft_block(
+    session: dict[str, Any],
+    *,
+    blob: dict[str, Any] | None = None,
+    pick_patch: bool = False,
+) -> None:
     pf = session.setdefault("page_filter_state", {})
     if not isinstance(pf, dict):
         return
@@ -760,8 +792,41 @@ def _sync_page_filter_live_draft_block(session: dict[str, Any], *, blob: dict[st
         block = {}
         pf[LIVE_DRAFT_PAGE_BLOCK] = block
     src = blob if isinstance(blob, dict) else canonical_live_draft(session) or {}
+    patch_keys = (
+        "draft_board",
+        "current_pick_index",
+        "drafted_player_ids",
+        "rosters",
+        "status",
+        "pick_order",
+        "teams",
+        "config",
+        "meta",
+        "paused_remaining_seconds",
+        "timer_deadline",
+        "timer_handled_index",
+        "last_write_reason",
+        "_persisted_at",
+    )
     if src and src.get("draft_room_id"):
-        block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(src)
+        existing = block.get(LIVE_DRAFT_ROOM_KEY)
+        same_room = (
+            isinstance(existing, dict)
+            and str(existing.get("draft_room_id") or "") == str(src.get("draft_room_id") or "")
+        )
+        if pick_patch:
+            target = existing if same_room else src
+            if not same_room:
+                block[LIVE_DRAFT_ROOM_KEY] = src
+            for key in patch_keys:
+                if key in src:
+                    target[key] = src[key]
+        elif same_room:
+            for key in patch_keys:
+                if key in src:
+                    existing[key] = src[key]
+        else:
+            block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(src)
     else:
         block.pop(LIVE_DRAFT_ROOM_KEY, None)
     for key in LIVE_DRAFT_SETTINGS_KEYS:
@@ -777,32 +842,36 @@ def patch_canonical_live_draft_pick_fields(
     local_edit: bool = True,
 ) -> dict[str, Any]:
     """Fast pick persist — update board/index/rosters without re-serializing the pool."""
-    blob = canonical_live_draft(session)
+    blob = session.get(LIVE_DRAFT_STATE_KEY)
     if not isinstance(blob, dict) or not blob.get("draft_room_id"):
         return write_canonical_live_draft_state(session, room, reason=reason, local_edit=local_edit)
     if str(blob.get("draft_room_id") or "") != str(room.get("draft_room_id") or ""):
         return write_canonical_live_draft_state(session, room, reason=reason, local_edit=local_edit)
-    for key in (
-        "draft_board",
-        "current_pick_index",
-        "drafted_player_ids",
-        "rosters",
-        "status",
-        "pick_order",
-        "teams",
-        "config",
-        "meta",
-        "paused_remaining_seconds",
-        "timer_deadline",
-        "timer_handled_index",
-    ):
+    board = room.get("draft_board")
+    if isinstance(board, list):
+        blob["draft_board"] = _json_safe(board)
+    blob["current_pick_index"] = int(room.get("current_pick_index") or 0)
+    drafted = room.get("drafted_player_ids")
+    if isinstance(drafted, list):
+        blob["drafted_player_ids"] = list(drafted)
+    rosters = room.get("rosters")
+    if isinstance(rosters, dict):
+        blob["rosters"] = _json_safe(rosters)
+    for key in ("status", "pick_order", "teams", "config", "meta", "paused_remaining_seconds", "timer_deadline", "timer_handled_index"):
         if key in room:
-            blob[key] = _json_safe(room[key])
+            val = room[key]
+            blob[key] = val if key in ("status", "current_pick_index", "paused_remaining_seconds", "timer_handled_index") else _json_safe(val)
     blob["last_write_reason"] = reason or None
-    _stamp_live_draft_owner(session, blob)
+    _stamp_live_draft_owner(session, blob, fast=True)
     session[LIVE_DRAFT_STATE_KEY] = blob
     session[LIVE_DRAFT_ROOM_KEY] = room
-    _sync_page_filter_live_draft_block(session, blob=blob)
+    try:
+        from live_draft_perf import PHASE_PICK_PAGE_FILTER_SYNC, live_draft_perf_action
+
+        with live_draft_perf_action(session, "page_filter_sync", phase=PHASE_PICK_PAGE_FILTER_SYNC):
+            _sync_page_filter_live_draft_block(session, blob=blob, pick_patch=True)
+    except ImportError:
+        _sync_page_filter_live_draft_block(session, blob=blob, pick_patch=True)
     session["_suite_last_cloud_payload_live_draft"] = {
         "draft_room_id": blob.get("draft_room_id"),
         "current_pick_index": blob.get("current_pick_index"),
