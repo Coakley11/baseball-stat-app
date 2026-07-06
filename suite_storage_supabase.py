@@ -317,9 +317,36 @@ _TRANSIENT_SUPABASE_MARKERS = (
     "PGRST002",
     "schema cache",
     "Could not query the database",
+    "upstream connect error",
+    "disconnect/reset",
+    "reset before headers",
+    "connection termination",
+    "delayed connect error",
 )
 _DEFAULT_REQUEST_ATTEMPTS = 3
+_DEFAULT_WRITE_REQUEST_ATTEMPTS = 5
 _DEFAULT_REQUEST_BACKOFF_SEC = 0.5
+_DEFAULT_REQUEST_TIMEOUT_SEC = 15
+_MAX_REQUEST_TIMEOUT_SEC = 120
+
+
+def estimate_metrics_payload_bytes(metrics: dict[str, Any] | None) -> int:
+    try:
+        return len(json.dumps(metrics or {}, default=str, sort_keys=True).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _request_timeout_sec(json_body: Any) -> float:
+    if json_body is None:
+        return float(_DEFAULT_REQUEST_TIMEOUT_SEC)
+    try:
+        body_bytes = len(json.dumps(json_body, default=str).encode("utf-8"))
+    except Exception:
+        body_bytes = 0
+    # Large full_session uploads need more time on Streamlit Cloud → Supabase paths.
+    extra = max(0, (body_bytes - 64 * 1024) // (64 * 1024)) * 15
+    return float(min(_MAX_REQUEST_TIMEOUT_SEC, _DEFAULT_REQUEST_TIMEOUT_SEC + extra))
 
 
 def is_transient_supabase_error(exc: BaseException) -> bool:
@@ -402,13 +429,14 @@ def _request_once(
             return hit[1]
 
     url = f"{config.url}/rest/v1/{path}"
+    timeout_sec = _request_timeout_sec(json_body)
     response = requests.request(
         method,
         url,
         headers=_headers(config, prefer=prefer),
         params=params,
         json=json_body,
-        timeout=15,
+        timeout=timeout_sec,
     )
     if response.status_code >= 400:
         detail = response.text[:500]
@@ -660,13 +688,17 @@ def save_current_state_with_result(
     page: str = "",
     summary: str = "",
     metrics: dict[str, Any] | None = None,
+    skip_metrics_merge: bool = False,
 ) -> dict[str, Any]:
     """Persist app state and report write mode (PATCH when a row already exists)."""
     logical_app = normalize_app_key(app)
     app_key = _scoped_storage_app(app)
     if logical_app not in ACTIVE_APP_KEYS:
         return {"ok": False, "write_mode": "skipped", "error": "inactive_app"}
-    merged_metrics = _merge_state_metrics(app_key, metrics)
+    if skip_metrics_merge:
+        merged_metrics = dict(metrics or {})
+    else:
+        merged_metrics = _merge_state_metrics(app_key, metrics)
     body: dict[str, Any] = {
         "app": app_key,
         "page": page or "",
@@ -677,7 +709,29 @@ def save_current_state_with_result(
     uid = _cloud_user_id()
     if uid:
         body["user_id"] = uid
+    payload_bytes = estimate_metrics_payload_bytes(merged_metrics)
     write_mode = "post"
+    write_attempts = _DEFAULT_WRITE_REQUEST_ATTEMPTS
+
+    def _write_post() -> None:
+        _request(
+            "POST",
+            _TABLE_STATE,
+            json_body=body,
+            prefer="resolution=merge-duplicates,return=minimal",
+            max_attempts=write_attempts,
+        )
+
+    def _write_patch(patch_params: dict[str, str]) -> None:
+        _request(
+            "PATCH",
+            _TABLE_STATE,
+            params=patch_params,
+            json_body=body,
+            prefer="return=minimal",
+            max_attempts=write_attempts,
+        )
+
     try:
         params: dict[str, str] = {"select": "app", "app": f"eq.{app_key}"}
         if uid:
@@ -690,39 +744,29 @@ def save_current_state_with_result(
             # PostgREST schema-cache blips can fail read-before-write while an
             # upsert succeeds. Avoid letting the diagnostic GET block durable saves.
             write_mode = "direct_upsert_after_get_retry"
-            _request(
-                "POST",
-                _TABLE_STATE,
-                json_body=body,
-                prefer="resolution=merge-duplicates,return=minimal",
-            )
+            _write_post()
             return {
                 "ok": True,
                 "write_mode": write_mode,
+                "payload_bytes": payload_bytes,
                 "warning": f"prewrite_get_transient:{exc}",
             }
         if isinstance(rows, list) and rows:
             patch_params = {"app": f"eq.{app_key}"}
             if uid:
                 patch_params["user_id"] = f"eq.{uid}"
-            _request(
-                "PATCH",
-                _TABLE_STATE,
-                params=patch_params,
-                json_body=body,
-                prefer="return=minimal",
-            )
+            _write_patch(patch_params)
             write_mode = "patch"
         else:
-            _request(
-                "POST",
-                _TABLE_STATE,
-                json_body=body,
-                prefer="resolution=merge-duplicates,return=minimal",
-            )
-        return {"ok": True, "write_mode": write_mode}
+            _write_post()
+        return {"ok": True, "write_mode": write_mode, "payload_bytes": payload_bytes}
     except Exception as exc:
-        return {"ok": False, "write_mode": write_mode, "error": str(exc)}
+        return {
+            "ok": False,
+            "write_mode": write_mode,
+            "payload_bytes": payload_bytes,
+            "error": str(exc),
+        }
 
 
 def upsert_resume_item(

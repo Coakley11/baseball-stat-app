@@ -51,6 +51,11 @@ class TestSuiteStorageSupabase(unittest.TestCase):
             '{"code":"PGRST002","message":"Could not query the database for the schema cache. Retrying."}'
         )
         self.assertTrue(is_transient_supabase_error(err))
+        upstream = RuntimeError(
+            "Supabase POST suite_app_current_state failed (503): "
+            "upstream connect error or disconnect/reset before headers"
+        )
+        self.assertTrue(is_transient_supabase_error(upstream))
         self.assertFalse(is_transient_supabase_error(RuntimeError("Supabase GET failed (401): denied")))
 
     def test_request_retries_transient_503(self) -> None:

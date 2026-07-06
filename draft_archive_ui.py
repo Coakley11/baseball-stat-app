@@ -365,6 +365,35 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
                 )
             else:
                 st.caption("Cloud: no baseball row for this workspace key.")
+            health = session.get("_suite_cloud_health_probe")
+            if not isinstance(health, dict) or st.button(
+                "Run Supabase state-table health check",
+                key="suite_app_current_state_health_rerun",
+            ):
+                try:
+                    from suite_app_current_state_health import probe_suite_app_current_state_health
+
+                    health = probe_suite_app_current_state_health(scoped_app_key=str(diag.get("cloud_app_key") or ""))
+                    session["_suite_cloud_health_probe"] = health
+                except ImportError:
+                    health = None
+            if isinstance(health, dict) and health.get("configured"):
+                st.markdown("**Supabase `suite_app_current_state` health**")
+                rows = [
+                    ("ping_ok", health.get("ping_ok")),
+                    ("table_reachable", health.get("table_reachable")),
+                    ("minimal_write_ok", health.get("minimal_write_ok")),
+                    ("minimal_write_mode", health.get("minimal_write_mode") or "—"),
+                    ("likely_cause", health.get("likely_cause") or "—"),
+                ]
+                for label, value in rows:
+                    st.text(f"{label}: {value}")
+                if session.get("_suite_last_cloud_payload_bytes") is not None:
+                    st.text(f"last_save_payload_bytes: {session.get('_suite_last_cloud_payload_bytes')}")
+                if health.get("user_message"):
+                    st.caption(str(health["user_message"]))
+                if health.get("detail"):
+                    st.code(str(health["detail"])[:2000])
         elif not diag.get("cloud_enabled"):
             st.caption("Cloud storage not configured in this deployment.")
 

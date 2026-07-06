@@ -480,6 +480,79 @@ def save_cloud_full_session(
     return ok
 
 
+def _workflow_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Smaller full_session blob with draft library / league context keys only."""
+    try:
+        from workflow_persist_guard import PROTECTED_WORKFLOW_PERSIST_KEYS
+    except ImportError:
+        return {}
+    slice_out: dict[str, Any] = {}
+    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        if key in state:
+            slice_out[key] = copy.deepcopy(state[key])
+    page = str(state.get("active_page") or "").strip()
+    if page:
+        slice_out["active_page"] = page
+    return slice_out
+
+
+def _format_cloud_save_error(
+    *,
+    err: str,
+    write_mode: str,
+    app_key: str,
+    payload_bytes: int,
+    extra: str = "",
+) -> str:
+    base = f"{err} (mode={write_mode}, app={app_key}, payload_bytes={payload_bytes})"
+    if extra:
+        return f"{base}; {extra}"
+    return base
+
+
+def _attempt_cloud_metrics_save(
+    storage: Any,
+    app_key: str,
+    *,
+    page: str,
+    summary: str,
+    metrics: dict[str, Any],
+    write_label: str,
+) -> tuple[bool, str, dict[str, Any]]:
+    result_fn = getattr(storage, "save_current_state_with_result", None)
+    if callable(result_fn):
+        result = result_fn(
+            app_key,
+            page=page or "",
+            summary=summary or "Last session",
+            metrics=metrics,
+        )
+        if isinstance(result, dict) and result.get("ok"):
+            out = dict(result)
+            out["write_label"] = write_label
+            return True, "", out
+        err = str((result or {}).get("error") or "cloud_save_failed").strip()
+        write_mode = str((result or {}).get("write_mode") or "")
+        payload_bytes = int((result or {}).get("payload_bytes") or 0)
+        return (
+            False,
+            _format_cloud_save_error(
+                err=err,
+                write_mode=write_mode,
+                app_key=app_key,
+                payload_bytes=payload_bytes,
+            ),
+            dict(result or {}),
+        )
+    storage.save_current_state(
+        app_key,
+        page=page or "",
+        summary=summary or "Last session",
+        metrics=metrics,
+    )
+    return True, "", {"write_mode": "post", "write_label": write_label}
+
+
 def save_cloud_full_session_with_details(
     app_id: str,
     state: dict[str, Any],
@@ -496,42 +569,105 @@ def save_cloud_full_session_with_details(
         return False, "cloud_storage_config_unavailable", ""
     if not cloud_storage_enabled():
         return False, "cloud_storage_disabled", ""
+    storage: Any | None = None
+    app_key = ""
     try:
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
-        payload = {FULL_SESSION_KEY: copy.deepcopy(state)}
-        result_fn = getattr(storage, "save_current_state_with_result", None)
-        if callable(result_fn):
-            result = result_fn(
-                app_key,
-                page=page or "",
-                summary=summary or "Last session",
-                metrics=payload,
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                err = str((result or {}).get("error") or "cloud_save_failed").strip()
-                write_mode = str((result or {}).get("write_mode") or "")
-                detail = f"{err} (mode={write_mode}, app={app_key})" if write_mode else f"{err} (app={app_key})"
-                return False, detail, app_key
+        full_payload = {FULL_SESSION_KEY: copy.deepcopy(state)}
+        estimate_fn = getattr(storage, "estimate_metrics_payload_bytes", None)
+        if callable(estimate_fn):
+            full_bytes = int(estimate_fn(full_payload))
         else:
-            storage.save_current_state(
-                app_key,
-                page=page or "",
-                summary=summary or "Last session",
-                metrics=payload,
+            from suite_app_current_state_health import estimate_json_bytes
+
+            full_bytes = estimate_json_bytes(full_payload)
+
+        ok, detail, result = _attempt_cloud_metrics_save(
+            storage,
+            app_key,
+            page=page,
+            summary=summary,
+            metrics=full_payload,
+            write_label="full_session",
+        )
+        if not ok:
+            wf_slice = _workflow_slice_from_state(state)
+            wf_payload = {FULL_SESSION_KEY: wf_slice}
+            wf_bytes = (
+                int(estimate_fn(wf_payload))
+                if callable(estimate_fn)
+                else estimate_json_bytes(wf_payload)
             )
+            if wf_slice and wf_bytes + 4096 < full_bytes:
+                wf_ok, wf_detail, wf_result = _attempt_cloud_metrics_save(
+                    storage,
+                    app_key,
+                    page=page,
+                    summary=summary or "Workflow slice",
+                    metrics=wf_payload,
+                    write_label="workflow_slice_fallback",
+                )
+                if wf_ok:
+                    ss = _streamlit_session()
+                    if ss is not None:
+                        ss["_suite_last_cloud_write_mode"] = str(wf_result.get("write_mode") or "")
+                        ss["_suite_last_cloud_payload_bytes"] = wf_bytes
+                        ss["_suite_cloud_write_used_workflow_fallback"] = True
+                    ts_key, blob_key = _full_session_cache_keys(app_key)
+                    if ss is not None:
+                        ss[blob_key] = copy.deepcopy(wf_slice)
+                        ss[ts_key] = _utc_now_iso()
+                        ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
+                    return True, "", app_key
+                detail = f"{detail}; workflow_fallback_failed={wf_detail}"
+
+            likely = ""
+            health: dict[str, Any] = {}
+            try:
+                from suite_app_current_state_health import classify_cloud_save_failure, probe_suite_app_current_state_health
+
+                health = probe_suite_app_current_state_health(
+                    run_write_probe=True,
+                    run_size_ladder=False,
+                    scoped_app_key=app_key,
+                )
+                likely = classify_cloud_save_failure(
+                    error=detail,
+                    payload_bytes=full_bytes,
+                    minimal_write_ok=bool(health.get("minimal_write_ok")),
+                )
+                ss = _streamlit_session()
+                if ss is not None:
+                    ss["_suite_cloud_health_probe"] = health
+                    ss["_suite_last_cloud_payload_bytes"] = full_bytes
+            except Exception:
+                pass
+            extra_bits = []
+            if likely:
+                extra_bits.append(f"likely_cause={likely}")
+            if health:
+                extra_bits.append(f"minimal_write_ok={health.get('minimal_write_ok')}")
+            err_out = detail if not extra_bits else f"{detail}; {'; '.join(extra_bits)}"
+            return False, err_out, app_key
+
         ss = _streamlit_session()
         if ss is not None:
-            ts_key, blob_key = _full_session_cache_keys(app_key)
+            ss["_suite_last_cloud_write_mode"] = str(result.get("write_mode") or "")
+            ss["_suite_last_cloud_payload_bytes"] = full_bytes
+            ss.pop("_suite_cloud_write_used_workflow_fallback", None)
+        ts_key, blob_key = _full_session_cache_keys(app_key)
+        if ss is not None:
             ss[blob_key] = copy.deepcopy(state)
             ss[ts_key] = _utc_now_iso()
             ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
         return True, "", app_key
     except Exception as exc:
         try:
-            app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))  # type: ignore[possibly-undefined]
+            if storage is not None:
+                app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
         except Exception:
-            app_key = ""
+            app_key = app_key or ""
         return False, f"{type(exc).__name__}: {exc}", app_key
 
 
