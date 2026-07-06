@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import inspect
 import unittest
+from unittest.mock import MagicMock
 
 import pandas as pd
 
 from draft_archive_ui import (
+    DRAFT_SIMULATOR_PAGE,
     FANTASY_LINEUP_PAGE,
     FANTASY_STANDINGS_PAGE,
+    LIVE_DRAFT_PAGE,
     SAVED_DRAFT_LIBRARY_PAGE,
     SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY,
+    _nav_label,
+    _render_archive_actions,
+    render_saved_draft_library_page,
     schedule_fantasy_analysis_navigation,
     schedule_page_navigation,
     schedule_return_from_saved_draft_library,
@@ -94,6 +101,71 @@ class SavedDraftLibraryNavigationTests(unittest.TestCase):
         self.assertEqual(session["_navigate_to_page"], FANTASY_LINEUP_PAGE)
         self.assertEqual(session["_skip_page_restore_for"], FANTASY_LINEUP_PAGE)
         self.assertNotIn(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY, session)
+
+
+class SavedDraftLibraryRenderTests(unittest.TestCase):
+    def _mock_st(self) -> MagicMock:
+        st = MagicMock()
+        st.markdown = MagicMock()
+        st.caption = MagicMock()
+        st.metric = MagicMock()
+        st.info = MagicMock()
+        st.success = MagicMock()
+        st.warning = MagicMock()
+        st.toast = MagicMock()
+        st.divider = MagicMock()
+        st.container = MagicMock(
+            return_value=MagicMock(
+                __enter__=MagicMock(return_value=MagicMock()),
+                __exit__=MagicMock(return_value=False),
+            )
+        )
+        st.expander = MagicMock(
+            return_value=MagicMock(
+                __enter__=MagicMock(return_value=MagicMock()),
+                __exit__=MagicMock(return_value=False),
+            )
+        )
+        st.columns = MagicMock(side_effect=lambda n: [MagicMock() for _ in range(n if isinstance(n, int) else len(n))])
+        st.button = MagicMock(return_value=False)
+        st.checkbox = MagicMock(return_value=False)
+        st.rerun = MagicMock()
+        st.session_state = {}
+        return st
+
+    def test_render_archive_actions_accepts_page_label_fn(self) -> None:
+        params = inspect.signature(_render_archive_actions).parameters
+        self.assertIn("page_label_fn", params)
+        st = self._mock_st()
+        session: dict = {}
+        entry = {"draft_id": "d1", "draft_name": "Mock Draft", "draft_type": "simulator", "team_name": "Daniel"}
+        _render_archive_actions(
+            st,
+            session,
+            entry,
+            active_id="other",
+            active_context_id="",
+            page_label_fn=lambda key: f"Label:{key}",
+        )
+        st.button.assert_called()
+
+    def test_nav_label_renders_live_and_simulator_icons(self) -> None:
+        live = _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", None)
+        sim = _nav_label(DRAFT_SIMULATOR_PAGE, "Go to Draft Room Simulator", None)
+        self.assertIn("Live Draft Room", live)
+        self.assertIn("Draft Room Simulator", sim)
+        self.assertTrue(live.startswith("📡"))
+        self.assertTrue(sim.startswith("🧾"))
+
+    def test_render_saved_draft_library_page_with_archive(self) -> None:
+        session: dict = {"room_your_team": "Daniel", "draft_shared_settings": {}}
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        from fantasy_league_context import save_simulator_league_context
+
+        save_simulator_league_context(session, board, my_team_name="Daniel", defer_activation=True)
+        st = self._mock_st()
+        render_saved_draft_library_page(st, session, page_label_fn=lambda key: key)
+        st.markdown.assert_called()
 
 
 if __name__ == "__main__":

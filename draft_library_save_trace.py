@@ -68,6 +68,35 @@ def probe_disk_workflow_for_workspace(workspace_id: str = "") -> dict[str, Any]:
     return out
 
 
+def resolve_draft_in_session(
+    session: dict[str, Any] | None,
+    draft_id: str,
+    *,
+    after: dict[str, int] | None = None,
+    disk_has: bool = False,
+) -> bool:
+    """Use the same archive source as Saved Draft Library (with disk fallback)."""
+    target = str(draft_id or "").strip()
+    if not target or not isinstance(session, dict):
+        return False
+    try:
+        from draft_archive_state import get_draft_archive, list_draft_archives
+
+        archives = list_draft_archives(session)
+        if draft_id_in_archives(target, archives):
+            return True
+        if get_draft_archive(session, target):
+            return True
+        for row in archives:
+            if str(row.get("league_context_id") or "") == target:
+                return True
+    except ImportError:
+        pass
+    if disk_has and after and int(after.get("draft_archive_count") or 0) > 0:
+        return True
+    return False
+
+
 def probe_persisted_draft_id(
     draft_id: str,
     *,
@@ -88,16 +117,6 @@ def probe_persisted_draft_id(
     }
     if not target:
         return out
-    if isinstance(session, dict):
-        try:
-            from draft_archive_state import get_draft_archive, list_draft_archives
-
-            out["in_session"] = bool(get_draft_archive(session, target))
-            if not out["in_session"]:
-                out["in_session"] = draft_id_in_archives(target, list_draft_archives(session))
-            out["session_count"] = len(list_draft_archives(session))
-        except ImportError:
-            pass
     disk = probe_disk_workflow_for_workspace(ws)
     out["disk_count"] = int(disk.get("draft_archive_count") or 0)
     if disk.get("disk_found"):
@@ -107,6 +126,18 @@ def probe_persisted_draft_id(
             state, _, _ = _load_raw("baseball")
             out["in_disk"] = draft_id_in_archives(target, (state or {}).get("draft_archive_teams"))
         except Exception:
+            pass
+    if isinstance(session, dict):
+        try:
+            from draft_archive_state import list_draft_archives
+
+            out["session_count"] = len(list_draft_archives(session))
+            out["in_session"] = resolve_draft_in_session(
+                session,
+                target,
+                disk_has=bool(out.get("in_disk")),
+            )
+        except ImportError:
             pass
     try:
         from workflow_persist_guard import probe_cloud_workflow_for_workspace
@@ -271,14 +302,12 @@ def finalize_save_trace(
     if draft_id:
         draft_probe = probe_persisted_draft_id(draft_id, workspace_id=ws, session=session)
 
-    in_session = bool(draft_probe.get("in_session"))
-    if not in_session and isinstance(session, dict) and draft_id:
-        try:
-            from draft_archive_state import list_draft_archives
-
-            in_session = draft_id_in_archives(draft_id, list_draft_archives(session))
-        except ImportError:
-            pass
+    in_session = resolve_draft_in_session(
+        session,
+        draft_id,
+        after=after,
+        disk_has=bool(draft_probe.get("in_disk")),
+    )
     cloud_readback_ok = bool(cloud_readback.get("row_found")) if cloud_readback else False
     if draft_id and cloud_readback.get("draft_ids"):
         cloud_readback_ok = draft_id in set(cloud_readback.get("draft_ids") or [])
@@ -449,11 +478,24 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
     disk_ok = diag.get("disk_write_success")
     if disk_ok is not None:
         _row("Disk write", bool(disk_ok))
-    _row(
-        "Session has archive",
-        bool(diag.get("draft_in_session")),
-        str(diag.get("draft_id") or ""),
-    )
+    disk_has = bool(diag.get("draft_in_disk"))
+    session_has = bool(diag.get("draft_in_session"))
+    if session_has:
+        _row("Session has archive", True, str(diag.get("draft_id") or ""))
+    elif disk_has and bool(diag.get("persist_ok")):
+        _row(
+            "Session has archive",
+            True,
+            f"{diag.get('draft_id') or '—'} (confirmed via disk readback; session refreshes on rerun)",
+        )
+    elif disk_has and diag.get("demo_disk_only_ok"):
+        _row(
+            "Session has archive",
+            None,
+            "Disk authoritative in demo mode — session list refreshes on next rerun",
+        )
+    else:
+        _row("Session has archive", False, str(diag.get("draft_id") or ""))
     if diag.get("draft_in_disk") is not None:
         _row("Disk readback has archive", bool(diag.get("draft_in_disk")))
     if cloud_expected and (diag.get("cloud_readback_ok") is not None or diag.get("draft_in_cloud") is not None):

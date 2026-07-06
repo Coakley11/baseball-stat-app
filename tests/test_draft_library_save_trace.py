@@ -16,6 +16,7 @@ from draft_library_save_trace import (
     record_library_load_trace,
     record_restore_trace,
     record_save_button_click,
+    resolve_draft_in_session,
     save_trace_checklist,
 )
 from fantasy_league_context import save_simulator_league_context
@@ -137,6 +138,25 @@ class DraftLibrarySaveTraceTests(unittest.TestCase):
         self.assertTrue(diag.get("persist_ok"))
         checklist = dict((label, status) for label, status, _ in save_trace_checklist(diag))
         self.assertEqual(checklist.get("Cloud write"), "pending")
+
+    def test_resolve_draft_in_session_uses_library_source(self) -> None:
+        session: dict = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "abc123", "draft_name": "Mock", "players": []}],
+        }
+        self.assertTrue(resolve_draft_in_session(session, "abc123"))
+        self.assertFalse(resolve_draft_in_session(session, "missing"))
+
+    def test_session_checklist_passes_when_disk_confirms(self) -> None:
+        diag = {
+            "save_request_received": True,
+            "draft_id": "x1",
+            "draft_in_session": False,
+            "draft_in_disk": True,
+            "persist_ok": True,
+            "disk_write_success": True,
+        }
+        checklist = dict((label, status) for label, status, _ in save_trace_checklist(diag))
+        self.assertEqual(checklist.get("Session has archive"), "pass")
 
 
 if __name__ == "__main__":

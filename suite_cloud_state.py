@@ -618,6 +618,43 @@ def pick_restore_session(
     except ImportError:
         pass
 
+    try:
+        from workflow_persist_guard import summarize_cloud_workflow_blob
+
+        disk_summary = summarize_cloud_workflow_blob(disk_state)
+        cloud_summary = summarize_cloud_workflow_blob(cloud_state)
+        disk_drafts = int(disk_summary.get("draft_archive_count") or 0)
+        cloud_drafts = int(cloud_summary.get("draft_archive_count") or 0)
+        if disk_drafts > cloud_drafts:
+            return RestorePickResult(
+                disk_state,
+                "disk",
+                f"disk has more saved drafts ({disk_drafts}>{cloud_drafts})",
+                cloud_ts,
+                disk_ts,
+            )
+        disk_ctx = int(disk_summary.get("league_context_count") or 0)
+        cloud_ctx = int(cloud_summary.get("league_context_count") or 0)
+        if disk_ctx > cloud_ctx:
+            return RestorePickResult(
+                disk_state,
+                "disk",
+                f"disk has more saved contexts ({disk_ctx}>{cloud_ctx})",
+                cloud_ts,
+                disk_ts,
+            )
+    except ImportError:
+        pass
+
+    if not cloud_first and disk_state:
+        return RestorePickResult(
+            disk_state,
+            "disk",
+            "local/demo disk-first restore",
+            cloud_ts,
+            disk_ts,
+        )
+
     if cloud_first and cloud_state:
         return RestorePickResult(
             cloud_state,
@@ -631,7 +668,7 @@ def pick_restore_session(
         return RestorePickResult(cloud_state, "cloud", "cloud newer", cloud_ts, disk_ts)
     if disk_epoch > cloud_epoch:
         return RestorePickResult(disk_state, "disk", "disk newer", cloud_ts, disk_ts)
-    if prefer_cloud_on_tie:
+    if prefer_cloud_on_tie and cloud_first:
         return RestorePickResult(cloud_state, "cloud", "tie → cloud", cloud_ts, disk_ts)
     return RestorePickResult(disk_state, "disk", "tie → disk", cloud_ts, disk_ts)
 

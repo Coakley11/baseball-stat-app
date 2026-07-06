@@ -1035,6 +1035,21 @@ def apply_baseball_session_defaults(st: Any) -> None:
     ss["main_sidebar_page"] = _DEFAULT_SIDEBAR_PAGE
 
 
+def _workspace_restore_cloud_first(session: dict[str, Any]) -> bool:
+    """In local/demo mode prefer disk restore over cloud snapshots."""
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+        from suite_storage_config import cloud_storage_enabled
+
+        if not cloud_storage_enabled():
+            return False
+        if is_auth_enabled() and not is_authenticated(session):
+            return False
+    except ImportError:
+        pass
+    return True
+
+
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
@@ -1046,7 +1061,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
                 st,
                 APP_ID,
                 apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
-                cloud_first=True,
+                cloud_first=_workspace_restore_cloud_first(ss),
             )
     except ImportError:
         try:
@@ -1059,7 +1074,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
             st,
             APP_ID,
             apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
-            cloud_first=True,
+            cloud_first=_workspace_restore_cloud_first(ss),
         )
         try:
             from page_perf import perf_end

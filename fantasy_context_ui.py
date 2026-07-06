@@ -7,9 +7,9 @@ from typing import Any
 # Persisted session key (legacy name retained for cloud/disk compatibility).
 FANTASY_RESEARCH_SYNC_KEY = "use_active_league_context_waiver_filter"
 
-FANTASY_RESEARCH_SYNC_LABEL = "Sync active league context to research pages"
+FANTASY_RESEARCH_SYNC_LABEL = "Sync active draft to research pages"
 FANTASY_RESEARCH_SYNC_HELP = (
-    "When enabled, research pages filter recommendations using your **Active League Context** "
+    "When enabled, research pages filter recommendations using your **Active Draft** "
     "(rostered players are treated as unavailable)."
 )
 
@@ -63,7 +63,7 @@ def render_fantasy_context_sync_control(
     )
     st.caption(
         "**Not affected:** Fantasy Standings, Lineup Assistant, Waiver Wire, Trade tools — "
-        "those always use **Active League Context** when one is set. Draft Lab stays independent."
+        "those always use your **Active Draft** when one is set. Draft Lab stays independent."
     )
 
 
@@ -76,9 +76,9 @@ def active_league_context_badge_text(session: dict[str, Any]) -> str:
     except ImportError:
         ctx = None
     if isinstance(ctx, dict):
-        name = str(ctx.get("display_name") or ctx.get("my_team_name") or "Active League").strip()
-        return f"Active League Context: **{name}** · ✓ Active"
-    return "Active League Context: **Not set** — choose one in Saved Draft Library"
+        name = str(ctx.get("display_name") or ctx.get("my_team_name") or "Active Draft").strip()
+        return f"Active Draft: **{name}** · ✓ Active"
+    return "Active Draft: **Not set** — choose one in Saved Draft Library"
 
 
 def research_sync_badge_text(session: dict[str, Any]) -> str:
@@ -94,7 +94,7 @@ def research_sync_badge_text(session: dict[str, Any]) -> str:
     if isinstance(ctx, dict):
         name = str(ctx.get("display_name") or ctx.get("my_team_name") or "Active League").strip()
         return f"Research mode: **League-aware** · {name}"
-    return "Research mode: **League-aware** (no active league — set one in Saved Draft Library)"
+    return "Research mode: **League-aware** (no active draft — set one in Saved Draft Library)"
 
 
 def render_active_league_context_badge(st: Any, session: dict[str, Any]) -> None:
@@ -120,12 +120,5 @@ def render_fantasy_context_library_block(
     *,
     active_context: dict[str, Any] | None,
 ) -> None:
-    """Active league summary + research sync toggle on Saved Draft Library."""
-    st.markdown("##### Active League Context")
-    if active_context:
-        name = str(active_context.get("display_name") or "League").strip()
-        team = str(active_context.get("my_team_name") or "—").strip()
-        st.markdown(f"**{name}** · My team: **{team}** · ✓ Active")
-    else:
-        st.info("No **Active League Context** yet. Save a draft room or live draft below, then click **Set Active League Context**.")
+    """Legacy wrapper — sync control only (Active Draft section lives in draft_archive_ui)."""
     render_fantasy_context_sync_control(st, session)

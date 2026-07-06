@@ -153,6 +153,61 @@ class ManageSavedDraftsNavigationTests(unittest.TestCase):
         self.assertEqual(len(list_draft_archives(session)), 1)
 
 
+class DemoRestorePriorityTests(unittest.TestCase):
+    def test_disk_wins_when_more_drafts_than_cloud(self) -> None:
+        from suite_cloud_state import pick_restore_session
+
+        cloud = {
+            "draft_archive_teams": [{"draft_id": "c1", "draft_name": "Cloud"}],
+            "fantasy_league_context_state": {"contexts": {"lc1": {"league_context_id": "lc1"}}},
+        }
+        disk = {
+            "draft_archive_teams": [
+                {"draft_id": "d1", "draft_name": "Disk A"},
+                {"draft_id": "d2", "draft_name": "Disk B"},
+            ],
+            "fantasy_league_context_state": {
+                "contexts": {
+                    "lc1": {"league_context_id": "lc1"},
+                    "lc2": {"league_context_id": "lc2"},
+                }
+            },
+        }
+        picked = pick_restore_session(
+            cloud,
+            "2026-07-05T12:00:00",
+            disk,
+            "2026-07-05T11:00:00",
+            cloud_first=True,
+        )
+        self.assertEqual(picked.source, "disk")
+        self.assertTrue(
+            "more saved drafts" in picked.reason or "richer saved drafts" in picked.reason,
+            picked.reason,
+        )
+
+    def test_demo_disk_first_when_cloud_first_disabled(self) -> None:
+        from suite_cloud_state import pick_restore_session
+
+        cloud = {
+            "draft_archive_teams": [{"draft_id": "c1", "draft_name": "Cloud"}],
+            "active_page": "Saved Draft Library",
+        }
+        disk = {
+            "draft_archive_teams": [{"draft_id": "d1", "draft_name": "Disk"}],
+            "active_page": "Draft Room Simulator",
+        }
+        picked = pick_restore_session(
+            cloud,
+            "2026-07-05T13:00:00",
+            disk,
+            "2026-07-05T12:00:00",
+            cloud_first=False,
+        )
+        self.assertEqual(picked.source, "disk")
+        self.assertIn("disk-first", picked.reason.lower())
+
+
 class PostDraftGradesTableTests(unittest.TestCase):
     def test_post_draft_grades_hide_total_player_grade(self) -> None:
         from draft_score_display import prepare_draft_scores_for_display
