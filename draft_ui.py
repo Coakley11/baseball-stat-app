@@ -1258,6 +1258,12 @@ def on_confirm_convert_simulator_to_live() -> None:
 def on_start_new_live_draft() -> None:
     import streamlit as st
 
+    try:
+        from live_draft_setup_persist import flush_live_draft_setup_persist
+
+        flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
+    except ImportError:
+        pass
     mark_start_live_draft_clicked(st.session_state)
     st.session_state["_start_live_draft_mode"] = "new"
     st.session_state["_start_live_draft_pending"] = True

@@ -157,6 +157,16 @@ def render_perf_report(st: Any, session: dict[str, Any]) -> None:
                 st.markdown("**Live Draft — top phases**")
                 for i, (name, sec) in enumerate(ld_top, start=1):
                     st.text(f"{i}. {name}: {sec:.3f}s")
+            try:
+                from live_draft_perf import summarize_setup_phases
+
+                setup_top = summarize_setup_phases(session, limit=12)
+                if setup_top:
+                    st.markdown("**Live Draft setup — top phases**")
+                    for i, (name, ms) in enumerate(setup_top, start=1):
+                        st.text(f"{i}. {name}: {ms:.1f}ms")
+            except ImportError:
+                pass
             render_live_draft_perf_section(st, session)
         except ImportError:
             pass

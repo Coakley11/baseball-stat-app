@@ -780,6 +780,16 @@ def build_snake_board(team_names: list[str], *, rounds: int) -> pd.DataFrame:
 def get_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
     """Single board every draft tool should read."""
     try:
+        from live_draft_setup_persist import should_skip_draft_room_prep_for_live_setup
+
+        if should_skip_draft_room_prep_for_live_setup(session):
+            runtime = ensure_runtime_draft_board(session)
+            if is_runtime_table(runtime):
+                return runtime.copy()
+            return coerce_board_table(runtime)
+    except ImportError:
+        pass
+    try:
         from live_draft_state import flush_deferred_live_draft_pick_effects
 
         flush_deferred_live_draft_pick_effects(session)
@@ -2599,6 +2609,16 @@ def write_canonical_draft_room_state(
 
 def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
     """Hydrate runtime draft_room_table from canonical blob without clobbering in-memory picks."""
+    try:
+        from live_draft_perf import PHASE_SETUP_PREPARE_DRAFT_ROOM, live_draft_perf_action
+
+        with live_draft_perf_action(session, "prepare_draft_room", phase=PHASE_SETUP_PREPARE_DRAFT_ROOM):
+            return _prepare_draft_room_state_body(session)
+    except ImportError:
+        return _prepare_draft_room_state_body(session)
+
+
+def _prepare_draft_room_state_body(session: dict[str, Any]) -> pd.DataFrame:
     richest, rich_count, rich_source = _resolve_richest_draft_board(session)
     submit = session.get(_BOARD_ASSIGN_SUBMIT_TRACE_KEY)
     submit_after = (
@@ -2733,6 +2753,16 @@ def _resolve_richest_draft_board(session: dict[str, Any]) -> tuple[pd.DataFrame,
 
 
 def sync_draft_room_session_before_save(session: dict[str, Any]) -> None:
+    try:
+        from live_draft_perf import PHASE_SETUP_SYNC_DRAFT_ROOM_SAVE, live_draft_perf_action
+
+        with live_draft_perf_action(session, "sync_draft_room_save", phase=PHASE_SETUP_SYNC_DRAFT_ROOM_SAVE):
+            _sync_draft_room_session_before_save_body(session)
+    except ImportError:
+        _sync_draft_room_session_before_save_body(session)
+
+
+def _sync_draft_room_session_before_save_body(session: dict[str, Any]) -> None:
     table, pick_count, source = _resolve_richest_draft_board(session)
     session[DRAFT_ROOM_TABLE_KEY] = table.copy()
     session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()

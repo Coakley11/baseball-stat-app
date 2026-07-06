@@ -13565,15 +13565,16 @@ _DRAFT_BOARD_PAGES = frozenset({
     "Fantasy Sleepers & Busts",
     "Live Draft Room",
 })
-_needs_live_prep = _active_page_for_prep == "Live Draft Room"
-if not _needs_live_prep:
-    _ld_room = st.session_state.get("live_draft_room")
-    if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in (
-        "in_progress",
-        "paused",
-        "complete",
-    ):
-        _needs_live_prep = True
+_needs_live_prep = False
+_ld_room = st.session_state.get("live_draft_room")
+if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in (
+    "in_progress",
+    "paused",
+    "complete",
+):
+    _needs_live_prep = True
+elif isinstance(_ld_room, dict) and _ld_room.get("draft_room_id"):
+    _needs_live_prep = True
 if _needs_live_prep:
     try:
         from live_draft_state import prepare_live_draft_state
@@ -13582,16 +13583,24 @@ if _needs_live_prep:
     except Exception:
         pass
 if _active_page_for_prep in _DRAFT_BOARD_PAGES:
+    _skip_draft_room_prep = False
     try:
-        from draft_room_state import ensure_live_draft_synced_to_canonical_board, prepare_draft_room_state
+        from live_draft_setup_persist import should_skip_draft_room_prep_for_live_setup
 
-        ensure_live_draft_synced_to_canonical_board(
-            st.session_state,
-            reason=f"draft_board_page:{_active_page_for_prep}",
-        )
-        prepare_draft_room_state(st.session_state)
-    except Exception:
+        _skip_draft_room_prep = should_skip_draft_room_prep_for_live_setup(st.session_state)
+    except ImportError:
         pass
+    if not _skip_draft_room_prep:
+        try:
+            from draft_room_state import ensure_live_draft_synced_to_canonical_board, prepare_draft_room_state
+
+            ensure_live_draft_synced_to_canonical_board(
+                st.session_state,
+                reason=f"draft_board_page:{_active_page_for_prep}",
+            )
+            prepare_draft_room_state(st.session_state)
+        except Exception:
+            pass
 try:
     from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
 
@@ -13736,6 +13745,13 @@ if _page_changed or _user_nav:
     st.session_state["_global_settings_force_mirror"] = True
     _did_save = False
     if _user_nav or _page_changed:
+        try:
+            if str(_prev_persisted_page or "") == "Live Draft Room":
+                from live_draft_setup_persist import flush_live_draft_setup_persist
+
+                flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_setup_page_leave")
+        except Exception:
+            pass
         try:
             force_save_baseball_state(st, reason="page_change")
             _did_save = True
@@ -15153,8 +15169,10 @@ def _prepare_and_show_draft_shared_settings(
             prepare_shared_draft_context,
             render_draft_shared_settings_diagnostics,
         )
+        from live_draft_perf import PHASE_SETUP_SHARED_CONTEXT, live_draft_perf_action
 
-        prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
+        with live_draft_perf_action(st.session_state, "shared_context", phase=PHASE_SETUP_SHARED_CONTEXT):
+            prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
         render_draft_shared_settings_diagnostics(
             st,
             st.session_state,
@@ -15164,7 +15182,23 @@ def _prepare_and_show_draft_shared_settings(
             widget_format_key=format_key,
         )
     except ImportError:
-        pass
+        try:
+            from shared_draft_context import (
+                prepare_shared_draft_context,
+                render_draft_shared_settings_diagnostics,
+            )
+
+            prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
+            render_draft_shared_settings_diagnostics(
+                st,
+                st.session_state,
+                active_page=page,
+                widget_lookback_key=lookback_key,
+                widget_style_key=style_key,
+                widget_format_key=format_key,
+            )
+        except ImportError:
+            pass
 
 
 def fantasy_filter_changed():
@@ -20294,15 +20328,33 @@ if active_page == DRAFT_LAB_PAGE:
 
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
+    _setup_prep_ctx = None
+    try:
+        from live_draft_perf import PHASE_SETUP_PAGE_PREP, live_draft_perf_action
+
+        _setup_prep_ctx = live_draft_perf_action(st.session_state, "page_prep", phase=PHASE_SETUP_PAGE_PREP)
+        _setup_prep_ctx.__enter__()
+    except ImportError:
+        _setup_prep_ctx = None
     try:
         from global_fantasy_settings_state import GLOBAL_FORMAT_KEY, prepare_global_fantasy_settings, to_live_draft_scoring
+        from live_draft_perf import PHASE_SETUP_GLOBAL_FANTASY, live_draft_perf_action
 
-        prepare_global_fantasy_settings(st.session_state, force_mirror=True)
-        fmt = st.session_state.get(GLOBAL_FORMAT_KEY)
-        if fmt is not None:
-            st.session_state["live_draft_scoring"] = to_live_draft_scoring(fmt)
+        with live_draft_perf_action(st.session_state, "global_fantasy", phase=PHASE_SETUP_GLOBAL_FANTASY):
+            prepare_global_fantasy_settings(st.session_state, force_mirror=True)
+            fmt = st.session_state.get(GLOBAL_FORMAT_KEY)
+            if fmt is not None:
+                st.session_state["live_draft_scoring"] = to_live_draft_scoring(fmt)
     except ImportError:
-        pass
+        try:
+            from global_fantasy_settings_state import GLOBAL_FORMAT_KEY, prepare_global_fantasy_settings, to_live_draft_scoring
+
+            prepare_global_fantasy_settings(st.session_state, force_mirror=True)
+            fmt = st.session_state.get(GLOBAL_FORMAT_KEY)
+            if fmt is not None:
+                st.session_state["live_draft_scoring"] = to_live_draft_scoring(fmt)
+        except ImportError:
+            pass
     render_section_header(
         "📡 Live Draft Room",
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
@@ -20325,7 +20377,26 @@ if active_page == "Live Draft Room":
         pass
     from live_draft_state import prepare_live_draft_state
 
-    prepare_live_draft_state(st.session_state)
+    _skip_live_prep = False
+    try:
+        from live_draft_setup_persist import should_skip_live_draft_state_prep
+
+        _skip_live_prep = should_skip_live_draft_state_prep(st.session_state)
+    except ImportError:
+        pass
+    if not _skip_live_prep:
+        try:
+            from live_draft_perf import PHASE_SETUP_PREPARE_LIVE_STATE, live_draft_perf_action
+
+            with live_draft_perf_action(st.session_state, "prepare_live_state", phase=PHASE_SETUP_PREPARE_LIVE_STATE):
+                prepare_live_draft_state(st.session_state)
+        except ImportError:
+            prepare_live_draft_state(st.session_state)
+    try:
+        if _setup_prep_ctx is not None:
+            _setup_prep_ctx.__exit__(None, None, None)
+    except Exception:
+        pass
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
         try:
@@ -20496,6 +20567,12 @@ if active_page == "Live Draft Room":
     _start_handler_ok = False
     _start_handler_err = ""
     if st.session_state.pop("_start_live_draft_pending", False):
+        try:
+            from live_draft_setup_persist import flush_live_draft_setup_persist
+
+            flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
+        except ImportError:
+            pass
         from draft_live_start import (
             build_simulator_to_live_summary,
             clear_stale_live_draft_for_simulator_start,
@@ -20973,6 +21050,13 @@ if active_page == "Live Draft Room":
                 )
 
     elif room is None:
+        try:
+            from live_draft_perf import PHASE_SETUP_RENDER, live_draft_perf_action
+
+            _setup_render_ctx = live_draft_perf_action(st.session_state, "setup_render", phase=PHASE_SETUP_RENDER)
+            _setup_render_ctx.__enter__()
+        except ImportError:
+            _setup_render_ctx = None
         with st.expander("Draft Setup / Configuration", expanded=True):
             try:
                 from live_draft_setup_ui import (
@@ -20995,20 +21079,23 @@ if active_page == "Live Draft Room":
 
             def _live_draft_setting_changed():
                 try:
-                    from shared_draft_context import on_draft_settings_changed
+                    from live_draft_setup_persist import on_live_draft_setup_widget_changed
 
-                    on_draft_settings_changed(
-                        st.session_state,
-                        source_page="Live Draft Room",
-                        lookback_key="live_draft_proj_window",
-                        style_key="live_draft_proj_style",
-                        format_key="live_draft_scoring",
-                    )
+                    on_live_draft_setup_widget_changed(st.session_state)
                 except ImportError:
-                    pass
-                save_page_state("Live Draft Room")
-                force_save_baseball_state(st, reason="live_draft_setting_changed")
-                _record_settings_onchange("Live Draft Room", "_live_draft_setting_changed", "live_draft_setting_changed")
+                    try:
+                        from shared_draft_context import on_draft_settings_changed
+
+                        on_draft_settings_changed(
+                            st.session_state,
+                            source_page="Live Draft Room",
+                            lookback_key="live_draft_proj_window",
+                            style_key="live_draft_proj_style",
+                            format_key="live_draft_scoring",
+                        )
+                    except ImportError:
+                        pass
+                _record_settings_onchange("Live Draft Room", "_live_draft_setting_changed", "live_draft_setup_deferred")
 
             with lc1:
                 validate_text_state("live_draft_league_name", "My Fantasy League")
@@ -21102,7 +21189,7 @@ if active_page == "Live Draft Room":
             except ImportError:
                 _start_disabled, _start_help = False, ""
 
-            b_start, b_reset = st.columns(2)
+            b_start, b_reset, b_save = st.columns([2, 2, 1])
             with b_start:
                 st.button(
                     "Start New Live Draft",
@@ -21114,6 +21201,29 @@ if active_page == "Live Draft Room":
                 )
             with b_reset:
                 reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
+            with b_save:
+                try:
+                    from live_draft_setup_persist import is_live_draft_setup_dirty
+
+                    _save_setup_disabled = not is_live_draft_setup_dirty(st.session_state)
+                except ImportError:
+                    _save_setup_disabled = True
+                if st.button(
+                    "Save Setup",
+                    key="live_draft_save_setup_btn",
+                    disabled=_save_setup_disabled,
+                    help="Persist setup changes to disk/cloud (settings auto-save after a few seconds of idle).",
+                ):
+                    try:
+                        from live_draft_setup_persist import flush_live_draft_setup_persist
+
+                        if flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_setup_save"):
+                            st.success("Setup saved.")
+                        else:
+                            st.info("No pending setup changes.")
+                    except ImportError:
+                        save_page_state("Live Draft Room")
+                        force_save_baseball_state(st, reason="live_draft_setup_save")
 
             if reset_live:
                 from draft_room_membership import reset_live_draft_with_membership_guard
@@ -21139,6 +21249,11 @@ if active_page == "Live Draft Room":
                     help="Review simulator state and confirm before starting the live draft clock.",
                     on_click=on_open_simulator_convert_panel,
                 )
+        try:
+            if _setup_render_ctx is not None:
+                _setup_render_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
 
     room = st.session_state.get("live_draft_room")
 
@@ -21625,6 +21740,13 @@ if active_page == "Live Draft Room":
                     from live_draft_start_progress import is_live_draft_start_in_flight
 
                     _defer_recs = is_live_draft_start_in_flight(st.session_state)
+                except ImportError:
+                    pass
+                try:
+                    from live_draft_setup_persist import should_skip_live_draft_recommendations
+
+                    if should_skip_live_draft_recommendations(st.session_state, room):
+                        _defer_recs = True
                 except ImportError:
                     pass
                 if not _defer_recs:
@@ -22154,6 +22276,13 @@ if active_page == "Live Draft Room":
         from live_draft_state import flush_deferred_live_draft_pick_effects
 
         flush_deferred_live_draft_pick_effects(st.session_state)
+    except ImportError:
+        pass
+
+    try:
+        from live_draft_setup_persist import maybe_flush_deferred_live_draft_setup_autosave
+
+        maybe_flush_deferred_live_draft_setup_autosave(st, st.session_state)
     except ImportError:
         pass
 

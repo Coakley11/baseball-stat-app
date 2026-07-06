@@ -585,6 +585,24 @@ def render_ml_blend_off_note(st: Any, session: dict[str, Any]) -> None:
 def has_active_draft_context(session: dict[str, Any]) -> bool:
     """True when a live or simulator draft exists (diagnostics only)."""
     try:
+        from live_draft_setup_persist import should_skip_draft_room_prep_for_live_setup
+
+        if should_skip_draft_room_prep_for_live_setup(session):
+            from draft_room_state import DRAFT_ROOM_TABLE_KEY, table_pick_count
+
+            if table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)) > 0:
+                return True
+            room = session.get("live_draft_room")
+            if isinstance(room, dict) and str(room.get("status") or "") in (
+                "in_progress",
+                "paused",
+                "complete",
+            ):
+                return True
+            return False
+    except ImportError:
+        pass
+    try:
         from draft_room_state import DRAFT_ROOM_TABLE_KEY, get_active_draft_status, table_pick_count
 
         status = get_active_draft_status(session)

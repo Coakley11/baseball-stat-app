@@ -51,6 +51,27 @@ PHASE_PICK_CLOUD_HOOK = "live_draft_pick_cloud_hook"
 
 _PICK_COMMIT_PHASE_PREFIX = "live_draft_pick_"
 
+# Live Draft setup/configuration path (pre-room and lobby).
+PHASE_SETUP_PAGE_PREP = "live_draft_setup_page_prep"
+PHASE_SETUP_RENDER = "live_draft_setup_render"
+PHASE_SETUP_SHARED_CONTEXT = "live_draft_setup_shared_context"
+PHASE_SETUP_GLOBAL_FANTASY = "live_draft_setup_global_fantasy"
+PHASE_SETUP_SETTINGS_ONCHANGE = "live_draft_setup_settings_onchange"
+PHASE_SETUP_CANONICAL_SETTINGS = "live_draft_setup_canonical_settings"
+PHASE_SETUP_PAGE_STATE_SAVE = "live_draft_setup_page_state_save"
+PHASE_SETUP_FORCE_SAVE = "live_draft_setup_force_save"
+PHASE_SETUP_BUILD_DISK_STATE = "live_draft_setup_build_disk_state"
+PHASE_SETUP_CLOUD_AUTOSAVE = "live_draft_setup_cloud_autosave"
+PHASE_SETUP_PREPARE_DRAFT_ROOM = "live_draft_setup_prepare_draft_room"
+PHASE_SETUP_PREPARE_LIVE_STATE = "live_draft_setup_prepare_live_state"
+PHASE_SETUP_SYNC_DRAFT_ROOM_SAVE = "live_draft_setup_sync_draft_room_save"
+PHASE_SETUP_START_POOL_BUILD = "live_draft_setup_start_pool_build"
+PHASE_SETUP_ROOM_CREATE = "live_draft_setup_room_create"
+PHASE_SETUP_LOBBY_RECOMMENDATIONS = "live_draft_setup_lobby_recommendations"
+PHASE_SETUP_JOIN_LOOKUP = "live_draft_setup_join_lookup"
+
+_SETUP_PHASE_PREFIX = "live_draft_setup_"
+
 
 def _dev_enabled(session: dict[str, Any]) -> bool:
     try:
@@ -199,6 +220,29 @@ def pick_commit_phase_total_ms(session: dict[str, Any]) -> float:
         return 0.0
     timings = dict(ns.get("timings") or {})
     return sum(float(sec) * 1000.0 for name, sec in timings.items() if name.startswith(_PICK_COMMIT_PHASE_PREFIX))
+
+
+def summarize_setup_phases(session: dict[str, Any], *, limit: int = 24) -> list[tuple[str, float]]:
+    """Setup/configuration sub-phases from the shared perf namespace (ms, descending)."""
+    ns = session.get("_page_perf_ns")
+    if not isinstance(ns, dict):
+        return []
+    timings = dict(ns.get("timings") or {})
+    ranked = [
+        (name, float(sec) * 1000.0)
+        for name, sec in timings.items()
+        if name.startswith(_SETUP_PHASE_PREFIX)
+    ]
+    ranked.sort(key=lambda kv: kv[1], reverse=True)
+    return ranked[: max(1, int(limit))]
+
+
+def setup_phase_total_ms(session: dict[str, Any]) -> float:
+    ns = session.get("_page_perf_ns")
+    if not isinstance(ns, dict):
+        return 0.0
+    timings = dict(ns.get("timings") or {})
+    return sum(float(sec) * 1000.0 for name, sec in timings.items() if name.startswith(_SETUP_PHASE_PREFIX))
 
 
 def summarize_live_draft_phases(session: dict[str, Any], *, limit: int = 10) -> list[tuple[str, float]]:

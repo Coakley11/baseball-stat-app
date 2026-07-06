@@ -1192,7 +1192,20 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
         st.session_state.pop("_suite_defer_baseball_save_reason", None)
     if reason:
         st.session_state["_suite_pending_save_reason"] = reason
-    saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
+    _trace_live_draft_save = "live_draft" in str(reason or "")
+    if _trace_live_draft_save:
+        try:
+            from live_draft_perf import PHASE_SETUP_BUILD_DISK_STATE, PHASE_SETUP_CLOUD_AUTOSAVE, live_draft_perf_action
+
+            with live_draft_perf_action(st.session_state, "build_disk_state", phase=PHASE_SETUP_BUILD_DISK_STATE):
+                _built = build_baseball_disk_state(st)
+            st.session_state["_suite_pending_save_reason"] = reason
+            with live_draft_perf_action(st.session_state, "cloud_autosave", phase=PHASE_SETUP_CLOUD_AUTOSAVE):
+                saved = force_autosave(st, APP_ID, build_state=lambda _st: _built, reason=reason)
+        except ImportError:
+            saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
+    else:
+        saved = force_autosave(st, APP_ID, build_state=build_baseball_disk_state, reason=reason)
     if reason == "career_edit":
         try:
             from career_totals_state import record_career_force_save_result

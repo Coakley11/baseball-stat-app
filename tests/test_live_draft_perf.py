@@ -18,6 +18,7 @@ from live_draft_perf import (
     recent_live_draft_actions,
     summarize_live_draft_phases,
     summarize_pick_commit_phases,
+    summarize_setup_phases,
 )
 from live_draft_state import LIVE_DRAFT_PREPARE_FP_KEY, prepare_live_draft_state
 
@@ -103,6 +104,21 @@ class LiveDraftPerfTests(unittest.TestCase):
         names = [name for name, _ in top]
         self.assertIn("live_draft_recommendations", names)
         self.assertNotIn("other_page", names)
+
+    def test_summarize_setup_phases(self) -> None:
+        session = {
+            "_page_perf_ns": {
+                "timings": {
+                    "live_draft_setup_build_disk_state": 0.45,
+                    "live_draft_setup_prepare_draft_room": 0.12,
+                    "live_draft_pick_commit": 0.15,
+                }
+            }
+        }
+        phases = summarize_setup_phases(session, limit=5)
+        names = [name for name, _ in phases]
+        self.assertIn("live_draft_setup_build_disk_state", names)
+        self.assertNotIn("live_draft_pick_commit", names)
 
     def test_summarize_pick_commit_phases(self) -> None:
         session = {
