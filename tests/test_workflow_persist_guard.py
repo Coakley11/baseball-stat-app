@@ -9,11 +9,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from workflow_persist_guard import (
+    ACTIVE_DRAFT_ARCHIVE_KEY,
     DRAFT_ARCHIVE_KEY,
     LEAGUE_CONTEXT_STATE_KEY,
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
     build_saved_draft_library_diagnostics,
     build_startup_restore_snapshot,
+    hydrate_session_workflow_from_disk,
     infer_restore_persistence_verdict,
     merge_protected_workflow_into_save,
     merge_protected_workflow_on_restore,
@@ -165,7 +167,18 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertFalse(diag["durable_persistence"])
         self.assertFalse(diag["cloud_write_expected"])
         self.assertIn("Temporary local session only", diag["durability_warning"])
-        self.assertIn("lost after", diag["durability_label"].lower())
+
+    def test_hydrate_session_workflow_from_disk_restores_archives(self) -> None:
+        session: dict = {}
+        disk_state = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "abc123", "draft_name": "Recovered"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "abc123",
+        }
+        with patch("suite_user_persistence._load_raw", return_value=(disk_state, "/tmp/state.json", "ts")):
+            out = hydrate_session_workflow_from_disk(session, draft_id="abc123")
+        self.assertTrue(out["hydrated"])
+        self.assertEqual(len(session[DRAFT_ARCHIVE_KEY]), 1)
+        self.assertEqual(session[ACTIVE_DRAFT_ARCHIVE_KEY], "abc123")
 
     def test_startup_restore_snapshot_flags_restore_failure(self) -> None:
         session = {

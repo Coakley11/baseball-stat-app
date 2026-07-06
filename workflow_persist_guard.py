@@ -702,7 +702,61 @@ def record_startup_restore_snapshot(
     return snapshot
 
 
-def probe_cloud_workflow_for_workspace(workspace_id: str) -> dict[str, Any]:
+def hydrate_session_workflow_from_disk(
+    session: dict[str, Any],
+    *,
+    draft_id: str = "",
+) -> dict[str, Any]:
+    """Restore workflow archives/context from disk when session lost them after persist."""
+    out: dict[str, Any] = {"hydrated": False, "draft_archive_count": 0, "merged_keys": []}
+    try:
+        from suite_user_persistence import _load_raw
+    except ImportError:
+        return out
+    try:
+        disk_state, _, _ = _load_raw("baseball")
+    except Exception:
+        return out
+    if not isinstance(disk_state, dict):
+        return out
+
+    target = str(draft_id or "").strip()
+    merged: list[str] = []
+
+    disk_archives = disk_state.get(DRAFT_ARCHIVE_KEY)
+    session_archives = session.get(DRAFT_ARCHIVE_KEY)
+    need_archives = not _draft_archive_nonempty(session_archives)
+    if target and isinstance(session_archives, list):
+        need_archives = need_archives or not any(
+            str(row.get("draft_id") or "") == target for row in session_archives if isinstance(row, dict)
+        )
+    if need_archives and _draft_archive_nonempty(disk_archives):
+        session[DRAFT_ARCHIVE_KEY] = copy.deepcopy(disk_archives)
+        merged.append(DRAFT_ARCHIVE_KEY)
+
+    disk_active = str(disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    session_active = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if not session_active and disk_active:
+        session[ACTIVE_DRAFT_ARCHIVE_KEY] = disk_active
+        merged.append(ACTIVE_DRAFT_ARCHIVE_KEY)
+
+    disk_flc = disk_state.get(LEAGUE_CONTEXT_STATE_KEY)
+    session_flc = session.get(LEAGUE_CONTEXT_STATE_KEY)
+    if not _league_context_store_nonempty(session_flc) and _league_context_store_nonempty(disk_flc):
+        session[LEAGUE_CONTEXT_STATE_KEY] = copy.deepcopy(disk_flc)
+        merged.append(LEAGUE_CONTEXT_STATE_KEY)
+
+    out["hydrated"] = bool(merged)
+    out["merged_keys"] = merged
+    out["draft_archive_count"] = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    return out
+
+
+def probe_cloud_workflow_for_workspace(
+    workspace_id: str,
+    *,
+    max_attempts: int = 1,
+) -> dict[str, Any]:
     """Read-only cloud probe for one workspace profile (production diagnostics)."""
     from suite_workspace import scoped_cloud_app_id
 
@@ -726,17 +780,36 @@ def probe_cloud_workflow_for_workspace(workspace_id: str) -> dict[str, Any]:
     if not out["cloud_enabled"]:
         out["error"] = "cloud_storage_disabled"
         return out
-    try:
-        import suite_storage_supabase as storage
+    import time
 
-        row = storage.load_current_state_for_app(cloud_app_key)
-        if not isinstance(row, dict) or not row:
+    attempts = max(1, int(max_attempts or 1))
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            import suite_storage_supabase as storage
+
+            row = storage.load_current_state_for_app(cloud_app_key)
+            if not isinstance(row, dict) or not row:
+                return out
+            out["row_found"] = True
+            out["updated_at"] = str(row.get("updated_at") or "") or None
+            metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+            blob = metrics.get("full_session") if isinstance(metrics, dict) else None
+            out.update(summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None))
+            out.pop("error", None)
             return out
-        out["row_found"] = True
-        out["updated_at"] = str(row.get("updated_at") or "") or None
-        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
-        blob = metrics.get("full_session") if isinstance(metrics, dict) else None
-        out.update(summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None))
-    except Exception as exc:
-        out["error"] = str(exc)
+        except Exception as exc:
+            last_exc = exc
+            try:
+                from suite_storage_supabase import is_transient_supabase_error
+
+                transient = is_transient_supabase_error(exc)
+            except ImportError:
+                transient = "503" in str(exc) or "PGRST002" in str(exc)
+            if attempt + 1 >= attempts or not transient:
+                out["error"] = str(exc)
+                return out
+            time.sleep(0.5 * (2**attempt))
+    if last_exc is not None:
+        out["error"] = str(last_exc)
     return out

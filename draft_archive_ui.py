@@ -619,6 +619,13 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
         ok = False
     after = _workflow_counts(session)
     entry_id = str((entry or {}).get("draft_id") or "").strip()
+    if entry_id and not get_draft_archive(session, entry_id):
+        try:
+            from workflow_persist_guard import hydrate_session_workflow_from_disk
+
+            hydrate_session_workflow_from_disk(session, draft_id=entry_id)
+        except ImportError:
+            pass
     if entry_id:
         session_has_entry = bool(get_draft_archive(session, entry_id))
         if not session_has_entry:

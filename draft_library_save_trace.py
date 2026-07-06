@@ -92,6 +92,15 @@ def resolve_draft_in_session(
                 return True
     except ImportError:
         pass
+    if disk_has and target:
+        try:
+            from suite_user_persistence import _load_raw
+
+            state, _, _ = _load_raw("baseball")
+            if isinstance(state, dict) and draft_id_in_archives(target, state.get("draft_archive_teams")):
+                return True
+        except Exception:
+            pass
     if disk_has and after and int(after.get("draft_archive_count") or 0) > 0:
         return True
     return False
@@ -299,12 +308,21 @@ def finalize_save_trace(
         try:
             from workflow_persist_guard import probe_cloud_workflow_for_workspace
 
-            cloud_readback = probe_cloud_workflow_for_workspace(ws)
+            readback_attempts = 3 if bool(cloud_write_ok) else 1
+            cloud_readback = probe_cloud_workflow_for_workspace(ws, max_attempts=readback_attempts)
         except Exception:
             pass
     disk_readback = probe_disk_workflow_for_workspace(ws)
     if draft_id:
         draft_probe = probe_persisted_draft_id(draft_id, workspace_id=ws, session=session)
+        if not draft_probe.get("in_session"):
+            try:
+                from workflow_persist_guard import hydrate_session_workflow_from_disk
+
+                hydrate_session_workflow_from_disk(session, draft_id=draft_id)
+                draft_probe = probe_persisted_draft_id(draft_id, workspace_id=ws, session=session)
+            except ImportError:
+                pass
 
     in_session = resolve_draft_in_session(
         session,
@@ -651,20 +669,23 @@ def render_save_trace_inline(
                 "**Temporary local save only — will not survive Streamlit Cloud reboot.** "
                 "Cloud write was skipped. Configure Supabase (or sign in, if enabled) for durable saves."
             )
-        if diag.get("persist_error"):
-            st.error(f"**Persist error:** {diag['persist_error']}")
-        if not diag.get("persist_ok") and diag.get("cloud_write_expected"):
-            st.error(
-                "Save is **not durable** until cloud write succeeds and readback confirms the draft "
-                f"(`draft_in_cloud={diag.get('draft_in_cloud')}`, "
-                f"cloud_readback_drafts={diag.get('cloud_readback_drafts')}`)."
+        elif diag.get("cloud_write_expected") and not diag.get("cloud_write_success"):
+            st.warning(
+                "**Saved to disk/session only — not durable yet.** "
+                "Cloud write failed; do not reboot until cloud readback confirms the draft. "
+                "If the error mentions PGRST002/503, retry Save Draft after a few seconds."
+            )
+        if not diag.get("draft_in_session") and diag.get("draft_in_disk"):
+            st.info(
+                "Draft confirmed on **disk** but missing from session — reload Saved Draft Library "
+                "or save again to refresh the in-memory library."
             )
         if diag.get("save_error"):
             st.error(str(diag["save_error"]))
         if diag.get("cloud_blocked_reason"):
             st.caption(f"Cloud blocked: {diag['cloud_blocked_reason']}")
-        if diag.get("cloud_app_key"):
-            st.caption(f"Cloud app key: `{diag['cloud_app_key']}`")
+        if diag.get("persist_error"):
+            st.caption(f"Persist error: {diag['persist_error']}")
         st.markdown("**Checklist**")
         for label, status, detail in save_trace_checklist(diag):
             icon = {"pass": "✅", "fail": "❌", "warn": "⚠️", "pending": "⏳"}.get(status, "•")

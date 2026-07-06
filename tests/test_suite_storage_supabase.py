@@ -10,6 +10,7 @@ from suite_storage_supabase import (
     _merge_full_session_preserve_richer_draft,
     _merge_state_metrics,
     _pick_best_state_row,
+    is_transient_supabase_error,
     load_current_states,
     save_current_state_with_result,
 )
@@ -44,6 +45,27 @@ def _full_session(picks: int, *, page: str = "Draft Room Simulator") -> dict:
 
 
 class TestSuiteStorageSupabase(unittest.TestCase):
+    def test_is_transient_supabase_error(self) -> None:
+        err = RuntimeError(
+            "Supabase GET suite_app_current_state failed (503): "
+            '{"code":"PGRST002","message":"Could not query the database for the schema cache. Retrying."}'
+        )
+        self.assertTrue(is_transient_supabase_error(err))
+        self.assertFalse(is_transient_supabase_error(RuntimeError("Supabase GET failed (401): denied")))
+
+    def test_request_retries_transient_503(self) -> None:
+        from suite_storage_supabase import _request
+
+        with patch("suite_storage_supabase._request_once", side_effect=[
+            RuntimeError("Supabase GET suite_app_current_state failed (503): PGRST002"),
+            RuntimeError("Supabase GET suite_app_current_state failed (503): PGRST002"),
+            [{"app": "baseball"}],
+        ]) as mock_once:
+            with patch("suite_storage_supabase.time.sleep"):
+                out = _request("GET", "suite_app_current_state", params={"app": "eq.baseball"})
+        self.assertEqual(out, [{"app": "baseball"}])
+        self.assertEqual(mock_once.call_count, 3)
+
     def test_pick_best_state_row_prefers_richer_draft_over_newer_empty(self) -> None:
         rows = [
             {

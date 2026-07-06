@@ -5,6 +5,7 @@ Supabase PostgREST backend for cross-deployment suite activity.
 from __future__ import annotations
 
 import json
+import time
 from activity_time import normalize_timestamp_iso, utc_now_iso
 from datetime import datetime
 from typing import Any
@@ -310,7 +311,60 @@ def _egress(source: str):
         return nullcontext()
 
 
+_NO_GET_CACHE_TABLES = frozenset({"baseball_shared_draft_rooms"})
+_TRANSIENT_SUPABASE_HTTP = frozenset({502, 503, 504})
+_TRANSIENT_SUPABASE_MARKERS = (
+    "PGRST002",
+    "schema cache",
+    "Could not query the database",
+)
+_DEFAULT_REQUEST_ATTEMPTS = 3
+_DEFAULT_REQUEST_BACKOFF_SEC = 0.5
+
+
+def is_transient_supabase_error(exc: BaseException) -> bool:
+    """True for PostgREST schema-cache blips and other short-lived Supabase outages."""
+    msg = str(exc or "")
+    low = msg.lower()
+    for code in _TRANSIENT_SUPABASE_HTTP:
+        if f"({code})" in msg or f" {code}:" in msg:
+            return True
+    return any(marker.lower() in low for marker in _TRANSIENT_SUPABASE_MARKERS)
+
+
 def _request(
+    method: str,
+    path: str,
+    *,
+    cfg: SuiteCloudConfig | None = None,
+    params: dict[str, str] | None = None,
+    json_body: Any = None,
+    prefer: str = "return=minimal",
+    max_attempts: int = _DEFAULT_REQUEST_ATTEMPTS,
+) -> Any:
+    last_exc: RuntimeError | None = None
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(attempts):
+        try:
+            return _request_once(
+                method,
+                path,
+                cfg=cfg,
+                params=params,
+                json_body=json_body,
+                prefer=prefer,
+            )
+        except RuntimeError as exc:
+            last_exc = exc
+            if attempt + 1 >= attempts or not is_transient_supabase_error(exc):
+                raise
+            time.sleep(_DEFAULT_REQUEST_BACKOFF_SEC * (2**attempt))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Supabase request failed")
+
+
+def _request_once(
     method: str,
     path: str,
     *,
