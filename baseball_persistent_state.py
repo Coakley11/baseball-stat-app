@@ -646,6 +646,26 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
                 continue
         if key == "page_filter_state" and isinstance(val, dict):
             continue
+        if key in ("_draft_library_save_diag", "_draft_save_button_trace"):
+            session_diag = ss.get(key)
+            if isinstance(session_diag, dict) and (
+                session_diag.get("save_request_received") or session_diag.get("save_requested")
+            ):
+                blob_diag = val if isinstance(val, dict) else {}
+                session_at = str(
+                    session_diag.get("save_request_at")
+                    or session_diag.get("requested_at")
+                    or session_diag.get("finalized_at")
+                    or ""
+                )
+                blob_at = str(
+                    blob_diag.get("save_request_at")
+                    or blob_diag.get("requested_at")
+                    or blob_diag.get("finalized_at")
+                    or ""
+                )
+                if not blob_diag or (session_at and (not blob_at or session_at >= blob_at)):
+                    continue
         try:
             from workflow_persist_guard import (
                 PROTECTED_WORKFLOW_PERSIST_KEYS,

@@ -138,6 +138,8 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         self.assertIn('"Save Draft"', ui_text)
         self.assertIn('"Analyze Draft"', ui_text)
         self.assertIn('"Set Active Draft"', ui_text)
+        self.assertIn("on_click=_on_live_draft_save_click", ui_text)
+        self.assertIn("record_save_button_click", ui_text)
 
     def test_rec_table_drops_redundant_score_columns(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")

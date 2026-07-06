@@ -758,19 +758,21 @@ def _execute_live_draft_save(
     draft_name: str,
     key_prefix: str,
     defer_activation: bool,
+    trace_already_started: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
     """Save completed live draft to session + disk/cloud. Returns (entry, context, persist_ok)."""
-    try:
-        from draft_library_save_trace import begin_save_trace
+    if not trace_already_started:
+        try:
+            from draft_library_save_trace import begin_save_trace
 
-        begin_save_trace(
-            session,
-            source="live_draft_room",
-            reason="live_draft_league_context_saved",
-            draft_name=draft_name,
-        )
-    except ImportError:
-        pass
+            begin_save_trace(
+                session,
+                source="live_draft_room",
+                reason="live_draft_league_context_saved",
+                draft_name=draft_name,
+            )
+        except ImportError:
+            pass
     counts_before = _workflow_counts(session)
     entry, context = save_live_draft_league_context(
         session,
@@ -780,6 +782,27 @@ def _execute_live_draft_save(
         defer_activation=defer_activation,
     )
     if not list_draft_archives(session):
+        try:
+            from draft_library_save_trace import finalize_save_trace, record_save_failure_trace
+
+            record_save_failure_trace(
+                session,
+                reason="live_draft_league_context_saved",
+                error="Session library empty after save_live_draft_league_context",
+                before=counts_before,
+            )
+            counts_after = _workflow_counts(session)
+            finalize_save_trace(
+                session,
+                reason="live_draft_league_context_saved",
+                before=counts_before,
+                after=counts_after,
+                persist_ok=False,
+                entry=entry if isinstance(entry, dict) else None,
+                probe_cloud=False,
+            )
+        except ImportError:
+            pass
         return None, None, False
     _clear_fantasy_caches_on_archive_change(session)
     persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
@@ -799,6 +822,155 @@ def _execute_live_draft_save(
             league_save=True,
         )
     return entry, context, persist_ok
+
+
+def _execute_live_draft_save_click(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    team_name: str,
+    key_prefix: str,
+    defer_activation: bool,
+) -> None:
+    """Streamlit on_click body — record save trace immediately, then persist."""
+    session["_draft_save_trace_expand"] = True
+    record_save_failure_trace = None
+    finalize_save_trace = None
+    record_save_button_click = None
+    try:
+        from draft_library_save_trace import (
+            finalize_save_trace as _finalize_save_trace,
+            record_save_button_click as _record_save_button_click,
+            record_save_failure_trace as _record_save_failure_trace,
+        )
+
+        record_save_failure_trace = _record_save_failure_trace
+        finalize_save_trace = _finalize_save_trace
+        record_save_button_click = _record_save_button_click
+    except ImportError:
+        pass
+
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        try:
+            if record_save_button_click is not None:
+                record_save_button_click(
+                    session,
+                    source="live_draft_room",
+                    team_name=team_name,
+                    key_prefix=key_prefix,
+                    reason="live_draft_league_context_saved",
+                )
+            if record_save_failure_trace is not None:
+                record_save_failure_trace(
+                    session,
+                    reason="live_draft_league_context_saved",
+                    error="No live_draft_room in session",
+                )
+        except Exception:
+            pass
+        _set_draft_save_ui_flash(session, level="error", message="No active live draft room to save.")
+        return
+
+    save_team = _resolve_live_draft_save_team_name(room, team_name)
+    draft_name = str(session.get(f"{key_prefix}_name_input") or "").strip()
+    try:
+        if record_save_button_click is not None:
+            record_save_button_click(
+                session,
+                source="live_draft_room",
+                team_name=save_team,
+                key_prefix=key_prefix,
+                reason="live_draft_league_context_saved",
+            )
+    except Exception:
+        pass
+
+    if not save_team:
+        try:
+            if record_save_failure_trace is not None:
+                record_save_failure_trace(
+                    session,
+                    reason="live_draft_league_context_saved",
+                    error="Could not determine fantasy team for save",
+                )
+        except Exception:
+            pass
+        _set_draft_save_ui_flash(
+            session,
+            level="error",
+            message="Could not determine your fantasy team for saving this draft.",
+        )
+        return
+
+    counts_before = _workflow_counts(session)
+    try:
+        entry, context, persist_ok = _execute_live_draft_save(
+            st,
+            session,
+            room,
+            team_name=save_team,
+            draft_name=draft_name,
+            key_prefix=key_prefix,
+            defer_activation=defer_activation,
+            trace_already_started=True,
+        )
+        if entry is None:
+            _set_draft_save_ui_flash(
+                session,
+                level="error",
+                message="Save did not update Saved Draft Library — check Save diagnostics below.",
+            )
+        elif not persist_ok:
+            _set_draft_save_ui_flash(
+                session,
+                level="error",
+                message=(
+                    "Saved to this session, but cloud/disk persist failed. "
+                    "Review **Save diagnostics** below before refreshing."
+                ),
+            )
+        elif defer_activation:
+            st.toast(f"Saved draft: {entry.get('draft_name', 'Saved Draft')}")
+        else:
+            st.toast(f"Active draft: {entry.get('draft_name', 'Saved Draft')}")
+    except Exception as exc:
+        try:
+            if record_save_failure_trace is not None:
+                record_save_failure_trace(
+                    session,
+                    reason="live_draft_league_context_saved",
+                    error=f"{type(exc).__name__}: {exc}",
+                    before=counts_before,
+                )
+            if finalize_save_trace is not None:
+                finalize_save_trace(
+                    session,
+                    reason="live_draft_league_context_saved",
+                    before=counts_before,
+                    after=_workflow_counts(session),
+                    persist_ok=False,
+                    probe_cloud=False,
+                )
+        except Exception:
+            pass
+        _set_draft_save_ui_flash(session, level="error", message=f"Could not save draft: {exc}")
+
+
+def _on_live_draft_save_click(
+    team_name: str = "",
+    key_prefix: str = "live_draft_complete",
+    defer_activation: bool = True,
+) -> None:
+    import streamlit as st
+
+    _execute_live_draft_save_click(
+        st,
+        st.session_state,
+        team_name=str(team_name or ""),
+        key_prefix=str(key_prefix or "live_draft_complete"),
+        defer_activation=bool(defer_activation),
+    )
 
 
 def render_live_draft_completion_panel(
@@ -821,6 +993,12 @@ def render_live_draft_completion_panel(
         return
 
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
+    flash = _pop_draft_save_ui_flash(session)
+    if flash and flash.get("message"):
+        if flash.get("level") == "error":
+            st.error(str(flash["message"]))
+        else:
+            st.info(str(flash["message"]))
     default_name = f"{cfg.get('league_name', 'Live Draft')} — {' vs '.join(str(t) for t in (room.get('teams') or [])[:4] if str(t).strip()) or save_team}"
     draft_name = st.text_input(
         "Draft Name",
@@ -833,62 +1011,34 @@ def render_live_draft_completion_panel(
 
     save_col, analyze_col, active_col, export_col = st.columns(4)
     with save_col:
-        save_clicked = st.button("Save Draft", key=f"{key_prefix}_save_btn", type="primary", use_container_width=True)
+        st.button(
+            "Save Draft",
+            key=f"{key_prefix}_save_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_on_live_draft_save_click,
+            kwargs={
+                "team_name": save_team,
+                "key_prefix": key_prefix,
+                "defer_activation": True,
+            },
+        )
     with analyze_col:
         analyze_clicked = st.button("Analyze Draft", key=f"{key_prefix}_analyze_btn", use_container_width=True)
     with active_col:
-        active_clicked = st.button("Set Active Draft", key=f"{key_prefix}_active_btn", use_container_width=True)
+        st.button(
+            "Set Active Draft",
+            key=f"{key_prefix}_active_btn",
+            use_container_width=True,
+            on_click=_on_live_draft_save_click,
+            kwargs={
+                "team_name": save_team,
+                "key_prefix": key_prefix,
+                "defer_activation": False,
+            },
+        )
     with export_col:
         export_clicked = st.button("Export Draft", key=f"{key_prefix}_export_btn", use_container_width=True)
-
-    if save_clicked:
-        try:
-            _entry, _context, persist_ok = _execute_live_draft_save(
-                st,
-                session,
-                room,
-                team_name=save_team,
-                draft_name=str(draft_name or "").strip(),
-                key_prefix=key_prefix,
-                defer_activation=True,
-            )
-            if _entry is None:
-                st.error("Save did not update Saved Draft Library — check Developer Mode persistence diagnostics.")
-            elif not persist_ok:
-                st.error(
-                    "Saved to this session, but cloud/disk persist failed. "
-                    "Open **Persistence diagnostics** in Saved Drafts (Developer Mode) before refreshing."
-                )
-            session["_draft_save_trace_expand"] = True
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Could not save draft: {exc}")
-            session["_draft_save_trace_expand"] = True
-            st.rerun()
-
-    if active_clicked:
-        try:
-            _entry, _context, persist_ok = _execute_live_draft_save(
-                st,
-                session,
-                room,
-                team_name=save_team,
-                draft_name=str(draft_name or "").strip(),
-                key_prefix=key_prefix,
-                defer_activation=False,
-            )
-            if _entry is None:
-                st.error("Could not set active draft — save failed.")
-            elif not persist_ok:
-                st.error("Draft saved in session but persist failed — do not refresh until diagnostics pass.")
-            else:
-                st.toast(f"Active draft: {_entry.get('draft_name', 'Saved Draft')}")
-            session["_draft_save_trace_expand"] = True
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Could not set active draft: {exc}")
-            session["_draft_save_trace_expand"] = True
-            st.rerun()
 
     if analyze_clicked:
         room_status = str(room.get("status") or "").strip()
