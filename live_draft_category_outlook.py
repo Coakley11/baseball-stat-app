@@ -105,18 +105,23 @@ def compute_category_outlook(
         elif level_num >= 4:
             strengths.append(label)
 
-    inferred = _draft_lab_infer_category_needs(roster_df, pool_df, fantasy_format=fantasy_format)
+    inferred = []
+    try:
+        from draft_needs import infer_hitter_category_needs
+
+        inferred = infer_hitter_category_needs(
+            roster_df,
+            pool_df,
+            fantasy_format=fantasy_format,
+        )
+    except ImportError:
+        inferred = _draft_lab_infer_category_needs(roster_df, pool_df, fantasy_format=fantasy_format)
     for cat in inferred:
         if cat not in needs:
             needs.append(cat)
 
-    if roster_gaps:
-        of_open = sum(1 for g in roster_gaps if g == "OF")
-        if of_open >= 2 and "Outfield Depth" not in needs:
-            needs.append("Outfield Depth")
-        for pos in roster_gaps:
-            if pos not in ("OF", "UTIL", "P") and f"{pos} Depth" not in needs:
-                pass
+    # Prefer projected-total hitter categories; drop position-depth noise from needs list.
+    needs = [n for n in needs if not str(n).endswith(" Depth") and n != "Outfield Depth"]
 
     return {
         "bars": bars,

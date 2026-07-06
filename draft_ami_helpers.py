@@ -654,7 +654,19 @@ def infer_draft_assistant_needs(
     import pandas as pd
 
     roster_df_auto = roster_df if roster_df is not None else pd.DataFrame()
+    pool = draft_df if draft_df is not None and hasattr(draft_df, "columns") else pd.DataFrame()
     cfg = dict(config or {})
+    try:
+        from draft_needs import infer_draft_team_needs
+
+        return infer_draft_team_needs(
+            roster_df_auto,
+            pool,
+            config=cfg,
+            fantasy_format=draft_format,
+        )
+    except ImportError:
+        pass
     needed_positions: list[str] = []
     if cfg.get("slots"):
         try:
@@ -663,13 +675,10 @@ def infer_draft_assistant_needs(
             needed_positions = get_remaining_position_needs(roster_df_auto, cfg)
         except ImportError:
             needed_positions = []
-    # No host slots configured — do not assume a default fantasy roster template.
-
     category_needs: list[str] = []
     try:
         from live_draft_pick_scoring import _draft_lab_infer_category_needs
 
-        pool = draft_df if draft_df is not None and hasattr(draft_df, "columns") else pd.DataFrame()
         if not roster_df_auto.empty:
             category_needs = _draft_lab_infer_category_needs(
                 roster_df_auto,

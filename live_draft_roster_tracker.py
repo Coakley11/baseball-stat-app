@@ -15,12 +15,19 @@ def build_roster_checklist(
 ) -> dict[str, Any]:
     """Checklist rows from host-created slot instances — sequential assignment, not primary-position counts."""
     result = assign_roster_to_slot_instances(roster_df, config or {})
+    gaps = list(result.get("gaps") or [])
+    try:
+        from draft_needs import filter_bench_gaps
+
+        gaps = filter_bench_gaps(gaps)
+    except ImportError:
+        gaps = [g for g in gaps if str(g or "").strip().upper() not in ("BN", "BENCH")]
     return {
         "lines": list(result.get("lines") or []),
         "filled": int(result.get("filled") or 0),
         "target": int(result.get("target") or 0),
         "open_positions": list(result.get("open_positions") or []),
-        "gaps": list(result.get("gaps") or []),
+        "gaps": gaps,
     }
 
 

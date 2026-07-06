@@ -9947,7 +9947,16 @@ def _live_draft_score_available(available, roster_df, rule, target_counts, confi
     current_pick = int(config.get("current_pick", 1) or 1)
     category_needs = config.get("category_needs")
     if category_needs is None and not roster_df.empty:
-        category_needs = _draft_lab_infer_category_needs(roster_df, available, fantasy_format)
+        try:
+            from draft_needs import infer_hitter_category_needs
+
+            category_needs = infer_hitter_category_needs(
+                roster_df,
+                available,
+                fantasy_format=fantasy_format,
+            )
+        except ImportError:
+            category_needs = _draft_lab_infer_category_needs(roster_df, available, fantasy_format)
     try:
         from live_draft_pick_scoring import apply_draft_pick_scoring as _apply_scoring
     except ImportError:
@@ -10126,6 +10135,27 @@ def live_draft_recommendations(room, top_n=8, team=None, session=None):
     cfg["next_user_pick"] = live_draft_next_pick_for_team(room, target_team)
     cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
     target_counts = _live_draft_target_counts(cfg)
+    fantasy_format = str(cfg.get("fantasy_format") or "5x5 Roto")
+    try:
+        from live_draft_safe_mode import is_draft_truly_complete
+
+        draft_complete = bool(is_draft_truly_complete(room))
+    except ImportError:
+        draft_complete = str(room.get("status") or "").strip() == "complete"
+    try:
+        from draft_needs import infer_draft_team_needs
+
+        need_pos, cat_needs = infer_draft_team_needs(
+            roster_df,
+            available,
+            config=cfg,
+            fantasy_format=fantasy_format,
+            draft_complete=draft_complete,
+        )
+        cfg["needed_positions"] = need_pos
+        cfg["category_needs"] = cat_needs
+    except ImportError:
+        pass
     try:
         from contextlib import nullcontext
 

@@ -6,15 +6,16 @@
 
 ## Active priority
 
-**P0 — Draft persistence** before any further performance work.
+**P1 — Draft Intelligence** (position/category needs + recommendation parity)
 
 | ID | Issue | Status |
 |----|--------|--------|
-| P0.1 | Live Draft Save Draft not persisting | In progress — union restore, defer bypass, completion panel |
-| P0.2 | Saved drafts disappearing | In progress — union merge on restore |
-| P1 | League Context terminology | In progress |
-| P2 | Analyze Draft → Draft Lab | In progress — completion panel Analyze button |
-| P3–P8 | Needs logic, UI cleanup | P3–P5 done; P6–P8 (EFV display, cards, header) queued |
+| P0.1–P0.2 | Draft persistence | **Closed** (`ec05dc0`) |
+| P1 | Terminology / completion panel | **Closed** (`ec05dc0`) |
+| P3 | Dynamic position needs | In progress — `draft_needs.py` |
+| P4 | Dynamic hitter category needs | In progress — `draft_needs.py` |
+| P5 | Draft Assistant parity | In progress |
+| P6–P8 | EFV display, cards, header | Queued |
 
 ## Key code paths (P0 audit)
 
