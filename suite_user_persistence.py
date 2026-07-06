@@ -273,6 +273,13 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "draft_archive_duplicated",
     "draft_archive_deleted",
     "draft_archive_cleared",
+    "draft_room_settings_changed",
+    "live_draft_setting_changed",
+    "draft_sim_settings_changed",
+    "draft_assistant_settings_changed",
+    "global_settings_changed",
+    "historical_chart_save",
+    "career_chart_save",
 })
 
 

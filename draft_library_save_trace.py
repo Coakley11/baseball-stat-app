@@ -164,10 +164,14 @@ def save_persist_mode_context(session: dict[str, Any]) -> dict[str, Any]:
         authenticated = bool(is_authenticated(session))
     except ImportError:
         pass
-    cloud_expected = bool(cloud_enabled and authenticated)
+    # Cloud writes require Supabase config only (not sign-in). When cloud is
+    # configured, saves are durable across Streamlit Cloud reboots regardless of
+    # auth. Disk-only (cloud disabled) is NOT durable — disk is ephemeral on reboot.
+    cloud_expected = bool(cloud_enabled)
     blocked = str(session.get("_suite_autosave_cloud_blocked_reason") or "").strip()
     return {
         "cloud_write_expected": cloud_expected,
+        "durable_persistence": cloud_expected,
         "auth_mode": "signed_in" if authenticated else "local_demo",
         "cloud_blocked_reason": blocked,
         "demo_disk_only_ok": not cloud_expected,
@@ -492,7 +496,7 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
         _row(
             "Session has archive",
             None,
-            "Disk authoritative in demo mode — session list refreshes on next rerun",
+            "Temporary local save only — will not survive Streamlit Cloud reboot",
         )
     else:
         _row("Session has archive", False, str(diag.get("draft_id") or ""))
@@ -509,7 +513,7 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
         _row(
             "Cloud readback has archive",
             None,
-            "Not required in local/demo mode — disk is source of truth until signed in",
+            "Cloud not configured — temporary local save only, will not survive reboot",
         )
     _row("Persist OK (overall)", bool(diag.get("persist_ok")))
     return rows
@@ -591,7 +595,7 @@ def render_save_trace_inline(
         diag.get("save_request_received") or diag.get("finalized_at") or diag.get("save_error")
     )
     if not has_trace and not (isinstance(btn_trace, dict) and btn_trace.get("save_requested")):
-        st.info("No save trace yet — click **Save Draft**.")
+        st.info("No save trace yet — click **Save Active League Context**.")
         return
     if not has_trace:
         st.warning("Save button fired, but full pipeline trace was not finalized yet.")
@@ -614,13 +618,15 @@ def render_save_trace_inline(
             f"{diag.get('draft_in_disk')}/{diag.get('draft_in_cloud')}"
         )
         if diag.get("demo_disk_only_ok") and diag.get("disk_write_success"):
-            st.info(
-                "Saved locally on **disk** in local/demo mode. Cloud sync is unavailable until you sign in; "
-                "disk is the source of truth for refresh in this mode."
+            st.warning(
+                "**Temporary local save only — will not survive Streamlit Cloud reboot.** "
+                "Cloud storage is not configured in this deployment, so this draft is stored only on "
+                "ephemeral disk. It survives page refresh but is lost when the app restarts."
             )
         elif not diag.get("cloud_write_expected") and diag.get("cloud_write_success") is False:
-            st.info(
-                "Cloud write skipped — not signed in. A successful **disk** save is valid in demo/local mode."
+            st.warning(
+                "**Temporary local save only — will not survive Streamlit Cloud reboot.** "
+                "Cloud write was skipped. Configure Supabase (or sign in, if enabled) for durable saves."
             )
         if diag.get("save_error"):
             st.error(str(diag["save_error"]))

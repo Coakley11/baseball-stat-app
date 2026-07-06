@@ -1056,17 +1056,21 @@ def apply_baseball_session_defaults(st: Any) -> None:
 
 
 def _workspace_restore_cloud_first(session: dict[str, Any]) -> bool:
-    """In local/demo mode prefer disk restore over cloud snapshots."""
+    """Prefer durable cloud restore whenever cloud storage is configured.
+
+    Streamlit Cloud disk is ephemeral (wiped on reboot), so cloud is the only
+    durable source. We restore cloud-first whenever it is enabled — including
+    local/demo mode — so a reboot rehydrates the workspace instead of falling
+    back to a blank default. Only fall back to disk-first when cloud storage is
+    not configured at all.
+    """
     try:
-        from suite_auth import is_auth_enabled, is_authenticated
         from suite_storage_config import cloud_storage_enabled
 
         if not cloud_storage_enabled():
             return False
-        if is_auth_enabled() and not is_authenticated(session):
-            return False
     except ImportError:
-        pass
+        return False
     return True
 
 

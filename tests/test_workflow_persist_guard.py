@@ -137,6 +137,24 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(diag["restore_source"], "cloud")
         self.assertIn("cloud", diag["restore_source_label"].lower())
 
+    def test_diagnostics_durable_when_cloud_enabled(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}]}
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
+            diag = build_saved_draft_library_diagnostics(session)
+        self.assertTrue(diag["durable_persistence"])
+        self.assertTrue(diag["cloud_write_expected"])
+        self.assertEqual(diag["durability_warning"], "")
+        self.assertIn("Durable", diag["durability_label"])
+
+    def test_diagnostics_not_durable_when_cloud_disabled(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}]}
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=False):
+            diag = build_saved_draft_library_diagnostics(session)
+        self.assertFalse(diag["durable_persistence"])
+        self.assertFalse(diag["cloud_write_expected"])
+        self.assertIn("Temporary local session only", diag["durability_warning"])
+        self.assertIn("lost after", diag["durability_label"].lower())
+
     def test_startup_restore_snapshot_flags_restore_failure(self) -> None:
         session = {
             "active_page": "Historical Explorer",

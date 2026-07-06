@@ -208,6 +208,32 @@ def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
     )
 
 
+def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bool:
+    """Visible (non-dev) warning when saves are not durable across app reboot.
+
+    Returns True when durable (cloud) persistence is active.
+    """
+    try:
+        from workflow_persist_guard import build_saved_draft_library_diagnostics
+    except ImportError:
+        return True
+    diag = build_saved_draft_library_diagnostics(session)
+    if diag.get("durable_persistence"):
+        return True
+    st.warning(
+        "**Temporary local session only — app data will be lost after reboot.** "
+        "Cloud storage is not configured in this deployment, so Saved Drafts, Active Draft, "
+        "tracked players, and settings are only stored on ephemeral disk and will not survive "
+        "a Streamlit Cloud restart."
+        + (
+            " Sign in to save permanently."
+            if diag.get("auth_enabled_but_signed_out")
+            else ""
+        )
+    )
+    return False
+
+
 def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
     try:
         from workflow_persist_guard import build_saved_draft_library_diagnostics, probe_cloud_workflow_for_workspace
@@ -234,6 +260,12 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
             f"**Counts (session):** {int(diag.get('draft_archive_count') or 0)} saved drafts · "
             f"{int(diag.get('league_context_count') or 0)} league contexts"
         )
+        if diag.get("durable_persistence"):
+            st.success(f"**Persistence:** {diag.get('durability_label')}")
+        else:
+            st.error(f"**Persistence:** {diag.get('durability_label')}")
+            if diag.get("durability_warning"):
+                st.warning(str(diag["durability_warning"]))
         startup_snap = session.get("_suite_startup_restore_snapshot")
         if isinstance(startup_snap, dict) and startup_snap:
             st.markdown("**Startup restore snapshot**")
@@ -267,7 +299,15 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
         if diag.get("restore_cloud_vs_demo_note"):
             st.warning(str(diag["restore_cloud_vs_demo_note"]))
         if diag.get("auth_mode"):
-            st.caption(f"Auth mode: **{diag.get('auth_mode')}** · cloud write expected: {diag.get('cloud_write_expected')}")
+            st.caption(
+                f"Auth mode: **{diag.get('auth_mode')}** · durable cloud write: "
+                f"{diag.get('cloud_write_expected')} (requires Supabase config, not sign-in)"
+            )
+        if diag.get("auth_enabled_but_signed_out"):
+            st.info(
+                "Sign-in is enabled for this deployment. Signing in scopes your workspace and "
+                "guarantees cloud restore after reboot."
+            )
         if diag.get("restore_at"):
             st.caption(f"Last restore: {diag['restore_at']}")
         if diag.get("cloud_app_key"):
@@ -1566,6 +1606,8 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         "Set one **Active Draft** for Standings, Lineup, and Waiver Wire. "
         "Use **Fantasy Context Sync** to make research pages league-aware."
     )
+
+    render_persistence_durability_banner(st, session)
 
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:

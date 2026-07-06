@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
+from baseball_persistent_state import (
+    _workspace_restore_cloud_first,
+    apply_baseball_disk_state,
+    build_baseball_disk_state,
+)
+
+
+class TestWorkspaceRestoreCloudFirst(unittest.TestCase):
+    def test_cloud_first_when_cloud_enabled_even_in_demo(self) -> None:
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
+            with patch("suite_auth.is_auth_enabled", return_value=True):
+                with patch("suite_auth.is_authenticated", return_value=False):
+                    self.assertTrue(_workspace_restore_cloud_first({}))
+
+    def test_disk_first_only_when_cloud_disabled(self) -> None:
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=False):
+            self.assertFalse(_workspace_restore_cloud_first({}))
 
 
 class TestBaseballPersistence(unittest.TestCase):

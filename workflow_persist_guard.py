@@ -450,7 +450,23 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "restore_source_label": restore_label,
         "restore_at": restore_at,
         "auth_mode": "signed_in" if authenticated else "local_demo",
-        "cloud_write_expected": bool(cloud_enabled and authenticated),
+        # Cloud writes require Supabase config only (not sign-in): a configured
+        # deployment persists durably across Streamlit Cloud reboots.
+        "cloud_write_expected": bool(cloud_enabled),
+        "durable_persistence": bool(cloud_enabled),
+        "durability_label": (
+            "Durable — saved to cloud (survives app reboot)"
+            if cloud_enabled
+            else "Temporary local session only — data will be lost after app reboot"
+        ),
+        "durability_warning": (
+            ""
+            if cloud_enabled
+            else "Temporary local session only — app data will be lost after reboot. "
+            "Cloud storage is not configured in this deployment, so Saved Drafts, "
+            "Active Draft, tracked players, and settings are only stored on ephemeral disk."
+        ),
+        "auth_enabled_but_signed_out": bool(auth_enabled and not authenticated),
         "restore_cloud_vs_demo_note": (
             "Restore source is cloud, but you are in local/demo mode — empty cloud can overwrite "
             "disk saves unless workflow protection is active."
