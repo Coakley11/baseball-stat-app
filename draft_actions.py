@@ -810,6 +810,25 @@ def resolve_player_draft_gate(
         except ImportError:
             pass
 
+        if isinstance(live_room, dict):
+            on_clock = str(gate.get("on_clock_team") or _on_clock_team_from_live_room(session, live_room) or "").strip()
+            if on_clock:
+                try:
+                    from live_draft_roster_enforcement import check_required_position_gate
+
+                    enf = check_required_position_gate(
+                        session,
+                        live_room,
+                        on_clock_team=on_clock,
+                        player_name=name,
+                    )
+                    if not enf.get("allowed"):
+                        gate["disable_reason"] = "required_position"
+                        gate["disable_message"] = str(enf.get("message") or "Required position pick.")
+                        return gate
+                except ImportError:
+                    pass
+
     gate["allowed"] = True
     gate["disable_reason"] = ""
     gate["disable_message"] = ""

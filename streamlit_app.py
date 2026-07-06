@@ -10310,6 +10310,12 @@ def live_draft_export_frames(room):
 
 def live_draft_to_lab_draft_df(room):
     """Convert a completed live draft into Draft Simulation Test Mode analysis shape."""
+    try:
+        from draft_lab_handoff import live_draft_to_lab_draft_df as _handoff_df
+
+        return _handoff_df(room if isinstance(room, dict) else {})
+    except ImportError:
+        pass
     if not room.get("draft_board"):
         return pd.DataFrame()
     df = pd.DataFrame(room["draft_board"])
@@ -10542,6 +10548,12 @@ def live_draft_push_analysis_to_session(room):
     lab_draft = live_draft_to_lab_draft_df(room)
     if is_dataframe_empty(lab_draft):
         return False
+    try:
+        from draft_lab_handoff import push_completed_live_draft_to_lab
+
+        return bool(push_completed_live_draft_to_lab(st.session_state, room, yearly_df=yearly_df))
+    except ImportError:
+        pass
     handoff_meta = {}
     try:
         from draft_lab_handoff import apply_live_draft_handoff_to_session
@@ -13058,8 +13070,15 @@ def _apply_transfer_payload_to_page(
     for action in payload.get("actions") or []:
         if action == "push_live_draft_to_lab":
             room = st.session_state.get("live_draft_room")
-            if room and room.get("status") == "complete":
-                live_draft_push_analysis_to_session(room)
+            if isinstance(room, dict):
+                try:
+                    from live_draft_safe_mode import is_draft_truly_complete
+
+                    draft_complete = bool(is_draft_truly_complete(room))
+                except ImportError:
+                    draft_complete = str(room.get("status") or "").strip() == "complete"
+                if draft_complete:
+                    live_draft_push_analysis_to_session(room)
     _clear_stale_transfer_player_state()
     players = payload.get("transfer_players") or {}
     player_mode = str((players or {}).get("mode", "none")).lower()
@@ -21754,7 +21773,7 @@ if active_page == "Live Draft Room":
 
                     with live_draft_perf_action(st.session_state, "board_table", phase=PHASE_BOARD_TABLE):
                         render_output_table(
-                            clean_ui_columns(board_df),
+                            format_fantasy_table(clean_ui_columns(board_df)),
                             key="live_draft_board",
                             file_name="live_draft_board.csv",
                             display_rows=80,
@@ -21762,7 +21781,7 @@ if active_page == "Live Draft Room":
                         )
                 except ImportError:
                     render_output_table(
-                        clean_ui_columns(board_df),
+                        format_fantasy_table(clean_ui_columns(board_df)),
                         key="live_draft_board",
                         file_name="live_draft_board.csv",
                         display_rows=80,
@@ -21805,7 +21824,7 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
-                _rec_team = user_team if _multiplayer_draft else None
+                _rec_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip() or None
                 _LIVE_REC_TOP_N = 10
                 _defer_recs = False
                 try:
@@ -21992,6 +22011,14 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 st.markdown("##### Recommendations")
+                try:
+                    from live_draft_roster_enforcement import resolve_on_clock_enforcement
+
+                    _enf = resolve_on_clock_enforcement(room, on_clock_team=str(on_clock_team or ""))
+                    if _enf.get("active") and _enf.get("message"):
+                        st.warning(str(_enf["message"]))
+                except ImportError:
+                    pass
                 try:
                     from live_draft_room_ui import (
                         add_why_this_pick_column,

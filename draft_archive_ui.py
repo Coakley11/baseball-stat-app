@@ -42,6 +42,7 @@ DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 _DRAFT_SAVE_UI_FLASH_KEY = "_draft_save_ui_flash"
+_DRAFT_ANALYZE_UI_FLASH_KEY = "_draft_analyze_ui_flash"
 _PAGE_ICONS: dict[str, str] = {
     SAVED_DRAFT_LIBRARY_PAGE: "📁",
     FANTASY_STANDINGS_PAGE: "📊",
@@ -730,12 +731,61 @@ def schedule_analyze_completed_draft_navigation(session: dict[str, Any]) -> None
         import page_transfers as pg_xfer
     except ImportError:
         return
-    payload = pg_xfer.build_transfer(session, "live_to_draft_lab", {})
-    target = "Draft Lab / Simulation"
-    set_pending = getattr(__import__("streamlit_app", fromlist=["set_pending_page_transfer"]), "set_pending_page_transfer", None)
-    if callable(set_pending):
-        set_pending(target, payload, "Live Draft Room")
+    payload = pg_xfer.normalize_transfer_payload(
+        pg_xfer.build_transfer(session, "live_to_draft_lab", {})
+    )
+    target = DRAFT_LAB_PAGE
+    session["_pending_page_transfer"] = {
+        "target": target,
+        "source": LIVE_DRAFT_PAGE,
+        "payload": payload,
+        "filters": payload,
+    }
     schedule_page_navigation(session, target)
+
+
+def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:
+    """Streamlit on_click — preload Draft Lab, then navigate."""
+    import streamlit as st
+
+    session = st.session_state
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
+            "level": "error",
+            "message": "No active live draft room to analyze.",
+        }
+        return
+    try:
+        from live_draft_safe_mode import is_draft_truly_complete
+
+        draft_complete = bool(is_draft_truly_complete(room))
+    except ImportError:
+        draft_complete = str(room.get("status") or "").strip() == "complete"
+    if not draft_complete:
+        session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
+            "level": "error",
+            "message": "Draft must be fully complete before analysis.",
+        }
+        return
+    try:
+        from draft_lab_handoff import push_completed_live_draft_to_lab
+
+        push_ok = bool(push_completed_live_draft_to_lab(session, room))
+    except Exception:
+        push_ok = False
+    if not push_ok:
+        session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
+            "level": "error",
+            "message": "Could not load completed draft into Draft Lab — check Developer Mode diagnostics.",
+        }
+        return
+    schedule_analyze_completed_draft_navigation(session)
+    session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
+        "level": "info",
+        "message": "Opening Draft Lab with your completed draft…",
+    }
+    session["_draft_analyze_nav_pending"] = True
 
 
 def _resolve_live_draft_save_team_name(room: dict[str, Any], team_name: str) -> str:
@@ -999,6 +1049,12 @@ def render_live_draft_completion_panel(
             st.error(str(flash["message"]))
         else:
             st.info(str(flash["message"]))
+    analyze_flash = session.pop(_DRAFT_ANALYZE_UI_FLASH_KEY, None)
+    if isinstance(analyze_flash, dict) and analyze_flash.get("message"):
+        if analyze_flash.get("level") == "error":
+            st.error(str(analyze_flash["message"]))
+        else:
+            st.info(str(analyze_flash["message"]))
     default_name = f"{cfg.get('league_name', 'Live Draft')} — {' vs '.join(str(t) for t in (room.get('teams') or [])[:4] if str(t).strip()) or save_team}"
     draft_name = st.text_input(
         "Draft Name",
@@ -1024,7 +1080,13 @@ def render_live_draft_completion_panel(
             },
         )
     with analyze_col:
-        analyze_clicked = st.button("Analyze Draft", key=f"{key_prefix}_analyze_btn", use_container_width=True)
+        st.button(
+            "Analyze Draft",
+            key=f"{key_prefix}_analyze_btn",
+            use_container_width=True,
+            on_click=_on_analyze_draft_click,
+            kwargs={"key_prefix": key_prefix},
+        )
     with active_col:
         st.button(
             "Set Active Draft",
@@ -1039,14 +1101,6 @@ def render_live_draft_completion_panel(
         )
     with export_col:
         export_clicked = st.button("Export Draft", key=f"{key_prefix}_export_btn", use_container_width=True)
-
-    if analyze_clicked:
-        room_status = str(room.get("status") or "").strip()
-        if room_status != "complete":
-            st.warning("Draft must be fully complete before analysis.")
-        else:
-            schedule_analyze_completed_draft_navigation(session)
-            st.rerun()
 
     if export_clicked:
         session[f"{key_prefix}_export_open"] = True

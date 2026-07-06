@@ -149,3 +149,94 @@ def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str,
         "expected_pick_count": extracted.get("expected_pick_count"),
     }
     return handoff_meta
+
+
+def live_draft_to_lab_draft_df(room: dict[str, Any] | None):
+    """Convert a completed live draft board into Draft Lab analysis shape."""
+    import pandas as pd
+
+    if not isinstance(room, dict) or not room.get("draft_board"):
+        return pd.DataFrame()
+    df = pd.DataFrame(room["draft_board"])
+    if "Fantasy Team" not in df.columns and "Draft Team" in df.columns:
+        df["Fantasy Team"] = df["Draft Team"]
+    if "fullName" not in df.columns and "Player" in df.columns:
+        df["fullName"] = df["Player"]
+    try:
+        from draft_lab_analysis import apply_pick_time_snapshots
+
+        df = apply_pick_time_snapshots(df)
+    except ImportError:
+        pass
+    if "Decision Score" not in df.columns:
+        df["Decision Score"] = pd.NA
+    return df
+
+
+def push_completed_live_draft_to_lab(session: dict[str, Any], room: dict[str, Any], *, yearly_df=None) -> bool:
+    """Stage completed live draft into session draft_lab_results (no streamlit_app import)."""
+    import pandas as pd
+
+    lab_draft = live_draft_to_lab_draft_df(room)
+    if getattr(lab_draft, "empty", True):
+        return False
+    handoff_meta = apply_live_draft_handoff_to_session(session, room)
+    pool = room.get("pool", pd.DataFrame())
+    if not isinstance(pool, pd.DataFrame):
+        pool = pd.DataFrame()
+    config = dict(room.get("config") or {})
+    try:
+        from draft_lab_analysis import enrich_lab_draft_metrics
+
+        lab_draft = enrich_lab_draft_metrics(lab_draft, pool, config)
+    except ImportError:
+        pass
+    yearly = yearly_df if isinstance(yearly_df, pd.DataFrame) else pd.DataFrame()
+    analysis_ctx = {
+        "config": config,
+        "teams": list(room.get("teams") or []),
+        "pool": pool,
+        "handoff": handoff_meta,
+    }
+    try:
+        from draft_lab_analysis import analyze_draft_lab_results
+
+        team_summary, strengths, pick_analysis, gaps, actual_summary = analyze_draft_lab_results(
+            lab_draft,
+            yearly,
+            context=analysis_ctx,
+        )
+    except Exception:
+        try:
+            from baseball_draft_activity import log_draft_analysis_attempted
+
+            log_draft_analysis_attempted(room, session=session, error="analyze_draft_lab_results failed")
+        except ImportError:
+            pass
+        return False
+    session["draft_lab_results"] = {
+        "pool": pool,
+        "draft": lab_draft,
+        "team_summary": team_summary,
+        "strengths": strengths,
+        "pick_analysis": pick_analysis,
+        "gaps": gaps,
+        "actual_summary": actual_summary,
+        "trades": [],
+        "source": "Live Draft Room",
+        "handoff": handoff_meta,
+        "analysis_context": analysis_ctx,
+    }
+    try:
+        from baseball_draft_activity import log_draft_analysis_created
+
+        log_draft_analysis_created(room, session=session, lab_state=session.get("draft_lab_results"))
+    except ImportError:
+        pass
+    try:
+        from draft_lab_state import persist_draft_lab_results
+
+        persist_draft_lab_results(session, None, reason="draft_lab_live_analysis_complete")
+    except ImportError:
+        pass
+    return True

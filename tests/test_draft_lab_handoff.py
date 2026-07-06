@@ -56,6 +56,16 @@ class DraftLabHandoffTests(unittest.TestCase):
         self.assertEqual(keys["draft_lab_team_count"], 2)
         self.assertEqual(keys["draft_lab_picks_per_team"], 4)
 
+    def test_push_completed_live_draft_to_lab(self) -> None:
+        session: dict = {}
+        room = _sample_room()
+        ok = __import__("draft_lab_handoff", fromlist=["push_completed_live_draft_to_lab"]).push_completed_live_draft_to_lab(
+            session, room
+        )
+        self.assertTrue(ok)
+        self.assertIn("draft_lab_results", session)
+        self.assertFalse(getattr(session["draft_lab_results"].get("draft"), "empty", True))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from draft_archive_ui import (
+    _on_analyze_draft_click,
     _on_click_navigate_to_page,
     _on_click_return_from_saved_draft_library,
     _on_click_saved_draft_library,
@@ -78,6 +79,47 @@ class DraftArchiveCallbackTests(unittest.TestCase):
         execute.assert_called_once()
         self.assertTrue(execute.call_args.kwargs.get("trace_already_started"))
 
+    def test_analyze_draft_click_rejects_incomplete_room(self) -> None:
+        session: dict = {
+            "live_draft_room": {
+                "status": "in_progress",
+                "current_pick_index": 0,
+                "pick_order": [{"Team": "Daniel", "Pick": 1}],
+            }
+        }
+        with patch("streamlit.session_state", session, create=True):
+            _on_analyze_draft_click(key_prefix="live_draft_complete")
+        flash = session.get("_draft_analyze_ui_flash")
+        self.assertIsInstance(flash, dict)
+        self.assertEqual(flash.get("level"), "error")
+        self.assertIn("complete", str(flash.get("message") or "").lower())
 
-if __name__ == "__main__":
+    def test_analyze_draft_click_pushes_and_navigates_complete_room(self) -> None:
+        board = [
+            {"Round": 1, "Pick": 1, "Fantasy Team": "Daniel", "fullName": "Player A", "Primary Position": "OF", "Expected Fantasy Value": 0.82, "Model Rank": 12, "Market Rank": 18, "Fantasy Edge": 6},
+            {"Round": 1, "Pick": 2, "Fantasy Team": "Ariel", "fullName": "Player B", "Primary Position": "SS", "Expected Fantasy Value": 0.79, "Model Rank": 20, "Market Rank": 25, "Fantasy Edge": 5},
+        ]
+        session: dict = {
+            "live_draft_room": {
+                "status": "complete",
+                "current_pick_index": 2,
+                "teams": ["Daniel", "Ariel"],
+                "config": {"num_teams": 2, "picks_per_team": 1, "scoring_type": "Roto (5x5)"},
+                "draft_board": board,
+                "pick_order": [{"Team": "Daniel", "Pick": 1}, {"Team": "Ariel", "Pick": 2}],
+                "pool": [],
+            }
+        }
+        with patch("streamlit.session_state", session, create=True):
+            _on_analyze_draft_click(key_prefix="live_draft_complete")
+        flash = session.get("_draft_analyze_ui_flash")
+        self.assertIsInstance(flash, dict)
+        self.assertNotEqual(flash.get("level"), "error", msg=str(flash))
+        self.assertEqual(session.get("_navigate_to_page"), "Draft Lab / Simulation")
+        pending = session.get("_pending_page_transfer")
+        self.assertIsInstance(pending, dict)
+        self.assertEqual(pending.get("target"), "Draft Lab / Simulation")
+        self.assertIn("draft_lab_results", session)
+        self.assertFalse(getattr(session["draft_lab_results"].get("draft"), "empty", True))
+
     unittest.main()

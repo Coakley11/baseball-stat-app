@@ -1050,6 +1050,82 @@ def build_why_this_pick_summary(
     return " · ".join(parts[:4]) + "."
 
 
+def build_rec_card_why_bullets(
+    rank: int,
+    row: Any,
+    rec_df: Any,
+    *,
+    badges: list[tuple[str, str]] | None = None,
+    gaps: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    strengths: list[str] | None = None,
+) -> list[str]:
+    """Deduped Why Recommended bullets — each idea appears once."""
+    bullets: list[str] = []
+    seen: set[str] = set()
+    pos = str(row.get("Primary Position") or "").strip()
+    badge_labels = {str(label) for label, _css in (badges or [])}
+
+    def _add(text: str, *, key: str = "") -> None:
+        t = str(text or "").strip()
+        if not t:
+            return
+        dedupe_key = (key or t).lower()
+        if dedupe_key in seen:
+            return
+        seen.add(dedupe_key)
+        bullets.append(t)
+
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    top_edge = np.nan
+    if rec_df is not None and not getattr(rec_df, "empty", True) and "Fantasy Edge" in rec_df.columns:
+        top_edge = pd.to_numeric(rec_df["Fantasy Edge"], errors="coerce").max()
+    if rank == 1 and "Best Overall" in badge_labels:
+        _add("Best value remaining", key="best_value")
+    elif pd.notna(edge) and pd.notna(top_edge) and float(edge) >= float(top_edge):
+        _add("Best value remaining", key="best_value")
+    elif "Best Value" in badge_labels:
+        _add("Best value remaining", key="best_value")
+
+    if gaps and pos in gaps:
+        open_of = sum(1 for g in gaps if g == "OF")
+        if pos == "OF" and open_of >= 2:
+            _add(f"Fills {open_of} open OF slots", key="fills_of")
+        else:
+            _add(f"Fills open {pos} slot", key=f"fills_{pos}")
+    elif any("Fills" in label for label in badge_labels):
+        for label in badge_labels:
+            if "Fills" in label:
+                _add(label.replace("Fills ", "Fills open ").replace(" Slot", " slot"), key="fills_badge")
+                break
+
+    if strengths:
+        _add(f"Improves {'/'.join(strengths[:2])}", key="strengths")
+    elif category_needs and any("Category" in label for label in badge_labels):
+        _add(f"Improves {'/'.join(str(c) for c in category_needs[:2])}", key="category_need")
+
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv):
+        pct = int(round(float(surv) * 100))
+        if float(surv) < 0.35:
+            _add(f"Availability Risk: High — {pct}% available next round", key="avail_risk")
+        elif float(surv) < 0.5:
+            _add(f"Availability Risk: Medium — {pct}% available next round", key="avail_risk")
+        elif float(surv) < 0.65:
+            _add(f"Availability Risk: Moderate — {pct}% available next round", key="avail_risk")
+
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.65 and "Scarcity" in " ".join(badge_labels):
+        _add(f"{pos} tier thinning" if pos else "Position scarcity rising", key="scarcity")
+
+    if pd.notna(edge) and float(edge) >= 8 and "best_value" not in seen:
+        _add(f"Strong market edge (+{int(round(float(edge)))})", key="edge")
+
+    if not bullets:
+        _add("Balanced upside, roster fit, and availability", key="default")
+    return bullets[:4]
+
+
 def build_draft_assistant_why_this_pick(
     row: Any,
     *,
@@ -1186,7 +1262,7 @@ def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str
 
         need = format_open_position_needs(gaps)
     except ImportError:
-        need = ", ".join(gaps or []) or "All Positions"
+        need = ", ".join(gaps or []) or "balanced roster"
     scarcity_note = ""
     if "Scarcity Score" in rec_df.columns:
         scarce = rec_df.sort_values("Scarcity Score", ascending=False).head(1)
@@ -1296,12 +1372,20 @@ def render_live_draft_rec_cards(
 
         player_available = True
         avail_reason = ""
+        draft_gate: dict[str, Any] = {}
         try:
-            from draft_actions import _live_player_available
+            from draft_actions import resolve_player_draft_gate
 
-            player_available, avail_reason = _live_player_available(session, name)
+            draft_gate = resolve_player_draft_gate(session, name)
+            player_available = bool(draft_gate.get("allowed"))
+            avail_reason = str(draft_gate.get("disable_message") or "")
         except ImportError:
-            pass
+            try:
+                from draft_actions import _live_player_available
+
+                player_available, avail_reason = _live_player_available(session, name)
+            except ImportError:
+                pass
 
         draft_enabled = turn_enabled and player_available and not draft_complete and not paused and not submitting
         disable_reason = ""
@@ -1368,16 +1452,19 @@ def render_live_draft_rec_cards(
                 st.caption(f"{pos}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            badge_texts = {label for label, _css in badges}
-            if headline and headline not in badge_texts:
-                st.markdown(f'<div class="ld-rec-card-reason">{headline}</div>', unsafe_allow_html=True)
-            insight_parts = [surv_pct, action]
-            if explanation:
-                insight_parts.append(explanation)
-            st.markdown(
-                f'<div class="ld-rec-card-caption">{" · ".join(insight_parts)}</div>',
-                unsafe_allow_html=True,
+            why_bullets = build_rec_card_why_bullets(
+                i,
+                r,
+                rec_df,
+                badges=badges,
+                gaps=gaps,
+                category_needs=category_needs,
+                strengths=strengths,
             )
+            if why_bullets:
+                st.markdown("**Why Recommended:**")
+                for bullet in why_bullets:
+                    st.markdown(f"- {bullet}")
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()
