@@ -95,12 +95,40 @@ def normalize_draft_slot_config(config: dict[str, Any] | None) -> dict[str, Any]
     return cfg
 
 
+def coerce_room_config(raw: Any) -> dict[str, Any]:
+    """Normalize room config from dict, legacy list/tuple, or empty."""
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, (list, tuple)):
+        if raw and all(isinstance(x, str) for x in raw):
+            return {"slots": {}}
+        instances = [
+            dict(item)
+            for item in raw
+            if isinstance(item, dict) and str(item.get("position") or item.get("position_code") or "").strip()
+        ]
+        if instances:
+            return {"slot_instances": instances}
+        return {"slots": {}}
+    return {}
+
+
 def ensure_room_slot_config(room: dict[str, Any] | None) -> dict[str, Any] | None:
     """Normalize host slot config on an in-memory live draft room."""
     if not isinstance(room, dict):
         return room
-    cfg = dict(room.get("config") or {})
-    if not cfg.get("slots"):
+    cfg = coerce_room_config(room.get("config"))
+    if cfg.get("slot_instances") and not cfg.get("slots"):
+        counts: dict[str, int] = {}
+        for inst in cfg["slot_instances"]:
+            if isinstance(inst, dict):
+                pos = str(inst.get("position") or inst.get("position_code") or "").strip()
+                if pos:
+                    counts[pos] = counts.get(pos, 0) + 1
+        if counts:
+            cfg["slots"] = counts
+    if not cfg.get("slots") and not cfg.get("slot_instances"):
+        room["config"] = cfg
         return room
     room["config"] = normalize_draft_slot_config(cfg)
     return room

@@ -664,22 +664,79 @@ def runtime_room_hydrated(room: dict[str, Any] | None) -> bool:
     return bool(pool)
 
 
+def _fingerprint_slots_from_config(raw: Any) -> tuple[tuple[str, int], ...]:
+    """Slot counts for prepare fingerprint — tolerant of legacy/malformed config shapes."""
+    if raw is None:
+        return ()
+    if isinstance(raw, dict):
+        out: dict[str, int] = {}
+        slots_block = raw.get("slots")
+        if isinstance(slots_block, dict):
+            for k, v in slots_block.items():
+                key = str(k).strip()
+                if not key:
+                    continue
+                try:
+                    out[key] = int(v or 0)
+                except (TypeError, ValueError):
+                    out[key] = 0
+        for k, v in raw.items():
+            key = str(k)
+            if key.startswith("slot_"):
+                try:
+                    out[key] = int(v or 0)
+                except (TypeError, ValueError):
+                    out[key] = 0
+        instances = raw.get("slot_instances")
+        if isinstance(instances, list) and instances and not out:
+            for item in instances:
+                if isinstance(item, dict):
+                    pos = str(item.get("position") or item.get("position_code") or "").strip()
+                    if pos:
+                        out[pos] = out.get(pos, 0) + 1
+        return tuple(sorted((k, out[k]) for k in out))
+    if isinstance(raw, (list, tuple)):
+        out: dict[str, int] = {}
+        for item in raw:
+            if isinstance(item, dict):
+                pos = str(item.get("position") or item.get("position_code") or item.get("slot") or "").strip()
+                if pos:
+                    out[pos] = out.get(pos, 0) + 1
+            elif isinstance(item, str):
+                key = item.strip()
+                if key:
+                    out[key] = out.get(key, 0) + 1
+        return tuple(sorted(out.items()))
+    return ()
+
+
+def _fingerprint_room_revision(room: dict[str, Any]) -> int:
+    meta = room.get("meta")
+    if not isinstance(meta, dict):
+        return 0
+    sync = meta.get("sync")
+    if not isinstance(sync, dict):
+        return 0
+    try:
+        return int(sync.get("revision") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def live_draft_prepare_fingerprint(room: dict[str, Any] | None) -> tuple[Any, ...]:
     """Revision key for prepare short-circuit — pick/board/room identity + slot config."""
     if not isinstance(room, dict):
         return ("", 0, 0, 0, (), 0)
-    cfg = dict(room.get("config") or {})
-    slots = tuple(sorted((k, int(cfg.get(k) or 0)) for k in cfg if str(k).startswith("slot_")))
+    slots = _fingerprint_slots_from_config(room.get("config"))
     pool = room.get("pool")
     pool_len = int(len(pool)) if hasattr(pool, "__len__") else 0
-    rev = int(((room.get("meta") or {}).get("sync") or {}).get("revision") or 0)
     return (
         str(room.get("draft_room_id") or ""),
         int(room.get("current_pick_index") or 0),
         live_draft_board_len(room),
         pool_len,
         slots,
-        rev,
+        _fingerprint_room_revision(room),
     )
 
 
@@ -928,7 +985,7 @@ def _apply_derived_draft_status(session: dict[str, Any], room: dict[str, Any] | 
 
         ensure_room_slot_config(room)
         sync_live_slot_widgets_from_config(session, room.get("config"))
-    except ImportError:
+    except Exception:
         pass
     try:
         from live_draft_safe_mode import reconcile_live_draft_room
