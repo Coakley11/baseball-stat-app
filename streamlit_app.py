@@ -2275,6 +2275,8 @@ def _numeric_plot_columns(df):
     for c in df.columns:
         c_key = str(c).replace("_", " ").lower().strip()
         if c not in cols and c_key not in blocked:
+            if pd.api.types.is_bool_dtype(df[c]):
+                continue
             vals = pd.to_numeric(df[c], errors="coerce")
             if vals.notna().sum() > 0 and not str(c).lower().endswith("id"):
                 cols.append(c)
@@ -2617,15 +2619,26 @@ def _scatter_size_encoding(chart_df, size_col):
     """Scale dot size dynamically to the filtered data.
 
     Uses the 5th-95th percentile domain so one extreme outlier does not make all
-    other dots look the same size.
+    other dots look the same size. Falls back to fixed marker size when the column
+    is boolean, object, constant, or otherwise non-quantitative.
     """
+    try:
+        from scatter_encoding import build_scatter_size_encoding
+
+        enc, _prepared = build_scatter_size_encoding(chart_df, size_col, alt_module=alt)
+        return enc
+    except ImportError:
+        pass
     if size_col == "None" or size_col not in chart_df.columns:
         return None
     vals = pd.to_numeric(chart_df[size_col], errors="coerce").dropna()
     if vals.empty:
         return None
-    low = float(vals.quantile(0.05))
-    high = float(vals.quantile(0.95))
+    try:
+        low = float(vals.quantile(0.05))
+        high = float(vals.quantile(0.95))
+    except (TypeError, ValueError):
+        return None
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
         low, high = float(vals.min()), float(vals.max())
     if high <= low:
@@ -3516,9 +3529,18 @@ def render_scatterplot_section(
             st.session_state.pop(color_key, None)
         with p3:
             color_col = st.selectbox("Color by", cat_options, index=0, key=color_key)
-        size_options = ["None"] + numeric_cols
+        size_options = ["None"]
+        try:
+            from scatter_encoding import filter_size_by_columns
+
+            size_options.extend(filter_size_by_columns(plot_df, numeric_cols))
+        except ImportError:
+            size_options.extend(numeric_cols)
+        size_key = f"{key_prefix}_scatter_size"
+        if size_key in st.session_state and st.session_state[size_key] not in size_options:
+            st.session_state.pop(size_key, None)
         with p4:
-            size_col = st.selectbox("Size by", size_options, index=0, key=f"{key_prefix}_scatter_size")
+            size_col = st.selectbox("Size by", size_options, index=0, key=size_key)
 
         max_points = st.slider(
             "Maximum points to plot",
@@ -3654,7 +3676,12 @@ def render_scatterplot_section(
     if color_encoding is not None:
         enc["color"] = color_encoding
 
-    size_encoding = _scatter_size_encoding(chart_df, size_col)
+    try:
+        from scatter_encoding import build_scatter_size_encoding
+
+        size_encoding, chart_df = build_scatter_size_encoding(chart_df, size_col, alt_module=alt)
+    except ImportError:
+        size_encoding = _scatter_size_encoding(chart_df, size_col)
     if size_encoding is not None:
         enc["size"] = size_encoding
 
