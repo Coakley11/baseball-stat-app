@@ -13747,6 +13747,12 @@ try:
     apply_draft_lab_resume(st)
 except Exception:
     pass
+try:
+    from draft_archive_ui import enforce_pending_analyze_draft_navigation
+
+    enforce_pending_analyze_draft_navigation(st.session_state)
+except ImportError:
+    pass
 
 try:
     from suite_resume_launch import finalize_ami_return_restore

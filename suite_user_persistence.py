@@ -293,6 +293,8 @@ def _egress_cloud_autosave_block(
     cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=save_reason)
     if cloud_block:
         return cloud_block
+    if save_reason in _FORCE_SAVE_CLOUD_REASONS:
+        return None
     try:
         from suite_egress_policy import cloud_autosave_allowed, poll_sync_defer_active
 
@@ -1504,10 +1506,31 @@ def force_autosave(
         page, summary = session_page_summary(app_id, state)
         cloud_block = _egress_cloud_autosave_block(st, app_id, state, save_reason=reason or "force_autosave")
         saved_cloud = False
+        cloud_error = ""
         if cloud_block:
+            cloud_error = str(cloud_block)
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
+            st.session_state["_suite_persist_last_cloud_error"] = cloud_error
         else:
-            saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
+            try:
+                from suite_cloud_state import save_cloud_full_session_with_details
+
+                saved_cloud, cloud_error, cloud_app_key = save_cloud_full_session_with_details(
+                    app_id, state, page=page, summary=summary
+                )
+                if cloud_app_key:
+                    st.session_state["_suite_last_cloud_app_key"] = cloud_app_key
+            except ImportError:
+                from suite_cloud_state import save_cloud_full_session
+
+                saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
+                if not saved_cloud:
+                    cloud_error = "save_cloud_full_session_unavailable"
+            if not saved_cloud:
+                st.session_state["_suite_persist_last_cloud_error"] = cloud_error or "cloud_save_failed"
+                st.session_state["_draft_archive_persist_error"] = cloud_error or "cloud_save_failed"
+            else:
+                st.session_state.pop("_suite_persist_last_cloud_error", None)
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp

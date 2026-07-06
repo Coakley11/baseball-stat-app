@@ -364,6 +364,75 @@ def resolve_restore_source_label(session: dict[str, Any]) -> str:
     return raw
 
 
+def evaluate_cloud_durability_status(session: dict[str, Any]) -> dict[str, Any]:
+    """Whether this session has verified durable cloud persistence (not just config)."""
+    cloud_enabled = False
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        cloud_enabled = bool(cloud_storage_enabled())
+    except ImportError:
+        pass
+    if not cloud_enabled:
+        return {
+            "cloud_enabled": False,
+            "durable_persistence": False,
+            "cloud_write_verified": False,
+            "durability_label": "Temporary local session only — data will be lost after app reboot",
+            "durability_warning": (
+                "Temporary local session only — app data will be lost after reboot. "
+                "Cloud storage is not configured in this deployment."
+            ),
+        }
+
+    last_cloud_save = bool(session.get("_suite_persist_last_save_cloud"))
+    cloud_probe: dict[str, Any] = {}
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        ws = str(get_active_workspace_id(st=type("_St", (), {"session_state": session})()))
+        cloud_probe = probe_cloud_workflow_for_workspace(ws)
+    except Exception:
+        pass
+    row_found = bool(cloud_probe.get("row_found"))
+    cloud_drafts = int(cloud_probe.get("draft_archive_count") or 0)
+    cloud_write_verified = last_cloud_save or (row_found and cloud_drafts > 0)
+
+    if cloud_write_verified:
+        return {
+            "cloud_enabled": True,
+            "durable_persistence": True,
+            "cloud_write_verified": True,
+            "cloud_row_found": row_found,
+            "cloud_saved_draft_count": cloud_drafts,
+            "durability_label": "Durable — saved to cloud (survives app reboot)",
+            "durability_warning": "",
+        }
+
+    last_error = str(
+        session.get("_suite_persist_last_cloud_error")
+        or session.get("_draft_archive_persist_error")
+        or session.get("_suite_autosave_cloud_blocked_reason")
+        or ""
+    ).strip()
+    warning = (
+        "Cloud storage is configured, but no draft has been verified in cloud yet. "
+        "Saves are only durable after a successful cloud write and readback. "
+        "Disk-only saves will not survive Streamlit Cloud reboot."
+    )
+    if last_error:
+        warning += f" Last cloud error: `{last_error}`"
+    return {
+        "cloud_enabled": True,
+        "durable_persistence": False,
+        "cloud_write_verified": False,
+        "cloud_row_found": row_found,
+        "cloud_saved_draft_count": cloud_drafts,
+        "durability_label": "Not durable yet — cloud write not verified",
+        "durability_warning": warning,
+    }
+
+
 def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     """Read-only diagnostics for Saved Draft Library header."""
     counts = workflow_counts_from_session(session)
@@ -431,6 +500,7 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
 
     save_diag = session.get("_draft_library_save_diag")
     nav_diag = session.get("_draft_library_nav_diag")
+    durability = evaluate_cloud_durability_status(session)
 
     return {
         "account_email": account_email,
@@ -450,22 +520,11 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "restore_source_label": restore_label,
         "restore_at": restore_at,
         "auth_mode": "signed_in" if authenticated else "local_demo",
-        # Cloud writes require Supabase config only (not sign-in): a configured
-        # deployment persists durably across Streamlit Cloud reboots.
         "cloud_write_expected": bool(cloud_enabled),
-        "durable_persistence": bool(cloud_enabled),
-        "durability_label": (
-            "Durable — saved to cloud (survives app reboot)"
-            if cloud_enabled
-            else "Temporary local session only — data will be lost after app reboot"
-        ),
-        "durability_warning": (
-            ""
-            if cloud_enabled
-            else "Temporary local session only — app data will be lost after reboot. "
-            "Cloud storage is not configured in this deployment, so Saved Drafts, "
-            "Active Draft, tracked players, and settings are only stored on ephemeral disk."
-        ),
+        "durable_persistence": bool(durability.get("durable_persistence")),
+        "cloud_write_verified": bool(durability.get("cloud_write_verified")),
+        "durability_label": str(durability.get("durability_label") or ""),
+        "durability_warning": str(durability.get("durability_warning") or ""),
         "auth_enabled_but_signed_out": bool(auth_enabled and not authenticated),
         "restore_cloud_vs_demo_note": (
             "Restore source is cloud, but you are in local/demo mode — empty cloud can overwrite "

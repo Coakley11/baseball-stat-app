@@ -94,6 +94,19 @@ class DraftArchiveCallbackTests(unittest.TestCase):
         self.assertEqual(flash.get("level"), "error")
         self.assertIn("complete", str(flash.get("message") or "").lower())
 
+    def test_analyze_draft_enforce_pending_navigation(self) -> None:
+        session: dict = {
+            "_draft_analyze_nav_pending": True,
+            "active_page": "Saved Draft Library",
+            "main_sidebar_page": "Saved Draft Library",
+        }
+        from draft_archive_ui import enforce_pending_analyze_draft_navigation
+
+        self.assertTrue(enforce_pending_analyze_draft_navigation(session))
+        self.assertEqual(session.get("active_page"), "Draft Lab / Simulation")
+        self.assertEqual(session.get("main_sidebar_page"), "Draft Lab / Simulation")
+        self.assertEqual(session.get("_suite_nav_consumed_target"), "Draft Lab / Simulation")
+
     def test_analyze_draft_click_pushes_and_navigates_complete_room(self) -> None:
         board = [
             {"Round": 1, "Pick": 1, "Fantasy Team": "Daniel", "fullName": "Player A", "Primary Position": "OF", "Expected Fantasy Value": 0.82, "Model Rank": 12, "Market Rank": 18, "Fantasy Edge": 6},

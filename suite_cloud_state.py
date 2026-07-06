@@ -474,32 +474,65 @@ def save_cloud_full_session(
     summary: str = "",
 ) -> bool:
     """Persist full_session to Supabase. Returns True when cloud write succeeds."""
+    ok, _error, _app_key = save_cloud_full_session_with_details(
+        app_id, state, page=page, summary=summary
+    )
+    return ok
+
+
+def save_cloud_full_session_with_details(
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    page: str = "",
+    summary: str = "",
+) -> tuple[bool, str, str]:
+    """Persist full_session to cloud; return (success, error_message, storage_app_key)."""
     if not state:
-        return False
+        return False, "empty_state", ""
     try:
         from suite_storage_config import cloud_storage_enabled
     except ImportError:
-        return False
+        return False, "cloud_storage_config_unavailable", ""
     if not cloud_storage_enabled():
-        return False
+        return False, "cloud_storage_disabled", ""
     try:
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
-        storage.save_current_state(
-            app_key,
-            page=page or "",
-            summary=summary or "Last session",
-            metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
-        )
+        payload = {FULL_SESSION_KEY: copy.deepcopy(state)}
+        result_fn = getattr(storage, "save_current_state_with_result", None)
+        if callable(result_fn):
+            result = result_fn(
+                app_key,
+                page=page or "",
+                summary=summary or "Last session",
+                metrics=payload,
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                err = str((result or {}).get("error") or "cloud_save_failed").strip()
+                write_mode = str((result or {}).get("write_mode") or "")
+                detail = f"{err} (mode={write_mode}, app={app_key})" if write_mode else f"{err} (app={app_key})"
+                return False, detail, app_key
+        else:
+            storage.save_current_state(
+                app_key,
+                page=page or "",
+                summary=summary or "Last session",
+                metrics=payload,
+            )
         ss = _streamlit_session()
         if ss is not None:
             ts_key, blob_key = _full_session_cache_keys(app_key)
             ss[blob_key] = copy.deepcopy(state)
             ss[ts_key] = _utc_now_iso()
             ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
-        return True
-    except Exception:
-        return False
+        return True, "", app_key
+    except Exception as exc:
+        try:
+            app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))  # type: ignore[possibly-undefined]
+        except Exception:
+            app_key = ""
+        return False, f"{type(exc).__name__}: {exc}", app_key
 
 
 def save_cloud_full_session_with_result(
@@ -512,9 +545,11 @@ def save_cloud_full_session_with_result(
 ) -> tuple[bool, str]:
     """Persist full_session to cloud; return (success, error_message)."""
     try:
-        ok = save_cloud_full_session(app_id, state, page=page, summary=summary)
+        ok, error, _app_key = save_cloud_full_session_with_details(
+            app_id, state, page=page, summary=summary
+        )
         if not ok:
-            return False, "cloud_save_failed"
+            return False, error or "cloud_save_failed"
         if min_draft_pick_count is not None and int(min_draft_pick_count) > 0:
             invalidate_cloud_full_session_cache(app_id)
             cloud_after, _ = load_cloud_full_session(app_id, force=True)

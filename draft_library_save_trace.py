@@ -334,8 +334,28 @@ def finalize_save_trace(
     if draft_probe.get("in_cloud") or cloud_readback_ok:
         steps.append("cloud_readback_has_archive")
 
-    disk_only_ok = bool(mode.get("demo_disk_only_ok")) and bool(disk_write_ok) and bool(in_session or draft_probe.get("in_disk"))
-    effective_persist_ok = bool(persist_ok) or disk_only_ok
+    disk_only_ok = bool(mode.get("demo_disk_only_ok")) and bool(disk_write_ok) and bool(
+        in_session or draft_probe.get("in_disk")
+    )
+    cloud_expected = bool(mode.get("cloud_write_expected"))
+    cloud_error = str(
+        session.get("_suite_persist_last_cloud_error")
+        or session.get("_draft_archive_persist_error")
+        or session.get("_suite_autosave_cloud_blocked_reason")
+        or ""
+    ).strip()
+    if cloud_expected:
+        draft_in_cloud = bool(draft_probe.get("in_cloud")) or bool(cloud_readback_ok)
+        effective_persist_ok = bool(cloud_write_ok) and draft_in_cloud
+        if not effective_persist_ok and not cloud_error:
+            if cloud_write_ok is False:
+                cloud_error = "cloud_write_failed"
+            elif not draft_in_cloud:
+                cloud_error = "cloud_readback_missing_draft"
+    elif disk_only_ok:
+        effective_persist_ok = disk_only_ok
+    else:
+        effective_persist_ok = bool(persist_ok)
 
     payload: dict[str, Any] = {
         **diag,
@@ -367,7 +387,8 @@ def finalize_save_trace(
         "last_save_reason": str(session.get("_suite_persist_last_save_reason") or ""),
         "last_save_at": str(session.get("_suite_persist_last_save_at") or ""),
         "cloud_blocked_reason": str(session.get("_suite_autosave_cloud_blocked_reason") or ""),
-        "persist_error": str(session.get("_draft_archive_persist_error") or ""),
+        "persist_error": cloud_error or str(session.get("_draft_archive_persist_error") or ""),
+        "cloud_app_key": str(session.get("_suite_last_cloud_app_key") or ""),
         "steps": steps,
         "finalized_at": _utc_now(),
     }
@@ -516,6 +537,8 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
             "Cloud not configured — temporary local save only, will not survive reboot",
         )
     _row("Persist OK (overall)", bool(diag.get("persist_ok")))
+    if not diag.get("persist_ok") and diag.get("persist_error"):
+        _row("Persist error", False, str(diag.get("persist_error")))
     return rows
 
 
@@ -628,12 +651,20 @@ def render_save_trace_inline(
                 "**Temporary local save only — will not survive Streamlit Cloud reboot.** "
                 "Cloud write was skipped. Configure Supabase (or sign in, if enabled) for durable saves."
             )
+        if diag.get("persist_error"):
+            st.error(f"**Persist error:** {diag['persist_error']}")
+        if not diag.get("persist_ok") and diag.get("cloud_write_expected"):
+            st.error(
+                "Save is **not durable** until cloud write succeeds and readback confirms the draft "
+                f"(`draft_in_cloud={diag.get('draft_in_cloud')}`, "
+                f"cloud_readback_drafts={diag.get('cloud_readback_drafts')}`)."
+            )
         if diag.get("save_error"):
             st.error(str(diag["save_error"]))
         if diag.get("cloud_blocked_reason"):
             st.caption(f"Cloud blocked: {diag['cloud_blocked_reason']}")
-        if diag.get("persist_error"):
-            st.caption(f"Persist error: {diag['persist_error']}")
+        if diag.get("cloud_app_key"):
+            st.caption(f"Cloud app key: `{diag['cloud_app_key']}`")
         st.markdown("**Checklist**")
         for label, status, detail in save_trace_checklist(diag):
             icon = {"pass": "✅", "fail": "❌", "warn": "⚠️", "pending": "⏳"}.get(status, "•")

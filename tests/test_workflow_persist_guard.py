@@ -137,14 +137,26 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(diag["restore_source"], "cloud")
         self.assertIn("cloud", diag["restore_source_label"].lower())
 
-    def test_diagnostics_durable_when_cloud_enabled(self) -> None:
-        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}]}
+    def test_diagnostics_durable_when_cloud_save_verified(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}], "_suite_persist_last_save_cloud": True}
         with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
             diag = build_saved_draft_library_diagnostics(session)
         self.assertTrue(diag["durable_persistence"])
         self.assertTrue(diag["cloud_write_expected"])
         self.assertEqual(diag["durability_warning"], "")
         self.assertIn("Durable", diag["durability_label"])
+
+    def test_diagnostics_not_durable_when_cloud_enabled_but_unverified(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}]}
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
+            with patch(
+                "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                return_value={"row_found": False, "draft_archive_count": 0},
+            ):
+                diag = build_saved_draft_library_diagnostics(session)
+        self.assertFalse(diag["durable_persistence"])
+        self.assertFalse(diag.get("cloud_write_verified"))
+        self.assertIn("Not durable yet", diag["durability_label"])
 
     def test_diagnostics_not_durable_when_cloud_disabled(self) -> None:
         session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}]}

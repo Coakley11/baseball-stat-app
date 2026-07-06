@@ -211,26 +211,19 @@ def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
 def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bool:
     """Visible (non-dev) warning when saves are not durable across app reboot.
 
-    Returns True when durable (cloud) persistence is active.
+    Returns True when durable (verified cloud) persistence is active.
     """
     try:
-        from workflow_persist_guard import build_saved_draft_library_diagnostics
+        from workflow_persist_guard import evaluate_cloud_durability_status
     except ImportError:
         return True
-    diag = build_saved_draft_library_diagnostics(session)
-    if diag.get("durable_persistence"):
+    status = evaluate_cloud_durability_status(session)
+    if status.get("durable_persistence"):
+        st.success(f"**Persistence:** {status.get('durability_label')}")
         return True
-    st.warning(
-        "**Temporary local session only — app data will be lost after reboot.** "
-        "Cloud storage is not configured in this deployment, so Saved Drafts, Active Draft, "
-        "tracked players, and settings are only stored on ephemeral disk and will not survive "
-        "a Streamlit Cloud restart."
-        + (
-            " Sign in to save permanently."
-            if diag.get("auth_enabled_but_signed_out")
-            else ""
-        )
-    )
+    st.error(f"**Persistence:** {status.get('durability_label')}")
+    if status.get("durability_warning"):
+        st.warning(str(status["durability_warning"]))
     return False
 
 
@@ -636,6 +629,15 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
         session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
     count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
     persist_ok = bool(session_has_entry and ok)
+    try:
+        from draft_library_save_trace import save_persist_mode_context
+
+        if save_persist_mode_context(session).get("cloud_write_expected") and not session.get(
+            "_suite_persist_last_save_cloud"
+        ):
+            persist_ok = False
+    except ImportError:
+        pass
     if session_has_entry and not ok:
         try:
             session.pop("_suite_autosave_fp::baseball", None)
@@ -844,10 +846,27 @@ def schedule_analyze_completed_draft_navigation(session: dict[str, Any]) -> None
     session["active_page"] = target
     session["main_sidebar_page"] = target
     session["_suite_page_user_nav"] = True
+    session["_suite_nav_consumed_this_run"] = True
     session["_skip_page_restore_for"] = target
     session["_suite_nav_consumed_target"] = target
     session["draft_lab_preferred_tab"] = "Draft Board"
     session["_draft_lab_live_handoff_pending"] = True
+
+
+def enforce_pending_analyze_draft_navigation(session: dict[str, Any]) -> bool:
+    """Re-apply Draft Lab navigation after workspace/resume hooks (Analyze Draft)."""
+    if not session.pop("_draft_analyze_nav_pending", None):
+        return False
+    target = DRAFT_LAB_PAGE
+    session["main_sidebar_page"] = target
+    session["active_page"] = target
+    session["_skip_page_restore_for"] = target
+    session["_suite_page_user_nav"] = True
+    session["_suite_nav_consumed_this_run"] = True
+    session["_suite_nav_consumed_target"] = target
+    session["_navigate_to_page"] = target
+    session["draft_lab_preferred_tab"] = "Draft Board"
+    return True
 
 
 def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:

@@ -20,6 +20,7 @@ from draft_library_save_trace import (
     save_trace_checklist,
 )
 from fantasy_league_context import save_simulator_league_context
+from workflow_persist_guard import build_saved_draft_library_diagnostics
 
 
 def _mock_board(picks: int = 12) -> pd.DataFrame:
