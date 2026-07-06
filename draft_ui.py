@@ -603,6 +603,17 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
             elif cpos != "—":
                 meta["position"] = cpos
 
+    pool = _draft_pool_for_meta_lookup(session)
+    if pool is not None:
+        hit = _match_pool(pool)
+        if hit and hit.get("team") != "—":
+            if hit.get("position") != "—":
+                cache_queue_player_meta(session, name, hit)
+                return hit
+            meta["team"] = hit["team"]
+        elif hit and hit.get("position") != "—" and meta.get("position") == "—":
+            meta["position"] = hit["position"]
+
     try:
         from draft_room_state import get_canonical_draft_board
 
@@ -618,17 +629,6 @@ def lookup_player_draft_meta(session: dict[str, Any], player_name: str) -> dict[
                 meta["position"] = hit["position"]
     except Exception:
         pass
-
-    pool = _draft_pool_for_meta_lookup(session)
-    if pool is not None:
-        hit = _match_pool(pool)
-        if hit and hit.get("team") != "—":
-            if hit.get("position") != "—":
-                cache_queue_player_meta(session, name, hit)
-                return hit
-            meta["team"] = hit["team"]
-        elif hit and hit.get("position") != "—" and meta.get("position") == "—":
-            meta["position"] = hit["position"]
 
     lookup = _ensure_draft_player_meta_lookup(session)
     row = lookup.get(target) or lookup.get(name)

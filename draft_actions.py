@@ -320,11 +320,12 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
 
     if source == ACTIVE_DRAFT_SOURCE_LIVE:
         try:
-            from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress, prepare_live_draft_state, repair_stale_live_draft_progress
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress, is_runtime_room, prepare_live_draft_state, repair_stale_live_draft_progress
 
-            if not session.get("_live_draft_manual_pick_in_flight"):
-                prepare_live_draft_state(session)
             room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if not session.get("_live_draft_manual_pick_in_flight") and not is_runtime_room(room):
+                prepare_live_draft_state(session)
+                room = session.get(LIVE_DRAFT_ROOM_KEY)
             if isinstance(room, dict):
                 try:
                     from live_draft_safe_mode import reconcile_live_draft_room
@@ -1180,13 +1181,25 @@ def _draft_live(
         result["message"] = "Live draft commit path unavailable."
         return result
 
-    commit = commit_manual_live_pick(
-        session,
-        room,
-        player_row,
-        source=source,
-        verdict=f"Draft ({source})",
-    )
+    try:
+        from live_draft_perf import PHASE_PICK_COMMIT, live_draft_perf_action
+
+        with live_draft_perf_action(session, "pick_commit", phase=PHASE_PICK_COMMIT):
+            commit = commit_manual_live_pick(
+                session,
+                room,
+                player_row,
+                source=source,
+                verdict=f"Draft ({source})",
+            )
+    except ImportError:
+        commit = commit_manual_live_pick(
+            session,
+            room,
+            player_row,
+            source=source,
+            verdict=f"Draft ({source})",
+        )
     try:
         from live_draft_state import check_manual_commit_overwrite, is_live_draft_locally_dirty, record_manual_pick_snapshot
 
@@ -1296,15 +1309,21 @@ def draft_player(
         ACTIVE_DRAFT_SOURCE_LIVE = "live"
 
     if resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE:
-        result = _draft_live(session, name, source=src)
+        try:
+            from live_draft_perf import PHASE_DRAFT_PICK, live_draft_perf_action
+
+            with live_draft_perf_action(session, "draft_player", phase=PHASE_DRAFT_PICK):
+                result = _draft_live(session, name, source=src)
+        except ImportError:
+            result = _draft_live(session, name, source=src)
     else:
         result = _draft_simulator(session, name, source=src)
 
     if result.get("ok"):
         try:
-            from page_perf_phases import session_perf_phase
+            from live_draft_perf import PHASE_POST_DRAFT_SAVE, live_draft_perf_action
 
-            with session_perf_phase(session, "draft_pick_action"):
+            with live_draft_perf_action(session, "post_draft_save", phase=PHASE_POST_DRAFT_SAVE):
                 side = _post_draft_side_effects(session, name, st_obj=st_obj, save_reason=f"draft_player:{src}")
         except ImportError:
             side = _post_draft_side_effects(session, name, st_obj=st_obj, save_reason=f"draft_player:{src}")

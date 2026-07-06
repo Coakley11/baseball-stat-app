@@ -14,6 +14,10 @@ LIVE_DRAFT_ROOM_KEY = "live_draft_room"
 LIVE_DRAFT_DIRTY_KEY = "live_draft_state_dirty"
 LIVE_DRAFT_LOCAL_EDIT_TS_KEY = "live_draft_state_last_local_edit_ts"
 MANUAL_PICK_SNAPSHOT_KEY = "_manual_pick_commit_snapshot"
+LIVE_DRAFT_PREPARE_FP_KEY = "_live_draft_prepare_fingerprint"
+LIVE_DRAFT_FORCE_PREPARE_KEY = "_live_draft_force_prepare"
+LIVE_DRAFT_BOARD_SYNC_PENDING_KEY = "_live_draft_board_sync_pending"
+LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY = "_live_draft_deferred_pick_activity"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
 LIVE_DRAFT_OWNER_AUTH_KEY = "owner_auth_user_id"
 LIVE_DRAFT_OWNER_EXTERNAL_KEY = "owner_external_id"
@@ -604,14 +608,137 @@ def should_prefer_runtime_live_room(
     canonical: dict[str, Any] | None,
 ) -> bool:
     if not is_runtime_room(runtime) or not isinstance(canonical, dict):
-        return False
+        return bool(is_runtime_room(runtime) and runtime_room_hydrated(runtime))
     if runtime_room_ahead_of_blob(runtime, canonical):
         return True
     if is_live_draft_locally_dirty(session):
         rb = live_draft_board_len(runtime)
         cb = live_draft_board_len(canonical)
         return rb >= cb
+    if runtime_room_hydrated(runtime):
+        rb = live_draft_board_len(runtime)
+        cb = live_draft_board_len(canonical)
+        ri = int(runtime.get("current_pick_index") or 0)
+        ci = int(canonical.get("current_pick_index") or 0)
+        if rb >= cb and ri >= ci and str(runtime.get("draft_room_id") or "") == str(canonical.get("draft_room_id") or ""):
+            return True
     return False
+
+
+def runtime_room_hydrated(room: dict[str, Any] | None) -> bool:
+    """True when runtime room already has an in-memory pool — skip canonical rebuild."""
+    if not is_runtime_room(room):
+        return False
+    pool = room.get("pool")
+    if pool is None:
+        return False
+    if hasattr(pool, "empty"):
+        return not pool.empty
+    return bool(pool)
+
+
+def live_draft_prepare_fingerprint(room: dict[str, Any] | None) -> tuple[Any, ...]:
+    """Revision key for prepare short-circuit — pick/board/room identity + slot config."""
+    if not isinstance(room, dict):
+        return ("", 0, 0, 0, (), 0)
+    cfg = dict(room.get("config") or {})
+    slots = tuple(sorted((k, int(cfg.get(k) or 0)) for k in cfg if str(k).startswith("slot_")))
+    pool = room.get("pool")
+    pool_len = int(len(pool)) if hasattr(pool, "__len__") else 0
+    rev = int(((room.get("meta") or {}).get("sync") or {}).get("revision") or 0)
+    return (
+        str(room.get("draft_room_id") or ""),
+        int(room.get("current_pick_index") or 0),
+        live_draft_board_len(room),
+        pool_len,
+        slots,
+        rev,
+    )
+
+
+def invalidate_live_draft_prepare_cache(session: dict[str, Any], *, reason: str = "") -> None:
+    session.pop(LIVE_DRAFT_PREPARE_FP_KEY, None)
+    session[LIVE_DRAFT_FORCE_PREPARE_KEY] = str(reason or "invalidate")
+
+
+def _store_live_draft_prepare_fingerprint(session: dict[str, Any], room: dict[str, Any] | None) -> None:
+    if isinstance(room, dict):
+        session[LIVE_DRAFT_PREPARE_FP_KEY] = live_draft_prepare_fingerprint(room)
+    session.pop(LIVE_DRAFT_FORCE_PREPARE_KEY, None)
+
+
+def _try_short_circuit_prepare(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Return hydrated runtime room when prepare would be a no-op."""
+    if session.get(LIVE_DRAFT_FORCE_PREPARE_KEY):
+        return None
+    if session.get("_live_draft_force_sync_on_return"):
+        return None
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not is_runtime_room(room):
+        return None
+    fp = live_draft_prepare_fingerprint(room)
+    if session.get(LIVE_DRAFT_PREPARE_FP_KEY) == fp and runtime_room_hydrated(room):
+        return _finish_prepare(session, room)
+    canonical = canonical_live_draft(session)
+    if isinstance(canonical, dict) and canonical.get("draft_room_id"):
+        if should_prefer_runtime_live_room(session, room, canonical):
+            return _finish_prepare(session, room)
+    return None
+
+
+def mark_live_draft_board_sync_pending(session: dict[str, Any], *, reason: str = "") -> None:
+    session[LIVE_DRAFT_BOARD_SYNC_PENDING_KEY] = str(reason or "pick")
+
+
+def flush_deferred_live_draft_board_sync(session: dict[str, Any]) -> bool:
+    """Push live draft picks to canonical draft_room_table when deferred after a pick."""
+    if not session.get(LIVE_DRAFT_BOARD_SYNC_PENDING_KEY):
+        return False
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not isinstance(room, dict):
+        session.pop(LIVE_DRAFT_BOARD_SYNC_PENDING_KEY, None)
+        return False
+    try:
+        from draft_room_state import sync_live_draft_room_to_canonical_board
+
+        sync_live_draft_room_to_canonical_board(session, room)
+    except ImportError:
+        pass
+    session.pop(LIVE_DRAFT_BOARD_SYNC_PENDING_KEY, None)
+    return True
+
+
+def defer_live_draft_pick_activity(session: dict[str, Any], room: dict[str, Any], *, source: str = "") -> None:
+    session[LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY] = {
+        "room_id": str(room.get("draft_room_id") or ""),
+        "pick_index": int(room.get("current_pick_index") or 0),
+        "board_len": live_draft_board_len(room),
+        "source": str(source or ""),
+    }
+
+
+def flush_deferred_live_draft_pick_activity(session: dict[str, Any]) -> bool:
+    pending = session.get(LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY)
+    if not isinstance(pending, dict):
+        return False
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not isinstance(room, dict):
+        session.pop(LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY, None)
+        return False
+    try:
+        from baseball_draft_activity import after_live_draft_pick_committed
+
+        after_live_draft_pick_committed(session, room)
+    except Exception:
+        pass
+    session.pop(LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY, None)
+    return True
+
+
+def flush_deferred_live_draft_pick_effects(session: dict[str, Any]) -> None:
+    """Run board sync + activity logging deferred from the hot pick-commit path."""
+    flush_deferred_live_draft_board_sync(session)
+    flush_deferred_live_draft_pick_activity(session)
 
 
 def mark_live_draft_local_edit(session: dict[str, Any]) -> None:
@@ -640,6 +767,51 @@ def _sync_page_filter_live_draft_block(session: dict[str, Any], *, blob: dict[st
     for key in LIVE_DRAFT_SETTINGS_KEYS:
         if key in session:
             block[key] = session[key]
+
+
+def patch_canonical_live_draft_pick_fields(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    reason: str = "",
+    local_edit: bool = True,
+) -> dict[str, Any]:
+    """Fast pick persist — update board/index/rosters without re-serializing the pool."""
+    blob = canonical_live_draft(session)
+    if not isinstance(blob, dict) or not blob.get("draft_room_id"):
+        return write_canonical_live_draft_state(session, room, reason=reason, local_edit=local_edit)
+    if str(blob.get("draft_room_id") or "") != str(room.get("draft_room_id") or ""):
+        return write_canonical_live_draft_state(session, room, reason=reason, local_edit=local_edit)
+    for key in (
+        "draft_board",
+        "current_pick_index",
+        "drafted_player_ids",
+        "rosters",
+        "status",
+        "pick_order",
+        "teams",
+        "config",
+        "meta",
+        "paused_remaining_seconds",
+        "timer_deadline",
+        "timer_handled_index",
+    ):
+        if key in room:
+            blob[key] = _json_safe(room[key])
+    blob["last_write_reason"] = reason or None
+    _stamp_live_draft_owner(session, blob)
+    session[LIVE_DRAFT_STATE_KEY] = blob
+    session[LIVE_DRAFT_ROOM_KEY] = room
+    _sync_page_filter_live_draft_block(session, blob=blob)
+    session["_suite_last_cloud_payload_live_draft"] = {
+        "draft_room_id": blob.get("draft_room_id"),
+        "current_pick_index": blob.get("current_pick_index"),
+        "status": blob.get("status"),
+        "board_len": len(blob.get("draft_board") or []),
+    }
+    if local_edit:
+        mark_live_draft_local_edit(session)
+    return blob
 
 
 def write_canonical_live_draft_state(
@@ -698,6 +870,13 @@ def _apply_derived_draft_status(session: dict[str, Any], room: dict[str, Any] | 
     return room
 
 
+def _finish_prepare(session: dict[str, Any], room: dict[str, Any] | None) -> dict[str, Any] | None:
+    result = _apply_derived_draft_status(session, room)
+    if is_runtime_room(result):
+        _store_live_draft_prepare_fingerprint(session, result)
+    return result
+
+
 def record_manual_pick_snapshot(session: dict[str, Any], board_size: int, pick_index: int) -> None:
     session[MANUAL_PICK_SNAPSHOT_KEY] = {
         "board_size": int(board_size),
@@ -739,6 +918,16 @@ def check_manual_commit_overwrite(session: dict[str, Any], *, source: str = "") 
 
 def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
     """Hydrate runtime room from canonical blob before Live Draft Room renders."""
+    try:
+        from live_draft_perf import PHASE_PREPARE_STATE, live_draft_perf_action
+
+        with live_draft_perf_action(session, "prepare_state", phase=PHASE_PREPARE_STATE):
+            return _prepare_live_draft_state_body(session)
+    except ImportError:
+        return _prepare_live_draft_state_body(session)
+
+
+def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | None:
     if session.get("_live_draft_manual_pick_in_flight"):
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if is_runtime_room(room):
@@ -748,16 +937,19 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
                 record_draft_commit_diagnostics(session, runtime_room_preferred=True, canonical_room_preferred=False)
             except ImportError:
                 pass
-            return _apply_derived_draft_status(session, room)
+            return _finish_prepare(session, room)
     try:
         from draft_ui import PENDING_MANUAL_PICK_KEY
 
         if session.get(PENDING_MANUAL_PICK_KEY):
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if is_runtime_room(room):
-                return _apply_derived_draft_status(session, room)
+                return _finish_prepare(session, room)
     except ImportError:
         pass
+    short = _try_short_circuit_prepare(session)
+    if short is not None:
+        return short
     try:
         from draft_room_context import clear_stale_multiplayer_state, is_multiplayer_draft_active
 
@@ -765,7 +957,7 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if is_runtime_room(room):
                 write_canonical_live_draft_state(session, room, reason="multiplayer_hydrate", local_edit=False)
-                return _apply_derived_draft_status(session, room)
+                return _finish_prepare(session, room)
             clear_stale_multiplayer_state(
                 session,
                 reason="Shared room was not loaded — restored your single-user live draft.",
@@ -789,7 +981,7 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
                 pass
             write_canonical_live_draft_state(session, runtime, reason="session_hydrate_prefer_runtime", local_edit=True)
             check_manual_commit_overwrite(session, source="prepare_live_draft_state_prefer_runtime")
-            return _apply_derived_draft_status(session, runtime)
+            return _finish_prepare(session, runtime)
         try:
             from draft_commit_diagnostics import record_draft_commit_diagnostics
 
@@ -800,10 +992,10 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
         if restored:
             session[LIVE_DRAFT_ROOM_KEY] = restored
             check_manual_commit_overwrite(session, source="prepare_live_draft_state_canonical_restore")
-            return _apply_derived_draft_status(session, restored)
+            return _finish_prepare(session, restored)
     if is_runtime_room(room):
         write_canonical_live_draft_state(session, room, reason="session_hydrate", local_edit=False)
-        return _apply_derived_draft_status(session, room)
+        return _finish_prepare(session, room)
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
         block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
@@ -813,9 +1005,9 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
                 restored = room_from_persist_dict(legacy)
                 if restored:
                     write_canonical_live_draft_state(session, restored, reason="page_filter_hydrate", local_edit=False)
-                    return _apply_derived_draft_status(session, restored)
+                    return _finish_prepare(session, restored)
     final = room if isinstance(room, dict) else None
-    return _apply_derived_draft_status(session, final)
+    return _finish_prepare(session, final)
 
 
 def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -1101,6 +1293,16 @@ def live_draft_envelope_summary(state: dict[str, Any]) -> dict[str, Any] | None:
 
 def commit_live_draft_room(st: Any, session: dict[str, Any], room: dict[str, Any] | None, *, reason: str) -> dict[str, Any]:
     """Canonical write + force-save after a live draft mutation."""
+    try:
+        from live_draft_perf import PHASE_PERSIST, live_draft_perf_action
+
+        with live_draft_perf_action(session, f"persist:{reason}", phase=PHASE_PERSIST):
+            return _commit_live_draft_room_body(st, session, room, reason=reason)
+    except ImportError:
+        return _commit_live_draft_room_body(st, session, room, reason=reason)
+
+
+def _commit_live_draft_room_body(st: Any, session: dict[str, Any], room: dict[str, Any] | None, *, reason: str) -> dict[str, Any]:
     trace: dict[str, Any] = {"reason": reason, "saved": False, "disk": False, "cloud": False, "error": ""}
     if room is None:
         clear_live_draft_state(session, reason=reason)

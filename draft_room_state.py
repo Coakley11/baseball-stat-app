@@ -56,8 +56,11 @@ ACTIVE_DRAFT_SOURCE_SIMULATOR = "simulator"
 def is_live_draft_runtime_active(session: dict[str, Any]) -> bool:
     """True only when a live draft is in progress or paused — not not_started/complete."""
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_runtime_room, prepare_live_draft_state
 
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if is_runtime_room(room) and str(room.get("status") or "") in ("in_progress", "paused"):
+            return True
         prepare_live_draft_state(session)
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         return isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused")
@@ -103,10 +106,12 @@ def ensure_live_draft_synced_to_canonical_board(
         "last_sync_error": None,
     }
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_runtime_room, prepare_live_draft_state
 
-        prepare_live_draft_state(session)
         room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if not is_runtime_room(room):
+            prepare_live_draft_state(session)
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
     except Exception as exc:
         diag["last_sync_error"] = f"prepare_live_draft_state: {exc}"
         room = session.get("live_draft_room")
@@ -774,6 +779,12 @@ def build_snake_board(team_names: list[str], *, rounds: int) -> pd.DataFrame:
 
 def get_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
     """Single board every draft tool should read."""
+    try:
+        from live_draft_state import flush_deferred_live_draft_pick_effects
+
+        flush_deferred_live_draft_pick_effects(session)
+    except ImportError:
+        pass
     ensure_live_draft_synced_to_canonical_board(session, reason="get_canonical_draft_board")
     prepare_draft_room_state(session)
     return ensure_runtime_draft_board(session).copy()

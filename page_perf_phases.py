@@ -149,6 +149,17 @@ def render_perf_report(st: Any, session: dict[str, Any]) -> None:
             st.markdown("**Top 10 slowest functions**")
             for i, (name, sec) in enumerate(top, start=1):
                 st.text(f"{i}. {name}: {sec:.3f}s")
+        try:
+            from live_draft_perf import render_live_draft_perf_section, summarize_live_draft_phases
+
+            ld_top = summarize_live_draft_phases(session, limit=10)
+            if ld_top:
+                st.markdown("**Live Draft — top phases**")
+                for i, (name, sec) in enumerate(ld_top, start=1):
+                    st.text(f"{i}. {name}: {sec:.3f}s")
+            render_live_draft_perf_section(st, session)
+        except ImportError:
+            pass
         st.markdown("**All phases**")
         for phase, sec in sorted(timings.items(), key=lambda kv: kv[1], reverse=True):
             st.text(f"{phase}: {sec:.3f}s")

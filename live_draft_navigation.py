@@ -76,6 +76,16 @@ def inject_live_draft_quick_nav_styles(st: Any) -> None:
     )
 
 
+def _go_body(session: dict[str, Any], target_page: str, prepare_canonical_scoring_context) -> None:
+    if prepare_canonical_scoring_context is not None:
+        try:
+            prepare_canonical_scoring_context(session, active_page=target_page)
+        except Exception:
+            pass
+    session[BROWSING_AWAY_KEY] = True
+    _apply_scheduled_page(session, target_page)
+
+
 def render_live_draft_quick_nav(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
     """Color-coded navigation tiles to related fantasy pages."""
     try:
@@ -84,13 +94,13 @@ def render_live_draft_quick_nav(st: Any, session: dict[str, Any], *, page_label_
         prepare_canonical_scoring_context = None  # type: ignore[misc,assignment]
 
     def _go(target_page: str) -> None:
-        if prepare_canonical_scoring_context is not None:
-            try:
-                prepare_canonical_scoring_context(session, active_page=target_page)
-            except Exception:
-                pass
-        session[BROWSING_AWAY_KEY] = True
-        _apply_scheduled_page(session, target_page)
+        try:
+            from live_draft_perf import PHASE_SECTION_NAV, live_draft_perf_action
+
+            with live_draft_perf_action(session, f"nav:{target_page}", phase=PHASE_SECTION_NAV):
+                _go_body(session, target_page, prepare_canonical_scoring_context)
+        except ImportError:
+            _go_body(session, target_page, prepare_canonical_scoring_context)
 
     inject_live_draft_quick_nav_styles(st)
     st.markdown('<div class="ld-quick-nav-wrap"><div class="ld-quick-nav-title">Quick navigation</div></div>', unsafe_allow_html=True)

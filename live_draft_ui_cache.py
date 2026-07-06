@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pandas as pd
@@ -85,19 +86,48 @@ def cached_live_draft_get_available(session: dict[str, Any], room: dict[str, Any
         df = entry.get("df")
         if isinstance(df, pd.DataFrame):
             try:
-                from page_perf_phases import record_cache_event
+                from live_draft_perf import record_cache_action
 
-                record_cache_event(session, "live_draft_available_pool", hit=True)
+                record_cache_action(
+                    session,
+                    "available_pool",
+                    phase="live_draft_available_pool",
+                    hit=True,
+                )
             except ImportError:
-                pass
-            return df.copy()
-    try:
-        from page_perf_phases import record_cache_event
+                try:
+                    from page_perf_phases import record_cache_event
 
-        record_cache_event(session, "live_draft_available_pool", hit=False)
+                    record_cache_event(session, "live_draft_available_pool", hit=True)
+                except ImportError:
+                    pass
+            return df.copy()
+    t0 = time.perf_counter()
+    try:
+        from page_perf_phases import session_perf_phase
+
+        with session_perf_phase(session, "live_draft_available_pool"):
+            df = live_draft_get_available(room)
     except ImportError:
-        pass
-    df = live_draft_get_available(room)
+        df = live_draft_get_available(room)
+    elapsed = time.perf_counter() - t0
+    try:
+        from live_draft_perf import PHASE_AVAILABLE_POOL, record_cache_action
+
+        record_cache_action(
+            session,
+            "available_pool",
+            phase=PHASE_AVAILABLE_POOL,
+            hit=False,
+            elapsed_sec=elapsed,
+        )
+    except ImportError:
+        try:
+            from page_perf_phases import record_cache_event
+
+            record_cache_event(session, "live_draft_available_pool", hit=False)
+        except ImportError:
+            pass
     session[AVAILABLE_CACHE_KEY] = {"key": key, "df": df}
     return df.copy()
 

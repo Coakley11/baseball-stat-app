@@ -367,12 +367,43 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
     q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     if name in q:
         return q, False
-    q.append(name)
-    sync_draft_queue(session, q, reason="add_to_queue")
     try:
-        from draft_ui import cache_queue_player_meta, lookup_player_draft_meta
+        from live_draft_perf import PHASE_QUEUE_ADD, live_draft_perf_action
 
-        cache_queue_player_meta(session, name, lookup_player_draft_meta(session, name))
+        with live_draft_perf_action(session, "queue_add", phase=PHASE_QUEUE_ADD):
+            q.append(name)
+            sync_draft_queue(session, q, reason="add_to_queue")
+    except ImportError:
+        q.append(name)
+        sync_draft_queue(session, q, reason="add_to_queue")
+    try:
+        from draft_ui import cache_queue_player_meta
+
+        pool = None
+        try:
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(room, dict):
+                pool = room.get("pool")
+        except ImportError:
+            pass
+        if pool is not None and hasattr(pool, "iterrows"):
+            target = name.lower()
+            col = "fullName" if "fullName" in pool.columns else "Player"
+            if col in pool.columns:
+                for _, row in pool.iterrows():
+                    full = str(row.get(col) or "").strip()
+                    if full.lower() == target:
+                        cache_queue_player_meta(
+                            session,
+                            name,
+                            {
+                                "position": str(row.get("Primary Position") or row.get("Position") or "—"),
+                                "team": str(row.get("Team") or row.get("MLB Team") or "—"),
+                            },
+                        )
+                        break
     except ImportError:
         pass
     return q, True
@@ -388,8 +419,15 @@ def remove_player_from_draft_queue(
     q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     if name not in q:
         return q, False
-    q = [p for p in q if p != name]
-    sync_draft_queue(session, q, reason=reason)
+    try:
+        from live_draft_perf import PHASE_QUEUE_REMOVE, live_draft_perf_action
+
+        with live_draft_perf_action(session, "queue_remove", phase=PHASE_QUEUE_REMOVE):
+            q = [p for p in q if p != name]
+            sync_draft_queue(session, q, reason=reason)
+    except ImportError:
+        q = [p for p in q if p != name]
+        sync_draft_queue(session, q, reason=reason)
     return q, True
 
 
@@ -704,9 +742,11 @@ def gather_draft_ami_snapshot(page: str, session: dict[str, Any]) -> dict[str, A
         snapshot["scoring_settings"] = scoring
 
     try:
-        from live_draft_state import prepare_live_draft_state
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_runtime_room, prepare_live_draft_state
 
-        prepare_live_draft_state(session)
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if not (is_runtime_room(room) and str(room.get("status") or "") in ("in_progress", "paused", "not_started")):
+            prepare_live_draft_state(session)
     except ImportError:
         pass
     try:

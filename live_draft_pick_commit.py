@@ -142,13 +142,52 @@ def persist_applied_pick(
         pass
 
     try:
-        from draft_room_state import sync_live_draft_room_to_canonical_board
+        from live_draft_state import (
+            defer_live_draft_pick_activity,
+            invalidate_live_draft_prepare_cache,
+            mark_live_draft_board_sync_pending,
+        )
 
-        sync_live_draft_room_to_canonical_board(session, room)
+        invalidate_live_draft_prepare_cache(session, reason=f"pick:{source}")
+        if mp:
+            try:
+                from draft_room_state import sync_live_draft_room_to_canonical_board
+
+                sync_live_draft_room_to_canonical_board(session, room)
+            except ImportError:
+                pass
+            try:
+                from baseball_draft_activity import after_live_draft_pick_committed
+
+                after_live_draft_pick_committed(session, room)
+            except Exception:
+                pass
+        else:
+            mark_live_draft_board_sync_pending(session, reason=source)
+            defer_live_draft_pick_activity(session, room, source=source)
     except ImportError:
-        pass
+        try:
+            from draft_room_state import sync_live_draft_room_to_canonical_board
 
-    write_canonical_live_draft_state(session, room, reason=source, local_edit=not mp)
+            sync_live_draft_room_to_canonical_board(session, room)
+        except ImportError:
+            pass
+        try:
+            from baseball_draft_activity import after_live_draft_pick_committed
+
+            after_live_draft_pick_committed(session, room)
+        except Exception:
+            pass
+
+    if mp:
+        write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
+    else:
+        try:
+            from live_draft_state import patch_canonical_live_draft_pick_fields
+
+            patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
+        except ImportError:
+            write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
     if mp:
         try:
             from live_draft_state import clear_live_draft_local_edit
@@ -167,13 +206,6 @@ def persist_applied_pick(
             )
         except ImportError:
             pass
-
-    try:
-        from baseball_draft_activity import after_live_draft_pick_committed
-
-        after_live_draft_pick_committed(session, room)
-    except Exception:
-        pass
 
     return PickCommitResult(
         ok=True,

@@ -10079,7 +10079,7 @@ def live_draft_build_board_df(room):
     return df[[c for c in show if c in df.columns]]
 
 
-def live_draft_recommendations(room, top_n=8, team=None):
+def live_draft_recommendations(room, top_n=8, team=None, session=None):
     slot = live_draft_current_slot(room)
     if slot is None:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -10101,7 +10101,22 @@ def live_draft_recommendations(room, top_n=8, team=None):
     cfg["next_user_pick"] = live_draft_next_pick_for_team(room, target_team)
     cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
     target_counts = _live_draft_target_counts(cfg)
-    balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg, room=room)
+    try:
+        from contextlib import nullcontext
+
+        from page_perf_phases import session_perf_phase
+
+        score_ctx = (
+            session_perf_phase(session, "live_draft_score_available")
+            if isinstance(session, dict)
+            else nullcontext()
+        )
+    except ImportError:
+        from contextlib import nullcontext
+
+        score_ctx = nullcontext()
+    with score_ctx:
+        balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg, room=room)
     top_recommended = balanced.head(top_n)
     best_available = balanced.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[False, False]).head(top_n)
     positional = balanced[balanced["Primary Position"].isin(gaps)].sort_values(
@@ -10119,24 +10134,47 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     entry = session.get(REC_CACHE_KEY)
     if isinstance(entry, dict) and entry.get("key") == cache_key:
         try:
-            from page_perf_phases import record_cache_event
+            from live_draft_perf import PHASE_RECOMMENDATIONS, record_cache_action
 
-            record_cache_event(session, "live_draft_recommendations", hit=True)
+            record_cache_action(
+                session,
+                "recommendations",
+                phase=PHASE_RECOMMENDATIONS,
+                hit=True,
+            )
         except ImportError:
-            pass
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "live_draft_recommendations", hit=True)
+            except ImportError:
+                pass
         return entry["top_rec"], entry["best_avail"], entry["pos_fit"], entry["value_sleep"]
+    t0 = __import__("time").perf_counter()
     try:
         from page_perf_phases import record_cache_event, session_perf_phase
 
         record_cache_event(session, "live_draft_recommendations", hit=False)
         with session_perf_phase(session, "live_draft_recommendations"):
             top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
-                room, top_n=top_n, team=team
+                room, top_n=top_n, team=team, session=session
             )
     except ImportError:
         top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
-            room, top_n=top_n, team=team
+            room, top_n=top_n, team=team, session=session
         )
+    try:
+        from live_draft_perf import PHASE_RECOMMENDATIONS, record_cache_action
+
+        record_cache_action(
+            session,
+            "recommendations",
+            phase=PHASE_RECOMMENDATIONS,
+            hit=False,
+            elapsed_sec=__import__("time").perf_counter() - t0,
+        )
+    except ImportError:
+        pass
     session[REC_CACHE_KEY] = {
         "key": cache_key,
         "top_rec": top_rec,
@@ -21524,13 +21562,25 @@ if active_page == "Live Draft Room":
             if board_df.empty:
                 st.caption("No picks yet.")
             else:
-                render_output_table(
-                    clean_ui_columns(board_df),
-                    key="live_draft_board",
-                    file_name="live_draft_board.csv",
-                    display_rows=80,
-                    style_cols=["Fantasy Edge", "Player Grade"],
-                )
+                try:
+                    from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
+
+                    with live_draft_perf_action(st.session_state, "board_table", phase=PHASE_BOARD_TABLE):
+                        render_output_table(
+                            clean_ui_columns(board_df),
+                            key="live_draft_board",
+                            file_name="live_draft_board.csv",
+                            display_rows=80,
+                            style_cols=["Fantasy Edge", "Player Grade"],
+                        )
+                except ImportError:
+                    render_output_table(
+                        clean_ui_columns(board_df),
+                        key="live_draft_board",
+                        file_name="live_draft_board.csv",
+                        display_rows=80,
+                        style_cols=["Fantasy Edge", "Player Grade"],
+                    )
             st.markdown("</div>", unsafe_allow_html=True)
 
         with rec_col:
@@ -21636,16 +21686,27 @@ if active_page == "Live Draft Room":
                             )
                         if _decision_ctx:
                             try:
-                                from page_perf_phases import record_cache_event
+                                from live_draft_perf import PHASE_DECISION_CONTEXT, record_cache_action
 
-                                record_cache_event(st.session_state, "live_draft_decision_context", hit=True)
+                                record_cache_action(
+                                    st.session_state,
+                                    "decision_context",
+                                    phase=PHASE_DECISION_CONTEXT,
+                                    hit=True,
+                                )
                             except ImportError:
-                                pass
+                                try:
+                                    from page_perf_phases import record_cache_event
+
+                                    record_cache_event(st.session_state, "live_draft_decision_context", hit=True)
+                                except ImportError:
+                                    pass
                             _tracker = _decision_ctx["tracker"]
                             _outlook = _decision_ctx["outlook"]
                             _gaps = list(_decision_ctx.get("gaps") or [])
                             _category_needs = list(_decision_ctx.get("category_needs") or [])
                         else:
+                            _decision_t0 = __import__("time").perf_counter()
                             try:
                                 from page_perf_phases import record_cache_event, session_perf_phase
 
@@ -21669,6 +21730,18 @@ if active_page == "Live Draft Room":
                                     config=cfg,
                                     roster_gaps=_tracker.get("open_positions"),
                                 )
+                            try:
+                                from live_draft_perf import PHASE_DECISION_CONTEXT, record_cache_action
+
+                                record_cache_action(
+                                    st.session_state,
+                                    "decision_context",
+                                    phase=PHASE_DECISION_CONTEXT,
+                                    hit=False,
+                                    elapsed_sec=__import__("time").perf_counter() - _decision_t0,
+                                )
+                            except ImportError:
+                                pass
                             _gaps = list(_tracker.get("gaps") or [])
                             _category_needs = list(_outlook.get("needs_attention") or [])
                             if _ui_cache_key is not None:
@@ -21800,13 +21873,25 @@ if active_page == "Live Draft Room":
                     )
                 with rec_tabs[0]:
                     _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
-                    render_output_table(
-                        format_fantasy_table(clean_ui_columns(_top_show)),
-                        key="live_draft_rec_top",
-                        file_name="live_draft_top_recommendations.csv",
-                        display_rows=10,
-                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                    )
+                    try:
+                        from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
+
+                        with live_draft_perf_action(st.session_state, "rec:Top Picks", phase=PHASE_REC_SECTION):
+                            render_output_table(
+                                format_fantasy_table(clean_ui_columns(_top_show)),
+                                key="live_draft_rec_top",
+                                file_name="live_draft_top_recommendations.csv",
+                                display_rows=10,
+                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                            )
+                    except ImportError:
+                        render_output_table(
+                            format_fantasy_table(clean_ui_columns(_top_show)),
+                            key="live_draft_rec_top",
+                            file_name="live_draft_top_recommendations.csv",
+                            display_rows=10,
+                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                        )
                 with rec_tabs[1]:
                     _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
                     render_output_table(
@@ -21912,12 +21997,23 @@ if active_page == "Live Draft Room":
             for tab, team_name in zip(roster_tabs, sorted(room.get("teams", []))):
                 with tab:
                     team_view = roster_df[roster_df["Fantasy Team"] == team_name]
-                    render_output_table(
-                        format_draft_lab_table(clean_ui_columns(team_view[[c for c in roster_show if c in team_view.columns]])),
-                        key=f"live_draft_roster_{team_name}",
-                        file_name=f"live_draft_roster_{team_name}.csv",
-                        display_rows=40,
-                    )
+                    try:
+                        from live_draft_perf import PHASE_ROSTER_SECTION, live_draft_perf_action
+
+                        with live_draft_perf_action(st.session_state, f"roster:{team_name}", phase=PHASE_ROSTER_SECTION):
+                            render_output_table(
+                                format_draft_lab_table(clean_ui_columns(team_view[[c for c in roster_show if c in team_view.columns]])),
+                                key=f"live_draft_roster_{team_name}",
+                                file_name=f"live_draft_roster_{team_name}.csv",
+                                display_rows=40,
+                            )
+                    except ImportError:
+                        render_output_table(
+                            format_draft_lab_table(clean_ui_columns(team_view[[c for c in roster_show if c in team_view.columns]])),
+                            key=f"live_draft_roster_{team_name}",
+                            file_name=f"live_draft_roster_{team_name}.csv",
+                            display_rows=40,
+                        )
 
         totals_df = live_draft_team_totals(room)
         if not totals_df.empty:
@@ -22053,6 +22149,13 @@ if active_page == "Live Draft Room":
                 later be mirrored to a database or websocket service without rewriting the UI.
                 """
             )
+
+    try:
+        from live_draft_state import flush_deferred_live_draft_pick_effects
+
+        flush_deferred_live_draft_pick_effects(st.session_state)
+    except ImportError:
+        pass
 
     _page_perf_end(active_page)
     save_page_state(active_page)
