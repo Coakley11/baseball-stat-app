@@ -232,7 +232,7 @@ def render_trade_proposals_section(
     """Incoming/outgoing inbox plus Propose Trade action."""
     context = get_active_league_context(session)
     if not context:
-        st.caption("Set an **Active League Context** in Saved Draft Library to propose league trades.")
+        st.caption("Set an **Active Draft** in Saved Draft Library to propose league trades.")
         return
 
     my_team_name = str(my_team or context.get("my_team_name") or "").strip()

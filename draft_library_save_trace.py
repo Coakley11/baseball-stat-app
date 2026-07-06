@@ -591,7 +591,7 @@ def render_save_trace_inline(
         diag.get("save_request_received") or diag.get("finalized_at") or diag.get("save_error")
     )
     if not has_trace and not (isinstance(btn_trace, dict) and btn_trace.get("save_requested")):
-        st.info("No save trace yet — click **Save Active League Context**.")
+        st.info("No save trace yet — click **Save Draft**.")
         return
     if not has_trace:
         st.warning("Save button fired, but full pipeline trace was not finalized yet.")

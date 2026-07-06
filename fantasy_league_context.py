@@ -984,8 +984,8 @@ def get_league_context_for_archive(session: dict[str, Any], archive_entry: dict[
 
 def league_context_coverage_badge(context: dict[str, Any] | None) -> str:
     if has_full_league_rosters(context):
-        return "Active League Context"
-    return "Incomplete — re-save as full league"
+        return "Full League Draft"
+    return "Incomplete — re-save draft"
 
 
 def league_context_type_badge(context: dict[str, Any] | None) -> str:

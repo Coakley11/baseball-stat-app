@@ -665,30 +665,19 @@ def infer_draft_assistant_needs(
             needed_positions = []
     # No host slots configured — do not assume a default fantasy roster template.
 
-    if draft_format == "5x5 Roto":
-        cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
-        default_cat_fallback = ["HR", "RBI"]
-    else:
-        cat_defs = {
-            "Power": "proj_HR",
-            "Run Production": "proj_RBI",
-            "Speed": "proj_SB",
-            "Walks/OPS": "proj_OPS",
-            "Volume": "AB",
-        }
-        default_cat_fallback = ["Power", "Run Production"]
-
     category_needs: list[str] = []
-    if not roster_df_auto.empty and draft_df is not None and hasattr(draft_df, "columns"):
-        for label, col in cat_defs.items():
-            if col not in roster_df_auto.columns or col not in draft_df.columns:
-                continue
-            roster_val = pd.to_numeric(roster_df_auto[col], errors="coerce").mean()
-            pool_val = pd.to_numeric(draft_df[col], errors="coerce").mean()
-            if pd.notna(roster_val) and pd.notna(pool_val) and roster_val < pool_val:
-                category_needs.append(label)
-    if not category_needs:
-        category_needs = default_cat_fallback
+    try:
+        from live_draft_pick_scoring import _draft_lab_infer_category_needs
+
+        pool = draft_df if draft_df is not None and hasattr(draft_df, "columns") else pd.DataFrame()
+        if not roster_df_auto.empty:
+            category_needs = _draft_lab_infer_category_needs(
+                roster_df_auto,
+                pool,
+                fantasy_format=draft_format,
+            )
+    except ImportError:
+        category_needs = []
     return needed_positions, category_needs
 
 

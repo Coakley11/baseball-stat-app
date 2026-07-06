@@ -13,6 +13,7 @@ import pandas as pd
 from draft_archive_state import DRAFT_ARCHIVE_KEY, list_draft_archives
 from draft_archive_ui import (
     SAVED_DRAFT_LIBRARY_PAGE,
+    _persist_archive,
     schedule_page_navigation,
     schedule_saved_draft_library_navigation,
 )
@@ -132,6 +133,20 @@ class DraftLibrarySaveBridgeTests(unittest.TestCase):
             counts = workflow_counts_from_session(restored)
             self.assertEqual(counts["saved_drafts"], 1)
             self.assertEqual(counts["league_contexts"], 1)
+
+    @patch("baseball_persistent_state.force_save_baseball_state", return_value=False)
+    def test_persist_archive_reports_failure_when_force_save_fails(self, _mock_force_save: MagicMock) -> None:
+        session: dict = {"room_your_team": "Daniel", "draft_shared_settings": {}}
+        board = _mock_board(8)
+        entry, _ = save_simulator_league_context(session, board, my_team_name="Daniel", defer_activation=True)
+        st = MagicMock()
+        st.session_state = session
+
+        ok = _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
+
+        self.assertFalse(ok)
+        self.assertFalse(session["_draft_library_save_diag"]["persist_ok"])
+        self.assertEqual(session["_draft_library_save_diag"]["draft_archive_count_after"], 1)
 
 
 class ManageSavedDraftsNavigationTests(unittest.TestCase):

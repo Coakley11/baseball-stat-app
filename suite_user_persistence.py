@@ -1454,7 +1454,8 @@ def force_autosave(
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         fp_key = f"_suite_autosave_fp::{app_id}"
-        if st.session_state.get(fp_key) == fp:
+        bypass_fp = reason in _FORCE_SAVE_CLOUD_REASONS
+        if st.session_state.get(fp_key) == fp and not bypass_fp:
             return False
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)

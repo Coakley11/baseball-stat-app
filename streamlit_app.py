@@ -22218,10 +22218,19 @@ if active_page == "Live Draft Room":
                 st.caption(picks_txt)
             _save_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
             try:
-                from draft_archive_ui import render_league_context_save_flash, render_save_live_draft_team
+                from draft_archive_ui import render_league_context_save_flash, render_live_draft_completion_panel
 
                 render_league_context_save_flash(st, st.session_state, page_label_fn=page_option_label)
-                render_save_live_draft_team(st, st.session_state, room, team_name=_save_team, page_label_fn=page_option_label)
+                render_live_draft_completion_panel(
+                    st,
+                    st.session_state,
+                    room,
+                    team_name=_save_team,
+                    page_label_fn=page_option_label,
+                    export_frames_fn=live_draft_export_frames,
+                    csv_export_fn=draft_lab_csv_export,
+                    excel_export_fn=draft_lab_excel_export,
+                )
             except ImportError:
                 if _save_team and _save_team != "—":
                     with st.expander("Save completed draft team", expanded=False):
@@ -22258,44 +22267,6 @@ if active_page == "Live Draft Room":
                 )
             except ImportError:
                 pass
-            act1, act2 = st.columns(2)
-            with act1:
-                if st.button("Analyze Completed Draft", type="primary", key="live_draft_analyze_btn"):
-                    _analyze_payload = pg_xfer.build_transfer(st.session_state, "live_to_draft_lab", {})
-                    request_contextual_page(
-                        "Draft Lab / Simulation",
-                        _analyze_payload,
-                        source_page="Live Draft Room",
-                    )
-            with act2:
-                if st.button("View Results", key="live_draft_view_results_btn"):
-                    navigate_to_page("Draft Room Simulator")
-            export_frames_live = live_draft_export_frames(room)
-            ex1, ex2 = st.columns(2)
-            with ex1:
-                st.download_button(
-                    "Download Live Draft CSV",
-                    data=draft_lab_csv_export(export_frames_live),
-                    file_name="live_draft_room_export.csv",
-                    mime="text/csv",
-                    width="content",
-                )
-            with ex2:
-                try:
-                    st.download_button(
-                        "Download Live Draft Excel",
-                        data=draft_lab_excel_export(export_frames_live),
-                        file_name="live_draft_room_export.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        width="content",
-                    )
-                except Exception as e:
-                    st.caption(f"Excel export unavailable ({e}).")
-            render_contextual_page_nav(
-                "Live Draft Room",
-                "draft_workflow",
-                label="Send completed draft to…",
-            )
 
         with st.expander("Future Multi-Drafter Mode", expanded=False):
             st.markdown(

@@ -93,6 +93,7 @@ def save_draft_archive(
     config: dict[str, Any] | None = None,
     roster_rows: list[dict[str, Any]] | None = None,
     pick_rows: list[dict[str, Any]] | None = None,
+    draft_board_rows: list[dict[str, Any]] | None = None,
     draft_id: str | None = None,
     league_rosters: dict[str, dict[str, Any]] | None = None,
     league_context_id: str | None = None,
@@ -120,6 +121,7 @@ def save_draft_archive(
         },
         "players": copy.deepcopy(roster_rows or []),
         "picks": copy.deepcopy(pick_rows or []),
+        "draft_board": copy.deepcopy(draft_board_rows or []),
     }
     if league_rosters is not None:
         entry["league_rosters"] = copy.deepcopy(league_rosters)
@@ -153,6 +155,7 @@ def save_live_draft_team_archive(
         for p in (room.get("draft_board") or [])
         if isinstance(p, dict) and str(p.get("Fantasy Team") or p.get("Team") or "") == str(team_name)
     ]
+    full_board = [dict(p) for p in (room.get("draft_board") or []) if isinstance(p, dict)]
     label = draft_name or f"{cfg.get('league_name', 'Live Draft')} — {team_name}"
     return save_draft_archive(
         session,
@@ -162,6 +165,7 @@ def save_live_draft_team_archive(
         config=cfg,
         roster_rows=roster,
         pick_rows=picks,
+        draft_board_rows=full_board,
     )
 
 
@@ -186,6 +190,7 @@ def save_simulator_team_archive(
         config=cfg,
         roster_rows=players,
         pick_rows=picks,
+        draft_board_rows=board_df.to_dict(orient="records") if board_df is not None else [],
         draft_id=draft_id,
     )
 

@@ -370,7 +370,7 @@ def start_trade_acquire_flow(
     contexts = collect_player_roster_contexts(session, display)
     trade_contexts, acquire_contexts = split_trade_acquire_contexts(contexts)
     if not trade_contexts and not acquire_contexts:
-        return f"No **Active League Context** roster found for {display}. Set one in Saved Draft Library."
+        return f"No **Active Draft** roster found for {display}. Set one in Saved Draft Library."
 
     if trade_contexts and acquire_contexts:
         session[TRADE_FLOW_SESSION_KEY] = {

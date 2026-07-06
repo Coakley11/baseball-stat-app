@@ -1186,7 +1186,7 @@ def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str
 
         need = format_open_position_needs(gaps)
     except ImportError:
-        need = ", ".join(gaps or []) or "balanced roster"
+        need = ", ".join(gaps or []) or "All Positions"
     scarcity_note = ""
     if "Scarcity Score" in rec_df.columns:
         scarce = rec_df.sort_values("Scarcity Score", ascending=False).head(1)

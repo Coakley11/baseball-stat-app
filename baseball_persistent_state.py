@@ -1184,6 +1184,12 @@ def force_save_baseball_state(st: Any, *, reason: str = "") -> bool:
         "insight_hydrate",
         "insight_persist",
     ) or bool(st.session_state.get("_suite_persist_insight_dirty"))
+    try:
+        from suite_user_persistence import _FORCE_SAVE_CLOUD_REASONS
+
+        bypass_defer = bypass_defer or reason in _FORCE_SAVE_CLOUD_REASONS
+    except ImportError:
+        pass
     if defer.startswith("ami_send") and not bypass_defer:
         st.session_state.pop("_suite_defer_baseball_save_reason", None)
         st.session_state["_suite_last_deferred_save_reason"] = defer

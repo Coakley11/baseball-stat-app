@@ -112,6 +112,22 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(len(session[DRAFT_ARCHIVE_KEY]), 1)
         self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_id"], "restore01")
 
+    def test_union_restore_keeps_all_unique_drafts(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "a1", "draft_name": "Session"}]}
+        incoming = {DRAFT_ARCHIVE_KEY: [{"draft_id": "b1", "draft_name": "Incoming"}]}
+        disk = {
+            DRAFT_ARCHIVE_KEY: [
+                {"draft_id": "a1", "draft_name": "Session"},
+                {"draft_id": "c1", "draft_name": "Disk"},
+            ],
+        }
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=disk):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value={}):
+                merge_protected_workflow_on_restore(session, incoming)
+
+        ids = {str(e.get("draft_id")) for e in session[DRAFT_ARCHIVE_KEY]}
+        self.assertEqual(ids, {"a1", "b1", "c1"})
+
     def test_should_keep_session_workflow_over_empty_blob(self) -> None:
         session_archives = [{"draft_id": "a1"}, {"draft_id": "a2"}]
         self.assertTrue(

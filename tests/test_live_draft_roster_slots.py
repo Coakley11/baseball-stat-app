@@ -130,21 +130,21 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         needed, _cats = infer_draft_assistant_needs(pd.DataFrame(), pd.DataFrame(), config={})
         self.assertEqual(needed, [])
 
-    def test_view_results_uses_safe_navigation(self) -> None:
+    def test_completion_panel_has_analyze_and_save_actions(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
-        marker = 'key="live_draft_view_results_btn"'
-        idx = text.find(marker)
-        self.assertNotEqual(idx, -1)
-        chunk = text[max(0, idx - 120) : idx + 200]
-        self.assertIn("navigate_to_page", chunk)
-        self.assertNotIn('main_sidebar_page"] = "Draft Room Simulator"', chunk)
+        self.assertIn("render_live_draft_completion_panel", text)
+        self.assertIn("export_frames_fn=live_draft_export_frames", text)
+        ui_text = (_REPO / "draft_archive_ui.py").read_text(encoding="utf-8")
+        self.assertIn('"Save Draft"', ui_text)
+        self.assertIn('"Analyze Draft"', ui_text)
+        self.assertIn('"Set Active Draft"', ui_text)
 
     def test_rec_table_drops_redundant_score_columns(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         marker = 'key="live_draft_rec_top"'
         idx = text.find(marker)
         self.assertNotEqual(idx, -1)
-        chunk = text[max(0, idx - 1200) : idx]
+        chunk = text[max(0, idx - 4000) : idx]
         self.assertIn('"Why this pick"', chunk)
         self.assertNotIn('"Sleeper Score"', chunk)
         self.assertNotIn('"Positional Fit"', chunk)

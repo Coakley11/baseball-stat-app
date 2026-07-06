@@ -338,8 +338,9 @@ def get_remaining_position_needs(
     roster_df: pd.DataFrame | None,
     config: dict[str, Any] | None,
 ) -> list[str]:
-    """Open slot position codes — duplicates preserved (e.g. three OF needs → ['OF','OF','OF'])."""
-    return list(assign_roster_to_slot_instances(roster_df, config).get("gaps") or [])
+    """Open slot position codes — excludes bench; duplicates preserved (e.g. three OF)."""
+    gaps = list(assign_roster_to_slot_instances(roster_df, config).get("gaps") or [])
+    return [g for g in gaps if str(g or "").strip().upper() not in ("BN", "BENCH")]
 
 
 def get_league_remaining_demand(room: dict[str, Any] | None, config: dict[str, Any] | None) -> dict[str, int]:
@@ -429,11 +430,12 @@ def position_codes_in_slot_order(config: dict[str, Any] | None) -> list[str]:
 
 def format_open_position_needs(gaps: list[str] | None) -> str:
     """Deduped open-need label for summary banners."""
-    if not gaps:
-        return "balanced roster"
+    filtered = [g for g in (gaps or []) if str(g or "").strip().upper() not in ("BN", "BENCH")]
+    if not filtered:
+        return "All Positions"
     seen: list[str] = []
-    for g in gaps:
+    for g in filtered:
         s = str(g or "").strip()
         if s and s not in seen:
             seen.append(s)
-    return ", ".join(seen) if seen else "balanced roster"
+    return ", ".join(seen) if seen else "All Positions"

@@ -193,7 +193,7 @@ def _execute_simulator_league_context_save(
                 )
         except Exception:
             pass
-        _set_draft_save_ui_flash(session, level="error", message=f"Could not save active league context: {exc}")
+        _set_draft_save_ui_flash(session, level="error", message=f"Could not save draft: {exc}")
 
 
 def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
@@ -565,7 +565,7 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     else:
         session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
     count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
-    persist_ok = bool(session_has_entry and (ok or count_increased or bool(entry_id)))
+    persist_ok = bool(session_has_entry and ok)
     if session_has_entry and not ok:
         try:
             session.pop("_suite_autosave_fp::baseball", None)
@@ -724,6 +724,220 @@ def render_league_context_save_flash(st: Any, session: dict[str, Any], *, page_l
     )
 
 
+def schedule_analyze_completed_draft_navigation(session: dict[str, Any]) -> None:
+    """Open Draft Lab with the completed live draft preloaded."""
+    try:
+        import page_transfers as pg_xfer
+    except ImportError:
+        return
+    payload = pg_xfer.build_transfer(session, "live_to_draft_lab", {})
+    target = "Draft Lab / Simulation"
+    set_pending = getattr(__import__("streamlit_app", fromlist=["set_pending_page_transfer"]), "set_pending_page_transfer", None)
+    if callable(set_pending):
+        set_pending(target, payload, "Live Draft Room")
+    schedule_page_navigation(session, target)
+
+
+def _resolve_live_draft_save_team_name(room: dict[str, Any], team_name: str) -> str:
+    cfg = dict(room.get("config") or {})
+    resolved = str(team_name or "").strip()
+    if not resolved or resolved == "—":
+        resolved = str(cfg.get("user_team") or cfg.get("your_team") or "").strip()
+    if not resolved or resolved == "—":
+        teams = [str(t).strip() for t in (room.get("teams") or cfg.get("teams") or []) if str(t).strip()]
+        resolved = teams[0] if teams else ""
+    return resolved
+
+
+def _execute_live_draft_save(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    team_name: str,
+    draft_name: str,
+    key_prefix: str,
+    defer_activation: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+    """Save completed live draft to session + disk/cloud. Returns (entry, context, persist_ok)."""
+    try:
+        from draft_library_save_trace import begin_save_trace
+
+        begin_save_trace(
+            session,
+            source="live_draft_room",
+            reason="live_draft_league_context_saved",
+            draft_name=draft_name,
+        )
+    except ImportError:
+        pass
+    counts_before = _workflow_counts(session)
+    entry, context = save_live_draft_league_context(
+        session,
+        room,
+        my_team_name=team_name,
+        draft_name=draft_name,
+        defer_activation=defer_activation,
+    )
+    if not list_draft_archives(session):
+        return None, None, False
+    _clear_fantasy_caches_on_archive_change(session)
+    persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
+    if isinstance(session.get("_draft_library_save_diag"), dict):
+        session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
+    if persist_ok:
+        try:
+            from baseball_archive_activity import log_saved_draft_archived
+
+            log_saved_draft_archived(entry, session=session)
+        except ImportError:
+            pass
+        stash_league_context_save_flash(
+            session,
+            entry,
+            context=context,
+            league_save=True,
+        )
+    return entry, context, persist_ok
+
+
+def render_live_draft_completion_panel(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    team_name: str,
+    key_prefix: str = "live_draft_complete",
+    page_label_fn=None,
+    export_frames_fn=None,
+    csv_export_fn=None,
+    excel_export_fn=None,
+) -> None:
+    """Post-final-pick workflow: Draft Name, Save, Analyze, Set Active, Export."""
+    cfg = dict(room.get("config") or {})
+    save_team = _resolve_live_draft_save_team_name(room, team_name)
+    if not save_team:
+        st.warning("Could not determine your fantasy team for saving this draft.")
+        return
+
+    expand_save = bool(session.pop("_draft_save_trace_expand", False))
+    default_name = f"{cfg.get('league_name', 'Live Draft')} — {' vs '.join(str(t) for t in (room.get('teams') or [])[:4] if str(t).strip()) or save_team}"
+    draft_name = st.text_input(
+        "Draft Name",
+        value=default_name.strip(" —"),
+        key=f"{key_prefix}_name_input",
+    )
+    st.caption(
+        "Save the full draft board, all team rosters, settings, and player grades to **Saved Drafts**."
+    )
+
+    save_col, analyze_col, active_col, export_col = st.columns(4)
+    with save_col:
+        save_clicked = st.button("Save Draft", key=f"{key_prefix}_save_btn", type="primary", use_container_width=True)
+    with analyze_col:
+        analyze_clicked = st.button("Analyze Draft", key=f"{key_prefix}_analyze_btn", use_container_width=True)
+    with active_col:
+        active_clicked = st.button("Set Active Draft", key=f"{key_prefix}_active_btn", use_container_width=True)
+    with export_col:
+        export_clicked = st.button("Export Draft", key=f"{key_prefix}_export_btn", use_container_width=True)
+
+    if save_clicked:
+        try:
+            _entry, _context, persist_ok = _execute_live_draft_save(
+                st,
+                session,
+                room,
+                team_name=save_team,
+                draft_name=str(draft_name or "").strip(),
+                key_prefix=key_prefix,
+                defer_activation=True,
+            )
+            if _entry is None:
+                st.error("Save did not update Saved Draft Library — check Developer Mode persistence diagnostics.")
+            elif not persist_ok:
+                st.error(
+                    "Saved to this session, but cloud/disk persist failed. "
+                    "Open **Persistence diagnostics** in Saved Drafts (Developer Mode) before refreshing."
+                )
+            session["_draft_save_trace_expand"] = True
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not save draft: {exc}")
+            session["_draft_save_trace_expand"] = True
+            st.rerun()
+
+    if active_clicked:
+        try:
+            _entry, _context, persist_ok = _execute_live_draft_save(
+                st,
+                session,
+                room,
+                team_name=save_team,
+                draft_name=str(draft_name or "").strip(),
+                key_prefix=key_prefix,
+                defer_activation=False,
+            )
+            if _entry is None:
+                st.error("Could not set active draft — save failed.")
+            elif not persist_ok:
+                st.error("Draft saved in session but persist failed — do not refresh until diagnostics pass.")
+            else:
+                st.toast(f"Active draft: {_entry.get('draft_name', 'Saved Draft')}")
+            session["_draft_save_trace_expand"] = True
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not set active draft: {exc}")
+            session["_draft_save_trace_expand"] = True
+            st.rerun()
+
+    if analyze_clicked:
+        room_status = str(room.get("status") or "").strip()
+        if room_status != "complete":
+            st.warning("Draft must be fully complete before analysis.")
+        else:
+            schedule_analyze_completed_draft_navigation(session)
+            st.rerun()
+
+    if export_clicked:
+        session[f"{key_prefix}_export_open"] = True
+
+    if session.pop(f"{key_prefix}_export_open", False) or export_clicked:
+        if callable(export_frames_fn):
+            frames = export_frames_fn(room)
+            ex1, ex2 = st.columns(2)
+            with ex1:
+                if callable(csv_export_fn):
+                    st.download_button(
+                        "Download CSV",
+                        data=csv_export_fn(frames),
+                        file_name="live_draft_export.csv",
+                        mime="text/csv",
+                        key=f"{key_prefix}_csv_dl",
+                        use_container_width=True,
+                    )
+            with ex2:
+                if callable(excel_export_fn):
+                    try:
+                        st.download_button(
+                            "Download Excel",
+                            data=excel_export_fn(frames),
+                            file_name="live_draft_export.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"{key_prefix}_xlsx_dl",
+                            use_container_width=True,
+                        )
+                    except Exception as exc:
+                        st.caption(f"Excel export unavailable ({exc}).")
+
+    with st.expander("Save diagnostics", expanded=expand_save):
+        try:
+            from draft_library_save_trace import render_save_trace_inline
+
+            render_save_trace_inline(st, session, source="Live Draft Room")
+        except ImportError:
+            pass
+
+
 def render_save_live_draft_team(
     st: Any,
     session: dict[str, Any],
@@ -733,73 +947,18 @@ def render_save_live_draft_team(
     key_prefix: str = "live_draft_archive",
     page_label_fn=None,
 ) -> None:
-    cfg = dict(room.get("config") or {})
-    if not team_name or team_name == "—":
+    """Legacy save expander — prefer render_live_draft_completion_panel on the completion screen."""
+    save_team = _resolve_live_draft_save_team_name(room, team_name)
+    if not save_team:
         return
-    expand_save = bool(session.pop("_draft_save_trace_expand", False))
-    with st.expander("Save completed draft", expanded=expand_save):
-        draft_name = st.text_input(
-            "League context name",
-            value=f"{cfg.get('league_name', 'Live Draft')} — {team_name}",
-            key=f"{key_prefix}_name_input",
-        )
-        st.caption(
-            "Saves **Active League Context** with all team rosters from this live draft, "
-            "then activates it for fantasy workflows."
-        )
-        if st.button("Save Active League Context", key=f"{key_prefix}_save_league_btn", type="primary"):
-            try:
-                try:
-                    from draft_library_save_trace import begin_save_trace
-
-                    begin_save_trace(
-                        session,
-                        source="live_draft_room",
-                        reason="live_draft_league_context_saved",
-                        draft_name=draft_name,
-                    )
-                except ImportError:
-                    pass
-                counts_before = _workflow_counts(session)
-                entry, context = save_live_draft_league_context(
-                    session,
-                    room,
-                    my_team_name=team_name,
-                    draft_name=draft_name,
-                    defer_activation=True,
-                )
-                if not list_draft_archives(session):
-                    st.error("Save did not update Saved Draft Library — check Developer Mode persistence diagnostics.")
-                    return
-                _clear_fantasy_caches_on_archive_change(session)
-                persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
-                if isinstance(session.get("_draft_library_save_diag"), dict):
-                    session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
-                if not persist_ok:
-                    st.error(
-                        "Saved to this session, but cloud/disk persist failed. "
-                        "Open **Persistence diagnostics** on Saved Draft Library (Developer Mode) before refreshing."
-                    )
-                else:
-                    try:
-                        from baseball_archive_activity import log_saved_draft_archived
-
-                        log_saved_draft_archived(entry, session=session)
-                    except ImportError:
-                        pass
-                    stash_league_context_save_flash(session, entry, context=context, league_save=True)
-                session["_draft_save_trace_expand"] = True
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not save active league context: {exc}")
-                session["_draft_save_trace_expand"] = True
-                st.rerun()
-        try:
-            from draft_library_save_trace import render_save_trace_inline
-
-            render_save_trace_inline(st, session, source="Live Draft Room")
-        except ImportError:
-            pass
+    render_live_draft_completion_panel(
+        st,
+        session,
+        room,
+        team_name=save_team,
+        key_prefix=key_prefix,
+        page_label_fn=page_label_fn,
+    )
 
 
 def render_save_simulator_draft_team(

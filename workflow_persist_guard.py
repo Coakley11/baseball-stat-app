@@ -193,6 +193,95 @@ def merge_protected_workflow_into_save(
     return state
 
 
+def _archive_sort_ts(entry: dict[str, Any]) -> str:
+    return str(entry.get("updated_at") or entry.get("created_at") or "")
+
+
+def _union_merge_draft_archives(*sources: Any) -> list[dict[str, Any]]:
+    """Merge saved draft lists by draft_id — never drop drafts present on any source."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for raw in source:
+            if not isinstance(raw, dict):
+                continue
+            draft_id = str(raw.get("draft_id") or "").strip()
+            if not draft_id:
+                continue
+            entry = copy.deepcopy(raw)
+            existing = by_id.get(draft_id)
+            if existing is None or _archive_sort_ts(entry) >= _archive_sort_ts(existing):
+                by_id[draft_id] = entry
+    return sorted(by_id.values(), key=_archive_sort_ts, reverse=True)
+
+
+def _union_merge_league_context_stores(*sources: Any) -> dict[str, Any]:
+    """Merge league-context stores by league_context_id."""
+    merged: dict[str, dict[str, Any]] = {}
+    active_id = ""
+    schema_version = 1
+    legacy_migration: dict[str, Any] | None = None
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        schema_version = int(source.get("schema_version") or schema_version or 1)
+        if isinstance(source.get("legacy_migration"), dict):
+            legacy_migration = copy.deepcopy(source["legacy_migration"])
+        candidate_active = str(source.get("active_league_context_id") or "").strip()
+        if candidate_active:
+            active_id = candidate_active
+        contexts = source.get("contexts")
+        if not isinstance(contexts, dict):
+            continue
+        for context_id, context in contexts.items():
+            if not isinstance(context, dict):
+                continue
+            cid = str(context_id or context.get("league_context_id") or "").strip()
+            if not cid:
+                continue
+            existing = merged.get(cid)
+            if existing is None:
+                merged[cid] = copy.deepcopy(context)
+                continue
+            existing_ts = str(existing.get("metadata", {}).get("updated_at") or "")
+            incoming_ts = str(context.get("metadata", {}).get("updated_at") or "")
+            if incoming_ts >= existing_ts:
+                merged[cid] = copy.deepcopy(context)
+    out: dict[str, Any] = {
+        "schema_version": schema_version,
+        "contexts": merged,
+        "active_league_context_id": active_id,
+    }
+    if legacy_migration is not None:
+        out["legacy_migration"] = legacy_migration
+    return out
+
+
+def _resolve_active_draft_archive_id(
+    *,
+    session_val: Any,
+    incoming_val: Any,
+    disk_val: Any,
+    cloud_val: Any,
+    merged_archives: list[dict[str, Any]],
+) -> str:
+    archive_ids = {
+        str(entry.get("draft_id") or "").strip()
+        for entry in merged_archives
+        if str(entry.get("draft_id") or "").strip()
+    }
+    for candidate in (
+        str(session_val or "").strip(),
+        str(incoming_val or "").strip(),
+        str(disk_val or "").strip(),
+        str(cloud_val or "").strip(),
+    ):
+        if candidate and candidate in archive_ids:
+            return candidate
+    return ""
+
+
 def merge_protected_workflow_on_restore(
     session: dict[str, Any],
     incoming_state: dict[str, Any] | None = None,
@@ -200,43 +289,48 @@ def merge_protected_workflow_on_restore(
     app_id: str = "baseball",
     st: Any | None = None,
 ) -> dict[str, Any]:
-    """After restore, prefer the richest draft archive / league context source."""
+    """After restore, union-merge drafts/contexts from session, blob, disk, and cloud."""
     incoming_state = incoming_state if isinstance(incoming_state, dict) else {}
     disk_state = _load_disk_workflow_snapshot(app_id)
     cloud_state = _load_cloud_workflow_snapshot(app_id, st) if st is not None else {}
     merged_keys: list[str] = []
     merge_sources: dict[str, str] = {}
 
-    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
-        if protected_workflow_nonempty(key, session.get(key)):
-            continue
-        candidates: list[tuple[str, Any]] = [
-            ("incoming", incoming_state.get(key)),
-            ("disk", disk_state.get(key)),
-            ("cloud", cloud_state.get(key)),
-        ]
-        best_val: Any = None
-        best_source = ""
-        best_count = -1
-        for source, val in candidates:
-            if not protected_workflow_nonempty(key, val):
-                continue
-            count = count_draft_archives(val) if key == DRAFT_ARCHIVE_KEY else count_league_contexts(val)
-            if key == ACTIVE_DRAFT_ARCHIVE_KEY:
-                count = 1 if str(val or "").strip() else 0
-            if count > best_count:
-                best_val = val
-                best_source = source
-                best_count = count
-        if best_val is None:
-            continue
-        try:
-            restored = copy.deepcopy(best_val)
-        except Exception:
-            restored = best_val
-        session[key] = restored
-        merged_keys.append(key)
-        merge_sources[key] = best_source
+    merged_archives = _union_merge_draft_archives(
+        session.get(DRAFT_ARCHIVE_KEY),
+        incoming_state.get(DRAFT_ARCHIVE_KEY),
+        disk_state.get(DRAFT_ARCHIVE_KEY),
+        cloud_state.get(DRAFT_ARCHIVE_KEY),
+    )
+    if merged_archives:
+        before = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+        session[DRAFT_ARCHIVE_KEY] = merged_archives
+        if len(merged_archives) > before:
+            merged_keys.append(DRAFT_ARCHIVE_KEY)
+            merge_sources[DRAFT_ARCHIVE_KEY] = "union"
+
+    merged_context_store = _union_merge_league_context_stores(
+        session.get(LEAGUE_CONTEXT_STATE_KEY),
+        incoming_state.get(LEAGUE_CONTEXT_STATE_KEY),
+        disk_state.get(LEAGUE_CONTEXT_STATE_KEY),
+        cloud_state.get(LEAGUE_CONTEXT_STATE_KEY),
+    )
+    if merged_context_store.get("contexts"):
+        before = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
+        session[LEAGUE_CONTEXT_STATE_KEY] = merged_context_store
+        if count_league_contexts(merged_context_store) > before:
+            merged_keys.append(LEAGUE_CONTEXT_STATE_KEY)
+            merge_sources[LEAGUE_CONTEXT_STATE_KEY] = "union"
+
+    active_id = _resolve_active_draft_archive_id(
+        session_val=session.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        incoming_val=incoming_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        disk_val=disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        cloud_val=cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        merged_archives=merged_archives,
+    )
+    if active_id:
+        session[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
 
     if merged_keys:
         session["_suite_workflow_restore_merged_keys"] = merged_keys
