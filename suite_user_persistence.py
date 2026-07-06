@@ -305,7 +305,7 @@ def _cloud_autosave_blocked_reason(
     save_reason: str = "",
 ) -> str | None:
     if save_reason in _FORCE_SAVE_CLOUD_REASONS:
-        if save_reason == "page_change":
+        if save_reason in ("page_change", "live_draft_pick"):
             return None
         if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
             return None
@@ -314,22 +314,47 @@ def _cloud_autosave_blocked_reason(
     if app_id != "baseball":
         return None
     local_players = _workspace_comparison_players(state)
-    if local_players:
+    local_draft_count = 0
+    try:
+        from workflow_persist_guard import count_draft_archives
+
+        local_draft_count = count_draft_archives(state.get("draft_archive_teams"))
+    except ImportError:
+        pass
+    if local_players or local_draft_count:
         return None
+    try:
+        from live_draft_state import live_draft_envelope_summary
+
+        if live_draft_envelope_summary(state):
+            return None
+    except ImportError:
+        pass
     try:
         from suite_cloud_state import load_cloud_full_session
 
         cloud_state, _ = load_cloud_full_session(app_id)
         if not isinstance(cloud_state, dict) or not cloud_state:
             return None
-        cloud_players = _workspace_comparison_players(cloud_state)
-        if not cloud_players:
-            return None
-        if _comparison_user_explicitly_cleared(st):
-            return None
-        return "blank_comparison_would_erase_cloud"
+        if not local_players:
+            cloud_players = _workspace_comparison_players(cloud_state)
+            if cloud_players and not _comparison_user_explicitly_cleared(st):
+                return "blank_comparison_would_erase_cloud"
+        if not local_draft_count:
+            try:
+                from workflow_persist_guard import (
+                    WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
+                    count_draft_archives,
+                )
+
+                cloud_draft_count = count_draft_archives(cloud_state.get("draft_archive_teams"))
+                if cloud_draft_count and not st.session_state.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
+                    return "blank_draft_archive_would_erase_cloud"
+            except ImportError:
+                pass
     except Exception:
         return None
+    return None
 
 
 def _preserve_cloud_widget_fields_on_page_change(
@@ -616,6 +641,17 @@ def _record_startup_restore_diagnostics(
     st.session_state["_suite_disk_restore_after_cloud"] = picked_source == "disk" and bool(cloud_state)
     st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
     st.session_state["_suite_post_restore_comparison_players"] = _session_comparison_players(st) or None
+    try:
+        from workflow_persist_guard import record_startup_restore_snapshot
+
+        record_startup_restore_snapshot(
+            st,
+            cloud_state=cloud_state if isinstance(cloud_state, dict) else None,
+            disk_state=disk_state if isinstance(disk_state, dict) else None,
+            phase="during_sync",
+        )
+    except ImportError:
+        pass
 
 
 def sync_workspace_protocol(

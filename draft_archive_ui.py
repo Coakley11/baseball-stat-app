@@ -234,6 +234,35 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
             f"**Counts (session):** {int(diag.get('draft_archive_count') or 0)} saved drafts · "
             f"{int(diag.get('league_context_count') or 0)} league contexts"
         )
+        startup_snap = session.get("_suite_startup_restore_snapshot")
+        if isinstance(startup_snap, dict) and startup_snap:
+            st.markdown("**Startup restore snapshot**")
+            verdict = str(startup_snap.get("persistence_verdict") or "")
+            verdict_note = {
+                "B_restore_failed": "Cloud/disk had data but session is empty — **restore failed (B)**.",
+                "A_persistence_failed_or_never_saved": "No drafts/tracked players in cloud or disk — **persistence may have failed or was never saved (A)**.",
+                "ok": "Session counts match restore sources.",
+            }.get(verdict, "")
+            st.markdown(
+                f"Workspace `{startup_snap.get('restored_workspace_id') or '—'}` · "
+                f"Page **{startup_snap.get('restored_active_page') or '—'}** · "
+                f"Session drafts **{int(startup_snap.get('session_saved_draft_count') or 0)}** "
+                f"(active `{startup_snap.get('session_active_draft_id') or '—'}`) · "
+                f"Tracked **{int(startup_snap.get('session_tracked_player_count') or 0)}**"
+            )
+            st.caption(
+                f"Cloud: {int(startup_snap.get('cloud_saved_draft_count') or 0)} drafts · "
+                f"Disk: {int(startup_snap.get('disk_saved_draft_count') or 0)} drafts · "
+                f"Restore: {startup_snap.get('restore_pick_source') or '—'} "
+                f"({startup_snap.get('restore_decision') or '—'})"
+            )
+            if verdict_note:
+                if verdict == "B_restore_failed":
+                    st.warning(verdict_note)
+                elif verdict == "A_persistence_failed_or_never_saved":
+                    st.info(verdict_note)
+                else:
+                    st.caption(verdict_note)
         st.markdown(f"**Restore source:** {diag.get('restore_source_label') or '—'}")
         if diag.get("restore_cloud_vs_demo_note"):
             st.warning(str(diag["restore_cloud_vs_demo_note"]))

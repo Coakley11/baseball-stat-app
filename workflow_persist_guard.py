@@ -467,6 +467,13 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     }
 
 
+def tracked_player_count_from_blob(blob: dict[str, Any] | None) -> int:
+    if not isinstance(blob, dict):
+        return 0
+    rv = blob.get("workflow_recently_viewed")
+    return len(rv) if isinstance(rv, list) else 0
+
+
 def summarize_cloud_workflow_blob(blob: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(blob, dict):
         return {
@@ -475,6 +482,8 @@ def summarize_cloud_workflow_blob(blob: dict[str, Any] | None) -> dict[str, Any]
             "has_draft_archive_teams": False,
             "has_fantasy_league_context_state": False,
             "active_draft_archive_id": "",
+            "active_page": "",
+            "tracked_player_count": 0,
             "state_key_count": 0,
             "draft_ids": [],
         }
@@ -493,9 +502,129 @@ def summarize_cloud_workflow_blob(blob: dict[str, Any] | None) -> dict[str, Any]
         "has_draft_archive_teams": _draft_archive_nonempty(archives),
         "has_fantasy_league_context_state": _league_context_store_nonempty(flc),
         "active_draft_archive_id": str(blob.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
+        "active_page": str(blob.get("active_page") or ""),
+        "tracked_player_count": tracked_player_count_from_blob(blob),
         "state_key_count": len(blob),
         "draft_ids": draft_ids,
     }
+
+
+def infer_restore_persistence_verdict(
+    *,
+    cloud_draft_count: int = 0,
+    disk_draft_count: int = 0,
+    session_draft_count: int = 0,
+    cloud_tracked_count: int = 0,
+    session_tracked_count: int = 0,
+    restore_applied: bool = False,
+    restore_skip_reason: str = "",
+) -> str:
+    """Classify cold-start outcome: persistence failed (A) vs restore failed (B)."""
+    skip = str(restore_skip_reason or "").strip().lower()
+    cloud_rich = cloud_draft_count > 0 or cloud_tracked_count > 0
+    disk_rich = disk_draft_count > 0
+    session_empty = session_draft_count == 0 and session_tracked_count == 0
+    if cloud_rich and session_empty:
+        if restore_applied:
+            return "B_restore_failed"
+        if skip in ("no workspace blob", "empty"):
+            return "A_persistence_failed_or_never_saved"
+        return "B_restore_failed"
+    if disk_rich and session_empty and not cloud_rich:
+        return "B_restore_failed"
+    if not cloud_rich and not disk_rich and session_empty:
+        return "A_persistence_failed_or_never_saved"
+    return "ok"
+
+
+def build_startup_restore_snapshot(
+    session: dict[str, Any],
+    *,
+    cloud_state: dict[str, Any] | None = None,
+    disk_state: dict[str, Any] | None = None,
+    phase: str = "post_apply",
+) -> dict[str, Any]:
+    """Read-only startup restore snapshot for A vs B persistence diagnosis."""
+    counts = workflow_counts_from_session(session)
+    session_tracked = tracked_player_count_from_blob(session)
+    cloud_summary = summarize_cloud_workflow_blob(cloud_state if isinstance(cloud_state, dict) else None)
+    disk_summary = summarize_cloud_workflow_blob(disk_state if isinstance(disk_state, dict) else None)
+
+    workspace_id = ""
+    cloud_app_key = ""
+    try:
+        from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
+
+        workspace_id = str(get_active_workspace_id(st=type("_St", (), {"session_state": session})()))
+        cloud_app_key = scoped_cloud_app_id("baseball", workspace_id)
+    except Exception:
+        workspace_id = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("_suite_owned_workspace_id")
+            or ""
+        )
+
+    restore_applied = str(session.get("_suite_restore_decision") or "") == "applied"
+    restore_skip = str(
+        session.get("_suite_restore_skip_reason")
+        or session.get("_suite_persist_restore_skip_reason")
+        or ""
+    )
+    restored_page = str(session.get("active_page") or session.get("main_sidebar_page") or "")
+
+    verdict = infer_restore_persistence_verdict(
+        cloud_draft_count=int(cloud_summary.get("draft_archive_count") or 0),
+        disk_draft_count=int(disk_summary.get("draft_archive_count") or 0),
+        session_draft_count=int(counts.get("draft_archive_count") or 0),
+        cloud_tracked_count=int(cloud_summary.get("tracked_player_count") or 0),
+        session_tracked_count=session_tracked,
+        restore_applied=restore_applied,
+        restore_skip_reason=restore_skip,
+    )
+
+    return {
+        "phase": phase,
+        "restored_workspace_id": workspace_id,
+        "cloud_app_key": cloud_app_key,
+        "restored_active_page": restored_page,
+        "session_saved_draft_count": int(counts.get("draft_archive_count") or 0),
+        "session_active_draft_id": str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
+        "session_tracked_player_count": session_tracked,
+        "cloud_saved_draft_count": int(cloud_summary.get("draft_archive_count") or 0),
+        "cloud_active_draft_id": str(cloud_summary.get("active_draft_archive_id") or ""),
+        "cloud_active_page": str(cloud_summary.get("active_page") or ""),
+        "cloud_tracked_player_count": int(cloud_summary.get("tracked_player_count") or 0),
+        "disk_saved_draft_count": int(disk_summary.get("draft_archive_count") or 0),
+        "disk_active_draft_id": str(disk_summary.get("active_draft_archive_id") or ""),
+        "disk_active_page": str(disk_summary.get("active_page") or ""),
+        "disk_tracked_player_count": int(disk_summary.get("tracked_player_count") or 0),
+        "restore_decision": session.get("_suite_restore_decision"),
+        "restore_pick_source": session.get("_suite_restore_pick_source")
+        or session.get("_suite_persist_last_restore_source"),
+        "restore_skip_reason": restore_skip or None,
+        "persistence_verdict": verdict,
+    }
+
+
+def record_startup_restore_snapshot(
+    st: Any,
+    *,
+    cloud_state: dict[str, Any] | None = None,
+    disk_state: dict[str, Any] | None = None,
+    phase: str = "during_sync",
+) -> dict[str, Any]:
+    """Store startup restore snapshot on session for dev panels and Saved Draft Library."""
+    ss = st.session_state
+    snapshot = build_startup_restore_snapshot(
+        ss,
+        cloud_state=cloud_state,
+        disk_state=disk_state,
+        phase=phase,
+    )
+    ss["_suite_startup_restore_snapshot"] = snapshot
+    for key, value in snapshot.items():
+        ss[f"_suite_startup_{key}"] = value
+    return snapshot
 
 
 def probe_cloud_workflow_for_workspace(workspace_id: str) -> dict[str, Any]:

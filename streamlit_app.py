@@ -13715,6 +13715,12 @@ try:
 except ImportError:
     pass
 st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
+try:
+    from baseball_persistent_state import record_post_restore_workspace_diagnostics
+
+    record_post_restore_workspace_diagnostics(st)
+except ImportError:
+    pass
 if isinstance(st.session_state.get("_draft_library_nav_diag"), dict):
     st.session_state["_draft_library_nav_diag"]["active_page_after_rerun"] = st.session_state.get("active_page")
     st.session_state["_draft_library_nav_diag"]["main_sidebar_page_after"] = st.session_state.get(MAIN_SIDEBAR_PAGE_KEY)

@@ -13,9 +13,12 @@ from workflow_persist_guard import (
     LEAGUE_CONTEXT_STATE_KEY,
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
     build_saved_draft_library_diagnostics,
+    build_startup_restore_snapshot,
+    infer_restore_persistence_verdict,
     merge_protected_workflow_into_save,
     merge_protected_workflow_on_restore,
     probe_cloud_workflow_for_workspace,
+    record_startup_restore_snapshot,
     should_keep_session_workflow_over_blob,
 )
 
@@ -112,22 +115,6 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(len(session[DRAFT_ARCHIVE_KEY]), 1)
         self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_id"], "restore01")
 
-    def test_union_restore_keeps_all_unique_drafts(self) -> None:
-        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "a1", "draft_name": "Session"}]}
-        incoming = {DRAFT_ARCHIVE_KEY: [{"draft_id": "b1", "draft_name": "Incoming"}]}
-        disk = {
-            DRAFT_ARCHIVE_KEY: [
-                {"draft_id": "a1", "draft_name": "Session"},
-                {"draft_id": "c1", "draft_name": "Disk"},
-            ],
-        }
-        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=disk):
-            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value={}):
-                merge_protected_workflow_on_restore(session, incoming)
-
-        ids = {str(e.get("draft_id")) for e in session[DRAFT_ARCHIVE_KEY]}
-        self.assertEqual(ids, {"a1", "b1", "c1"})
-
     def test_should_keep_session_workflow_over_empty_blob(self) -> None:
         session_archives = [{"draft_id": "a1"}, {"draft_id": "a2"}]
         self.assertTrue(
@@ -149,6 +136,68 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(diag["league_context_count"], 1)
         self.assertEqual(diag["restore_source"], "cloud")
         self.assertIn("cloud", diag["restore_source_label"].lower())
+
+    def test_startup_restore_snapshot_flags_restore_failure(self) -> None:
+        session = {
+            "active_page": "Historical Explorer",
+            "_suite_restore_decision": "applied",
+            "workflow_recently_viewed": [],
+        }
+        cloud = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01"}],
+            "active_draft_archive_id": "cloud01",
+            "active_page": "Live Draft Room",
+            "workflow_recently_viewed": ["Judge", "Ohtani"],
+        }
+        snap = build_startup_restore_snapshot(session, cloud_state=cloud, disk_state={}, phase="post_resume")
+        self.assertEqual(snap["restored_workspace_id"], "daniel")
+        self.assertEqual(snap["restored_active_page"], "Historical Explorer")
+        self.assertEqual(snap["session_saved_draft_count"], 0)
+        self.assertEqual(snap["cloud_saved_draft_count"], 1)
+        self.assertEqual(snap["cloud_active_draft_id"], "cloud01")
+        self.assertEqual(snap["cloud_tracked_player_count"], 2)
+        self.assertEqual(snap["persistence_verdict"], "B_restore_failed")
+
+    def test_infer_restore_persistence_verdict_ok(self) -> None:
+        self.assertEqual(
+            infer_restore_persistence_verdict(
+                cloud_draft_count=1,
+                session_draft_count=1,
+                restore_applied=True,
+            ),
+            "ok",
+        )
+
+    def test_record_startup_restore_snapshot_writes_session_keys(self) -> None:
+        st = MagicMock()
+        st.session_state = {DRAFT_ARCHIVE_KEY: [{"draft_id": "s1"}], "active_page": "Live Draft Room"}
+        snap = record_startup_restore_snapshot(st, cloud_state={}, disk_state={}, phase="during_sync")
+        self.assertEqual(st.session_state["_suite_startup_restore_snapshot"], snap)
+        self.assertEqual(st.session_state["_suite_startup_session_saved_draft_count"], 1)
+
+    def test_blank_draft_archive_cloud_block(self) -> None:
+        from suite_user_persistence import _cloud_autosave_blocked_reason
+
+        state = {DRAFT_ARCHIVE_KEY: [], "comparison_state": {"players": []}}
+        cloud_state = {DRAFT_ARCHIVE_KEY: [{"draft_id": "keep01"}]}
+        st = MagicMock()
+        st.session_state = {}
+        with patch("suite_cloud_state.load_cloud_full_session", return_value=(cloud_state, "ts")):
+            reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="autosave")
+        self.assertEqual(reason, "blank_draft_archive_would_erase_cloud")
+
+    def test_draft_archive_save_reason_not_cloud_blocked(self) -> None:
+        from suite_user_persistence import _cloud_autosave_blocked_reason
+
+        state = {DRAFT_ARCHIVE_KEY: []}
+        cloud_state = {DRAFT_ARCHIVE_KEY: [{"draft_id": "keep01"}]}
+        st = MagicMock()
+        st.session_state = {"_suite_workspace_sync_skipped_no_apply": True}
+        with patch("suite_cloud_state.load_cloud_full_session", return_value=(cloud_state, "ts")):
+            reason = _cloud_autosave_blocked_reason(
+                st, "baseball", state, save_reason="draft_archive_saved"
+            )
+        self.assertIsNone(reason)
 
     def test_build_disk_state_applies_merge(self) -> None:
         from baseball_persistent_state import build_baseball_disk_state

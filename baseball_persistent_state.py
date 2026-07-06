@@ -1116,6 +1116,40 @@ def prepare_baseball_workspace(st: Any) -> bool:
     return result
 
 
+def record_post_restore_workspace_diagnostics(st: Any) -> dict[str, Any]:
+    """Capture post-restore counts after resume hooks (authoritative session view)."""
+    ss = st.session_state
+    cloud_state: dict[str, Any] | None = None
+    disk_state: dict[str, Any] | None = None
+    try:
+        from suite_cloud_state import load_cloud_full_session
+
+        loaded, _ = load_cloud_full_session(APP_ID)
+        if isinstance(loaded, dict):
+            cloud_state = loaded
+    except ImportError:
+        pass
+    try:
+        from suite_user_persistence import _load_raw
+
+        disk_state, _, _ = _load_raw(APP_ID)
+    except ImportError:
+        pass
+    try:
+        from workflow_persist_guard import record_startup_restore_snapshot
+
+        snapshot = record_startup_restore_snapshot(
+            st,
+            cloud_state=cloud_state,
+            disk_state=disk_state if isinstance(disk_state, dict) else None,
+            phase="post_resume",
+        )
+    except ImportError:
+        snapshot = {}
+    ss["_suite_post_restore_active_page"] = ss.get("active_page")
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
 def restore_baseball_disk_state_once(st: Any) -> bool:
     """Deprecated — use prepare_baseball_workspace() before sidebar instead."""
     return False
@@ -1468,6 +1502,9 @@ def render_cross_device_sync_debug(st: Any) -> None:
         "local_disk_updated_at": ss.get("local_disk_updated_at"),
         "cloud_updated_at_at_restore": ss.get("cloud_updated_at_at_restore"),
     }
+    startup_snap = ss.get("_suite_startup_restore_snapshot")
+    if isinstance(startup_snap, dict):
+        startup_rows.update(startup_snap)
     try:
         from suite_deploy_marker import GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
 
