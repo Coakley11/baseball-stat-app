@@ -151,6 +151,28 @@ def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str,
     return handoff_meta
 
 
+def resolve_lab_yearly_df(session: dict[str, Any] | None = None, yearly_df=None):
+    """Best-effort Lahman yearly source for Draft Lab analysis (empty frame if unavailable)."""
+    import pandas as pd
+
+    if isinstance(yearly_df, pd.DataFrame) and not yearly_df.empty:
+        return yearly_df
+    if isinstance(session, dict):
+        for key in ("_lahman_yearly_df", "yearly_df"):
+            val = session.get(key)
+            if isinstance(val, pd.DataFrame) and not val.empty:
+                return val
+    try:
+        import streamlit as st
+
+        val = st.session_state.get("_lahman_yearly_df") or st.session_state.get("yearly_df")
+        if isinstance(val, pd.DataFrame) and not val.empty:
+            return val
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 def live_draft_to_lab_draft_df(room: dict[str, Any] | None):
     """Convert a completed live draft board into Draft Lab analysis shape."""
     import pandas as pd
@@ -158,10 +180,41 @@ def live_draft_to_lab_draft_df(room: dict[str, Any] | None):
     if not isinstance(room, dict) or not room.get("draft_board"):
         return pd.DataFrame()
     df = pd.DataFrame(room["draft_board"])
+    pick_to_team: dict[int, str] = {}
+    for slot in room.get("pick_order") or []:
+        if not isinstance(slot, dict):
+            continue
+        try:
+            pick_no = int(slot.get("Pick"))
+        except (TypeError, ValueError):
+            continue
+        team = str(slot.get("Team") or "").strip()
+        if team:
+            pick_to_team[pick_no] = team
     if "Fantasy Team" not in df.columns and "Draft Team" in df.columns:
         df["Fantasy Team"] = df["Draft Team"]
+    if "Fantasy Team" not in df.columns:
+        if pick_to_team and "Pick" in df.columns:
+            df["Fantasy Team"] = pd.to_numeric(df["Pick"], errors="coerce").map(pick_to_team)
     if "fullName" not in df.columns and "Player" in df.columns:
         df["fullName"] = df["Player"]
+    if "Fantasy Team" not in df.columns or df["Fantasy Team"].astype(str).str.strip().eq("").all():
+        order_teams = [
+            str(s.get("Team") or "").strip()
+            for s in (room.get("pick_order") or [])
+            if isinstance(s, dict) and str(s.get("Team") or "").strip()
+        ]
+        if order_teams:
+            if "Pick" in df.columns and pick_to_team:
+                df["Fantasy Team"] = pd.to_numeric(df["Pick"], errors="coerce").map(pick_to_team)
+            elif len(order_teams) >= len(df):
+                df["Fantasy Team"] = order_teams[: len(df)]
+    if "Fantasy Team" not in df.columns or df["Fantasy Team"].astype(str).str.strip().eq("").all():
+        teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+        if teams and len(df) > 0:
+            df["Fantasy Team"] = [teams[i % len(teams)] for i in range(len(df))]
+    if "Fantasy Team" not in df.columns or df["Fantasy Team"].astype(str).str.strip().eq("").all():
+        return pd.DataFrame()
     try:
         from draft_lab_analysis import apply_pick_time_snapshots
 
@@ -179,25 +232,33 @@ def push_completed_live_draft_to_lab(session: dict[str, Any], room: dict[str, An
 
     lab_draft = live_draft_to_lab_draft_df(room)
     if getattr(lab_draft, "empty", True):
+        session[DRAFT_LAB_HANDOFF_DIAG_KEY] = {
+            "push_ok": False,
+            "error": "empty_draft_board",
+            "board_rows": len(room.get("draft_board") or []) if isinstance(room, dict) else 0,
+        }
         return False
     handoff_meta = apply_live_draft_handoff_to_session(session, room)
     pool = room.get("pool", pd.DataFrame())
     if not isinstance(pool, pd.DataFrame):
         pool = pd.DataFrame()
     config = dict(room.get("config") or {})
+    enrich_error = ""
     try:
         from draft_lab_analysis import enrich_lab_draft_metrics
 
         lab_draft = enrich_lab_draft_metrics(lab_draft, pool, config)
-    except ImportError:
-        pass
-    yearly = yearly_df if isinstance(yearly_df, pd.DataFrame) else pd.DataFrame()
+    except Exception as exc:
+        enrich_error = str(exc)
+    yearly = resolve_lab_yearly_df(session, yearly_df)
     analysis_ctx = {
         "config": config,
         "teams": list(room.get("teams") or []),
         "pool": pool,
         "handoff": handoff_meta,
     }
+    analysis_error = enrich_error
+    team_summary = strengths = pick_analysis = gaps = actual_summary = pd.DataFrame()
     try:
         from draft_lab_analysis import analyze_draft_lab_results
 
@@ -206,14 +267,14 @@ def push_completed_live_draft_to_lab(session: dict[str, Any], room: dict[str, An
             yearly,
             context=analysis_ctx,
         )
-    except Exception:
+    except Exception as exc:
+        analysis_error = str(exc) or analysis_error or "analyze_draft_lab_results failed"
         try:
             from baseball_draft_activity import log_draft_analysis_attempted
 
-            log_draft_analysis_attempted(room, session=session, error="analyze_draft_lab_results failed")
+            log_draft_analysis_attempted(room, session=session, error=analysis_error)
         except ImportError:
             pass
-        return False
     session["draft_lab_results"] = {
         "pool": pool,
         "draft": lab_draft,
@@ -226,6 +287,13 @@ def push_completed_live_draft_to_lab(session: dict[str, Any], room: dict[str, An
         "source": "Live Draft Room",
         "handoff": handoff_meta,
         "analysis_context": analysis_ctx,
+    }
+    session[DRAFT_LAB_HANDOFF_DIAG_KEY] = {
+        "push_ok": True,
+        "board_rows": int(len(lab_draft)),
+        "team_count": int(lab_draft["Fantasy Team"].nunique()) if "Fantasy Team" in lab_draft.columns else 0,
+        "analysis_error": analysis_error or None,
+        "yearly_rows": int(len(yearly)) if getattr(yearly, "__len__", None) else 0,
     }
     try:
         from baseball_draft_activity import log_draft_analysis_created

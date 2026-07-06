@@ -586,14 +586,10 @@ def render_live_draft_room_header(
         st.markdown(
             f"""
             <div class="ld-room-header">
-                <div class="ld-rh-title">Live draft room</div>
+                <div class="ld-rh-title">Live Draft Room</div>
                 <div class="ld-rh-meta">
-                    <strong>Mode:</strong> {mode_label} · {mode_detail}<br/>
-                    <strong>Your team:</strong> {assigned_team or "—"} ·
-                    <strong>Status:</strong> {status_txt}{live_badge} ·
-                    <strong>{pick_label or "Pick"}</strong> ·
-                    <strong>On clock:</strong> {on_clock_team or "—"}<br/>
-                    <strong>Teams:</strong> {teams_txt}
+                    <strong>Teams:</strong> {teams_txt}<br/>
+                    You control all teams
                 </div>
             </div>
             """,
@@ -630,6 +626,41 @@ def render_live_draft_room_header(
         st.caption(f"Invite players with this room code: **{code}**")
     else:
         st.error("Could not create shared room. This draft cannot be joined by others.")
+
+
+def render_live_draft_league_header(
+    st: Any,
+    *,
+    league_name: str,
+    teams: list[str],
+    solo: bool = True,
+    pick_label: str = "",
+    round_no: str = "",
+    on_clock_team: str = "",
+    live: bool = False,
+) -> None:
+    """Compact page header — league line + single status line (no duplicate badges)."""
+    league = str(league_name or "League").strip()
+    team_names = [str(t).strip() for t in (teams or []) if str(t).strip()]
+    if solo and len(team_names) >= 2:
+        subtitle = f"Solo Draft · {' vs '.join(team_names[:4])}"
+    elif solo:
+        subtitle = "Solo Draft"
+    else:
+        subtitle = " · ".join(team_names[:4]) if team_names else "Multiplayer Draft"
+    st.markdown(f"### {league}")
+    st.caption(subtitle)
+    status_parts: list[str] = []
+    if pick_label:
+        status_parts.append(str(pick_label).replace("Pick ", "Pick ").replace(" / ", " of "))
+    if round_no and str(round_no) != "—":
+        status_parts.append(f"Round {round_no}")
+    if on_clock_team and str(on_clock_team) != "—":
+        status_parts.append(f"On Clock: {on_clock_team}")
+    if live:
+        status_parts.append("Live")
+    if status_parts:
+        st.caption(" · ".join(status_parts))
 
 
 def render_live_draft_status_badges(
@@ -830,16 +861,11 @@ def build_rec_card_detail_body(
 ) -> str:
     """Expanded analytics for Why Recommended — compact grid without repeating card facts."""
     cells: list[tuple[str, str]] = []
-    insight = build_draft_insight_expander_text(
-        row, badges=badges, strengths=None, gaps=gaps, rank=rank, skip_survival=True
-    )
-    if insight:
-        cells.append(("Recommendation", insight))
+    pos = str(row.get("Primary Position") or "—")
 
     if category_needs:
         cells.append(("Team needs", ", ".join(str(c) for c in category_needs[:4])))
 
-    pos = str(row.get("Primary Position") or "—")
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
     if pd.notna(scarcity) and float(scarcity) >= 0.5:
         cells.append(("Scarcity", f"{pos} tier thinning ({float(scarcity):.2f})"))
@@ -851,17 +877,11 @@ def build_rec_card_detail_body(
             ("Market value", f"Model {int(round(float(mdl)))} vs market {int(round(float(mkt)))}")
         )
 
-    fit = pd.to_numeric(row.get("Positional Fit", np.nan), errors="coerce")
     dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
-    if pd.notna(fit) or pd.notna(dfs):
-        fit_txt = f"{float(fit):.0%}" if pd.notna(fit) else "—"
-        roster_txt = f"{float(dfs):.2f}" if pd.notna(dfs) else "—"
-        if gaps and pos in gaps:
-            cells.append(
-                ("Roster fit", f"Positional fit {fit_txt}; roster fit {roster_txt} for open {pos}")
-            )
-        else:
-            cells.append(("Roster fit", f"Positional fit {fit_txt}; roster fit {roster_txt}"))
+    if gaps and pos in gaps and pd.notna(dfs):
+        cells.append(("Roster fit", f"Fills an open {pos} position<br/>Fit Score: {float(dfs):.2f}"))
+    elif pd.notna(dfs):
+        cells.append(("Roster fit", f"Fit Score: {float(dfs):.2f}"))
 
     risk = pd.to_numeric(row.get("Risk Penalty", np.nan), errors="coerce")
     conf = pd.to_numeric(row.get("Projection Confidence", np.nan), errors="coerce")
@@ -1076,54 +1096,52 @@ def build_rec_card_why_bullets(
         seen.add(dedupe_key)
         bullets.append(t)
 
-    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
-    top_edge = np.nan
-    if rec_df is not None and not getattr(rec_df, "empty", True) and "Fantasy Edge" in rec_df.columns:
-        top_edge = pd.to_numeric(rec_df["Fantasy Edge"], errors="coerce").max()
-    if rank == 1 and "Best Overall" in badge_labels:
-        _add("Best value remaining", key="best_value")
-    elif pd.notna(edge) and pd.notna(top_edge) and float(edge) >= float(top_edge):
-        _add("Best value remaining", key="best_value")
-    elif "Best Value" in badge_labels:
-        _add("Best value remaining", key="best_value")
-
     if gaps and pos in gaps:
         open_of = sum(1 for g in gaps if g == "OF")
         if pos == "OF" and open_of >= 2:
-            _add(f"Fills {open_of} open OF slots", key="fills_of")
+            _add(f"Fills {open_of} of your remaining OF slots", key="fills_position")
         else:
-            _add(f"Fills open {pos} slot", key=f"fills_{pos}")
-    elif any("Fills" in label for label in badge_labels):
-        for label in badge_labels:
-            if "Fills" in label:
-                _add(label.replace("Fills ", "Fills open ").replace(" Slot", " slot"), key="fills_badge")
-                break
+            _add(f"Fills one of your remaining {pos} slots", key="fills_position")
 
-    if strengths:
-        _add(f"Improves {'/'.join(strengths[:2])}", key="strengths")
-    elif category_needs and any("Category" in label for label in badge_labels):
-        _add(f"Improves {'/'.join(str(c) for c in category_needs[:2])}", key="category_need")
-
-    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
-    if pd.notna(surv):
-        pct = int(round(float(surv) * 100))
-        if float(surv) < 0.35:
-            _add(f"Availability Risk: High — {pct}% available next round", key="avail_risk")
-        elif float(surv) < 0.5:
-            _add(f"Availability Risk: Medium — {pct}% available next round", key="avail_risk")
-        elif float(surv) < 0.65:
-            _add(f"Availability Risk: Moderate — {pct}% available next round", key="avail_risk")
+    if category_needs:
+        labels = [str(c).strip() for c in category_needs[:2] if str(c).strip()]
+        if labels:
+            if len(labels) == 1:
+                _add(f"Helps address {labels[0]} deficit", key="category_need")
+            else:
+                _add(f"Helps address {' and '.join(labels)} deficits", key="category_need")
+    elif strengths:
+        _add(f"Strong {'/'.join(strengths[:2])} profile", key="category_strength")
 
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    if pd.notna(scarcity) and float(scarcity) >= 0.65 and "Scarcity" in " ".join(badge_labels):
-        _add(f"{pos} tier thinning" if pos else "Position scarcity rising", key="scarcity")
+    if pd.notna(scarcity) and float(scarcity) >= 0.55:
+        if pos:
+            _add(f"{pos} depth is thinning rapidly", key="scarcity")
+        else:
+            _add("Position depth is thinning rapidly", key="scarcity")
 
-    if pd.notna(edge) and float(edge) >= 8 and "best_value" not in seen:
-        _add(f"Strong market edge (+{int(round(float(edge)))})", key="edge")
+    mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
+    mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
+    if pd.notna(mkt) and pd.notna(mdl):
+        _add(
+            f"Model rank {int(round(float(mdl)))} vs market rank {int(round(float(mkt)))}",
+            key="rank_edge",
+        )
 
-    if not bullets:
+    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
+    if pd.notna(edge) and float(edge) >= 8 and "rank_edge" not in seen:
+        _add(f"Strong market edge (+{int(round(float(edge)))})", key="market_edge")
+
+    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
+    if pd.notna(surv) and float(surv) < 0.4 and "scarcity" not in seen:
+        pct = int(round(float(surv) * 100))
+        _add(f"Only {pct}% likely available next round", key="availability")
+
+    if rank == 1 and not bullets:
+        _add("Best overall pick on the board", key="best_overall")
+    elif not bullets:
         _add("Balanced upside, roster fit, and availability", key="default")
-    return bullets[:4]
+    return bullets[:3]
 
 
 def build_draft_assistant_why_this_pick(
@@ -1249,8 +1267,8 @@ def _display_efv(efv: float | None) -> str:
         return "—"
     val = float(efv)
     if 0 < val <= 1.5:
-        return str(int(round(val * 100)))
-    return str(int(round(val)))
+        val = val * 100.0
+    return f"{round(val, 1):.1f}"
 
 
 def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str] | None = None) -> None:
@@ -1258,11 +1276,16 @@ def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str
         return
     top_name = str(rec_df.iloc[0].get("fullName", "") or "")
     try:
-        from live_draft_roster_slots import format_open_position_needs
+        from draft_needs import display_position_needs_label
 
-        need = format_open_position_needs(gaps)
+        need = display_position_needs_label(gaps)
     except ImportError:
-        need = ", ".join(gaps or []) or "balanced roster"
+        try:
+            from live_draft_roster_slots import format_open_position_needs
+
+            need = format_open_position_needs(gaps)
+        except ImportError:
+            need = ", ".join(gaps or []) or "All Positions"
     scarcity_note = ""
     if "Scarcity Score" in rec_df.columns:
         scarce = rec_df.sort_values("Scarcity Score", ascending=False).head(1)

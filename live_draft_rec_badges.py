@@ -92,84 +92,58 @@ def build_smart_recommendation_badges(
     category_needs: list[str] | None = None,
     strengths: list[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """Return up to four specific (label, css_class) badges — avoid generic Position Need."""
+    """Return up to three specific (label, css_class) badges — one concept each."""
     badges: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    seen_labels: set[str] = set()
+    seen_concepts: set[str] = set()
     pos = str(row.get("Primary Position") or "").strip()
     name = str(row.get("fullName") or "").strip()
 
-    def _add(label: str, css: str) -> None:
-        if label in seen or len(badges) >= 4:
+    def _add(label: str, css: str, *, concept: str = "") -> None:
+        if label in seen_labels or len(badges) >= 3:
             return
-        seen.add(label)
+        concept_key = concept or label.lower()
+        if concept_key in seen_concepts:
+            return
+        seen_labels.add(label)
+        seen_concepts.add(concept_key)
         badges.append((label, css))
-
-    rank_labels = {1: "Best Overall", 2: "Second Best", 3: "Third Best"}
-    rank_badge: tuple[str, str] | None = None
-    if rank in rank_labels:
-        rank_badge = (rank_labels[rank], _BADGE_CSS["gold"])
 
     edge = _num(row, "Fantasy Edge")
     top_edge = np.nan
     if rec_df is not None and not getattr(rec_df, "empty", True) and "Fantasy Edge" in rec_df.columns:
         top_edge = pd.to_numeric(rec_df["Fantasy Edge"], errors="coerce").max()
-    has_best_value = False
     if pd.notna(edge) and pd.notna(top_edge) and float(edge) >= float(top_edge):
-        _add("Best Value", _BADGE_CSS["value"])
-        has_best_value = True
+        _add("Best Value", _BADGE_CSS["value"], concept="best_value")
 
     if pos and gaps and pos in gaps:
         best_at_pos = _best_name_at_position(rec_df, pos)
+        open_of = sum(1 for g in gaps if g == "OF")
         if best_at_pos and name and best_at_pos == name:
-            _add(f"Best Remaining {pos}", _BADGE_CSS["position"])
+            _add(f"Best Remaining {pos}", _BADGE_CSS["position"], concept=f"fill_{pos}")
+        elif pos == "OF" and open_of >= 2:
+            _add(f"Fills {open_of} OF Slots", _BADGE_CSS["position"], concept="fill_position")
         else:
-            open_of = sum(1 for g in gaps if g == "OF")
-            if pos == "OF" and open_of >= 2:
-                _add(f"Fills {open_of} OF Slots", _BADGE_CSS["position"])
-            else:
-                _add(f"Fills {pos} Slot", _BADGE_CSS["position"])
+            _add(f"Fills {pos} Slot", _BADGE_CSS["position"], concept="fill_position")
 
     cat_b = _category_badge(strengths, category_needs)
-    if cat_b and cat_b[0] not in seen:
+    if cat_b:
         cat_bonus = _num(row, "Category Need Bonus")
         if pd.isna(cat_bonus) or float(cat_bonus) > 0:
-            _add(cat_b[0], cat_b[1])
+            _add(cat_b[0], cat_b[1], concept="category_need")
 
-    edge_b = _edge_badge(edge, already_has_value=has_best_value)
-    if edge_b:
-        _add(edge_b[0], edge_b[1])
     scarcity = _num(row, "Scarcity Score")
-    if pd.notna(scarcity) and float(scarcity) >= 0.6:
-        if rec_df is not None and "Scarcity Score" in getattr(rec_df, "columns", []):
-            top_scarcity = pd.to_numeric(rec_df["Scarcity Score"], errors="coerce").max()
-            if float(scarcity) >= float(top_scarcity or 0):
-                _add("Best Scarcity Pick", _BADGE_CSS["scarcity"])
-            elif float(scarcity) >= 0.75:
-                _add("Scarcity Alert", _BADGE_CSS["scarcity"])
+    if pd.notna(scarcity) and float(scarcity) >= 0.65:
+        _add(f"{pos} Scarcity Rising" if pos else "Scarcity Rising", _BADGE_CSS["scarcity"], concept="scarcity")
 
-    efv = _num(row, "Expected Fantasy Value")
-    if pd.notna(efv) and float(efv) >= 0.82:
-        _add("Elite Ceiling", _BADGE_CSS["upside"])
-    elif pd.notna(efv) and float(efv) >= 0.72 and rank <= 3:
-        _add("Highest Upside", _BADGE_CSS["upside"])
+    if pd.notna(edge) and float(edge) >= 10 and "best_value" not in seen_concepts:
+        _add("Market Discount", _BADGE_CSS["bargain"], concept="market_discount")
 
-    conf = _num(row, "Projection Confidence")
-    risk = _num(row, "Risk Penalty")
-    if pd.notna(conf) and float(conf) >= 0.65 and (pd.isna(risk) or float(risk) <= 0.35):
-        _add("Safest Pick", _BADGE_CSS["safe"])
+    rank_labels = {1: "Best Overall", 2: "Second Best", 3: "Third Best"}
+    if rank in rank_labels and len(badges) < 3:
+        _add(rank_labels[rank], _BADGE_CSS["gold"], concept=f"rank_{rank}")
 
-    dec = _num(row, "Decision Score")
-    if rank == 1 and "Best Overall" not in seen and pd.notna(dec) and float(dec) >= 0.75:
-        _add("League Winner Potential", _BADGE_CSS["gold"])
-
-    fit = _num(row, "Positional Fit")
-    if pd.notna(fit) and float(fit) >= 0.8 and not any("Fills" in b[0] or "Best Remaining" in b[0] for b in badges):
-        _add("Elite Floor", _BADGE_CSS["safe"])
-
-    if rank_badge and len(badges) < 4:
-        _add(rank_badge[0], rank_badge[1])
-
-    return badges[:4]
+    return badges[:3]
 
 
 _GENERIC_RANK_BADGES = frozenset({"Best Overall", "Second Best", "Third Best"})

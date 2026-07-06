@@ -116,10 +116,16 @@ class DraftArchiveCallbackTests(unittest.TestCase):
         self.assertIsInstance(flash, dict)
         self.assertNotEqual(flash.get("level"), "error", msg=str(flash))
         self.assertEqual(session.get("_navigate_to_page"), "Draft Lab / Simulation")
+        self.assertEqual(session.get("active_page"), "Draft Lab / Simulation")
+        self.assertEqual(session.get("main_sidebar_page"), "Draft Lab / Simulation")
+        self.assertEqual(session.get("_suite_nav_consumed_target"), "Draft Lab / Simulation")
+        self.assertEqual(session.get("draft_lab_preferred_tab"), "Draft Board")
         pending = session.get("_pending_page_transfer")
         self.assertIsInstance(pending, dict)
         self.assertEqual(pending.get("target"), "Draft Lab / Simulation")
         self.assertIn("draft_lab_results", session)
         self.assertFalse(getattr(session["draft_lab_results"].get("draft"), "empty", True))
 
+
+if __name__ == "__main__":
     unittest.main()

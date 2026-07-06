@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 _BENCH_CODES = frozenset({"BN", "BENCH"})
+_FLEX_ONLY_CODES = frozenset({"DH", "UTIL", "BN", "BENCH"})
 
 
 def filter_bench_gaps(gaps: list[str] | None) -> list[str]:
@@ -14,15 +15,33 @@ def filter_bench_gaps(gaps: list[str] | None) -> list[str]:
     return [g for g in (gaps or []) if str(g or "").strip().upper() not in _BENCH_CODES]
 
 
+def is_flex_only_position_needs(gaps: list[str] | None) -> bool:
+    """True when only utility/bench slots remain — draft becomes best-player-available."""
+    filtered = filter_bench_gaps(gaps)
+    if not filtered:
+        return False
+    return all(str(g or "").strip().upper() in _FLEX_ONLY_CODES for g in filtered)
+
+
+def normalize_position_needs_for_scoring(gaps: list[str] | None) -> list[str]:
+    """Required position codes for recommendations; empty when only flex/bench remains."""
+    filtered = filter_bench_gaps(gaps)
+    if not filtered or is_flex_only_position_needs(filtered):
+        return []
+    return list(dict.fromkeys(filtered))
+
+
 def display_position_needs_label(gaps: list[str] | None) -> str:
     """Human label for UI banners — 'All Positions' when only bench/utility remains."""
+    filtered = filter_bench_gaps(gaps)
+    if not filtered or is_flex_only_position_needs(filtered):
+        return "All Positions"
     try:
         from live_draft_roster_slots import format_open_position_needs
 
-        return format_open_position_needs(filter_bench_gaps(gaps))
+        return format_open_position_needs(filtered)
     except ImportError:
-        filtered = filter_bench_gaps(gaps)
-        return ", ".join(dict.fromkeys(filtered)) if filtered else "All Positions"
+        return ", ".join(dict.fromkeys(filtered))
 
 
 def infer_position_needs(
@@ -40,7 +59,8 @@ def infer_position_needs(
     try:
         from live_draft_roster_slots import get_remaining_position_needs
 
-        return filter_bench_gaps(get_remaining_position_needs(roster_df, cfg))
+        gaps = filter_bench_gaps(get_remaining_position_needs(roster_df, cfg))
+        return normalize_position_needs_for_scoring(gaps)
     except ImportError:
         return []
 

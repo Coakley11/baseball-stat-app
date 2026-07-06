@@ -159,8 +159,8 @@ def render_waiver_wire_page(
     context = get_active_league_context(session)
     if not context:
         st.warning(
-            "No **Active League Context**. Open **Saved Draft Library**, pick a saved draft, "
-            "and click **Set Active League Context**."
+            "No **Active Draft**. Open **Saved Drafts**, pick a saved draft, "
+            "and click **Set Active Draft**."
         )
         return
 
@@ -213,7 +213,7 @@ def render_waiver_wire_page(
         return
 
     st.caption(
-        "Waiver analysis uses **current-season MLB stats** and your **Active Draft** — "
+        "Waiver analysis uses **current-season MLB stats** and your **Active League Context** — "
         "not projections, ADP, Fantasy Edge, or draft-risk metrics."
     )
 

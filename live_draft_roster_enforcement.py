@@ -41,12 +41,12 @@ def format_required_pick_message(required_positions: list[str]) -> str:
     """User-facing disable message for forced required-position picks."""
     labels = [_display_position_code(p) for p in dict.fromkeys(required_positions or []) if str(p).strip()]
     if not labels:
-        return "Required pick: you must fill a required roster slot."
-    if len(labels) == 1:
-        return f"Required pick: you must select a {labels[0]}."
-    if len(labels) == 2:
-        return f"Required pick: you must select {labels[0]} or {labels[1]}."
-    return f"Required pick: you must select {', '.join(labels[:-1])} or {labels[-1]}."
+        return "You must fill required roster positions before the draft ends."
+    joined = ", ".join(labels)
+    return (
+        "You must fill the following positions before the draft ends:\n\n"
+        f"{joined}"
+    )
 
 
 def compute_required_position_enforcement(

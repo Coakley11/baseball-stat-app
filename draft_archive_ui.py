@@ -727,14 +727,16 @@ def render_league_context_save_flash(st: Any, session: dict[str, Any], *, page_l
 
 def schedule_analyze_completed_draft_navigation(session: dict[str, Any]) -> None:
     """Open Draft Lab with the completed live draft preloaded."""
+    target = DRAFT_LAB_PAGE
+    payload: dict[str, Any] = {"actions": ["push_live_draft_to_lab"]}
     try:
         import page_transfers as pg_xfer
+
+        payload = pg_xfer.normalize_transfer_payload(
+            pg_xfer.build_transfer(session, "live_to_draft_lab", {})
+        )
     except ImportError:
-        return
-    payload = pg_xfer.normalize_transfer_payload(
-        pg_xfer.build_transfer(session, "live_to_draft_lab", {})
-    )
-    target = DRAFT_LAB_PAGE
+        pass
     session["_pending_page_transfer"] = {
         "target": target,
         "source": LIVE_DRAFT_PAGE,
@@ -742,6 +744,13 @@ def schedule_analyze_completed_draft_navigation(session: dict[str, Any]) -> None
         "filters": payload,
     }
     schedule_page_navigation(session, target)
+    session["active_page"] = target
+    session["main_sidebar_page"] = target
+    session["_suite_page_user_nav"] = True
+    session["_skip_page_restore_for"] = target
+    session["_suite_nav_consumed_target"] = target
+    session["draft_lab_preferred_tab"] = "Draft Board"
+    session["_draft_lab_live_handoff_pending"] = True
 
 
 def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:
@@ -769,11 +778,22 @@ def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:
         }
         return
     try:
-        from draft_lab_handoff import push_completed_live_draft_to_lab
+        from draft_lab_handoff import push_completed_live_draft_to_lab, resolve_lab_yearly_df
 
-        push_ok = bool(push_completed_live_draft_to_lab(session, room))
-    except Exception:
+        push_ok = bool(
+            push_completed_live_draft_to_lab(
+                session,
+                room,
+                yearly_df=resolve_lab_yearly_df(session),
+            )
+        )
+    except Exception as exc:
         push_ok = False
+        session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
+            "level": "error",
+            "message": f"Could not load completed draft into Draft Lab: {exc}",
+        }
+        return
     if not push_ok:
         session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
             "level": "error",
@@ -1177,7 +1197,7 @@ def render_save_simulator_draft_team(
     if not team_name or team_name == "—":
         return
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
-    with st.expander("Save Active League Context", expanded=expand_save):
+    with st.expander("Set Active Draft", expanded=expand_save):
         flash = _pop_draft_save_ui_flash(session)
         if flash and flash.get("message"):
             if flash.get("level") == "error":
@@ -1185,16 +1205,16 @@ def render_save_simulator_draft_team(
             else:
                 st.info(str(flash["message"]))
         st.caption(
-            "Saves the full mock draft as **Active League Context** (all teams), "
+            "Saves the full mock draft as your **Active Draft** (all teams), "
             "ready for Standings, Lineup, and Waiver workflows."
         )
         st.text_input(
-            "League name",
+            "Draft name",
             value=f"Simulator — {team_name}",
             key=f"{key_prefix}_name_input",
         )
         st.button(
-            "Save Active League Context",
+            "Set Active Draft",
             key=f"{key_prefix}_save_league_btn",
             type="primary",
             on_click=_on_simulator_save_click,

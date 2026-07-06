@@ -313,9 +313,14 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
         "Draft Lab Team Score",
     ):
         if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce").apply(
-                lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
-            )
+            if col == DISPLAY_PLAYER_GRADE:
+                out[col] = pd.to_numeric(out[col], errors="coerce").apply(
+                    lambda v: round(float(v), 1) if pd.notna(v) else v
+                )
+            else:
+                out[col] = pd.to_numeric(out[col], errors="coerce").apply(
+                    lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
+                )
     if DISPLAY_ROSTER_FIT in out.columns:
         out[DISPLAY_ROSTER_FIT] = pd.to_numeric(out[DISPLAY_ROSTER_FIT], errors="coerce").apply(
             lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v

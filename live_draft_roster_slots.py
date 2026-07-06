@@ -430,12 +430,17 @@ def position_codes_in_slot_order(config: dict[str, Any] | None) -> list[str]:
 
 def format_open_position_needs(gaps: list[str] | None) -> str:
     """Deduped open-need label for summary banners."""
+    _flex = frozenset({"DH", "UTIL", "BN", "BENCH"})
     filtered = [g for g in (gaps or []) if str(g or "").strip().upper() not in ("BN", "BENCH")]
     if not filtered:
+        return "All Positions"
+    if all(str(g or "").strip().upper() in _flex for g in filtered):
         return "All Positions"
     seen: list[str] = []
     for g in filtered:
         s = str(g or "").strip()
+        if s.upper() == "DH":
+            s = "UTIL"
         if s and s not in seen:
             seen.append(s)
     return ", ".join(seen) if seen else "All Positions"

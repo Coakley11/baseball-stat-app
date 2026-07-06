@@ -41,8 +41,12 @@ class LiveDraftRosterEnforcementTests(unittest.TestCase):
         self.assertEqual(required, [])
 
     def test_format_required_pick_message(self) -> None:
-        self.assertIn("C", format_required_pick_message(["C"]))
-        self.assertIn("C or 1B", format_required_pick_message(["C", "1B"]))
+        msg = format_required_pick_message(["C"])
+        self.assertIn("C", msg)
+        self.assertIn("before the draft ends", msg)
+        msg2 = format_required_pick_message(["C", "1B"])
+        self.assertIn("C", msg2)
+        self.assertIn("1B", msg2)
 
     def test_player_eligible_multi_position(self) -> None:
         row = {"Primary Position": "C,1B"}

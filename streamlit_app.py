@@ -1806,7 +1806,10 @@ def format_fantasy_table(df):
             df[col] = pd.to_numeric(df[col], errors="coerce").round(0).astype("Int64")
     for col in score_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").apply(format_trimmed_2dp)
+            if col == "Player Grade":
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(1)
+            else:
+                df[col] = pd.to_numeric(df[col], errors="coerce").apply(format_trimmed_2dp)
     for col in rate_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
@@ -2014,7 +2017,7 @@ PAGE_GUIDES = {
     },
     "Waiver Wire / Add-Drop Center": {
         "purpose": "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner.",
-        "when": "In-season with an Active League Context from Saved Draft Library.",
+        "when": "In-season with an Active Draft from Saved Drafts.",
         "outputs": "Waiver-eligible players, recommended adds/drops, pending moves, and league activity log.",
     },
 }
@@ -10549,9 +10552,15 @@ def live_draft_push_analysis_to_session(room):
     if is_dataframe_empty(lab_draft):
         return False
     try:
-        from draft_lab_handoff import push_completed_live_draft_to_lab
+        from draft_lab_handoff import push_completed_live_draft_to_lab, resolve_lab_yearly_df
 
-        return bool(push_completed_live_draft_to_lab(st.session_state, room, yearly_df=yearly_df))
+        return bool(
+            push_completed_live_draft_to_lab(
+                st.session_state,
+                room,
+                yearly_df=resolve_lab_yearly_df(st.session_state, yearly_df),
+            )
+        )
     except ImportError:
         pass
     handoff_meta = {}
@@ -21574,15 +21583,33 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
         if not _shared_lobby_view:
-            st.caption(
-                f"**{cfg.get('league_name', 'League')}** · {room_label} · "
-                f"Your team: **{user_team}** · "
-                f"Status: **{str(_derived_status or room.get('status', '')).replace('_', ' ').title()}** · "
-                f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} of {total_picks}"
-            )
-        on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
-        round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
-        pick_label = f"Pick {min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks} / {total_picks}"
+            pick_num = min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+            pick_label = f"Pick {pick_num} of {total_picks}"
+            on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
+            round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
+            try:
+                from live_draft_room_ui import render_live_draft_league_header
+
+                render_live_draft_league_header(
+                    st,
+                    league_name=str(cfg.get("league_name") or "League"),
+                    teams=team_list,
+                    solo=not _multiplayer_draft,
+                    pick_label=pick_label,
+                    round_no=round_no,
+                    on_clock_team=on_clock_team,
+                    live=_draft_in_progress,
+                )
+            except ImportError:
+                st.caption(
+                    f"**{cfg.get('league_name', 'League')}** · "
+                    f"Pick {pick_num} of {total_picks}"
+                )
+        else:
+            on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
+            round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
+            pick_num = min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+            pick_label = f"Pick {pick_num} of {total_picks}"
         _status_label = str(_derived_status or room.get("status", "")).replace("_", " ").title()
         if not _shared_lobby_view:
             try:
@@ -21611,7 +21638,7 @@ if active_page == "Live Draft Room":
                             st.markdown(f"**Room Code:** `{sc}`")
                         else:
                             st.warning("Room code missing — shared draft may not be joinable.")
-        if not _shared_lobby_view:
+        if not _shared_lobby_view and _multiplayer_draft:
             try:
                 from live_draft_room_ui import render_live_draft_status_badges
 

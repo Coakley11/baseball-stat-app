@@ -47,6 +47,18 @@ class DraftNeedsTests(unittest.TestCase):
         self.assertEqual(needs, [])
         self.assertEqual(display_position_needs_label(needs), "All Positions")
 
+    def test_flex_only_slots_show_all_positions(self) -> None:
+        cfg = {"slots": {"C": 1, "1B": 1, "2B": 0, "3B": 0, "SS": 0, "OF": 0, "DH": 1, "P": 0, "BN": 2}}
+        roster = pd.DataFrame(
+            [
+                {"Primary Position": "C", "Expected Fantasy Value": 0.9},
+                {"Primary Position": "1B", "Expected Fantasy Value": 0.85},
+            ]
+        )
+        needs = infer_position_needs(roster, cfg)
+        self.assertEqual(needs, [])
+        self.assertEqual(display_position_needs_label(["DH"]), "All Positions")
+
     def test_draft_complete_clears_needs(self) -> None:
         roster = pd.DataFrame([{"Primary Position": "C", "proj_HR": 5}])
         pool = pd.DataFrame([{"Primary Position": "OF", "proj_HR": 30}])
