@@ -19879,14 +19879,13 @@ if active_page == DRAFT_LAB_PAGE:
             _t_sim = 0.0
         with st.spinner("Building draft pool and simulating 60 picks..."):
             lab_pool = get_cached_unified_projection_pool(
-                yearly_df,
-                lab_market_df,
-                draft_window=lab_window,
-                fantasy_format=lab_format,
-                projection_style=lab_projection_style,
-                use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
-                ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
-                ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                int(st.session_state.get("_lahman_max_year", year_max)),
+                int(lab_window),
+                str(lab_format),
+                str(lab_projection_style),
+                bool(st.session_state.get("draft_use_ml_blend", False)),
+                float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+                int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
             )
             lab_draft = simulate_draft_lab(lab_pool, teams=("Team A", "Team B", "Team C", "Team D"), picks_per_team=int(lab_picks_per_team))
             sim_teams = ["Team A", "Team B", "Team C", "Team D"]
@@ -20689,14 +20688,13 @@ if active_page == "Live Draft Room":
                 pass
             with st.spinner("Building player pool and draft room..."):
                 pool_live = get_cached_unified_projection_pool(
-                    yearly_df,
-                    market_df_live,
-                    draft_window=int(live_proj_window),
-                    fantasy_format=fantasy_format,
-                    projection_style=live_proj_style,
-                    use_ml_blend=bool(st.session_state.get("draft_use_ml_blend", False)),
-                    ml_blend_weight=float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
-                    ml_min_games_for_signal=int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                    int(st.session_state.get("_lahman_max_year", year_max)),
+                    int(live_proj_window),
+                    str(fantasy_format),
+                    str(live_proj_style),
+                    bool(st.session_state.get("draft_use_ml_blend", False)),
+                    float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+                    int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
                 )
             try:
                 if mark_start_step:
