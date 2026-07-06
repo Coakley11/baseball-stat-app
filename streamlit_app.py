@@ -23505,45 +23505,26 @@ if active_page == "Fantasy Lineup Assistant":
                 with st.container(border=True):
                     st.markdown(str(diag["position_note"]))
             if _outlook_line:
-                with st.container(border=True):
-                    st.markdown(_outlook_line)
-                    try:
-                        from fantasy_actionable_recommendations import (
-                            team_outlook_confidence_help,
-                            team_outlook_confidence_reasons,
-                            team_outlook_explanation,
-                            team_outlook_summary,
-                        )
+                st.caption(_outlook_line.replace("**Team Outlook:**", "Team Outlook:"))
 
-                        for _why_line in team_outlook_explanation(
-                            strong_cats=_strength_cats,
-                            weak_cats=_weakness_cats,
-                            category_ranks=_cat_ranks,
-                            category_values=_cat_values,
-                            n_teams=_n_teams,
-                            missing_slots=list(lineup_pkg.get("missing_slots") or []),
-                        ):
-                            st.markdown(_why_line)
-                        _, _confidence_label, _ = team_outlook_summary(
-                            strong_cats=_strength_cats,
-                            weak_cats=_weakness_cats,
-                            category_ranks=_cat_ranks,
-                            n_teams=_n_teams,
-                        )
-                        _conf_reasons = team_outlook_confidence_reasons(
-                            confidence=_confidence_label,
-                            category_ranks=_cat_ranks,
-                            n_teams=_n_teams,
-                            missing_slots=list(lineup_pkg.get("missing_slots") or []),
-                            roster_complete=not bool(lineup_pkg.get("missing_slots")),
-                        )
-                        if _conf_reasons and _confidence_label:
-                            st.markdown(f"**Why confidence is {_confidence_label.lower()}:**")
-                            for _conf_line in _conf_reasons:
-                                st.markdown(f"- {_conf_line}")
-                        st.caption(team_outlook_confidence_help())
-                    except ImportError:
-                        pass
+            _team_summary: dict = {}
+            try:
+                from fantasy_actionable_recommendations import (
+                    build_condensed_team_summary,
+                    render_condensed_team_summary,
+                )
+
+                _team_summary = build_condensed_team_summary(
+                    strong_cats=_strength_cats,
+                    weak_cats=_weakness_cats,
+                    needs=_needs,
+                    waiver_pool=_waiver_pool,
+                    league_context=_ctx if isinstance(_ctx, dict) else None,
+                )
+                with st.container(border=True):
+                    render_condensed_team_summary(st, _team_summary)
+            except ImportError:
+                _team_summary = {}
 
             if _needs:
                 try:
@@ -23577,64 +23558,8 @@ if active_page == "Fantasy Lineup Assistant":
                 st.dataframe(diag["pitching_table"], width="stretch", hide_index=True)
 
 
-            cA, cB = st.columns(2)
             try:
-                from fantasy_actionable_recommendations import (
-                    build_team_actionable_summary,
-                    format_category_rank_line,
-                    format_category_weakness_line,
-                    plain_lineup_archetype,
-                )
-
-                strength_lines = [
-                    format_category_rank_line(
-                        cat,
-                        _cat_ranks.get(cat),
-                        n_teams=_n_teams,
-                        value=_cat_values.get(cat),
-                    )
-                    for cat in _strength_cats
-                ]
-                weakness_lines = [
-                    format_category_weakness_line(
-                        cat,
-                        _cat_ranks.get(cat),
-                        n_teams=_n_teams,
-                        value=_cat_values.get(cat),
-                    )
-                    for cat in _weakness_cats
-                ]
-                _rate_label = "OBP" if rate_for_diag == "OBP" else "AVG"
-                _archetype = plain_lineup_archetype(
-                    {},
-                    rate_label=_rate_label,
-                    strong_cats=_strength_cats,
-                    weak_cats=_weakness_cats,
-                )
-            except ImportError:
-                _strength_cats = []
-                _weakness_cats = []
-                strength_lines = []
-                weakness_lines = []
-                _archetype = str(diag.get("archetype") or "")
-            with cA:
-                st.markdown("**Strengths**")
-                if strength_lines:
-                    for line in strength_lines:
-                        st.markdown(line)
-                else:
-                    st.markdown("_—_")
-            with cB:
-                st.markdown("**Weaknesses**")
-                if weakness_lines:
-                    for line in weakness_lines:
-                        st.markdown(line)
-                else:
-                    st.markdown("_—_")
-            if _archetype:
-                st.markdown(_archetype)
-            try:
-                from fantasy_actionable_recommendations import build_team_actionable_summary
+                from fantasy_actionable_recommendations import build_team_actionable_summary, render_waiver_strategy_cards
 
                 _action_lines = build_team_actionable_summary(
                     strong_cats=_strength_cats,
@@ -23646,9 +23571,14 @@ if active_page == "Fantasy Lineup Assistant":
                     my_team=str(lineup_team or ""),
                     league_context=_ctx if isinstance(_ctx, dict) else None,
                 )
+                _waiver_cards = list((_team_summary or {}).get("waiver_targets") or [])
+                if _waiver_cards:
+                    render_waiver_strategy_cards(st, _waiver_cards)
                 for _action_line in _action_lines:
+                    if _action_line == "__WAIVER_CARDS__":
+                        continue
                     st.markdown(_action_line)
-                if _action_lines:
+                if _action_lines or _waiver_cards:
                     act_w, act_s = st.columns(2)
                     with act_w:
                         if st.button(

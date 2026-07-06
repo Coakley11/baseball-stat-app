@@ -57,6 +57,8 @@ def format_category_weakness_line(
 ) -> str:
     rank_phrase = format_league_rank_phrase(rank, n_teams=n_teams)
     val_text = _format_category_value(cat, value)
+    if n_teams <= 4 and rank_phrase:
+        return f"🔴 **{cat}** — {val_text} (lowest-ranked category, {rank_phrase})"
     if rank_phrase and value is not None:
         return f"🔴 **{cat}** — {val_text} ({rank_phrase})"
     if rank_phrase:
@@ -262,6 +264,96 @@ def _trade_target_hint(weak_cats: list[str]) -> str:
     return hints.get(str(weak).upper(), f"upgrade **{weak}** without giving up your best categories")
 
 
+def build_waiver_strategy_cards(
+    *,
+    needs: dict[str, Any] | None = None,
+    waiver_pool: pd.DataFrame | None = None,
+    league_context: dict[str, Any] | None = None,
+    limit: int = 3,
+) -> list[dict[str, str]]:
+    """Structured top waiver targets for card rendering."""
+    adds = _waiver_target_rows(waiver_pool, needs, limit=int(limit), context=league_context)
+    if adds.empty:
+        return []
+    name_col = "Player" if "Player" in adds.columns else "fullName"
+    cards: list[dict[str, str]] = []
+    for i, (_, row) in enumerate(adds.head(int(limit)).iterrows(), 1):
+        name = str(row.get(name_col) or row.get("Player") or "").strip()
+        if not name:
+            continue
+        pos = str(row.get("Primary Position") or row.get("Position") or "—").strip()
+        reason = str(row.get("Why Add") or "").strip()
+        cards.append({"rank": str(i), "name": name, "position": pos, "reason": reason})
+    return cards
+
+
+def build_condensed_team_summary(
+    *,
+    strong_cats: list[str] | None = None,
+    weak_cats: list[str] | None = None,
+    needs: dict[str, Any] | None = None,
+    waiver_pool: pd.DataFrame | None = None,
+    league_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Single team summary block — strengths, biggest weakness, one sentence, waiver cards."""
+    strengths = list(strong_cats or [])[:4]
+    weaknesses = list(weak_cats or [])
+    biggest_weak = weaknesses[0] if weaknesses else ""
+    if strengths and biggest_weak:
+        summary = (
+            f"Strong in **{', '.join(strengths[:2])}**; "
+            f"biggest improvement opportunity at **{biggest_weak}**."
+        )
+    elif strengths:
+        summary = f"Leads with **{', '.join(strengths[:2])}**."
+    elif biggest_weak:
+        summary = f"Biggest improvement opportunity: **{biggest_weak}**."
+    else:
+        summary = "Balanced roster profile across categories."
+    return {
+        "strengths": strengths,
+        "biggest_weakness": biggest_weak,
+        "summary": summary,
+        "waiver_targets": build_waiver_strategy_cards(
+            needs=needs,
+            waiver_pool=waiver_pool,
+            league_context=league_context,
+            limit=3,
+        ),
+    }
+
+
+def render_condensed_team_summary(st: Any, summary: dict[str, Any]) -> None:
+    """Render Team Summary panel without repeating category findings."""
+    strengths = list(summary.get("strengths") or [])
+    biggest_weak = str(summary.get("biggest_weakness") or "").strip()
+    st.markdown("##### Team Summary")
+    if strengths:
+        st.markdown("**Strengths:**")
+        for cat in strengths:
+            st.markdown(f"• **{cat}**")
+    if biggest_weak:
+        st.markdown(f"**Biggest weakness:**\n• **{biggest_weak}**")
+    summary_line = str(summary.get("summary") or "").strip()
+    if summary_line:
+        st.caption(summary_line)
+
+
+def render_waiver_strategy_cards(st: Any, cards: list[dict[str, str]]) -> None:
+    """Scan-friendly waiver target cards."""
+    if not cards:
+        st.caption("No strong waiver upgrades are currently available in this league.")
+        return
+    st.markdown("**Best waiver strategy**")
+    for card in cards:
+        with st.container(border=True):
+            st.markdown(f"**Top Target #{card.get('rank', '—')}**")
+            st.markdown(f"**{card.get('name', '—')}** · {card.get('position', '—')}")
+            reason = str(card.get("reason") or "").strip()
+            if reason:
+                st.caption(reason)
+
+
 def build_team_actionable_summary(
     *,
     strong_cats: list[str] | None = None,
@@ -279,43 +371,21 @@ def build_team_actionable_summary(
     lines: list[str] = []
     strong_cats = list(strong_cats or [])
     weak_cats = list(weak_cats or [])
-    cat_values = dict((needs or {}).get("category_values") or {})
-    if strong_cats:
-        top = strong_cats[0]
-        val = cat_values.get(top)
-        val_bit = f" ({_format_category_value(top, val)})" if val is not None else ""
-        lines.append(f"**Biggest strength:** **{top}**{val_bit} leads your league profile.")
+    cards = build_waiver_strategy_cards(
+        needs=needs,
+        waiver_pool=waiver_pool,
+        league_context=league_context,
+        limit=3,
+    )
+    if weak_cats and cards:
+        lines.append("__WAIVER_CARDS__")
+    elif weak_cats:
+        lines.append(
+            "**Best waiver strategy:** No strong waiver upgrades are currently available in this league."
+        )
     if weak_cats:
-        weak = weak_cats[0]
-        val = cat_values.get(weak)
-        val_bit = f" ({_format_category_value(weak, val)})" if val is not None else ""
-        lines.append(f"**Biggest weakness:** **{weak}**{val_bit} is your clearest upgrade area.")
-        add_rows = _waiver_target_rows(waiver_pool, needs, limit=3, context=league_context)
-        if not add_rows.empty:
-            lines.append("**Best waiver strategy:** Recommended targets:")
-            name_col = "Player" if "Player" in add_rows.columns else "fullName"
-            for _, row in add_rows.iterrows():
-                pname = str(row.get(name_col) or row.get("Player") or "").strip()
-                if not pname:
-                    continue
-                gain_lines = format_waiver_target_gain_lines(row, weak_cats=weak_cats)
-                block = f"**{pname}**"
-                if gain_lines:
-                    block += "\n" + "\n".join(gain_lines)
-                lines.append(block)
-        elif _waiver_target_names(waiver_pool, needs, limit=1, context=league_context):
-            targets = _waiver_target_names(waiver_pool, needs, limit=3, context=league_context)
-            why = ", ".join(weak_cats[:2])
-            lines.append(
-                "**Best waiver strategy:** Recommended targets: "
-                + ", ".join(f"**{name}**" for name in targets)
-                + f" — {why} upside · everyday role."
-            )
-        else:
-            lines.append(
-                "**Best waiver strategy:** No strong waiver upgrades are currently available in this league."
-            )
         trade_from = strong_cats[0] if strong_cats else "surplus counting stats"
+        weak = weak_cats[0]
         trade_targets = _trade_target_names(
             league_rosters,
             my_team=str(my_team or ""),

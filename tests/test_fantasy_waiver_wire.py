@@ -282,12 +282,59 @@ class CurrentStatsWaiverTests(unittest.TestCase):
             "targets": ["SV", "K"],
             "weaknesses": ["SV"],
             "category_ranks": {"SV": 6, "K": 5},
+            "n_teams": 8,
         }
         rec = recommend_adds_current(pool, needs, limit=1)
         self.assertEqual(str(rec.iloc[0]["Player"]), "Closer Ace")
         explanation = build_add_recommendation_explanation(rec.iloc[0], needs)
         self.assertIn("SV", explanation)
-        self.assertIn("6th", explanation)
+        self.assertIn("6th of 8 teams", explanation)
+
+    def test_add_explanation_clarifies_small_league_rank(self) -> None:
+        row = pd.Series({"Player": "Nasim Nuñez", "SB": 12})
+        needs = {
+            "targets": ["SB"],
+            "weaknesses": ["SB"],
+            "category_ranks": {"SB": 2},
+            "n_teams": 2,
+        }
+        explanation = build_add_recommendation_explanation(row, needs)
+        self.assertIn("2nd of 2 teams", explanation)
+        self.assertNotIn("Current team rank", explanation)
+
+    def test_drop_explanation_uses_player_grade_not_current_stats(self) -> None:
+        from fantasy_waiver_wire import _build_drop_explanation, recommend_drops_current
+
+        roster = pd.DataFrame(
+            [
+                {
+                    "Player": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.92,
+                    "HR": 5,
+                    "proj_OPS": 1.050,
+                },
+                {
+                    "Player": "Bench Guy",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.55,
+                    "HR": 2,
+                    "proj_OPS": 0.680,
+                },
+            ]
+        )
+        drops = recommend_drops_current(roster, limit=1)
+        self.assertEqual(str(drops.iloc[0]["Player"]), "Bench Guy")
+        why = str(drops.iloc[0]["Why Drop"])
+        self.assertNotIn("Weakest current-season", why)
+        self.assertNotIn("low current", why)
+
+    def test_format_category_display_value(self) -> None:
+        from fantasy_waiver_wire import format_category_display_value
+
+        self.assertEqual(format_category_display_value("HR", 105.0), "105")
+        self.assertEqual(format_category_display_value("AVG", 0.245), ".245")
+        self.assertEqual(format_category_display_value("OPS", 0.783), ".783")
 
     def test_filter_waiver_names_by_search(self) -> None:
         names = ["Aaron Judge", "Juan Soto", "Mike Trout"]

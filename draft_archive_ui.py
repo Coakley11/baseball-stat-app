@@ -625,6 +625,32 @@ def _context_badges_html(session: dict[str, Any], entry: dict[str, Any]) -> str:
     return "".join(p for p in parts if p)
 
 
+def _format_league_matchup_label(
+    context: dict[str, Any] | None,
+    active_entry: dict[str, Any] | None = None,
+) -> str:
+    """Compact league line: Donny vs Barry."""
+    teams: list[str] = []
+    if isinstance(context, dict):
+        rosters = context.get("league_rosters") or {}
+        if isinstance(rosters, dict):
+            teams = [str(t).strip() for t in rosters.keys() if str(t).strip()]
+        if not teams:
+            teams = [str(t).strip() for t in (context.get("teams") or []) if str(t).strip()]
+    my_team = str(
+        (context or {}).get("my_team_name")
+        or (active_entry or {}).get("team_name")
+        or ""
+    ).strip()
+    if len(teams) >= 2:
+        others = [t for t in teams if t != my_team][:3]
+        if my_team and others:
+            return f"{my_team} vs {' vs '.join(others)}"
+        return " vs ".join(teams[:4])
+    title = str((active_entry or {}).get("draft_name") or (context or {}).get("display_name") or "League")
+    return title
+
+
 def render_active_saved_draft_chip(
     st: Any,
     session: dict[str, Any],
@@ -638,15 +664,17 @@ def render_active_saved_draft_chip(
     if active:
         context = active_context or get_league_context_for_archive(session, active)
         team_count = league_team_count(context, active)
-        coverage = league_context_coverage_badge(context)
-        st.markdown(
-            f"**Active Saved Draft:** {active.get('draft_name', 'Saved Draft')} · "
-            f"**{draft_type_display(active)}** · {coverage} · "
-            f"{active.get('team_name', '')} · "
-            f"{team_count} team{'s' if team_count != 1 else ''} · "
-            f"{archive_my_team_player_count(active, context=context)} players on your roster · "
-            f"Updated {format_archive_modified(active)}",
-            unsafe_allow_html=False,
+        league_line = _format_league_matchup_label(context, active)
+        title = str(
+            active.get("draft_name")
+            or (context.get("display_name") if context else "")
+            or "Saved Draft"
+        )
+        st.markdown(f"**Active Draft**\n{title} — {league_line}")
+        st.caption(
+            f"{draft_type_display(active)} | {team_count} Team{'s' if team_count != 1 else ''} | "
+            f"{archive_my_team_player_count(active, context=context)} Players · "
+            f"Updated {format_archive_modified(active)}"
         )
     else:
         st.caption(
@@ -654,7 +682,7 @@ def render_active_saved_draft_chip(
             "unless you set one active in the library."
         )
     st.button(
-        _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage saved drafts", page_label_fn),
+        _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage Drafts", page_label_fn),
         key=f"{key_prefix}__manage_saved_drafts_btn",
         use_container_width=True,
         on_click=_on_click_saved_draft_library,
@@ -1312,17 +1340,34 @@ def _render_active_draft_section(
 
     context = active_context or get_league_context_for_archive(session, active)
     title = str(active.get("draft_name") or "Saved Draft")
-    team = str(active.get("team_name") or (context.get("my_team_name") if context else "—"))
+    team_count = league_team_count(context, active)
     player_n = archive_my_team_player_count(active, context=context)
-    team_n = league_team_count(context, active)
-    st.markdown(
-        f"**{title}** · {draft_type_display(active)} · My team: **{team}** · "
-        f"{team_n} team{'s' if team_n != 1 else ''} · {player_n} players"
+    league_line = _format_league_matchup_label(context, active)
+    st.markdown(f"**{title}** — {league_line}")
+    st.caption(
+        f"{draft_type_display(active)} | {team_count} Teams | {player_n} Players · "
+        f"Updated {format_archive_modified(active)}"
     )
     tool1, tool2, tool3, clear_col = st.columns([1, 1, 1, 1])
     with tool1:
         if st.button(
-            _nav_label(FANTASY_STANDINGS_PAGE, "Standings", page_label_fn),
+            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage Drafts", page_label_fn),
+            key="library_manage_drafts",
+            use_container_width=True,
+        ):
+            schedule_saved_draft_library_navigation(session)
+            st.rerun()
+    with tool2:
+        if st.button(
+            _nav_label(FANTASY_LINEUP_PAGE, "Fantasy Lineup Assistant", page_label_fn),
+            key="library_active_lineup",
+            use_container_width=True,
+        ):
+            if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
+                st.rerun()
+    with tool3:
+        if st.button(
+            _nav_label(FANTASY_STANDINGS_PAGE, "Fantasy Standings Tracker", page_label_fn),
             key="library_active_standings",
             use_container_width=True,
         ):
@@ -1337,22 +1382,6 @@ def _render_active_draft_section(
                     )
                 except ImportError:
                     pass
-                st.rerun()
-    with tool2:
-        if st.button(
-            _nav_label(FANTASY_LINEUP_PAGE, "Lineup Assistant", page_label_fn),
-            key="library_active_lineup",
-            use_container_width=True,
-        ):
-            if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
-                st.rerun()
-    with tool3:
-        if st.button(
-            _nav_label(FANTASY_WAIVER_PAGE, "Waiver Wire", page_label_fn),
-            key="library_active_waiver",
-            use_container_width=True,
-        ):
-            if schedule_fantasy_analysis_navigation(session, FANTASY_WAIVER_PAGE):
                 st.rerun()
     with clear_col:
         if st.button("Clear Active", key="library_clear_active", use_container_width=True):

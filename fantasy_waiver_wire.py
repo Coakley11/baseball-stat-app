@@ -247,7 +247,14 @@ def analyze_current_team_needs(
     *,
     categories: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Category strengths/weaknesses from current-season stat columns (not projections)."""
+    """
+    In-season category strengths/weaknesses from current-season stat columns.
+
+    Shared source of truth for Waiver Wire, Lineup Assistant, and future Start/Sit,
+    trade, and lineup-optimization recommendations. Draft-time category logic lives
+    in ``draft_needs.infer_hitter_category_needs``; keep both aligned when changing
+    weakness thresholds or category sets.
+    """
     result: dict[str, Any] = {
         "strengths": [],
         "weaknesses": [],
@@ -388,19 +395,9 @@ def build_category_action_table(
         rank_label = f"{rank}{_ordinal_suffix(rank)}"
         if n_teams > 1:
             rank_label = f"{rank_label} of {n_teams} teams"
-        val_display = my_val
-        if cat in RATE_CATEGORIES and my_val is not None:
-            val_display = f"{float(my_val):.3f}".lstrip("0") if float(my_val) < 1 else f"{float(my_val):.3f}"
-        elif my_val is not None:
-            val_display = int(round(float(my_val)))
-        best_display = league_best
-        if cat in RATE_CATEGORIES and league_best is not None:
-            best_display = f"{float(league_best):.3f}".lstrip("0") if float(league_best) < 1 else f"{float(league_best):.3f}"
-        gap_display = gap
-        if gap is not None and cat in RATE_CATEGORIES:
-            gap_display = f"{float(gap):.3f}".lstrip("0") if abs(float(gap)) < 1 else f"{float(gap):.3f}"
-        elif gap is not None:
-            gap_display = int(round(float(gap)))
+        val_display = format_category_display_value(cat, my_val) if my_val is not None else "—"
+        best_display = format_category_display_value(cat, league_best) if league_best is not None else "—"
+        gap_display = format_category_display_value(cat, gap) if gap is not None else "—"
         rows.append(
             {
                 "Category": cat,
@@ -574,23 +571,25 @@ def format_projected_stat_line(row: pd.Series) -> str:
 
 
 def build_add_recommendation_explanation(player_row: pd.Series, needs: dict[str, Any]) -> str:
-    """Waiver-specific explanation with league rank context — not draft metrics."""
+    """Waiver-specific explanation with clear category-weakness context."""
     targets = list(needs.get("targets") or needs.get("weaknesses") or [])
     ranks = needs.get("category_ranks") or {}
+    n_teams = int(needs.get("n_teams") or 0)
     helped = categories_helped_by_player(player_row, targets)
     if helped and ranks:
-        rank_bits = [
-            f"{cat} {int(ranks[cat])}{_ordinal_suffix(int(ranks[cat]))}"
-            for cat in helped[:4]
-            if cat in ranks
-        ]
-        cats_text = ", ".join(helped[:4])
-        if rank_bits:
-            return f"Helps: **{cats_text}**. Current team ranks: **{' • '.join(rank_bits)}**."
-        return f"Helps: **{cats_text}**."
+        primary = helped[0]
+        rank = ranks.get(primary)
+        if rank and n_teams > 1:
+            rank_phrase = format_weakness_rank_phrase(primary, int(rank), n_teams=n_teams)
+            if primary == "SB":
+                return f"Adds speed to improve your lowest-ranked category ({rank_phrase})."
+            return f"Addresses your weakest category ({rank_phrase})."
+        if primary == "SB":
+            return "Targets stolen bases, currently your biggest category weakness."
+        return f"Helps address your {primary} deficit."
     if helped:
-        return f"Helps: **{', '.join(helped[:4])}** based on current-season production."
-    return "Solid current-season upgrade for roster balance."
+        return f"Strengthens **{', '.join(helped[:3])}** based on projected production."
+    return "Solid upgrade for roster balance."
 
 
 def build_weakness_narrative(needs: dict[str, Any]) -> list[str]:
@@ -606,30 +605,36 @@ def build_weakness_narrative(needs: dict[str, Any]) -> list[str]:
     targets = list(needs.get("targets") or weaknesses)
 
     if weaknesses:
-        weak_bits = [f"{cat} ({ranks.get(cat, '?')}/{n_teams})" for cat in weaknesses[:4]]
+        weak_bits = [
+            format_weakness_rank_phrase(cat, int(ranks[cat]), n_teams=n_teams)
+            for cat in weaknesses[:4]
+            if cat in ranks
+        ]
         lines.append(
-            f"Your biggest category gaps are **{', '.join(weak_bits)}** — prioritize adds that improve these areas."
+            f"Your biggest improvement opportunities: **{', '.join(weak_bits)}** — prioritize adds in these areas."
         )
     if targets:
         top = targets[0]
         rank = ranks.get(top)
         if top in ("HR", "RBI") and rank:
             lines.append(
-                f"You are **{rank}{_ordinal_suffix(rank)} in {top}** — power bats are a top waiver target."
+                f"**{top}** is your weakest category ({int(rank)}{_ordinal_suffix(int(rank))} of {n_teams}) — target power production."
             )
         elif top == "SB" and rank:
             lines.append(
-                f"You are **{rank}{_ordinal_suffix(rank)} in SB** — prioritize speed and stolen-base upside."
+                f"**SB** is your weakest category ({int(rank)}{_ordinal_suffix(int(rank))} of {n_teams}) — prioritize speed."
             )
         elif top == "SV" and rank:
-            lines.append("Your pitching is competitive, but **saves are your biggest gap**.")
+            lines.append("Saves are your biggest improvement opportunity.")
         elif top == "AVG" and strengths and "SB" in weaknesses:
-            lines.append("You are strong in **AVG** but weak in **SB** — prioritize speed without tanking average.")
+            lines.append("Strong average, but speed is your lowest-ranked category — target SB without sacrificing contact.")
         elif rank:
-            lines.append(f"**{top}** is your top upgrade category (currently {rank}{_ordinal_suffix(rank)} in the league).")
+            lines.append(
+                f"**{top}** is your top upgrade target ({int(rank)}{_ordinal_suffix(int(rank))} of {n_teams})."
+            )
 
     if not lines:
-        lines.append("Your roster profile is balanced — target best-available current-season upgrades.")
+        lines.append("Roster profile is balanced — target best-available upgrades.")
     return lines
 
 
@@ -637,6 +642,73 @@ def _ordinal_suffix(n: int) -> str:
     if 10 <= (n % 100) <= 20:
         return "th"
     return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def format_category_display_value(cat: str, val: Any) -> str:
+    """Format counting stats as integers; rate stats with decimals."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    if cat in RATE_CATEGORIES:
+        fval = float(val)
+        return f"{fval:.3f}".lstrip("0") if fval < 1 else f"{fval:.3f}"
+    if cat in LOWER_IS_BETTER_CATEGORIES:
+        return f"{float(val):.2f}"
+    return str(int(round(float(val))))
+
+
+def format_weakness_rank_phrase(cat: str, rank: int | None, *, n_teams: int = 0) -> str:
+    """Small-league-friendly rank phrase — avoids dramatic wording."""
+    if not rank:
+        return str(cat)
+    suffix = _ordinal_suffix(int(rank))
+    if n_teams > 1:
+        return f"{cat}: {int(rank)}{suffix} of {n_teams} teams"
+    return f"{cat}: {int(rank)}{suffix}"
+
+
+def _player_grade_display(row: pd.Series) -> float | None:
+    """Normalize Player Grade / EFV to 0–100 display scale."""
+    for col in ("Player Grade", "Expected Fantasy Value", "ML Fantasy Value"):
+        if col not in row.index:
+            continue
+        val = pd.to_numeric(row.get(col), errors="coerce")
+        if pd.notna(val):
+            fval = float(val)
+            return fval * 100.0 if 0 < fval <= 1.5 else fval
+    return None
+
+
+def _roster_grade_median(roster: pd.DataFrame) -> float | None:
+    for col in ("Player Grade", "Expected Fantasy Value", "ML Fantasy Value"):
+        if col not in roster.columns:
+            continue
+        vals = pd.to_numeric(roster[col], errors="coerce")
+        if vals.notna().any():
+            med = float(vals.median())
+            return med * 100.0 if 0 < med <= 1.5 else med
+    return None
+
+
+def _drop_value_score(roster: pd.DataFrame) -> pd.Series:
+    """Higher score = more valuable — sort ascending for drop candidates."""
+    score = pd.Series(0.0, index=roster.index)
+    for col in ("Player Grade", "Expected Fantasy Value", "ML Fantasy Value"):
+        if col in roster.columns:
+            vals = pd.to_numeric(roster[col], errors="coerce").fillna(0)
+            if vals.max() <= 1.5:
+                vals = vals * 100.0
+            score += vals * 0.45
+            break
+    for col, weight in (("proj_OPS", 0.20), ("proj_HR", 0.12), ("proj_RBI", 0.10), ("proj_SB", 0.08)):
+        if col in roster.columns:
+            score += pd.to_numeric(roster[col], errors="coerce").fillna(0) * weight
+    if "Fantasy Edge" in roster.columns:
+        score += pd.to_numeric(roster["Fantasy Edge"], errors="coerce").fillna(0) * 0.08
+    for cat, weight in (("HR", 0.03), ("RBI", 0.02), ("SB", 0.02), ("OPS", 0.02)):
+        col = _resolve_current_stat_col(roster, cat)
+        if col:
+            score += pd.to_numeric(roster[col], errors="coerce").fillna(0) * weight
+    return score
 
 
 def categories_helped_by_player(player_row: pd.Series, targets: list[str]) -> list[str]:
@@ -716,60 +788,68 @@ def recommend_drops_current(
     if my_roster is None or my_roster.empty:
         return pd.DataFrame()
     roster = my_roster.copy()
-    score = pd.Series(0.0, index=roster.index)
-    drop_weights: tuple[tuple[str, float], ...] = (
-        ("HR", 0.16),
-        ("RBI", 0.14),
-        ("R", 0.1),
-        ("SB", 0.08),
-        ("AVG", 0.12),
-        ("OPS", 0.1),
-        ("OBP", 0.08),
-        ("W", 0.1),
-        ("SV", 0.12),
-        ("K", 0.08),
-        ("ERA", 0.05),
-        ("WHIP", 0.05),
-    )
-    active_cats = set(categories or WAIVER_HITTER_CATEGORIES)
-    for cat, weight in drop_weights:
-        if cat not in active_cats:
-            continue
-        col = _resolve_current_stat_col(roster, cat)
-        if col:
-            vals = pd.to_numeric(roster[col], errors="coerce").fillna(0)
-            if cat in LOWER_IS_BETTER_CATEGORIES:
-                score += (1.0 / (vals + 0.01)) * weight
-            else:
-                score += vals * weight
-    roster["_drop_score"] = score
+    roster["_drop_score"] = _drop_value_score(roster)
     roster = roster.sort_values("_drop_score", ascending=True)
     top = roster.head(limit).copy()
-    top["Why Drop"] = [_drop_explanation_current(row, my_roster) for _, row in top.iterrows()]
+    top["Why Drop"] = [_build_drop_explanation(row, my_roster) for _, row in top.iterrows()]
     name_col = _player_name_col(top)
     if name_col != "Player":
         top["Player"] = top[name_col]
     return top.drop(columns=["_drop_score"], errors="ignore")
 
 
-def _drop_explanation_current(player_row: pd.Series, my_roster: pd.DataFrame) -> str:
-    parts: list[str] = []
-    for cat in ("HR", "RBI", "R", "SB", "AVG"):
+def _build_drop_explanation(player_row: pd.Series, my_roster: pd.DataFrame) -> str:
+    """One concise fantasy-analyst drop reason — Player Grade and ROS first, not current stats."""
+    pos = str(player_row.get("Primary Position") or player_row.get("position") or "").strip()
+    grade = _player_grade_display(player_row)
+    med_grade = _roster_grade_median(my_roster)
+
+    if grade is not None and med_grade is not None and grade < med_grade * 0.85:
+        if pos:
+            same_pos = my_roster[my_roster["Primary Position"].astype(str) == pos] if "Primary Position" in my_roster.columns else my_roster
+            if len(same_pos) > 1:
+                pos_grades = [_player_grade_display(r) for _, r in same_pos.iterrows()]
+                pos_grades = [g for g in pos_grades if g is not None]
+                if pos_grades and grade <= min(pos_grades):
+                    return f"Lowest Player Grade among active {pos} options."
+        return "Lowest Player Grade on roster."
+
+    if "proj_OPS" in player_row.index and "proj_OPS" in my_roster.columns:
+        val = pd.to_numeric(player_row.get("proj_OPS"), errors="coerce")
+        med = pd.to_numeric(my_roster["proj_OPS"], errors="coerce").median()
+        if pd.notna(val) and pd.notna(med) and float(val) < float(med) * 0.80:
+            if pos:
+                return f"Lowest projected rest-of-season value among active {pos}."
+            return "Lowest projected rest-of-season value on roster."
+
+    if pos and "Primary Position" in my_roster.columns:
+        same = my_roster[my_roster["Primary Position"].astype(str) == pos]
+        if len(same) > 2:
+            return f"Blocked by stronger players at {pos}."
+
+    weak_cats: list[str] = []
+    for cat in ("HR", "RBI", "R", "SB"):
         col = _resolve_current_stat_col(player_row.to_frame().T, cat)
         if not col or col not in my_roster.columns:
             continue
         val = pd.to_numeric(player_row.get(col), errors="coerce")
         med = pd.to_numeric(my_roster[col], errors="coerce").median()
-        if pd.notna(val) and pd.notna(med) and val < med * 0.75:
-            parts.append(f"low current {cat}")
-    pos = str(player_row.get("Primary Position") or player_row.get("position") or "").strip()
-    if pos and "Primary Position" in my_roster.columns:
-        same = my_roster[my_roster["Primary Position"].astype(str) == pos]
-        if len(same) > 2:
-            parts.append(f"redundant {pos}")
-    if not parts:
-        return "Weakest current-season production on roster."
-    return " · ".join(parts)
+        if pd.notna(val) and pd.notna(med) and float(val) < float(med) * 0.65:
+            weak_cats.append(cat)
+    if weak_cats:
+        return f"Limited {'/'.join(weak_cats[:2])} contribution relative to alternatives."
+
+    if "Fantasy Edge" in player_row.index:
+        edge = pd.to_numeric(player_row.get("Fantasy Edge"), errors="coerce")
+        if pd.notna(edge) and float(edge) < -3:
+            return "Replacement-level value vs market."
+
+    return "Replacement-level alternatives provide more category value."
+
+
+def _drop_explanation_current(player_row: pd.Series, my_roster: pd.DataFrame) -> str:
+    """Backward-compatible alias."""
+    return _build_drop_explanation(player_row, my_roster)
 
 
 def compute_add_drop_category_impact(

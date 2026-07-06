@@ -71,6 +71,20 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
         self.assertNotIn("(th of 4 teams)", joined)
         self.assertIn(".351", joined)
 
+    def test_build_condensed_team_summary_dedupes_strengths(self) -> None:
+        from fantasy_actionable_recommendations import build_condensed_team_summary
+
+        summary = build_condensed_team_summary(
+            strong_cats=["HR", "RBI"],
+            weak_cats=["SB"],
+            needs={"weaknesses": ["SB"]},
+            waiver_pool=pd.DataFrame(),
+        )
+        self.assertEqual(summary["strengths"], ["HR", "RBI"])
+        self.assertEqual(summary["biggest_weakness"], "SB")
+        self.assertIn("SB", summary["summary"])
+        self.assertNotIn("Biggest strength", summary["summary"])
+
     def test_build_team_actionable_summary_no_waiver_pool_shows_unavailable(self) -> None:
         lines = build_team_actionable_summary(
             strong_cats=["OBP"],
@@ -79,6 +93,7 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
             waiver_pool=pd.DataFrame(),
         )
         self.assertTrue(any("No strong waiver upgrades" in line for line in lines))
+        self.assertFalse(any("Biggest strength" in line for line in lines))
 
     def test_team_outlook_explanation_lists_strengths_and_concerns(self) -> None:
         lines = team_outlook_explanation(
