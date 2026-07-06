@@ -1,0 +1,207 @@
+{
+  "pick_count": 36,
+  "pool_size": 699,
+  "data_load_ms": 12066.792300000088,
+  "scenario_walls_ms": {
+    "1_initial_load_cold_ms": 10745.926299976418,
+    "1_projection_pool_warm_ms": 0.4474000015761703,
+    "1_scoring_cache_warm_ms": 34.91839999333024,
+    "why_text_cold_ms": 14.134599972749129,
+    "why_text_cached_ms": 0.23860001238062978,
+    "2_settings_change_ms": 16.17479999549687,
+    "3_recommendation_refresh_cached_ms": 25.11040001991205,
+    "4_scoring_refresh_miss_ms": 76.31159998709336,
+    "5_projection_change_ms": 10030.90979999979,
+    "6_roster_change_ms": 75.27,
+    "7_nav_return_ms": 48.35
+  },
+  "top_phases": [
+    [
+      "projection_pool",
+      19.9175
+    ],
+    [
+      "draft_assistant_shared_context",
+      0.6747
+    ],
+    [
+      "draft_assistant_scoring",
+      0.0547
+    ],
+    [
+      "draft_assistant_category_analysis",
+      0.0546
+    ],
+    [
+      "draft_assistant_why_text",
+      0.0281
+    ],
+    [
+      "draft_assistant_board_hydrate",
+      0.0128
+    ],
+    [
+      "draft_assistant_table_prep",
+      0.0008
+    ]
+  ],
+  "instrumented_total_ms": 20743.2,
+  "timings_ms": {
+    "live_draft_prepare_state": 2.9,
+    "live_draft_setup_prepare_draft_room": 12.7,
+    "draft_assistant_shared_context": 674.7,
+    "live_draft_setup_shared_context": 674.8,
+    "projection_pool": 19917.5,
+    "draft_assistant_board_hydrate": 12.8,
+    "draft_assistant_scoring": 54.7,
+    "draft_assistant_category_analysis": 54.6,
+    "draft_assistant_why_text": 28.1,
+    "draft_assistant_table_prep": 0.8
+  },
+  "actions": [
+    {
+      "action": "projection_pool",
+      "phase": "projection_pool",
+      "elapsed_ms": 0.0,
+      "cache": "miss",
+      "detail": "",
+      "at": 1783344957.84
+    },
+    {
+      "action": "projection_pool_cold",
+      "phase": "projection_pool",
+      "elapsed_ms": 9958.81,
+      "cache": "miss",
+      "detail": "",
+      "at": 1783344967.8
+    },
+    {
+      "action": "scoring",
+      "phase": "draft_assistant_scoring",
+      "elapsed_ms": 0.0,
+      "cache": "miss",
+      "detail": "",
+      "at": 1783344967.849
+    },
+    {
+      "action": "scoring",
+      "phase": "draft_assistant_scoring",
+      "elapsed_ms": 54.7,
+      "cache": "miss",
+      "detail": "",
+      "at": 1783344967.904
+    },
+    {
+      "action": "projection_pool",
+      "phase": "projection_pool",
+      "elapsed_ms": 0.0,
+      "cache": "hit",
+      "detail": "",
+      "at": 1783344967.908
+    },
+    {
+      "action": "scoring",
+      "phase": "draft_assistant_scoring",
+      "elapsed_ms": 0.0,
+      "cache": "hit",
+      "detail": "",
+      "at": 1783344967.943
+    },
+    {
+      "action": "why_text",
+      "phase": "draft_assistant_why_text",
+      "elapsed_ms": 14.07,
+      "cache": "",
+      "detail": "",
+      "at": 1783344967.961
+    },
+    {
+      "action": "table_prep",
+      "phase": "draft_assistant_table_prep",
+      "elapsed_ms": 0.77,
+      "cache": "",
+      "detail": "",
+      "at": 1783344967.962
+    },
+    {
+      "action": "projection_pool",
+      "phase": "projection_pool",
+      "elapsed_ms": 0.0,
+      "cache": "hit",
+      "detail": "",
+      "at": 1783344989.053
+    }
+  ],
+  "cache_audit": {
+    "draft_assistant_scoring": {
+      "hit": 1,
+      "miss": 1,
+      "total": 2
+    },
+    "draft_assistant_why_text": {
+      "hit": 1,
+      "miss": 1,
+      "total": 2
+    },
+    "projection_pool": {
+      "hit": 2,
+      "miss": 2,
+      "total": 4
+    }
+  },
+  "score_cold_cache": "miss",
+  "score_warm_cache": "hit",
+  "pool_cold_rows": 699,
+  "action_summary": {
+    "settings_onchange_ms": [],
+    "force_save_ms": [],
+    "page_state_save_ms": [],
+    "scoring_cold_ms": [
+      0.0,
+      54.7
+    ],
+    "scoring_warm_ms": [
+      0.0
+    ],
+    "why_text_ms": [
+      14.07
+    ],
+    "table_prep_ms": [
+      0.77
+    ],
+    "board_hydrate_ms": [],
+    "shared_context_ms": [],
+    "projection_pool_ms": [
+      0.0,
+      9958.81,
+      0.0,
+      0.0
+    ]
+  },
+  "settings_session2_actions": [
+    {
+      "action": "projection_pool",
+      "phase": "projection_pool",
+      "elapsed_ms": 0.0,
+      "cache": "hit",
+      "detail": "",
+      "at": 1783344967.988
+    },
+    {
+      "action": "canonical_settings",
+      "phase": "draft_assistant_canonical_settings",
+      "elapsed_ms": 14.94,
+      "cache": "",
+      "detail": "",
+      "at": 1783344968.004
+    },
+    {
+      "action": "settings_onchange",
+      "phase": "draft_assistant_settings_onchange",
+      "elapsed_ms": 15.0,
+      "cache": "",
+      "detail": "",
+      "at": 1783344968.004
+    }
+  ]
+}

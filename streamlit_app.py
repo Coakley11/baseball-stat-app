@@ -2275,8 +2275,6 @@ def _numeric_plot_columns(df):
     for c in df.columns:
         c_key = str(c).replace("_", " ").lower().strip()
         if c not in cols and c_key not in blocked:
-            if pd.api.types.is_bool_dtype(df[c]):
-                continue
             vals = pd.to_numeric(df[c], errors="coerce")
             if vals.notna().sum() > 0 and not str(c).lower().endswith("id"):
                 cols.append(c)
@@ -13777,6 +13775,12 @@ if _page_changed or _user_nav:
                 from live_draft_setup_persist import flush_live_draft_setup_persist
 
                 flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_setup_page_leave")
+            if str(_prev_persisted_page or "") == "Draft Assistant Simulator":
+                from draft_assistant_setup_persist import flush_draft_assistant_settings_persist
+
+                flush_draft_assistant_settings_persist(
+                    st, st.session_state, reason="draft_assistant_page_leave"
+                )
         except Exception:
             pass
         try:
@@ -18146,23 +18150,32 @@ if active_page == "Draft Assistant Simulator":
 
         def _draft_assistant_settings_changed():
             try:
-                from shared_draft_context import on_draft_settings_changed
+                from draft_assistant_setup_persist import on_draft_assistant_settings_changed
 
-                on_draft_settings_changed(
-                    st.session_state,
-                    source_page="Draft Assistant Simulator",
-                    lookback_key="draft_window",
-                    style_key="fantasy_draft_projection_style",
-                    format_key="draft_format",
-                    ml_blend_key="draft_use_ml_blend",
-                    ml_weight_key="draft_ml_blend_weight",
-                    ml_min_games_key="draft_ml_min_games_signal",
-                )
+                on_draft_assistant_settings_changed(st.session_state)
             except ImportError:
-                pass
-            save_page_state("Draft Assistant Simulator")
-            force_save_baseball_state(st, reason="draft_assistant_settings_changed")
-            _record_settings_onchange("Draft Assistant Simulator", "_draft_assistant_settings_changed", "draft_assistant_settings_changed")
+                try:
+                    from shared_draft_context import on_draft_settings_changed
+
+                    on_draft_settings_changed(
+                        st.session_state,
+                        source_page="Draft Assistant Simulator",
+                        lookback_key="draft_window",
+                        style_key="fantasy_draft_projection_style",
+                        format_key="draft_format",
+                        ml_blend_key="draft_use_ml_blend",
+                        ml_weight_key="draft_ml_blend_weight",
+                        ml_min_games_key="draft_ml_min_games_signal",
+                    )
+                except ImportError:
+                    pass
+            _record_settings_onchange(
+                "Draft Assistant Simulator",
+                "_draft_assistant_settings_changed",
+                "draft_assistant_settings_changed_deferred",
+                save_page_state=False,
+                force_save=False,
+            )
 
         d1, d2, d3 = st.columns(3)
         with d1:
@@ -18653,20 +18666,18 @@ if active_page == "Draft Assistant Simulator":
         recs_for_ami = remaining_recommendations(recs_ranked, featured_ids, limit=int(draft_top_n))
         if "Why this pick" not in recs.columns and not recs.empty:
             try:
-                from live_draft_room_ui import build_draft_assistant_why_this_pick
+                from live_draft_ui_cache import enrich_draft_assistant_recs_with_why
                 from page_perf_phases import session_perf_phase
 
                 with session_perf_phase(st.session_state, "draft_assistant_why_text"):
-                    recs = recs.copy()
-                    recs["Why this pick"] = recs.apply(
-                        lambda r: build_draft_assistant_why_this_pick(
-                            r,
-                            needed_positions=needed_positions,
-                            category_needs=category_needs,
-                            pool_df=available,
-                            draft_format=draft_format,
-                        ),
-                        axis=1,
+                    recs = enrich_draft_assistant_recs_with_why(
+                        st.session_state,
+                        _da_key,
+                        recs,
+                        needed_positions=needed_positions,
+                        category_needs=category_needs,
+                        pool_df=available,
+                        draft_format=draft_format,
                     )
             except ImportError:
                 recs["Why this pick"] = ""
@@ -18993,6 +19004,12 @@ if active_page == "Draft Assistant Simulator":
             "ml_projection_style": st.session_state.get("fantasy_draft_projection_style"),
         },
     )
+    try:
+        from draft_assistant_setup_persist import maybe_flush_deferred_draft_assistant_autosave
+
+        maybe_flush_deferred_draft_assistant_autosave(st, st.session_state)
+    except ImportError:
+        pass
     _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)

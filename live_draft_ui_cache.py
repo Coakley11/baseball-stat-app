@@ -12,6 +12,7 @@ AVAILABLE_CACHE_KEY = "_live_draft_available_cache"
 DECISION_CACHE_KEY = "_live_draft_decision_cache"
 WHY_COLUMN_CACHE_KEY = "_live_draft_why_column_cache"
 DA_SCORING_CACHE_KEY = "_draft_assistant_scoring_cache"
+DA_WHY_CACHE_KEY = "_draft_assistant_why_cache"
 
 
 def invalidate_live_draft_ui_caches(session: dict[str, Any] | None) -> None:
@@ -27,6 +28,67 @@ def invalidate_live_draft_ui_caches(session: dict[str, Any] | None) -> None:
 def invalidate_draft_assistant_scoring_cache(session: dict[str, Any] | None) -> None:
     if session:
         session.pop(DA_SCORING_CACHE_KEY, None)
+        session.pop(DA_WHY_CACHE_KEY, None)
+
+
+def invalidate_draft_assistant_why_cache(session: dict[str, Any] | None) -> None:
+    if session:
+        session.pop(DA_WHY_CACHE_KEY, None)
+
+
+def invalidate_draft_assistant_ui_caches(session: dict[str, Any] | None) -> None:
+    """Clear Draft Assistant scoring + why-text caches after settings or board changes."""
+    if not session:
+        return
+    invalidate_draft_assistant_scoring_cache(session)
+    invalidate_draft_assistant_why_cache(session)
+
+
+def draft_assistant_pool_revision(session: dict[str, Any]) -> tuple[Any, ...]:
+    """Fingerprint for unified projection pool inputs (@st.cache_data 7-arg key + canonical stamp)."""
+    try:
+        from shared_draft_context import draft_pool_kwargs_from_session, read_canonical_draft_settings
+
+        kw = draft_pool_kwargs_from_session(session)
+        canon = read_canonical_draft_settings(session)
+    except ImportError:
+        return ()
+    try:
+        max_y = int(session.get("_lahman_max_year") or 0)
+    except (TypeError, ValueError):
+        max_y = 0
+    return (
+        max_y,
+        int(kw.get("draft_window") or 0),
+        str(kw.get("fantasy_format") or ""),
+        str(kw.get("projection_style") or ""),
+        bool(kw.get("use_ml_blend")),
+        float(kw.get("ml_blend_weight") or 0),
+        int(kw.get("ml_min_games_for_signal") or 0),
+        str(canon.get("updated_at") or ""),
+    )
+
+
+def draft_assistant_board_revision(session: dict[str, Any]) -> tuple[Any, ...]:
+    """Fingerprint for draft board state feeding recommendations."""
+    pick_count = 0
+    try:
+        from draft_room_state import effective_board_pick_count
+
+        pick_count = int(effective_board_pick_count(session))
+    except ImportError:
+        pass
+    rev = str(session.get("_canonical_live_sync_revision") or "").strip()
+    try:
+        adj = int(session.get("draft_pick_adjustment") or 0)
+    except (TypeError, ValueError):
+        adj = 0
+    team = str(
+        session.get("draft_assistant_synced_team")
+        or session.get("room_your_team")
+        or ""
+    ).strip()
+    return (pick_count, rev, adj, team)
 
 
 def live_draft_ui_cache_key(
@@ -239,6 +301,19 @@ def draft_assistant_scoring_cache_key(
     draft_top_n: int = 10,
 ) -> tuple[Any, ...]:
     slots_key = tuple(sorted((k, int(v or 0)) for k, v in (target_counts or {}).items()))
+    lookback = 0
+    projection_style = ""
+    fantasy_fmt = str(draft_format)
+    try:
+        from shared_draft_context import read_canonical_draft_settings
+
+        canon = read_canonical_draft_settings(session)
+        lookback = int(canon.get("lookback_window") or 0)
+        projection_style = str(canon.get("projection_style") or "")
+        fantasy_fmt = str(canon.get("fantasy_format") or draft_format)
+    except ImportError:
+        lookback = int(session.get("draft_window") or 0)
+        projection_style = str(session.get("fantasy_draft_projection_style") or "")
     return (
         frozenset(str(n).strip().lower() for n in drafted_names if str(n).strip()),
         tuple(sorted(str(n) for n in my_roster)),
@@ -246,8 +321,72 @@ def draft_assistant_scoring_cache_key(
         tuple(needed_positions or []),
         tuple(category_needs or []),
         slots_key,
-        str(draft_format),
+        str(fantasy_fmt),
+        int(lookback),
+        str(projection_style),
         bool(use_ml_blend),
         float(ml_blend_weight or 0),
         int(draft_top_n),
+        draft_assistant_pool_revision(session),
+        draft_assistant_board_revision(session),
     )
+
+
+def enrich_draft_assistant_recs_with_why(
+    session: dict[str, Any],
+    scoring_cache_key: tuple[Any, ...] | None,
+    recs_df: pd.DataFrame,
+    *,
+    needed_positions: list[str] | None = None,
+    category_needs: list[str] | None = None,
+    pool_df: Any = None,
+    draft_format: str = "5x5 Roto",
+) -> pd.DataFrame:
+    """Cache expensive Why-this-pick column enrichment across Draft Assistant reruns."""
+    from live_draft_room_ui import build_draft_assistant_why_this_pick
+
+    if recs_df is None or recs_df.empty:
+        return recs_df
+    if scoring_cache_key is None:
+        out = recs_df.copy()
+        out["Why this pick"] = out.apply(
+            lambda r: build_draft_assistant_why_this_pick(
+                r,
+                needed_positions=needed_positions,
+                category_needs=category_needs,
+                pool_df=pool_df,
+                draft_format=draft_format,
+            ),
+            axis=1,
+        )
+        return out
+    entry = session.get(DA_WHY_CACHE_KEY)
+    if isinstance(entry, dict) and entry.get("key") == scoring_cache_key:
+        stored = entry.get("df")
+        if isinstance(stored, pd.DataFrame) and len(stored) == len(recs_df):
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "draft_assistant_why_text", hit=True)
+            except ImportError:
+                pass
+            return stored.copy()
+    try:
+        from page_perf_phases import record_cache_event
+
+        record_cache_event(session, "draft_assistant_why_text", hit=False)
+    except ImportError:
+        pass
+    out = recs_df.copy()
+    out["Why this pick"] = out.apply(
+        lambda r: build_draft_assistant_why_this_pick(
+            r,
+            needed_positions=needed_positions,
+            category_needs=category_needs,
+            pool_df=pool_df,
+            draft_format=draft_format,
+        ),
+        axis=1,
+    )
+    session[DA_WHY_CACHE_KEY] = {"key": scoring_cache_key, "df": out.copy()}
+    return out.copy()
