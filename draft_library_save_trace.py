@@ -330,6 +330,11 @@ def finalize_save_trace(
         after=after,
         disk_has=bool(draft_probe.get("in_disk")),
     )
+    if not in_session and bool(disk_write_ok) and int(disk_readback.get("draft_archive_count") or 0) > 0:
+        # Disk is the refresh cache for this Streamlit run.  If the in-memory
+        # archive list was stale, treat the session as recoverable after the
+        # disk hydrate above; durability still requires cloud readback below.
+        in_session = True
     cloud_readback_ok = bool(cloud_readback.get("row_found")) if cloud_readback else False
     if draft_id and cloud_readback.get("draft_ids"):
         cloud_readback_ok = draft_id in set(cloud_readback.get("draft_ids") or [])

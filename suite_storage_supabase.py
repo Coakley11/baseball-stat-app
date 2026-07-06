@@ -682,7 +682,25 @@ def save_current_state_with_result(
         params: dict[str, str] = {"select": "app", "app": f"eq.{app_key}"}
         if uid:
             params["user_id"] = f"eq.{uid}"
-        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+        try:
+            rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+        except Exception as exc:
+            if not is_transient_supabase_error(exc):
+                raise
+            # PostgREST schema-cache blips can fail read-before-write while an
+            # upsert succeeds. Avoid letting the diagnostic GET block durable saves.
+            write_mode = "direct_upsert_after_get_retry"
+            _request(
+                "POST",
+                _TABLE_STATE,
+                json_body=body,
+                prefer="resolution=merge-duplicates,return=minimal",
+            )
+            return {
+                "ok": True,
+                "write_mode": write_mode,
+                "warning": f"prewrite_get_transient:{exc}",
+            }
         if isinstance(rows, list) and rows:
             patch_params = {"app": f"eq.{app_key}"}
             if uid:

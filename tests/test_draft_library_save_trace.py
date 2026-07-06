@@ -159,6 +159,44 @@ class DraftLibrarySaveTraceTests(unittest.TestCase):
         checklist = dict((label, status) for label, status, _ in save_trace_checklist(diag))
         self.assertEqual(checklist.get("Session has archive"), "pass")
 
+    def test_finalize_treats_disk_confirmed_archive_as_session_recoverable(self) -> None:
+        session: dict = {
+            DRAFT_ARCHIVE_KEY: [],
+            "_suite_persist_last_save_cloud": False,
+            "_suite_persist_last_save_disk": True,
+        }
+        with patch("draft_library_save_trace.save_persist_mode_context") as mode_mock:
+            mode_mock.return_value = {
+                "cloud_write_expected": True,
+                "demo_disk_only_ok": False,
+                "auth_mode": "local_demo",
+                "cloud_blocked_reason": "",
+            }
+            with patch(
+                "draft_library_save_trace.probe_disk_workflow_for_workspace",
+                return_value={"draft_archive_count": 3, "disk_found": True},
+            ):
+                with patch(
+                    "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                    return_value={"row_found": False, "draft_archive_count": 0, "draft_ids": []},
+                ):
+                    with patch(
+                        "draft_library_save_trace.probe_persisted_draft_id",
+                        return_value={"in_disk": False, "in_cloud": False, "in_session": False},
+                    ):
+                        diag = finalize_save_trace(
+                            session,
+                            reason="live_draft_league_context_saved",
+                            before={"draft_archive_count": 2, "league_context_count": 2},
+                            after={"draft_archive_count": 2, "league_context_count": 2},
+                            persist_ok=False,
+                            entry={"draft_id": "abc123"},
+                            cloud_write_ok=False,
+                            disk_write_ok=True,
+                        )
+        self.assertTrue(diag["draft_in_session"])
+        self.assertFalse(diag["persist_ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

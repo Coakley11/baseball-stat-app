@@ -66,6 +66,26 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(out, [{"app": "baseball"}])
         self.assertEqual(mock_once.call_count, 3)
 
+    def test_save_current_state_direct_upsert_after_transient_get(self) -> None:
+        with patch("suite_storage_supabase._cloud_user_id", return_value=None):
+            with patch("suite_storage_supabase._merge_state_metrics", return_value={"full_session": _full_session(1)}):
+                with patch(
+                    "suite_storage_supabase._request",
+                    side_effect=[
+                        RuntimeError("Supabase GET suite_app_current_state failed (503): PGRST002"),
+                        None,
+                    ],
+                ) as mock_req:
+                    result = save_current_state_with_result(
+                        "baseball",
+                        page="Saved Draft Library",
+                        summary="test",
+                        metrics={"full_session": _full_session(1)},
+                    )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("write_mode"), "direct_upsert_after_get_retry")
+        self.assertEqual(mock_req.call_args_list[-1].args[0], "POST")
+
     def test_pick_best_state_row_prefers_richer_draft_over_newer_empty(self) -> None:
         rows = [
             {
