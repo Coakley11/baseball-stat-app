@@ -130,6 +130,56 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         needed, _cats = infer_draft_assistant_needs(pd.DataFrame(), pd.DataFrame(), config={})
         self.assertEqual(needed, [])
 
+    def test_infer_draft_assistant_needs_accepts_draft_complete(self) -> None:
+        """Regression: Draft Assistant passes draft_complete=... (streamlit_app.py ~18585)."""
+        import inspect
+
+        from draft_ami_helpers import infer_draft_assistant_needs
+
+        params = inspect.signature(infer_draft_assistant_needs).parameters
+        self.assertIn("draft_complete", params)
+
+        cfg = _minimal_config()
+        roster = pd.DataFrame([{"fullName": "Catcher", "Primary Position": "C"}])
+        pool = pd.DataFrame(
+            [
+                {"fullName": "Catcher", "Primary Position": "C", "proj_HR": 20, "proj_RBI": 80},
+                {"fullName": "Other", "Primary Position": "SS", "proj_HR": 25, "proj_RBI": 90},
+            ]
+        )
+        needed, _cats = infer_draft_assistant_needs(
+            roster,
+            pool,
+            draft_format="5x5 Roto",
+            config=cfg,
+            draft_complete=True,
+        )
+        self.assertEqual(needed, [])
+
+    def test_infer_draft_assistant_needs_matches_draft_context_call(self) -> None:
+        """Regression: exercise the exact Draft Assistant call chain with resolve_draft_context."""
+        from draft_ami_helpers import infer_draft_assistant_needs
+        from draft_context import resolve_draft_context
+
+        cfg = _minimal_config()
+        session = {"live_draft_room": {"config": cfg, "status": "in_progress"}}
+        roster = pd.DataFrame([{"fullName": "Catcher", "Primary Position": "C"}])
+        pool = pd.DataFrame(
+            [
+                {"fullName": "Catcher", "Primary Position": "C", "proj_HR": 20, "proj_RBI": 80},
+                {"fullName": "Other", "Primary Position": "SS", "proj_HR": 25, "proj_RBI": 90},
+            ]
+        )
+        draft_ctx = resolve_draft_context(session)
+        needed, _cats = infer_draft_assistant_needs(
+            roster,
+            pool,
+            draft_format="5x5 Roto",
+            config=cfg,
+            draft_complete=bool(draft_ctx.draft_complete),
+        )
+        self.assertIn("SS", needed)
+
     def test_completion_panel_has_analyze_and_save_actions(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         self.assertIn("render_live_draft_completion_panel", text)

@@ -649,6 +649,7 @@ def infer_draft_assistant_needs(
     *,
     draft_format: str = "5x5 Roto",
     config: dict[str, Any] | None = None,
+    draft_complete: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Auto-detect position and category needs from host-configured roster slots when available."""
     import pandas as pd
@@ -664,6 +665,7 @@ def infer_draft_assistant_needs(
             pool,
             config=cfg,
             fantasy_format=draft_format,
+            draft_complete=draft_complete,
         )
     except ImportError:
         pass
