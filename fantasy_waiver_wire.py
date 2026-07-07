@@ -90,6 +90,7 @@ RATE_CATEGORIES = frozenset({"AVG", "OBP", "SLG", "OPS", "BA"})
 WAIVER_PENDING_PAIRS_KEY = "_waiver_pending_move_pairs"
 WAIVER_PLANNER_ADD_KEY = "waiver_planner_add_pick"
 WAIVER_PLANNER_DROP_KEY = "waiver_planner_drop_pick"
+WAIVER_TX_FLASH_KEY = "_waiver_tx_ui_flash"
 MAX_WAIVER_MOVE_PAIRS = 2
 ROTO_STAT_MAP = {
     "HR": ("HR", "proj_HR", "Total HR"),
@@ -106,6 +107,79 @@ ROTO_STAT_MAP = {
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def set_waiver_tx_flash(session: dict[str, Any], *, level: str, message: str) -> None:
+    session[WAIVER_TX_FLASH_KEY] = {"level": str(level or "info"), "message": str(message or "")}
+    try:
+        import streamlit as st
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="waiver_tx_flash")
+    except Exception:
+        pass
+
+
+def pop_waiver_tx_flash(session: dict[str, Any]) -> dict[str, str] | None:
+    flash = session.pop(WAIVER_TX_FLASH_KEY, None)
+    return flash if isinstance(flash, dict) else None
+
+
+def _is_player_rostered(context: dict[str, Any], player_name: str) -> bool:
+    """True when player_name matches an owned roster slot (display or normalized key)."""
+    name = str(player_name or "").strip()
+    if not name:
+        return False
+    if name in rostered_player_names(context):
+        return True
+    target_key = normalize_player_key(name)
+    ownership = context.get("ownership_map") or build_ownership_map(context)
+    return target_key in ownership
+
+
+def _find_roster_player_index(players: list[dict[str, Any]], player_name: str) -> int | None:
+    """Match roster entry by display name or normalized player key."""
+    target = str(player_name or "").strip()
+    if not target:
+        return None
+    target_key = normalize_player_key(target)
+    for i, player in enumerate(players):
+        if not isinstance(player, dict):
+            continue
+        pname = str(player.get("player_name") or "").strip()
+        if pname == target:
+            return i
+        pkey = str(player.get("player_key") or normalize_player_key(pname)).strip()
+        if pkey and pkey == target_key:
+            return i
+    return None
+
+
+def sync_waiver_roster_views(
+    session: dict[str, Any],
+    *,
+    stats_pool: pd.DataFrame | None = None,
+    normalize_name_fn=None,
+) -> None:
+    """Refresh cached league roster dataframe after waiver transactions."""
+    context = get_active_league_context(session)
+    if not context:
+        return
+    _clear_waiver_transaction_caches(session)
+    if stats_pool is None or getattr(stats_pool, "empty", True):
+        return
+    name_fn = normalize_name_fn or normalize_player_key
+    try:
+        from fantasy_league_context import build_roster_stats_from_league_context, has_full_league_rosters
+
+        if has_full_league_rosters(context):
+            session["fantasy_current_roster_stats"] = build_roster_stats_from_league_context(
+                context,
+                stats_pool,
+                normalize_name_fn=name_fn,
+            )
+    except Exception:
+        pass
 
 
 def research_league_sync_enabled(session: dict[str, Any]) -> bool:
@@ -1184,10 +1258,7 @@ def apply_waiver_move_pairs(
         if add_name in rostered:
             result["errors"].append(f"{add_name} is already rostered.")
             continue
-        drop_idx = next(
-            (i for i, p in enumerate(players) if str(p.get("player_name") or "").strip() == drop_name),
-            None,
-        )
+        drop_idx = _find_roster_player_index(players, drop_name)
         if drop_idx is None:
             result["errors"].append(f"{drop_name} is not on your roster.")
             continue
@@ -1273,6 +1344,8 @@ def apply_waiver_move_pairs(
     session.pop(WAIVER_PLANNER_ADD_KEY, None)
     session.pop(WAIVER_PLANNER_DROP_KEY, None)
     _clear_waiver_transaction_caches(session)
+    if stats_pool is not None and not getattr(stats_pool, "empty", True):
+        sync_waiver_roster_views(session, stats_pool=stats_pool)
 
     try:
         import streamlit as st
@@ -1290,6 +1363,8 @@ def apply_waiver_move_pairs(
         pass
 
     result["ok"] = True
+    result["added_players"] = [str(m.get("add_player") or "") for m in result["moves"]]
+    result["dropped_players"] = [str(m.get("drop_player") or "") for m in result["moves"]]
     return result
 
 

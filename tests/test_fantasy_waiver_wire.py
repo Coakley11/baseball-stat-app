@@ -215,6 +215,16 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertEqual(pairs[0]["add_player"], "Mike Trout")
         self.assertEqual(pairs[0]["drop_player"], "Aaron Judge")
 
+    def test_waiver_tx_flash_roundtrip(self) -> None:
+        from fantasy_waiver_wire import pop_waiver_tx_flash, set_waiver_tx_flash
+
+        session: dict = {}
+        self.assertIsNone(pop_waiver_tx_flash(session))
+        set_waiver_tx_flash(session, level="success", message="Added Mike Trout")
+        flash = pop_waiver_tx_flash(session)
+        self.assertEqual(flash, {"level": "success", "message": "Added Mike Trout"})
+        self.assertIsNone(pop_waiver_tx_flash(session))
+
     def test_apply_waiver_move_pairs_swaps_roster(self) -> None:
         session: dict = {}
         board = pd.DataFrame(
@@ -244,6 +254,74 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertIn("Mike Trout", names)
         self.assertNotIn("Aaron Judge", names)
         self.assertIn("Juan Soto", names)
+        self.assertEqual(result.get("added_players"), ["Mike Trout"])
+        self.assertEqual(result.get("dropped_players"), ["Aaron Judge"])
+
+    def test_apply_waiver_move_pairs_matches_drop_by_normalized_name(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Primary Position": "OF"},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2, "Primary Position": "OF"},
+            ]
+        )
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        context = get_active_league_context(session)
+        assert context is not None
+        my_team = str(context.get("my_team_name") or "Daniel")
+        players = context["league_rosters"][my_team]["players"]
+        players[0]["player_name"] = "Aaron Judge Jr."
+        context["league_rosters"][my_team]["players"] = players
+        from fantasy_league_context import upsert_league_context
+
+        upsert_league_context(session, context)
+        stats_pool = pd.DataFrame(
+            [
+                {"Player": "Aaron Judge Jr.", "HR": 20},
+                {"Player": "Mike Trout", "HR": 25, "Primary Position": "OF"},
+            ]
+        )
+        result = apply_waiver_move_pairs(
+            session,
+            [{"add_player": "Mike Trout", "drop_player": "Aaron Judge"}],
+            stats_pool=stats_pool,
+        )
+        self.assertTrue(result.get("ok"))
+        names = rostered_player_names(get_active_league_context(session))
+        self.assertIn("Mike Trout", names)
+        self.assertNotIn("Aaron Judge Jr.", names)
+
+    def test_sync_waiver_roster_views_refreshes_cached_roster(self) -> None:
+        from fantasy_waiver_wire import sync_waiver_roster_views
+
+        session: dict = {}
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2},
+            ]
+        )
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        stats_pool = pd.DataFrame(
+            [
+                {"Player": "Aaron Judge", "Team": "Daniel", "HR": 20},
+                {"Player": "Juan Soto", "Team": "Rivals", "HR": 18},
+                {"Player": "Mike Trout", "HR": 25},
+            ]
+        )
+        apply_waiver_move_pairs(
+            session,
+            [{"add_player": "Mike Trout", "drop_player": "Aaron Judge"}],
+            stats_pool=stats_pool,
+        )
+        sync_waiver_roster_views(session, stats_pool=stats_pool)
+        roster_df = session.get("fantasy_current_roster_stats")
+        self.assertIsInstance(roster_df, pd.DataFrame)
+        assert roster_df is not None
+        daniel_rows = roster_df[roster_df["Team"].astype(str) == "Daniel"]
+        names = set(daniel_rows["Player"].astype(str).tolist())
+        self.assertIn("Mike Trout", names)
+        self.assertNotIn("Aaron Judge", names)
 
     def test_apply_waiver_move_pairs_rejects_more_than_two(self) -> None:
         session: dict = {}

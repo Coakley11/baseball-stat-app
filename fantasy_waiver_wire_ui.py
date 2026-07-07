@@ -34,9 +34,12 @@ from fantasy_waiver_wire import (
     format_league_rank_lines,
     get_pending_move_pairs,
     my_team_roster_dataframe,
+    pop_waiver_tx_flash,
     recommend_adds_current,
     recommend_drops_current,
     remove_pending_move_pair,
+    set_waiver_tx_flash,
+    sync_waiver_roster_views,
     waiver_categories_for_context,
     waiver_display_stat_columns,
 )
@@ -201,6 +204,43 @@ def _on_planner_pick_changed() -> None:
         pass
 
 
+def _handle_waiver_tx_result(
+    st: Any,
+    session: dict[str, Any],
+    tx_result: dict,
+    *,
+    stats_pool: pd.DataFrame,
+    normalize_name_fn=None,
+) -> None:
+    if tx_result.get("ok"):
+        added = ", ".join(tx_result.get("added_players") or [])
+        dropped = ", ".join(tx_result.get("dropped_players") or [])
+        message = f"**Added:** {added or '—'}\n\n**Dropped:** {dropped or '—'}"
+        warns = [str(w) for w in (tx_result.get("position_warnings") or []) if str(w).strip()]
+        if warns:
+            message = f"{message}\n\n" + "\n".join(warns)
+        set_waiver_tx_flash(session, level="success", message=message)
+        try:
+            sync_waiver_roster_views(session, stats_pool=stats_pool, normalize_name_fn=normalize_name_fn)
+        except Exception:
+            pass
+        session.pop("waiver_tx_add_players", None)
+        session.pop("waiver_tx_drop_players", None)
+        st.rerun()
+        return
+    errors = [str(err) for err in (tx_result.get("errors") or []) if str(err).strip()]
+    if errors:
+        set_waiver_tx_flash(session, level="error", message="\n".join(errors))
+        st.rerun()
+        return
+    set_waiver_tx_flash(
+        session,
+        level="error",
+        message="Waiver move could not be applied. Check your add/drop selections and try again.",
+    )
+    st.rerun()
+
+
 def render_waiver_wire_page(
     st: Any,
     session: dict[str, Any],
@@ -217,6 +257,20 @@ def render_waiver_wire_page(
             "and click **Set Active Draft**."
         )
         return
+
+    flash = pop_waiver_tx_flash(session)
+    if flash:
+        level = str(flash.get("level") or "info")
+        message = str(flash.get("message") or "")
+        if message:
+            if level == "success":
+                st.success(message)
+            elif level == "error":
+                st.error(message)
+            elif level == "warning":
+                st.warning(message)
+            else:
+                st.info(message)
 
     my_team = str(context.get("my_team_name") or "").strip()
     if my_team:
@@ -266,7 +320,12 @@ def render_waiver_wire_page(
     waiver_cats = waiver_categories_for_context(context)
     ctx_id = str(context.get("context_id") or context.get("draft_id") or context.get("display_name") or "")
     stats_sig = str(len(stats_pool)) + ":" + str(tuple(stats_pool.columns[:8].tolist()))
-    league_sig = str(len(league_df)) + ":" + str(my_team)
+    try:
+        from fantasy_league_context import league_rosters_cache_sig
+
+        league_sig = league_rosters_cache_sig(context)
+    except ImportError:
+        league_sig = str(len(league_df)) + ":" + str(my_team)
     cache_key = None
     cached_payload = None
     try:
@@ -395,31 +454,38 @@ def render_waiver_wire_page(
                 st.caption(" · ".join(bits))
     if st.button("Confirm Waiver Move", key="waiver_confirm_tx_btn", type="primary"):
         if not tx_adds or not tx_drops:
-            st.warning("Select at least one add and one drop player.")
+            set_waiver_tx_flash(session, level="warning", message="Select at least one add and one drop player.")
+            st.rerun()
         elif len(tx_adds) != len(tx_drops):
-            st.warning("Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).")
-        elif len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
-            st.warning(
-                f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction (Add 1/Drop 1 or Add 2/Drop 2)."
+            set_waiver_tx_flash(
+                session,
+                level="warning",
+                message="Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).",
             )
+            st.rerun()
+        elif len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
+            set_waiver_tx_flash(
+                session,
+                level="warning",
+                message=(
+                    f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction "
+                    "(Add 1/Drop 1 or Add 2/Drop 2)."
+                ),
+            )
+            st.rerun()
         else:
             pairs = [
                 {"add_player": add_name, "drop_player": drop_name}
                 for add_name, drop_name in zip(tx_adds, tx_drops)
             ]
             tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
-            if tx_result.get("ok"):
-                added = ", ".join(tx_result.get("added_players") or [])
-                dropped = ", ".join(tx_result.get("dropped_players") or [])
-                st.success(
-                    f"**Added:** {added or '—'}\n\n**Dropped:** {dropped or '—'}"
-                )
-                for warn in tx_result.get("position_warnings") or []:
-                    st.warning(str(warn))
-                st.rerun()
-            else:
-                for err in tx_result.get("errors") or []:
-                    st.error(str(err))
+            _handle_waiver_tx_result(
+                st,
+                session,
+                tx_result,
+                stats_pool=stats_pool,
+                normalize_name_fn=normalize_name_fn,
+            )
 
     st.markdown("##### 1. Top Recommended Adds")
     if adds.empty:
@@ -478,15 +544,29 @@ def render_waiver_wire_page(
         st.dataframe(pool_view[disp_cols].head(150), use_container_width=True, hide_index=True)
 
     st.markdown("##### 4. Manual Add / Drop Actions")
-    st.caption("Select an add target and a drop from your roster, then save as a pending move.")
-    planner_add = str(session.get(WAIVER_PLANNER_ADD_KEY) or "").strip()
-    planner_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or "").strip()
+    st.caption("Pick an add and a drop below, or use **Plan Add** / **Plan Drop** cards above.")
+    manual_add_options = [""] + add_options
+    manual_drop_options = [""] + drop_options
+    manual_add_pick = st.selectbox(
+        "Add player (waiver pool)",
+        manual_add_options,
+        key="waiver_manual_add_select",
+        format_func=lambda name: "Select a waiver add…" if not name else name,
+    )
+    manual_drop_pick = st.selectbox(
+        "Drop player (your roster)",
+        manual_drop_options,
+        key="waiver_manual_drop_select",
+        format_func=lambda name: "Select a roster drop…" if not name else name,
+    )
+    planner_add = str(session.get(WAIVER_PLANNER_ADD_KEY) or manual_add_pick or "").strip()
+    planner_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or manual_drop_pick or "").strip()
     if planner_add:
         add_row = _row_for_player(waiver_pool, planner_add)
         if add_row is not None:
             st.markdown("**Add target**")
 
-            def _clear_add(_name: str) -> None:
+            def _clear_add(*_args, **_kwargs) -> None:
                 session.pop(WAIVER_PLANNER_ADD_KEY, None)
                 _on_planner_pick_changed()
 
@@ -502,7 +582,7 @@ def render_waiver_wire_page(
         if drop_row is not None:
             st.markdown("**Drop candidate**")
 
-            def _clear_drop(_name: str) -> None:
+            def _clear_drop(*_args, **_kwargs) -> None:
                 session.pop(WAIVER_PLANNER_DROP_KEY, None)
                 _on_planner_pick_changed()
 
@@ -524,7 +604,12 @@ def render_waiver_wire_page(
         st.caption(f"**Category impact:** {', '.join(impact)}")
     if st.button("Add to Pending Moves", key="waiver_save_pair_btn", type="primary"):
         if not planner_add or not planner_drop:
-            st.warning("Select both an add target and a drop player.")
+            set_waiver_tx_flash(
+                session,
+                level="warning",
+                message="Select both an add target and a drop player before saving a pending move.",
+            )
+            st.rerun()
         elif add_pending_move_pair(
             session,
             add_player=planner_add,
@@ -533,6 +618,20 @@ def render_waiver_wire_page(
         ):
             session.pop(WAIVER_PLANNER_ADD_KEY, None)
             session.pop(WAIVER_PLANNER_DROP_KEY, None)
+            session.pop("waiver_manual_add_select", None)
+            session.pop("waiver_manual_drop_select", None)
+            set_waiver_tx_flash(
+                session,
+                level="success",
+                message=f"Pending move saved: **Add {planner_add}** · **Drop {planner_drop}**",
+            )
+            st.rerun()
+        else:
+            set_waiver_tx_flash(
+                session,
+                level="error",
+                message="Could not save pending move — check your active league context.",
+            )
             st.rerun()
 
     st.markdown("##### Pending Add/Drop Moves")
@@ -551,15 +650,10 @@ def render_waiver_wire_page(
                 st.rerun()
         if st.button("Confirm Pending Waiver Moves", key="waiver_confirm_pending_btn", type="primary"):
             tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
-            if tx_result.get("ok"):
-                added = ", ".join(tx_result.get("added_players") or [])
-                dropped = ", ".join(tx_result.get("dropped_players") or [])
-                st.success(
-                    f"**Added:** {added or '—'}\n\n**Dropped:** {dropped or '—'}"
-                )
-                for warn in tx_result.get("position_warnings") or []:
-                    st.warning(str(warn))
-                st.rerun()
-            else:
-                for err in tx_result.get("errors") or []:
-                    st.error(str(err))
+            _handle_waiver_tx_result(
+                st,
+                session,
+                tx_result,
+                stats_pool=stats_pool,
+                normalize_name_fn=normalize_name_fn,
+            )
