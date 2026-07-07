@@ -23344,6 +23344,13 @@ if active_page == "Fantasy Lineup Assistant":
             st.warning("No players found for the selected team.")
         else:
             team_roster = enrich_lineup_roster_positions(team_roster)
+            lineup_scored_for_weekly = None
+            try:
+                lineup_scored_for_weekly = build_lineup_assistant_scores(
+                    team_roster, lineup_format, custom_weights
+                )
+            except Exception:
+                lineup_scored_for_weekly = None
             try:
                 from fantasy_weekly_lineup_ui import render_weekly_lineup_section
 
@@ -23353,6 +23360,7 @@ if active_page == "Fantasy Lineup Assistant":
                     team_roster=team_roster,
                     lineup_team=str(lineup_team or ""),
                     on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
+                    scored_roster=lineup_scored_for_weekly,
                 )
             except ImportError:
                 pass

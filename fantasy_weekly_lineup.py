@@ -1,4 +1,4 @@
-"""Weekly lineup management for the active fantasy team (Phase 1)."""
+"""Weekly lineup management for the active fantasy team."""
 
 from __future__ import annotations
 
@@ -393,6 +393,15 @@ def compute_weekly_starter_totals(
     return {"starters": rows, "totals": totals, "categories": list(categories)}
 
 
+def _player_id_from_row(row: pd.Series | dict[str, Any]) -> str:
+    getter = row.get if hasattr(row, "get") else lambda _k, _d="": ""
+    for key in ("player_id", "playerID", "playerId", "mlbam_id", "ID"):
+        val = str(getter(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
 def save_weekly_lineup(
     session: dict[str, Any],
     *,
@@ -415,12 +424,25 @@ def save_weekly_lineup(
         return result
 
     slot_map = assignments_to_slot_player_map(slots, assignments)
+    name_col = _player_name_col(roster_df)
+    lookup = {
+        str(row[name_col]).strip(): row for _, row in roster_df.iterrows() if str(row.get(name_col) or "").strip()
+    }
+    assignments_by_id: dict[str, str] = {}
+    for slot_key, player_name in slot_map.items():
+        row = lookup.get(player_name)
+        if row is not None:
+            pid = _player_id_from_row(row)
+            if pid:
+                assignments_by_id[slot_key] = pid
+
     payload = {
         "week": int(week),
         "week_label": week_label(week),
         "my_team_name": str(my_team or "").strip(),
         "slots": slots,
         "assignments": slot_map,
+        "assignments_by_id": assignments_by_id,
         "not_starting": not_starting_players(roster_df, slot_map),
         "saved_at": _utc_now_iso(),
         "stats_snapshot": compute_weekly_starter_totals(roster_df, slot_map),

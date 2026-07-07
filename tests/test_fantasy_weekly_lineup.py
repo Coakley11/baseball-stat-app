@@ -149,7 +149,7 @@ class WeeklyLineupUiTests(unittest.TestCase):
 
         from fantasy_weekly_lineup_ui import render_weekly_lineup_section
 
-        session: dict = {}
+        session: dict = {"weekly_lineup_editor_mode": "Classic Dropdowns"}
         board = pd.DataFrame([{"Team": "Daniel", "Player": "Catcher One", "Pick": 1}])
         save_simulator_league_context(session, board, my_team_name="Daniel")
         roster = _roster_df()
@@ -163,7 +163,10 @@ class WeeklyLineupUiTests(unittest.TestCase):
 
         st.columns.side_effect = _columns
         st.selectbox.return_value = 1
+        st.radio.return_value = "Classic Dropdowns"
         st.button.return_value = False
+        st.expander.return_value.__enter__ = MagicMock(return_value=MagicMock())
+        st.expander.return_value.__exit__ = MagicMock(return_value=False)
 
         render_weekly_lineup_section(
             st,
