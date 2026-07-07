@@ -3635,6 +3635,11 @@ def save_draft_board_direct_to_cloud(
             trace.update(cloud_stats)
             _attach_cloud_boundary_diagnostics(trace)
             readback = int(trace.get("supabase_row_pick_count_after_write") or 0)
+            room_readback = session.get("_suite_last_draft_room_readback")
+            if isinstance(room_readback, dict) and room_readback:
+                trace["readback_scope_user_id"] = room_readback.get("scope_user_id")
+                trace["readback_selected_row_user_id"] = room_readback.get("selected_row_user_id")
+                trace["readback_row_inspection"] = room_readback
             if readback < expected_picks:
                 trace["saved_cloud"] = False
                 trace["error"] = (

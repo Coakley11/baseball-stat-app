@@ -372,6 +372,10 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
         if isinstance(save_readback, dict) and save_readback:
             st.markdown("**Last save readback row identity**")
             st.json(save_readback)
+        room_readback = session.get("_suite_last_draft_room_readback")
+        if isinstance(room_readback, dict) and room_readback:
+            st.markdown("**Last draft-room pick readback row identity**")
+            st.json(room_readback)
         if diag.get("local_state_path"):
             st.caption(f"Disk path: `{diag['local_state_path']}`")
         merged = diag.get("workflow_merge_keys") or []

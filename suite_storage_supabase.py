@@ -153,7 +153,9 @@ def load_current_state_meta_for_app(app: str) -> dict[str, Any]:
     )
     if not rows:
         return {}
-    row = rows[0]
+    row = _pick_best_state_row([r for r in rows if isinstance(r, dict)])
+    if not isinstance(row, dict):
+        row = rows[0] if rows else {}
     if not isinstance(row, dict):
         return {}
     return {

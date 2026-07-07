@@ -14,9 +14,11 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
 
     @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
     @patch("suite_cloud_state.save_cloud_full_session_with_details", return_value=(True, "", "baseball"))
-    @patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-06-25T00:00:00"))
-    @patch("draft_room_state.draft_room_restore_stats", return_value={"pick_count": 4})
-    def test_readback_pick_count_ok(self, _stats, _load, _save, _enabled) -> None:
+    @patch(
+        "suite_cloud_state.verify_cloud_draft_room_readback",
+        return_value={"ok": True, "pick_count": 4, "cloud_app_key": "baseball", "selected_row_user_id": "user-1"},
+    )
+    def test_readback_pick_count_ok(self, _verify, _save, _enabled) -> None:
         ok, err = save_cloud_full_session_with_result(
             "baseball",
             {"draft_room_state": {"board": []}},
@@ -29,9 +31,18 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
 
     @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
     @patch("suite_cloud_state.save_cloud_full_session_with_details", return_value=(True, "", "baseball"))
-    @patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-06-25T00:00:00"))
-    @patch("draft_room_state.draft_room_restore_stats", return_value={"pick_count": 2})
-    def test_readback_pick_count_mismatch(self, _stats, _load, _save, _enabled) -> None:
+    @patch(
+        "suite_cloud_state.verify_cloud_draft_room_readback",
+        return_value={
+            "ok": False,
+            "pick_count": 0,
+            "cloud_app_key": "baseball",
+            "workspace_id": "daniel",
+            "selected_row_user_id": "user-1",
+            "error": "readback_pick_count_0_lt_4",
+        },
+    )
+    def test_readback_pick_count_mismatch(self, _verify, _save, _enabled) -> None:
         ok, err = save_cloud_full_session_with_result(
             "baseball",
             {"draft_room_state": {"board": []}},
@@ -39,6 +50,19 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertIn("readback_pick_mismatch", err)
+        self.assertIn("key=baseball", err)
+
+    @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
+    @patch("suite_cloud_state.save_cloud_full_session_with_details", return_value=(True, "", "baseball"))
+    def test_readback_blocks_workflow_fallback_with_picks(self, _save, _enabled) -> None:
+        with patch("suite_cloud_state._streamlit_session", return_value={"_suite_cloud_write_used_workflow_fallback": True}):
+            ok, err = save_cloud_full_session_with_result(
+                "baseball",
+                {"draft_room_state": {}},
+                min_draft_pick_count=4,
+            )
+        self.assertFalse(ok)
+        self.assertIn("workflow_fallback_omitted_draft_room_picks", err)
 
     @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
     @patch(

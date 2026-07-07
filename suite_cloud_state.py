@@ -408,13 +408,243 @@ def _streamlit_session() -> Any | None:
         return None
 
 
+def _resolve_cloud_app_key(app_id: str, storage: Any | None = None) -> str:
+    if storage is None:
+        storage, _ = _import_storage()
+    return storage.normalize_app_key(_cloud_storage_app_id(app_id))
+
+
+def _state_draft_pick_count(state: dict[str, Any]) -> int:
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        return int(draft_room_restore_stats(state).get("pick_count") or 0)
+    except ImportError:
+        return 0
+
+
+def _draft_room_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Compact durable blob: draft board keys only (for pick persistence when full save fails)."""
+    try:
+        from draft_room_state import (
+            CANONICAL_DRAFT_META_KEY,
+            DRAFT_ROOM_PAGE_BLOCK,
+            DRAFT_ROOM_STATE_KEY,
+            DRAFT_ROOM_TABLE_KEY,
+            draft_room_restore_stats,
+        )
+    except ImportError:
+        return {}
+    slice_out: dict[str, Any] = {}
+    for key in (DRAFT_ROOM_STATE_KEY, DRAFT_ROOM_TABLE_KEY, CANONICAL_DRAFT_META_KEY):
+        if key in state and state[key] is not None:
+            slice_out[key] = copy.deepcopy(state[key])
+    pf = state.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get(DRAFT_ROOM_PAGE_BLOCK)
+        if isinstance(block, dict) and block:
+            slice_out.setdefault("page_filter_state", {})[DRAFT_ROOM_PAGE_BLOCK] = copy.deepcopy(block)
+    page = str(state.get("active_page") or "").strip()
+    if page:
+        slice_out["active_page"] = page
+    if int(draft_room_restore_stats(slice_out).get("pick_count") or 0) <= 0:
+        return {}
+    return slice_out
+
+
+def _record_cloud_write_session_meta(
+    ss: dict[str, Any] | None,
+    *,
+    app_key: str,
+    write_mode: str = "",
+    payload_bytes: int = 0,
+    used_workflow_fallback: bool = False,
+    used_draft_room_slice: bool = False,
+) -> None:
+    if ss is None:
+        return
+    ss["_suite_last_cloud_app_key"] = app_key
+    if write_mode:
+        ss["_suite_last_cloud_write_mode"] = write_mode
+    if payload_bytes:
+        ss["_suite_last_cloud_payload_bytes"] = payload_bytes
+    if used_workflow_fallback:
+        ss["_suite_cloud_write_used_workflow_fallback"] = True
+    else:
+        ss.pop("_suite_cloud_write_used_workflow_fallback", None)
+    if used_draft_room_slice:
+        ss["_suite_cloud_write_used_draft_room_slice"] = True
+    else:
+        ss.pop("_suite_cloud_write_used_draft_room_slice", None)
+
+
+def last_cloud_write_meta() -> dict[str, Any]:
+    ss = _streamlit_session()
+    if not isinstance(ss, dict):
+        return {}
+    return {
+        "write_mode": str(ss.get("_suite_last_cloud_write_mode") or ""),
+        "cloud_app_key": str(ss.get("_suite_last_cloud_app_key") or ""),
+        "payload_bytes": int(ss.get("_suite_last_cloud_payload_bytes") or 0),
+        "used_workflow_fallback": bool(ss.get("_suite_cloud_write_used_workflow_fallback")),
+        "used_draft_room_slice": bool(ss.get("_suite_cloud_write_used_draft_room_slice")),
+    }
+
+
+def verify_cloud_draft_room_readback(
+    app_id: str = "baseball",
+    *,
+    min_picks: int = 1,
+    cloud_app_key: str = "",
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fresh Supabase readback after a draft-room write — confirms picks landed."""
+    out: dict[str, Any] = {
+        "ok": False,
+        "pick_count": 0,
+        "cloud_app_key": "",
+        "workspace_id": "",
+        "scope_user_id": None,
+        "selected_row_user_id": None,
+        "row_found": False,
+        "row_inspection": {},
+        "error": "",
+    }
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        if not cloud_storage_enabled():
+            out["error"] = "cloud_storage_disabled"
+            return out
+    except ImportError:
+        out["error"] = "cloud_storage_config_unavailable"
+        return out
+    try:
+        from workflow_persist_guard import _resolve_workspace_id_for_cloud_probe
+
+        ws = _resolve_workspace_id_for_cloud_probe("", session=session)
+        out["workspace_id"] = ws
+    except Exception:
+        ws = ""
+    app_key = str(cloud_app_key or "").strip()
+    if not app_key:
+        try:
+            storage, _ = _import_storage()
+            app_key = _resolve_cloud_app_key(app_id, storage)
+        except Exception as exc:
+            out["error"] = str(exc)
+            return out
+    out["cloud_app_key"] = app_key
+    invalidate_cloud_full_session_cache(app_id)
+    try:
+        from suite_storage_supabase import inspect_cloud_state_rows
+
+        inspection = inspect_cloud_state_rows(app_key)
+        out["row_inspection"] = inspection
+        out["scope_user_id"] = inspection.get("scope_user_id")
+        out["selected_row_user_id"] = inspection.get("selected_row_user_id")
+    except Exception:
+        pass
+    try:
+        storage, _ = _import_storage()
+        row = storage.load_current_state_for_app(app_key)
+        if not isinstance(row, dict) or not row:
+            out["error"] = "cloud_row_not_found"
+            return out
+        out["row_found"] = True
+        if out.get("selected_row_user_id") is None:
+            out["selected_row_user_id"] = row.get("user_id")
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        blob = metrics.get(FULL_SESSION_KEY) if isinstance(metrics, dict) else None
+        from draft_room_state import draft_room_restore_stats
+
+        out["pick_count"] = int(draft_room_restore_stats(blob if isinstance(blob, dict) else None).get("pick_count") or 0)
+        out["ok"] = out["pick_count"] >= max(0, int(min_picks or 0))
+        if not out["ok"] and not out["error"]:
+            out["error"] = f"readback_pick_count_{out['pick_count']}_lt_{min_picks}"
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out
+
+
+def read_cloud_persistence_boundary(app_id: str = "baseball") -> dict[str, Any]:
+    """Authoritative Supabase read-back for draft-room save/restore diagnostics."""
+    out: dict[str, Any] = {
+        "cloud_fetch_attempted": True,
+        "cloud_fetch_success": False,
+        "cloud_target_user_id": None,
+        "cloud_target_app_id": "",
+        "cloud_fetch_user_id": None,
+        "cloud_fetch_app_id": "",
+        "cloud_fetch_updated_at": None,
+        "cloud_fetch_pick_count": 0,
+        "supabase_row_pick_count_after_write": 0,
+        "supabase_row_updated_at_after_write": None,
+        "cloud_row_count": 0,
+        "cloud_row_pick_counts": [],
+        "cloud_load_error": None,
+    }
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        if not cloud_storage_enabled():
+            out["cloud_load_error"] = "cloud_storage_disabled"
+            return out
+    except ImportError:
+        out["cloud_load_error"] = "cloud_storage_config_unavailable"
+        return out
+    try:
+        storage, _ = _import_storage()
+        app_key = _resolve_cloud_app_key(app_id, storage)
+        out["cloud_target_app_id"] = app_key
+        out["cloud_fetch_app_id"] = app_key
+        try:
+            from suite_storage_supabase import _cloud_user_id, inspect_cloud_state_rows
+
+            out["cloud_target_user_id"] = _cloud_user_id()
+            out["cloud_fetch_user_id"] = out["cloud_target_user_id"]
+            inspection = inspect_cloud_state_rows(app_key)
+            out["cloud_row_count"] = int(inspection.get("row_count") or 0)
+            out["selected_row_user_id"] = inspection.get("selected_row_user_id")
+            out["scope_user_id"] = inspection.get("scope_user_id")
+            row_summaries = inspection.get("rows") if isinstance(inspection.get("rows"), list) else []
+            out["cloud_row_pick_counts"] = [
+                {
+                    "user_id": row.get("user_id"),
+                    "archive_draft_count": row.get("draft_count"),
+                    "updated_at": row.get("updated_at"),
+                }
+                for row in row_summaries
+                if isinstance(row, dict)
+            ]
+        except Exception:
+            pass
+        row = storage.load_current_state_for_app(app_key)
+        if not isinstance(row, dict) or not row:
+            return out
+        out["cloud_fetch_success"] = True
+        updated_at = str(row.get("updated_at") or "") or None
+        out["cloud_fetch_updated_at"] = updated_at
+        out["supabase_row_updated_at_after_write"] = updated_at
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        blob = metrics.get(FULL_SESSION_KEY) if isinstance(metrics, dict) else None
+        from draft_room_state import draft_room_restore_stats
+
+        pick_count = int(draft_room_restore_stats(blob if isinstance(blob, dict) else None).get("pick_count") or 0)
+        out["cloud_fetch_pick_count"] = pick_count
+        out["supabase_row_pick_count_after_write"] = pick_count
+    except Exception as exc:
+        out["cloud_load_error"] = str(exc)
+    return out
+
+
 def invalidate_cloud_full_session_cache(app_id: str) -> None:
     """Drop cached full_session after a local or cloud write."""
     try:
-        import suite_storage as storage
-    except ImportError:
+        storage, _ = _import_storage()
+    except Exception:
         return
-    app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+    app_key = _resolve_cloud_app_key(app_id, storage)
     ss = _streamlit_session()
     if ss is None:
         return
@@ -434,7 +664,7 @@ def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[s
     try:
         storage, _ = _import_storage()
 
-        app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+        app_key = _resolve_cloud_app_key(app_id, storage)
         meta_fn = getattr(storage, "load_current_state_meta_for_app", None)
         row_fn = getattr(storage, "load_current_state_for_app", None)
         ss = _streamlit_session()
@@ -448,7 +678,7 @@ def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[s
                 return copy.deepcopy(cached), ss.get(ts_key)
 
         if meta_fn:
-            meta = meta_fn(app_id) or {}
+            meta = meta_fn(app_key) or {}
             updated_at = str(meta.get("updated_at") or "") or None
             if not force and ss is not None and ss.get(ts_key) == updated_at:
                 cached = ss.get(blob_key)
@@ -456,7 +686,7 @@ def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[s
                     return copy.deepcopy(cached), updated_at
 
         if row_fn:
-            row = row_fn(app_id) or {}
+            row = row_fn(app_key) or {}
         else:
             row = storage.load_current_states(include_metrics=True).get(app_key) or {}
         if not isinstance(row, dict):
@@ -788,6 +1018,40 @@ def save_cloud_full_session_with_details(
             write_label="full_session",
         )
         if not ok:
+            pick_count = _state_draft_pick_count(state)
+            dr_slice = _draft_room_slice_from_state(state) if pick_count > 0 else {}
+            if dr_slice:
+                dr_payload = {FULL_SESSION_KEY: dr_slice}
+                dr_bytes = (
+                    int(estimate_fn(dr_payload))
+                    if callable(estimate_fn)
+                    else estimate_json_bytes(dr_payload)
+                )
+                dr_ok, dr_detail, dr_result = _attempt_cloud_metrics_save(
+                    storage,
+                    app_key,
+                    page=page,
+                    summary=summary or "Draft room slice",
+                    metrics=dr_payload,
+                    write_label="draft_room_slice",
+                )
+                if dr_ok:
+                    ss = _streamlit_session()
+                    _record_cloud_write_session_meta(
+                        ss,
+                        app_key=app_key,
+                        write_mode=str((dr_result or {}).get("write_mode") or ""),
+                        payload_bytes=dr_bytes,
+                        used_draft_room_slice=True,
+                    )
+                    ts_key, blob_key = _full_session_cache_keys(app_key)
+                    if ss is not None:
+                        ss[blob_key] = copy.deepcopy(dr_slice)
+                        ss[ts_key] = _utc_now_iso()
+                        ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
+                    return True, "", app_key
+                detail = f"{detail}; draft_room_slice_failed={dr_detail}"
+
             wf_slice = _workflow_slice_from_state(state)
             wf_payload = {FULL_SESSION_KEY: wf_slice}
             wf_bytes = (
@@ -795,7 +1059,7 @@ def save_cloud_full_session_with_details(
                 if callable(estimate_fn)
                 else estimate_json_bytes(wf_payload)
             )
-            if wf_slice and wf_bytes + 4096 < full_bytes:
+            if wf_slice and wf_bytes + 4096 < full_bytes and pick_count <= 0:
                 wf_ok, wf_detail, wf_result = _attempt_cloud_metrics_save(
                     storage,
                     app_key,
@@ -806,10 +1070,13 @@ def save_cloud_full_session_with_details(
                 )
                 if wf_ok:
                     ss = _streamlit_session()
-                    if ss is not None:
-                        ss["_suite_last_cloud_write_mode"] = str(wf_result.get("write_mode") or "")
-                        ss["_suite_last_cloud_payload_bytes"] = wf_bytes
-                        ss["_suite_cloud_write_used_workflow_fallback"] = True
+                    _record_cloud_write_session_meta(
+                        ss,
+                        app_key=app_key,
+                        write_mode=str((wf_result or {}).get("write_mode") or ""),
+                        payload_bytes=wf_bytes,
+                        used_workflow_fallback=True,
+                    )
                     ts_key, blob_key = _full_session_cache_keys(app_key)
                     if ss is not None:
                         ss[blob_key] = copy.deepcopy(wf_slice)
@@ -817,6 +1084,8 @@ def save_cloud_full_session_with_details(
                         ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
                     return True, "", app_key
                 detail = f"{detail}; workflow_fallback_failed={wf_detail}"
+            elif pick_count > 0:
+                detail = f"{detail}; workflow_fallback_skipped_preserves_draft_room_picks"
 
             likely = ""
             health: dict[str, Any] = {}
@@ -848,10 +1117,12 @@ def save_cloud_full_session_with_details(
             return False, err_out, app_key
 
         ss = _streamlit_session()
-        if ss is not None:
-            ss["_suite_last_cloud_write_mode"] = str(result.get("write_mode") or "")
-            ss["_suite_last_cloud_payload_bytes"] = full_bytes
-            ss.pop("_suite_cloud_write_used_workflow_fallback", None)
+        _record_cloud_write_session_meta(
+            ss,
+            app_key=app_key,
+            write_mode=str((result or {}).get("write_mode") or ""),
+            payload_bytes=full_bytes,
+        )
         ts_key, blob_key = _full_session_cache_keys(app_key)
         if ss is not None:
             ss[blob_key] = copy.deepcopy(state)
@@ -877,27 +1148,43 @@ def save_cloud_full_session_with_result(
 ) -> tuple[bool, str]:
     """Persist full_session to cloud; return (success, error_message)."""
     try:
-        ok, error, _app_key = save_cloud_full_session_with_details(
+        ok, error, app_key = save_cloud_full_session_with_details(
             app_id, state, page=page, summary=summary
         )
         if not ok:
             return False, error or "cloud_save_failed"
+        ss = _streamlit_session()
         if min_draft_pick_count is not None and int(min_draft_pick_count) > 0:
-            invalidate_cloud_full_session_cache(app_id)
-            cloud_after, _ = load_cloud_full_session(app_id, force=True)
-            readback = 0
-            try:
-                from draft_room_state import draft_room_restore_stats
-
-                readback = int(draft_room_restore_stats(cloud_after or {}).get("pick_count") or 0)
-            except ImportError:
-                pass
-            expected = int(min_draft_pick_count)
-            if readback < expected:
-                return (
-                    False,
-                    f"readback_pick_mismatch:expected={expected} got={readback}",
-                )
+            if isinstance(ss, dict) and ss.get("_suite_cloud_write_used_workflow_fallback"):
+                return False, "workflow_fallback_omitted_draft_room_picks"
+            readback = verify_cloud_draft_room_readback(
+                app_id,
+                min_picks=int(min_draft_pick_count),
+                cloud_app_key=app_key,
+                session=ss if isinstance(ss, dict) else None,
+            )
+            if not readback.get("ok"):
+                err = str(readback.get("error") or "readback_pick_mismatch")
+                expected = int(min_draft_pick_count)
+                got = int(readback.get("pick_count") or 0)
+                if "readback_pick_mismatch" not in err:
+                    err = f"readback_pick_mismatch:expected={expected} got={got}"
+                row_uid = readback.get("selected_row_user_id")
+                ws = readback.get("workspace_id") or ""
+                key = readback.get("cloud_app_key") or app_key
+                suffix = f"key={key}, workspace={ws or '—'}"
+                if row_uid is not None:
+                    suffix += f", row_user_id={row_uid}"
+                return False, f"{err}; {suffix}"
+            if isinstance(ss, dict):
+                ss["_suite_last_draft_room_readback"] = {
+                    "cloud_app_key": readback.get("cloud_app_key") or app_key,
+                    "workspace_id": readback.get("workspace_id"),
+                    "scope_user_id": readback.get("scope_user_id"),
+                    "selected_row_user_id": readback.get("selected_row_user_id"),
+                    "pick_count": readback.get("pick_count"),
+                    "expected_pick_count": int(min_draft_pick_count),
+                }
         return True, ""
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
