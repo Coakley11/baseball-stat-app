@@ -289,10 +289,20 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
         ws_label = str(diag.get("workspace_label") or diag.get("workspace_id") or "—")
         ws_id = str(diag.get("workspace_id") or "—")
         st.markdown(f"**Workspace:** {ws_label} (`{ws_id}`)")
+        owned_ws = str(diag.get("owned_workspace_id") or "—")
+        if owned_ws and owned_ws != "—" and owned_ws != ws_id:
+            st.markdown(f"**Owned workspace:** `{owned_ws}`")
         st.markdown(
             f"**Counts (session):** {int(diag.get('draft_archive_count') or 0)} saved drafts · "
             f"{int(diag.get('league_context_count') or 0)} league contexts"
         )
+        st.markdown(
+            f"**Counts (storage):** cloud active **{int(diag.get('cloud_saved_draft_count_active') or 0)}** · "
+            f"cloud owned **{int(diag.get('cloud_saved_draft_count_owned') or 0)}** · "
+            f"cloud legacy (daniel) **{int(diag.get('cloud_saved_draft_count_legacy') or 0)}** · "
+            f"disk **{int(diag.get('disk_saved_draft_count') or 0)}**"
+        )
+        st.caption(str(diag.get("ownership_filter_note") or ""))
         if diag.get("durable_persistence"):
             st.success(f"**Persistence:** {diag.get('durability_label')}")
         else:
@@ -2015,6 +2025,30 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     st.metric("Saved drafts", len(archives))
 
     if not archives:
+        try:
+            from workflow_persist_guard import build_saved_draft_library_diagnostics
+
+            _empty_diag = build_saved_draft_library_diagnostics(session)
+            _session_n = int(_empty_diag.get("draft_archive_count") or 0)
+            _cloud_active = int(_empty_diag.get("cloud_saved_draft_count_active") or 0)
+            _cloud_owned = int(_empty_diag.get("cloud_saved_draft_count_owned") or 0)
+            _cloud_legacy = int(_empty_diag.get("cloud_saved_draft_count_legacy") or 0)
+            _disk_n = int(_empty_diag.get("disk_saved_draft_count") or 0)
+            _cloud_any = max(_cloud_active, _cloud_owned, _cloud_legacy)
+            if _cloud_any > 0 and _session_n == 0:
+                st.error(
+                    "Saved drafts exist in cloud storage but were **not restored into this session**. "
+                    "Open **Persistence diagnostics** below for workspace / account details. "
+                    "This is usually a restore-path issue (wrong workspace key or user_id scope), "
+                    "not lost data."
+                )
+            elif _disk_n > 0 and _session_n == 0:
+                st.warning(
+                    f"Disk has **{_disk_n}** saved draft(s) but the session loaded **0**. "
+                    "Cloud-first restore may have picked an empty cloud row — check Persistence diagnostics."
+                )
+        except ImportError:
+            pass
         st.info(
             "No saved drafts yet. Finish a **Live Draft Room** or **Draft Room Simulator** draft, "
             "then save your draft from the draft room."

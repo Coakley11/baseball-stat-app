@@ -83,6 +83,53 @@ def _row_to_state_dict(row: dict[str, Any], *, logical: str) -> dict[str, Any]:
     }
 
 
+def _query_params_for_storage_app(
+    storage_app: str,
+    *,
+    select: str,
+    limit: str = "20",
+) -> dict[str, str]:
+    """Scoped GET params: match signed-in user rows **and** legacy null user_id rows."""
+    params: dict[str, str] = {
+        "select": select,
+        "app": f"eq.{storage_app}",
+        "order": "updated_at.desc",
+        "limit": limit,
+    }
+    _apply_user_scope_params(params)
+    return params
+
+
+def _fetch_state_rows_for_storage_app(
+    storage_app: str,
+    *,
+    select: str,
+    egress_label: str,
+    limit: str = "20",
+) -> list[dict[str, Any]]:
+    params = _query_params_for_storage_app(storage_app, select=select, limit=limit)
+    with _egress(egress_label):
+        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+    return rows if isinstance(rows, list) else []
+
+
+def _full_session_workflow_score(full_session: dict[str, Any] | None) -> int:
+    """Richness score for row selection — saved draft library dominates draft-room picks."""
+    if not isinstance(full_session, dict):
+        return 0
+    pick_score = _draft_pick_count_from_session_blob(full_session)
+    try:
+        from workflow_persist_guard import DRAFT_ARCHIVE_KEY, LEAGUE_CONTEXT_STATE_KEY
+        from workflow_persist_guard import count_draft_archives, count_league_contexts
+
+        archive_score = count_draft_archives(full_session.get(DRAFT_ARCHIVE_KEY))
+        context_score = count_league_contexts(full_session.get(LEAGUE_CONTEXT_STATE_KEY))
+        active = 1 if str(full_session.get("active_draft_archive_id") or "").strip() else 0
+        return archive_score * 100_000 + context_score * 1_000 + pick_score * 10 + active
+    except ImportError:
+        return pick_score
+
+
 def load_current_state_meta_for_app(app: str) -> dict[str, Any]:
     """Lightweight row metadata for one app (no metrics / full_session download)."""
     from suite_workspace import logical_storage_app_key
@@ -91,19 +138,17 @@ def load_current_state_meta_for_app(app: str) -> dict[str, Any]:
     logical = logical_storage_app_key(storage_app)
     if logical not in ACTIVE_APP_KEYS:
         return {}
-    params: dict[str, str] = {
-        "select": "app,page,summary,updated_at",
-        "app": f"eq.{storage_app}",
-        "limit": "1",
-    }
-    uid = _cloud_user_id()
-    if uid:
-        params["user_id"] = f"eq.{uid}"
-    with _egress("load_current_state_meta_for_app"):
-        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+    rows = _fetch_state_rows_for_storage_app(
+        storage_app,
+        select="app,page,summary,updated_at",
+        egress_label="load_current_state_meta_for_app",
+        limit="5",
+    )
+    if not rows:
         return {}
     row = rows[0]
+    if not isinstance(row, dict):
+        return {}
     return {
         "app": logical,
         "page": str(row.get("page") or ""),
@@ -120,19 +165,15 @@ def load_current_state_for_app(app: str) -> dict[str, Any]:
     logical = logical_storage_app_key(storage_app)
     if logical not in ACTIVE_APP_KEYS:
         return {}
-    params: dict[str, str] = {
-        "select": "app,page,summary,metrics,updated_at",
-        "app": f"eq.{storage_app}",
-        "limit": "1",
-    }
-    uid = _cloud_user_id()
-    if uid:
-        params["user_id"] = f"eq.{uid}"
-    with _egress("load_current_state_for_app"):
-        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+    rows = _fetch_state_rows_for_storage_app(
+        storage_app,
+        select="app,page,summary,metrics,updated_at,user_id",
+        egress_label="load_current_state_for_app",
+    )
+    best = _pick_best_state_row(rows)
+    if not isinstance(best, dict):
         return {}
-    return _row_to_state_dict(rows[0], logical=logical)
+    return _row_to_state_dict(best, logical=logical)
 
 
 def load_current_states_summary() -> dict[str, dict[str, Any]]:
@@ -141,11 +182,9 @@ def load_current_states_summary() -> dict[str, dict[str, Any]]:
 
     allowed = workspace_storage_app_keys()
     params: dict[str, str] = {"select": "app,page,summary,updated_at"}
-    uid = _cloud_user_id()
-    if uid:
-        params["user_id"] = f"eq.{uid}"
     if allowed:
         params["app"] = f"in.({','.join(sorted(allowed))})"
+    _apply_user_scope_params(params)
     with _egress("load_current_states_summary"):
         rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
     if not isinstance(rows, list):
@@ -173,17 +212,15 @@ def _merge_state_metrics(scoped_app_key: str, incoming: dict[str, Any] | None) -
     """Shallow-merge metrics; preserve ``full_session`` when incoming omits it."""
     new_metrics = dict(incoming or {})
     try:
-        params: dict[str, str] = {
-            "select": "metrics",
-            "app": f"eq.{scoped_app_key}",
-        }
-        uid = _cloud_user_id()
-        if uid:
-            params["user_id"] = f"eq.{uid}"
-        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+        rows = _fetch_state_rows_for_storage_app(
+            scoped_app_key,
+            select="metrics,updated_at",
+            egress_label="merge_state_metrics",
+        )
+        best = _pick_best_state_row(rows) if rows else None
         prior: dict[str, Any] = {}
-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-            raw = rows[0].get("metrics")
+        if isinstance(best, dict):
+            raw = best.get("metrics")
             if isinstance(raw, dict):
                 prior = raw
         if not prior:
@@ -236,19 +273,19 @@ def _draft_pick_count_from_session_blob(full_session: dict[str, Any] | None) -> 
 
 def _pick_best_state_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
-    best_count = -1
+    best_score = -1
     best_ts = ""
     for row in rows:
         if not isinstance(row, dict):
             continue
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
         full = metrics.get(_FULL_SESSION_KEY)
-        count = _draft_pick_count_from_session_blob(full if isinstance(full, dict) else None)
+        score = _full_session_workflow_score(full if isinstance(full, dict) else None)
         ts = str(row.get("updated_at") or "")
-        if count > best_count or (count == best_count and ts > best_ts):
+        if score > best_score or (score == best_score and ts > best_ts):
             best = dict(row)
-            best["_draft_pick_count"] = count
-            best_count = count
+            best["_workflow_score"] = score
+            best_score = score
             best_ts = ts
     return best
 
@@ -279,10 +316,8 @@ def _merge_full_session_preserve_richer_draft(
 
 def load_current_state_rows(**kwargs: Any) -> list[dict[str, Any]]:
     """Back-compat alias for tests and legacy callers."""
-    params: dict[str, str] = {"select": "app,page,summary,metrics,updated_at"}
-    uid = _cloud_user_id()
-    if uid:
-        params["user_id"] = f"eq.{uid}"
+    params: dict[str, str] = {"select": "app,page,summary,metrics,updated_at", "order": "updated_at.desc", "limit": "20"}
+    _apply_user_scope_params(params)
     rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
     return rows if isinstance(rows, list) else []
 
@@ -760,9 +795,7 @@ def save_current_state_with_result(
                 "write_mode": write_mode,
                 "payload_bytes": payload_bytes,
             }
-        params: dict[str, str] = {"select": "app", "app": f"eq.{app_key}"}
-        if uid:
-            params["user_id"] = f"eq.{uid}"
+        params: dict[str, str] = _query_params_for_storage_app(app_key, select="app,user_id", limit="20")
         try:
             rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
         except Exception as exc:
@@ -781,7 +814,13 @@ def save_current_state_with_result(
         if isinstance(rows, list) and rows:
             patch_params = {"app": f"eq.{app_key}"}
             if uid:
-                patch_params["user_id"] = f"eq.{uid}"
+                scoped = [r for r in rows if isinstance(r, dict) and str(r.get("user_id") or "") == uid]
+                if scoped:
+                    patch_params["user_id"] = f"eq.{uid}"
+                else:
+                    patch_params["user_id"] = "is.null"
+            else:
+                patch_params["user_id"] = "is.null"
             _write_patch(patch_params)
             write_mode = "patch"
         else:
@@ -922,11 +961,9 @@ def load_current_states(*, include_metrics: bool = False) -> dict[str, dict[str,
 
     allowed = workspace_storage_app_keys()
     params: dict[str, str] = {"select": "app,page,summary,metrics,updated_at"}
-    uid = _cloud_user_id()
-    if uid:
-        params["user_id"] = f"eq.{uid}"
     if allowed:
         params["app"] = f"in.({','.join(sorted(allowed))})"
+    _apply_user_scope_params(params)
     with _egress("load_current_states"):
         rows = _request(
             "GET",

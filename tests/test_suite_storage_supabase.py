@@ -125,7 +125,36 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         ]
         best = _pick_best_state_row(rows)
         assert best is not None
-        self.assertEqual(best.get("_draft_pick_count"), 3)
+        self.assertEqual(best.get("_workflow_score"), 30)
+
+    def test_pick_best_state_row_prefers_saved_drafts_over_newer_empty_page(self) -> None:
+        rows = [
+            {
+                "app": "baseball",
+                "updated_at": "2026-07-07T12:00:00",
+                "metrics": {
+                    _FULL_SESSION_KEY: {
+                        "active_page": "Historical Explorer",
+                        "draft_archive_teams": [],
+                    }
+                },
+            },
+            {
+                "app": "baseball",
+                "updated_at": "2026-07-07T11:00:00",
+                "metrics": {
+                    _FULL_SESSION_KEY: {
+                        "active_page": "Saved Draft Library",
+                        "draft_archive_teams": [{"draft_id": "abc123", "updated_at": "2026-07-07T10:00:00"}],
+                        "active_draft_archive_id": "abc123",
+                    }
+                },
+            },
+        ]
+        best = _pick_best_state_row(rows)
+        assert best is not None
+        blob = (best.get("metrics") or {}).get(_FULL_SESSION_KEY) or {}
+        self.assertEqual(len(blob.get("draft_archive_teams") or []), 1)
 
     def test_merge_full_session_preserves_richer_draft_room(self) -> None:
         prior = _full_session(3)

@@ -117,15 +117,98 @@ def _load_disk_workflow_snapshot(app_id: str) -> dict[str, Any]:
     return {}
 
 
+def _full_session_blob_from_storage_app_key(storage_app_key: str) -> dict[str, Any]:
+    """Load metrics.full_session for an explicit scoped cloud app key (e.g. baseball__coakley11)."""
+    try:
+        import suite_storage_supabase as storage
+
+        row = storage.load_current_state_for_app(storage_app_key)
+        if not isinstance(row, dict):
+            return {}
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict):
+            return {}
+        blob = metrics.get("full_session")
+        return copy.deepcopy(blob) if isinstance(blob, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cloud_workflow_fallback_workspace_ids(session: dict[str, Any]) -> list[str]:
+    """Extra workspace profiles to scan when the active workspace cloud row is empty."""
+    try:
+        from suite_workspace import DEFAULT_WORKSPACE_ID, get_active_workspace_id, normalize_workspace_id
+
+        active = normalize_workspace_id(
+            get_active_workspace_id(st=type("_St", (), {"session_state": session})())
+        )
+    except Exception:
+        active = normalize_workspace_id(str(session.get("_suite_active_workspace_id") or ""))
+
+    fallbacks: list[str] = []
+    if active and active != DEFAULT_WORKSPACE_ID:
+        fallbacks.append(DEFAULT_WORKSPACE_ID)
+    try:
+        from suite_workspace_registry import get_owned_workspace_id
+
+        owned = normalize_workspace_id(get_owned_workspace_id(session))
+        if owned and owned not in {active, DEFAULT_WORKSPACE_ID}:
+            fallbacks.append(owned)
+    except ImportError:
+        pass
+    return fallbacks
+
+
+def _merge_cloud_workflow_blobs(*blobs: dict[str, Any]) -> dict[str, Any]:
+    """Union-merge saved drafts and league contexts from multiple cloud full_session blobs."""
+    valid = [b for b in blobs if isinstance(b, dict) and b]
+    if not valid:
+        return {}
+    if len(valid) == 1:
+        return copy.deepcopy(valid[0])
+    merged_archives = _union_merge_draft_archives(*(b.get(DRAFT_ARCHIVE_KEY) for b in valid))
+    merged_context = _union_merge_league_context_stores(*(b.get(LEAGUE_CONTEXT_STATE_KEY) for b in valid))
+    out = copy.deepcopy(valid[0])
+    if merged_archives:
+        out[DRAFT_ARCHIVE_KEY] = merged_archives
+    if merged_context.get("contexts"):
+        out[LEAGUE_CONTEXT_STATE_KEY] = merged_context
+    active_id = _resolve_active_draft_archive_id(
+        session_val=None,
+        incoming_val=valid[-1].get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        disk_val=valid[0].get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        cloud_val=None,
+        merged_archives=merged_archives,
+    )
+    if active_id:
+        out[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
+    return out
+
+
 def _load_cloud_workflow_snapshot(app_id: str, st: Any | None) -> dict[str, Any]:
     try:
         from suite_cloud_state import load_cloud_full_session
+        from suite_workspace import get_active_workspace_id, normalize_workspace_id, scoped_cloud_app_id
 
         if st is None:
             return {}
-        blob, _ = load_cloud_full_session(app_id)
-        if isinstance(blob, dict):
-            return blob
+        primary, _ = load_cloud_full_session(app_id)
+        blobs: list[dict[str, Any]] = []
+        if isinstance(primary, dict) and primary:
+            blobs.append(primary)
+        session = st.session_state if hasattr(st, "session_state") else {}
+        active_ws = normalize_workspace_id(
+            get_active_workspace_id(st=type("_St", (), {"session_state": session})())
+        )
+        active_key = scoped_cloud_app_id(app_id, active_ws)
+        for fb_ws in _cloud_workflow_fallback_workspace_ids(session):
+            fb_key = scoped_cloud_app_id(app_id, fb_ws)
+            if fb_key == active_key:
+                continue
+            fb_blob = _full_session_blob_from_storage_app_key(fb_key)
+            if fb_blob:
+                blobs.append(fb_blob)
+        return _merge_cloud_workflow_blobs(*blobs)
     except Exception:
         pass
     return {}
@@ -407,7 +490,10 @@ def evaluate_cloud_durability_status(session: dict[str, Any]) -> dict[str, Any]:
         pass
     row_found = bool(cloud_probe.get("row_found"))
     cloud_drafts = int(cloud_probe.get("draft_archive_count") or 0)
+    session_drafts = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     cloud_write_verified = last_cloud_save or (row_found and cloud_drafts > 0)
+    if cloud_write_verified and session_drafts == 0 and cloud_drafts == 0 and not last_cloud_save:
+        cloud_write_verified = False
 
     if cloud_write_verified:
         return {
@@ -482,6 +568,7 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
 
     workspace_id = ""
     workspace_label = ""
+    owned_workspace_id = ""
     cloud_app_key = ""
     local_state_path = ""
     try:
@@ -494,6 +581,12 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         local_state_path = str(meta.get("local_state_path") or "")
     except Exception:
         workspace_id = str(session.get("_suite_active_workspace_id") or session.get("_suite_owned_workspace_id") or "")
+    try:
+        from suite_workspace_registry import get_owned_workspace_id
+
+        owned_workspace_id = str(get_owned_workspace_id(session) or "")
+    except ImportError:
+        owned_workspace_id = str(session.get("_suite_owned_workspace_id") or "")
 
     restore_at = str(session.get("_suite_persist_last_restore_at") or "")
     merged_keys = list(session.get("_suite_workflow_persist_merged_keys") or [])
@@ -509,6 +602,30 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     except ImportError:
         pass
 
+    disk_snapshot = _load_disk_workflow_snapshot("baseball")
+    disk_summary = summarize_cloud_workflow_blob(disk_snapshot if isinstance(disk_snapshot, dict) else None)
+
+    cloud_probe_active: dict[str, Any] = {}
+    cloud_probe_owned: dict[str, Any] = {}
+    cloud_probe_legacy: dict[str, Any] = {}
+    if cloud_enabled:
+        try:
+            cloud_probe_active = probe_cloud_workflow_for_workspace(workspace_id or "daniel")
+        except Exception:
+            pass
+        if owned_workspace_id and owned_workspace_id != workspace_id:
+            try:
+                cloud_probe_owned = probe_cloud_workflow_for_workspace(owned_workspace_id)
+            except Exception:
+                pass
+        try:
+            from suite_workspace import DEFAULT_WORKSPACE_ID, normalize_workspace_id
+
+            if normalize_workspace_id(workspace_id) != DEFAULT_WORKSPACE_ID:
+                cloud_probe_legacy = probe_cloud_workflow_for_workspace(DEFAULT_WORKSPACE_ID)
+        except Exception:
+            pass
+
     save_diag = session.get("_draft_library_save_diag")
     nav_diag = session.get("_draft_library_nav_diag")
     durability = evaluate_cloud_durability_status(session)
@@ -520,9 +637,21 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "auth_enabled": auth_enabled,
         "authenticated": authenticated,
         "workspace_id": workspace_id,
+        "owned_workspace_id": owned_workspace_id,
         "workspace_label": workspace_label,
         "cloud_app_key": cloud_app_key,
         "local_state_path": local_state_path,
+        "disk_saved_draft_count": int(disk_summary.get("draft_archive_count") or 0),
+        "cloud_saved_draft_count_active": int(cloud_probe_active.get("draft_archive_count") or 0),
+        "cloud_saved_draft_count_owned": int(cloud_probe_owned.get("draft_archive_count") or 0),
+        "cloud_saved_draft_count_legacy": int(cloud_probe_legacy.get("draft_archive_count") or 0),
+        "cloud_probe_active": cloud_probe_active,
+        "cloud_probe_owned": cloud_probe_owned,
+        "cloud_probe_legacy": cloud_probe_legacy,
+        "ownership_filter_note": (
+            "Saved Draft Library does not filter individual drafts by owner_user_id; "
+            "account scoping applies to the Supabase row (user_id) and active workspace only."
+        ),
         "draft_archive_count": counts["draft_archive_count"],
         "league_context_count": counts["league_context_count"],
         "saved_drafts": counts["saved_drafts"],
