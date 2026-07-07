@@ -511,18 +511,22 @@ def render_fantasy_page_navigation(
     if not targets:
         return
     purge_fantasy_nav_widget_keys(session, key_prefix=key_prefix)
+    nav_error = session.pop("_fantasy_nav_error", None)
+    if nav_error:
+        st.warning(str(nav_error))
     cols = st.columns(len(targets))
     for col, page_key in zip(cols, targets):
         with col:
             label = _fantasy_nav_button_label(page_key, page_label_fn)
             safe_key = "".join(ch if ch.isalnum() else "_" for ch in page_key)[:48]
-            if st.button(
+            widget_key = _fantasy_nav_button_widget_key(key_prefix, safe_key)
+            st.button(
                 label,
-                key=_fantasy_nav_button_widget_key(key_prefix, safe_key),
+                key=widget_key,
                 use_container_width=True,
-            ):
-                _navigate_fantasy_page(session, page_key, return_page=page)
-                st.rerun()
+                on_click=_on_click_navigate_fantasy_page,
+                args=(page_key, page, widget_key, label),
+            )
 
 
 def render_fantasy_page_header(
@@ -627,6 +631,57 @@ def _on_click_navigate_to_page(target_page: str, button_key: str = "", button: s
     schedule_page_navigation(session, target_page)
 
 
+def _on_click_navigate_fantasy_page(
+    target_page: str,
+    return_page: str,
+    button_key: str,
+    button: str,
+) -> None:
+    """Streamlit on_click — fantasy workflow navigation with context resync."""
+    import streamlit as st
+
+    session = st.session_state
+    _record_library_nav_diag(
+        session,
+        button=button or button_key or "fantasy_nav",
+        button_key=button_key,
+        target_page=target_page,
+    )
+    ok = _navigate_fantasy_page(session, target_page, return_page=return_page)
+    if not ok:
+        session["_fantasy_nav_error"] = (
+            f"Could not navigate to {target_page}. Set an **Active Draft** in Saved Draft Library first."
+        )
+
+
+def _on_click_request_delete_draft(draft_id: str, widget_key_prefix: str = "") -> None:
+    import streamlit as st
+
+    st.session_state[_DELETE_CONFIRM_PREFIX + str(draft_id or "").strip()] = True
+
+
+def _on_click_cancel_delete_draft(draft_id: str) -> None:
+    import streamlit as st
+
+    st.session_state.pop(_DELETE_CONFIRM_PREFIX + str(draft_id or "").strip(), None)
+
+
+def _on_click_confirm_delete_draft(draft_id: str, widget_key_prefix: str = "") -> None:
+    import streamlit as st
+
+    session = st.session_state
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return
+    if delete_draft_archive(session, draft_id):
+        session.pop(_DELETE_CONFIRM_PREFIX + draft_id, None)
+        _clear_fantasy_caches_on_archive_change(session)
+        _persist_archive(session, st, reason="draft_archive_deleted")
+        session["_draft_delete_flash"] = "Draft deleted."
+    else:
+        session["_draft_delete_flash"] = "Could not delete draft."
+
+
 def _on_click_waiver_wire(button_key: str, button: str) -> None:
     """Streamlit on_click — open Waiver Wire with active league context."""
     import streamlit as st
@@ -639,6 +694,7 @@ def _on_click_waiver_wire(button_key: str, button: str) -> None:
         target_page=FANTASY_WAIVER_PAGE,
     )
     schedule_fantasy_analysis_navigation(session, FANTASY_WAIVER_PAGE)
+
 
 
 def _on_click_saved_draft_library(return_page: str, button_key: str, button: str) -> None:
@@ -835,10 +891,12 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
             from draft_library_save_trace import draft_id_in_archives
 
             session_has_entry = draft_id_in_archives(entry_id, list_draft_archives(session))
+    elif reason == "draft_archive_deleted":
+        session_has_entry = int(after.get("draft_archive_count") or 0) <= int(before.get("draft_archive_count") or 0)
     else:
         session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
     count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
-    persist_ok = bool(session_has_entry and ok)
+    persist_ok = bool(session_has_entry and ok) if reason != "draft_archive_deleted" else bool(ok and session_has_entry)
     try:
         from draft_library_save_trace import save_persist_mode_context
 
@@ -1716,16 +1774,20 @@ def _render_archive_rename_delete_confirm(
         st.warning(f"Delete **{entry.get('draft_name')}**? Other saved drafts will be kept.")
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
-            if st.button("Confirm delete", key=f"{widget_key_prefix}_del_confirm_{draft_id}", type="primary"):
-                if delete_draft_archive(session, draft_id):
-                    session.pop(_DELETE_CONFIRM_PREFIX + draft_id, None)
-                    _clear_fantasy_caches_on_archive_change(session)
-                    _persist_archive(session, st, reason="draft_archive_deleted")
-                    st.rerun()
+            st.button(
+                "Confirm delete",
+                key=f"{widget_key_prefix}_del_confirm_{draft_id}",
+                type="primary",
+                on_click=_on_click_confirm_delete_draft,
+                args=(draft_id, widget_key_prefix),
+            )
         with cancel_col:
-            if st.button("Cancel", key=f"{widget_key_prefix}_del_cancel_{draft_id}"):
-                session.pop(_DELETE_CONFIRM_PREFIX + draft_id, None)
-                st.rerun()
+            st.button(
+                "Cancel",
+                key=f"{widget_key_prefix}_del_cancel_{draft_id}",
+                on_click=_on_click_cancel_delete_draft,
+                args=(draft_id,),
+            )
 
 
 def _render_archive_manage_actions(
@@ -1748,13 +1810,13 @@ def _render_archive_manage_actions(
                 session[_RENAME_CONFIRM_PREFIX + draft_id] = True
                 st.rerun()
         with btn2:
-            if st.button(
+            st.button(
                 "Delete",
                 key=f"{widget_key_prefix}_del_{draft_id}",
                 use_container_width=True,
-            ):
-                session[_DELETE_CONFIRM_PREFIX + draft_id] = True
-                st.rerun()
+                on_click=_on_click_request_delete_draft,
+                args=(draft_id, widget_key_prefix),
+            )
     else:
         btn1, btn2, btn3 = st.columns(3)
         with btn1:
@@ -1774,13 +1836,13 @@ def _render_archive_manage_actions(
                 session[_RENAME_CONFIRM_PREFIX + draft_id] = True
                 st.rerun()
         with btn3:
-            if st.button(
+            st.button(
                 "Delete",
                 key=f"{widget_key_prefix}_del_{draft_id}",
                 use_container_width=True,
-            ):
-                session[_DELETE_CONFIRM_PREFIX + draft_id] = True
-                st.rerun()
+                on_click=_on_click_request_delete_draft,
+                args=(draft_id, widget_key_prefix),
+            )
 
     _render_archive_rename_delete_confirm(
         st,
@@ -1849,6 +1911,9 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
 
 
 def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+    delete_flash = session.pop("_draft_delete_flash", None)
+    if delete_flash:
+        st.success(str(delete_flash))
     toast_msg = session.pop("_league_context_activation_toast", None)
     if toast_msg:
         st.toast(str(toast_msg))

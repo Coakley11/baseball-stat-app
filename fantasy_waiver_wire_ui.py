@@ -10,6 +10,7 @@ import pandas as pd
 from fantasy_league_context import (
     build_roster_stats_from_league_context,
     context_has_roster_slots,
+    filter_roster_stats_to_league_teams,
     get_active_league_context,
     has_full_league_rosters,
     league_context_coverage_badge,
@@ -43,6 +44,32 @@ from fantasy_waiver_wire import (
     waiver_categories_for_context,
     waiver_display_stat_columns,
 )
+
+WAIVER_POSITION_FILTER_KEY = "waiver_position_filter"
+WAIVER_POSITION_FILTER_OPTIONS: tuple[str, ...] = (
+    "All positions",
+    "C",
+    "1B",
+    "2B",
+    "3B",
+    "SS",
+    "OF",
+    "DH/UTIL",
+)
+
+
+def _apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -> pd.DataFrame:
+    choice = str(position_filter or "").strip()
+    if not choice or choice == "All positions":
+        return pool_df
+    try:
+        from streamlit_app import enrich_lineup_roster_positions, filter_players_by_fantasy_position
+    except ImportError:
+        return pool_df
+    if pool_df is None or pool_df.empty:
+        return pool_df
+    work = enrich_lineup_roster_positions(pool_df.copy())
+    return filter_players_by_fantasy_position(work, choice)
 
 
 def _player_names(df: pd.DataFrame) -> list[str]:
@@ -563,6 +590,7 @@ def render_waiver_wire_page(
             )
 
     my_team = str(context.get("my_team_name") or "").strip()
+    league_df = filter_roster_stats_to_league_teams(league_df, context)
     if not league_df.empty and my_team and "Team" in league_df.columns:
         my_roster = league_df[league_df["Team"].astype(str) == my_team].copy()
     else:
@@ -741,7 +769,15 @@ def render_waiver_wire_page(
             )
 
     st.markdown("##### 3. Available Player Pool")
-    st.caption(f"{len(waiver_pool)} waiver-eligible players. Search and sort in the table — use **Plan Add** cards above or the planner below.")
+    position_filter = st.selectbox(
+        "Position filter",
+        list(WAIVER_POSITION_FILTER_OPTIONS),
+        key=WAIVER_POSITION_FILTER_KEY,
+        help="Filter waiver pool by eligible fantasy position. Lineup Assistant can pre-set this when you open Waiver Wire for an empty slot.",
+    )
+    st.caption(
+        f"{len(waiver_pool)} waiver-eligible players. Search and sort in the table — use **Plan Add** cards above or the planner below."
+    )
     search_query = st.text_input(
         "Search available players",
         key="waiver_pool_search",
@@ -751,6 +787,7 @@ def render_waiver_wire_page(
         st.info("Waiver pool is empty for this context.")
     else:
         pool_view = waiver_pool.copy()
+        pool_view = _apply_waiver_position_filter(pool_view, position_filter)
         if search_query:
             names = _player_names(pool_view)
             keep = set(filter_waiver_names_by_search(names, search_query))

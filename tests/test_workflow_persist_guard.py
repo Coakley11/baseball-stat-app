@@ -117,6 +117,20 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(len(session[DRAFT_ARCHIVE_KEY]), 1)
         self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_id"], "restore01")
 
+    def test_restore_merge_respects_deleted_draft_tombstones(self) -> None:
+        incoming = {DRAFT_ARCHIVE_KEY: [{"draft_id": "gone01", "draft_name": "Deleted"}]}
+        disk = {DRAFT_ARCHIVE_KEY: [{"draft_id": "gone01", "draft_name": "Deleted"}]}
+        session: dict = {
+            DRAFT_ARCHIVE_KEY: [],
+            "_deleted_draft_archive_ids": ["gone01"],
+        }
+
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=disk):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value={}):
+                merge_protected_workflow_on_restore(session, incoming)
+
+        self.assertEqual(session.get(DRAFT_ARCHIVE_KEY), [])
+
     def test_should_keep_session_workflow_over_empty_blob(self) -> None:
         session_archives = [{"draft_id": "a1"}, {"draft_id": "a2"}]
         self.assertTrue(

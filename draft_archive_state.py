@@ -11,6 +11,7 @@ import pandas as pd
 
 DRAFT_ARCHIVE_KEY = "draft_archive_teams"
 ACTIVE_DRAFT_ARCHIVE_KEY = "active_draft_archive_id"
+DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
 
 DRAFT_TYPE_SIMULATOR = "simulator"
 DRAFT_TYPE_LIVE = "live_draft_room"
@@ -308,6 +309,15 @@ def delete_draft_archive(session: dict[str, Any], draft_id: str) -> bool:
     _set_archive_list(session, entries)
     if str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "") == draft_id:
         clear_active_draft_archive(session)
+    tombstones = session.setdefault(DELETED_DRAFT_ARCHIVE_IDS_KEY, [])
+    if isinstance(tombstones, list) and draft_id not in tombstones:
+        tombstones.append(draft_id)
+    try:
+        from fantasy_league_context import delete_league_context_for_archive
+
+        delete_league_context_for_archive(session, draft_id)
+    except ImportError:
+        pass
     return True
 
 

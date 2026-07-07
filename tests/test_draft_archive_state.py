@@ -123,6 +123,7 @@ class DraftArchiveTests(unittest.TestCase):
         self.assertTrue(delete_draft_archive(session, draft_id))
         self.assertIsNone(get_active_draft_archive(session))
         self.assertEqual(len(list_draft_archives(session)), 1)
+        self.assertIn(draft_id, session.get("_deleted_draft_archive_ids") or [])
         self.assertIsNotNone(get_draft_archive(session, dup["draft_id"]))
 
     def test_draft_type_display_and_modified(self) -> None:

@@ -197,8 +197,18 @@ def _archive_sort_ts(entry: dict[str, Any]) -> str:
     return str(entry.get("updated_at") or entry.get("created_at") or "")
 
 
-def _union_merge_draft_archives(*sources: Any) -> list[dict[str, Any]]:
+def _deleted_draft_archive_ids(session: dict[str, Any] | None) -> set[str]:
+    if not isinstance(session, dict):
+        return set()
+    raw = session.get("_deleted_draft_archive_ids")
+    if not isinstance(raw, list):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _union_merge_draft_archives(*sources: Any, exclude_ids: set[str] | None = None) -> list[dict[str, Any]]:
     """Merge saved draft lists by draft_id — never drop drafts present on any source."""
+    excluded = {str(item).strip() for item in (exclude_ids or set()) if str(item).strip()}
     by_id: dict[str, dict[str, Any]] = {}
     for source in sources:
         if not isinstance(source, list):
@@ -207,7 +217,7 @@ def _union_merge_draft_archives(*sources: Any) -> list[dict[str, Any]]:
             if not isinstance(raw, dict):
                 continue
             draft_id = str(raw.get("draft_id") or "").strip()
-            if not draft_id:
+            if not draft_id or draft_id in excluded:
                 continue
             entry = copy.deepcopy(raw)
             existing = by_id.get(draft_id)
@@ -301,6 +311,7 @@ def merge_protected_workflow_on_restore(
         incoming_state.get(DRAFT_ARCHIVE_KEY),
         disk_state.get(DRAFT_ARCHIVE_KEY),
         cloud_state.get(DRAFT_ARCHIVE_KEY),
+        exclude_ids=_deleted_draft_archive_ids(session),
     )
     if merged_archives:
         before = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))

@@ -324,6 +324,24 @@ class FantasyNavWidgetKeyTests(unittest.TestCase):
         self.assertIn("standings_stats_source", saved)
         self.assertNotIn("standings_archive_nav_btn_Fantasy_Lineup_Assistant", saved)
 
+    def test_render_fantasy_page_navigation_uses_on_click(self) -> None:
+        from draft_archive_ui import _on_click_navigate_fantasy_page, render_fantasy_page_navigation
+
+        st = self._mock_st()
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        render_fantasy_page_navigation(
+            st,
+            session,
+            active_page=FANTASY_STANDINGS_PAGE,
+            key_prefix="standings_archive",
+            page_label_fn=lambda key: key,
+        )
+        for call in st.button.call_args_list:
+            self.assertIs(call.kwargs.get("on_click"), _on_click_navigate_fantasy_page)
+            self.assertTrue(call.kwargs.get("args"))
+
 
 if __name__ == "__main__":
     unittest.main()

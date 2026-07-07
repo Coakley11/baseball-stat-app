@@ -531,6 +531,67 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertIn("+", sb_row["Change"])
         self.assertIn(impact.get("biggest_gain"), {"SB", "RBI", "R", "HR"})
 
+    def test_waiver_transaction_impact_ranks_clamped_to_league_size(self) -> None:
+        roster = pd.DataFrame(
+            [
+                {"Player": "Drop Me", "Team": "Daniel", "HR": 2, "RBI": 8, "R": 10, "SB": 1, "BA": 0.220},
+                {"Player": "Keep Me", "Team": "Daniel", "HR": 20, "RBI": 60, "R": 55, "SB": 7, "BA": 0.280},
+            ]
+        )
+        pool = pd.DataFrame(
+            [{"Player": "Add Me", "HR": 12, "RBI": 40, "R": 35, "SB": 15, "BA": 0.265}]
+        )
+        needs = {
+            "n_teams": 2,
+            "my_team_name": "Daniel",
+            "team_category_totals": {
+                "Daniel": {"HR": 22.0, "RBI": 68.0, "R": 65.0, "SB": 8.0, "BA": 0.250},
+                "Rival": {"HR": 30.0, "RBI": 80.0, "R": 78.0, "SB": 20.0, "BA": 0.270},
+            },
+            "category_values": {"HR": 22.0, "RBI": 68.0, "R": 65.0, "SB": 8.0, "BA": 0.250},
+            "category_ranks": {"HR": 2, "RBI": 2, "R": 2, "SB": 2, "BA": 2},
+            "team_totals_by_category": {
+                "HR": [30.0, 22.0],
+                "RBI": [80.0, 68.0],
+                "R": [78.0, 65.0],
+                "SB": [20.0, 8.0],
+                "BA": [0.270, 0.250],
+            },
+            "available_categories": ["HR", "RBI", "R", "SB", "BA"],
+        }
+        impact = compute_waiver_transaction_impact(
+            roster,
+            ["Add Me"],
+            ["Drop Me"],
+            stats_pool=pool,
+            needs=needs,
+            categories=("HR", "RBI", "R", "SB", "BA"),
+        )
+        for row in impact.get("rows") or []:
+            for col in ("Rank Before", "Rank After"):
+                val = str(row.get(col) or "").strip()
+                if val and val != "—":
+                    self.assertIn(val, {"1", "2"}, msg=f"{row['Category']} {col}={val}")
+
+    def test_analyze_current_team_needs_filters_extra_teams(self) -> None:
+        my_roster = pd.DataFrame(
+            [{"Player": "A", "Team": "Daniel", "HR": 20, "RBI": 60, "R": 55, "SB": 7, "BA": 0.280}]
+        )
+        league_df = pd.DataFrame(
+            [
+                {"Player": "A", "Team": "Daniel", "HR": 20, "RBI": 60, "R": 55, "SB": 7, "BA": 0.280},
+                {"Player": "B", "Team": "Rival", "HR": 30, "RBI": 80, "R": 78, "SB": 20, "BA": 0.270},
+                {"Player": "C", "Team": "Ghost", "HR": 40, "RBI": 90, "R": 88, "SB": 25, "BA": 0.290},
+            ]
+        )
+        from fantasy_league_context import filter_roster_stats_to_league_teams
+
+        context = {"league_rosters": {"Daniel": {}, "Rival": {}}}
+        filtered = filter_roster_stats_to_league_teams(league_df, context)
+        needs = analyze_current_team_needs(my_roster, filtered)
+        self.assertEqual(needs.get("n_teams"), 2)
+        self.assertLessEqual(max((needs.get("category_ranks") or {}).values(), default=1), 2)
+
     def test_format_category_display_value(self) -> None:
         from fantasy_waiver_wire import format_category_display_value
 

@@ -29,6 +29,21 @@ SLOT_DISPLAY_NAMES: dict[str, str] = {
     "UTIL": "Utility",
     "DH": "Designated Hitter",
 }
+SLOT_LABEL_TO_WAIVER_FILTER: dict[str, str] = {
+    "Catcher": "C",
+    "First Base": "1B",
+    "Second Base": "2B",
+    "Third Base": "3B",
+    "Shortstop": "SS",
+    "Outfield": "OF",
+    "Utility": "DH/UTIL",
+    "Designated Hitter": "DH/UTIL",
+}
+
+
+def waiver_filter_for_slot_label(slot_label: str) -> str:
+    """Map lineup slot display label to Waiver Wire position filter token."""
+    return SLOT_LABEL_TO_WAIVER_FILTER.get(str(slot_label or "").strip(), "")
 _STAT_ALIASES: dict[str, tuple[str, ...]] = {
     "R": ("R",),
     "HR": ("HR",),

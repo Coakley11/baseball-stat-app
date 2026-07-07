@@ -316,6 +316,53 @@ def _category_value_for_team(subset: pd.DataFrame, category: str) -> float | Non
     return float(vals.sum())
 
 
+def _clamp_league_rank(rank: int | float | None, n_teams: int) -> int | None:
+    if rank is None:
+        return None
+    try:
+        rank_i = int(rank)
+    except (TypeError, ValueError):
+        return None
+    n = max(1, int(n_teams or 1))
+    return max(1, min(rank_i, n))
+
+
+def _category_rank_from_values(
+    values: list[float],
+    my_val: float,
+    *,
+    lower_is_better: bool,
+    n_teams: int,
+) -> int:
+    if not values:
+        return 1
+    if lower_is_better:
+        rank = sum(1 for v in values if float(v) < float(my_val)) + 1
+    else:
+        rank = sum(1 for v in values if float(v) > float(my_val)) + 1
+    return int(_clamp_league_rank(rank, n_teams) or 1)
+
+
+def _projected_league_values_after_trade(
+    team_totals: dict[str, dict[str, float]],
+    my_team_name: str,
+    category: str,
+    after_val: float,
+) -> list[float]:
+    if not team_totals:
+        return []
+    my_team = str(my_team_name or "").strip()
+    values: list[float] = []
+    for team, totals in team_totals.items():
+        if category not in totals:
+            continue
+        if my_team and str(team) == my_team:
+            values.append(float(after_val))
+        else:
+            values.append(float(totals.get(category, 0.0)))
+    return values
+
+
 def analyze_current_team_needs(
     my_roster: pd.DataFrame,
     league_rosters_df: pd.DataFrame,
@@ -373,6 +420,8 @@ def analyze_current_team_needs(
             if val is not None:
                 my_totals[cat] = val
     result["category_values"] = dict(my_totals)
+    result["my_team_name"] = my_team_name
+    result["team_category_totals"] = {str(t): dict(vals) for t, vals in team_totals.items()}
     league_values_by_cat: dict[str, list[float]] = {}
     for cat in available:
         league_values_by_cat[cat] = [
@@ -398,6 +447,7 @@ def analyze_current_team_needs(
             league_best = max(values)
             weakness = my_val < league_best * 0.85 if league_best else False
             strength = my_val >= league_best * 0.95 if league_best else False
+        rank = _clamp_league_rank(rank, result["n_teams"])
         result["category_ranks"][cat] = rank
         if strength:
             result["strengths"].append(cat)
@@ -1102,6 +1152,16 @@ def compute_waiver_transaction_impact(
     after_totals = _team_category_totals(after_roster, cats)
     ranks_before = dict(needs.get("category_ranks") or {})
     league_values = dict(needs.get("team_totals_by_category") or {})
+    team_totals = dict(needs.get("team_category_totals") or {})
+    my_team_name = str(needs.get("my_team_name") or "").strip()
+    if not my_team_name and my_roster is not None and not getattr(my_roster, "empty", True):
+        if "Team" in my_roster.columns:
+            my_team_name = str(my_roster["Team"].iloc[0])
+    n_teams = int(needs.get("n_teams") or 0)
+    if not n_teams and team_totals:
+        n_teams = len(team_totals)
+    if not n_teams and league_values:
+        n_teams = max(len(v) for v in league_values.values() if v)
 
     rows: list[dict[str, str]] = []
     gain_scores: list[tuple[str, float]] = []
@@ -1117,13 +1177,40 @@ def compute_waiver_transaction_impact(
         delta = after_val - before_val
         lower_is_better = cat in LOWER_IS_BETTER_CATEGORIES
         rank_before = ranks_before.get(cat)
+        if rank_before is not None:
+            rank_before = _clamp_league_rank(rank_before, n_teams)
         rank_after = rank_before
-        values = list(league_values.get(cat) or [])
-        if values:
-            if lower_is_better:
-                rank_after = sum(1 for v in values if v < after_val) + 1
-            else:
-                rank_after = sum(1 for v in values if v > after_val) + 1
+        if team_totals and my_team_name:
+            proj_values = _projected_league_values_after_trade(
+                team_totals,
+                my_team_name,
+                cat,
+                after_val,
+            )
+            if proj_values:
+                rank_after = _category_rank_from_values(
+                    proj_values,
+                    after_val,
+                    lower_is_better=lower_is_better,
+                    n_teams=n_teams or len(proj_values),
+                )
+        else:
+            values = list(league_values.get(cat) or [])
+            if values:
+                adjusted = list(values)
+                if before is not None:
+                    for idx, val in enumerate(adjusted):
+                        if abs(float(val) - before_val) < 1e-9:
+                            adjusted[idx] = after_val
+                            break
+                    else:
+                        adjusted.append(after_val)
+                rank_after = _category_rank_from_values(
+                    adjusted,
+                    after_val,
+                    lower_is_better=lower_is_better,
+                    n_teams=n_teams or len(adjusted),
+                )
         rows.append(
             {
                 "Category": cat,
@@ -1254,8 +1341,7 @@ def apply_waiver_move_pairs(
         if add_name == drop_name:
             result["errors"].append(f"Add and drop cannot be the same player: {add_name}")
             continue
-        rostered = rostered_player_names(working_context)
-        if add_name in rostered:
+        if _is_player_rostered(working_context, add_name):
             result["errors"].append(f"{add_name} is already rostered.")
             continue
         drop_idx = _find_roster_player_index(players, drop_name)
@@ -1344,8 +1430,6 @@ def apply_waiver_move_pairs(
     session.pop(WAIVER_PLANNER_ADD_KEY, None)
     session.pop(WAIVER_PLANNER_DROP_KEY, None)
     _clear_waiver_transaction_caches(session)
-    if stats_pool is not None and not getattr(stats_pool, "empty", True):
-        sync_waiver_roster_views(session, stats_pool=stats_pool)
 
     try:
         import streamlit as st

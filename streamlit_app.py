@@ -6850,33 +6850,62 @@ def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custo
             return "Sit"
         return "Matchup Dependent"
 
+    def _confidence_label(conf_val: float | None) -> str:
+        if conf_val is None or pd.isna(conf_val):
+            return "Low"
+        if conf_val >= 0.72:
+            return "High"
+        if conf_val >= 0.55:
+            return "Medium"
+        return "Low"
+
     def make_lineup_reason(row):
-        action = row.get("Start/Sit Recommendation", "Watch")
-        reasons = []
+        action = str(row.get("Start/Sit Recommendation") or "Watch")
         conf = pd.to_numeric(row.get("Lineup Confidence", np.nan), errors="coerce")
-        if pd.notna(conf) and conf >= 0.72:
-            reasons.append("Highest overall lineup score among your options")
-        elif pd.notna(conf) and conf >= 0.55:
-            reasons.append("Strong lineup score vs bench alternatives")
-        if pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce") >= 0.70:
-            reasons.append("Positive current production trend")
-        if pd.to_numeric(row.get("Consistency Score", np.nan), errors="coerce") >= 0.70:
-            reasons.append("Steady playing time and rate support")
-        if "HR" in row and pd.to_numeric(row.get("HR"), errors="coerce") >= 10:
-            reasons.append(f"Elite HR contribution ({fmt_int(row.get('HR'))} HR)")
-        if "RBI" in row and pd.to_numeric(row.get("RBI"), errors="coerce") >= 30:
-            reasons.append(f"Strong RBI contribution ({fmt_int(row.get('RBI'))} RBI)")
-        if "SB" in row and pd.to_numeric(row.get("SB"), errors="coerce") >= 8:
-            reasons.append(f"Useful speed ({fmt_int(row.get('SB'))} SB)")
-        if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.800:
+        mom = pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce")
+        consistency = pd.to_numeric(row.get("Consistency Score", np.nan), errors="coerce")
+        vol = pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce")
+        current = pd.to_numeric(row.get("Current Fantasy Score", np.nan), errors="coerce")
+        conf_label = _confidence_label(conf if pd.notna(conf) else None)
+        reasons: list[str] = []
+
+        if action in ("Start", "Lean Start"):
+            if pd.notna(current) and current >= 0.70:
+                reasons.append("Strong current production trend")
+            if pd.notna(mom) and mom >= 0.65:
+                reasons.append("Positive momentum vs bench alternatives")
+            if pd.notna(consistency) and consistency >= 0.65:
+                reasons.append("Consistent playing time and rate support")
+            if "HR" in row and pd.to_numeric(row.get("HR"), errors="coerce") >= 10:
+                reasons.append(f"Above-average HR contribution ({fmt_int(row.get('HR'))} HR)")
+            if "RBI" in row and pd.to_numeric(row.get("RBI"), errors="coerce") >= 30:
+                reasons.append(f"Strong RBI category contribution ({fmt_int(row.get('RBI'))} RBI)")
+        elif action in ("Sit", "Bench / Risk"):
+            if pd.notna(current) and current < 0.45:
+                reasons.append("Current production below roster alternatives")
+            if pd.notna(mom) and mom < 0.45:
+                reasons.append("Production trend declining recently")
+            if pd.notna(consistency) and consistency < 0.45:
+                reasons.append("Limited playing time or unstable rates")
+            if pd.notna(vol) and vol >= 0.60:
+                reasons.append("Boom/bust profile adds risk this week")
+        else:
+            if pd.notna(vol) and vol >= 0.60:
+                reasons.append("Boom/bust profile — upside with inconsistency")
+            if pd.notna(mom) and mom >= 0.55:
+                reasons.append("Strong upside when hot, but streaky")
+            if pd.notna(consistency) and consistency < 0.55:
+                reasons.append("Depends on category needs and matchup this week")
+
+        if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.820 and len(reasons) < 4:
             reasons.append(f"Strong OPS ({fmt_rate_3(row.get('OPS'))})")
-        if "BA" in row and pd.to_numeric(row.get("BA"), errors="coerce") >= 0.270:
-            reasons.append(f"Solid batting average ({fmt_rate_3(row.get('BA'))})")
-        if pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce") >= 0.70:
-            reasons.append("Higher boom/bust profile — matchup-dependent")
+        if "SB" in row and pd.to_numeric(row.get("SB"), errors="coerce") >= 8 and len(reasons) < 4:
+            reasons.append(f"Useful speed contribution ({fmt_int(row.get('SB'))} SB)")
         if not reasons:
             reasons.append("Best available fit for this roster slot")
-        return " · ".join(reasons[:5])
+
+        bullets = "\n".join(f"- {line}" for line in reasons[:4])
+        return f"Confidence: {conf_label}\nReason:\n{bullets}"
 
     df["Start/Sit Recommendation"] = df.apply(classify_action, axis=1)
     df["Lineup Reason"] = df.apply(make_lineup_reason, axis=1)
@@ -12891,6 +12920,24 @@ def render_scheduled_navigation_diagnostics() -> None:
             width="stretch",
             hide_index=True,
         )
+
+
+def open_waiver_wire_from_lineup_slot(slot_label: str = "") -> None:
+    """Streamlit on_click — open Waiver Wire with a lineup slot position filter applied."""
+    try:
+        from draft_archive_ui import FANTASY_WAIVER_PAGE, schedule_fantasy_analysis_navigation
+        from fantasy_waiver_wire_ui import WAIVER_POSITION_FILTER_KEY
+        from fantasy_weekly_lineup import waiver_filter_for_slot_label
+    except ImportError:
+        navigate_to_page("Waiver Wire / Add-Drop Center", from_callback=True)
+        return
+    filt = waiver_filter_for_slot_label(str(slot_label or ""))
+    if filt:
+        st.session_state[WAIVER_POSITION_FILTER_KEY] = filt
+    else:
+        st.session_state.pop(WAIVER_POSITION_FILTER_KEY, None)
+    if not schedule_fantasy_analysis_navigation(st.session_state, FANTASY_WAIVER_PAGE):
+        navigate_to_page(FANTASY_WAIVER_PAGE, from_callback=True)
 
 
 def navigate_to_page(target_page, transfer_payload=None, *, source_page=None, from_callback=False):
@@ -23305,7 +23352,7 @@ if active_page == "Fantasy Lineup Assistant":
                     st.session_state,
                     team_roster=team_roster,
                     lineup_team=str(lineup_team or ""),
-                    on_open_waiver_wire=lambda: navigate_to_page("Waiver Wire / Add-Drop Center"),
+                    on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
                 )
             except ImportError:
                 pass
@@ -23373,7 +23420,8 @@ if active_page == "Fantasy Lineup Assistant":
 
             st.subheader("Recommended Starters")
             st.caption(
-                "Position-aware starters for your active team. **Lineup Reason** explains why each player is slotted to start."
+                "Position-aware starters for your active team. **Start/Sit Recommendation** shows the call; "
+                "**Lineup Reason** explains confidence and why."
             )
             if not starters.empty:
                 try:

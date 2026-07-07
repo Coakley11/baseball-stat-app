@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Callable
 
 import pandas as pd
@@ -18,7 +19,7 @@ from fantasy_weekly_lineup import (
     save_weekly_lineup,
     slot_display_name,
     validate_weekly_lineup,
-    week_label,
+    waiver_filter_for_slot_label,
 )
 
 
@@ -60,7 +61,7 @@ def render_weekly_lineup_section(
     *,
     team_roster: pd.DataFrame,
     lineup_team: str,
-    on_open_waiver_wire: Callable[[], None] | None = None,
+    on_open_waiver_wire: Callable[[str], None] | None = None,
 ) -> None:
     """Weekly lineup builder for the active team only."""
     context = get_active_league_context(session)
@@ -84,6 +85,15 @@ def render_weekly_lineup_section(
     prefix = "weekly_lineup"
 
     st.markdown("##### Weekly Lineup Management")
+    save_flash = session.pop("weekly_lineup_save_flash", None)
+    if isinstance(save_flash, dict):
+        st.success(
+            "✅ **Weekly Lineup Saved**\n\n"
+            f"Saved for:\n"
+            f"- **Team:** {save_flash.get('team') or active_team or '—'}\n"
+            f"- **Week:** {save_flash.get('week') or '—'}\n"
+            f"- **Time:** {save_flash.get('time') or '—'}"
+        )
     st.caption(
         "Assign your active-team starters by week. Saved lineups persist to your **Active Draft**, "
         "league context, cloud, and disk — and restore after refresh or reboot."
@@ -142,12 +152,12 @@ def render_weekly_lineup_section(
         waiver_cols = st.columns(min(3, len(open_slots)))
         for idx, slot_label in enumerate(open_slots[:3]):
             with waiver_cols[idx % len(waiver_cols)]:
-                if st.button(
+                st.button(
                     f"Open Waiver Wire for {slot_label}",
                     key=f"{prefix}_waiver_open_{slot_label}_{selected_week}_{idx}",
-                ):
-                    on_open_waiver_wire()
-                    st.rerun()
+                    on_click=on_open_waiver_wire,
+                    args=(slot_label,),
+                )
 
     st.markdown("**Team summary**")
     summary_cols = st.columns(3)
@@ -202,7 +212,12 @@ def render_weekly_lineup_section(
                 roster_df=team_roster,
             )
             if save_result.get("ok"):
-                st.success(f"Saved {week_label(int(selected_week))} lineup for **{active_team}**.")
+                now = datetime.now().astimezone()
+                session["weekly_lineup_save_flash"] = {
+                    "team": active_team,
+                    "week": int(selected_week),
+                    "time": now.strftime("%I:%M %p").lstrip("0"),
+                }
                 st.rerun()
             else:
                 for err in save_result.get("errors") or []:

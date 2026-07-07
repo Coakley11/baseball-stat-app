@@ -855,6 +855,32 @@ def activate_league_context(session: dict[str, Any], league_context_id: str) -> 
     return context
 
 
+def delete_league_context_for_archive(session: dict[str, Any], draft_id: str) -> bool:
+    """Remove the league context linked to a saved draft archive entry."""
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return False
+    league_context_id = context_id_for_archive(draft_id)
+    store = ensure_fantasy_league_context_state(session)
+    contexts = store.get("contexts")
+    if not isinstance(contexts, dict) or league_context_id not in contexts:
+        return False
+    del contexts[league_context_id]
+    if str(store.get("active_league_context_id") or "").strip() == league_context_id:
+        store["active_league_context_id"] = ""
+        clear_active_league_context(session)
+    tombstones = store.setdefault("deleted_context_ids", [])
+    if isinstance(tombstones, list) and league_context_id not in tombstones:
+        tombstones.append(league_context_id)
+    try:
+        from workflow_persist_guard import mark_workflow_persist_authoritative
+
+        mark_workflow_persist_authoritative(session)
+    except ImportError:
+        pass
+    return True
+
+
 def upsert_league_context(session: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     """Persist one league context; rebuild ownership_map before save."""
     store = ensure_fantasy_league_context_state(session)
@@ -1001,7 +1027,41 @@ def league_context_type_badge(context: dict[str, Any] | None) -> str:
     return ""
 
 
+def league_team_names(context: dict[str, Any] | None, archive_entry: dict[str, Any] | None = None) -> list[str]:
+    """Fantasy team names from league context or archive rosters."""
+    rosters: dict[str, Any] = {}
+    if context:
+        rosters = dict(context.get("league_rosters") or {})
+    if not rosters and archive_entry:
+        rosters = dict(archive_entry.get("league_rosters") or {})
+    if rosters:
+        return sorted(str(name).strip() for name in rosters.keys() if str(name).strip())
+    if archive_entry:
+        team = str(archive_entry.get("team_name") or "").strip()
+        return [team] if team else []
+    return []
+
+
+def filter_roster_stats_to_league_teams(
+    roster_df: pd.DataFrame,
+    context: dict[str, Any] | None,
+    *,
+    archive_entry: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Keep only rows for teams in the active league context."""
+    if roster_df is None or getattr(roster_df, "empty", True) or "Team" not in roster_df.columns:
+        return roster_df
+    teams = set(league_team_names(context, archive_entry))
+    if not teams:
+        return roster_df
+    filtered = roster_df[roster_df["Team"].astype(str).isin(teams)].copy()
+    return filtered if not filtered.empty else roster_df
+
+
 def league_team_count(context: dict[str, Any] | None, archive_entry: dict[str, Any] | None = None) -> int:
+    names = league_team_names(context, archive_entry)
+    if names:
+        return len(names)
     if context:
         rosters = context.get("league_rosters") or {}
         if isinstance(rosters, dict) and rosters:

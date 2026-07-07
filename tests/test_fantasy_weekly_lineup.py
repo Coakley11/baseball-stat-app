@@ -128,6 +128,13 @@ class WeeklyLineupTests(unittest.TestCase):
         self.assertIn("Second Base", summary["open_slots"])
         self.assertIn("Bench Bat", summary["bench"])
 
+    def test_waiver_filter_for_slot_label(self) -> None:
+        from fantasy_weekly_lineup import waiver_filter_for_slot_label
+
+        self.assertEqual(waiver_filter_for_slot_label("Catcher"), "C")
+        self.assertEqual(waiver_filter_for_slot_label("Second Base"), "2B")
+        self.assertEqual(waiver_filter_for_slot_label("Utility"), "DH/UTIL")
+
 
 if __name__ == "__main__":
     unittest.main()
