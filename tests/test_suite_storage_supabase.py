@@ -256,5 +256,56 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual((blob.get("draft_room_state") or {}).get("pick_count"), 3)
 
 
+    def test_apply_user_scope_signed_in_strict(self) -> None:
+        from suite_storage_supabase import _apply_user_scope_params
+
+        params: dict[str, str] = {}
+        with patch("suite_storage_supabase._cloud_user_id", return_value="user-uuid-1"):
+            _apply_user_scope_params(params)
+        self.assertEqual(params.get("user_id"), "eq.user-uuid-1")
+        self.assertNotIn("or", params)
+
+    def test_apply_user_scope_legacy_null_demo(self) -> None:
+        from suite_storage_supabase import _apply_user_scope_params
+
+        params: dict[str, str] = {}
+        with patch("suite_storage_supabase._cloud_user_id", return_value=None):
+            _apply_user_scope_params(params)
+        self.assertEqual(params.get("user_id"), "is.null")
+
+    def test_apply_user_scope_signed_in_with_legacy_or(self) -> None:
+        from suite_storage_supabase import _apply_user_scope_params
+
+        params: dict[str, str] = {}
+        with patch("suite_storage_supabase._cloud_user_id", return_value="user-uuid-1"):
+            _apply_user_scope_params(params, include_legacy_null=True)
+        self.assertIn("user_id.eq.user-uuid-1", params.get("or", ""))
+        self.assertIn("user_id.is.null", params.get("or", ""))
+
+    def test_inspect_cloud_state_rows_reports_selection(self) -> None:
+        from suite_storage_supabase import inspect_cloud_state_rows
+
+        rows = [
+            {
+                "user_id": "user-1",
+                "updated_at": "2026-07-07T12:00:00",
+                "page": "Saved Draft Library",
+                "metrics": {
+                    _FULL_SESSION_KEY: {
+                        "draft_archive_teams": [{"draft_id": "d1"}],
+                        "active_draft_archive_id": "d1",
+                    }
+                },
+            }
+        ]
+        with patch("suite_storage_supabase._cloud_user_id", return_value="user-1"):
+            with patch("suite_storage_supabase._fetch_state_rows_for_storage_app", return_value=rows):
+                with patch("suite_workspace.logical_storage_app_key", return_value="baseball"):
+                    out = inspect_cloud_state_rows("baseball")
+        self.assertEqual(out["selected_row_user_id"], "user-1")
+        self.assertEqual(out["selected_draft_count"], 1)
+        self.assertEqual(out["row_count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

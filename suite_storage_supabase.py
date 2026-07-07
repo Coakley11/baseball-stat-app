@@ -88,15 +88,16 @@ def _query_params_for_storage_app(
     *,
     select: str,
     limit: str = "20",
+    include_legacy_null: bool = False,
 ) -> dict[str, str]:
-    """Scoped GET params: match signed-in user rows **and** legacy null user_id rows."""
+    """Scoped GET params: match signed-in user row OR legacy null row (diagnostics only)."""
     params: dict[str, str] = {
         "select": select,
         "app": f"eq.{storage_app}",
         "order": "updated_at.desc",
         "limit": limit,
     }
-    _apply_user_scope_params(params)
+    _apply_user_scope_params(params, include_legacy_null=include_legacy_null)
     return params
 
 
@@ -106,8 +107,14 @@ def _fetch_state_rows_for_storage_app(
     select: str,
     egress_label: str,
     limit: str = "20",
+    include_legacy_null: bool = False,
 ) -> list[dict[str, Any]]:
-    params = _query_params_for_storage_app(storage_app, select=select, limit=limit)
+    params = _query_params_for_storage_app(
+        storage_app,
+        select=select,
+        limit=limit,
+        include_legacy_null=include_legacy_null,
+    )
     with _egress(egress_label):
         rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
     return rows if isinstance(rows, list) else []
@@ -557,17 +564,101 @@ def _cloud_user_id() -> str | None:
     return uid
 
 
-def _apply_user_scope_params(params: dict[str, str]) -> None:
+def _apply_user_scope_params(params: dict[str, str], *, include_legacy_null: bool = False) -> None:
     """
-    Match activity rows written with cloud user_id or legacy null user_id rows.
+    Scope Supabase state rows to the current auth mode.
 
-    Single-tenant suite: null user_id rows are legacy writes before auth-scoped ids.
+    Signed-in users read/write ONLY their ``user_id`` row so save, readback, and
+    restore target the same blob. Legacy ``user_id=null`` rows are excluded from
+    default loads (they caused false-positive readbacks on stale demo drafts).
+
+    Set ``include_legacy_null=True`` only for explicit migration/diagnostic probes.
     """
     uid = _cloud_user_id()
     if uid:
-        params["or"] = f"(user_id.eq.{uid},user_id.is.null)"
+        if include_legacy_null:
+            params["or"] = f"(user_id.eq.{uid},user_id.is.null)"
+        else:
+            params["user_id"] = f"eq.{uid}"
     else:
         params["user_id"] = "is.null"
+
+
+def _draft_count_from_row(row: dict[str, Any]) -> int:
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    blob = metrics.get(_FULL_SESSION_KEY)
+    if not isinstance(blob, dict):
+        return 0
+    try:
+        from workflow_persist_guard import count_draft_archives
+
+        return int(count_draft_archives(blob.get("draft_archive_teams")))
+    except Exception:
+        return 0
+
+
+def inspect_cloud_state_rows(
+    app: str,
+    *,
+    include_legacy_null: bool = False,
+) -> dict[str, Any]:
+    """Diagnostic: all scoped rows for one cloud app key + which row load would pick."""
+    from suite_workspace import logical_storage_app_key
+
+    storage_app = _scoped_storage_app(app)
+    logical = logical_storage_app_key(storage_app)
+    uid = _cloud_user_id() or ""
+    out: dict[str, Any] = {
+        "cloud_app_key": storage_app,
+        "logical_app": logical,
+        "scope_user_id": uid or None,
+        "scope_mode": "signed_in_strict" if uid and not include_legacy_null else ("signed_in_or_legacy" if uid else "legacy_null_only"),
+        "rows": [],
+        "row_count": 0,
+        "selected_row_user_id": None,
+        "selected_row_updated_at": None,
+        "selected_draft_count": 0,
+    }
+    if logical not in ACTIVE_APP_KEYS:
+        out["error"] = "inactive_app"
+        return out
+    rows = _fetch_state_rows_for_storage_app(
+        storage_app,
+        select="app,user_id,page,summary,metrics,updated_at",
+        egress_label="inspect_cloud_state_rows",
+        limit="20",
+        include_legacy_null=include_legacy_null,
+    )
+    row_summaries: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        summary = {
+            "user_id": row.get("user_id"),
+            "updated_at": str(row.get("updated_at") or "")[:19],
+            "page": str(row.get("page") or ""),
+            "draft_count": _draft_count_from_row(row),
+        }
+        try:
+            from workflow_persist_guard import summarize_cloud_workflow_blob
+
+            metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+            blob = metrics.get(_FULL_SESSION_KEY)
+            wf = summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None)
+            summary["draft_ids"] = list(wf.get("draft_ids") or [])
+            summary["league_context_count"] = int(wf.get("league_context_count") or 0)
+        except Exception:
+            summary["draft_ids"] = []
+            summary["league_context_count"] = 0
+        row_summaries.append(summary)
+    out["rows"] = row_summaries
+    out["row_count"] = len(row_summaries)
+    best = _pick_best_state_row([r for r in rows if isinstance(r, dict)])
+    if isinstance(best, dict):
+        out["selected_row_user_id"] = best.get("user_id")
+        out["selected_row_updated_at"] = str(best.get("updated_at") or "")[:19]
+        out["selected_draft_count"] = _draft_count_from_row(best)
+    return out
 
 
 def ensure_user_row(

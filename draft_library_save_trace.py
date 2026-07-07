@@ -149,13 +149,21 @@ def probe_persisted_draft_id(
         except ImportError:
             pass
     try:
-        from workflow_persist_guard import probe_cloud_workflow_for_workspace
+        cloud_app_key = ""
+        if isinstance(session, dict):
+            cloud_app_key = str(session.get("_suite_last_cloud_app_key") or "").strip()
+        if cloud_app_key:
+            from workflow_persist_guard import probe_cloud_workflow_for_app_key
 
-        cloud = probe_cloud_workflow_for_workspace(ws)
+            cloud = probe_cloud_workflow_for_app_key(cloud_app_key, workspace_id=ws)
+        else:
+            from workflow_persist_guard import probe_cloud_workflow_for_workspace
+
+            cloud = probe_cloud_workflow_for_workspace(ws)
         out["cloud_count"] = int(cloud.get("draft_archive_count") or 0)
         out["in_cloud"] = bool(cloud.get("draft_ids") and target in set(cloud.get("draft_ids") or []))
-        if not out["in_cloud"] and cloud.get("row_found"):
-            out["cloud_readback_ok"] = bool(cloud.get("row_found"))
+        out["cloud_app_key"] = cloud.get("cloud_app_key") or cloud_app_key
+        out["selected_row_user_id"] = cloud.get("selected_row_user_id")
     except ImportError:
         pass
     return out
@@ -299,16 +307,26 @@ def finalize_save_trace(
         disk_write_ok = bool(session.get("_suite_persist_last_save_disk"))
 
     ws = _workspace_id(session)
+    cloud_app_key = str(session.get("_suite_last_cloud_app_key") or "")
     cloud_readback: dict[str, Any] = {}
     disk_readback: dict[str, Any] = {}
     draft_probe: dict[str, Any] = {}
 
     if probe_cloud:
         try:
-            from workflow_persist_guard import probe_cloud_workflow_for_workspace
-
             readback_attempts = 3 if bool(cloud_write_ok) else 1
-            cloud_readback = probe_cloud_workflow_for_workspace(ws, max_attempts=readback_attempts)
+            if cloud_app_key:
+                from workflow_persist_guard import probe_cloud_workflow_for_app_key
+
+                cloud_readback = probe_cloud_workflow_for_app_key(
+                    cloud_app_key,
+                    workspace_id=ws,
+                    max_attempts=readback_attempts,
+                )
+            else:
+                from workflow_persist_guard import probe_cloud_workflow_for_workspace
+
+                cloud_readback = probe_cloud_workflow_for_workspace(ws, max_attempts=readback_attempts)
         except Exception:
             pass
     disk_readback = probe_disk_workflow_for_workspace(ws)
@@ -334,9 +352,12 @@ def finalize_save_trace(
         # archive list was stale, treat the session as recoverable after the
         # disk hydrate above; durability still requires cloud readback below.
         in_session = True
-    cloud_readback_ok = bool(cloud_readback.get("row_found")) if cloud_readback else False
-    if draft_id and cloud_readback.get("draft_ids"):
-        cloud_readback_ok = draft_id in set(cloud_readback.get("draft_ids") or [])
+    expected_after = int(after.get("draft_archive_count") or 0)
+    cloud_count = int(cloud_readback.get("draft_archive_count") or 0)
+    cloud_readback_ok = bool(cloud_readback.get("row_found")) and cloud_count == expected_after
+    if draft_id:
+        draft_ids = set(cloud_readback.get("draft_ids") or [])
+        cloud_readback_ok = cloud_readback_ok and draft_id in draft_ids
 
     if cloud_write_ok:
         steps.append("cloud_write_success")
@@ -410,7 +431,10 @@ def finalize_save_trace(
         "last_save_at": str(session.get("_suite_persist_last_save_at") or ""),
         "cloud_blocked_reason": str(session.get("_suite_autosave_cloud_blocked_reason") or ""),
         "persist_error": cloud_error or str(session.get("_draft_archive_persist_error") or ""),
-        "cloud_app_key": str(session.get("_suite_last_cloud_app_key") or ""),
+        "cloud_app_key": cloud_app_key or str(session.get("_suite_last_cloud_app_key") or ""),
+        "readback_scope_user_id": cloud_readback.get("scope_user_id"),
+        "readback_selected_row_user_id": cloud_readback.get("selected_row_user_id"),
+        "readback_row_inspection": cloud_readback.get("row_inspection") or {},
         "steps": steps,
         "finalized_at": _utc_now(),
     }
@@ -547,10 +571,15 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
         _row("Disk readback has archive", bool(diag.get("draft_in_disk")))
     if cloud_expected and (diag.get("cloud_readback_ok") is not None or diag.get("draft_in_cloud") is not None):
         in_cloud = bool(diag.get("draft_in_cloud"))
+        detail_bits = [f"cloud drafts={diag.get('cloud_readback_drafts', '—')}"]
+        if diag.get("cloud_app_key"):
+            detail_bits.append(f"key `{diag.get('cloud_app_key')}`")
+        if diag.get("readback_selected_row_user_id") is not None:
+            detail_bits.append(f"row user_id `{diag.get('readback_selected_row_user_id')}`")
         _row(
             "Cloud readback has archive",
             in_cloud if diag.get("draft_in_cloud") is not None else bool(diag.get("cloud_readback_ok")),
-            f"cloud drafts={diag.get('cloud_readback_drafts', '—')}",
+            " · ".join(detail_bits),
         )
     elif not cloud_expected and diag.get("cloud_write_success") is False:
         _row(

@@ -470,20 +470,54 @@ def resolve_restore_source_label(session: dict[str, Any]) -> str:
     return raw
 
 
+def _resolve_workspace_id_for_cloud_probe(
+    workspace_id: str = "",
+    *,
+    session: dict[str, Any] | None = None,
+) -> str:
+    ws = str(workspace_id or "").strip()
+    if ws:
+        return ws
+    ss: dict[str, Any] | None = session if isinstance(session, dict) else None
+    if ss is None:
+        try:
+            import streamlit as st  # noqa: WPS433
+
+            ss = st.session_state
+        except Exception:
+            ss = None
+    if isinstance(ss, dict):
+        try:
+            from suite_workspace import get_active_workspace_id
+
+            return str(get_active_workspace_id(st=type("_St", (), {"session_state": ss})()))
+        except Exception:
+            pass
+        return str(ss.get("_suite_active_workspace_id") or ss.get("_suite_owned_workspace_id") or "daniel")
+    return "daniel"
+
+
 def verify_cloud_draft_library_readback(
     app_id: str = "baseball",
     *,
     min_drafts: int = 1,
     expected_draft_id: str = "",
     workspace_id: str = "",
+    cloud_app_key: str = "",
+    expected_draft_count: int | None = None,
+    session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fresh Supabase readback after a draft-library write — confirms drafts landed."""
     out: dict[str, Any] = {
         "ok": False,
         "draft_count": 0,
         "cloud_app_key": "",
+        "workspace_id": "",
+        "scope_user_id": None,
+        "selected_row_user_id": None,
         "row_found": False,
         "draft_ids": [],
+        "row_inspection": {},
         "error": "",
     }
     try:
@@ -501,22 +535,27 @@ def verify_cloud_draft_library_readback(
         invalidate_cloud_full_session_cache(app_id)
     except Exception:
         pass
-    ws = str(workspace_id or "").strip()
-    if not ws:
+    ws = _resolve_workspace_id_for_cloud_probe(workspace_id, session=session)
+    out["workspace_id"] = ws
+    app_key = str(cloud_app_key or "").strip()
+    if not app_key:
         try:
-            from suite_workspace import get_active_workspace_id
+            from suite_workspace import scoped_cloud_app_id
 
-            ws = str(get_active_workspace_id(st=type("_St", (), {"session_state": {}})()))
-        except Exception:
-            ws = "daniel"
+            app_key = scoped_cloud_app_id(app_id, ws)
+        except Exception as exc:
+            out["error"] = str(exc)
+            return out
+    out["cloud_app_key"] = app_key
     try:
-        from suite_workspace import scoped_cloud_app_id
+        from suite_storage_supabase import inspect_cloud_state_rows
 
-        app_key = scoped_cloud_app_id(app_id, ws)
-        out["cloud_app_key"] = app_key
-    except Exception as exc:
-        out["error"] = str(exc)
-        return out
+        inspection = inspect_cloud_state_rows(app_key)
+        out["row_inspection"] = inspection
+        out["scope_user_id"] = inspection.get("scope_user_id")
+        out["selected_row_user_id"] = inspection.get("selected_row_user_id")
+    except Exception:
+        pass
     try:
         from suite_cloud_state import FULL_SESSION_KEY, _import_storage
 
@@ -526,6 +565,8 @@ def verify_cloud_draft_library_readback(
             out["error"] = "cloud_row_not_found"
             return out
         out["row_found"] = True
+        if out.get("selected_row_user_id") is None:
+            out["selected_row_user_id"] = row.get("user_id")
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
         blob = metrics.get(FULL_SESSION_KEY) if isinstance(metrics, dict) else None
         summary = summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None)
@@ -536,6 +577,11 @@ def verify_cloud_draft_library_readback(
         if out["ok"] and expected and expected not in set(out["draft_ids"]):
             out["ok"] = False
             out["error"] = f"expected_draft_id_missing:{expected}"
+        if expected_draft_count is not None and out["draft_count"] != int(expected_draft_count):
+            out["ok"] = False
+            out["error"] = (
+                f"readback_draft_count_mismatch:{out['draft_count']}_expected_{int(expected_draft_count)}"
+            )
         if not out["ok"] and not out["error"]:
             out["error"] = f"readback_draft_count_{out['draft_count']}_lt_{min_drafts}"
     except Exception as exc:
@@ -783,6 +829,22 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     nav_diag = session.get("_draft_library_nav_diag")
     durability = evaluate_cloud_durability_status(session)
 
+    cloud_row_inspection: dict[str, Any] = {}
+    cloud_row_inspection_legacy: dict[str, Any] = {}
+    if cloud_enabled and cloud_app_key:
+        try:
+            from suite_storage_supabase import inspect_cloud_state_rows
+            from suite_workspace import DEFAULT_WORKSPACE_ID, normalize_workspace_id, scoped_cloud_app_id
+
+            cloud_row_inspection = inspect_cloud_state_rows(cloud_app_key)
+            if workspace_id and normalize_workspace_id(workspace_id) != DEFAULT_WORKSPACE_ID:
+                cloud_row_inspection_legacy = inspect_cloud_state_rows(
+                    scoped_cloud_app_id("baseball", DEFAULT_WORKSPACE_ID),
+                    include_legacy_null=True,
+                )
+        except Exception:
+            pass
+
     return {
         "account_email": account_email,
         "account_external_id": account_external_id,
@@ -801,6 +863,8 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "cloud_probe_active": cloud_probe_active,
         "cloud_probe_owned": cloud_probe_owned,
         "cloud_probe_legacy": cloud_probe_legacy,
+        "cloud_row_inspection": cloud_row_inspection,
+        "cloud_row_inspection_legacy": cloud_row_inspection_legacy,
         "ownership_filter_note": (
             "Saved Draft Library does not filter individual drafts by owner_user_id; "
             "account scoping applies to the Supabase row (user_id) and active workspace only."
@@ -1045,24 +1109,29 @@ def hydrate_session_workflow_from_disk(
     return out
 
 
-def probe_cloud_workflow_for_workspace(
-    workspace_id: str,
+def probe_cloud_workflow_for_app_key(
+    cloud_app_key: str,
     *,
+    workspace_id: str = "",
     max_attempts: int = 1,
 ) -> dict[str, Any]:
-    """Read-only cloud probe for one workspace profile (production diagnostics)."""
-    from suite_workspace import scoped_cloud_app_id
-
-    ws = str(workspace_id or "daniel").strip()
-    cloud_app_key = scoped_cloud_app_id("baseball", ws)
+    """Read-only cloud probe for one exact Supabase ``app`` row key."""
+    app_key = str(cloud_app_key or "").strip()
+    ws = str(workspace_id or "").strip()
     out: dict[str, Any] = {
         "workspace_id": ws,
-        "cloud_app_key": cloud_app_key,
+        "cloud_app_key": app_key,
         "cloud_enabled": False,
+        "scope_user_id": None,
+        "selected_row_user_id": None,
         "row_found": False,
         "updated_at": None,
+        "row_inspection": {},
         "error": None,
     }
+    if not app_key:
+        out["error"] = "missing_cloud_app_key"
+        return out
     try:
         from suite_storage_config import cloud_storage_enabled
 
@@ -1073,6 +1142,15 @@ def probe_cloud_workflow_for_workspace(
     if not out["cloud_enabled"]:
         out["error"] = "cloud_storage_disabled"
         return out
+    try:
+        from suite_storage_supabase import inspect_cloud_state_rows
+
+        inspection = inspect_cloud_state_rows(app_key)
+        out["row_inspection"] = inspection
+        out["scope_user_id"] = inspection.get("scope_user_id")
+        out["selected_row_user_id"] = inspection.get("selected_row_user_id")
+    except Exception:
+        pass
     import time
 
     attempts = max(1, int(max_attempts or 1))
@@ -1081,11 +1159,13 @@ def probe_cloud_workflow_for_workspace(
         try:
             import suite_storage_supabase as storage
 
-            row = storage.load_current_state_for_app(cloud_app_key)
+            row = storage.load_current_state_for_app(app_key)
             if not isinstance(row, dict) or not row:
                 return out
             out["row_found"] = True
             out["updated_at"] = str(row.get("updated_at") or "") or None
+            if out.get("selected_row_user_id") is None:
+                out["selected_row_user_id"] = row.get("user_id")
             metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
             blob = metrics.get("full_session") if isinstance(metrics, dict) else None
             out.update(summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None))
@@ -1106,3 +1186,20 @@ def probe_cloud_workflow_for_workspace(
     if last_exc is not None:
         out["error"] = str(last_exc)
     return out
+
+
+def probe_cloud_workflow_for_workspace(
+    workspace_id: str,
+    *,
+    max_attempts: int = 1,
+) -> dict[str, Any]:
+    """Read-only cloud probe for one workspace profile (production diagnostics)."""
+    from suite_workspace import scoped_cloud_app_id
+
+    ws = str(workspace_id or "daniel").strip()
+    cloud_app_key = scoped_cloud_app_id("baseball", ws)
+    return probe_cloud_workflow_for_app_key(
+        cloud_app_key,
+        workspace_id=ws,
+        max_attempts=max_attempts,
+    )

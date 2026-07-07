@@ -355,6 +355,23 @@ def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
             st.caption(f"Last restore: {diag['restore_at']}")
         if diag.get("cloud_app_key"):
             st.caption(f"Cloud app key: `{diag['cloud_app_key']}`")
+        row_inspection = diag.get("cloud_row_inspection")
+        if isinstance(row_inspection, dict) and row_inspection.get("rows"):
+            st.markdown("**Cloud row inspection (active workspace)**")
+            st.caption(
+                f"Scope user_id: `{row_inspection.get('scope_user_id') or 'null'}` · "
+                f"Selected row user_id: `{row_inspection.get('selected_row_user_id') or '—'}` · "
+                f"Selected drafts: **{int(row_inspection.get('selected_draft_count') or 0)}**"
+            )
+            st.json(row_inspection)
+        legacy_inspection = diag.get("cloud_row_inspection_legacy")
+        if isinstance(legacy_inspection, dict) and legacy_inspection.get("rows"):
+            st.markdown("**Legacy cloud rows (daniel + null user_id — diagnostic only)**")
+            st.json(legacy_inspection)
+        save_readback = session.get("_suite_last_draft_save_readback")
+        if isinstance(save_readback, dict) and save_readback:
+            st.markdown("**Last save readback row identity**")
+            st.json(save_readback)
         if diag.get("local_state_path"):
             st.caption(f"Disk path: `{diag['local_state_path']}`")
         merged = diag.get("workflow_merge_keys") or []

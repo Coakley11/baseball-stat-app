@@ -664,16 +664,44 @@ def save_cloud_draft_library_with_details(
 
         readback: dict[str, Any] = {}
         try:
-            from workflow_persist_guard import record_draft_library_readback, verify_cloud_draft_library_readback
+            from workflow_persist_guard import (
+                count_draft_archives,
+                record_draft_library_readback,
+                verify_cloud_draft_library_readback,
+            )
 
             expected_id = str(state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+            expected_count = int(count_draft_archives(draft_slice.get(DRAFT_ARCHIVE_KEY)))
+            ws = ""
+            if ss is not None:
+                try:
+                    from suite_workspace import get_active_workspace_id
+
+                    ws = str(get_active_workspace_id(type("_St", (), {"session_state": ss})()))
+                except Exception:
+                    ws = str(ss.get("_suite_active_workspace_id") or ss.get("_suite_owned_workspace_id") or "")
+                ss["_suite_last_cloud_app_key"] = app_key
             readback = verify_cloud_draft_library_readback(
                 app_id,
                 min_drafts=1,
                 expected_draft_id=expected_id,
+                workspace_id=ws,
+                cloud_app_key=app_key,
+                expected_draft_count=expected_count,
+                session=ss if isinstance(ss, dict) else None,
             )
             if ss is not None:
                 record_draft_library_readback(ss, readback)
+                ss["_suite_last_draft_save_readback"] = {
+                    "cloud_app_key": app_key,
+                    "workspace_id": ws,
+                    "scope_user_id": readback.get("scope_user_id"),
+                    "selected_row_user_id": readback.get("selected_row_user_id"),
+                    "draft_count": readback.get("draft_count"),
+                    "draft_ids": list(readback.get("draft_ids") or []),
+                    "expected_draft_count": expected_count,
+                    "expected_draft_id": expected_id,
+                }
         except Exception as exc:
             readback = {"ok": False, "error": str(exc), "draft_count": 0}
             if ss is not None:

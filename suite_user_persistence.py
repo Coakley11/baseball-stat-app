@@ -330,6 +330,27 @@ def _cloud_autosave_blocked_reason(
         local_draft_count = count_draft_archives(state.get("draft_archive_teams"))
     except ImportError:
         pass
+    if not local_draft_count:
+        try:
+            from workflow_persist_guard import probe_cloud_workflow_for_app_key, probe_cloud_workflow_for_workspace
+
+            cloud_draft_count = 0
+            cloud_app_key = str(st.session_state.get("_suite_last_cloud_app_key") or "").strip()
+            if st.session_state.get("_suite_draft_library_readback_ok") or st.session_state.get(
+                "_suite_draft_library_cloud_verified_at"
+            ):
+                if cloud_app_key:
+                    probe = probe_cloud_workflow_for_app_key(cloud_app_key)
+                else:
+                    from suite_workspace import get_active_workspace_id
+
+                    ws = str(get_active_workspace_id(st))
+                    probe = probe_cloud_workflow_for_workspace(ws)
+                cloud_draft_count = int(probe.get("draft_archive_count") or 0)
+                if cloud_draft_count > 0 and save_reason not in _FORCE_SAVE_CLOUD_REASONS:
+                    return "post_draft_save_empty_session_would_erase_cloud"
+        except ImportError:
+            pass
     if local_players or local_draft_count:
         return None
     try:
