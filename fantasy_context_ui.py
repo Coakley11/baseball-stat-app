@@ -32,7 +32,7 @@ def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
     return research_league_sync_enabled(session)
 
 
-def _on_sync_changed(st: Any) -> None:
+def _on_sync_changed(*_args, **_kwargs) -> None:
     try:
         from baseball_persistent_state import force_save_baseball_state
 

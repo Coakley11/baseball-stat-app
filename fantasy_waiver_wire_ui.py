@@ -109,9 +109,12 @@ def _render_player_card(
                 st.caption(subtitle)
         with c_action:
             safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
-            if st.button(button_label, key=f"{key_prefix}_{safe_key}", use_container_width=True):
-                on_click(name)
-                st.rerun()
+            st.button(
+                button_label,
+                key=f"{key_prefix}_{safe_key}",
+                use_container_width=True,
+                on_click=on_click,
+            )
 
 
 def _render_add_player_card(
@@ -119,7 +122,6 @@ def _render_add_player_card(
     row: pd.Series,
     *,
     key_prefix: str,
-    on_plan_add,
 ) -> None:
     why = str(row.get("Why Add") or "").strip()
     use_photos, get_photo, render_photo = _photo_helpers(st)
@@ -143,9 +145,13 @@ def _render_add_player_card(
                 st.caption(f"Current: {current_line}")
         with c_action:
             safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
-            if st.button("Plan Add", key=f"{key_prefix}_{safe_key}", use_container_width=True):
-                on_plan_add(name)
-                st.rerun()
+            st.button(
+                "Plan Add",
+                key=f"{key_prefix}_{safe_key}",
+                use_container_width=True,
+                on_click=_on_plan_add_click,
+                args=(name,),
+            )
 
 
 def _render_drop_player_card(
@@ -154,7 +160,6 @@ def _render_drop_player_card(
     *,
     key_prefix: str,
     button_label: str,
-    on_click,
 ) -> None:
     why = str(row.get("Why Drop") or "").strip()
     use_photos, get_photo, render_photo = _photo_helpers(st)
@@ -178,12 +183,16 @@ def _render_drop_player_card(
                 st.caption(f"Current: {current_line}")
         with c_action:
             safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
-            if st.button(button_label, key=f"{key_prefix}_{safe_key}", use_container_width=True):
-                on_click(name)
-                st.rerun()
+            st.button(
+                button_label,
+                key=f"{key_prefix}_{safe_key}",
+                use_container_width=True,
+                on_click=_on_plan_drop_click,
+                args=(name,),
+            )
 
 
-def _on_waiver_filter_changed() -> None:
+def _on_waiver_filter_changed(*_args, **_kwargs) -> None:
     """Persist waiver global filter toggle to baseball workspace state."""
     try:
         import streamlit as st
@@ -194,7 +203,7 @@ def _on_waiver_filter_changed() -> None:
         pass
 
 
-def _on_planner_pick_changed() -> None:
+def _on_planner_pick_changed(*_args, **_kwargs) -> None:
     try:
         import streamlit as st
         from baseball_persistent_state import force_save_baseball_state
@@ -202,6 +211,230 @@ def _on_planner_pick_changed() -> None:
         force_save_baseball_state(st, reason="waiver_planner_pick")
     except Exception:
         pass
+
+
+def _resolve_normalize_name_fn():
+    try:
+        from streamlit_app import normalize_player_name_for_merge
+
+        return normalize_player_name_for_merge
+    except ImportError:
+        from fantasy_league_context import normalize_player_key
+
+        return normalize_player_key
+
+
+def _resolve_waiver_stats_pool(session: dict[str, Any]) -> pd.DataFrame:
+    hitters = session.get("_fantasy_current_hitter_stats", pd.DataFrame())
+    if not isinstance(hitters, pd.DataFrame):
+        hitters = pd.DataFrame()
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_waiver_wire import fantasy_format_includes_pitching, merge_current_season_stats
+
+        ctx = get_active_league_context(session)
+        fmt = str((ctx or {}).get("fantasy_format") or "5x5 Roto")
+        if fantasy_format_includes_pitching(fmt, ctx):
+            pitchers = session.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+            if not isinstance(pitchers, pd.DataFrame):
+                pitchers = pd.DataFrame()
+            return merge_current_season_stats(hitters, pitchers)
+    except ImportError:
+        pass
+    return hitters
+
+
+def _planner_add_pick(session: dict[str, Any]) -> str:
+    manual = str(session.get("waiver_manual_add_select") or "").strip()
+    return str(session.get(WAIVER_PLANNER_ADD_KEY) or manual or "").strip()
+
+
+def _planner_drop_pick(session: dict[str, Any]) -> str:
+    manual = str(session.get("waiver_manual_drop_select") or "").strip()
+    return str(session.get(WAIVER_PLANNER_DROP_KEY) or manual or "").strip()
+
+
+def purge_waiver_action_widget_keys(session: dict[str, Any]) -> None:
+    """Drop stale waiver button widget keys so Streamlit can bind callbacks safely."""
+    for key in list(session.keys()):
+        if not isinstance(key, str):
+            continue
+        if key in (
+            "waiver_confirm_tx_btn",
+            "waiver_save_pair_btn",
+            "waiver_confirm_pending_btn",
+        ):
+            session.pop(key, None)
+            continue
+        if key.startswith("waiver_rm_pair_") and key.endswith("_btn"):
+            session.pop(key, None)
+            continue
+        if key.startswith(("waiver_rec_", "waiver_drop_", "waiver_planner_add_", "waiver_planner_drop_")):
+            if key.endswith("_btn") or "_btn_" in key:
+                session.pop(key, None)
+
+
+def _clear_waiver_tx_multiselects(session: dict[str, Any]) -> None:
+    session["waiver_tx_add_players"] = []
+    session["waiver_tx_drop_players"] = []
+
+
+def _clear_manual_planner_widgets(session: dict[str, Any]) -> None:
+    session.pop(WAIVER_PLANNER_ADD_KEY, None)
+    session.pop(WAIVER_PLANNER_DROP_KEY, None)
+    session["waiver_manual_add_select"] = ""
+    session["waiver_manual_drop_select"] = ""
+
+
+def _on_plan_add_click(player_name: str, *_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    session[WAIVER_PLANNER_ADD_KEY] = str(player_name or "").strip()
+    _on_planner_pick_changed()
+
+
+def _on_plan_drop_click(player_name: str, *_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    session[WAIVER_PLANNER_DROP_KEY] = str(player_name or "").strip()
+    _on_planner_pick_changed()
+
+
+def _on_clear_planner_add_click(*_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    session.pop(WAIVER_PLANNER_ADD_KEY, None)
+    _on_planner_pick_changed()
+
+
+def _on_clear_planner_drop_click(*_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    session.pop(WAIVER_PLANNER_DROP_KEY, None)
+    _on_planner_pick_changed()
+
+
+def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    tx_adds = list(session.get("waiver_tx_add_players") or [])
+    tx_drops = list(session.get("waiver_tx_drop_players") or [])
+    if not tx_adds or not tx_drops:
+        set_waiver_tx_flash(session, level="warning", message="Select at least one add and one drop player.")
+        return
+    if len(tx_adds) != len(tx_drops):
+        set_waiver_tx_flash(
+            session,
+            level="warning",
+            message="Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).",
+        )
+        return
+    if len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
+        set_waiver_tx_flash(
+            session,
+            level="warning",
+            message=(
+                f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction "
+                "(Add 1/Drop 1 or Add 2/Drop 2)."
+            ),
+        )
+        return
+    pairs = [
+        {"add_player": add_name, "drop_player": drop_name}
+        for add_name, drop_name in zip(tx_adds, tx_drops)
+    ]
+    stats_pool = _resolve_waiver_stats_pool(session)
+    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+    _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
+
+
+def _on_add_pending_pair_click(*_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    planner_add = _planner_add_pick(session)
+    planner_drop = _planner_drop_pick(session)
+    if not planner_add or not planner_drop:
+        set_waiver_tx_flash(
+            session,
+            level="warning",
+            message="Select both an add target and a drop player before saving a pending move.",
+        )
+        return
+    if add_pending_move_pair(
+        session,
+        add_player=planner_add,
+        drop_player=planner_drop,
+        category_impact=[],
+    ):
+        _clear_manual_planner_widgets(session)
+        set_waiver_tx_flash(
+            session,
+            level="success",
+            message=f"Pending move saved: **Add {planner_add}** · **Drop {planner_drop}**",
+        )
+    else:
+        set_waiver_tx_flash(
+            session,
+            level="error",
+            message="Could not save pending move — check your active league context.",
+        )
+
+
+def _on_remove_pending_pair_click(pair_index: int, *_args, **_kwargs) -> None:
+    import streamlit as st
+
+    remove_pending_move_pair(st.session_state, int(pair_index))
+
+
+def _on_confirm_pending_waiver_moves_click(*_args, **_kwargs) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    pairs = get_pending_move_pairs(session)
+    if not pairs:
+        set_waiver_tx_flash(session, level="warning", message="No pending add/drop moves to confirm.")
+        return
+    stats_pool = _resolve_waiver_stats_pool(session)
+    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+    _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
+
+
+def _apply_waiver_tx_result(
+    session: dict[str, Any],
+    tx_result: dict,
+    *,
+    stats_pool: pd.DataFrame,
+) -> None:
+    normalize_name_fn = _resolve_normalize_name_fn()
+    if tx_result.get("ok"):
+        added = ", ".join(tx_result.get("added_players") or [])
+        dropped = ", ".join(tx_result.get("dropped_players") or [])
+        message = f"**Added:** {added or '—'}\n\n**Dropped:** {dropped or '—'}"
+        warns = [str(w) for w in (tx_result.get("position_warnings") or []) if str(w).strip()]
+        if warns:
+            message = f"{message}\n\n" + "\n".join(warns)
+        set_waiver_tx_flash(session, level="success", message=message)
+        try:
+            sync_waiver_roster_views(session, stats_pool=stats_pool, normalize_name_fn=normalize_name_fn)
+        except Exception:
+            pass
+        _clear_waiver_tx_multiselects(session)
+        return
+    errors = [str(err) for err in (tx_result.get("errors") or []) if str(err).strip()]
+    if errors:
+        set_waiver_tx_flash(session, level="error", message="\n".join(errors))
+        return
+    set_waiver_tx_flash(
+        session,
+        level="error",
+        message="Waiver move could not be applied. Check your add/drop selections and try again.",
+    )
 
 
 def _handle_waiver_tx_result(
@@ -258,6 +491,8 @@ def render_waiver_wire_page(
         )
         return
 
+    purge_waiver_action_widget_keys(session)
+
     flash = pop_waiver_tx_flash(session)
     if flash:
         level = str(flash.get("level") or "info")
@@ -297,7 +532,10 @@ def render_waiver_wire_page(
         pass
 
     league_df = league_roster_stats.copy() if league_roster_stats is not None and not league_roster_stats.empty else pd.DataFrame()
-    if league_df.empty and normalize_name_fn is not None:
+    session_roster = session.get("fantasy_current_roster_stats")
+    if isinstance(session_roster, pd.DataFrame) and not session_roster.empty:
+        league_df = session_roster.copy()
+    elif league_df.empty and normalize_name_fn is not None:
         cached = stats_pool
         if isinstance(cached, pd.DataFrame) and not cached.empty and has_full_league_rosters(context):
             league_df = build_roster_stats_from_league_context(
@@ -452,61 +690,25 @@ def render_waiver_wire_page(
                 bits.append(f"Biggest loss: **{loss}**")
             if bits:
                 st.caption(" · ".join(bits))
-    if st.button("Confirm Waiver Move", key="waiver_confirm_tx_btn", type="primary"):
-        if not tx_adds or not tx_drops:
-            set_waiver_tx_flash(session, level="warning", message="Select at least one add and one drop player.")
-            st.rerun()
-        elif len(tx_adds) != len(tx_drops):
-            set_waiver_tx_flash(
-                session,
-                level="warning",
-                message="Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).",
-            )
-            st.rerun()
-        elif len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
-            set_waiver_tx_flash(
-                session,
-                level="warning",
-                message=(
-                    f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction "
-                    "(Add 1/Drop 1 or Add 2/Drop 2)."
-                ),
-            )
-            st.rerun()
-        else:
-            pairs = [
-                {"add_player": add_name, "drop_player": drop_name}
-                for add_name, drop_name in zip(tx_adds, tx_drops)
-            ]
-            tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
-            _handle_waiver_tx_result(
-                st,
-                session,
-                tx_result,
-                stats_pool=stats_pool,
-                normalize_name_fn=normalize_name_fn,
-            )
+    st.button(
+        "Confirm Waiver Move",
+        key="waiver_confirm_tx_btn",
+        type="primary",
+        on_click=_on_confirm_waiver_move_click,
+    )
 
     st.markdown("##### 1. Top Recommended Adds")
     if adds.empty:
         st.info("No waiver recommendations yet — load current-season stats and check your league context.")
     else:
-        def _plan_add(name: str) -> None:
-            session[WAIVER_PLANNER_ADD_KEY] = name
-            _on_planner_pick_changed()
-
         for i, (_, row) in enumerate(adds.head(15).iterrows()):
-            _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}", on_plan_add=_plan_add)
+            _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}")
 
     st.markdown("##### 2. Recommended Drops")
     if drops.empty:
         st.info("No drop candidates on your roster yet.")
     else:
         selected_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or "").strip()
-
-        def _select_drop(name: str) -> None:
-            session[WAIVER_PLANNER_DROP_KEY] = name
-            _on_planner_pick_changed()
 
         for i, (_, row) in enumerate(drops.head(15).iterrows()):
             name = str(row.get("Player") or row.get("fullName") or "")
@@ -516,7 +718,6 @@ def render_waiver_wire_page(
                 row,
                 key_prefix=f"waiver_drop_{i}",
                 button_label=label,
-                on_click=_select_drop,
             )
 
     st.markdown("##### 3. Available Player Pool")
@@ -565,33 +766,23 @@ def render_waiver_wire_page(
         add_row = _row_for_player(waiver_pool, planner_add)
         if add_row is not None:
             st.markdown("**Add target**")
-
-            def _clear_add(*_args, **_kwargs) -> None:
-                session.pop(WAIVER_PLANNER_ADD_KEY, None)
-                _on_planner_pick_changed()
-
             _render_player_card(
                 st,
                 add_row,
                 key_prefix="waiver_planner_add",
                 button_label="Clear Add",
-                on_click=_clear_add,
+                on_click=_on_clear_planner_add_click,
             )
     if planner_drop:
         drop_row = _row_for_player(my_roster, planner_drop)
         if drop_row is not None:
             st.markdown("**Drop candidate**")
-
-            def _clear_drop(*_args, **_kwargs) -> None:
-                session.pop(WAIVER_PLANNER_DROP_KEY, None)
-                _on_planner_pick_changed()
-
             _render_player_card(
                 st,
                 drop_row,
                 key_prefix="waiver_planner_drop",
                 button_label="Clear Drop",
-                on_click=_clear_drop,
+                on_click=_on_clear_planner_drop_click,
             )
     add_row = _row_for_player(waiver_pool, planner_add) if planner_add else None
     drop_row = _row_for_player(my_roster, planner_drop) if planner_drop else None
@@ -602,37 +793,12 @@ def render_waiver_wire_page(
     )
     if impact:
         st.caption(f"**Category impact:** {', '.join(impact)}")
-    if st.button("Add to Pending Moves", key="waiver_save_pair_btn", type="primary"):
-        if not planner_add or not planner_drop:
-            set_waiver_tx_flash(
-                session,
-                level="warning",
-                message="Select both an add target and a drop player before saving a pending move.",
-            )
-            st.rerun()
-        elif add_pending_move_pair(
-            session,
-            add_player=planner_add,
-            drop_player=planner_drop,
-            category_impact=impact,
-        ):
-            session.pop(WAIVER_PLANNER_ADD_KEY, None)
-            session.pop(WAIVER_PLANNER_DROP_KEY, None)
-            session.pop("waiver_manual_add_select", None)
-            session.pop("waiver_manual_drop_select", None)
-            set_waiver_tx_flash(
-                session,
-                level="success",
-                message=f"Pending move saved: **Add {planner_add}** · **Drop {planner_drop}**",
-            )
-            st.rerun()
-        else:
-            set_waiver_tx_flash(
-                session,
-                level="error",
-                message="Could not save pending move — check your active league context.",
-            )
-            st.rerun()
+    st.button(
+        "Add to Pending Moves",
+        key="waiver_save_pair_btn",
+        type="primary",
+        on_click=_on_add_pending_pair_click,
+    )
 
     st.markdown("##### Pending Add/Drop Moves")
     pairs = get_pending_move_pairs(session)
@@ -645,15 +811,15 @@ def render_waiver_wire_page(
             impact_txt = ", ".join(pair.get("category_impact") or []) or "—"
             st.markdown(f"**Add:** {add_name}  ·  **Drop:** {drop_name}")
             st.caption(f"Category impact: {impact_txt}")
-            if st.button("Remove pair", key=f"waiver_rm_pair_{i}_btn"):
-                remove_pending_move_pair(session, i)
-                st.rerun()
-        if st.button("Confirm Pending Waiver Moves", key="waiver_confirm_pending_btn", type="primary"):
-            tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
-            _handle_waiver_tx_result(
-                st,
-                session,
-                tx_result,
-                stats_pool=stats_pool,
-                normalize_name_fn=normalize_name_fn,
+            st.button(
+                "Remove pair",
+                key=f"waiver_rm_pair_{i}_btn",
+                on_click=_on_remove_pending_pair_click,
+                args=(i,),
             )
+        st.button(
+            "Confirm Pending Waiver Moves",
+            key="waiver_confirm_pending_btn",
+            type="primary",
+            on_click=_on_confirm_pending_waiver_moves_click,
+        )
