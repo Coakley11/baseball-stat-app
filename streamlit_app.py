@@ -12447,13 +12447,6 @@ def _page_perf_end(page: str) -> None:
 def render_developer_mode_sidebar_toggle():
     """Single sidebar switch for all developer-only tools (default OFF)."""
     try:
-        from suite_sidebar_run import GUARD_DEV_TOGGLE, claim_sidebar_render
-
-        if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
-            return
-    except ImportError:
-        pass
-    try:
         from suite_workspace import (
             DEVELOPER_MODE_DIAG_KEY,
             developer_tools_workspace_eligible,
@@ -12463,6 +12456,14 @@ def render_developer_mode_sidebar_toggle():
 
         sync_developer_mode_widget(st.session_state, source="pre_toggle_render")
         if not developer_tools_workspace_eligible(st=st):
+            return
+    except ImportError:
+        pass
+
+    try:
+        from suite_sidebar_run import GUARD_DEV_TOGGLE, claim_sidebar_render
+
+        if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
             return
     except ImportError:
         pass
@@ -23297,6 +23298,18 @@ if active_page == "Fantasy Lineup Assistant":
         else:
             team_roster = enrich_lineup_roster_positions(team_roster)
             try:
+                from fantasy_weekly_lineup_ui import render_weekly_lineup_section
+
+                render_weekly_lineup_section(
+                    st,
+                    st.session_state,
+                    team_roster=team_roster,
+                    lineup_team=str(lineup_team or ""),
+                    on_open_waiver_wire=lambda: navigate_to_page("Waiver Wire / Add-Drop Center"),
+                )
+            except ImportError:
+                pass
+            try:
                 from fantasy_perf_cache import (
                     _df_sig,
                     get_cached_lineup_scores,
@@ -23543,9 +23556,9 @@ if active_page == "Fantasy Lineup Assistant":
                         _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                         _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                         if _needs.get("strengths"):
-                            _strength_cats = list(_needs.get("strengths") or _strength_cats)[:3]
+                            _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
                         if _needs.get("weaknesses"):
-                            _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:3]
+                            _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
                         _outlook, _confidence, _stars = team_outlook_summary(
                             strong_cats=_strength_cats,
                             weak_cats=_weakness_cats,
