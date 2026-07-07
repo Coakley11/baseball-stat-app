@@ -35,7 +35,7 @@ _FULL_SESSION_KEY = "full_session"
 _READ_CACHE_KEY = "_suite_supabase_get_cache"
 # Shared draft rooms must never be GET-cached — remote PATCHes on other devices
 # do not invalidate this client's session cache.
-_NO_GET_CACHE_TABLES = frozenset({"baseball_shared_draft_rooms"})
+_NO_GET_CACHE_TABLES = frozenset({"baseball_shared_draft_rooms", "baseball_shared_leagues"})
 
 
 def _read_cache_bucket() -> dict[tuple[str, str, tuple[tuple[str, str], ...]], tuple[int, Any]]:
@@ -355,7 +355,7 @@ def _egress(source: str):
         return nullcontext()
 
 
-_NO_GET_CACHE_TABLES = frozenset({"baseball_shared_draft_rooms"})
+_NO_GET_CACHE_TABLES = frozenset({"baseball_shared_draft_rooms", "baseball_shared_leagues"})
 _TRANSIENT_SUPABASE_HTTP = frozenset({502, 503, 504})
 _TRANSIENT_SUPABASE_MARKERS = (
     "PGRST002",

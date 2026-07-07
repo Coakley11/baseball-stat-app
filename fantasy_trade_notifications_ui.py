@@ -44,7 +44,7 @@ def render_trade_notification_sidebar(st: Any, session: dict[str, Any]) -> None:
 
     if pending_n and not any(a.get("kind") == "incoming" for a in alerts):
         st.sidebar.warning(
-            f"**{pending_n}** incoming trade offer{'s' if pending_n != 1 else ''}"
+            f"**{pending_n}** pending trade offer{'s' if pending_n != 1 else ''}"
         )
 
     for alert in alerts[:8]:

@@ -1,0 +1,337 @@
+"""Cross-account shared league document — rosters, ownership, trade proposals."""
+
+from __future__ import annotations
+
+import copy
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Protocol, runtime_checkable
+
+from fantasy_league_identity import compute_draft_fingerprint, resolve_canonical_league_id
+
+WORKFLOW_KEY_TRADE_PROPOSALS = "trade_proposals"
+
+DATA_DIR = Path(__file__).resolve().parent / "data" / "shared_leagues"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def shared_league_document_from_context(context: dict[str, Any], *, revision: int = 1) -> dict[str, Any]:
+    context = copy.deepcopy(context)
+    league_id = resolve_canonical_league_id(context)
+    fp = compute_draft_fingerprint(context)
+    workflow = context.get("workflow") or {}
+    proposals = workflow.get(WORKFLOW_KEY_TRADE_PROPOSALS) or []
+    if not isinstance(proposals, list):
+        proposals = []
+    ownership = context.get("team_ownership")
+    if not isinstance(ownership, dict):
+        meta = context.get("metadata") or {}
+        ownership = meta.get("team_ownership") or {}
+    return {
+        "schema_version": 1,
+        "league_id": league_id,
+        "draft_fingerprint": fp,
+        "draft_id": str((context.get("metadata") or {}).get("source_draft_id") or "").strip(),
+        "revision": int(revision or 1),
+        "updated_at": _utc_now_iso(),
+        "league_rosters": copy.deepcopy(context.get("league_rosters") or {}),
+        "team_ownership": copy.deepcopy(ownership if isinstance(ownership, dict) else {}),
+        "trade_proposals": copy.deepcopy(proposals),
+    }
+
+
+@runtime_checkable
+class SharedLeagueStore(Protocol):
+    def exists(self, league_id: str) -> bool: ...
+
+    def load(self, league_id: str) -> dict[str, Any] | None: ...
+
+    def save(self, document: dict[str, Any]) -> dict[str, Any]: ...
+
+    def save_if_revision(
+        self,
+        document: dict[str, Any],
+        *,
+        expected_revision: int | None,
+    ) -> tuple[bool, dict[str, Any] | None]: ...
+
+
+class LocalFileSharedLeagueStore:
+    """Dev/test backend — one JSON file per canonical league_id."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or DATA_DIR
+
+    def _path(self, league_id: str) -> Path:
+        safe = str(league_id or "").strip().replace(":", "_").replace("/", "_")
+        return self.root / f"{safe}.json"
+
+    def exists(self, league_id: str) -> bool:
+        return self._path(league_id).is_file()
+
+    def load(self, league_id: str) -> dict[str, Any] | None:
+        path = self._path(league_id)
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    def save(self, document: dict[str, Any]) -> dict[str, Any]:
+        league_id = str(document.get("league_id") or "").strip()
+        if not league_id:
+            raise ValueError("shared league document missing league_id")
+        self.root.mkdir(parents=True, exist_ok=True)
+        out = copy.deepcopy(document)
+        out["updated_at"] = _utc_now_iso()
+        self._path(league_id).write_text(json.dumps(out, indent=2), encoding="utf-8")
+        return out
+
+    def save_if_revision(
+        self,
+        document: dict[str, Any],
+        *,
+        expected_revision: int | None,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        league_id = str(document.get("league_id") or "").strip()
+        existing = self.load(league_id)
+        if expected_revision is not None and isinstance(existing, dict):
+            current = int(existing.get("revision") or 0)
+            if current != int(expected_revision):
+                return False, existing
+        saved = self.save(document)
+        return True, saved
+
+
+_SHARED_STORE: SharedLeagueStore | None = None
+
+
+def get_shared_league_store() -> SharedLeagueStore:
+    global _SHARED_STORE
+    if _SHARED_STORE is not None:
+        return _SHARED_STORE
+    try:
+        from fantasy_shared_league_supabase_store import get_supabase_shared_league_store
+
+        store = get_supabase_shared_league_store()
+        _SHARED_STORE = store
+        return store
+    except Exception:
+        _SHARED_STORE = LocalFileSharedLeagueStore()
+        return _SHARED_STORE
+
+
+def set_shared_league_store(store: SharedLeagueStore | None) -> None:
+    global _SHARED_STORE
+    _SHARED_STORE = store
+
+
+def load_shared_league(league_id: str, *, store: SharedLeagueStore | None = None) -> dict[str, Any] | None:
+    backend = store or get_shared_league_store()
+    return backend.load(str(league_id or "").strip())
+
+
+def save_shared_league(document: dict[str, Any], *, store: SharedLeagueStore | None = None) -> dict[str, Any]:
+    backend = store or get_shared_league_store()
+    return backend.save(document)
+
+
+def _proposal_sort_key(proposal: dict[str, Any]) -> str:
+    return str(proposal.get("updated_at") or proposal.get("created_at") or "")
+
+
+def _proposal_status_rank(status: str) -> int:
+    terminal = {
+        "accepted": 5,
+        "declined": 5,
+        "canceled": 5,
+        "countered": 5,
+        "expired": 5,
+        "stale": 5,
+        "pending": 1,
+    }
+    return terminal.get(str(status or "").strip(), 0)
+
+
+def _merge_single_proposal(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    existing_rank = _proposal_status_rank(str(existing.get("status") or ""))
+    incoming_rank = _proposal_status_rank(str(incoming.get("status") or ""))
+    if incoming_rank > existing_rank:
+        primary, secondary = incoming, existing
+    elif existing_rank > incoming_rank:
+        primary, secondary = existing, incoming
+    elif _proposal_sort_key(incoming) >= _proposal_sort_key(existing):
+        primary, secondary = incoming, existing
+    else:
+        primary, secondary = existing, incoming
+    merged = copy.deepcopy(primary)
+    for key in (
+        "expires_at",
+        "accepted_at",
+        "declined_at",
+        "responded_at",
+        "from_user_display",
+        "verdict",
+        "give_player_ids",
+        "receive_player_ids",
+    ):
+        if not str(merged.get(key) or "").strip() and str(secondary.get(key) or "").strip():
+            merged[key] = secondary[key]
+    return merged
+
+
+def _merge_trade_proposals(*sources: list[Any]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for proposals in sources:
+        if not isinstance(proposals, list):
+            continue
+        for raw in proposals:
+            if not isinstance(raw, dict):
+                continue
+            pid = str(raw.get("trade_id") or raw.get("proposal_id") or "").strip()
+            if not pid:
+                continue
+            existing = merged.get(pid)
+            if existing is None:
+                merged[pid] = copy.deepcopy(raw)
+            else:
+                merged[pid] = _merge_single_proposal(existing, raw)
+    return sorted(merged.values(), key=_proposal_sort_key, reverse=True)
+
+
+def _merge_team_ownership(*sources: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for team, record in source.items():
+            team_name = str(team or "").strip()
+            if not team_name or not isinstance(record, dict):
+                continue
+            existing = merged.get(team_name)
+            if existing is None:
+                merged[team_name] = copy.deepcopy(record)
+                continue
+            existing_ts = str(existing.get("assigned_at") or "")
+            incoming_ts = str(record.get("assigned_at") or "")
+            if incoming_ts >= existing_ts:
+                merged[team_name] = copy.deepcopy(record)
+    return merged
+
+
+def _roster_content_fingerprint(rosters: Any) -> str:
+    if not isinstance(rosters, dict):
+        return ""
+    payload = {
+        team: sorted(
+            str(p.get("player_key") or p.get("player_name") or "").strip().lower()
+            for p in (entry.get("players") or [])
+            if isinstance(p, dict)
+            for _ in [0]
+            if str(p.get("player_key") or p.get("player_name") or "").strip()
+        )
+        for team, entry in sorted(rosters.items())
+        if isinstance(entry, dict)
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+    """Apply shared league document onto a local league context."""
+    out = copy.deepcopy(context)
+    shared_revision = int(shared.get("revision") or 0)
+    local_revision = int((out.get("metadata") or {}).get("shared_revision") or 0)
+    shared_rosters = shared.get("league_rosters")
+    local_rosters = out.get("league_rosters") or {}
+    shared_fp = _roster_content_fingerprint(shared_rosters)
+    local_fp = _roster_content_fingerprint(local_rosters)
+    if isinstance(shared_rosters, dict) and shared_rosters and (
+        shared_revision > local_revision or shared_fp != local_fp
+    ):
+        out["league_rosters"] = copy.deepcopy(shared_rosters)
+    ownership = _merge_team_ownership(get_team_ownership_from_context(out), shared.get("team_ownership") or {})
+    out["team_ownership"] = ownership
+    meta = dict(out.get("metadata") or {})
+    meta["team_ownership"] = copy.deepcopy(ownership)
+    meta["shared_revision"] = max(local_revision, shared_revision)
+    out["metadata"] = meta
+    workflow = dict(out.get("workflow") or {})
+    local_proposals = workflow.get(WORKFLOW_KEY_TRADE_PROPOSALS) or []
+    merged_proposals = _merge_trade_proposals(
+        local_proposals if isinstance(local_proposals, list) else [],
+        shared.get("trade_proposals") or [],
+    )
+    workflow[WORKFLOW_KEY_TRADE_PROPOSALS] = merged_proposals
+    out["workflow"] = workflow
+    return out
+
+
+def get_team_ownership_from_context(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = context.get("team_ownership")
+    if isinstance(raw, dict):
+        return copy.deepcopy(raw)
+    meta = context.get("metadata") or {}
+    raw = meta.get("team_ownership")
+    return copy.deepcopy(raw) if isinstance(raw, dict) else {}
+
+
+def sync_context_with_shared_store(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    store: SharedLeagueStore | None = None,
+) -> dict[str, Any]:
+    from fantasy_league_context import upsert_league_context
+
+    league_id = resolve_canonical_league_id(context)
+    if not league_id:
+        return context
+    shared = load_shared_league(league_id, store=store)
+    if not isinstance(shared, dict):
+        return context
+    merged = merge_shared_into_context(context, shared)
+    return upsert_league_context(session, merged)
+
+
+def push_league_context_to_shared(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    store: SharedLeagueStore | None = None,
+) -> dict[str, Any] | None:
+    league_id = resolve_canonical_league_id(context)
+    if not league_id:
+        return None
+    backend = store or get_shared_league_store()
+    existing = backend.load(league_id)
+    base_revision = int(existing.get("revision") or 0) if isinstance(existing, dict) else 0
+    revision = max(base_revision + 1, int((context.get("metadata") or {}).get("shared_revision") or 0) + 1)
+    document = shared_league_document_from_context(context, revision=revision)
+    document["league_rosters"] = copy.deepcopy(context.get("league_rosters") or {})
+    if isinstance(existing, dict):
+        merged_proposals = _merge_trade_proposals(
+            existing.get("trade_proposals") or [],
+            document.get("trade_proposals") or [],
+        )
+        document["trade_proposals"] = merged_proposals
+        document["team_ownership"] = _merge_team_ownership(
+            existing.get("team_ownership") or {},
+            document.get("team_ownership") or {},
+        )
+    saved = backend.save(document)
+    meta = dict(context.get("metadata") or {})
+    meta["shared_revision"] = int((saved or document).get("revision") or document.get("revision") or 1)
+    context["metadata"] = meta
+    try:
+        from fantasy_league_context import upsert_league_context
+
+        upsert_league_context(session, context)
+    except ImportError:
+        pass
+    return saved

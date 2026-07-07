@@ -12,7 +12,16 @@ from fantasy_league_context import (
     get_active_league_context,
     get_league_context,
     normalize_player_key,
+    save_draft_archive_with_league_context,
     upsert_league_context,
+)
+from fantasy_league_identity import ensure_league_identity, resolve_canonical_league_id
+from fantasy_league_team_ownership import (
+    TRADES_DISABLED_MESSAGE,
+    owner_display_for_team,
+    owner_user_id_for_team,
+    owned_team_for_user,
+    trades_enabled,
 )
 
 WORKFLOW_KEY_TRADE_PROPOSALS = "trade_proposals"
@@ -26,6 +35,7 @@ TRADE_PROPOSAL_STATUS_EXPIRED = "expired"
 TRADE_PROPOSAL_STATUS_STALE = "stale"
 TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_proposal_handoff"
 LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
+TRADE_PHASE1_SIMPLE = True
 STALE_TRADE_MESSAGE = (
     "Trade can no longer be completed because one or more players are no longer on the expected roster."
 )
@@ -46,6 +56,77 @@ def _parse_utc_datetime(raw: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _player_ids_from_refs(players: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        key = str(player.get("player_key") or normalize_player_key(player.get("player_name"))).strip()
+        if key:
+            ids.append(key)
+    return ids
+
+
+def _load_mutable_context(session: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    context = get_active_league_context(session)
+    if not context:
+        return None, "Set an active league context in Saved Draft Library before trading."
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    if not league_context_id:
+        return None, "Active league context is missing an id."
+    try:
+        from fantasy_shared_league_store import sync_context_with_shared_store
+
+        context = sync_context_with_shared_store(session, context)
+    except ImportError:
+        context = get_league_context(session, league_context_id)
+    if not context:
+        return None, "Active league context could not be loaded."
+    return context, ""
+
+
+def finalize_accepted_trade(session: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Persist roster swap to local context, archive, and shared league document."""
+    context = ensure_league_identity(context)
+    context["ownership_map"] = build_ownership_map(context)
+    meta = context.get("metadata") or {}
+    draft_id = str(meta.get("source_draft_id") or meta.get("draft_id") or "").strip()
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    if draft_id:
+        save_draft_archive_with_league_context(
+            session,
+            draft_id=draft_id,
+            league_rosters=context.get("league_rosters") or {},
+            league_context_id=league_context_id,
+        )
+    saved = upsert_league_context(session, context)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, saved)
+    except ImportError:
+        pass
+    return saved
+
+
+def get_trade_history(context: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    pending: list[dict[str, Any]] = []
+    accepted: list[dict[str, Any]] = []
+    declined: list[dict[str, Any]] = []
+    if not context:
+        return {"pending": pending, "accepted": accepted, "declined": declined}
+    for proposal in get_trade_proposals(context):
+        status = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
+        display = get_display_status(context, proposal)
+        if display == TRADE_PROPOSAL_STATUS_PENDING:
+            pending.append(copy.deepcopy(proposal))
+        elif status == TRADE_PROPOSAL_STATUS_ACCEPTED:
+            accepted.append(copy.deepcopy(proposal))
+        elif status == TRADE_PROPOSAL_STATUS_DECLINED:
+            declined.append(copy.deepcopy(proposal))
+    return {"pending": pending, "accepted": accepted, "declined": declined}
 
 
 def _normalize_player_ref(player_name: str) -> dict[str, str]:
@@ -362,13 +443,24 @@ def get_trade_notifications(
             key = _alert_key(pid, "incoming")
             if key not in seen:
                 proposer = str(proposal.get("proposer_team") or "")
+                proposer_label = str(
+                    proposal.get("from_user_display")
+                    or owner_display_for_team(context, proposer)
+                    or proposer
+                ).strip()
                 is_counter = bool(str(proposal.get("countered_from_proposal_id") or "").strip())
+                if TRADE_PHASE1_SIMPLE:
+                    message = f"New trade offer from {proposer_label}."
+                elif is_counter:
+                    message = f"Counteroffer from {proposer_label}"
+                else:
+                    message = f"1 incoming trade offer from {proposer_label}"
                 alerts.append(
                     {
                         "alert_key": key,
                         "proposal_id": pid,
                         "kind": "counteroffer" if is_counter else "incoming",
-                        "message": f"Counteroffer from {proposer}" if is_counter else f"1 incoming trade offer from {proposer}",
+                        "message": message,
                         "view_as_team": team,
                     }
                 )
@@ -515,47 +607,77 @@ def create_trade_proposal(
     expires_at: str = "",
     countered_from_proposal_id: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
-    context = get_active_league_context(session)
-    if not context:
-        return None, "Set an active league context in Saved Draft Library before proposing a trade."
-    league_context_id = str(context.get("league_context_id") or "").strip()
-    if not league_context_id:
-        return None, "Active league context is missing an id."
-    context = get_league_context(session, league_context_id)
-    if not context:
-        return None, "Active league context could not be loaded."
+    context, load_err = _load_mutable_context(session)
+    if context is None:
+        return None, load_err
+
+    enabled, gate_msg = trades_enabled(context, session)
+    if not enabled:
+        return None, gate_msg or TRADES_DISABLED_MESSAGE
+
+    proposer = str(proposer_team or "").strip()
+    recipient = str(recipient_team or "").strip()
+    my_owned = owned_team_for_user(context)
+    if my_owned and proposer != my_owned:
+        return None, f"Your account owns {my_owned}; trades must be proposed from that team."
 
     gives = [str(x).strip() for x in proposer_gives if str(x).strip()]
     receives = [str(x).strip() for x in proposer_receives if str(x).strip()]
     ok, msg = validate_proposal_players(
         context,
-        proposer_team=proposer_team,
-        recipient_team=recipient_team,
+        proposer_team=proposer,
+        recipient_team=recipient,
         proposer_gives=gives,
         proposer_receives=receives,
     )
     if not ok:
         return None, msg
 
+    give_refs = [_normalize_player_ref(n) for n in gives]
+    receive_refs = [_normalize_player_ref(n) for n in receives]
     now = _utc_now_iso()
+    from_user_id = owner_user_id_for_team(context, proposer) or owned_team_for_user(context)
+    to_user_id = owner_user_id_for_team(context, recipient)
+    if not to_user_id:
+        return None, f"{recipient} has no account owner assigned yet."
+    league_id = resolve_canonical_league_id(context)
     proposal: dict[str, Any] = {
         "proposal_id": f"tp:{uuid.uuid4().hex[:12]}",
+        "trade_id": "",
+        "league_id": league_id,
         "status": TRADE_PROPOSAL_STATUS_PENDING,
-        "proposer_team": str(proposer_team or "").strip(),
-        "recipient_team": str(recipient_team or "").strip(),
-        "proposer_gives": [_normalize_player_ref(n) for n in gives],
-        "proposer_receives": [_normalize_player_ref(n) for n in receives],
+        "proposer_team": proposer,
+        "recipient_team": recipient,
+        "from_user_id": from_user_id,
+        "to_user_id": to_user_id,
+        "from_team_id": proposer,
+        "to_team_id": recipient,
+        "proposer_gives": give_refs,
+        "proposer_receives": receive_refs,
+        "give_player_ids": _player_ids_from_refs(give_refs),
+        "receive_player_ids": _player_ids_from_refs(receive_refs),
+        "from_user_display": owner_display_for_team(context, proposer),
         "created_at": now,
         "updated_at": now,
         "responded_at": "",
-        "expires_at": str(expires_at or "").strip(),
-        "countered_from_proposal_id": str(countered_from_proposal_id or "").strip(),
+        "accepted_at": "",
+        "declined_at": "",
+        "expires_at": "" if TRADE_PHASE1_SIMPLE else str(expires_at or "").strip(),
+        "countered_from_proposal_id": "" if TRADE_PHASE1_SIMPLE else str(countered_from_proposal_id or "").strip(),
         "verdict": str(verdict or "").strip(),
     }
+    proposal["trade_id"] = str(proposal["proposal_id"])
     proposals = _ensure_trade_proposals_workflow(context)
     proposals.append(proposal)
-    upsert_league_context(session, context)
-    return copy.deepcopy(proposal), ""
+    context = ensure_league_identity(context)
+    saved = upsert_league_context(session, context)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, saved)
+    except ImportError:
+        pass
+    return get_trade_proposal(saved, str(proposal["proposal_id"])), ""
 
 
 def _execute_roster_swap(context: dict[str, Any], proposal: dict[str, Any]) -> bool:
@@ -597,13 +719,13 @@ def _execute_roster_swap(context: dict[str, Any], proposal: dict[str, Any]) -> b
 
 
 def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[dict[str, Any] | None, str]:
-    context = get_active_league_context(session)
-    if not context:
-        return None, "Set an active league context before accepting a trade."
-    league_context_id = str(context.get("league_context_id") or "").strip()
-    context = get_league_context(session, league_context_id)
-    if not context:
-        return None, "Active league context could not be loaded."
+    context, load_err = _load_mutable_context(session)
+    if context is None:
+        return None, load_err
+
+    enabled, gate_msg = trades_enabled(context, session)
+    if not enabled:
+        return None, gate_msg or TRADES_DISABLED_MESSAGE
 
     proposal_id = str(proposal_id or "").strip()
     proposals = _ensure_trade_proposals_workflow(context)
@@ -637,6 +759,11 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
             upsert_league_context(session, context)
         return None, msg
 
+    recipient = str(proposal.get("recipient_team") or "").strip()
+    my_owned = owned_team_for_user(context)
+    if my_owned and recipient != my_owned:
+        return None, f"Only the owner of {recipient} can accept this trade."
+
     if not _execute_roster_swap(context, proposal):
         return None, STALE_TRADE_MESSAGE
 
@@ -644,20 +771,21 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
     proposal["status"] = TRADE_PROPOSAL_STATUS_ACCEPTED
     proposal["updated_at"] = now
     proposal["responded_at"] = now
+    proposal["accepted_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_ACCEPTED)
-    saved = upsert_league_context(session, context)
+    saved = finalize_accepted_trade(session, context)
     return get_trade_proposal(saved, proposal_id), ""
 
 
 def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[dict[str, Any] | None, str]:
-    context = get_active_league_context(session)
-    if not context:
-        return None, "Set an active league context before declining a trade."
-    league_context_id = str(context.get("league_context_id") or "").strip()
-    context = get_league_context(session, league_context_id)
-    if not context:
-        return None, "Active league context could not be loaded."
+    context, load_err = _load_mutable_context(session)
+    if context is None:
+        return None, load_err
+
+    enabled, gate_msg = trades_enabled(context, session)
+    if not enabled:
+        return None, gate_msg or TRADES_DISABLED_MESSAGE
 
     proposal_id = str(proposal_id or "").strip()
     proposals = _ensure_trade_proposals_workflow(context)
@@ -677,9 +805,16 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     proposal["status"] = TRADE_PROPOSAL_STATUS_DECLINED
     proposal["updated_at"] = now
     proposal["responded_at"] = now
+    proposal["declined_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_DECLINED)
     saved = upsert_league_context(session, context)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, saved)
+    except ImportError:
+        pass
     return get_trade_proposal(saved, proposal_id), ""
 
 
@@ -722,6 +857,12 @@ def cancel_trade_proposal(
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_CANCELED)
     saved = upsert_league_context(session, context)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, saved)
+    except ImportError:
+        pass
     return get_trade_proposal(saved, proposal_id), ""
 
 
@@ -806,6 +947,12 @@ def counter_trade_proposal(
     }
     proposals.append(counter)
     saved = upsert_league_context(session, context)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, saved)
+    except ImportError:
+        pass
     return get_trade_proposal(saved, str(counter["proposal_id"])), ""
 
 

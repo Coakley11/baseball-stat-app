@@ -6,7 +6,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fantasy_league_context import get_active_league_context
+from fantasy_league_team_ownership import (
+    TEAM_ASSIGNMENT_PROMPT,
+    TRADES_DISABLED_MESSAGE,
+    assign_my_team,
+    needs_team_assignment,
+    resolve_trade_team_for_session,
+    trades_enabled,
+)
 from fantasy_trade_proposals import (
+    TRADE_PHASE1_SIMPLE,
     TRADE_PROPOSAL_STATUS_ACCEPTED,
     TRADE_PROPOSAL_STATUS_CANCELED,
     TRADE_PROPOSAL_STATUS_COUNTERED,
@@ -22,6 +31,7 @@ from fantasy_trade_proposals import (
     get_display_status,
     get_incoming_trade_proposals,
     get_outgoing_trade_proposals,
+    get_trade_history,
     is_proposal_actionable,
     navigate_to_trade_proposal,
     pending_incoming_count,
@@ -145,34 +155,38 @@ def _render_proposal_card(
         return
 
     if direction == "incoming" and display_status == TRADE_PROPOSAL_STATUS_PENDING:
-        btn_analyze, btn_counter, btn_accept, btn_decline = st.columns(4)
+        if TRADE_PHASE1_SIMPLE:
+            btn_analyze, btn_accept, btn_decline = st.columns(3)
+        else:
+            btn_analyze, btn_counter, btn_accept, btn_decline = st.columns(4)
         with btn_analyze:
             if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_in_{pid}"):
                 navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
                 st.rerun()
-        with btn_counter:
-            counter_shape_error = _validate_ui_trade_shape(current_give_players, current_get_players)
-            if st.button(
-                "Counter Offer",
-                key=f"{key_prefix}_counter_{pid}",
-                disabled=bool(counter_shape_error),
-            ):
-                countered, err = counter_trade_proposal(
-                    session,
-                    pid,
-                    countered_by_team=my_team_name,
-                    counter_gives=current_give_players,
-                    counter_receives=current_get_players,
-                    verdict=verdict,
-                    expires_at=expires_at,
-                )
-                if err:
-                    st.error(err)
-                else:
-                    if persist_fn:
-                        persist_fn(session, st, reason="trade_proposal_countered")
-                    st.success("Counteroffer sent.")
-                    st.rerun()
+        if not TRADE_PHASE1_SIMPLE:
+            with btn_counter:
+                counter_shape_error = _validate_ui_trade_shape(current_give_players, current_get_players)
+                if st.button(
+                    "Counter Offer",
+                    key=f"{key_prefix}_counter_{pid}",
+                    disabled=bool(counter_shape_error),
+                ):
+                    countered, err = counter_trade_proposal(
+                        session,
+                        pid,
+                        countered_by_team=my_team_name,
+                        counter_gives=current_give_players,
+                        counter_receives=current_get_players,
+                        verdict=verdict,
+                        expires_at=expires_at,
+                    )
+                    if err:
+                        st.error(err)
+                    else:
+                        if persist_fn:
+                            persist_fn(session, st, reason="trade_proposal_countered")
+                        st.success("Counteroffer sent.")
+                        st.rerun()
         with btn_accept:
             if st.button("Accept Trade", key=f"{key_prefix}_accept_{pid}", type="primary"):
                 accepted, err = accept_trade_proposal(session, pid)
@@ -193,7 +207,7 @@ def _render_proposal_card(
                         persist_fn(session, st, reason="trade_proposal_declined")
                     st.warning("Trade Declined")
                     st.rerun()
-        if _validate_ui_trade_shape(current_give_players, current_get_players):
+        if not TRADE_PHASE1_SIMPLE and _validate_ui_trade_shape(current_give_players, current_get_players):
             st.caption("To counter, select the players you would give and receive in the analyzer above.")
     elif direction == "outgoing" and display_status == TRADE_PROPOSAL_STATUS_PENDING:
         btn_analyze, btn_cancel = st.columns(2)
@@ -217,6 +231,32 @@ def _render_proposal_card(
             st.rerun()
 
 
+def _render_trade_history(st: Any, context: dict[str, Any], *, key_prefix: str) -> None:
+    history = get_trade_history(context)
+    st.markdown("##### Trade History")
+    sections = (
+        ("Pending Trades", history.get("pending") or []),
+        ("Accepted Trades", history.get("accepted") or []),
+        ("Declined Trades", history.get("declined") or []),
+    )
+    for title, proposals in sections:
+        st.markdown(f"**{title}**")
+        if not proposals:
+            st.caption("None")
+            continue
+        for proposal in proposals[:12]:
+            pid = str(proposal.get("proposal_id") or "")
+            status = get_display_status(context, proposal)
+            proposer = str(proposal.get("proposer_team") or "")
+            recipient = str(proposal.get("recipient_team") or "")
+            gives = _format_players(proposal.get("proposer_gives") or [])
+            receives = _format_players(proposal.get("proposer_receives") or [])
+            st.caption(
+                f"{_status_badge(status)} · {proposer} → {recipient}: {gives} for {receives} "
+                f"({_format_time(str(proposal.get('created_at') or ''))})"
+            )
+
+
 def render_trade_proposals_section(
     st: Any,
     session: dict[str, Any],
@@ -235,16 +275,40 @@ def render_trade_proposals_section(
         st.caption("Set an **Active Draft** in Saved Draft Library to propose league trades.")
         return
 
-    my_team_name = str(my_team or context.get("my_team_name") or "").strip()
+    my_team_name = str(my_team or resolve_trade_team_for_session(context, session) or context.get("my_team_name") or "").strip()
+    team_names = sorted((context.get("league_rosters") or {}).keys())
+
+    if needs_team_assignment(context):
+        st.warning(TEAM_ASSIGNMENT_PROMPT)
+        if team_names:
+            pick = st.selectbox("Which team is yours?", team_names, key=f"{key_prefix}_assign_team")
+            if st.button("Save my team", key=f"{key_prefix}_assign_team_btn"):
+                saved, err = assign_my_team(session, pick)
+                if err:
+                    st.error(err)
+                else:
+                    if persist_fn:
+                        persist_fn(session, st, reason="team_ownership_assigned")
+                    st.success(f"Assigned **{pick}** to your account.")
+                    st.rerun()
+
+    enabled, gate_msg = trades_enabled(context, session)
+    if not enabled:
+        st.info(gate_msg or TRADES_DISABLED_MESSAGE)
+        _render_trade_history(st, context, key_prefix=key_prefix)
+        return
+
     incoming = get_incoming_trade_proposals(session, my_team_name)
     outgoing = get_outgoing_trade_proposals(session, my_team_name)
     pending_n = pending_incoming_count(session, my_team_name)
-    expiry_choice = st.selectbox(
-        "New offer/counter deadline",
-        ["No deadline", "24 hours", "48 hours", "7 days"],
-        key=f"{key_prefix}_expiry_choice",
-    )
-    expires_at = _deadline_for_choice(expiry_choice)
+    expires_at = ""
+    if not TRADE_PHASE1_SIMPLE:
+        expiry_choice = st.selectbox(
+            "New offer/counter deadline",
+            ["No deadline", "24 hours", "48 hours", "7 days"],
+            key=f"{key_prefix}_expiry_choice",
+        )
+        expires_at = _deadline_for_choice(expiry_choice)
 
     st.markdown("##### League Trade Offers")
     if pending_n:
@@ -318,3 +382,5 @@ def render_trade_proposals_section(
                 st.rerun()
     else:
         st.caption("Select players you give up and receive above, then click **Propose this trade**.")
+
+    _render_trade_history(st, context, key_prefix=key_prefix)

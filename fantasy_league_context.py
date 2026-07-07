@@ -852,6 +852,12 @@ def activate_league_context(session: dict[str, Any], league_context_id: str) -> 
         return None
     set_active_league_context(session, league_context_id)
     _sync_legacy_archive_aliases(session, context)
+    try:
+        from fantasy_shared_league_store import sync_context_with_shared_store
+
+        context = sync_context_with_shared_store(session, context)
+    except ImportError:
+        pass
     return context
 
 
@@ -893,6 +899,12 @@ def upsert_league_context(session: dict[str, Any], context: dict[str, Any]) -> d
     meta.setdefault("created_at", now)
     meta["updated_at"] = now
     context["metadata"] = meta
+    try:
+        from fantasy_league_identity import ensure_league_identity
+
+        context = ensure_league_identity(context)
+    except ImportError:
+        pass
     context["schema_version"] = SCHEMA_VERSION
     context["ownership_map"] = build_ownership_map(context)
     contexts = store.setdefault("contexts", {})

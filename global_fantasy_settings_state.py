@@ -195,6 +195,17 @@ def active_fantasy_team_label(session: dict[str, Any]) -> str:
     return f"{team} (Draft Room)"
 
 
+ACTIVE_TEAM_CHANGE_GUIDANCE = (
+    "You can change this in **Draft Room Simulator**, **Live Draft Room**, "
+    "or **Saved Draft Library** (by changing the Active Draft)."
+)
+
+
+def active_fantasy_team_caption(session: dict[str, Any], *, label: str = "Your team") -> str:
+    """Caption explaining the active team label and where to change it."""
+    return f"**{label}:** {active_fantasy_team_label(session)}. {ACTIVE_TEAM_CHANGE_GUIDANCE}"
+
+
 # Dev trace ring buffer key — records each lifecycle step for canonical format/team.
 _FORMAT_TRACE_KEY = "_global_format_trace"
 _FORMAT_TRACE_MAX = 40
