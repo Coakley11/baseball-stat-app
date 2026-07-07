@@ -14,6 +14,7 @@ from active_team_context import (
     apply_position_need_boost,
     player_helps_positions,
     recalculate_pool_ranks,
+    research_mode_signature,
     resolve_active_team_context,
 )
 
@@ -169,6 +170,34 @@ class PositionBoostTests(unittest.TestCase):
         boosted = apply_category_need_boost(df, ["HR", "RBI"], score_col="Score", boost=0.15)
         vals = dict(zip(boosted["Player"], boosted["Score"]))
         self.assertGreater(vals["Slugger"], vals["Speedster"])
+
+
+class ResearchModeSignatureTests(unittest.TestCase):
+    def test_signature_off_when_research_disabled(self) -> None:
+        session = _league_session()
+        session["use_active_league_context_waiver_filter"] = False
+        self.assertEqual(research_mode_signature(session), ("research_off",))
+
+    def test_signature_changes_when_research_enabled(self) -> None:
+        session = _league_session()
+        off_sig = research_mode_signature(session)
+        session["use_active_league_context_waiver_filter"] = True
+        on_sig = research_mode_signature(session)
+        self.assertNotEqual(off_sig, on_sig)
+        self.assertEqual(on_sig[0], "research_on")
+        # Drafted keys from the active league are part of the signature.
+        self.assertIn("aaron judge", on_sig[2])
+
+    def test_signature_tracks_drafted_set_changes(self) -> None:
+        session = _league_session()
+        session["use_active_league_context_waiver_filter"] = True
+        sig_before = research_mode_signature(session)
+        rosters = session["fantasy_league_context_state"]["contexts"]["ctx1"]["league_rosters"]
+        rosters["Daniel"]["players"].append(
+            {"player_name": "Mike Trout", "player_key": "mike trout"}
+        )
+        sig_after = research_mode_signature(session)
+        self.assertNotEqual(sig_before, sig_after)
 
 
 if __name__ == "__main__":

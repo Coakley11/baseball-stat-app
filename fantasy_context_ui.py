@@ -38,6 +38,16 @@ def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
 
 
 def _on_sync_changed(*_args, **_kwargs) -> None:
+    """Persist the Research Mode toggle immediately on change.
+
+    Must import streamlit locally — this module has no top-level ``st`` binding,
+    and a missing import previously made every save silently no-op, so the toggle
+    reverted to its stored value on the next navigation/refresh.
+    """
+    try:
+        import streamlit as st
+    except Exception:
+        return
     try:
         from baseball_persistent_state import force_save_baseball_state
 

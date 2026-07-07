@@ -443,10 +443,14 @@ def apply_research_recommendation_adjustments(
     score_col: str,
     name_col: str = "fullName",
 ) -> pd.DataFrame:
-    """Research Mode pipeline for recommendation tables (not lookup pickers).
+    """Research Mode pipeline for research recommendation tables (not lookup pickers).
 
-    Filters drafted players, dense re-ranks, then applies position + category
-    boosts when the Position Needs sync toggle is enabled.
+    1. Removes players already drafted in the active draft (Research Mode ON).
+    2. Dense re-ranks the remaining available pool.
+    3. Applies **position-need** boosts when the position-needs sync toggle is on.
+
+    Category needs are intentionally NOT applied here — they stay local to the
+    Draft Assistant Simulator, Live Draft Room, and Waiver Wire.
     """
     if df is None or getattr(df, "empty", True):
         return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
@@ -459,11 +463,8 @@ def apply_research_recommendation_adjustments(
             out = recalculate_pool_ranks(out)
         ctx = resolve_active_team_context(session)
         pos_boosts = effective_position_boosts(session, ctx)
-        cat_boosts = effective_category_boosts(session, ctx)
         if pos_boosts and score_col in out.columns:
             out = apply_position_need_boost(out, pos_boosts, score_col=score_col)
-        if cat_boosts and score_col in out.columns:
-            out = apply_category_need_boost(out, cat_boosts, score_col=score_col)
         return out
     except Exception:
         return df
@@ -511,11 +512,17 @@ def recalculate_pool_ranks(df: pd.DataFrame | None) -> pd.DataFrame:
 
 
 def effective_position_boosts(session: dict[str, Any], ctx: ActiveTeamContext) -> list[str]:
-    """Position codes to boost on recommendation pages.
+    """Position codes to boost on synced research pages (draft-time only).
 
-    Honors the Position Needs sync toggle: when it is OFF, returns an empty list so
-    pages behave normally. When ON, returns the active team's open position needs.
+    Position Needs are a **draft-time** feature. This returns needs only when:
+    - the "Use Draft Assistant position needs on other fantasy pages" sync is ON, and
+    - the draft is not complete (after completion, position needs no longer drive
+      recommendations — the team already has all required slots).
+
+    When OFF or draft-complete, returns an empty list so pages show all positions.
     """
+    if getattr(ctx, "draft_complete", False):
+        return []
     try:
         from fantasy_position_sync import is_position_sync_enabled
 
@@ -527,15 +534,37 @@ def effective_position_boosts(session: dict[str, Any], ctx: ActiveTeamContext) -
 
 
 def effective_category_boosts(session: dict[str, Any], ctx: ActiveTeamContext) -> list[str]:
-    """Hitter categories to boost. Mirrors position-needs sync gating."""
-    try:
-        from fantasy_position_sync import is_position_sync_enabled
+    """Hitter categories to boost — LOCAL pages only (not synced research pages).
 
-        if not is_position_sync_enabled(session):
-            return []
-    except Exception:
-        return []
+    Category Needs stay local to Draft Assistant Simulator, Live Draft Room, and
+    Waiver Wire, and remain active **after** the draft completes (a finished roster
+    can still be weak in HR/RBI/SB/AVG). They intentionally do NOT sync to the
+    general research pages, so this ignores the position-needs sync toggle.
+    """
     return list(ctx.category_needs or [])
+
+
+def research_mode_signature(session: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable cache signature reflecting Research Mode state + unavailable players.
+
+    Include this in scoring cache keys so that toggling Research Mode (or changing
+    the active draft) invalidates stale scored pools that still contain drafted
+    players. Without it, a pool scored while Research Mode was OFF could be reused
+    after it turns ON, re-surfacing already-drafted players.
+    """
+    try:
+        from fantasy_waiver_wire import research_league_sync_enabled
+
+        enabled = bool(research_league_sync_enabled(session))
+    except Exception:
+        enabled = False
+    if not enabled:
+        return ("research_off",)
+    try:
+        ctx = resolve_active_team_context(session)
+        return ("research_on", ctx.source, tuple(sorted(ctx.drafted_keys)))
+    except Exception:
+        return ("research_on", "unknown", ())
 
 
 def active_team_context_badge(ctx: ActiveTeamContext) -> str:

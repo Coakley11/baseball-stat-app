@@ -299,6 +299,7 @@ def draft_assistant_scoring_cache_key(
     use_ml_blend: bool,
     ml_blend_weight: float,
     draft_top_n: int = 10,
+    research_sig: Any = None,
 ) -> tuple[Any, ...]:
     slots_key = tuple(sorted((k, int(v or 0)) for k, v in (target_counts or {}).items()))
     lookback = 0
@@ -329,6 +330,7 @@ def draft_assistant_scoring_cache_key(
         int(draft_top_n),
         draft_assistant_pool_revision(session),
         draft_assistant_board_revision(session),
+        research_sig,
     )
 
 

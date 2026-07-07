@@ -18701,6 +18701,12 @@ if active_page == "Draft Assistant Simulator":
         try:
             from live_draft_ui_cache import DA_SCORING_CACHE_KEY, draft_assistant_scoring_cache_key
 
+            try:
+                from active_team_context import research_mode_signature
+
+                _research_sig = research_mode_signature(st.session_state)
+            except ImportError:
+                _research_sig = None
             _da_key = draft_assistant_scoring_cache_key(
                 st.session_state,
                 drafted_names=set(drafted_or_owned_players),
@@ -18713,6 +18719,7 @@ if active_page == "Draft Assistant Simulator":
                 use_ml_blend=use_ml_in_draft,
                 ml_blend_weight=ml_blend_weight,
                 draft_top_n=int(draft_top_n),
+                research_sig=_research_sig,
             )
             _da_entry = st.session_state.get(DA_SCORING_CACHE_KEY)
             if isinstance(_da_entry, dict) and _da_entry.get("key") == _da_key:
