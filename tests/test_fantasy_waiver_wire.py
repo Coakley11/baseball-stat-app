@@ -25,6 +25,7 @@ from fantasy_waiver_wire import (
     WAIVER_PLANNER_DROP_KEY,
     add_pending_move,
     add_pending_move_pair,
+    apply_waiver_move_pairs,
     analyze_current_team_needs,
     analyze_team_needs,
     build_add_recommendation_explanation,
@@ -212,6 +213,54 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]["add_player"], "Mike Trout")
         self.assertEqual(pairs[0]["drop_player"], "Aaron Judge")
+
+    def test_apply_waiver_move_pairs_swaps_roster(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Primary Position": "OF"},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2, "Primary Position": "OF"},
+            ]
+        )
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        stats_pool = pd.DataFrame(
+            [
+                {"Player": "Aaron Judge", "HR": 20},
+                {"Player": "Juan Soto", "HR": 18},
+                {"Player": "Mike Trout", "HR": 25, "Primary Position": "OF"},
+            ]
+        )
+        result = apply_waiver_move_pairs(
+            session,
+            [{"add_player": "Mike Trout", "drop_player": "Aaron Judge"}],
+            stats_pool=stats_pool,
+        )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(int(result.get("applied") or 0), 1)
+        context = get_active_league_context(session)
+        assert context is not None
+        names = rostered_player_names(context)
+        self.assertIn("Mike Trout", names)
+        self.assertNotIn("Aaron Judge", names)
+        self.assertIn("Juan Soto", names)
+
+    def test_apply_waiver_move_pairs_rejects_more_than_two(self) -> None:
+        session: dict = {}
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2},
+            ]
+        )
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        pairs = [
+            {"add_player": "Mike Trout", "drop_player": "Aaron Judge"},
+            {"add_player": "Mookie Betts", "drop_player": "Juan Soto"},
+            {"add_player": "Ronald Acuna", "drop_player": "Aaron Judge"},
+        ]
+        result = apply_waiver_move_pairs(session, pairs)
+        self.assertFalse(result.get("ok"))
+        self.assertTrue(any("2 add/drop pairs" in str(e) for e in result.get("errors") or []))
 
     def test_category_impact_positive_for_hr_upgrade(self) -> None:
         add_row = pd.Series({"HR": 25, "RBI": 70})

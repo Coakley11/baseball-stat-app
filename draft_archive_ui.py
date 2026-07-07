@@ -1489,22 +1489,6 @@ def _render_active_draft_section(
     tool1, tool2, tool3, clear_col = st.columns([1, 1, 1, 1])
     with tool1:
         if st.button(
-            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage Drafts", page_label_fn),
-            key="library_manage_drafts",
-            use_container_width=True,
-        ):
-            schedule_saved_draft_library_navigation(session)
-            st.rerun()
-    with tool2:
-        if st.button(
-            _nav_label(FANTASY_LINEUP_PAGE, "Fantasy Lineup Assistant", page_label_fn),
-            key="library_active_lineup",
-            use_container_width=True,
-        ):
-            if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
-                st.rerun()
-    with tool3:
-        if st.button(
             _nav_label(FANTASY_STANDINGS_PAGE, "Fantasy Standings Tracker", page_label_fn),
             key="library_active_standings",
             use_container_width=True,
@@ -1520,6 +1504,22 @@ def _render_active_draft_section(
                     )
                 except ImportError:
                     pass
+                st.rerun()
+    with tool2:
+        if st.button(
+            _nav_label(FANTASY_LINEUP_PAGE, "Fantasy Lineup Assistant", page_label_fn),
+            key="library_active_lineup",
+            use_container_width=True,
+        ):
+            if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
+                st.rerun()
+    with tool3:
+        if st.button(
+            _nav_label(FANTASY_WAIVER_PAGE, "Waiver Wire / Add-Drop Center", page_label_fn),
+            key="library_active_waiver",
+            use_container_width=True,
+        ):
+            if schedule_fantasy_analysis_navigation(session, FANTASY_WAIVER_PAGE):
                 st.rerun()
     with clear_col:
         if st.button("Clear Active", key="library_clear_active", use_container_width=True):

@@ -19,8 +19,10 @@ from fantasy_league_context import (
 from fantasy_waiver_wire import (
     WAIVER_PLANNER_ADD_KEY,
     WAIVER_PLANNER_DROP_KEY,
+    MAX_WAIVER_MOVE_PAIRS,
     add_pending_move_pair,
     analyze_current_team_needs,
+    apply_waiver_move_pairs,
     build_category_standings_table,
     build_waiver_pool,
     build_weakness_narrative,
@@ -182,18 +184,8 @@ def render_waiver_wire_page(
             return str(page_label_fn(page_key))
         return page_key
 
-    cols = st.columns(2)
-    nav_lineup = cols[0]
-    nav_standings = cols[1] if len(cols) > 1 else cols[0]
-    with nav_lineup:
-        if st.button(_nav_label("Fantasy Lineup Assistant"), key="waiver_open_lineup_btn", use_container_width=True):
-            try:
-                from draft_archive_ui import schedule_fantasy_analysis_navigation, FANTASY_LINEUP_PAGE
-
-                if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
-                    st.rerun()
-            except ImportError:
-                pass
+    cols = st.columns(3)
+    nav_standings, nav_lineup, nav_waiver = cols[0], cols[1], cols[2]
     with nav_standings:
         if st.button(_nav_label("Fantasy Standings Tracker"), key="waiver_open_standings_btn", use_container_width=True):
             try:
@@ -203,6 +195,22 @@ def render_waiver_wire_page(
                     st.rerun()
             except ImportError:
                 pass
+    with nav_lineup:
+        if st.button(_nav_label("Fantasy Lineup Assistant"), key="waiver_open_lineup_btn", use_container_width=True):
+            try:
+                from draft_archive_ui import schedule_fantasy_analysis_navigation, FANTASY_LINEUP_PAGE
+
+                if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
+                    st.rerun()
+            except ImportError:
+                pass
+    with nav_waiver:
+        st.button(
+            _nav_label("Waiver Wire / Add-Drop Center"),
+            key="waiver_open_self_btn",
+            use_container_width=True,
+            disabled=True,
+        )
 
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
@@ -316,6 +324,62 @@ def render_waiver_wire_page(
             st.dataframe(cat_table, use_container_width=True, hide_index=True)
     for line in build_weakness_narrative(needs)[:2]:
         st.caption(line)
+
+    st.markdown("##### Waiver Transaction")
+    st.caption(
+        "**Step 1:** Select waiver players to add (1–2). **Step 2:** Select roster players to drop "
+        "(same count). **Step 3:** Confirm the move. Allowed: Add 1/Drop 1 or Add 2/Drop 2."
+    )
+    add_options = _player_names(waiver_pool)
+    drop_options = _player_names(my_roster)
+    tx_adds = st.multiselect(
+        "Players to ADD (waiver pool)",
+        add_options,
+        key="waiver_tx_add_players",
+        placeholder="Choose 1–2 free agents…",
+        max_selections=MAX_WAIVER_MOVE_PAIRS,
+    )
+    tx_drops = st.multiselect(
+        "Players to DROP (your roster)",
+        drop_options,
+        key="waiver_tx_drop_players",
+        placeholder="Choose 1–2 matching roster drops…",
+        max_selections=MAX_WAIVER_MOVE_PAIRS,
+    )
+    if tx_adds or tx_drops:
+        if len(tx_adds) != len(tx_drops):
+            st.warning(
+                f"Select the same number of adds and drops "
+                f"({len(tx_adds)} add(s) · {len(tx_drops)} drop(s)) — up to {MAX_WAIVER_MOVE_PAIRS} pairs."
+            )
+        elif len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
+            st.warning(
+                f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction (Add 1/Drop 1 or Add 2/Drop 2)."
+            )
+    if st.button("Confirm Waiver Move", key="waiver_confirm_tx_btn", type="primary"):
+        if not tx_adds or not tx_drops:
+            st.warning("Select at least one add and one drop player.")
+        elif len(tx_adds) != len(tx_drops):
+            st.warning("Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).")
+        elif len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
+            st.warning(
+                f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction (Add 1/Drop 1 or Add 2/Drop 2)."
+            )
+        else:
+            pairs = [
+                {"add_player": add_name, "drop_player": drop_name}
+                for add_name, drop_name in zip(tx_adds, tx_drops)
+            ]
+            tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+            if tx_result.get("ok"):
+                applied = int(tx_result.get("applied") or 0)
+                st.success(f"Waiver move confirmed — {applied} pair(s) applied to your roster.")
+                for warn in tx_result.get("position_warnings") or []:
+                    st.warning(str(warn))
+                st.rerun()
+            else:
+                for err in tx_result.get("errors") or []:
+                    st.error(str(err))
 
     st.markdown("##### 1. Top Recommended Adds")
     if adds.empty:
@@ -446,3 +510,15 @@ def render_waiver_wire_page(
             if st.button("Remove pair", key=f"waiver_rm_pair_{i}_btn"):
                 remove_pending_move_pair(session, i)
                 st.rerun()
+        if st.button("Confirm Pending Waiver Moves", key="waiver_confirm_pending_btn", type="primary"):
+            tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+            if tx_result.get("ok"):
+                st.success(
+                    f"Applied {int(tx_result.get('applied') or 0)} pending waiver pair(s) to your roster."
+                )
+                for warn in tx_result.get("position_warnings") or []:
+                    st.warning(str(warn))
+                st.rerun()
+            else:
+                for err in tx_result.get("errors") or []:
+                    st.error(str(err))

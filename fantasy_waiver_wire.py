@@ -90,6 +90,7 @@ RATE_CATEGORIES = frozenset({"AVG", "OBP", "SLG", "OPS", "BA"})
 WAIVER_PENDING_PAIRS_KEY = "_waiver_pending_move_pairs"
 WAIVER_PLANNER_ADD_KEY = "waiver_planner_add_pick"
 WAIVER_PLANNER_DROP_KEY = "waiver_planner_drop_pick"
+MAX_WAIVER_MOVE_PAIRS = 2
 ROTO_STAT_MAP = {
     "HR": ("HR", "proj_HR", "Total HR"),
     "RBI": ("RBI", "proj_RBI", "Total RBI"),
@@ -885,6 +886,212 @@ def compute_add_drop_category_impact(
         elif delta < -threshold:
             impacts.append(f"-{cat}")
     return impacts
+
+
+def _clear_waiver_transaction_caches(session: dict[str, Any]) -> None:
+    try:
+        from fantasy_perf_cache import (
+            LINEUP_DIAGNOSIS_CACHE_KEY,
+            LINEUP_SCORES_CACHE_KEY,
+            STANDINGS_ROSTER_CACHE_KEY,
+            WAIVER_ANALYSIS_CACHE_KEY,
+        )
+
+        session.pop(STANDINGS_ROSTER_CACHE_KEY, None)
+        session.pop(LINEUP_SCORES_CACHE_KEY, None)
+        session.pop(WAIVER_ANALYSIS_CACHE_KEY, None)
+        session.pop(LINEUP_DIAGNOSIS_CACHE_KEY, None)
+    except ImportError:
+        pass
+
+
+def _row_for_player_name(df: pd.DataFrame, name: str) -> pd.Series | None:
+    target = str(name or "").strip()
+    if not target or df is None or getattr(df, "empty", True):
+        return None
+    for col in ("Player", "fullName", "player_name"):
+        if col not in df.columns:
+            continue
+        match = df[df[col].astype(str).str.strip() == target]
+        if not match.empty:
+            return match.iloc[0]
+    return None
+
+
+def _player_entry_from_name(
+    player_name: str,
+    *,
+    team_name: str,
+    stats_pool: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    from fantasy_league_context import _normalize_player_entry
+
+    row = _row_for_player_name(stats_pool, player_name) if stats_pool is not None else None
+    if row is not None:
+        return _normalize_player_entry(row.to_dict(), team_name=team_name)
+    return _normalize_player_entry({"fullName": player_name, "Player": player_name}, team_name=team_name)
+
+
+def apply_waiver_move_pairs(
+    session: dict[str, Any],
+    pairs: list[dict[str, Any]],
+    *,
+    stats_pool: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Execute matched add/drop pairs on the active league context roster."""
+    result: dict[str, Any] = {
+        "ok": False,
+        "applied": 0,
+        "errors": [],
+        "position_warnings": [],
+        "moves": [],
+    }
+    context = get_active_league_context(session)
+    if not context:
+        result["errors"].append("No active league context.")
+        return result
+    if not pairs:
+        result["errors"].append("Select at least one add/drop pair.")
+        return result
+    if len(pairs) > MAX_WAIVER_MOVE_PAIRS:
+        result["errors"].append(
+            f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction (Add 1/Drop 1 or Add 2/Drop 2)."
+        )
+        return result
+
+    my_team = str(context.get("my_team_name") or "").strip()
+    league_rosters = copy.deepcopy(context.get("league_rosters") or {})
+    if not isinstance(league_rosters, dict):
+        league_rosters = {}
+    team_entry = league_rosters.get(my_team)
+    if not isinstance(team_entry, dict):
+        result["errors"].append(f"Roster not found for {my_team or 'your team'}.")
+        return result
+
+    players = [dict(p) for p in (team_entry.get("players") or []) if isinstance(p, dict)]
+    working_context = copy.deepcopy(context)
+    working_context["league_rosters"] = league_rosters
+
+    for pair in pairs:
+        add_name = str(pair.get("add_player") or "").strip()
+        drop_name = str(pair.get("drop_player") or "").strip()
+        if not add_name or not drop_name:
+            result["errors"].append("Each move needs both an add and a drop player.")
+            continue
+        if add_name == drop_name:
+            result["errors"].append(f"Add and drop cannot be the same player: {add_name}")
+            continue
+        rostered = rostered_player_names(working_context)
+        if add_name in rostered:
+            result["errors"].append(f"{add_name} is already rostered.")
+            continue
+        drop_idx = next(
+            (i for i, p in enumerate(players) if str(p.get("player_name") or "").strip() == drop_name),
+            None,
+        )
+        if drop_idx is None:
+            result["errors"].append(f"{drop_name} is not on your roster.")
+            continue
+        new_player = _player_entry_from_name(add_name, team_name=my_team, stats_pool=stats_pool)
+        players.pop(drop_idx)
+        players.append(new_player)
+        team_entry["players"] = players
+        league_rosters[my_team] = team_entry
+        working_context["league_rosters"] = league_rosters
+        working_context["ownership_map"] = build_ownership_map(working_context)
+        result["moves"].append({"add_player": add_name, "drop_player": drop_name})
+        result["applied"] += 1
+
+    if result["applied"] <= 0:
+        return result
+
+    workflow = context.setdefault("workflow", {})
+    if not isinstance(workflow, dict):
+        workflow = {}
+    activity = list(workflow.get(WORKFLOW_KEY_LEAGUE_ACTIVITY) or [])
+    now = _utc_now_iso()
+    for move in result["moves"]:
+        activity.append(
+            {
+                "team_name": my_team,
+                "action": "add",
+                "player_name": move["add_player"],
+                "paired_drop": move["drop_player"],
+                "recorded_at": now,
+            }
+        )
+        activity.append(
+            {
+                "team_name": my_team,
+                "action": "drop",
+                "player_name": move["drop_player"],
+                "paired_add": move["add_player"],
+                "recorded_at": now,
+            }
+        )
+    workflow[WORKFLOW_KEY_LEAGUE_ACTIVITY] = activity[-50:]
+    context["workflow"] = workflow
+    context["league_rosters"] = league_rosters
+    context = upsert_league_context(session, context)
+
+    draft_id = str(context.get("source_draft_id") or "").strip()
+    if not draft_id:
+        try:
+            from draft_archive_state import get_active_draft_archive
+
+            active = get_active_draft_archive(session)
+            if isinstance(active, dict):
+                draft_id = str(active.get("draft_id") or "").strip()
+        except ImportError:
+            pass
+    if draft_id:
+        try:
+            from fantasy_league_context import save_draft_archive_with_league_context
+
+            save_draft_archive_with_league_context(
+                session,
+                draft_id=draft_id,
+                league_rosters=league_rosters,
+                league_context_id=str(context.get("league_context_id") or ""),
+            )
+        except ImportError:
+            pass
+
+    my_roster_df = my_team_roster_dataframe(context)
+    try:
+        from fantasy_league_context import context_has_roster_slots, resolve_context_open_position_needs
+
+        if context_has_roster_slots(context):
+            open_slots = resolve_context_open_position_needs(context, my_roster_df)
+            if open_slots:
+                result["position_warnings"].append(
+                    f"Roster has open required slots: {', '.join(open_slots)}"
+                )
+    except ImportError:
+        pass
+
+    session.pop(WAIVER_PENDING_PAIRS_KEY, None)
+    session.pop(WAIVER_PLANNER_ADD_KEY, None)
+    session.pop(WAIVER_PLANNER_DROP_KEY, None)
+    _clear_waiver_transaction_caches(session)
+
+    try:
+        import streamlit as st
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="waiver_transaction")
+    except Exception:
+        pass
+    try:
+        import streamlit as st
+        from suite_user_persistence import force_autosave
+
+        force_autosave(st, reason="waiver_transaction")
+    except Exception:
+        pass
+
+    result["ok"] = True
+    return result
 
 
 def get_pending_move_pairs(session: dict[str, Any]) -> list[dict[str, Any]]:
