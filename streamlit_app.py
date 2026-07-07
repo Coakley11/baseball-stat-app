@@ -13815,6 +13815,26 @@ except Exception:
 try:
     from live_draft_navigation import render_return_to_draft_sidebar
 
+    try:
+        from draft_ui import PENDING_MANUAL_PICK_KEY, process_pending_manual_draft_pick
+
+        if st.session_state.get(PENDING_MANUAL_PICK_KEY):
+            _early_pending_pick = process_pending_manual_draft_pick(st, st.session_state)
+            if _early_pending_pick.get("should_rerun"):
+                try:
+                    from live_draft_safe_mode import request_live_draft_rerun
+
+                    request_live_draft_rerun(
+                        st,
+                        st.session_state,
+                        "manual_pick_complete",
+                        room=st.session_state.get("live_draft_room"),
+                    )
+                except ImportError:
+                    st.rerun()
+    except ImportError:
+        pass
+
     render_return_to_draft_sidebar(st, st.session_state, active_page=active_page, page_label_fn=page_option_label)
 except Exception:
     try:
@@ -21765,6 +21785,15 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         st.session_state.pop("_live_draft_rec_cache", None)
                     st.success(msg)
+                    try:
+                        from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
+
+                        if is_draft_truly_complete(room):
+                            request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
+                        else:
+                            request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
+                    except ImportError:
+                        st.rerun()
                 else:
                     st.warning(msg)
                 _persist_live_draft_room(room, reason="auto_pick")

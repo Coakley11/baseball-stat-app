@@ -502,6 +502,15 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
                 record_rec_card_diagnostics(session, rec_card_commit_success=True, local_optimistic_update_applied=True)
         except ImportError:
             pass
+        try:
+            from live_draft_safe_mode import is_draft_truly_complete
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(room, dict) and is_draft_truly_complete(room):
+                should_rerun = True
+        except ImportError:
+            pass
 
     return {
         "processed": True,

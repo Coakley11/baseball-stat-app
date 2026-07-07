@@ -467,6 +467,20 @@ def _on_click_navigate_to_page(target_page: str, button_key: str = "", button: s
     schedule_page_navigation(session, target_page)
 
 
+def _on_click_waiver_wire(button_key: str, button: str) -> None:
+    """Streamlit on_click — open Waiver Wire with active league context."""
+    import streamlit as st
+
+    session = st.session_state
+    _record_library_nav_diag(
+        session,
+        button=button,
+        button_key=button_key,
+        target_page=FANTASY_WAIVER_PAGE,
+    )
+    schedule_fantasy_analysis_navigation(session, FANTASY_WAIVER_PAGE)
+
+
 def _on_click_saved_draft_library(return_page: str, button_key: str, button: str) -> None:
     import streamlit as st
 
@@ -789,11 +803,11 @@ def render_active_saved_draft_chip(
             "unless you set one active in the library."
         )
     st.button(
-        _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage Drafts", page_label_fn),
-        key=f"{key_prefix}__manage_saved_drafts_btn",
+        _nav_label(FANTASY_WAIVER_PAGE, "Waiver Wire", page_label_fn),
+        key=f"{key_prefix}__waiver_wire_btn",
         use_container_width=True,
-        on_click=_on_click_saved_draft_library,
-        args=(str(session.get("active_page") or ""), f"{key_prefix}__manage_saved_drafts_btn", "manage_saved_drafts"),
+        on_click=_on_click_waiver_wire,
+        args=(f"{key_prefix}__waiver_wire_btn", "waiver_wire"),
     )
 
 

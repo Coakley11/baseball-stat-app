@@ -35,6 +35,16 @@ def account_summary() -> dict[str, str]:
     }
 
 
+def _import_storage() -> Any:
+    """Command Center monorepo uses ``suite_storage``; standalone apps use Supabase client."""
+    try:
+        import suite_storage as storage
+    except ImportError:
+        import suite_storage_supabase as storage
+
+    return storage
+
+
 def _scoped_storage_app(app: str | None) -> str | None:
     """Map logical app id to workspace-scoped cloud key (Daniel keeps legacy unscoped)."""
     if not app:
@@ -59,11 +69,7 @@ def remember_saved_item(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a song, player, portfolio, simulation, etc. for this account."""
-    try:
-        import suite_storage as storage
-    except ImportError:
-        import suite_storage_supabase as storage
-
+    storage = _import_storage()
     scoped_app = _scoped_storage_app(app) or str(app or "").strip()
     result = storage.upsert_saved_item(
         scoped_app, item_type, item_key, title=title, payload=payload
@@ -75,8 +81,7 @@ def remember_saved_item(
 
 def forget_saved_item(app: str, item_type: str, item_key: str) -> None:
     """Mark saved item invalid — removes it from active dashboard surfaces."""
-    import suite_storage as storage
-
+    storage = _import_storage()
     scoped_app = _scoped_storage_app(app) or str(app or "").strip()
     storage.invalidate_saved_item(scoped_app, item_type, item_key)
     storage.invalidate_resume_item(scoped_app, item_key)
@@ -88,8 +93,7 @@ def load_saved_items(
     item_type: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    import suite_storage as storage
-
+    storage = _import_storage()
     app_key = _scoped_storage_app(app)
     return storage.load_saved_items(app=app_key, item_type=item_type, limit=limit)
 
@@ -100,34 +104,24 @@ def fetch_saved_item(
     item_key: str,
 ) -> dict[str, Any] | None:
     """Load one saved item by exact key under a logical app id."""
-    try:
-        import suite_storage as storage
-    except ImportError:
-        import suite_storage_supabase as storage
-
+    storage = _import_storage()
     return storage.load_saved_item_by_key(item_type, item_key, app=app)
 
 
 def fetch_saved_item_any_app(item_type: str, item_key: str) -> dict[str, Any] | None:
     """Load one saved item by exact key across all app namespaces for this user."""
-    try:
-        import suite_storage as storage
-    except ImportError:
-        import suite_storage_supabase as storage
-
+    storage = _import_storage()
     return storage.load_saved_item_by_key(item_type, item_key, app=None)
 
 
 def save_settings(app: str, settings: dict[str, Any]) -> None:
     """Per-app settings, or ``_global`` for suite-wide preferences."""
-    import suite_storage as storage
-
+    storage = _import_storage()
     storage.save_user_settings(app, settings)
 
 
 def load_settings(app: str = "_global") -> dict[str, Any]:
-    import suite_storage as storage
-
+    storage = _import_storage()
     return storage.load_user_settings(app)
 
 
@@ -138,8 +132,7 @@ def sync_local_state_to_cloud(app: str, state: dict[str, Any]) -> None:
     """
     if not state:
         return
-    import suite_storage as storage
-
+    storage = _import_storage()
     scoped_app = _scoped_storage_app(app) or str(app or "").strip()
     page = str(state.get("page") or "")
     summary = str(state.get("summary") or state.get("label") or "")
