@@ -68,6 +68,31 @@ _KEY_PREFIX_TO_FANTASY_PAGE: dict[str, str] = {
     "waiver_archive": FANTASY_WAIVER_PAGE,
 }
 
+_FANTASY_NAV_KEY_PREFIXES: tuple[str, ...] = (
+    "standings_archive",
+    "lineup_archive",
+    "waiver_archive",
+    "fantasy_nav",
+)
+
+
+def _fantasy_nav_button_widget_key(key_prefix: str, safe_key: str) -> str:
+    """Streamlit button widget key — never write this key into session_state directly."""
+    return f"{key_prefix}_nav_btn_{safe_key}"
+
+
+def purge_fantasy_nav_widget_keys(session: dict[str, Any], *, key_prefix: str = "") -> None:
+    """Drop persisted fantasy nav widget keys so st.button can bind on this rerun."""
+    prefix = str(key_prefix or "").strip()
+    for key in list(session.keys()):
+        if not isinstance(key, str):
+            continue
+        if prefix and not key.startswith(prefix):
+            continue
+        if not any(key.startswith(f"{p}_nav_") for p in _FANTASY_NAV_KEY_PREFIXES):
+            continue
+        session.pop(key, None)
+
 
 def _set_draft_save_ui_flash(session: dict[str, Any], *, level: str, message: str) -> None:
     session[_DRAFT_SAVE_UI_FLASH_KEY] = {"level": str(level or "info"), "message": str(message or "")}
@@ -485,6 +510,7 @@ def render_fantasy_page_navigation(
     targets = FANTASY_NAV_TARGETS.get(page, ())
     if not targets:
         return
+    purge_fantasy_nav_widget_keys(session, key_prefix=key_prefix)
     cols = st.columns(len(targets))
     for col, page_key in zip(cols, targets):
         with col:
@@ -492,7 +518,7 @@ def render_fantasy_page_navigation(
             safe_key = "".join(ch if ch.isalnum() else "_" for ch in page_key)[:48]
             if st.button(
                 label,
-                key=f"{key_prefix}_nav_{safe_key}",
+                key=_fantasy_nav_button_widget_key(key_prefix, safe_key),
                 use_container_width=True,
             ):
                 _navigate_fantasy_page(session, page_key, return_page=page)

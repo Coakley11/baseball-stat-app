@@ -170,6 +170,8 @@ def _is_ephemeral_widget_key(key: str) -> bool:
     k = str(key)
     if k in ("standings_refresh_mlb_stats",):
         return True
+    if any(k.startswith(f"{p}_nav_") for p in ("standings_archive", "lineup_archive", "waiver_archive", "fantasy_nav")):
+        return True
     if k.endswith("_button") or k.endswith("_btn"):
         if k in ("ml_predictions_refresh_button",):
             return False

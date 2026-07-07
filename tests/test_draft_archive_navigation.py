@@ -17,8 +17,12 @@ from draft_archive_ui import (
     LIVE_DRAFT_PAGE,
     SAVED_DRAFT_LIBRARY_PAGE,
     SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY,
+    _fantasy_nav_button_widget_key,
     _nav_label,
     _render_archive_actions,
+    purge_fantasy_nav_widget_keys,
+    render_active_saved_draft_chip,
+    render_fantasy_page_header,
     render_saved_draft_library_page,
     schedule_fantasy_analysis_navigation,
     schedule_page_navigation,
@@ -236,6 +240,89 @@ class SavedDraftLibraryRenderTests(unittest.TestCase):
         st = self._mock_st()
         render_saved_draft_library_page(st, session, page_label_fn=lambda key: key)
         st.markdown.assert_called()
+
+
+class FantasyNavWidgetKeyTests(unittest.TestCase):
+    def _mock_st(self) -> MagicMock:
+        st = MagicMock()
+        st.markdown = MagicMock()
+        st.caption = MagicMock()
+        st.columns = MagicMock(side_effect=lambda n: [MagicMock() for _ in range(n if isinstance(n, int) else len(n))])
+        st.button = MagicMock(return_value=False)
+        st.rerun = MagicMock()
+        return st
+
+    def test_nav_button_keys_use_nav_btn_suffix(self) -> None:
+        key = _fantasy_nav_button_widget_key("standings_archive", "Fantasy_Lineup_Assistant")
+        self.assertEqual(key, "standings_archive_nav_btn_Fantasy_Lineup_Assistant")
+        self.assertIn("_nav_btn_", key)
+
+    def test_purge_fantasy_nav_widget_keys_removes_legacy_and_new_keys(self) -> None:
+        session = {
+            "standings_archive_nav_Fantasy_Lineup_Assistant": True,
+            "standings_archive_nav_btn_Fantasy_Lineup_Assistant": False,
+            "lineup_team": "Daniel",
+        }
+        purge_fantasy_nav_widget_keys(session, key_prefix="standings_archive")
+        self.assertNotIn("standings_archive_nav_Fantasy_Lineup_Assistant", session)
+        self.assertNotIn("standings_archive_nav_btn_Fantasy_Lineup_Assistant", session)
+        self.assertEqual(session["lineup_team"], "Daniel")
+
+    def test_page_state_skips_fantasy_nav_widget_keys(self) -> None:
+        from page_state import _is_ephemeral_widget_key
+
+        self.assertTrue(_is_ephemeral_widget_key("standings_archive_nav_btn_Fantasy_Lineup_Assistant"))
+        self.assertTrue(_is_ephemeral_widget_key("lineup_archive_nav_Fantasy_Standings_Tracker"))
+        self.assertTrue(_is_ephemeral_widget_key("waiver_archive_nav_btn_Waiver_Wire_Add_Drop_Center"))
+
+    def test_render_fantasy_page_header_does_not_persist_nav_button_keys(self) -> None:
+        st = self._mock_st()
+        session: dict = {
+            "standings_archive_nav_Fantasy_Lineup_Assistant": True,
+        }
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        render_fantasy_page_header(
+            st,
+            session,
+            active_page=FANTASY_STANDINGS_PAGE,
+            key_prefix="standings_archive",
+            page_label_fn=lambda key: key,
+        )
+        self.assertNotIn("standings_archive_nav_Fantasy_Lineup_Assistant", session)
+        nav_keys = [call.kwargs.get("key") for call in st.button.call_args_list if call.kwargs.get("key")]
+        self.assertTrue(all("_nav_btn_" in str(key) for key in nav_keys))
+        self.assertFalse(any("_nav_Fantasy_Lineup_Assistant" in str(key) and "_nav_btn_" not in str(key) for key in nav_keys))
+
+    def test_render_active_saved_draft_chip_for_lineup_and_waiver(self) -> None:
+        for prefix in ("lineup_archive", "waiver_archive"):
+            st = self._mock_st()
+            session: dict = {f"{prefix}_nav_Old_Key": True}
+            board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+            save_simulator_league_context(session, board, my_team_name="Daniel")
+            render_active_saved_draft_chip(
+                st,
+                session,
+                key_prefix=prefix,
+                page_label_fn=lambda key: key,
+            )
+            self.assertNotIn(f"{prefix}_nav_Old_Key", session)
+            nav_keys = [call.kwargs.get("key") for call in st.button.call_args_list if call.kwargs.get("key")]
+            self.assertTrue(nav_keys)
+            self.assertTrue(all("_nav_btn_" in str(key) for key in nav_keys))
+
+    def test_save_page_state_excludes_fantasy_nav_widget_keys(self) -> None:
+        from page_state import save_page_state
+
+        session = {
+            "standings_archive_nav_btn_Fantasy_Lineup_Assistant": False,
+            "standings_stats_source": "MLB API",
+        }
+        store: dict = {}
+        save_page_state(session, FANTASY_STANDINGS_PAGE, store)
+        saved = store.get(FANTASY_STANDINGS_PAGE) or {}
+        self.assertIn("standings_stats_source", saved)
+        self.assertNotIn("standings_archive_nav_btn_Fantasy_Lineup_Assistant", saved)
 
 
 if __name__ == "__main__":
