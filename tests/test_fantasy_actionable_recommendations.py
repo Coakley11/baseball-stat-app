@@ -81,6 +81,7 @@ class FantasyActionableRecommendationsTests(unittest.TestCase):
             waiver_pool=pd.DataFrame(),
         )
         self.assertEqual(summary["strengths"], ["HR", "RBI"])
+        self.assertEqual(summary["weaknesses"], ["SB"])
         self.assertEqual(summary["biggest_weakness"], "SB")
         self.assertIn("SB", summary["summary"])
         self.assertNotIn("Biggest strength", summary["summary"])

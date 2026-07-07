@@ -33,6 +33,7 @@ from fantasy_waiver_wire import (
     build_waiver_pool,
     build_weakness_narrative,
     compute_add_drop_category_impact,
+    compute_waiver_transaction_impact,
     filter_waiver_names_by_search,
     format_current_stat_line,
     format_league_rank_lines,
@@ -337,7 +338,7 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         self.assertEqual(str(rec.iloc[0]["Player"]), "Closer Ace")
         explanation = build_add_recommendation_explanation(rec.iloc[0], needs)
         self.assertIn("SV", explanation)
-        self.assertIn("6th of 8 teams", explanation)
+        self.assertIn("Improves", explanation)
 
     def test_add_explanation_clarifies_small_league_rank(self) -> None:
         row = pd.Series({"Player": "Nasim Nuñez", "SB": 12})
@@ -348,8 +349,8 @@ class CurrentStatsWaiverTests(unittest.TestCase):
             "n_teams": 2,
         }
         explanation = build_add_recommendation_explanation(row, needs)
-        self.assertIn("2nd of 2 teams", explanation)
-        self.assertNotIn("Current team rank", explanation)
+        self.assertIn("SB", explanation)
+        self.assertIn("Improves", explanation)
 
     def test_drop_explanation_uses_player_grade_not_current_stats(self) -> None:
         from fantasy_waiver_wire import _build_drop_explanation, recommend_drops_current
@@ -377,6 +378,80 @@ class CurrentStatsWaiverTests(unittest.TestCase):
         why = str(drops.iloc[0]["Why Drop"])
         self.assertNotIn("Weakest current-season", why)
         self.assertNotIn("low current", why)
+
+    def test_recommend_drops_protects_stars(self) -> None:
+        from fantasy_waiver_wire import recommend_drops_current
+
+        roster = pd.DataFrame(
+            [
+                {
+                    "Player": "Ketel Marte",
+                    "Primary Position": "2B",
+                    "Expected Fantasy Value": 0.90,
+                    "HR": 18,
+                    "RBI": 55,
+                    "proj_OPS": 0.920,
+                },
+                {
+                    "Player": "Matt Olson",
+                    "Primary Position": "1B",
+                    "Expected Fantasy Value": 0.88,
+                    "HR": 22,
+                    "RBI": 60,
+                    "proj_OPS": 0.910,
+                },
+                {
+                    "Player": "Deep Bench",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.42,
+                    "HR": 1,
+                    "RBI": 4,
+                    "proj_OPS": 0.620,
+                    "Fantasy Edge": -4,
+                },
+            ]
+        )
+        drops = recommend_drops_current(roster, limit=3)
+        drop_names = drops["Player"].astype(str).tolist()
+        self.assertIn("Deep Bench", drop_names)
+        self.assertNotIn("Ketel Marte", drop_names[:1])
+        self.assertNotIn("Matt Olson", drop_names[:1])
+
+    def test_compute_waiver_transaction_impact(self) -> None:
+        roster = pd.DataFrame(
+            [
+                {"Player": "Drop Me", "Team": "Daniel", "HR": 2, "RBI": 8, "R": 10, "SB": 1, "BA": 0.220},
+                {"Player": "Keep Me", "Team": "Daniel", "HR": 20, "RBI": 60, "R": 55, "SB": 7, "BA": 0.280},
+            ]
+        )
+        pool = pd.DataFrame(
+            [{"Player": "Add Me", "HR": 12, "RBI": 40, "R": 35, "SB": 15, "BA": 0.265}]
+        )
+        needs = {
+            "category_values": {"HR": 22.0, "RBI": 68.0, "R": 65.0, "SB": 8.0, "BA": 0.250},
+            "category_ranks": {"HR": 4, "RBI": 4, "R": 4, "SB": 6, "BA": 5},
+            "team_totals_by_category": {
+                "HR": [30.0, 28.0, 25.0, 22.0],
+                "RBI": [80.0, 75.0, 70.0, 68.0],
+                "R": [78.0, 72.0, 68.0, 65.0],
+                "SB": [20.0, 18.0, 12.0, 8.0],
+                "BA": [0.270, 0.265, 0.258, 0.250],
+            },
+            "available_categories": ["HR", "RBI", "R", "SB", "BA"],
+        }
+        impact = compute_waiver_transaction_impact(
+            roster,
+            ["Add Me"],
+            ["Drop Me"],
+            stats_pool=pool,
+            needs=needs,
+            categories=("HR", "RBI", "R", "SB", "BA"),
+        )
+        rows = impact.get("rows") or []
+        self.assertTrue(rows)
+        sb_row = next(row for row in rows if row["Category"] == "SB")
+        self.assertIn("+", sb_row["Change"])
+        self.assertIn(impact.get("biggest_gain"), {"SB", "RBI", "R", "HR"})
 
     def test_format_category_display_value(self) -> None:
         from fantasy_waiver_wire import format_category_display_value

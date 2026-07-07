@@ -7361,6 +7361,9 @@ def lineup_diagnosis_report(
         "weakest_detail": "",
         "balance_label": "",
         "position_note": "",
+        "weakest_pos": "",
+        "weakest_pos_val": None,
+        "weakest_pos_benchmark": None,
         "dragger_note": "",
         "surplus_note": "",
         "recommendations": [],
@@ -7580,19 +7583,32 @@ def lineup_diagnosis_report(
                         slot_benchmark = float(sum(slot_team_totals) / len(slot_team_totals))
             if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
                 try:
-                    from fantasy_actionable_recommendations import plain_position_weakness_note
+                    from fantasy_actionable_recommendations import build_actionable_position_weakness_note
 
-                    label = "Fantasy slot" if grp_col == "Fantasy slot" else "position"
-                    out["position_note"] = plain_position_weakness_note(
-                        worst_pos, agg[worst_pos], best_pos, agg[best_pos], grp_label=label,
+                    worst_starters = st_df[st_df[grp_col].astype(str) == str(worst_pos)]
+                    out["position_note"] = build_actionable_position_weakness_note(
+                        worst_pos=worst_pos,
+                        worst_val=agg[worst_pos],
+                        starter_df=worst_starters,
+                        waiver_pool=out.get("_waiver_pool_preview"),
+                        needs=out.get("_needs_preview"),
                         benchmark=slot_benchmark,
                     )
                 except ImportError:
-                    label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
-                    out["position_note"] = (
-                        f"**Position weakness ({label}):** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
-                        f"vs **{best_pos}** (**{agg[best_pos]:.0f}**). Consider upgrading that slot via add/drop or trade."
-                    )
+                    try:
+                        from fantasy_actionable_recommendations import plain_position_weakness_note
+
+                        label = "Fantasy slot" if grp_col == "Fantasy slot" else "position"
+                        out["position_note"] = plain_position_weakness_note(
+                            worst_pos, agg[worst_pos], best_pos, agg[best_pos], grp_label=label,
+                            benchmark=slot_benchmark,
+                        )
+                    except ImportError:
+                        label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
+                        out["position_note"] = (
+                            f"**Position weakness ({label}):** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
+                            f"vs **{best_pos}** (**{agg[best_pos]:.0f}**). Consider upgrading that slot via add/drop or trade."
+                        )
             else:
                 out["position_note"] = "**Position shape:** HR+R+RBI is fairly even across starter slots in this set."
 
@@ -22486,7 +22502,13 @@ if active_page == "Fantasy Standings Tracker":
     try:
         from draft_archive_ui import render_active_saved_draft_chip
 
-        render_active_saved_draft_chip(st, st.session_state, key_prefix="standings_archive", page_label_fn=page_option_label)
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="standings_archive",
+            page_label_fn=page_option_label,
+            active_page="Fantasy Standings Tracker",
+        )
     except ImportError:
         pass
 
@@ -23026,7 +23048,13 @@ if active_page == "Fantasy Lineup Assistant":
     try:
         from draft_archive_ui import render_active_saved_draft_chip
 
-        render_active_saved_draft_chip(st, st.session_state, key_prefix="lineup_archive", page_label_fn=page_option_label)
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="lineup_archive",
+            page_label_fn=page_option_label,
+            active_page="Fantasy Lineup Assistant",
+        )
     except ImportError:
         pass
 
@@ -23898,7 +23926,13 @@ if active_page == "Waiver Wire / Add-Drop Center":
     try:
         from draft_archive_ui import render_active_saved_draft_chip
 
-        render_active_saved_draft_chip(st, st.session_state, key_prefix="waiver_archive", page_label_fn=page_option_label)
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="waiver_archive",
+            page_label_fn=page_option_label,
+            active_page="Waiver Wire / Add-Drop Center",
+        )
     except ImportError:
         pass
     _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())

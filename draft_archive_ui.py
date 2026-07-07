@@ -30,6 +30,7 @@ from fantasy_league_context import (
     save_simulator_league_context,
     schedule_active_context_resync,
     stash_league_context_save_flash,
+    upsert_league_context,
 )
 
 SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
@@ -41,6 +42,8 @@ DRAFT_LAB_PAGE = "Draft Lab / Simulation"
 DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
+_RENAME_CONFIRM_PREFIX = "_draft_archive_rename_confirm_"
+MANAGE_SAVED_DRAFTS_LABEL = "Manage Saved Drafts"
 _DRAFT_SAVE_UI_FLASH_KEY = "_draft_save_ui_flash"
 _DRAFT_ANALYZE_UI_FLASH_KEY = "_draft_analyze_ui_flash"
 _PAGE_ICONS: dict[str, str] = {
@@ -51,6 +54,18 @@ _PAGE_ICONS: dict[str, str] = {
     LIVE_DRAFT_PAGE: "📡",
     DRAFT_LAB_PAGE: "🧪",
     DRAFT_SIMULATOR_PAGE: "🧾",
+}
+
+FANTASY_NAV_TARGETS: dict[str, tuple[str, ...]] = {
+    FANTASY_STANDINGS_PAGE: (SAVED_DRAFT_LIBRARY_PAGE, FANTASY_LINEUP_PAGE),
+    FANTASY_LINEUP_PAGE: (SAVED_DRAFT_LIBRARY_PAGE, FANTASY_STANDINGS_PAGE, FANTASY_WAIVER_PAGE),
+    FANTASY_WAIVER_PAGE: (SAVED_DRAFT_LIBRARY_PAGE, FANTASY_STANDINGS_PAGE, FANTASY_LINEUP_PAGE),
+}
+
+_KEY_PREFIX_TO_FANTASY_PAGE: dict[str, str] = {
+    "standings_archive": FANTASY_STANDINGS_PAGE,
+    "lineup_archive": FANTASY_LINEUP_PAGE,
+    "waiver_archive": FANTASY_WAIVER_PAGE,
 }
 
 
@@ -418,6 +433,125 @@ def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
     return f"{icon} {text}".strip()
 
 
+def _fantasy_nav_button_label(page_key: str, page_label_fn=None) -> str:
+    if page_key == SAVED_DRAFT_LIBRARY_PAGE:
+        return _nav_label(SAVED_DRAFT_LIBRARY_PAGE, MANAGE_SAVED_DRAFTS_LABEL, page_label_fn)
+    return _page_label(page_key, page_label_fn)
+
+
+def _navigate_fantasy_page(session: dict[str, Any], target_page: str, *, return_page: str = "") -> bool:
+    target = str(target_page or "").strip()
+    if not target:
+        return False
+    if target == SAVED_DRAFT_LIBRARY_PAGE:
+        schedule_active_context_resync(session)
+        schedule_saved_draft_library_navigation(session, return_page=return_page)
+        return True
+    return schedule_fantasy_analysis_navigation(session, target)
+
+
+def render_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
+    """Single Active Draft block — draft name once, metadata line below."""
+    active = get_active_draft_archive(session)
+    active_context = get_active_league_context(session)
+    st.markdown("##### Active Draft")
+    if not active:
+        st.caption(
+            "No active saved draft selected. Standings and Lineup use the **Draft Room** board "
+            "unless you set one active in the library."
+        )
+        return
+    context = active_context or get_league_context_for_archive(session, active)
+    title = str(active.get("draft_name") or (context or {}).get("display_name") or "Saved Draft")
+    team_count = league_team_count(context, active)
+    st.markdown(f"**{title}**")
+    st.caption(
+        f"{team_count} Team{'s' if team_count != 1 else ''} · "
+        f"{draft_type_display(active)} · "
+        f"Updated {format_archive_modified(active)}"
+    )
+
+
+def render_fantasy_page_navigation(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    active_page: str,
+    key_prefix: str = "fantasy_nav",
+    page_label_fn=None,
+) -> None:
+    """Consistent fantasy workflow nav — excludes the current page."""
+    page = str(active_page or "").strip()
+    targets = FANTASY_NAV_TARGETS.get(page, ())
+    if not targets:
+        return
+    cols = st.columns(len(targets))
+    for col, page_key in zip(cols, targets):
+        with col:
+            label = _fantasy_nav_button_label(page_key, page_label_fn)
+            safe_key = "".join(ch if ch.isalnum() else "_" for ch in page_key)[:48]
+            if st.button(
+                label,
+                key=f"{key_prefix}_nav_{safe_key}",
+                use_container_width=True,
+            ):
+                _navigate_fantasy_page(session, page_key, return_page=page)
+                st.rerun()
+
+
+def render_fantasy_page_header(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    active_page: str,
+    key_prefix: str = "fantasy_nav",
+    page_label_fn=None,
+) -> None:
+    """Active draft summary + cross-page navigation for fantasy workflow pages."""
+    render_active_draft_summary(st, session)
+    render_fantasy_page_navigation(
+        st,
+        session,
+        active_page=active_page,
+        key_prefix=key_prefix,
+        page_label_fn=page_label_fn,
+    )
+
+
+def _sync_draft_rename_to_league_context(
+    session: dict[str, Any],
+    draft_id: str,
+    new_name: str,
+) -> None:
+    """Update linked league context display name when a draft is renamed."""
+    entry = get_draft_archive(session, draft_id)
+    if not isinstance(entry, dict):
+        return
+    context = get_league_context_for_archive(session, entry)
+    if not isinstance(context, dict):
+        return
+    context["display_name"] = str(new_name or "").strip()
+    upsert_league_context(session, context)
+
+
+def _rename_archive_entry(
+    st: Any,
+    session: dict[str, Any],
+    draft_id: str,
+    new_name: str,
+) -> bool:
+    label = str(new_name or "").strip()
+    if not label:
+        return False
+    updated = rename_draft_archive(session, draft_id, label)
+    if not updated:
+        return False
+    _sync_draft_rename_to_league_context(session, draft_id, label)
+    _clear_fantasy_caches_on_archive_change(session)
+    _persist_archive(session, st, reason="draft_archive_renamed")
+    return True
+
+
 def _workflow_counts(session: dict[str, Any]) -> dict[str, int]:
     try:
         from workflow_persist_guard import workflow_counts_from_session
@@ -778,37 +912,20 @@ def render_active_saved_draft_chip(
     *,
     key_prefix: str = "active_draft",
     page_label_fn=None,
+    active_page: str = "",
 ) -> None:
-    """Compact active-draft indicator with link to the library."""
-    active = get_active_draft_archive(session)
-    active_context = get_active_league_context(session)
-    if active:
-        context = active_context or get_league_context_for_archive(session, active)
-        team_count = league_team_count(context, active)
-        league_line = _format_league_matchup_label(context, active)
-        title = str(
-            active.get("draft_name")
-            or (context.get("display_name") if context else "")
-            or "Saved Draft"
+    """Fantasy workflow header — active draft summary + page navigation."""
+    page = str(active_page or _KEY_PREFIX_TO_FANTASY_PAGE.get(key_prefix) or "").strip()
+    if page:
+        render_fantasy_page_header(
+            st,
+            session,
+            active_page=page,
+            key_prefix=key_prefix,
+            page_label_fn=page_label_fn,
         )
-        st.markdown(f"**Active Draft**\n{title} — {league_line}")
-        st.caption(
-            f"{draft_type_display(active)} | {team_count} Team{'s' if team_count != 1 else ''} | "
-            f"{archive_my_team_player_count(active, context=context)} Players · "
-            f"Updated {format_archive_modified(active)}"
-        )
-    else:
-        st.caption(
-            "No active saved draft selected. Standings and Lineup use the **Draft Room** board "
-            "unless you set one active in the library."
-        )
-    st.button(
-        _nav_label(FANTASY_WAIVER_PAGE, "Waiver Wire", page_label_fn),
-        key=f"{key_prefix}__waiver_wire_btn",
-        use_container_width=True,
-        on_click=_on_click_waiver_wire,
-        args=(f"{key_prefix}__waiver_wire_btn", "waiver_wire"),
-    )
+        return
+    render_active_draft_summary(st, session)
 
 
 def _render_post_save_actions(
@@ -1494,16 +1611,6 @@ def _render_active_draft_section(
             use_container_width=True,
         ):
             if schedule_fantasy_analysis_navigation(session, FANTASY_STANDINGS_PAGE):
-                try:
-                    from baseball_archive_activity import log_saved_draft_activated
-
-                    log_saved_draft_activated(
-                        active,
-                        session=session,
-                        target_page=FANTASY_STANDINGS_PAGE,
-                    )
-                except ImportError:
-                    pass
                 st.rerun()
     with tool2:
         if st.button(
@@ -1560,7 +1667,7 @@ def _render_archive_actions(
     if is_active:
         return
 
-    btn1, btn2 = st.columns(2)
+    btn1, btn2, btn3 = st.columns(3)
     with btn1:
         if st.button(
             "Set Active",
@@ -1570,9 +1677,34 @@ def _render_archive_actions(
         ):
             _activate_archive_entry(st, session, draft_id)
     with btn2:
+        if st.button("Rename Draft", key=f"archive_rename_{draft_id}", use_container_width=True):
+            session[_RENAME_CONFIRM_PREFIX + draft_id] = True
+            st.rerun()
+    with btn3:
         if st.button("Delete", key=f"archive_del_{draft_id}", use_container_width=True):
             session[_DELETE_CONFIRM_PREFIX + draft_id] = True
             st.rerun()
+
+    if session.get(_RENAME_CONFIRM_PREFIX + draft_id):
+        current_name = str(entry.get("draft_name") or "Saved Draft")
+        new_name = st.text_input(
+            "New draft name",
+            value=current_name,
+            key=f"archive_rename_input_{draft_id}",
+        )
+        rename_col, cancel_col = st.columns(2)
+        with rename_col:
+            if st.button("Save rename", key=f"archive_rename_confirm_{draft_id}", type="primary"):
+                if _rename_archive_entry(st, session, draft_id, new_name):
+                    session.pop(_RENAME_CONFIRM_PREFIX + draft_id, None)
+                    st.toast(f"Renamed draft to: {new_name.strip()}")
+                    st.rerun()
+                else:
+                    st.error("Could not rename draft — name cannot be empty.")
+        with cancel_col:
+            if st.button("Cancel rename", key=f"archive_rename_cancel_{draft_id}"):
+                session.pop(_RENAME_CONFIRM_PREFIX + draft_id, None)
+                st.rerun()
 
     if session.get(_DELETE_CONFIRM_PREFIX + draft_id):
         st.warning(f"Delete **{entry.get('draft_name')}**? Other saved drafts will be kept.")

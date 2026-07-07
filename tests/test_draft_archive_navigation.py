@@ -11,7 +11,9 @@ import pandas as pd
 from draft_archive_ui import (
     DRAFT_SIMULATOR_PAGE,
     FANTASY_LINEUP_PAGE,
+    FANTASY_NAV_TARGETS,
     FANTASY_STANDINGS_PAGE,
+    FANTASY_WAIVER_PAGE,
     LIVE_DRAFT_PAGE,
     SAVED_DRAFT_LIBRARY_PAGE,
     SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY,
@@ -23,7 +25,7 @@ from draft_archive_ui import (
     schedule_return_from_saved_draft_library,
     schedule_saved_draft_library_navigation,
 )
-from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, save_simulator_team_archive
+from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, get_draft_archive, save_simulator_team_archive
 from fantasy_league_context import (
     PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY,
     apply_pending_league_context_activation,
@@ -156,6 +158,22 @@ class SavedDraftLibraryRenderTests(unittest.TestCase):
         self.assertIn("Draft Room Simulator", sim)
         self.assertTrue(live.startswith("📡"))
         self.assertTrue(sim.startswith("🧾"))
+
+    def test_fantasy_nav_targets_exclude_current_page(self) -> None:
+        self.assertEqual(
+            FANTASY_NAV_TARGETS[FANTASY_STANDINGS_PAGE],
+            (SAVED_DRAFT_LIBRARY_PAGE, FANTASY_LINEUP_PAGE),
+        )
+        self.assertEqual(
+            FANTASY_NAV_TARGETS[FANTASY_LINEUP_PAGE],
+            (SAVED_DRAFT_LIBRARY_PAGE, FANTASY_STANDINGS_PAGE, FANTASY_WAIVER_PAGE),
+        )
+        self.assertEqual(
+            FANTASY_NAV_TARGETS[FANTASY_WAIVER_PAGE],
+            (SAVED_DRAFT_LIBRARY_PAGE, FANTASY_STANDINGS_PAGE, FANTASY_LINEUP_PAGE),
+        )
+        self.assertNotIn(FANTASY_WAIVER_PAGE, FANTASY_NAV_TARGETS[FANTASY_STANDINGS_PAGE])
+        self.assertNotIn(FANTASY_WAIVER_PAGE, FANTASY_NAV_TARGETS[FANTASY_WAIVER_PAGE])
 
     def test_render_saved_draft_library_page_with_archive(self) -> None:
         session: dict = {"room_your_team": "Daniel", "draft_shared_settings": {}}

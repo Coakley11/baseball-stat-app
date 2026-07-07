@@ -27,6 +27,7 @@ from fantasy_waiver_wire import (
     build_waiver_pool,
     build_weakness_narrative,
     compute_add_drop_category_impact,
+    compute_waiver_transaction_impact,
     filter_waiver_names_by_search,
     format_current_stat_line,
     format_projected_stat_line,
@@ -117,15 +118,66 @@ def _render_add_player_card(
     key_prefix: str,
     on_plan_add,
 ) -> None:
-    why = str(row.get("Why Add") or "")
-    _render_player_card(
-        st,
-        row,
-        key_prefix=key_prefix,
-        button_label="Plan Add",
-        on_click=on_plan_add,
-        subtitle=why,
-    )
+    why = str(row.get("Why Add") or "").strip()
+    use_photos, get_photo, render_photo = _photo_helpers(st)
+    name = str(row.get("Player") or row.get("fullName") or "")
+    team = str(row.get("MLB Team") or row.get("Team") or "—")
+    pos = str(row.get("Primary Position") or row.get("Position") or "—")
+
+    with st.container(border=True):
+        c_photo, c_body, c_action = st.columns([1, 3, 1])
+        with c_photo:
+            if use_photos and get_photo and render_photo:
+                photo_info = get_photo(full_name=name, row=row, use_api=True)
+                st.markdown(render_photo(photo_info, alt=name), unsafe_allow_html=True)
+        with c_body:
+            st.markdown(f"**{name}**")
+            st.caption(f"{team} · {pos}")
+            if why:
+                st.markdown(f"**Why Recommended:** {why}")
+            current_line = format_current_stat_line(row)
+            if current_line:
+                st.caption(f"Current: {current_line}")
+        with c_action:
+            safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
+            if st.button("Plan Add", key=f"{key_prefix}_{safe_key}", use_container_width=True):
+                on_plan_add(name)
+                st.rerun()
+
+
+def _render_drop_player_card(
+    st: Any,
+    row: pd.Series,
+    *,
+    key_prefix: str,
+    button_label: str,
+    on_click,
+) -> None:
+    why = str(row.get("Why Drop") or "").strip()
+    use_photos, get_photo, render_photo = _photo_helpers(st)
+    name = str(row.get("Player") or row.get("fullName") or "")
+    team = str(row.get("MLB Team") or row.get("Team") or "—")
+    pos = str(row.get("Primary Position") or row.get("Position") or "—")
+
+    with st.container(border=True):
+        c_photo, c_body, c_action = st.columns([1, 3, 1])
+        with c_photo:
+            if use_photos and get_photo and render_photo:
+                photo_info = get_photo(full_name=name, row=row, use_api=True)
+                st.markdown(render_photo(photo_info, alt=name), unsafe_allow_html=True)
+        with c_body:
+            st.markdown(f"**{name}**")
+            st.caption(f"{team} · {pos}")
+            if why:
+                st.markdown(f"**Why Drop:** {why}")
+            current_line = format_current_stat_line(row)
+            if current_line:
+                st.caption(f"Current: {current_line}")
+        with c_action:
+            safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
+            if st.button(button_label, key=f"{key_prefix}_{safe_key}", use_container_width=True):
+                on_click(name)
+                st.rerun()
 
 
 def _on_waiver_filter_changed() -> None:
@@ -166,51 +218,22 @@ def render_waiver_wire_page(
         )
         return
 
-    st.caption(
-        f"**{context.get('display_name', 'Active League')}** · "
-        f"{league_context_coverage_badge(context)} · "
-        f"{league_context_type_badge(context)} · "
-        f"My team: **{context.get('my_team_name', '—')}**"
-    )
     try:
-        from fantasy_context_ui import render_active_league_context_badge
+        from draft_archive_ui import FANTASY_WAIVER_PAGE, render_fantasy_page_header
 
-        render_active_league_context_badge(st, session)
+        render_fantasy_page_header(
+            st,
+            session,
+            active_page=FANTASY_WAIVER_PAGE,
+            key_prefix="waiver_archive",
+            page_label_fn=page_label_fn,
+        )
     except ImportError:
         pass
 
-    def _nav_label(page_key: str) -> str:
-        if callable(page_label_fn):
-            return str(page_label_fn(page_key))
-        return page_key
-
-    cols = st.columns(3)
-    nav_standings, nav_lineup, nav_waiver = cols[0], cols[1], cols[2]
-    with nav_standings:
-        if st.button(_nav_label("Fantasy Standings Tracker"), key="waiver_open_standings_btn", use_container_width=True):
-            try:
-                from draft_archive_ui import schedule_fantasy_analysis_navigation, FANTASY_STANDINGS_PAGE
-
-                if schedule_fantasy_analysis_navigation(session, FANTASY_STANDINGS_PAGE):
-                    st.rerun()
-            except ImportError:
-                pass
-    with nav_lineup:
-        if st.button(_nav_label("Fantasy Lineup Assistant"), key="waiver_open_lineup_btn", use_container_width=True):
-            try:
-                from draft_archive_ui import schedule_fantasy_analysis_navigation, FANTASY_LINEUP_PAGE
-
-                if schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE):
-                    st.rerun()
-            except ImportError:
-                pass
-    with nav_waiver:
-        st.button(
-            _nav_label("Waiver Wire / Add-Drop Center"),
-            key="waiver_open_self_btn",
-            use_container_width=True,
-            disabled=True,
-        )
+    my_team = str(context.get("my_team_name") or "").strip()
+    if my_team:
+        st.caption(f"My team: **{my_team}**")
 
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
@@ -356,6 +379,33 @@ def render_waiver_wire_page(
             st.warning(
                 f"At most {MAX_WAIVER_MOVE_PAIRS} add/drop pairs per transaction (Add 1/Drop 1 or Add 2/Drop 2)."
             )
+    if (
+        tx_adds
+        and tx_drops
+        and len(tx_adds) == len(tx_drops)
+        and len(tx_adds) <= MAX_WAIVER_MOVE_PAIRS
+    ):
+        impact = compute_waiver_transaction_impact(
+            my_roster,
+            list(tx_adds),
+            list(tx_drops),
+            stats_pool=stats_pool,
+            needs=needs,
+            categories=tuple(waiver_cats),
+        )
+        impact_rows = impact.get("rows") or []
+        if impact_rows:
+            st.markdown("**Projected impact**")
+            st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
+            gain = str(impact.get("biggest_gain") or "").strip()
+            loss = str(impact.get("biggest_loss") or "").strip()
+            bits: list[str] = []
+            if gain:
+                bits.append(f"Biggest gain: **{gain}**")
+            if loss:
+                bits.append(f"Biggest loss: **{loss}**")
+            if bits:
+                st.caption(" · ".join(bits))
     if st.button("Confirm Waiver Move", key="waiver_confirm_tx_btn", type="primary"):
         if not tx_adds or not tx_drops:
             st.warning("Select at least one add and one drop player.")
@@ -372,8 +422,11 @@ def render_waiver_wire_page(
             ]
             tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
             if tx_result.get("ok"):
-                applied = int(tx_result.get("applied") or 0)
-                st.success(f"Waiver move confirmed — {applied} pair(s) applied to your roster.")
+                added = ", ".join(tx_result.get("added_players") or [])
+                dropped = ", ".join(tx_result.get("dropped_players") or [])
+                st.success(
+                    f"**Added:** {added or '—'}\n\n**Dropped:** {dropped or '—'}"
+                )
                 for warn in tx_result.get("position_warnings") or []:
                     st.warning(str(warn))
                 st.rerun()
@@ -405,13 +458,12 @@ def render_waiver_wire_page(
         for i, (_, row) in enumerate(drops.head(15).iterrows()):
             name = str(row.get("Player") or row.get("fullName") or "")
             label = "Selected To Drop" if name == selected_drop else "Plan Drop"
-            _render_player_card(
+            _render_drop_player_card(
                 st,
                 row,
                 key_prefix=f"waiver_drop_{i}",
                 button_label=label,
                 on_click=_select_drop,
-                subtitle=str(row.get("Why Drop") or ""),
             )
 
     st.markdown("##### 3. Available Player Pool")
@@ -513,8 +565,10 @@ def render_waiver_wire_page(
         if st.button("Confirm Pending Waiver Moves", key="waiver_confirm_pending_btn", type="primary"):
             tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
             if tx_result.get("ok"):
+                added = ", ".join(tx_result.get("added_players") or [])
+                dropped = ", ".join(tx_result.get("dropped_players") or [])
                 st.success(
-                    f"Applied {int(tx_result.get('applied') or 0)} pending waiver pair(s) to your roster."
+                    f"**Added:** {added or '—'}\n\n**Dropped:** {dropped or '—'}"
                 )
                 for warn in tx_result.get("position_warnings") or []:
                     st.warning(str(warn))

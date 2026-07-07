@@ -572,25 +572,24 @@ def format_projected_stat_line(row: pd.Series) -> str:
 
 
 def build_add_recommendation_explanation(player_row: pd.Series, needs: dict[str, Any]) -> str:
-    """Waiver-specific explanation with clear category-weakness context."""
+    """Waiver-specific explanation — emphasize why the add helps a team weakness."""
     targets = list(needs.get("targets") or needs.get("weaknesses") or [])
-    ranks = needs.get("category_ranks") or {}
-    n_teams = int(needs.get("n_teams") or 0)
     helped = categories_helped_by_player(player_row, targets)
-    if helped and ranks:
-        primary = helped[0]
-        rank = ranks.get(primary)
-        if rank and n_teams > 1:
-            rank_phrase = format_weakness_rank_phrase(primary, int(rank), n_teams=n_teams)
-            if primary == "SB":
-                return f"Adds speed to improve your lowest-ranked category ({rank_phrase})."
-            return f"Addresses your weakest category ({rank_phrase})."
-        if primary == "SB":
-            return "Targets stolen bases, currently your biggest category weakness."
-        return f"Helps address your {primary} deficit."
+    pos = str(player_row.get("Primary Position") or player_row.get("Position") or "").strip()
     if helped:
-        return f"Strengthens **{', '.join(helped[:3])}** based on projected production."
-    return "Solid upgrade for roster balance."
+        primary = helped[0]
+        if primary == "SB":
+            return "Improves SB weakness"
+        if primary in ("AVG", "OBP", "OPS"):
+            return f"Improves {primary}"
+        if primary in ("HR", "RBI", "R"):
+            return f"Improves {primary} production"
+        if pos:
+            return f"Improves {pos} depth"
+        return f"Improves {primary} weakness"
+    if pos:
+        return f"Improves {pos} depth"
+    return "Solid upgrade for roster balance"
 
 
 def build_weakness_narrative(needs: dict[str, Any]) -> list[str]:
@@ -780,6 +779,54 @@ def recommend_adds_current(
     return top.drop(columns=["_waiver_add_score"], errors="ignore")
 
 
+def _is_roster_star(player_row: pd.Series, roster: pd.DataFrame) -> bool:
+    """Protect elite roster anchors from drop recommendations."""
+    grade = _player_grade_display(player_row)
+    grades = [_player_grade_display(row) for _, row in roster.iterrows()]
+    grades = [g for g in grades if g is not None]
+    if grade is not None and grades:
+        sorted_grades = sorted(grades, reverse=True)
+        top_cutoff = sorted_grades[max(0, min(len(sorted_grades) - 1, max(1, len(sorted_grades) // 4)))]
+        if grade >= top_cutoff:
+            return True
+    for cat in ("HR", "RBI", "R", "SB"):
+        col = _resolve_current_stat_col(roster, cat)
+        if not col or col not in player_row.index:
+            continue
+        val = pd.to_numeric(player_row.get(col), errors="coerce")
+        roster_vals = pd.to_numeric(roster[col], errors="coerce")
+        if pd.notna(val) and roster_vals.notna().any() and float(val) >= float(roster_vals.max()) * 0.88:
+            return True
+    if "proj_OPS" in player_row.index and "proj_OPS" in roster.columns:
+        val = pd.to_numeric(player_row.get("proj_OPS"), errors="coerce")
+        med = pd.to_numeric(roster["proj_OPS"], errors="coerce").median()
+        if pd.notna(val) and pd.notna(med) and float(val) >= float(med) * 1.12:
+            return True
+    return False
+
+
+def _is_bench_or_replacement(player_row: pd.Series, roster: pd.DataFrame) -> bool:
+    """Prefer dropping bench-level or blocked roster spots."""
+    scores = _drop_value_score(roster)
+    if scores.empty:
+        return False
+    player_score = float(_drop_value_score(player_row.to_frame().T).iloc[0])
+    if player_score <= float(scores.quantile(0.35)):
+        return True
+    pos = str(player_row.get("Primary Position") or player_row.get("position") or "").strip()
+    if pos and "Primary Position" in roster.columns:
+        same = roster[roster["Primary Position"].astype(str) == pos]
+        if len(same) > 1:
+            pos_scores = _drop_value_score(same)
+            if player_score <= float(pos_scores.min()) * 1.05:
+                return True
+    if "Fantasy Edge" in player_row.index:
+        edge = pd.to_numeric(player_row.get("Fantasy Edge"), errors="coerce")
+        if pd.notna(edge) and float(edge) < -2:
+            return True
+    return False
+
+
 def recommend_drops_current(
     my_roster: pd.DataFrame,
     *,
@@ -790,18 +837,37 @@ def recommend_drops_current(
         return pd.DataFrame()
     roster = my_roster.copy()
     roster["_drop_score"] = _drop_value_score(roster)
-    roster = roster.sort_values("_drop_score", ascending=True)
-    top = roster.head(limit).copy()
+    roster["_is_star"] = [_is_roster_star(row, my_roster) for _, row in roster.iterrows()]
+    roster["_is_bench"] = [_is_bench_or_replacement(row, my_roster) for _, row in roster.iterrows()]
+    candidates = roster[~roster["_is_star"]].copy()
+    if candidates.empty:
+        candidates = roster.copy()
+    candidates["_bench_sort"] = (~candidates["_is_bench"]).astype(int)
+    candidates = candidates.sort_values(["_bench_sort", "_drop_score"], ascending=[True, True])
+    top = candidates.head(limit).copy()
     top["Why Drop"] = [_build_drop_explanation(row, my_roster) for _, row in top.iterrows()]
     name_col = _player_name_col(top)
     if name_col != "Player":
         top["Player"] = top[name_col]
-    return top.drop(columns=["_drop_score"], errors="ignore")
+    return top.drop(columns=["_drop_score", "_is_star", "_is_bench", "_bench_sort"], errors="ignore")
 
 
 def _build_drop_explanation(player_row: pd.Series, my_roster: pd.DataFrame) -> str:
-    """One concise fantasy-analyst drop reason — Player Grade and ROS first, not current stats."""
+    """One concise fantasy-analyst drop reason — prefer bench, injured, replacement-level."""
     pos = str(player_row.get("Primary Position") or player_row.get("position") or "").strip()
+    for col in ("Injury", "injury_status", "Status", "IL Status"):
+        if col in player_row.index:
+            status = str(player_row.get(col) or "").strip().lower()
+            if status and any(token in status for token in ("il", "inj", "out", "dtd", "disabled")):
+                return "Injured or limited — lowest immediate roster value."
+
+    if _is_bench_or_replacement(player_row, my_roster):
+        if pos and "Primary Position" in my_roster.columns:
+            same = my_roster[my_roster["Primary Position"].astype(str) == pos]
+            if len(same) > 1:
+                return f"Bench-level {pos} with stronger starters available."
+        return "Replacement-level bench option."
+
     grade = _player_grade_display(player_row)
     med_grade = _roster_grade_median(my_roster)
 
@@ -886,6 +952,139 @@ def compute_add_drop_category_impact(
         elif delta < -threshold:
             impacts.append(f"-{cat}")
     return impacts
+
+
+def _apply_names_to_roster_df(
+    roster: pd.DataFrame,
+    add_names: list[str],
+    drop_names: list[str],
+    *,
+    stats_pool: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    if roster is None or getattr(roster, "empty", True):
+        return pd.DataFrame()
+    working = roster.copy()
+    name_col = _player_name_col(working)
+    if not name_col:
+        return working
+    drop_set = {str(n).strip() for n in drop_names if str(n).strip()}
+    working = working[~working[name_col].astype(str).str.strip().isin(drop_set)]
+    add_rows: list[dict[str, Any]] = []
+    for add_name in add_names:
+        add_name = str(add_name or "").strip()
+        if not add_name:
+            continue
+        row = _row_for_player_name(stats_pool, add_name) if stats_pool is not None else None
+        if row is not None:
+            add_rows.append(row.to_dict())
+        else:
+            add_rows.append({"Player": add_name, "fullName": add_name})
+    if add_rows:
+        working = pd.concat([working, pd.DataFrame(add_rows)], ignore_index=True)
+    return working
+
+
+def _team_category_totals(
+    roster: pd.DataFrame,
+    categories: tuple[str, ...] | None = None,
+) -> dict[str, float]:
+    cats = list(categories or WAIVER_HITTER_CATEGORIES)
+    totals: dict[str, float] = {}
+    if roster is None or getattr(roster, "empty", True):
+        return totals
+    for cat in cats:
+        val = _category_value_for_team(roster, cat)
+        if val is not None:
+            totals[cat] = float(val)
+    return totals
+
+
+def _format_impact_delta(cat: str, before: float, after: float) -> str:
+    delta = after - before
+    if cat in RATE_CATEGORIES:
+        sign = "+" if delta >= 0 else ""
+        return f"{sign}{delta:.3f}"
+    if cat in LOWER_IS_BETTER_CATEGORIES:
+        sign = "+" if delta <= 0 else ""
+        return f"{sign}{delta:.2f}"
+    sign = "+" if delta >= 0 else ""
+    return f"{sign}{int(round(delta))}"
+
+
+def compute_waiver_transaction_impact(
+    my_roster: pd.DataFrame,
+    add_names: list[str],
+    drop_names: list[str],
+    *,
+    stats_pool: pd.DataFrame | None = None,
+    needs: dict[str, Any] | None = None,
+    categories: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Project category totals and ranks before/after a waiver transaction."""
+    needs = needs or {}
+    cats = tuple(categories or needs.get("available_categories") or WAIVER_HITTER_CATEGORIES)
+    before_totals = dict(needs.get("category_values") or _team_category_totals(my_roster, cats))
+    after_roster = _apply_names_to_roster_df(my_roster, add_names, drop_names, stats_pool=stats_pool)
+    after_totals = _team_category_totals(after_roster, cats)
+    ranks_before = dict(needs.get("category_ranks") or {})
+    league_values = dict(needs.get("team_totals_by_category") or {})
+
+    rows: list[dict[str, str]] = []
+    gain_scores: list[tuple[str, float]] = []
+    loss_scores: list[tuple[str, float]] = []
+
+    for cat in cats:
+        before = before_totals.get(cat)
+        after = after_totals.get(cat)
+        if before is None and after is None:
+            continue
+        before_val = float(before if before is not None else 0.0)
+        after_val = float(after if after is not None else 0.0)
+        delta = after_val - before_val
+        lower_is_better = cat in LOWER_IS_BETTER_CATEGORIES
+        rank_before = ranks_before.get(cat)
+        rank_after = rank_before
+        values = list(league_values.get(cat) or [])
+        if values:
+            if lower_is_better:
+                rank_after = sum(1 for v in values if v < after_val) + 1
+            else:
+                rank_after = sum(1 for v in values if v > after_val) + 1
+        rows.append(
+            {
+                "Category": cat,
+                "Before": format_category_display_value(cat, before_val),
+                "After": format_category_display_value(cat, after_val),
+                "Change": _format_impact_delta(cat, before_val, after_val),
+                "Rank Before": str(rank_before) if rank_before else "—",
+                "Rank After": str(rank_after) if rank_after else "—",
+            }
+        )
+        if lower_is_better:
+            score = before_val - after_val
+        else:
+            score = delta
+        if score > 0.001 or (cat in RATE_CATEGORIES and score > 0.0005):
+            gain_scores.append((cat, score))
+        elif score < -0.001 or (cat in RATE_CATEGORIES and score < -0.0005):
+            loss_scores.append((cat, abs(score)))
+
+    biggest_gain = ""
+    if gain_scores:
+        gain_scores.sort(key=lambda item: item[1], reverse=True)
+        biggest_gain = gain_scores[0][0]
+    biggest_loss = ""
+    if loss_scores:
+        loss_scores.sort(key=lambda item: item[1], reverse=True)
+        biggest_loss = loss_scores[0][0]
+
+    return {
+        "rows": rows,
+        "before_totals": before_totals,
+        "after_totals": after_totals,
+        "biggest_gain": biggest_gain,
+        "biggest_loss": biggest_loss,
+    }
 
 
 def _clear_waiver_transaction_caches(session: dict[str, Any]) -> None:

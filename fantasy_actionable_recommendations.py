@@ -296,8 +296,8 @@ def build_condensed_team_summary(
     league_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Single team summary block — strengths, biggest weakness, one sentence, waiver cards."""
-    strengths = list(strong_cats or [])[:4]
-    weaknesses = list(weak_cats or [])
+    strengths = list(strong_cats or [])[:3]
+    weaknesses = list(weak_cats or [])[:3]
     biggest_weak = weaknesses[0] if weaknesses else ""
     if strengths and biggest_weak:
         summary = (
@@ -305,13 +305,14 @@ def build_condensed_team_summary(
             f"biggest improvement opportunity at **{biggest_weak}**."
         )
     elif strengths:
-        summary = f"Leads with **{', '.join(strengths[:2])}**."
+        summary = f"Leads with **{', '.join(strengths[:3])}**."
     elif biggest_weak:
-        summary = f"Biggest improvement opportunity: **{biggest_weak}**."
+        summary = f"Biggest improvement opportunities: **{', '.join(weaknesses[:3])}**."
     else:
         summary = "Balanced roster profile across categories."
     return {
         "strengths": strengths,
+        "weaknesses": weaknesses,
         "biggest_weakness": biggest_weak,
         "summary": summary,
         "waiver_targets": build_waiver_strategy_cards(
@@ -326,14 +327,20 @@ def build_condensed_team_summary(
 def render_condensed_team_summary(st: Any, summary: dict[str, Any]) -> None:
     """Render Team Summary panel without repeating category findings."""
     strengths = list(summary.get("strengths") or [])
-    biggest_weak = str(summary.get("biggest_weakness") or "").strip()
+    weaknesses = list(summary.get("weaknesses") or [])
+    if not weaknesses:
+        biggest_weak = str(summary.get("biggest_weakness") or "").strip()
+        if biggest_weak:
+            weaknesses = [biggest_weak]
     st.markdown("##### Team Summary")
     if strengths:
-        st.markdown("**Strengths:**")
-        for cat in strengths:
+        st.markdown("**Top Strengths:**")
+        for cat in strengths[:3]:
             st.markdown(f"• **{cat}**")
-    if biggest_weak:
-        st.markdown(f"**Biggest weakness:**\n• **{biggest_weak}**")
+    if weaknesses:
+        st.markdown("**Top Weaknesses:**")
+        for cat in weaknesses[:3]:
+            st.markdown(f"• **{cat}**")
     summary_line = str(summary.get("summary") or "").strip()
     if summary_line:
         st.caption(summary_line)
@@ -570,6 +577,57 @@ def plain_position_weakness_note(
         f"**{worst_pos}**\n\n"
         f"Current contribution: **{worst_val:.0f}** HR+R+RBI{bench_line}\n\n"
         f"Recommendation: Upgrade **{worst_pos}** through the waiver wire or a trade."
+    )
+
+
+def build_actionable_position_weakness_note(
+    *,
+    worst_pos: str,
+    worst_val: float,
+    starter_df: pd.DataFrame | None = None,
+    waiver_pool: pd.DataFrame | None = None,
+    needs: dict[str, Any] | None = None,
+    league_context: dict[str, Any] | None = None,
+    benchmark: float | None = None,
+) -> str:
+    """Actionable weakest-position card with starter name and best waiver upgrade."""
+    starter_name = "—"
+    if starter_df is not None and not getattr(starter_df, "empty", True):
+        name_col = "Player" if "Player" in starter_df.columns else "fullName"
+        if name_col in starter_df.columns:
+            names = starter_df[name_col].dropna().astype(str).tolist()
+            if names:
+                starter_name = names[0]
+    upgrade_name = "—"
+    gain_bits: list[str] = []
+    if waiver_pool is not None and not getattr(waiver_pool, "empty", True):
+        try:
+            from fantasy_waiver_wire import recommend_adds_current
+
+            adds = recommend_adds_current(waiver_pool, needs or {}, limit=5)
+            if not adds.empty:
+                pos_col = "Primary Position" if "Primary Position" in adds.columns else "Position"
+                if pos_col in adds.columns:
+                    pos_match = adds[adds[pos_col].astype(str).str.contains(str(worst_pos), case=False, na=False)]
+                    pick = pos_match.iloc[0] if not pos_match.empty else adds.iloc[0]
+                else:
+                    pick = adds.iloc[0]
+                upgrade_name = str(pick.get("Player") or pick.get("fullName") or "—")
+                for col, label in (("HR", "+HR"), ("RBI", "+RBI"), ("AVG", "+AVG"), ("R", "+R"), ("SB", "+SB")):
+                    if col in pick.index and pd.notna(pick.get(col)):
+                        if col == "AVG":
+                            gain_bits.append(f"{label} {float(pick.get(col)):.3f}")
+                        else:
+                            gain_bits.append(f"{label} {int(round(float(pick.get(col))))}")
+        except ImportError:
+            pass
+    bench_line = f"\n\nLeague benchmark: **{benchmark:.0f}**" if benchmark is not None else ""
+    gain_line = " · ".join(gain_bits[:3]) if gain_bits else "Check waiver pool for upgrades"
+    return (
+        f"**Weakest Position:** {worst_pos}\n\n"
+        f"**Current Starter:** {starter_name}\n\n"
+        f"**Best Available Upgrade:** {upgrade_name}\n\n"
+        f"**Estimated Gain:** {gain_line}{bench_line}"
     )
 
 
