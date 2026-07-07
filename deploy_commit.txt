@@ -1,3 +1,2 @@
-3dcbfad  # auto-generated; Streamlit Cloud reads this at runtime; rebuild 2026-07-07
-
+b40ecaa  # auto-generated; Streamlit Cloud reads this at runtime
 branch: dev
