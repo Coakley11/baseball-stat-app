@@ -444,3 +444,132 @@ def format_open_position_needs(gaps: list[str] | None) -> str:
         if s and s not in seen:
             seen.append(s)
     return ", ".join(seen) if seen else "All Positions"
+
+
+def config_includes_pitcher_slots(config: dict[str, Any] | None) -> bool:
+    """True when the host draft config includes at least one pitcher slot."""
+    return int(get_required_position_counts(config).get("P") or 0) > 0
+
+
+def session_includes_pitcher_slots(session: dict[str, Any] | None) -> bool:
+    """True when live setup or resolved config includes pitcher slots."""
+    cfg = resolve_draft_slot_config_from_session(session)
+    if cfg.get("slots"):
+        return config_includes_pitcher_slots(cfg)
+    return session_slot_count(session, "live_slot_p", 0) > 0
+
+
+def _resolve_format_includes_pitching(
+    *,
+    context: dict[str, Any] | None = None,
+    fantasy_format: str | None = None,
+) -> bool:
+    fmt = str(fantasy_format or "").strip()
+    if not fmt and context:
+        fmt = str(context.get("fantasy_format") or "5x5 Roto").strip()
+    if not fmt:
+        fmt = "5x5 Roto"
+    try:
+        from fantasy_waiver_wire import fantasy_format_includes_pitching
+
+        return fantasy_format_includes_pitching(fmt, context)
+    except ImportError:
+        return False
+
+
+def _resolve_has_pitcher_slots(
+    *,
+    config: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> bool:
+    if config is not None and dict(config or {}).get("slots"):
+        return config_includes_pitcher_slots(config)
+    if context is not None:
+        try:
+            from fantasy_league_context import resolve_context_draft_slot_config
+
+            ctx_cfg = resolve_context_draft_slot_config(context)
+            if ctx_cfg.get("slots"):
+                return config_includes_pitcher_slots(ctx_cfg)
+        except Exception:
+            pass
+    if session is not None:
+        return session_includes_pitcher_slots(session)
+    return False
+
+
+def league_allows_pitcher_recommendations(
+    *,
+    config: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    fantasy_format: str | None = None,
+) -> bool:
+    """Pitchers belong in recommendation pools only when P slots exist and format includes pitching."""
+    return bool(
+        _resolve_has_pitcher_slots(config=config, session=session, context=context)
+        and _resolve_format_includes_pitching(context=context, fantasy_format=fantasy_format)
+    )
+
+
+def _player_has_hitter_eligibility(row: pd.Series) -> bool:
+    """True when a row can fill a non-pitcher fantasy slot (keeps two-way hitters like Ohtani)."""
+    primary = str(row.get("Primary Position") or row.get("Position") or "").upper().strip()
+    if primary and primary not in ("P", "SP", "RP"):
+        return True
+    elig = str(row.get("Eligible Positions") or row.get("Eligibility") or row.get("Positions") or "")
+    for tok in re.split(r"[,/\+]", elig.upper()):
+        token = tok.strip()
+        if token and token not in ("P", "SP", "RP"):
+            return True
+    ab = pd.to_numeric(row.get("AB"), errors="coerce")
+    if pd.notna(ab) and float(ab) > 0:
+        return True
+    for col in ("HR", "RBI", "R", "H", "proj_HR", "proj_RBI", "proj_R"):
+        if col in row.index:
+            val = pd.to_numeric(row.get(col), errors="coerce")
+            if pd.notna(val) and float(val) > 0:
+                return True
+    return False
+
+
+def _is_pitcher_only_player_row(row: pd.Series) -> bool:
+    """True for SP/RP/P-only rows that should be hard-excluded from hitter-only pools."""
+    if _player_has_hitter_eligibility(row):
+        return False
+    pos = str(row.get("Primary Position") or row.get("Position") or "").upper().strip()
+    if pos in ("P", "SP", "RP"):
+        return True
+    for col in ("W", "SV", "ERA", "WHIP"):
+        if col in row.index and pd.notna(row.get(col)):
+            if col in ("ERA", "WHIP") or float(pd.to_numeric(row.get(col), errors="coerce") or 0) > 0:
+                return True
+    return False
+
+
+def _is_pitcher_player_row(row: pd.Series) -> bool:
+    """Backward-compatible alias — prefer _is_pitcher_only_player_row."""
+    return _is_pitcher_only_player_row(row)
+
+
+def exclude_pitchers_when_no_pitcher_slots(
+    df: pd.DataFrame | None,
+    *,
+    config: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    fantasy_format: str | None = None,
+) -> pd.DataFrame:
+    """Hard-drop SP/RP/P-only rows when includes_pitching is false or pitcher slots are zero."""
+    if df is None or getattr(df, "empty", True):
+        return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    if league_allows_pitcher_recommendations(
+        config=config,
+        session=session,
+        context=context,
+        fantasy_format=fantasy_format,
+    ):
+        return df.copy()
+    mask = ~df.apply(_is_pitcher_only_player_row, axis=1)
+    return df.loc[mask].copy()

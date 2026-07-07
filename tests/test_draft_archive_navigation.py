@@ -19,6 +19,7 @@ from draft_archive_ui import (
     SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY,
     _fantasy_nav_button_widget_key,
     _nav_label,
+    _on_click_navigate_to_page,
     _render_archive_actions,
     purge_fantasy_nav_widget_keys,
     render_active_saved_draft_chip,

@@ -754,6 +754,34 @@ def render_waiver_wire_page(
         on_click=_on_confirm_waiver_move_click,
     )
 
+    try:
+        from fantasy_waiver_wire import rostered_player_names
+        from recommendation_player_diagnostics import (
+            diagnose_recommendation_players,
+            format_recommendation_diagnostic_line,
+        )
+
+        _waiver_rostered = rostered_player_names(context)
+        _waiver_diag_rows = diagnose_recommendation_players(
+            source_pool=stats_pool,
+            available_pool=waiver_pool,
+            recs=adds,
+            drafted_or_rostered=_waiver_rostered,
+            needed_positions=None,
+            rec_limit=15,
+            context=context,
+            value_col="Expected Fantasy Value" if "Expected Fantasy Value" in stats_pool.columns else "HR",
+            rank_col="Expected Fantasy Value" if "Expected Fantasy Value" in (waiver_pool.columns if not waiver_pool.empty else []) else "HR",
+        )
+        with st.expander("Top player recommendation diagnostics", expanded=False):
+            st.caption(
+                "Why top raw-value players (including Ohtani) are available, ranked, or excluded from waiver adds."
+            )
+            for _diag_row in _waiver_diag_rows:
+                st.markdown(format_recommendation_diagnostic_line(_diag_row))
+    except ImportError:
+        pass
+
     st.markdown("##### 1. Top Recommended Adds")
     if adds.empty:
         st.info("No waiver recommendations yet — load current-season stats and check your league context.")

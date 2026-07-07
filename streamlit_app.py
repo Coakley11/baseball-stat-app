@@ -8697,6 +8697,11 @@ def build_draft_lab_player_pool(yearly_source, market_df, draft_window=3, fantas
         hitter_mask = ohtani_mask & (safe_numeric_series(pool, "AB", 0) > 0)
         pool.loc[hitter_mask, "Primary Position"] = "DH"
         pool.loc[ohtani_mask, "Eligible Positions"] = "DH/UTIL/P"
+        if "Expected Fantasy Value" in pool.columns:
+            pool.loc[hitter_mask, "Expected Fantasy Value"] = np.maximum(
+                pd.to_numeric(pool.loc[hitter_mask, "Expected Fantasy Value"], errors="coerce").fillna(0),
+                0.95,
+            )
     pool["Player Key"] = pool["fullName"].apply(normalize_player_name_for_merge)
     if market_df is not None and not market_df.empty:
         market_cols = [c for c in ["Player Key", "ADP", "ADP Rank", "FantasyPros Rank", "Expert Avg Rank", "Expert Std Dev", "Market Rank"] if c in market_df.columns]
@@ -18557,6 +18562,7 @@ if active_page == "Draft Assistant Simulator":
         # Automatically infer position needs from host-configured draft slots (live draft room).
         roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
         try:
+            from draft_context import resolve_draft_context
             from draft_ami_helpers import infer_draft_assistant_needs
             from live_draft_roster_slots import (
                 get_required_position_counts,
@@ -18565,6 +18571,7 @@ if active_page == "Draft Assistant Simulator":
             )
 
             _slot_cfg = resolve_draft_slot_config_from_session(st.session_state)
+            _draft_ctx = resolve_draft_context(st.session_state)
             target_position_counts = (
                 get_required_position_counts(_slot_cfg)
                 if _slot_cfg.get("slots")
@@ -18580,9 +18587,11 @@ if active_page == "Draft Assistant Simulator":
                 draft_df,
                 draft_format=draft_format,
                 config=_slot_cfg,
+                draft_complete=bool(_draft_ctx.draft_complete),
             )
         except ImportError:
             _slot_cfg = {}
+            _draft_ctx = None
             target_position_counts = {}
             position_options = []
             auto_needed_positions = []
@@ -18629,14 +18638,40 @@ if active_page == "Draft Assistant Simulator":
             r1, r2 = st.columns(2)
             with r1:
                 _pos_options = position_options
-                _pos_default = [p for p in auto_needed_positions if p in _pos_options]
-                needed_positions = st.multiselect(
-                    "Positions to prioritize",
-                    _pos_options,
-                    default=_pos_default,
-                    key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(_pos_default)}",
-                    help="Auto-filled from host draft slots and your roster.",
-                )
+                try:
+                    from fantasy_position_sync import (
+                        DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                        on_draft_assistant_position_needs_changed,
+                        prepare_draft_assistant_position_needs,
+                    )
+
+                    prepare_draft_assistant_position_needs(
+                        st.session_state,
+                        auto_needed_positions,
+                        position_options=_pos_options,
+                        widget_key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                    )
+
+                    def _draft_assistant_position_needs_changed(*_args, **_kwargs):
+                        on_draft_assistant_position_needs_changed(st.session_state)
+                        _draft_assistant_settings_changed()
+
+                    needed_positions = st.multiselect(
+                        "Positions to prioritize",
+                        _pos_options,
+                        key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                        help="Auto-filled from host draft slots and your roster. Override temporarily during a live draft.",
+                        on_change=_draft_assistant_position_needs_changed,
+                    )
+                except ImportError:
+                    _pos_default = [p for p in auto_needed_positions if p in _pos_options]
+                    needed_positions = st.multiselect(
+                        "Positions to prioritize",
+                        _pos_options,
+                        default=_pos_default,
+                        key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(_pos_default)}",
+                        help="Auto-filled from host draft slots and your roster.",
+                    )
             with r2:
                 category_options_auto = list(cat_defs_auto.keys())
                 category_needs = st.multiselect(
@@ -18675,8 +18710,9 @@ if active_page == "Draft Assistant Simulator":
             "Use Draft Assistant position needs on other fantasy pages",
             key="sync_draft_assistant_position_needs",
             help=(
-                "When checked, ML Predictions, Sleepers, Trends, and Valuation default to these "
-                "position needs on load/refresh. Temporary overrides on those pages reset after refresh."
+                "When checked, ML Predictions, Sleepers, Trends, and Valuation follow these position "
+                "needs. During a live draft they auto-sync to team needs unless you override; overrides "
+                "propagate across synced pages. After draft completion, defaults return to All Positions."
             ),
             on_change=_draft_assistant_position_sync_changed,
         )
@@ -18684,6 +18720,17 @@ if active_page == "Draft Assistant Simulator":
         # Remove every player who is already off the board:
         # players on other rosters + players on my roster.
         available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
+        try:
+            from live_draft_roster_slots import exclude_pitchers_when_no_pitcher_slots
+
+            available = exclude_pitchers_when_no_pitcher_slots(
+                available,
+                config=_slot_cfg,
+                session=st.session_state,
+                fantasy_format=draft_format,
+            )
+        except ImportError:
+            pass
         try:
             from fantasy_waiver_wire import filter_unrostered_players
 
@@ -18827,6 +18874,7 @@ if active_page == "Draft Assistant Simulator":
         from recommendation_dedupe import (
             add_recommendation_rank_column,
             collect_featured_player_ids,
+            ensure_top_raw_value_in_recommendations,
             recommendation_player_id,
             remaining_recommendations,
         )
@@ -18835,6 +18883,37 @@ if active_page == "Draft Assistant Simulator":
         best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
         featured_ids = collect_featured_player_ids(best_fit, best_value)
         recs = recs_ranked.head(int(draft_top_n)).copy()
+        recs = ensure_top_raw_value_in_recommendations(
+            recs,
+            available,
+            limit=int(draft_top_n),
+        )
+        try:
+            from recommendation_player_diagnostics import (
+                diagnose_recommendation_players,
+                format_recommendation_diagnostic_line,
+            )
+
+            _rec_diag_rows = diagnose_recommendation_players(
+                source_pool=draft_df,
+                available_pool=available,
+                recs=recs,
+                drafted_or_rostered=set(drafted_or_owned_players),
+                needed_positions=needed_positions,
+                cache_hit=bool(_da_scored),
+                rec_limit=int(draft_top_n),
+                config=_slot_cfg,
+                session=st.session_state,
+                fantasy_format=draft_format,
+            )
+            with st.expander("Top player recommendation diagnostics", expanded=False):
+                st.caption(
+                    "Why top raw-value players (including Ohtani) are available, ranked, or excluded from the table."
+                )
+                for _diag_row in _rec_diag_rows:
+                    st.markdown(format_recommendation_diagnostic_line(_diag_row))
+        except ImportError:
+            pass
         recs_for_ami = remaining_recommendations(recs_ranked, featured_ids, limit=int(draft_top_n))
         if "Why this pick" not in recs.columns and not recs.empty:
             try:

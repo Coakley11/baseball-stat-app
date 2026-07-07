@@ -75,6 +75,31 @@ class TestTeamPropagation(unittest.TestCase):
         self.assertEqual(active_fantasy_team_source(session), "draft_room")
         self.assertEqual(get_active_fantasy_team(session), "Daniel")
 
+    def test_active_draft_overrides_draft_room_team_and_label(self) -> None:
+        from fantasy_league_context import FANTASY_LEAGUE_CONTEXT_STATE_KEY
+        from global_fantasy_settings_state import (
+            active_fantasy_team_label,
+            active_fantasy_team_source,
+            get_active_fantasy_team,
+        )
+
+        session = {
+            "room_your_team": "Simulator Team",
+            FANTASY_LEAGUE_CONTEXT_STATE_KEY: {
+                "active_league_context_id": "ctx1",
+                "contexts": {
+                    "ctx1": {
+                        "league_context_id": "ctx1",
+                        "my_team_name": "Daniel",
+                        "display_name": "Practice Draft",
+                    }
+                },
+            },
+        }
+        self.assertEqual(active_fantasy_team_source(session), "active_draft")
+        self.assertEqual(get_active_fantasy_team(session), "Daniel")
+        self.assertEqual(active_fantasy_team_label(session), "Daniel (Practice Draft)")
+
     def test_active_team_from_live_draft_when_in_progress(self) -> None:
         from global_fantasy_settings_state import active_fantasy_team_source, get_active_fantasy_team
 

@@ -73,7 +73,9 @@ def global_settings_snapshot_excluded_keys() -> frozenset[str]:
 
 
 def active_fantasy_team_source(session: dict[str, Any]) -> str:
-    """Which subsystem owns the active fantasy team: live draft or draft room."""
+    """Which subsystem owns the active fantasy team."""
+    if _active_league_team_info(session):
+        return "active_draft"
     try:
         from live_draft_state import has_active_live_draft
 
@@ -89,15 +91,53 @@ def active_fantasy_team_source(session: dict[str, Any]) -> str:
     return "draft_room"
 
 
+def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
+    """Return (team_name, draft_label) when an Active Draft/league context is set."""
+    try:
+        from fantasy_league_context import get_active_league_context
+
+        ctx = get_active_league_context(session)
+    except ImportError:
+        return None
+    if not isinstance(ctx, dict):
+        return None
+    team = str(ctx.get("my_team_name") or "").strip()
+    if not team:
+        return None
+    label = str(ctx.get("display_name") or ctx.get("draft_name") or "").strip()
+    if not label:
+        try:
+            from draft_archive_state import get_active_draft_archive
+
+            archive = get_active_draft_archive(session)
+            if isinstance(archive, dict):
+                label = str(archive.get("draft_name") or "").strip()
+        except ImportError:
+            pass
+    return team, label or "Active Draft"
+
+
 def get_active_fantasy_team(session: dict[str, Any]) -> str:
     """Single active fantasy team for the whole app."""
     try:
         from draft_room_context import is_multiplayer_draft_active, recommendation_team
 
         if is_multiplayer_draft_active(session):
-            return str(recommendation_team(session) or "").strip()
+            mp_team = str(recommendation_team(session) or "").strip()
+            if not mp_team:
+                try:
+                    from draft_room_participant_state import ACTIVE_PARTICIPANT_TEAM_KEY
+
+                    mp_team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
+                except ImportError:
+                    pass
+            if mp_team:
+                return mp_team
     except ImportError:
         pass
+    league_info = _active_league_team_info(session)
+    if league_info:
+        return league_info[0]
     if active_fantasy_team_source(session) == "live_draft":
         room = session.get("live_draft_room")
         if isinstance(room, dict):
@@ -114,6 +154,15 @@ def get_active_fantasy_team(session: dict[str, Any]) -> str:
 
 def sync_active_fantasy_team_to_canonical(session: dict[str, Any]) -> str:
     """Push the active source-of-truth team into ``room_your_team`` and aliases."""
+    league_info = _active_league_team_info(session)
+    if league_info:
+        team = league_info[0]
+        session[GLOBAL_TEAM_KEY] = team
+        _mirror_globals_to_aliases(session)
+        session["_active_fantasy_team_source"] = "active_draft"
+        propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
+        session["_global_settings_last_propagated"] = propagated
+        return team
     team = get_active_fantasy_team(session)
     if team:
         session[GLOBAL_TEAM_KEY] = team
@@ -135,6 +184,10 @@ def active_fantasy_team_label(session: dict[str, Any]) -> str:
             return f"{team} (Shared Draft Room)"
     except ImportError:
         pass
+    league_info = _active_league_team_info(session)
+    if league_info:
+        team, label = league_info
+        return f"{team} ({label})"
     team = get_active_fantasy_team(session) or "—"
     src = active_fantasy_team_source(session)
     if src == "live_draft":

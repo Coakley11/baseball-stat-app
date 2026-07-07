@@ -241,9 +241,21 @@ def build_waiver_pool(
         if rostered_keys:
             pool["_waiver_key"] = pool[name_col].astype(str).str.strip().str.lower()
             pool = pool[~pool["_waiver_key"].isin(rostered_keys)].drop(columns=["_waiver_key"])
+        pool = _exclude_pitchers_for_context(pool, context)
         return pool.reset_index(drop=True)
     pool = pool[~pool[name_col].astype(str).str.strip().isin(rostered)].reset_index(drop=True)
+    pool = _exclude_pitchers_for_context(pool, context)
     return pool
+
+
+def _exclude_pitchers_for_context(pool: pd.DataFrame, context: dict[str, Any] | None) -> pd.DataFrame:
+    try:
+        from live_draft_roster_slots import exclude_pitchers_when_no_pitcher_slots
+
+        fmt = str((context or {}).get("fantasy_format") or "5x5 Roto")
+        return exclude_pitchers_when_no_pitcher_slots(pool, context=context, fantasy_format=fmt)
+    except ImportError:
+        return pool
 
 
 def filter_unrostered_players(
@@ -932,8 +944,22 @@ _WAIVER_POSITION_ALIASES: dict[str, tuple[str, ...]] = {
 }
 # Missing positions dominate; weak/thin positions rank up; filled positions get little weight.
 _POSITION_WEIGHT_MISSING = 1.0
-_POSITION_WEIGHT_THIN = 0.6
-_POSITION_WEIGHT_FILLED = 0.12
+_POSITION_WEIGHT_THIN = 0.55
+_POSITION_WEIGHT_FILLED = 0.05
+_CATEGORY_WEIGHTS = {
+    "HR": 1.0,
+    "RBI": 1.0,
+    "R": 0.85,
+    "Power": 1.0,
+    "Run Production": 0.95,
+    "SB": 1.0,
+    "Speed": 1.0,
+    "AVG": 0.95,
+    "BA": 0.95,
+    "OBP": 0.85,
+    "OPS": 0.85,
+    "Walks/OPS": 0.85,
+}
 
 
 def _row_positions(row: pd.Series) -> set[str]:
@@ -1065,7 +1091,9 @@ def recommend_adds_personalized(
     """
     if waiver_pool is None or getattr(waiver_pool, "empty", True):
         return pd.DataFrame()
-    pool = waiver_pool.copy()
+    pool = _exclude_pitchers_for_context(waiver_pool.copy(), context)
+    if pool.empty:
+        return pd.DataFrame()
     targets = list(needs.get("targets") or needs.get("weaknesses") or [])
     position_weights = compute_position_need_weights(context, my_roster)
     roster_grade_med = _roster_grade_median(my_roster) if my_roster is not None else None
@@ -1085,14 +1113,24 @@ def recommend_adds_personalized(
         normalized = vals.fillna(0) / vmax
         if cat in LOWER_IS_BETTER_CATEGORIES:
             normalized = 1.0 - normalized
-        cat_component = cat_component + normalized
+        cat_weight = float(_CATEGORY_WEIGHTS.get(str(cat).strip(), 0.85))
+        cat_component = cat_component + (normalized * cat_weight)
 
     grade = pool.apply(lambda r: _player_grade_display(r) or 0.0, axis=1)
     gmax = float(grade.max()) or 1.0
     quality_component = grade / gmax
 
-    # Positional need dominates; team category needs are the next strongest signal.
-    score = pos_component * 3.0 + cat_component * 2.5 + quality_component * 1.0
+    has_missing_positions = any(weight >= _POSITION_WEIGHT_MISSING for weight in position_weights.values())
+    pos_multiplier = 12.0 if has_missing_positions else 3.5
+    cat_multiplier = 2.5
+    quality_multiplier = 0.2 if has_missing_positions else 1.0
+
+    # Positional need dominates when roster holes exist; category needs follow.
+    score = (
+        pos_component * pos_multiplier
+        + cat_component * cat_multiplier
+        + quality_component * quality_multiplier
+    )
 
     if roster_grade_med:
         upgrade = grade.apply(lambda g: 0.4 if g and g > roster_grade_med else 0.0)
@@ -1100,7 +1138,7 @@ def recommend_adds_personalized(
 
     pool["_waiver_add_score"] = score
     pool["_position_need_weight"] = pos_component
-    pool = pool.sort_values(["_waiver_add_score"], ascending=False)
+    pool = pool.sort_values(["_position_need_weight", "_waiver_add_score"], ascending=[False, False])
     top = pool.head(limit).copy()
     top["Why Add"] = [
         _personalized_add_explanation(row, needs, position_weights)

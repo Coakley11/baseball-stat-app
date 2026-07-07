@@ -506,6 +506,35 @@ def _navigate_fantasy_page(session: dict[str, Any], target_page: str, *, return_
     return schedule_fantasy_analysis_navigation(session, target)
 
 
+def render_saved_draft_library_draft_room_navigation(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    page_label_fn=None,
+    key_prefix: str = "library",
+) -> None:
+    """Bottom navigation to Live Draft Room and Draft Room Simulator."""
+    st.divider()
+    st.markdown("##### Draft rooms")
+    nav1, nav2 = st.columns(2)
+    with nav1:
+        st.button(
+            _nav_label(LIVE_DRAFT_PAGE, "Go to Live Draft Room", page_label_fn),
+            key=f"{key_prefix}__go_live_draft_room_btn",
+            use_container_width=True,
+            on_click=_on_click_navigate_to_page,
+            args=(LIVE_DRAFT_PAGE, f"{key_prefix}__go_live_draft_room_btn", "go_live_draft_room"),
+        )
+    with nav2:
+        st.button(
+            _nav_label(DRAFT_SIMULATOR_PAGE, "Go to Draft Room Simulator", page_label_fn),
+            key=f"{key_prefix}__go_draft_simulator_btn",
+            use_container_width=True,
+            on_click=_on_click_navigate_to_page,
+            args=(DRAFT_SIMULATOR_PAGE, f"{key_prefix}__go_draft_simulator_btn", "go_to_draft_room_simulator"),
+        )
+
+
 def render_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
     """Single Active Draft block — draft name once, metadata line below."""
     active = get_active_draft_archive(session)
@@ -2074,23 +2103,12 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
             "No saved drafts yet. Finish a **Live Draft Room** or **Draft Room Simulator** draft, "
             "then save your draft from the draft room."
         )
-        nav1, nav2 = st.columns(2)
-        with nav1:
-            st.button(
-                _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", page_label_fn),
-                key="library__go_live_draft_room_btn",
-                use_container_width=True,
-                on_click=_on_click_navigate_to_page,
-                args=(LIVE_DRAFT_PAGE, "library__go_live_draft_room_btn", "open_live_draft_room"),
-            )
-        with nav2:
-            st.button(
-                _nav_label(DRAFT_SIMULATOR_PAGE, "Go to Draft Room Simulator", page_label_fn),
-                key="library__go_draft_simulator_btn",
-                use_container_width=True,
-                on_click=_on_click_navigate_to_page,
-                args=(DRAFT_SIMULATOR_PAGE, "library__go_draft_simulator_btn", "go_to_draft_room_simulator"),
-            )
+        render_saved_draft_library_draft_room_navigation(
+            st,
+            session,
+            page_label_fn=page_label_fn,
+            key_prefix="library_empty",
+        )
         return
 
     for entry in archives:
@@ -2117,3 +2135,10 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
                 active_context_id=active_context_id,
                 page_label_fn=page_label_fn,
             )
+
+    render_saved_draft_library_draft_room_navigation(
+        st,
+        session,
+        page_label_fn=page_label_fn,
+        key_prefix="library_bottom",
+    )
