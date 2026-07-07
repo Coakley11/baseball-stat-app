@@ -1646,12 +1646,14 @@ def _render_active_draft_section(
 
     draft_id = str(active.get("draft_id") or "").strip()
     if draft_id:
+        st.markdown("**Manage this draft**")
         _render_archive_manage_actions(
             st,
             session,
             active,
             draft_id=draft_id,
             is_active=True,
+            widget_key_prefix="library_active",
         )
 
 
@@ -1660,17 +1662,19 @@ def _render_archive_rename_delete_confirm(
     session: dict[str, Any],
     entry: dict[str, Any],
     draft_id: str,
+    *,
+    widget_key_prefix: str = "archive",
 ) -> None:
     if session.get(_RENAME_CONFIRM_PREFIX + draft_id):
         current_name = str(entry.get("draft_name") or "Saved Draft")
         new_name = st.text_input(
             "New draft name",
             value=current_name,
-            key=f"archive_rename_input_{draft_id}",
+            key=f"{widget_key_prefix}_rename_input_{draft_id}",
         )
         rename_col, cancel_col = st.columns(2)
         with rename_col:
-            if st.button("Save rename", key=f"archive_rename_confirm_{draft_id}", type="primary"):
+            if st.button("Save rename", key=f"{widget_key_prefix}_rename_confirm_{draft_id}", type="primary"):
                 if _rename_archive_entry(st, session, draft_id, new_name):
                     session.pop(_RENAME_CONFIRM_PREFIX + draft_id, None)
                     st.toast(f"Renamed draft to: {new_name.strip()}")
@@ -1678,7 +1682,7 @@ def _render_archive_rename_delete_confirm(
                 else:
                     st.error("Could not rename draft — name cannot be empty.")
         with cancel_col:
-            if st.button("Cancel rename", key=f"archive_rename_cancel_{draft_id}"):
+            if st.button("Cancel rename", key=f"{widget_key_prefix}_rename_cancel_{draft_id}"):
                 session.pop(_RENAME_CONFIRM_PREFIX + draft_id, None)
                 st.rerun()
 
@@ -1686,14 +1690,14 @@ def _render_archive_rename_delete_confirm(
         st.warning(f"Delete **{entry.get('draft_name')}**? Other saved drafts will be kept.")
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
-            if st.button("Confirm delete", key=f"archive_del_confirm_{draft_id}", type="primary"):
+            if st.button("Confirm delete", key=f"{widget_key_prefix}_del_confirm_{draft_id}", type="primary"):
                 if delete_draft_archive(session, draft_id):
                     session.pop(_DELETE_CONFIRM_PREFIX + draft_id, None)
                     _clear_fantasy_caches_on_archive_change(session)
                     _persist_archive(session, st, reason="draft_archive_deleted")
                     st.rerun()
         with cancel_col:
-            if st.button("Cancel", key=f"archive_del_cancel_{draft_id}"):
+            if st.button("Cancel", key=f"{widget_key_prefix}_del_cancel_{draft_id}"):
                 session.pop(_DELETE_CONFIRM_PREFIX + draft_id, None)
                 st.rerun()
 
@@ -1705,17 +1709,24 @@ def _render_archive_manage_actions(
     *,
     draft_id: str,
     is_active: bool,
+    widget_key_prefix: str = "archive",
 ) -> None:
     if is_active:
-        btn1, btn2, btn3 = st.columns(3)
+        btn1, btn2 = st.columns(2)
         with btn1:
-            st.button("Active", key=f"archive_active_badge_{draft_id}", disabled=True, use_container_width=True)
-        with btn2:
-            if st.button("Rename Draft", key=f"archive_rename_{draft_id}", use_container_width=True):
+            if st.button(
+                "Rename Draft",
+                key=f"{widget_key_prefix}_rename_{draft_id}",
+                use_container_width=True,
+            ):
                 session[_RENAME_CONFIRM_PREFIX + draft_id] = True
                 st.rerun()
-        with btn3:
-            if st.button("Delete", key=f"archive_del_{draft_id}", use_container_width=True):
+        with btn2:
+            if st.button(
+                "Delete",
+                key=f"{widget_key_prefix}_del_{draft_id}",
+                use_container_width=True,
+            ):
                 session[_DELETE_CONFIRM_PREFIX + draft_id] = True
                 st.rerun()
     else:
@@ -1723,21 +1734,35 @@ def _render_archive_manage_actions(
         with btn1:
             if st.button(
                 "Set Active",
-                key=f"archive_active_{draft_id}",
+                key=f"{widget_key_prefix}_set_active_{draft_id}",
                 type="primary",
                 use_container_width=True,
             ):
                 _activate_archive_entry(st, session, draft_id)
         with btn2:
-            if st.button("Rename Draft", key=f"archive_rename_{draft_id}", use_container_width=True):
+            if st.button(
+                "Rename Draft",
+                key=f"{widget_key_prefix}_rename_{draft_id}",
+                use_container_width=True,
+            ):
                 session[_RENAME_CONFIRM_PREFIX + draft_id] = True
                 st.rerun()
         with btn3:
-            if st.button("Delete", key=f"archive_del_{draft_id}", use_container_width=True):
+            if st.button(
+                "Delete",
+                key=f"{widget_key_prefix}_del_{draft_id}",
+                use_container_width=True,
+            ):
                 session[_DELETE_CONFIRM_PREFIX + draft_id] = True
                 st.rerun()
 
-    _render_archive_rename_delete_confirm(st, session, entry, draft_id)
+    _render_archive_rename_delete_confirm(
+        st,
+        session,
+        entry,
+        draft_id,
+        widget_key_prefix=widget_key_prefix,
+    )
 
 
 def _render_fantasy_sync_section(st: Any, session: dict[str, Any]) -> None:
@@ -1773,6 +1798,7 @@ def _render_archive_actions(
         entry,
         draft_id=draft_id,
         is_active=is_active,
+        widget_key_prefix=f"archive_list_{draft_id[:12]}",
     )
 
 
@@ -1813,6 +1839,14 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
                 f"Saved **{flash.get('draft_name')}** ({flash.get('player_count')} players). "
                 "Set active for Standings and Lineup analysis."
             )
+
+    try:
+        from suite_deploy_marker import GIT_COMMIT_SHORT, format_deploy_caption
+
+        build_line = format_deploy_caption() or f"Build `{GIT_COMMIT_SHORT}`"
+        st.caption(f"Library UI · {build_line}")
+    except ImportError:
+        pass
 
     st.markdown(
         """
@@ -1926,11 +1960,14 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
             _saved_draft_card_html(entry, is_active=is_active, player_n=player_n, team_n=team_n),
             unsafe_allow_html=True,
         )
-        _render_archive_actions(
-            st,
-            session,
-            entry,
-            active_id=active_id,
-            active_context_id=active_context_id,
-            page_label_fn=page_label_fn,
-        )
+        if is_active:
+            st.caption("Active draft — use **Manage this draft** in the **Active Draft** section above.")
+        else:
+            _render_archive_actions(
+                st,
+                session,
+                entry,
+                active_id=active_id,
+                active_context_id=active_context_id,
+                page_label_fn=page_label_fn,
+            )
