@@ -9,6 +9,7 @@ import pandas as pd
 from recommendation_dedupe import (
     add_recommendation_rank_column,
     collect_featured_player_ids,
+    ensure_top_raw_value_in_recommendations,
     exclude_recommendation_player_ids,
     recommendation_player_id,
     remaining_recommendations,
@@ -117,6 +118,38 @@ class TestRecommendationDedupe(unittest.TestCase):
             recommendation_player_id(table.iloc[0]),
         )
         self.assertEqual(str(best_fit.iloc[0]["fullName"]), str(table.iloc[0]["fullName"]))
+
+
+class TestDraftAssistantDedupeImports(unittest.TestCase):
+    """Regression: streamlit_app.py Draft Assistant block imports these symbols (~18874)."""
+
+    def test_streamlit_import_symbols_exist(self) -> None:
+        from recommendation_dedupe import (
+            add_recommendation_rank_column,
+            collect_featured_player_ids,
+            ensure_top_raw_value_in_recommendations,
+            recommendation_player_id,
+            remaining_recommendations,
+        )
+
+        for fn in (
+            add_recommendation_rank_column,
+            collect_featured_player_ids,
+            ensure_top_raw_value_in_recommendations,
+            recommendation_player_id,
+            remaining_recommendations,
+        ):
+            self.assertTrue(callable(fn))
+
+    def test_ensure_top_raw_value_in_recommendations(self) -> None:
+        available = _rows(
+            ("99", "Shohei Ohtani", 0.99),
+            ("2", "Aaron Judge", 0.90),
+            ("3", "Juan Soto", 0.88),
+        )
+        recs = available.sort_values("Expected Fantasy Value", ascending=False).iloc[1:].copy()
+        out = ensure_top_raw_value_in_recommendations(recs, available, limit=2)
+        self.assertEqual(out.iloc[0]["playerID"], "99")
 
 
 if __name__ == "__main__":

@@ -64,6 +64,43 @@ def remaining_recommendations(
     return exclude_recommendation_player_ids(ranked_df, featured_ids).head(int(limit)).copy()
 
 
+def ensure_top_raw_value_in_recommendations(
+    recs: pd.DataFrame | None,
+    available: pd.DataFrame | None,
+    *,
+    limit: int,
+    value_col: str = "Expected Fantasy Value",
+) -> pd.DataFrame:
+    """Keep the highest raw-value available player visible in the recommendation table."""
+    if available is None or getattr(available, "empty", True) or limit <= 0:
+        return recs.copy() if isinstance(recs, pd.DataFrame) else pd.DataFrame()
+    if value_col not in available.columns:
+        return recs.copy() if isinstance(recs, pd.DataFrame) else pd.DataFrame()
+    top_raw = available.sort_values(value_col, ascending=False).head(1)
+    if top_raw.empty:
+        return recs.copy() if isinstance(recs, pd.DataFrame) else pd.DataFrame()
+    top_id = recommendation_player_id(top_raw.iloc[0])
+    work = recs.copy() if isinstance(recs, pd.DataFrame) and not recs.empty else pd.DataFrame()
+    if not work.empty:
+        existing = set(work.apply(recommendation_player_id, axis=1))
+        if top_id in existing:
+            return work.head(int(limit)).copy()
+    merged = pd.concat([top_raw.head(1), work], ignore_index=False)
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for _, row in merged.iterrows():
+        pid = recommendation_player_id(row)
+        if pid and pid in seen:
+            continue
+        if pid:
+            seen.add(pid)
+        deduped.append(row)
+    if not deduped:
+        return pd.DataFrame()
+    out = pd.DataFrame(deduped)
+    return out.head(int(limit)).copy()
+
+
 def add_recommendation_rank_column(
     df: pd.DataFrame | None,
     *,
