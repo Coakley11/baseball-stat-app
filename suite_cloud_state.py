@@ -648,8 +648,8 @@ def save_cloud_draft_library_with_details(
             summary=summary or "Saved Draft Library",
             metrics=payload,
             write_label="draft_library_slice",
-            skip_metrics_merge=True,
-            direct_upsert=True,
+            skip_metrics_merge=False,
+            direct_upsert=False,
             request_timeout_sec=DRAFT_LIBRARY_WRITE_TIMEOUT_SEC,
             write_attempts=DRAFT_LIBRARY_WRITE_ATTEMPTS,
         )
@@ -662,11 +662,41 @@ def save_cloud_draft_library_with_details(
         if not ok:
             return False, detail, app_key
 
+        readback: dict[str, Any] = {}
+        try:
+            from workflow_persist_guard import record_draft_library_readback, verify_cloud_draft_library_readback
+
+            expected_id = str(state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+            readback = verify_cloud_draft_library_readback(
+                app_id,
+                min_drafts=1,
+                expected_draft_id=expected_id,
+            )
+            if ss is not None:
+                record_draft_library_readback(ss, readback)
+        except Exception as exc:
+            readback = {"ok": False, "error": str(exc), "draft_count": 0}
+            if ss is not None:
+                try:
+                    from workflow_persist_guard import record_draft_library_readback
+
+                    record_draft_library_readback(ss, readback)
+                except Exception:
+                    pass
+        if not readback.get("ok"):
+            err = str(readback.get("error") or "cloud_readback_failed")
+            if ss is not None:
+                ss["_suite_persist_last_cloud_error"] = err
+                ss["_draft_archive_persist_error"] = err
+                ss["_suite_persist_last_save_cloud"] = False
+            return False, err, app_key
+
         if ss is not None:
             ts_key, blob_key = _full_session_cache_keys(app_key)
             ss[blob_key] = copy.deepcopy(draft_slice)
             ss[ts_key] = _utc_now_iso()
             ss.pop(f"_suite_full_session_fetch_run::{app_key}", None)
+            ss["_suite_persist_last_save_cloud"] = True
         return True, "", app_key
     except Exception as exc:
         try:
@@ -698,6 +728,20 @@ def save_cloud_full_session_with_details(
     try:
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+        ss = _streamlit_session()
+        if ss is not None:
+            try:
+                from workflow_persist_guard import merge_protected_workflow_into_save
+
+                state = merge_protected_workflow_into_save(
+                    copy.deepcopy(state),
+                    ss,
+                    app_id=app_id,
+                    st=type("_St", (), {"session_state": ss})(),
+                    save_reason=str(ss.get("_suite_pending_save_reason") or "cloud_full_session"),
+                )
+            except Exception:
+                pass
         full_payload = {FULL_SESSION_KEY: copy.deepcopy(state)}
         estimate_fn = getattr(storage, "estimate_metrics_payload_bytes", None)
         if callable(estimate_fn):

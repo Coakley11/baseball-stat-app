@@ -15,6 +15,7 @@ from workflow_persist_guard import (
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
     build_saved_draft_library_diagnostics,
     build_startup_restore_snapshot,
+    evaluate_cloud_durability_status,
     hydrate_session_workflow_from_disk,
     infer_restore_persistence_verdict,
     merge_protected_workflow_into_save,
@@ -153,14 +154,49 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(diag["restore_source"], "cloud")
         self.assertIn("cloud", diag["restore_source_label"].lower())
 
-    def test_diagnostics_durable_when_cloud_save_verified(self) -> None:
+    def test_diagnostics_durable_when_cloud_has_verified_drafts(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}],
+            "_suite_draft_library_readback_ok": True,
+            "_suite_draft_library_readback_count": 1,
+        }
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
+            with patch("suite_auth.is_auth_enabled", return_value=True):
+                with patch("suite_auth.is_authenticated", return_value=True):
+                    with patch(
+                        "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                        return_value={"row_found": True, "draft_archive_count": 1},
+                    ):
+                        diag = build_saved_draft_library_diagnostics(session)
+        self.assertTrue(diag["durable_persistence"])
+        self.assertTrue(diag["cloud_write_verified"])
+        self.assertIn("Durable", diag["durability_label"])
+
+    def test_diagnostics_not_durable_on_last_cloud_save_alone(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [], "_suite_persist_last_save_cloud": True, "_suite_last_cloud_payload_bytes": 173780}
+        with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
+            with patch("suite_auth.is_auth_enabled", return_value=True):
+                with patch("suite_auth.is_authenticated", return_value=True):
+                    with patch(
+                        "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                        return_value={"row_found": True, "draft_archive_count": 0},
+                    ):
+                        diag = build_saved_draft_library_diagnostics(session)
+        self.assertFalse(diag["durable_persistence"])
+        self.assertIn("Not durable", diag["durability_label"])
+
+    def test_diagnostics_local_demo_never_claims_full_durable(self) -> None:
         session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}], "_suite_persist_last_save_cloud": True}
         with patch("suite_storage_config.cloud_storage_enabled", return_value=True):
-            diag = build_saved_draft_library_diagnostics(session)
-        self.assertTrue(diag["durable_persistence"])
-        self.assertTrue(diag["cloud_write_expected"])
-        self.assertEqual(diag["durability_warning"], "")
-        self.assertIn("Durable", diag["durability_label"])
+            with patch("suite_auth.is_auth_enabled", return_value=True):
+                with patch("suite_auth.is_authenticated", return_value=False):
+                    with patch(
+                        "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                        return_value={"row_found": True, "draft_archive_count": 1},
+                    ):
+                        status = evaluate_cloud_durability_status(session)
+        self.assertFalse(status["durable_persistence"])
+        self.assertIn("Demo mode", status["durability_label"])
 
     def test_diagnostics_not_durable_when_cloud_enabled_but_unverified(self) -> None:
         session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "x1"}]}
@@ -236,11 +272,14 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         from suite_user_persistence import _cloud_autosave_blocked_reason
 
         state = {DRAFT_ARCHIVE_KEY: [], "comparison_state": {"players": []}}
-        cloud_state = {DRAFT_ARCHIVE_KEY: [{"draft_id": "keep01"}]}
         st = MagicMock()
         st.session_state = {}
-        with patch("suite_cloud_state.load_cloud_full_session", return_value=(cloud_state, "ts")):
-            reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="autosave")
+        with patch("suite_workspace.get_active_workspace_id", return_value="daniel"):
+            with patch(
+                "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                return_value={"draft_archive_count": 1, "row_found": True},
+            ):
+                reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="autosave")
         self.assertEqual(reason, "blank_draft_archive_would_erase_cloud")
 
     def test_draft_archive_save_reason_not_cloud_blocked(self) -> None:

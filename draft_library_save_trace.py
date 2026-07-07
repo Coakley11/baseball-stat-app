@@ -173,14 +173,13 @@ def save_persist_mode_context(session: dict[str, Any]) -> dict[str, Any]:
         authenticated = bool(is_authenticated(session))
     except ImportError:
         pass
-    # Cloud writes require Supabase config only (not sign-in). When cloud is
-    # configured, saves are durable across Streamlit Cloud reboots regardless of
-    # auth. Disk-only (cloud disabled) is NOT durable — disk is ephemeral on reboot.
+    # Cloud writes require Supabase config. Durability for saved drafts requires
+    # readback-confirmed draft_archive_teams in cloud — not payload size alone.
     cloud_expected = bool(cloud_enabled)
     blocked = str(session.get("_suite_autosave_cloud_blocked_reason") or "").strip()
     return {
         "cloud_write_expected": cloud_expected,
-        "durable_persistence": cloud_expected,
+        "durable_persistence": False,
         "auth_mode": "signed_in" if authenticated else "local_demo",
         "cloud_blocked_reason": blocked,
         "demo_disk_only_ok": not cloud_expected,

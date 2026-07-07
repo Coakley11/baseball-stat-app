@@ -34,14 +34,22 @@ class DraftLibraryCloudSaveTests(unittest.TestCase):
 
     @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
     @patch("suite_cloud_state._import_storage")
-    def test_save_cloud_draft_library_uses_direct_upsert(self, mock_import: MagicMock, _enabled: object) -> None:
+    def test_save_cloud_draft_library_merges_and_readbacks(self, mock_import: MagicMock, _enabled: object) -> None:
         storage = MagicMock()
         storage.normalize_app_key.return_value = "baseball"
         storage.estimate_metrics_payload_bytes.return_value = 1200
         storage.save_current_state_with_result.return_value = {
             "ok": True,
-            "write_mode": "direct_upsert",
+            "write_mode": "patch",
             "payload_bytes": 1200,
+        }
+        storage.load_current_state_for_app.return_value = {
+            "metrics": {
+                "full_session": {
+                    "draft_archive_teams": [{"draft_id": "d1", "draft_name": "A"}],
+                    "active_draft_archive_id": "d1",
+                }
+            }
         }
         mock_import.return_value = (storage, None)
 
@@ -54,14 +62,39 @@ class DraftLibraryCloudSaveTests(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertEqual(app_key, "baseball")
         kwargs = storage.save_current_state_with_result.call_args.kwargs
-        self.assertTrue(kwargs.get("direct_upsert"))
-        self.assertTrue(kwargs.get("skip_metrics_merge"))
+        self.assertFalse(kwargs.get("direct_upsert"))
+        self.assertFalse(kwargs.get("skip_metrics_merge"))
         self.assertEqual(kwargs.get("request_timeout_sec"), 25.0)
         self.assertEqual(kwargs.get("write_attempts"), 2)
         metrics = kwargs.get("metrics") or {}
         blob = metrics.get("full_session") or {}
         self.assertIn("draft_archive_teams", blob)
         self.assertNotIn("draft_room_state", blob)
+        storage.load_current_state_for_app.assert_called()
+
+    @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
+    @patch("suite_cloud_state._import_storage")
+    def test_save_cloud_draft_library_fails_when_readback_empty(self, mock_import: MagicMock, _enabled: object) -> None:
+        storage = MagicMock()
+        storage.normalize_app_key.return_value = "baseball"
+        storage.estimate_metrics_payload_bytes.return_value = 1200
+        storage.save_current_state_with_result.return_value = {
+            "ok": True,
+            "write_mode": "patch",
+            "payload_bytes": 1200,
+        }
+        storage.load_current_state_for_app.return_value = {
+            "metrics": {"full_session": {"draft_archive_teams": [], "active_page": "Historical Explorer"}}
+        }
+        mock_import.return_value = (storage, None)
+
+        state = {
+            "draft_archive_teams": [{"draft_id": "d1", "draft_name": "A"}],
+            "active_draft_archive_id": "d1",
+        }
+        ok, err, _app_key = save_cloud_draft_library_with_details("baseball", state)
+        self.assertFalse(ok)
+        self.assertIn("readback", err)
 
     @patch("suite_user_persistence.save_user_state", return_value=True)
     @patch("suite_cloud_state.session_page_summary", return_value=("Saved Draft Library", "Saved Draft Library"))

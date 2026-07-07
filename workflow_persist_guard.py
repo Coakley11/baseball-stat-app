@@ -5,6 +5,18 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+
+def _utc_now_iso() -> str:
+    try:
+        from activity_time import utc_now_iso
+
+        return utc_now_iso()
+    except ImportError:
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 DRAFT_ARCHIVE_KEY = "draft_archive_teams"
 LEAGUE_CONTEXT_STATE_KEY = "fantasy_league_context_state"
 ACTIVE_DRAFT_ARCHIVE_KEY = "active_draft_archive_id"
@@ -458,8 +470,93 @@ def resolve_restore_source_label(session: dict[str, Any]) -> str:
     return raw
 
 
+def verify_cloud_draft_library_readback(
+    app_id: str = "baseball",
+    *,
+    min_drafts: int = 1,
+    expected_draft_id: str = "",
+    workspace_id: str = "",
+) -> dict[str, Any]:
+    """Fresh Supabase readback after a draft-library write — confirms drafts landed."""
+    out: dict[str, Any] = {
+        "ok": False,
+        "draft_count": 0,
+        "cloud_app_key": "",
+        "row_found": False,
+        "draft_ids": [],
+        "error": "",
+    }
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        if not cloud_storage_enabled():
+            out["error"] = "cloud_storage_disabled"
+            return out
+    except ImportError:
+        out["error"] = "cloud_storage_config_unavailable"
+        return out
+    try:
+        from suite_cloud_state import invalidate_cloud_full_session_cache
+
+        invalidate_cloud_full_session_cache(app_id)
+    except Exception:
+        pass
+    ws = str(workspace_id or "").strip()
+    if not ws:
+        try:
+            from suite_workspace import get_active_workspace_id
+
+            ws = str(get_active_workspace_id(st=type("_St", (), {"session_state": {}})()))
+        except Exception:
+            ws = "daniel"
+    try:
+        from suite_workspace import scoped_cloud_app_id
+
+        app_key = scoped_cloud_app_id(app_id, ws)
+        out["cloud_app_key"] = app_key
+    except Exception as exc:
+        out["error"] = str(exc)
+        return out
+    try:
+        from suite_cloud_state import FULL_SESSION_KEY, _import_storage
+
+        storage, _ = _import_storage()
+        row = storage.load_current_state_for_app(app_key)
+        if not isinstance(row, dict) or not row:
+            out["error"] = "cloud_row_not_found"
+            return out
+        out["row_found"] = True
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        blob = metrics.get(FULL_SESSION_KEY) if isinstance(metrics, dict) else None
+        summary = summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None)
+        out["draft_count"] = int(summary.get("draft_archive_count") or 0)
+        out["draft_ids"] = list(summary.get("draft_ids") or [])
+        out["ok"] = out["draft_count"] >= max(0, int(min_drafts or 0))
+        expected = str(expected_draft_id or "").strip()
+        if out["ok"] and expected and expected not in set(out["draft_ids"]):
+            out["ok"] = False
+            out["error"] = f"expected_draft_id_missing:{expected}"
+        if not out["ok"] and not out["error"]:
+            out["error"] = f"readback_draft_count_{out['draft_count']}_lt_{min_drafts}"
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out
+
+
+def record_draft_library_readback(session: dict[str, Any], readback: dict[str, Any]) -> None:
+    """Store readback results on session for durability badge + save trace."""
+    session["_suite_draft_library_readback_at"] = _utc_now_iso() if readback.get("ok") else ""
+    session["_suite_draft_library_readback_count"] = int(readback.get("draft_count") or 0)
+    session["_suite_draft_library_readback_ok"] = bool(readback.get("ok"))
+    session["_suite_draft_library_readback_error"] = str(readback.get("error") or "")
+    if readback.get("ok"):
+        session["_suite_draft_library_cloud_verified_at"] = session.get("_suite_draft_library_readback_at")
+    else:
+        session.pop("_suite_draft_library_cloud_verified_at", None)
+
+
 def evaluate_cloud_durability_status(session: dict[str, Any]) -> dict[str, Any]:
-    """Whether this session has verified durable cloud persistence (not just config)."""
+    """Whether saved drafts are verified durable in cloud (readback required)."""
     cloud_enabled = False
     try:
         from suite_storage_config import cloud_storage_enabled
@@ -479,7 +576,17 @@ def evaluate_cloud_durability_status(session: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    last_cloud_save = bool(session.get("_suite_persist_last_save_cloud"))
+    auth_enabled = False
+    authenticated = False
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        auth_enabled = bool(is_auth_enabled())
+        authenticated = bool(is_authenticated(session))
+    except ImportError:
+        pass
+    local_demo = bool(auth_enabled and not authenticated)
+
     cloud_probe: dict[str, Any] = {}
     try:
         from suite_workspace import get_active_workspace_id
@@ -491,41 +598,87 @@ def evaluate_cloud_durability_status(session: dict[str, Any]) -> dict[str, Any]:
     row_found = bool(cloud_probe.get("row_found"))
     cloud_drafts = int(cloud_probe.get("draft_archive_count") or 0)
     session_drafts = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
-    cloud_write_verified = last_cloud_save or (row_found and cloud_drafts > 0)
-    if cloud_write_verified and session_drafts == 0 and cloud_drafts == 0 and not last_cloud_save:
-        cloud_write_verified = False
+    readback_ok = bool(session.get("_suite_draft_library_readback_ok"))
+    readback_count = int(session.get("_suite_draft_library_readback_count") or 0)
+
+    # Durable ONLY when cloud readback confirms drafts exist now — never from payload bytes
+    # or a generic cloud write flag alone (those can succeed while draft_archive_teams is empty).
+    cloud_write_verified = cloud_drafts > 0
+
+    if local_demo:
+        if cloud_drafts > 0:
+            return {
+                "cloud_enabled": True,
+                "durable_persistence": False,
+                "cloud_write_verified": False,
+                "cloud_row_found": row_found,
+                "cloud_saved_draft_count": cloud_drafts,
+                "durability_label": (
+                    "Demo mode — drafts may be in cloud (null user_id row). "
+                    "Sign in for account-scoped durability."
+                ),
+                "durability_warning": (
+                    "You are not signed in. Phone/demo saves use a separate Supabase row "
+                    "(user_id null) from your signed-in account on other devices. "
+                    "Sign in to scope saved drafts to your account."
+                ),
+            }
+        return {
+            "cloud_enabled": True,
+            "durable_persistence": False,
+            "cloud_write_verified": False,
+            "cloud_row_found": row_found,
+            "cloud_saved_draft_count": cloud_drafts,
+            "durability_label": "Not durable — sign in for account-scoped saved drafts",
+            "durability_warning": (
+                "Local/demo mode does not scope saves to your account. "
+                "Sign in so saved drafts restore on every device after reboot."
+            ),
+        }
 
     if cloud_write_verified:
+        label = "Durable — saved drafts verified in cloud (survives app reboot)"
+        if readback_ok and readback_count > 0:
+            label = (
+                f"Durable — {readback_count} saved draft(s) verified in cloud "
+                "(survives app reboot)"
+            )
         return {
             "cloud_enabled": True,
             "durable_persistence": True,
             "cloud_write_verified": True,
             "cloud_row_found": row_found,
             "cloud_saved_draft_count": cloud_drafts,
-            "durability_label": "Durable — saved to cloud (survives app reboot)",
+            "session_saved_draft_count": session_drafts,
+            "durability_label": label,
             "durability_warning": "",
         }
 
     last_error = str(
-        session.get("_suite_persist_last_cloud_error")
+        session.get("_suite_draft_library_readback_error")
+        or session.get("_suite_persist_last_cloud_error")
         or session.get("_draft_archive_persist_error")
         or session.get("_suite_autosave_cloud_blocked_reason")
         or ""
     ).strip()
+    payload_bytes = session.get("_suite_last_cloud_payload_bytes")
     warning = (
-        "Cloud storage is configured, but no draft has been verified in cloud yet. "
-        "Saves are only durable after a successful cloud write and readback. "
-        "Disk-only saves will not survive Streamlit Cloud reboot."
+        "Cloud storage is configured, but no saved drafts are present in the cloud blob. "
+        "A large cloud write (page state) does not mean drafts were saved — use Save Draft "
+        "and confirm cloud readback shows draft count > 0."
     )
+    if payload_bytes:
+        warning += f" Last payload was {payload_bytes} bytes."
     if last_error:
-        warning += f" Last cloud error: `{last_error}`"
+        warning += f" Last error: `{last_error}`"
     return {
         "cloud_enabled": True,
         "durable_persistence": False,
         "cloud_write_verified": False,
         "cloud_row_found": row_found,
         "cloud_saved_draft_count": cloud_drafts,
-        "durability_label": "Not durable yet — cloud write not verified",
+        "session_saved_draft_count": session_drafts,
+        "durability_label": "Not durable yet — no saved drafts verified in cloud",
         "durability_warning": warning,
     }
 

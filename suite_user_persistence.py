@@ -343,9 +343,9 @@ def _cloud_autosave_blocked_reason(
         from suite_cloud_state import load_cloud_full_session
 
         cloud_state, _ = load_cloud_full_session(app_id)
-        if not isinstance(cloud_state, dict) or not cloud_state:
-            return None
-        if not local_players:
+        if not isinstance(cloud_state, dict):
+            cloud_state = {}
+        if not local_players and cloud_state:
             cloud_players = _workspace_comparison_players(cloud_state)
             if cloud_players and not _comparison_user_explicitly_cleared(st):
                 return "blank_comparison_would_erase_cloud"
@@ -354,9 +354,18 @@ def _cloud_autosave_blocked_reason(
                 from workflow_persist_guard import (
                     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
                     count_draft_archives,
+                    probe_cloud_workflow_for_workspace,
                 )
 
-                cloud_draft_count = count_draft_archives(cloud_state.get("draft_archive_teams"))
+                cloud_draft_count = 0
+                try:
+                    from suite_workspace import get_active_workspace_id
+
+                    ws = str(get_active_workspace_id(st))
+                    probe = probe_cloud_workflow_for_workspace(ws)
+                    cloud_draft_count = int(probe.get("draft_archive_count") or 0)
+                except Exception:
+                    cloud_draft_count = count_draft_archives(cloud_state.get("draft_archive_teams"))
                 if cloud_draft_count and not st.session_state.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
                     return "blank_draft_archive_would_erase_cloud"
             except ImportError:
