@@ -11,6 +11,9 @@ import pandas as pd
 from fantasy_league_context import save_simulator_league_context
 from fantasy_waiver_wire import WAIVER_PLANNER_ADD_KEY, WAIVER_PLANNER_DROP_KEY, WAIVER_TX_FLASH_KEY
 from fantasy_waiver_wire_ui import (
+    WAIVER_TX_CLEAR_WIDGETS_KEY,
+    _apply_deferred_waiver_widget_clears,
+    _apply_waiver_tx_result,
     _on_add_pending_pair_click,
     _on_clear_planner_add_click,
     _on_clear_planner_drop_click,
@@ -90,6 +93,85 @@ class WaiverCallbackSignatureTests(unittest.TestCase):
         self.assertNotIn("waiver_save_pair_btn", session)
         self.assertNotIn("waiver_rm_pair_0_btn", session)
         self.assertEqual(session["lineup_team"], "Daniel")
+
+    def test_apply_waiver_tx_result_requests_deferred_widget_clear(self) -> None:
+        session: dict = {
+            "waiver_tx_add_players": ["Mike Trout"],
+            "waiver_tx_drop_players": ["Aaron Judge"],
+        }
+        stats = pd.DataFrame([{"Player": "Mike Trout", "HR": 25}])
+        with patch("fantasy_waiver_wire_ui.sync_waiver_roster_views"):
+            _apply_waiver_tx_result(
+                session,
+                {"ok": True, "added_players": ["Mike Trout"], "dropped_players": ["Aaron Judge"]},
+                stats_pool=stats,
+            )
+        self.assertTrue(session.get(WAIVER_TX_CLEAR_WIDGETS_KEY))
+        self.assertEqual(session["waiver_tx_add_players"], ["Mike Trout"])
+
+    def test_deferred_widget_clear_runs_before_widgets(self) -> None:
+        session: dict = {
+            WAIVER_TX_CLEAR_WIDGETS_KEY: True,
+            "waiver_tx_add_players": ["Mike Trout"],
+            "waiver_tx_drop_players": ["Aaron Judge"],
+            "waiver_manual_add_select": "Mike Trout",
+            "waiver_manual_drop_select": "Aaron Judge",
+        }
+        _apply_deferred_waiver_widget_clears(session)
+        self.assertNotIn(WAIVER_TX_CLEAR_WIDGETS_KEY, session)
+        self.assertNotIn("waiver_tx_add_players", session)
+        self.assertNotIn("waiver_tx_drop_players", session)
+        self.assertNotIn("waiver_manual_add_select", session)
+        self.assertNotIn("waiver_manual_drop_select", session)
+
+    def test_confirm_waiver_move_success_sets_clear_flag(self) -> None:
+        session: dict = {
+            "waiver_tx_add_players": ["Mike Trout"],
+            "waiver_tx_drop_players": ["Aaron Judge"],
+            "_fantasy_current_hitter_stats": pd.DataFrame(
+                [
+                    {"Player": "Aaron Judge", "HR": 20},
+                    {"Player": "Mike Trout", "HR": 25},
+                ]
+            ),
+        }
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        tx_ok = {"ok": True, "added_players": ["Mike Trout"], "dropped_players": ["Aaron Judge"]}
+        with patch("streamlit.session_state", session, create=True), patch(
+            "fantasy_waiver_wire_ui.apply_waiver_move_pairs", return_value=tx_ok
+        ), patch("fantasy_waiver_wire_ui.sync_waiver_roster_views"):
+            _on_confirm_waiver_move_click()
+        self.assertTrue(session.get(WAIVER_TX_CLEAR_WIDGETS_KEY))
+        flash = session.get(WAIVER_TX_FLASH_KEY)
+        self.assertIsInstance(flash, dict)
+        assert flash is not None
+        self.assertEqual(flash.get("level"), "success")
+
+    def test_confirm_pending_waiver_moves_success_sets_clear_flag(self) -> None:
+        session: dict = {
+            "_fantasy_current_hitter_stats": pd.DataFrame(
+                [
+                    {"Player": "Aaron Judge", "HR": 20},
+                    {"Player": "Mike Trout", "HR": 25},
+                ]
+            ),
+            "_waiver_pending_move_pairs": [
+                {"add_player": "Mike Trout", "drop_player": "Aaron Judge", "category_impact": []},
+            ],
+        }
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        tx_ok = {"ok": True, "added_players": ["Mike Trout"], "dropped_players": ["Aaron Judge"]}
+        with patch("streamlit.session_state", session, create=True), patch(
+            "fantasy_waiver_wire_ui.apply_waiver_move_pairs", return_value=tx_ok
+        ), patch("fantasy_waiver_wire_ui.sync_waiver_roster_views"):
+            _on_confirm_pending_waiver_moves_click()
+        self.assertTrue(session.get(WAIVER_TX_CLEAR_WIDGETS_KEY))
+        flash = session.get(WAIVER_TX_FLASH_KEY)
+        self.assertIsInstance(flash, dict)
+        assert flash is not None
+        self.assertEqual(flash.get("level"), "success")
 
 
 class WaiverRenderCallbackTests(unittest.TestCase):

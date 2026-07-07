@@ -12926,7 +12926,14 @@ def save_page_state(page_name: str):
     pg_state.save_page_state(st.session_state, normalize_page_key(page_name), store)
 
 
-def _record_settings_onchange(page_name: str, handler: str, reason: str):
+def _record_settings_onchange(
+    page_name: str,
+    handler: str,
+    reason: str,
+    *,
+    save_page_state: bool = True,
+    force_save: bool = True,
+):
     """Dev trace: log that a settings on_change fired and what it triggered."""
     try:
         from settings_persistence_trace import record_onchange
@@ -12935,8 +12942,8 @@ def _record_settings_onchange(page_name: str, handler: str, reason: str):
             st.session_state,
             page_name,
             handler=handler,
-            save_page_state=True,
-            force_save=True,
+            save_page_state=save_page_state,
+            force_save=force_save,
             reason=reason,
         )
     except Exception:
@@ -18254,7 +18261,7 @@ if active_page == "Draft Assistant Simulator":
         _draft_window_options = [3, 4, 5]
         _draft_format_options = ["5x5 Roto", "Points League"]
 
-        def _draft_assistant_settings_changed():
+        def _draft_assistant_settings_changed(*_args, **_kwargs):
             try:
                 from draft_assistant_setup_persist import on_draft_assistant_settings_changed
 
@@ -18290,7 +18297,7 @@ if active_page == "Draft Assistant Simulator":
                                         on_change=_draft_assistant_settings_changed)
         with d2:
             validate_state_option("draft_format", _draft_format_options, "5x5 Roto")
-            def _draft_format_changed():
+            def _draft_format_changed(*_args, **_kwargs):
                 _draft_assistant_settings_changed()
             draft_format = st.selectbox("League Format", _draft_format_options, key="draft_format",
                                         on_change=_draft_format_changed)
@@ -18600,7 +18607,7 @@ if active_page == "Draft Assistant Simulator":
 
         init_state_once("sync_draft_assistant_position_needs", False)
 
-        def _draft_assistant_position_sync_changed():
+        def _draft_assistant_position_sync_changed(*_args, **_kwargs):
             try:
                 from fantasy_position_sync import on_sync_position_needs_toggled
 

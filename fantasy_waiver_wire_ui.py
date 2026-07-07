@@ -274,16 +274,35 @@ def purge_waiver_action_widget_keys(session: dict[str, Any]) -> None:
                 session.pop(key, None)
 
 
+WAIVER_TX_CLEAR_WIDGETS_KEY = "_waiver_tx_clear_widgets"
+
+
+def _request_waiver_widget_clear(session: dict[str, Any]) -> None:
+    """Defer clearing widget-backed keys until the next render (before widgets exist)."""
+    session[WAIVER_TX_CLEAR_WIDGETS_KEY] = True
+
+
+def _apply_deferred_waiver_widget_clears(session: dict[str, Any]) -> None:
+    """Clear waiver widget session keys before multiselect/selectbox widgets are created."""
+    if not session.pop(WAIVER_TX_CLEAR_WIDGETS_KEY, False):
+        return
+    for key in (
+        "waiver_tx_add_players",
+        "waiver_tx_drop_players",
+        "waiver_manual_add_select",
+        "waiver_manual_drop_select",
+    ):
+        session.pop(key, None)
+
+
 def _clear_waiver_tx_multiselects(session: dict[str, Any]) -> None:
-    session["waiver_tx_add_players"] = []
-    session["waiver_tx_drop_players"] = []
+    _request_waiver_widget_clear(session)
 
 
 def _clear_manual_planner_widgets(session: dict[str, Any]) -> None:
     session.pop(WAIVER_PLANNER_ADD_KEY, None)
     session.pop(WAIVER_PLANNER_DROP_KEY, None)
-    session["waiver_manual_add_select"] = ""
-    session["waiver_manual_drop_select"] = ""
+    _request_waiver_widget_clear(session)
 
 
 def _on_plan_add_click(player_name: str, *_args, **_kwargs) -> None:
@@ -457,8 +476,7 @@ def _handle_waiver_tx_result(
             sync_waiver_roster_views(session, stats_pool=stats_pool, normalize_name_fn=normalize_name_fn)
         except Exception:
             pass
-        session.pop("waiver_tx_add_players", None)
-        session.pop("waiver_tx_drop_players", None)
+        _request_waiver_widget_clear(session)
         st.rerun()
         return
     errors = [str(err) for err in (tx_result.get("errors") or []) if str(err).strip()]
@@ -631,6 +649,8 @@ def render_waiver_wire_page(
             st.dataframe(cat_table, use_container_width=True, hide_index=True)
     for line in build_weakness_narrative(needs)[:2]:
         st.caption(line)
+
+    _apply_deferred_waiver_widget_clears(session)
 
     st.markdown("##### Waiver Transaction")
     st.caption(
