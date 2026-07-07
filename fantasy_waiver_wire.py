@@ -252,14 +252,31 @@ def filter_unrostered_players(
     *,
     name_col: str | None = None,
 ) -> pd.DataFrame:
-    """Exclude active-league rostered players when research sync is ON."""
+    """Exclude already-drafted players when Research Mode (sync) is ON.
+
+    Uses the unified active-team context so the correct source is applied:
+    Active League when one is selected, otherwise the Draft Assistant Simulator
+    draft board. Rows for any drafted/rostered player are removed so downstream
+    ranking and recommendation code recalculates on the remaining pool.
+    """
     if not research_league_sync_enabled(session):
         return df
-    context = get_active_league_context(session)
-    if context is None or df is None or getattr(df, "empty", True):
+    if df is None or getattr(df, "empty", True):
         return df
     col = name_col or _player_name_col(df)
     if col not in df.columns:
+        return df
+    try:
+        from active_team_context import resolve_active_team_context
+
+        ctx = resolve_active_team_context(session)
+        if ctx.drafted_keys:
+            return ctx.available_pool(df, name_col=col)
+    except Exception:
+        pass
+    # Fallback to Active League only (legacy behavior).
+    context = get_active_league_context(session)
+    if context is None:
         return df
     rostered = rostered_player_names(context)
     if not rostered:
@@ -901,6 +918,247 @@ def recommend_adds_current(
     if name_col != "Player" and "Player" not in top.columns:
         top["Player"] = top[name_col]
     return top.drop(columns=["_waiver_add_score"], errors="ignore")
+
+
+_WAIVER_POSITION_ALIASES: dict[str, tuple[str, ...]] = {
+    "C": ("C",),
+    "1B": ("1B",),
+    "2B": ("2B",),
+    "3B": ("3B",),
+    "SS": ("SS",),
+    "OF": ("OF", "LF", "CF", "RF"),
+    "DH": ("DH", "UTIL"),
+    "P": ("P", "SP", "RP"),
+}
+# Missing positions dominate; weak/thin positions rank up; filled positions get little weight.
+_POSITION_WEIGHT_MISSING = 1.0
+_POSITION_WEIGHT_THIN = 0.6
+_POSITION_WEIGHT_FILLED = 0.12
+
+
+def _row_positions(row: pd.Series) -> set[str]:
+    tokens: set[str] = set()
+    for col in ("positions", "Primary Position", "Position", "primaryPos", "Pos"):
+        if col not in row.index:
+            continue
+        val = row.get(col)
+        if val is None:
+            continue
+        if isinstance(val, (list, tuple, set)):
+            raw = [str(v) for v in val]
+        else:
+            raw = str(val).replace("/", ",").replace(";", ",").split(",")
+        for tok in raw:
+            s = tok.strip().upper()
+            if s:
+                tokens.add(s)
+    return tokens
+
+
+def _player_eligible_at(row: pd.Series, position: str) -> bool:
+    aliases = _WAIVER_POSITION_ALIASES.get(str(position).strip().upper(), (str(position).strip().upper(),))
+    return bool(_row_positions(row) & set(aliases))
+
+
+def _required_position_counts(context: dict[str, Any] | None) -> dict[str, int]:
+    if not context:
+        return {}
+    try:
+        from fantasy_league_context import resolve_context_draft_slot_config
+        from live_draft_roster_slots import get_required_position_counts
+
+        cfg = resolve_context_draft_slot_config(context)
+        if cfg.get("slots"):
+            return {str(k).strip().upper(): int(v or 0) for k, v in get_required_position_counts(cfg).items()}
+    except Exception:
+        pass
+    return {}
+
+
+def _filled_position_counts(my_roster: pd.DataFrame) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if my_roster is None or getattr(my_roster, "empty", True):
+        return counts
+    for _, row in my_roster.iterrows():
+        for pos in _row_positions(row):
+            for base, aliases in _WAIVER_POSITION_ALIASES.items():
+                if pos in aliases:
+                    counts[base] = counts.get(base, 0) + 1
+                    break
+    return counts
+
+
+def compute_position_need_weights(
+    context: dict[str, Any] | None,
+    my_roster: pd.DataFrame,
+) -> dict[str, float]:
+    """Per-position recommendation weight for the active team's waiver needs.
+
+    - Missing positions (0 filled where required) receive the highest weight so
+      catchers/first-basemen dominate when the roster has none.
+    - Thin positions (filled < required) receive an elevated weight.
+    - Fully filled / strong positions receive a small weight so quality still
+      matters but they no longer dominate.
+
+    When the context has no slot rules, falls back to relative scarcity by how many
+    of each position the roster already carries.
+    """
+    required = _required_position_counts(context)
+    filled = _filled_position_counts(my_roster)
+    weights: dict[str, float] = {}
+    if required:
+        for pos, need in required.items():
+            if need <= 0:
+                continue
+            have = filled.get(pos, 0)
+            if have <= 0:
+                weights[pos] = _POSITION_WEIGHT_MISSING
+            elif have < need:
+                shortfall = (need - have) / max(1, need)
+                weights[pos] = _POSITION_WEIGHT_THIN + shortfall * (_POSITION_WEIGHT_MISSING - _POSITION_WEIGHT_THIN)
+            else:
+                weights[pos] = _POSITION_WEIGHT_FILLED
+        return weights
+    # No slot rules: weight inversely to how deep the roster already is at a spot.
+    if not filled:
+        return {}
+    max_have = max(filled.values())
+    for base in _WAIVER_POSITION_ALIASES:
+        have = filled.get(base, 0)
+        if have <= 0:
+            weights[base] = _POSITION_WEIGHT_MISSING
+        else:
+            weights[base] = max(
+                _POSITION_WEIGHT_FILLED,
+                _POSITION_WEIGHT_MISSING * (1.0 - have / (max_have + 1)),
+            )
+    return weights
+
+
+def _player_position_weight(row: pd.Series, position_weights: dict[str, float]) -> float:
+    if not position_weights:
+        return 0.0
+    best = 0.0
+    for pos, weight in position_weights.items():
+        if _player_eligible_at(row, pos):
+            best = max(best, float(weight))
+    return best
+
+
+def recommend_adds_personalized(
+    waiver_pool: pd.DataFrame,
+    needs: dict[str, Any],
+    *,
+    context: dict[str, Any] | None,
+    my_roster: pd.DataFrame,
+    limit: int = 15,
+) -> pd.DataFrame:
+    """Personalized waiver adds: which available players help THIS roster the most.
+
+    Blends four signals so the ranking answers the roster's actual needs rather
+    than "best available in general":
+
+    1. **Positional need** (dominant) — missing positions first, then thin ones.
+    2. **Category help** — players who help weak categories move up.
+    3. **Overall quality** — Player Grade / EFV keeps elite talent relevant.
+    4. **Upgrade opportunity** — quality above the roster's median at that spot.
+    """
+    if waiver_pool is None or getattr(waiver_pool, "empty", True):
+        return pd.DataFrame()
+    pool = waiver_pool.copy()
+    targets = list(needs.get("targets") or needs.get("weaknesses") or [])
+    position_weights = compute_position_need_weights(context, my_roster)
+    roster_grade_med = _roster_grade_median(my_roster) if my_roster is not None else None
+
+    pos_component = pd.Series(0.0, index=pool.index)
+    cat_component = pd.Series(0.0, index=pool.index)
+    quality_component = pd.Series(0.0, index=pool.index)
+
+    if position_weights:
+        pos_component = pool.apply(lambda r: _player_position_weight(r, position_weights), axis=1)
+
+    for cat in targets:
+        vals = _category_value_series_for_waiver(pool, cat)
+        if vals is None:
+            continue
+        vmax = float(vals.max()) or 1.0
+        normalized = vals.fillna(0) / vmax
+        if cat in LOWER_IS_BETTER_CATEGORIES:
+            normalized = 1.0 - normalized
+        cat_component = cat_component + normalized
+
+    grade = pool.apply(lambda r: _player_grade_display(r) or 0.0, axis=1)
+    gmax = float(grade.max()) or 1.0
+    quality_component = grade / gmax
+
+    # Positional need dominates; team category needs are the next strongest signal.
+    score = pos_component * 3.0 + cat_component * 2.5 + quality_component * 1.0
+
+    if roster_grade_med:
+        upgrade = grade.apply(lambda g: 0.4 if g and g > roster_grade_med else 0.0)
+        score = score + upgrade
+
+    pool["_waiver_add_score"] = score
+    pool["_position_need_weight"] = pos_component
+    pool = pool.sort_values(["_waiver_add_score"], ascending=False)
+    top = pool.head(limit).copy()
+    top["Why Add"] = [
+        _personalized_add_explanation(row, needs, position_weights)
+        for _, row in top.iterrows()
+    ]
+    top["Categories Helped"] = [
+        ", ".join(categories_helped_by_player(row, targets)) or "Balance"
+        for _, row in top.iterrows()
+    ]
+    name_col = _player_name_col(top)
+    if name_col != "Player" and "Player" not in top.columns:
+        top["Player"] = top[name_col]
+    return top.drop(columns=["_waiver_add_score", "_position_need_weight"], errors="ignore")
+
+
+def _category_value_series_for_waiver(pool: pd.DataFrame, category: str) -> pd.Series | None:
+    """Current-season stats first, then projected columns for waiver scoring."""
+    col = _resolve_current_stat_col(pool, category)
+    if col:
+        vals = pd.to_numeric(pool[col], errors="coerce")
+        if vals.notna().any():
+            return vals
+    try:
+        from active_team_context import _category_value_series
+
+        return _category_value_series(pool, category)
+    except Exception:
+        return None
+
+
+def _personalized_add_explanation(
+    player_row: pd.Series,
+    needs: dict[str, Any],
+    position_weights: dict[str, float],
+) -> str:
+    """Explain the add, leading with the strongest personalized reason."""
+    targets = list(needs.get("targets") or needs.get("weaknesses") or [])
+    helped_cats = categories_helped_by_player(player_row, targets)
+    if helped_cats:
+        primary = helped_cats[0]
+        if primary in ("HR", "RBI", "R"):
+            return f"Improves {primary} production (team weakness)"
+        if primary == "SB":
+            return "Improves SB weakness — speed upgrade"
+        if primary in ("AVG", "OBP", "OPS"):
+            return f"Improves {primary} (team weakness)"
+    eligible_needed = [
+        pos
+        for pos, weight in sorted(position_weights.items(), key=lambda kv: kv[1], reverse=True)
+        if weight >= _POSITION_WEIGHT_THIN and _player_eligible_at(player_row, pos)
+    ]
+    if eligible_needed:
+        top_pos = eligible_needed[0]
+        weight = position_weights.get(top_pos, 0.0)
+        if weight >= _POSITION_WEIGHT_MISSING:
+            return f"Fills an empty {top_pos} spot on your roster"
+        return f"Upgrades your thin {top_pos} depth"
+    return build_add_recommendation_explanation(player_row, needs)
 
 
 def _is_roster_star(player_row: pd.Series, roster: pd.DataFrame) -> bool:

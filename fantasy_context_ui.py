@@ -7,10 +7,12 @@ from typing import Any
 # Persisted session key (legacy name retained for cloud/disk compatibility).
 FANTASY_RESEARCH_SYNC_KEY = "use_active_league_context_waiver_filter"
 
-FANTASY_RESEARCH_SYNC_LABEL = "Sync active draft to research pages"
+FANTASY_RESEARCH_SYNC_LABEL = "Research Mode — treat drafted players as unavailable"
 FANTASY_RESEARCH_SYNC_HELP = (
-    "When enabled, research pages filter recommendations using your **Active Draft** "
-    "(rostered players are treated as unavailable)."
+    "When enabled, research pages treat players already drafted in the active draft "
+    "as **unavailable** and recalculate rankings and recommendations using only the "
+    "remaining available players. Source of truth is your **Active League** when one "
+    "is selected, otherwise the **Draft Assistant Simulator**."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (
@@ -19,6 +21,9 @@ RESEARCH_SYNC_PAGES: tuple[str, ...] = (
     "Valuation",
     "Fantasy Sleepers & Busts",
     "Draft Assistant Simulator",
+    "Rankings",
+    "Leaderboards",
+    "Player Search",
 )
 
 
@@ -58,8 +63,9 @@ def render_fantasy_context_sync_control(
     st.caption(
         "Affected pages: "
         + ", ".join(RESEARCH_SYNC_PAGES)
-        + ". When enabled, recommendations and analysis become league-aware. "
-        "When disabled, those pages operate in general MLB mode."
+        + ". When enabled, **recommendation tables and rankings** exclude drafted players and "
+        "re-rank the remaining pool. **Player lookup** (Comparison charts, trend dashboards, "
+        "valuation insight picker) still allows viewing any player you search for."
     )
     st.caption(
         "**Not affected:** Fantasy Standings, Lineup Assistant, Waiver Wire, Trade tools — "
@@ -82,19 +88,24 @@ def active_league_context_badge_text(session: dict[str, Any]) -> str:
 
 
 def research_sync_badge_text(session: dict[str, Any]) -> str:
-    """Research pages — show whether league-aware mode is on."""
+    """Research pages — show whether Research Mode is on and its active source."""
     if not research_league_sync_enabled(session):
-        return "Research mode: **General MLB** (sync off)"
+        return "Research mode: **General MLB** (off)"
     try:
-        from fantasy_league_context import get_active_league_context
+        from active_team_context import (
+            SOURCE_LEAGUE,
+            SOURCE_SIMULATOR,
+            resolve_active_team_context,
+        )
 
-        ctx = get_active_league_context(session)
-    except ImportError:
+        ctx = resolve_active_team_context(session)
+    except Exception:
         ctx = None
-    if isinstance(ctx, dict):
-        name = str(ctx.get("display_name") or ctx.get("my_team_name") or "Active League").strip()
-        return f"Research mode: **League-aware** · {name}"
-    return "Research mode: **League-aware** (no active draft — set one in Saved Draft Library)"
+    if ctx is not None and getattr(ctx, "source", None) == SOURCE_LEAGUE:
+        return f"Research mode: **On** · Active League — {ctx.active_team} (drafted players hidden & re-ranked)"
+    if ctx is not None and getattr(ctx, "source", None) == SOURCE_SIMULATOR:
+        return f"Research mode: **On** · Draft Simulator — {ctx.active_team} (drafted players hidden & re-ranked)"
+    return "Research mode: **On** (no active draft — start a simulator draft or select an Active League)"
 
 
 def render_active_league_context_badge(st: Any, session: dict[str, Any]) -> None:

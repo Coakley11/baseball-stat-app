@@ -15963,14 +15963,8 @@ if active_page == "Comparison Tool":
             )
         except Exception:
             pass
-    try:
-        from fantasy_waiver_wire import filter_unrostered_players
-
-        comparison_projection_lookup = filter_unrostered_players(
-            st.session_state, comparison_projection_lookup, name_col="fullName"
-        )
-    except ImportError:
-        pass
+    # Comparison player pickers use the full yearly database (lookup). Do not filter
+    # drafted players from profile cards — users can still view any player they select.
 
     comparison_card_pool = build_profile_draft_metrics_pool(
         sync_team=comparison_action_team,
@@ -16756,9 +16750,14 @@ if active_page == "Trend Value":
     except Exception:
         pass
     try:
-        from fantasy_waiver_wire import filter_unrostered_players
+        from active_team_context import apply_research_recommendation_adjustments
 
-        trend_value_df = filter_unrostered_players(st.session_state, trend_value_df, name_col="fullName")
+        trend_value_df = apply_research_recommendation_adjustments(
+            st.session_state,
+            trend_value_df,
+            score_col="OPS_trend" if "OPS_trend" in trend_value_df.columns else "HR_trend",
+            name_col="fullName",
+        )
     except ImportError:
         pass
     trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)
@@ -17647,9 +17646,14 @@ if active_page == "Fantasy Sleepers & Busts":
     except Exception:
         pass
     try:
-        from fantasy_waiver_wire import filter_unrostered_players
+        from active_team_context import apply_research_recommendation_adjustments
 
-        fantasy_df = filter_unrostered_players(st.session_state, fantasy_df, name_col="fullName")
+        fantasy_df = apply_research_recommendation_adjustments(
+            st.session_state,
+            fantasy_df,
+            score_col="Fantasy Edge",
+            name_col="fullName",
+        )
     except ImportError:
         pass
 
@@ -24299,6 +24303,19 @@ if active_page == "Valuation":
     else:
         valuation_df["Valuation_Score"] = 0.0
 
+    valuation_lookup_df = valuation_df.copy()
+    try:
+        from active_team_context import apply_research_recommendation_adjustments
+
+        valuation_df = apply_research_recommendation_adjustments(
+            st.session_state,
+            valuation_df,
+            score_col="Valuation_Score",
+            name_col="fullName",
+        )
+    except ImportError:
+        pass
+
     valuation_df = safe_round_rate_stats(valuation_df)
     try:
         from draft_score_display import fmt_valuation_score
@@ -24387,7 +24404,7 @@ if active_page == "Valuation":
 
     st.subheader("Valuation Insight Summaries")
     selected_value_row = _select_insight_row(
-        valuation_df,
+        valuation_lookup_df,
         key="valuation_selected_player",
         label="Choose a player to explain",
         default_name=valuation_df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"] if not valuation_df.empty else None,
@@ -24442,12 +24459,6 @@ if active_page == "Valuation":
             selected_player=sel_name,
         )
     except Exception:
-        pass
-    try:
-        from fantasy_waiver_wire import filter_unrostered_players
-
-        valuation_df = filter_unrostered_players(st.session_state, valuation_df, name_col="fullName")
-    except ImportError:
         pass
 
     best_value_row = valuation_df.sort_values("Valuation_Score", ascending=False).head(1)

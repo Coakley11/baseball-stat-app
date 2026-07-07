@@ -37,6 +37,7 @@ from fantasy_waiver_wire import (
     my_team_roster_dataframe,
     pop_waiver_tx_flash,
     recommend_adds_current,
+    recommend_adds_personalized,
     recommend_drops_current,
     remove_pending_move_pair,
     set_waiver_tx_flash,
@@ -642,7 +643,15 @@ def render_waiver_wire_page(
     else:
         needs = analyze_current_team_needs(my_roster, league_df, categories=waiver_cats)
         waiver_pool = build_waiver_pool(stats_pool, context)
-        adds = recommend_adds_current(waiver_pool, needs, limit=15)
+        adds = recommend_adds_personalized(
+            waiver_pool,
+            needs,
+            context=context,
+            my_roster=my_roster,
+            limit=15,
+        )
+        if adds is None or adds.empty:
+            adds = recommend_adds_current(waiver_pool, needs, limit=15)
         drops = recommend_drops_current(my_roster, limit=15, categories=waiver_cats)
         if cache_key is not None:
             try:
