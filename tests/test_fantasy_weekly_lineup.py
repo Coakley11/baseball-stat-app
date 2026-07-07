@@ -17,6 +17,7 @@ from fantasy_weekly_lineup import (
     resolve_weekly_lineup_slots,
     save_weekly_lineup,
     validate_weekly_lineup,
+    week_label,
 )
 
 
@@ -134,6 +135,51 @@ class WeeklyLineupTests(unittest.TestCase):
         self.assertEqual(waiver_filter_for_slot_label("Catcher"), "C")
         self.assertEqual(waiver_filter_for_slot_label("Second Base"), "2B")
         self.assertEqual(waiver_filter_for_slot_label("Utility"), "DH/UTIL")
+
+
+class WeeklyLineupUiTests(unittest.TestCase):
+    def test_week_label_imported_for_selectbox_formatter(self) -> None:
+        import fantasy_weekly_lineup_ui as ui
+
+        self.assertIs(ui.week_label, week_label)
+        self.assertEqual(ui.week_label(3), "Week 3")
+
+    def test_render_weekly_lineup_section_reaches_week_selectbox(self) -> None:
+        from unittest.mock import MagicMock
+
+        from fantasy_weekly_lineup_ui import render_weekly_lineup_section
+
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Catcher One", "Pick": 1}])
+        save_simulator_league_context(session, board, my_team_name="Daniel")
+        roster = _roster_df()
+        roster["Team"] = "Daniel"
+
+        st = MagicMock()
+
+        def _columns(n):
+            count = n if isinstance(n, int) else len(n)
+            return [MagicMock() for _ in range(max(int(count or 1), 1))]
+
+        st.columns.side_effect = _columns
+        st.selectbox.return_value = 1
+        st.button.return_value = False
+
+        render_weekly_lineup_section(
+            st,
+            session,
+            team_roster=roster,
+            lineup_team="Daniel",
+        )
+
+        week_calls = [
+            c for c in st.selectbox.call_args_list
+            if c.kwargs.get("key") == "weekly_lineup_selected_week"
+        ]
+        self.assertEqual(len(week_calls), 1)
+        format_func = week_calls[0].kwargs.get("format_func")
+        self.assertIsNotNone(format_func)
+        self.assertEqual(format_func(1), "Week 1")
 
 
 if __name__ == "__main__":

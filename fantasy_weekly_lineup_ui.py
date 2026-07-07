@@ -19,6 +19,7 @@ from fantasy_weekly_lineup import (
     save_weekly_lineup,
     slot_display_name,
     validate_weekly_lineup,
+    week_label,
     waiver_filter_for_slot_label,
 )
 
