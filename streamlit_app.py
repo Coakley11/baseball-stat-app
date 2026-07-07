@@ -7361,9 +7361,6 @@ def lineup_diagnosis_report(
         "weakest_detail": "",
         "balance_label": "",
         "position_note": "",
-        "weakest_pos": "",
-        "weakest_pos_val": None,
-        "weakest_pos_benchmark": None,
         "dragger_note": "",
         "surplus_note": "",
         "recommendations": [],
@@ -7582,6 +7579,9 @@ def lineup_diagnosis_report(
                     if slot_team_totals:
                         slot_benchmark = float(sum(slot_team_totals) / len(slot_team_totals))
             if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
+                out["weakest_pos"] = worst_pos
+                out["weakest_pos_val"] = agg[worst_pos]
+                out["weakest_pos_benchmark"] = slot_benchmark
                 try:
                     from fantasy_actionable_recommendations import build_actionable_position_weakness_note
 
@@ -22507,10 +22507,14 @@ if active_page == "Fantasy Standings Tracker":
             st.session_state,
             key_prefix="standings_archive",
             page_label_fn=page_option_label,
-            active_page="Fantasy Standings Tracker",
         )
-    except ImportError:
-        pass
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
 
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
@@ -23053,10 +23057,14 @@ if active_page == "Fantasy Lineup Assistant":
             st.session_state,
             key_prefix="lineup_archive",
             page_label_fn=page_option_label,
-            active_page="Fantasy Lineup Assistant",
         )
-    except ImportError:
-        pass
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
 
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
     try:
@@ -23528,9 +23536,9 @@ if active_page == "Fantasy Lineup Assistant":
                         _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                         _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                         if _needs.get("strengths"):
-                            _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
+                            _strength_cats = list(_needs.get("strengths") or _strength_cats)[:3]
                         if _needs.get("weaknesses"):
-                            _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
+                            _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:3]
                         _outlook, _confidence, _stars = team_outlook_summary(
                             strong_cats=_strength_cats,
                             weak_cats=_weakness_cats,
@@ -23570,9 +23578,36 @@ if active_page == "Fantasy Lineup Assistant":
                         use_container_width=False,
                     ):
                         navigate_to_page("Waiver Wire / Add-Drop Center")
-            elif diag.get("position_note") and "Weakest Position" in str(diag.get("position_note") or ""):
+            elif diag.get("weakest_pos"):
                 with st.container(border=True):
-                    st.markdown(str(diag["position_note"]))
+                    try:
+                        from fantasy_actionable_recommendations import build_actionable_position_weakness_note
+
+                        grp_col = (
+                            "Fantasy slot"
+                            if "Fantasy slot" in starters.columns
+                            else "Primary Position"
+                            if "Primary Position" in starters.columns
+                            else None
+                        )
+                        worst_starters = (
+                            starters[starters[grp_col].astype(str) == str(diag["weakest_pos"])]
+                            if grp_col
+                            else pd.DataFrame()
+                        )
+                        st.markdown(
+                            build_actionable_position_weakness_note(
+                                worst_pos=str(diag["weakest_pos"]),
+                                worst_val=float(diag.get("weakest_pos_val") or 0),
+                                starter_df=worst_starters,
+                                waiver_pool=_waiver_pool,
+                                needs=_needs,
+                                benchmark=diag.get("weakest_pos_benchmark"),
+                            )
+                        )
+                    except ImportError:
+                        if diag.get("position_note"):
+                            st.markdown(str(diag["position_note"]))
             if _outlook_line:
                 st.caption(_outlook_line.replace("**Team Outlook:**", "Team Outlook:"))
 
@@ -23931,10 +23966,14 @@ if active_page == "Waiver Wire / Add-Drop Center":
             st.session_state,
             key_prefix="waiver_archive",
             page_label_fn=page_option_label,
-            active_page="Waiver Wire / Add-Drop Center",
         )
-    except ImportError:
-        pass
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
     _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
     try:
         from fantasy_league_context import get_active_league_context

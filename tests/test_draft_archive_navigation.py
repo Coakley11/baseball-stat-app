@@ -17,15 +17,18 @@ from draft_archive_ui import (
     LIVE_DRAFT_PAGE,
     SAVED_DRAFT_LIBRARY_PAGE,
     SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY,
+    _KEY_PREFIX_TO_FANTASY_PAGE,
     _nav_label,
     _render_archive_actions,
+    render_active_saved_draft_chip,
+    render_fantasy_page_header,
     render_saved_draft_library_page,
     schedule_fantasy_analysis_navigation,
     schedule_page_navigation,
     schedule_return_from_saved_draft_library,
     schedule_saved_draft_library_navigation,
 )
-from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, get_draft_archive, save_simulator_team_archive
+from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, save_simulator_team_archive
 from fantasy_league_context import (
     PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY,
     apply_pending_league_context_activation,
@@ -151,6 +154,22 @@ class SavedDraftLibraryRenderTests(unittest.TestCase):
         )
         st.button.assert_called()
 
+    def test_render_archive_actions_shows_rename_for_active_draft(self) -> None:
+        st = self._mock_st()
+        session: dict = {}
+        entry = {"draft_id": "d-active", "draft_name": "Active Draft", "draft_type": "simulator", "team_name": "Daniel"}
+        _render_archive_actions(
+            st,
+            session,
+            entry,
+            active_id="d-active",
+            active_context_id="",
+            page_label_fn=lambda key: key,
+        )
+        labels = [str(call.args[0]) for call in st.button.call_args_list if call.args]
+        self.assertIn("Rename Draft", labels)
+        self.assertIn("Delete", labels)
+
     def test_nav_label_renders_live_and_simulator_icons(self) -> None:
         live = _nav_label(LIVE_DRAFT_PAGE, "Open Live Draft Room", None)
         sim = _nav_label(DRAFT_SIMULATOR_PAGE, "Go to Draft Room Simulator", None)
@@ -178,12 +197,62 @@ class SavedDraftLibraryRenderTests(unittest.TestCase):
     def test_render_saved_draft_library_page_with_archive(self) -> None:
         session: dict = {"room_your_team": "Daniel", "draft_shared_settings": {}}
         board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
-        from fantasy_league_context import save_simulator_league_context
-
         save_simulator_league_context(session, board, my_team_name="Daniel", defer_activation=True)
         st = self._mock_st()
         render_saved_draft_library_page(st, session, page_label_fn=lambda key: key)
         st.markdown.assert_called()
+
+
+class FantasyPageRenderRegressionTests(unittest.TestCase):
+    def _mock_st(self) -> MagicMock:
+        st = MagicMock()
+        st.markdown = MagicMock()
+        st.caption = MagicMock()
+        st.info = MagicMock()
+        st.button = MagicMock(return_value=False)
+        st.columns = MagicMock(side_effect=lambda n: [MagicMock() for _ in range(n if isinstance(n, int) else len(n))])
+        st.rerun = MagicMock()
+        return st
+
+    def test_render_active_saved_draft_chip_accepts_streamlit_call_sites(self) -> None:
+        params = inspect.signature(render_active_saved_draft_chip).parameters
+        self.assertIn("key_prefix", params)
+        self.assertIn("page_label_fn", params)
+        st = self._mock_st()
+        session: dict = {}
+        for key_prefix in _KEY_PREFIX_TO_FANTASY_PAGE:
+            render_active_saved_draft_chip(
+                st,
+                session,
+                key_prefix=key_prefix,
+                page_label_fn=lambda page_key: page_key,
+            )
+        self.assertTrue(st.markdown.called)
+
+    def test_render_active_saved_draft_chip_accepts_legacy_active_page_kwarg(self) -> None:
+        st = self._mock_st()
+        session: dict = {}
+        render_active_saved_draft_chip(
+            st,
+            session,
+            key_prefix="standings_archive",
+            page_label_fn=lambda page_key: page_key,
+            active_page=FANTASY_STANDINGS_PAGE,
+        )
+        self.assertTrue(st.markdown.called)
+
+    def test_render_fantasy_page_headers_for_all_workflow_pages(self) -> None:
+        st = self._mock_st()
+        session: dict = {}
+        for page in (FANTASY_STANDINGS_PAGE, FANTASY_LINEUP_PAGE, FANTASY_WAIVER_PAGE):
+            render_fantasy_page_header(
+                st,
+                session,
+                active_page=page,
+                key_prefix=f"test_{page[:8]}",
+                page_label_fn=lambda page_key: page_key,
+            )
+        self.assertGreaterEqual(st.markdown.call_count, 3)
 
 
 if __name__ == "__main__":

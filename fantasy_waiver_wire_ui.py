@@ -218,19 +218,6 @@ def render_waiver_wire_page(
         )
         return
 
-    try:
-        from draft_archive_ui import FANTASY_WAIVER_PAGE, render_fantasy_page_header
-
-        render_fantasy_page_header(
-            st,
-            session,
-            active_page=FANTASY_WAIVER_PAGE,
-            key_prefix="waiver_archive",
-            page_label_fn=page_label_fn,
-        )
-    except ImportError:
-        pass
-
     my_team = str(context.get("my_team_name") or "").strip()
     if my_team:
         st.caption(f"My team: **{my_team}**")

@@ -909,22 +909,30 @@ def _format_league_matchup_label(
 def render_active_saved_draft_chip(
     st: Any,
     session: dict[str, Any],
-    *,
     key_prefix: str = "active_draft",
     page_label_fn=None,
     active_page: str = "",
+    **_unused: Any,
 ) -> None:
     """Fantasy workflow header — active draft summary + page navigation."""
-    page = str(active_page or _KEY_PREFIX_TO_FANTASY_PAGE.get(key_prefix) or "").strip()
+    page = str(
+        active_page
+        or _KEY_PREFIX_TO_FANTASY_PAGE.get(str(key_prefix or "").strip())
+        or ""
+    ).strip()
     if page:
-        render_fantasy_page_header(
-            st,
-            session,
-            active_page=page,
-            key_prefix=key_prefix,
-            page_label_fn=page_label_fn,
-        )
-        return
+        try:
+            render_fantasy_page_header(
+                st,
+                session,
+                active_page=page,
+                key_prefix=key_prefix,
+                page_label_fn=page_label_fn,
+            )
+            return
+        except TypeError:
+            render_active_draft_summary(st, session)
+            return
     render_active_draft_summary(st, session)
 
 
@@ -1636,55 +1644,23 @@ def _render_active_draft_section(
             _persist_archive(session, st, reason="draft_archive_cleared")
             st.rerun()
 
+    draft_id = str(active.get("draft_id") or "").strip()
+    if draft_id:
+        _render_archive_manage_actions(
+            st,
+            session,
+            active,
+            draft_id=draft_id,
+            is_active=True,
+        )
 
-def _render_fantasy_sync_section(st: Any, session: dict[str, Any]) -> None:
-    try:
-        from fantasy_context_ui import render_fantasy_context_sync_control
 
-        with st.container(border=True):
-            render_fantasy_context_sync_control(st, session)
-    except ImportError:
-        pass
-
-
-def _render_archive_actions(
+def _render_archive_rename_delete_confirm(
     st: Any,
     session: dict[str, Any],
     entry: dict[str, Any],
-    *,
-    active_id: str,
-    active_context_id: str,
-    page_label_fn=None,
+    draft_id: str,
 ) -> None:
-    draft_id = str(entry.get("draft_id") or "")
-    if not draft_id:
-        return
-    context = get_league_context_for_archive(session, entry)
-    league_context_id = str((context or {}).get("league_context_id") or entry.get("league_context_id") or "").strip()
-    is_active = draft_id == active_id and (
-        not active_context_id or not league_context_id or league_context_id == active_context_id
-    )
-    if is_active:
-        return
-
-    btn1, btn2, btn3 = st.columns(3)
-    with btn1:
-        if st.button(
-            "Set Active",
-            key=f"archive_active_{draft_id}",
-            type="primary",
-            use_container_width=True,
-        ):
-            _activate_archive_entry(st, session, draft_id)
-    with btn2:
-        if st.button("Rename Draft", key=f"archive_rename_{draft_id}", use_container_width=True):
-            session[_RENAME_CONFIRM_PREFIX + draft_id] = True
-            st.rerun()
-    with btn3:
-        if st.button("Delete", key=f"archive_del_{draft_id}", use_container_width=True):
-            session[_DELETE_CONFIRM_PREFIX + draft_id] = True
-            st.rerun()
-
     if session.get(_RENAME_CONFIRM_PREFIX + draft_id):
         current_name = str(entry.get("draft_name") or "Saved Draft")
         new_name = st.text_input(
@@ -1720,6 +1696,84 @@ def _render_archive_actions(
             if st.button("Cancel", key=f"archive_del_cancel_{draft_id}"):
                 session.pop(_DELETE_CONFIRM_PREFIX + draft_id, None)
                 st.rerun()
+
+
+def _render_archive_manage_actions(
+    st: Any,
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    draft_id: str,
+    is_active: bool,
+) -> None:
+    if is_active:
+        btn1, btn2, btn3 = st.columns(3)
+        with btn1:
+            st.button("Active", key=f"archive_active_badge_{draft_id}", disabled=True, use_container_width=True)
+        with btn2:
+            if st.button("Rename Draft", key=f"archive_rename_{draft_id}", use_container_width=True):
+                session[_RENAME_CONFIRM_PREFIX + draft_id] = True
+                st.rerun()
+        with btn3:
+            if st.button("Delete", key=f"archive_del_{draft_id}", use_container_width=True):
+                session[_DELETE_CONFIRM_PREFIX + draft_id] = True
+                st.rerun()
+    else:
+        btn1, btn2, btn3 = st.columns(3)
+        with btn1:
+            if st.button(
+                "Set Active",
+                key=f"archive_active_{draft_id}",
+                type="primary",
+                use_container_width=True,
+            ):
+                _activate_archive_entry(st, session, draft_id)
+        with btn2:
+            if st.button("Rename Draft", key=f"archive_rename_{draft_id}", use_container_width=True):
+                session[_RENAME_CONFIRM_PREFIX + draft_id] = True
+                st.rerun()
+        with btn3:
+            if st.button("Delete", key=f"archive_del_{draft_id}", use_container_width=True):
+                session[_DELETE_CONFIRM_PREFIX + draft_id] = True
+                st.rerun()
+
+    _render_archive_rename_delete_confirm(st, session, entry, draft_id)
+
+
+def _render_fantasy_sync_section(st: Any, session: dict[str, Any]) -> None:
+    try:
+        from fantasy_context_ui import render_fantasy_context_sync_control
+
+        with st.container(border=True):
+            render_fantasy_context_sync_control(st, session)
+    except ImportError:
+        pass
+
+
+def _render_archive_actions(
+    st: Any,
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    active_id: str,
+    active_context_id: str,
+    page_label_fn=None,
+) -> None:
+    draft_id = str(entry.get("draft_id") or "")
+    if not draft_id:
+        return
+    context = get_league_context_for_archive(session, entry)
+    league_context_id = str((context or {}).get("league_context_id") or entry.get("league_context_id") or "").strip()
+    is_active = draft_id == active_id and (
+        not active_context_id or not league_context_id or league_context_id == active_context_id
+    )
+    _render_archive_manage_actions(
+        st,
+        session,
+        entry,
+        draft_id=draft_id,
+        is_active=is_active,
+    )
 
 
 def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
