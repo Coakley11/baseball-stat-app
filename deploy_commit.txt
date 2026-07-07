@@ -1,2 +1,2 @@
-3b279f2  # auto-generated; Streamlit Cloud reads this at runtime; rebuild 2026-07-07
+95f59b6  # auto-generated; Streamlit Cloud reads this at runtime; rebuild 2026-07-07
 branch: dev
