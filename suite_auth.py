@@ -349,12 +349,25 @@ def _persist_auth_session(
     except Exception:
         pass
     try:
+        from suite_user_persistence import preserve_page_through_auth
+
+        preserve_page_through_auth(session_state, app_id="baseball")
+    except ImportError:
+        pass
+    try:
         from suite_workspace_registry import ensure_owned_workspace_for_session
 
         ensure_owned_workspace_for_session(session_state)
     except ImportError:
         pass
     enforce_workspace_ownership(session_state)
+    try:
+        from suite_user_persistence import preserve_page_through_auth
+
+        # Re-apply after workspace ownership clamp — clamp must not drop the page.
+        preserve_page_through_auth(session_state, app_id="baseball")
+    except ImportError:
+        pass
     if st is not None and tokens and suite_user_id:
         try:
             from suite_auth_browser import save_browser_auth_tokens

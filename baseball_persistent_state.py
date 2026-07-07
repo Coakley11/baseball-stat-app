@@ -571,6 +571,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     # draft-room blob. When the user edits settings, draft_room_state_dirty is set
     # (via mark_draft_room_local_edit on_change) and we must not let the cloud blob
     # overwrite their live edits on the very next rerun.
+    auth_nav_lock = bool(
+        str(ss.get("_suite_auth_preserve_page") or "").strip()
+        or ss.get("active_page_source") == "auth_preserve"
+    )
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _HOF_HANDOFF_KEYS + _WORKSPACE_KEYS + _WORKFLOW_KEYS:
         if key not in state:
             continue
@@ -581,6 +585,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         if skip_draft_room and key in (DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_STATE_KEY):
             continue
         if skip_draft_room and key in _DRAFT_ROOM_SETTINGS_GLOBALS:
+            continue
+        if auth_nav_lock and key in (
+            "active_page",
+            "main_sidebar_page",
+            "_skip_page_restore_for",
+            "_navigate_to_page",
+        ):
             continue
         if preserve_insight and key in _INSIGHT_KEYS + _HOF_HANDOFF_KEYS:
             if key == "_ami_pending_insight" and isinstance(val, dict):
@@ -696,8 +707,28 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     blob_page = str(state.get("active_page") or "").strip()
     session_page_after_blob = str(ss.get("active_page") or "").strip()
     last_persisted = str(ss.get("_suite_last_persisted_page") or "").strip()
+    auth_preserve_page = ""
+    owned_page = ""
+    try:
+        from suite_user_persistence import AUTH_PAGE_PRESERVE_KEY, SESSION_USER_OWNED_PAGE_KEY
+
+        auth_preserve_page = str(ss.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
+        owned_page = str(ss.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
+    except ImportError:
+        auth_preserve_page = str(ss.get("_suite_auth_preserve_page") or "").strip()
+        owned_page = str(ss.get("_suite_user_owned_page") or "").strip()
+    preferred_page = ""
+    if auth_preserve_page:
+        preferred_page = auth_preserve_page
+    elif owned_page and (
+        owned_page == pre_restore_session_page
+        or owned_page == last_persisted
+        or ss.get("active_page_source") == "auth_preserve"
+    ):
+        preferred_page = owned_page
     user_owns_page = bool(
         pre_restore_user_nav
+        or preferred_page
         or (
             pre_restore_session_page
             and last_persisted
@@ -706,7 +737,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     )
     active = blob_page
     overwrite_source = "workspace_blob"
-    if (
+    if preferred_page:
+        active = preferred_page
+        overwrite_source = "auth_page_preserved" if auth_preserve_page else "user_page_preserved"
+    elif (
         user_owns_page
         and pre_restore_session_page
         and blob_page
@@ -722,6 +756,9 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         active = session_page_after_blob
     ss["_suite_page_overwrite_source"] = overwrite_source
     resume_page = str(ss.get("_navigate_to_page") or "").strip()
+    skip_for = str(ss.get("_skip_page_restore_for") or "").strip()
+    if not resume_page and skip_for:
+        resume_page = skip_for
     if (
         ss.get("_suite_pending_draft_lab_resume")
         and resume_page

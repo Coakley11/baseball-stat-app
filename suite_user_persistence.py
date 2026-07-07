@@ -26,6 +26,7 @@ _SESSION_RESTORED_PREFIX = "_suite_disk_state_restored::"
 _SESSION_BANNER_KEY = "_suite_persist_banner"
 _SESSION_SAVED_FLASH_KEY = "_suite_persist_saved_flash"
 SESSION_USER_OWNED_PAGE_KEY = "_suite_user_owned_page"
+AUTH_PAGE_PRESERVE_KEY = "_suite_auth_preserve_page"
 _SESSION_INVALID_WARN_KEY = "_suite_persist_invalid_warn"
 _SESSION_CLOUD_BANNER_KEY = "_suite_persist_cloud_banner"
 _LOCAL_DIRTY_PREFIX = "_suite_persist_local_dirty::"
@@ -465,10 +466,91 @@ def claim_user_page_ownership(st: Any, app_id: str, page: str) -> None:
         pass
 
 
+def resolve_session_active_page(session: dict[str, Any]) -> str:
+    """Best available active page from session navigation keys."""
+    for key in (
+        "active_page",
+        "main_sidebar_page",
+        AUTH_PAGE_PRESERVE_KEY,
+        SESSION_USER_OWNED_PAGE_KEY,
+        "_suite_last_persisted_page",
+        "_navigate_to_page",
+        "_skip_page_restore_for",
+    ):
+        page = str(session.get(key) or "").strip()
+        if page:
+            return page
+    return ""
+
+
+def preserve_page_through_auth(session: dict[str, Any], *, app_id: str = "baseball") -> str:
+    """
+    Keep the page the user was on when sign-in finishes.
+
+    Login may switch workspace and re-sync cloud (needed for drafts) but must not
+    bounce the user back to Historical Explorer / cloud active_page.
+    """
+    page = resolve_session_active_page(session)
+    if not page:
+        return ""
+    session[AUTH_PAGE_PRESERVE_KEY] = page
+    session[SESSION_USER_OWNED_PAGE_KEY] = page
+    session["active_page"] = page
+    session["main_sidebar_page"] = page
+    session["_suite_last_persisted_page"] = page
+    session["_navigate_to_page"] = page
+    session["_skip_page_restore_for"] = page
+    session["requested_page"] = page
+    session["active_page_source"] = "auth_preserve"
+    session["_suite_workspace_force_sync"] = True
+    session.pop(_workspace_synced_key(app_id), None)
+    session.pop(f"{_SESSION_RESTORED_PREFIX}{app_id}", None)
+    session.pop(_applied_cloud_ts_key(app_id), None)
+    try:
+        from suite_cloud_state import invalidate_cloud_full_session_cache
+
+        invalidate_cloud_full_session_cache(app_id)
+    except Exception:
+        pass
+    return page
+
+
+def consume_auth_page_preserve(session: dict[str, Any]) -> str:
+    """Return and clear the one-shot auth page preserve target."""
+    page = str(session.pop(AUTH_PAGE_PRESERVE_KEY, None) or "").strip()
+    if page:
+        return page
+    return str(session.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
+
+
+def _apply_auth_page_preserve_after_restore(session: dict[str, Any]) -> str:
+    """Re-apply page captured at sign-in after cloud/disk workspace restore."""
+    page = str(session.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
+    if not page:
+        page = str(session.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
+        if session.get("active_page_source") != "auth_preserve":
+            return ""
+    if not page:
+        return ""
+    session["active_page"] = page
+    session["main_sidebar_page"] = page
+    session["_suite_last_persisted_page"] = page
+    session["_navigate_to_page"] = page
+    session["_skip_page_restore_for"] = page
+    session[SESSION_USER_OWNED_PAGE_KEY] = page
+    session["_suite_page_overwrite_source"] = "auth_page_preserved"
+    session.pop(AUTH_PAGE_PRESERVE_KEY, None)
+    return page
+
+
 def _user_page_blocks_cloud_overwrite(st: Any, cloud_page: str) -> bool:
-    owned = str(st.session_state.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
-    current = _session_workspace_page(st)
+    ss = st.session_state
+    auth_preserve = str(ss.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
+    owned = str(ss.get(SESSION_USER_OWNED_PAGE_KEY) or auth_preserve or "").strip()
+    current = _session_workspace_page(st) or auth_preserve or owned
     cloud = str(cloud_page or "").strip()
+    if auth_preserve and cloud and cloud != auth_preserve:
+        return True
     if not owned or not current:
         return False
     return bool(owned == current and cloud and cloud != owned)
@@ -820,7 +902,13 @@ def sync_workspace_protocol(
         )
         return False
 
-    if st.session_state.get("_suite_page_user_nav") or st.session_state.get("_suite_nav_consumed_this_run"):
+    force_sync = bool(st.session_state.get("_suite_workspace_force_sync"))
+    auth_page_preserve = str(st.session_state.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
+    if (
+        (st.session_state.get("_suite_page_user_nav") or st.session_state.get("_suite_nav_consumed_this_run"))
+        and not force_sync
+        and not auth_page_preserve
+    ):
         reason = "user page navigation — workspace sync skipped"
         _mark_user_nav_sync_skipped(st, reason)
         _record_startup_restore_diagnostics(
@@ -963,10 +1051,12 @@ def sync_workspace_protocol(
         )
         return False
 
+    _apply_auth_page_preserve_after_restore(st.session_state)
     _lock_fingerprint_after_restore(st, app_id, picked.state)
     st.session_state[synced_key] = True
     st.session_state[f"{_SESSION_RESTORED_PREFIX}{app_id}"] = True
     st.session_state[dirty_key] = False
+    st.session_state.pop("_suite_workspace_force_sync", None)
     st.session_state[_autosave_block_key(app_id)] = True
     st.session_state["_suite_autosave_block_reason"] = "post-restore cooldown"
     st.session_state["_cloud_workspace_restored"] = picked.source == "cloud"
@@ -1430,10 +1520,12 @@ def sync_cloud_workspace_before_sidebar(
         st.session_state["_suite_persist_restore_skip_reason"] = f"apply_state failed: {exc}"
         return False
 
+    _apply_auth_page_preserve_after_restore(st.session_state)
     flag = f"{_SESSION_RESTORED_PREFIX}{app_id}"
     st.session_state[flag] = True
     st.session_state[applied_key] = cloud_ts or _utc_now_iso()
     st.session_state[dirty_key] = False
+    st.session_state.pop("_suite_workspace_force_sync", None)
     st.session_state["_suite_persist_last_restore_at"] = _utc_now_iso()
     st.session_state["_suite_persist_last_restore_source"] = picked.source
     st.session_state["_suite_persist_last_restore_reason"] = picked.reason
