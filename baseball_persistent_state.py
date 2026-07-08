@@ -130,6 +130,7 @@ _WORKFLOW_KEYS = (
     "draft_archive_teams",
     "active_draft_archive_id",
     "fantasy_league_context_state",
+    "_deleted_draft_archive_ids",
     "fantasy_in_season_state",
     "draft_lab_persisted_state",
     "use_active_league_context_waiver_filter",

@@ -184,7 +184,22 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(merged["draft_room_state"]["pick_count"], 20)
         self.assertEqual(merged["draft_room_state"]["table_records"][0]["Player"], "Player 1")
 
-    def test_load_current_states_uses_richest_row_per_app(self) -> None:
+    def test_merge_prefers_incoming_when_draft_archives_deleted(self) -> None:
+        prior = {
+            "draft_archive_teams": [
+                {"draft_id": "keep01", "draft_name": "Keep"},
+                {"draft_id": "gone01", "draft_name": "Gone"},
+            ],
+        }
+        incoming = {
+            "draft_archive_teams": [{"draft_id": "keep01", "draft_name": "Keep"}],
+            "_deleted_draft_archive_ids": ["gone01"],
+        }
+        merged = _merge_full_session_preserve_richer_draft(prior, incoming)
+        archives = merged.get("draft_archive_teams") or []
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0]["draft_id"], "keep01")
+        self.assertIn("gone01", merged.get("_deleted_draft_archive_ids") or [])
         fake_rows = [
             {
                 "app": "baseball",

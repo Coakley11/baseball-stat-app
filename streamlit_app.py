@@ -14017,9 +14017,12 @@ if not _submit_insight_run or not st.session_state.get("_ami_insight_render_succ
 if _submit_insight_run:
     st.session_state.pop("_ami_submit_render_insight_this_run", None)
 
-# Drop restored ephemeral widget keys (file_uploader / buttons — assigning them crashes Streamlit).
+# Drop restored ephemeral button keys (assigning them from snapshots crashes Streamlit).
+# Do NOT purge file_uploader keys here — live uploads need session values until staged.
 for _ephemeral_key in list(st.session_state.keys()):
-    if pg_state._is_file_uploader_widget_key(_ephemeral_key) or pg_state._is_ephemeral_widget_key(_ephemeral_key):
+    if pg_state._is_file_uploader_widget_key(_ephemeral_key):
+        continue
+    if pg_state._is_ephemeral_widget_key(_ephemeral_key):
         st.session_state.pop(_ephemeral_key, None)
 
 if not pp.is_screenshot_mode(st):
@@ -19546,9 +19549,9 @@ if active_page == "Draft Room Simulator":
             )
 
         default_names = ["Daniel"] + [f"Team {i}" for i in range(2, int(room_team_count) + 1)]
+        ensure_text_state("room_team_names", "\n".join(default_names))
         team_name_text = st.text_area(
             "Team Names, one per line",
-            value="\n".join(default_names),
             key="room_team_names",
             help="Put each fantasy team on its own line. The draft table will use these names.",
             on_change=_draft_room_settings_changed,

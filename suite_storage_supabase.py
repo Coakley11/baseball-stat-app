@@ -304,22 +304,75 @@ def _merge_full_session_preserve_richer_draft(
     incoming: dict[str, Any],
 ) -> dict[str, Any]:
     merged = dict(incoming or {})
-    prior_count = _draft_pick_count_from_session_blob(prior)
-    incoming_count = _draft_pick_count_from_session_blob(incoming)
-    if prior_count > incoming_count:
-        for key in ("draft_room_state", "draft_room_table"):
-            if isinstance(prior.get(key), dict):
-                merged[key] = prior[key]
     try:
-        from workflow_persist_guard import PROTECTED_WORKFLOW_PERSIST_KEYS, workflow_richness
+        from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+    except ImportError:
+        DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
+    try:
+        from workflow_persist_guard import (
+            DRAFT_ARCHIVE_KEY,
+            LEAGUE_CONTEXT_STATE_KEY,
+            PROTECTED_WORKFLOW_PERSIST_KEYS,
+            _merge_deleted_draft_archive_ids,
+            count_draft_archives,
+            count_league_contexts,
+            workflow_richness,
+        )
+
+        tombstones = _merge_deleted_draft_archive_ids(prior, incoming)
+        if tombstones:
+            merged[DELETED_DRAFT_ARCHIVE_IDS_KEY] = tombstones
+
+        prior_archives = prior.get(DRAFT_ARCHIVE_KEY)
+        incoming_archives = merged.get(DRAFT_ARCHIVE_KEY)
+        if isinstance(prior_archives, list) and isinstance(incoming_archives, list):
+            if len(incoming_archives) < len(prior_archives):
+                merged[DRAFT_ARCHIVE_KEY] = incoming_archives
+            elif workflow_richness(DRAFT_ARCHIVE_KEY, prior_archives) > workflow_richness(
+                DRAFT_ARCHIVE_KEY, incoming_archives
+            ):
+                merged[DRAFT_ARCHIVE_KEY] = prior_archives
+        elif isinstance(prior_archives, list) and incoming_archives is None:
+            if workflow_richness(DRAFT_ARCHIVE_KEY, prior_archives) > 0 and not tombstones:
+                merged[DRAFT_ARCHIVE_KEY] = prior_archives
+
+        if tombstones and isinstance(merged.get(DRAFT_ARCHIVE_KEY), list):
+            excluded = set(tombstones)
+            merged[DRAFT_ARCHIVE_KEY] = [
+                entry
+                for entry in merged[DRAFT_ARCHIVE_KEY]
+                if isinstance(entry, dict)
+                and str(entry.get("draft_id") or "").strip() not in excluded
+            ]
+
+        prior_contexts = prior.get(LEAGUE_CONTEXT_STATE_KEY)
+        incoming_contexts = merged.get(LEAGUE_CONTEXT_STATE_KEY)
+        if isinstance(prior_contexts, dict) and isinstance(incoming_contexts, dict):
+            if count_league_contexts(incoming_contexts) < count_league_contexts(prior_contexts):
+                merged[LEAGUE_CONTEXT_STATE_KEY] = incoming_contexts
+            elif workflow_richness(LEAGUE_CONTEXT_STATE_KEY, prior_contexts) > workflow_richness(
+                LEAGUE_CONTEXT_STATE_KEY, incoming_contexts
+            ):
+                merged[LEAGUE_CONTEXT_STATE_KEY] = prior_contexts
+        elif isinstance(prior_contexts, dict) and incoming_contexts is None:
+            if workflow_richness(LEAGUE_CONTEXT_STATE_KEY, prior_contexts) > 0:
+                merged[LEAGUE_CONTEXT_STATE_KEY] = prior_contexts
 
         for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+            if key in (DRAFT_ARCHIVE_KEY, LEAGUE_CONTEXT_STATE_KEY):
+                continue
             prior_val = prior.get(key)
             incoming_val = merged.get(key)
             if workflow_richness(key, prior_val) > workflow_richness(key, incoming_val):
                 merged[key] = prior_val
     except ImportError:
         pass
+    prior_count = _draft_pick_count_from_session_blob(prior)
+    incoming_count = _draft_pick_count_from_session_blob(incoming)
+    if prior_count > incoming_count:
+        for key in ("draft_room_state", "draft_room_table"):
+            if isinstance(prior.get(key), dict):
+                merged[key] = prior[key]
     return merged
 
 

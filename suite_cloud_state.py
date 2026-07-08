@@ -753,11 +753,18 @@ def _draft_library_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
 
     slice_out: dict[str, Any] = {}
     archives = state.get(DRAFT_ARCHIVE_KEY)
-    if isinstance(archives, list) and archives:
+    if isinstance(archives, list):
         slice_out[DRAFT_ARCHIVE_KEY] = copy.deepcopy(archives)
     active_id = str(state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
     if active_id:
         slice_out[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
+    try:
+        from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+    except ImportError:
+        DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
+    tombstones = state.get(DELETED_DRAFT_ARCHIVE_IDS_KEY)
+    if isinstance(tombstones, list) and tombstones:
+        slice_out[DELETED_DRAFT_ARCHIVE_IDS_KEY] = copy.deepcopy(tombstones)
     flc = state.get(LEAGUE_CONTEXT_STATE_KEY)
     if _league_context_store_nonempty(flc):
         slice_out[LEAGUE_CONTEXT_STATE_KEY] = copy.deepcopy(flc)
@@ -879,10 +886,19 @@ def save_cloud_draft_library_with_details(
                 pass
         draft_slice = _draft_library_slice_from_state(state)
         try:
-            from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+            from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY, DELETED_DRAFT_ARCHIVE_IDS_KEY
         except ImportError:
             from workflow_persist_guard import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
-        if not draft_slice.get(DRAFT_ARCHIVE_KEY) and not draft_slice.get(ACTIVE_DRAFT_ARCHIVE_KEY):
+            DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
+        has_archives = DRAFT_ARCHIVE_KEY in draft_slice
+        has_tombstones = bool(draft_slice.get(DELETED_DRAFT_ARCHIVE_IDS_KEY))
+        has_contexts = bool(draft_slice.get(LEAGUE_CONTEXT_STATE_KEY))
+        if (
+            not has_archives
+            and not draft_slice.get(ACTIVE_DRAFT_ARCHIVE_KEY)
+            and not has_tombstones
+            and not has_contexts
+        ):
             return False, "empty_draft_library_slice", app_key
         payload = {FULL_SESSION_KEY: draft_slice}
         estimate_fn = getattr(storage, "estimate_metrics_payload_bytes", None)

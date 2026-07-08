@@ -106,5 +106,18 @@ class ReconcileStaleResumeFlagsTests(unittest.TestCase):
         self.assertNotIn("_navigate_to_page", st.session_state)
 
 
+class DraftLibrarySliceTests(unittest.TestCase):
+    def test_slice_includes_empty_archives_and_tombstones(self) -> None:
+        from suite_cloud_state import _draft_library_slice_from_state
+
+        state = {
+            "draft_archive_teams": [],
+            "_deleted_draft_archive_ids": ["gone01"],
+        }
+        slice_out = _draft_library_slice_from_state(state)
+        self.assertEqual(slice_out.get("draft_archive_teams"), [])
+        self.assertEqual(slice_out.get("_deleted_draft_archive_ids"), ["gone01"])
+
+
 if __name__ == "__main__":
     unittest.main()

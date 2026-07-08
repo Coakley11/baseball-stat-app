@@ -135,6 +135,31 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
         self.assertEqual(session.get(DRAFT_ARCHIVE_KEY), [])
 
+    def test_restore_merge_merges_tombstones_from_cloud(self) -> None:
+        incoming: dict = {}
+        cloud = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "gone01", "draft_name": "Deleted"}],
+            "_deleted_draft_archive_ids": ["gone01"],
+        }
+        session: dict = {DRAFT_ARCHIVE_KEY: []}
+
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value={}):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=cloud):
+                merge_protected_workflow_on_restore(session, incoming, st=MagicMock())
+
+        self.assertEqual(session.get(DRAFT_ARCHIVE_KEY), [])
+        self.assertIn("gone01", session.get("_deleted_draft_archive_ids") or [])
+
+    def test_inject_save_state_includes_empty_archives_on_authoritative_delete(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [],
+            WORKFLOW_PERSIST_ALLOW_CLEAR_KEY: True,
+            "_deleted_draft_archive_ids": ["gone01"],
+        }
+        out = inject_session_draft_library_into_save_state({}, session)
+        self.assertEqual(out.get(DRAFT_ARCHIVE_KEY), [])
+        self.assertEqual(out.get("_deleted_draft_archive_ids"), ["gone01"])
+
     def test_should_keep_session_workflow_over_empty_blob(self) -> None:
         session_archives = [{"draft_id": "a1"}, {"draft_id": "a2"}]
         self.assertTrue(

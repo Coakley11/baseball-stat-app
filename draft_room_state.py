@@ -3003,6 +3003,19 @@ def enrich_save_payload_with_draft_room(
             if blob:
                 diag["enrich_source"] = diag.get("enrich_source") or "session_blob"
         if not blob or table_pick_count(blob) <= 0:
+            settings = _room_settings_from_session(session)
+            if settings:
+                try:
+                    table = ensure_simulator_board_for_settings(session)
+                    blob = table_to_persist_dict(table, settings=settings)
+                    diag["enrich_source"] = "settings_only"
+                except Exception:
+                    blob = None
+        if not blob:
+            return state, diag
+        has_settings = any(k in blob for k in DRAFT_ROOM_SETTINGS_KEYS)
+        has_structure = isinstance(blob.get("table_records"), list) and bool(blob.get("table_records"))
+        if table_pick_count(blob) <= 0 and not has_settings and not has_structure:
             return state, diag
 
     safe_blob = copy.deepcopy(blob)
@@ -3401,10 +3414,12 @@ def apply_cloud_draft_room_state_if_allowed(session: dict[str, Any], state: dict
     if is_draft_room_locally_dirty(session):
         return False
     blob = _draft_room_from_blob(state)
-    if not blob or not blob.get("table_records"):
+    if not blob:
         return False
-    restored = table_from_persist_dict(blob)
-    if restored is None:
+    records = blob.get("table_records")
+    has_table = isinstance(records, list) and len(records) > 0
+    has_settings = any(k in blob for k in DRAFT_ROOM_SETTINGS_KEYS)
+    if not has_table and not has_settings:
         return False
     skip_team_settings = False
     try:
@@ -3421,6 +3436,12 @@ def apply_cloud_draft_room_state_if_allowed(session: dict[str, Any], state: dict
             if skip_team_settings and key == "room_your_team":
                 continue
             session[key] = blob[key]
+    if not has_table:
+        session["_draft_room_restore_source"] = "cloud_or_workspace_settings"
+        return True
+    restored = table_from_persist_dict(blob)
+    if restored is None:
+        return False
     apply_restored_board_to_session(session, restored, blob=copy.deepcopy(blob), bump_widget=True)
     session["_draft_room_restore_source"] = "cloud_or_workspace"
     return True

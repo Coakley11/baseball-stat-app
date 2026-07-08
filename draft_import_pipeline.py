@@ -637,8 +637,16 @@ def render_draft_room_import_block(
         key=widget_key,
         on_change=_on_upload_change,
     )
+    if imported_draft_file is not None:
+        stage_draft_import_upload(session, widget_key=widget_key)
     resolved_file = resolve_uploaded_file_for_import(session, imported_draft_file, widget_key=widget_key)
     cached_review = session.get(session_key)
+    probe_pool_size = 0
+    try:
+        probe_pool = pool_fn()
+        probe_pool_size = int(len(probe_pool)) if isinstance(probe_pool, pd.DataFrame) else 0
+    except Exception:
+        probe_pool_size = 0
 
     if resolved_file is None:
         status = build_draft_import_debug_status(
@@ -649,6 +657,7 @@ def render_draft_room_import_block(
             import_block_entered=True,
             pipeline_called=False,
             review=cached_review if isinstance(cached_review, dict) else None,
+            pool_size=probe_pool_size,
             layout_label=layout_label,
         )
         render_draft_import_debug_panel(st, status)

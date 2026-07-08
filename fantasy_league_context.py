@@ -1673,12 +1673,22 @@ def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any]
 
 def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
     """Restore archive list entries from league contexts when restore wiped draft_archive_teams."""
-    from draft_archive_state import DRAFT_ARCHIVE_KEY, get_draft_archive
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, DELETED_DRAFT_ARCHIVE_IDS_KEY, get_draft_archive
 
     store = ensure_fantasy_league_context_state(session)
     contexts = store.get("contexts") or {}
     if not isinstance(contexts, dict):
         return 0
+    deleted_drafts = {
+        str(item).strip()
+        for item in (session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])
+        if str(item).strip()
+    }
+    deleted_contexts = {
+        str(item).strip()
+        for item in (store.get("deleted_context_ids") or [])
+        if str(item).strip()
+    }
     raw = session.get(DRAFT_ARCHIVE_KEY)
     entries = [dict(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
     existing_ids = {str(e.get("draft_id") or "").strip() for e in entries if str(e.get("draft_id") or "").strip()}
@@ -1686,11 +1696,14 @@ def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
     for context in contexts.values():
         if not isinstance(context, dict):
             continue
+        context_id = str(context.get("league_context_id") or "").strip()
+        if context_id and context_id in deleted_contexts:
+            continue
         stub = _archive_stub_from_league_context(context)
         if not stub:
             continue
         draft_id = str(stub.get("draft_id") or "").strip()
-        if not draft_id or draft_id in existing_ids or get_draft_archive(session, draft_id):
+        if not draft_id or draft_id in deleted_drafts or draft_id in existing_ids or get_draft_archive(session, draft_id):
             continue
         repaired.append(stub)
         existing_ids.add(draft_id)

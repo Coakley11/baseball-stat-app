@@ -20,6 +20,10 @@ def _utc_now_iso() -> str:
 DRAFT_ARCHIVE_KEY = "draft_archive_teams"
 LEAGUE_CONTEXT_STATE_KEY = "fantasy_league_context_state"
 ACTIVE_DRAFT_ARCHIVE_KEY = "active_draft_archive_id"
+try:
+    from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+except ImportError:
+    DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
 
 PROTECTED_WORKFLOW_PERSIST_KEYS: tuple[str, ...] = (
     DRAFT_ARCHIVE_KEY,
@@ -72,6 +76,7 @@ def inject_session_draft_library_into_save_state(
 ) -> dict[str, Any]:
     """Copy live session draft library keys into the outbound save blob."""
     out = dict(state or {})
+    allow_clear = bool(session.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY))
     for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
         session_val = session.get(key)
         if protected_workflow_nonempty(key, session_val):
@@ -79,8 +84,16 @@ def inject_session_draft_library_into_save_state(
                 out[key] = copy.deepcopy(session_val)
             except Exception:
                 out[key] = session_val
+        elif allow_clear and key == DRAFT_ARCHIVE_KEY and isinstance(session_val, list):
+            out[key] = copy.deepcopy(session_val)
         elif key not in out and protected_workflow_nonempty(key, out.get(key)):
             continue
+    tombstones = session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY)
+    if isinstance(tombstones, list) and tombstones:
+        try:
+            out[DELETED_DRAFT_ARCHIVE_IDS_KEY] = copy.deepcopy(tombstones)
+        except Exception:
+            out[DELETED_DRAFT_ARCHIVE_IDS_KEY] = list(tombstones)
     return out
 
 
@@ -335,7 +348,25 @@ def _archive_sort_ts(entry: dict[str, Any]) -> str:
 def _deleted_draft_archive_ids(session: dict[str, Any] | None) -> set[str]:
     if not isinstance(session, dict):
         return set()
-    raw = session.get("_deleted_draft_archive_ids")
+    raw = session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY)
+    if not isinstance(raw, list):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _merge_deleted_draft_archive_ids(*sources: Any) -> list[str]:
+    merged: set[str] = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        merged.update(_deleted_draft_archive_ids(source))
+    return sorted(merged)
+
+
+def _deleted_context_ids_from_store(store: Any) -> set[str]:
+    if not isinstance(store, dict):
+        return set()
+    raw = store.get("deleted_context_ids")
     if not isinstance(raw, list):
         return set()
     return {str(item).strip() for item in raw if str(item).strip()}
@@ -361,8 +392,13 @@ def _union_merge_draft_archives(*sources: Any, exclude_ids: set[str] | None = No
     return sorted(by_id.values(), key=_archive_sort_ts, reverse=True)
 
 
-def _union_merge_league_context_stores(*sources: Any) -> dict[str, Any]:
+def _union_merge_league_context_stores(
+    *sources: Any,
+    exclude_context_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Merge league-context stores by league_context_id."""
+    excluded = {str(item).strip() for item in (exclude_context_ids or set()) if str(item).strip()}
+    deleted_context_ids: set[str] = set(excluded)
     merged: dict[str, dict[str, Any]] = {}
     active_id = ""
     schema_version = 1
@@ -370,11 +406,12 @@ def _union_merge_league_context_stores(*sources: Any) -> dict[str, Any]:
     for source in sources:
         if not isinstance(source, dict):
             continue
+        deleted_context_ids.update(_deleted_context_ids_from_store(source))
         schema_version = int(source.get("schema_version") or schema_version or 1)
         if isinstance(source.get("legacy_migration"), dict):
             legacy_migration = copy.deepcopy(source["legacy_migration"])
         candidate_active = str(source.get("active_league_context_id") or "").strip()
-        if candidate_active:
+        if candidate_active and candidate_active not in deleted_context_ids:
             active_id = candidate_active
         contexts = source.get("contexts")
         if not isinstance(contexts, dict):
@@ -383,7 +420,7 @@ def _union_merge_league_context_stores(*sources: Any) -> dict[str, Any]:
             if not isinstance(context, dict):
                 continue
             cid = str(context_id or context.get("league_context_id") or "").strip()
-            if not cid:
+            if not cid or cid in deleted_context_ids:
                 continue
             existing = merged.get(cid)
             if existing is None:
@@ -393,11 +430,15 @@ def _union_merge_league_context_stores(*sources: Any) -> dict[str, Any]:
             incoming_ts = str(context.get("metadata", {}).get("updated_at") or "")
             if incoming_ts >= existing_ts:
                 merged[cid] = copy.deepcopy(context)
+    if active_id and active_id not in merged:
+        active_id = next(iter(merged.keys()), "")
     out: dict[str, Any] = {
         "schema_version": schema_version,
         "contexts": merged,
         "active_league_context_id": active_id,
     }
+    if deleted_context_ids:
+        out["deleted_context_ids"] = sorted(deleted_context_ids)
     if legacy_migration is not None:
         out["legacy_migration"] = legacy_migration
     return out
@@ -441,12 +482,16 @@ def merge_protected_workflow_on_restore(
     merged_keys: list[str] = []
     merge_sources: dict[str, str] = {}
 
+    merged_tombstones = _merge_deleted_draft_archive_ids(session, incoming_state, disk_state, cloud_state)
+    if merged_tombstones:
+        session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = merged_tombstones
+
     merged_archives = _union_merge_draft_archives(
         session.get(DRAFT_ARCHIVE_KEY),
         incoming_state.get(DRAFT_ARCHIVE_KEY),
         disk_state.get(DRAFT_ARCHIVE_KEY),
         cloud_state.get(DRAFT_ARCHIVE_KEY),
-        exclude_ids=_deleted_draft_archive_ids(session),
+        exclude_ids=set(merged_tombstones),
     )
     if merged_archives:
         before = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
@@ -460,6 +505,10 @@ def merge_protected_workflow_on_restore(
         incoming_state.get(LEAGUE_CONTEXT_STATE_KEY),
         disk_state.get(LEAGUE_CONTEXT_STATE_KEY),
         cloud_state.get(LEAGUE_CONTEXT_STATE_KEY),
+        exclude_context_ids=_deleted_context_ids_from_store(session)
+        | _deleted_context_ids_from_store(incoming_state)
+        | _deleted_context_ids_from_store(disk_state)
+        | _deleted_context_ids_from_store(cloud_state),
     )
     if merged_context_store.get("contexts"):
         before = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))

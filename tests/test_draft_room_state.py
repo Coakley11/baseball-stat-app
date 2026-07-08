@@ -954,5 +954,35 @@ class TestBoardPickAssignment(unittest.TestCase):
         self.assertEqual(table_pick_count(blob), 3)
 
 
+class TestTeamNamesPersistence(unittest.TestCase):
+    def test_settings_only_enrich_persists_custom_team_names(self) -> None:
+        from draft_room_state import (
+            DRAFT_ROOM_PAGE_BLOCK,
+            DRAFT_ROOM_STATE_KEY,
+            apply_cloud_draft_room_state_if_allowed,
+            enrich_save_payload_with_draft_room,
+        )
+
+        session = {
+            "room_team_count": 2,
+            "room_rounds": 2,
+            "room_team_names": "Alpha\nBeta",
+            "room_your_team": "Alpha",
+            "room_format": "5x5 Roto",
+            "room_window": 3,
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+        }
+        state, diag = enrich_save_payload_with_draft_room(session, {})
+        self.assertTrue(diag.get("enrich_source"))
+        blob = state.get(DRAFT_ROOM_STATE_KEY) or {}
+        self.assertEqual(blob.get("room_team_names"), "Alpha\nBeta")
+        pf = state.get("page_filter_state", {}).get(DRAFT_ROOM_PAGE_BLOCK, {})
+        self.assertEqual(pf.get("room_team_names"), "Alpha\nBeta")
+
+        fresh: dict = {}
+        apply_cloud_draft_room_state_if_allowed(fresh, state)
+        self.assertEqual(fresh.get("room_team_names"), "Alpha\nBeta")
+
+
 if __name__ == "__main__":
     unittest.main()
