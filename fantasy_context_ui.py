@@ -7,6 +7,7 @@ from typing import Any
 from fantasy_context_source import (
     USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
     USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+    SOURCE_GENERIC,
     fantasy_context_source_badge_text,
     live_draft_context_available,
     live_draft_sync_enabled,
@@ -215,7 +216,19 @@ def render_fantasy_context_source_controls(
 
     _sync_persisted_context_toggles_from_widgets(session)
     st.caption(FANTASY_CONTEXT_OVERRIDE_FOOTER)
+    effective = resolve_fantasy_context_source(session)
     st.caption(f"Effective context: {fantasy_context_source_badge_text(session)}")
+    if effective.kind == SOURCE_GENERIC:
+        try:
+            from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives
+
+            if count_draft_archives(session.get(DRAFT_ARCHIVE_KEY)) > 0:
+                st.info(
+                    "**Next step:** choose a saved draft in **Saved Draft Library** below and click "
+                    "**Set Active** to feed Standings, Lineup, Waiver Wire, and Trades."
+                )
+        except ImportError:
+            pass
 
 
 def render_fantasy_context_sync_control(

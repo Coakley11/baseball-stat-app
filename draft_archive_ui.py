@@ -281,8 +281,10 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown(f"**Signed in?** {probe.get('signed_in_label') or '—'}")
+        if probe.get("auth_scope_label"):
+            st.caption(probe["auth_scope_label"])
         st.markdown(f"**Account email:** {probe.get('account_email') or '—'}")
-        st.markdown(f"**User ID:** `{probe.get('user_id') or '—'}`")
+        st.markdown(f"**Cloud user ID:** `{probe.get('user_id') or '—'}`")
         st.markdown(f"**Workspace ID:** `{probe.get('workspace_id') or '—'}`")
         st.markdown(f"**Owned workspace ID:** `{probe.get('owned_workspace_id') or '—'}`")
         st.markdown(f"**Cloud app key:** `{probe.get('cloud_app_key') or '—'}`")
@@ -300,7 +302,7 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         f"Path: {probe.get('persistence_key_path') or '—'}"
     )
     st.markdown(
-        f"**Cloud restore attempted:** {probe.get('cloud_restore_attempted_label') or '—'} · "
+        f"**Cloud restore:** {probe.get('cloud_restore_attempted_label') or '—'} · "
         f"**error:** `{probe.get('cloud_restore_error') or '—'}`"
     )
     st.markdown(
@@ -658,10 +660,22 @@ def render_saved_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
         active_context = get_active_league_context(session, respect_source_priority=False)
     st.markdown("##### Saved Active Draft")
     if not active:
-        st.caption(
-            "No saved draft selected as Active Draft. Fantasy pages can still use a "
-            "**temporary / unsaved** simulator or live board when you enable a Fantasy Context Source override."
-        )
+        try:
+            from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives
+
+            saved_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+        except ImportError:
+            saved_count = 0
+        if saved_count > 0:
+            st.info(
+                f"You have **{saved_count}** saved draft{'s' if saved_count != 1 else ''} in the library. "
+                "Choose one below and click **Set Active** to drive fantasy management tools."
+            )
+        else:
+            st.caption(
+                "No saved draft selected as Active Draft. Fantasy pages can still use a "
+                "**temporary / unsaved** simulator or live board when you enable a Fantasy Context Source override."
+            )
         return
     context = active_context or get_league_context_for_archive(session, active)
     title = str(active.get("draft_name") or (context or {}).get("display_name") or "Saved Draft")

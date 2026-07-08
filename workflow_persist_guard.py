@@ -539,6 +539,8 @@ def ensure_session_workflow_hydrated(
         return out
 
     out["empty_startup_write_would_erase"] = True
+    session["_suite_cloud_fetch_attempted"] = True
+    session["_suite_cloud_fetch_success"] = bool(cloud_count > 0 or disk_count > 0)
     merge_protected_workflow_on_restore(session, cloud_state, app_id=app_id, st=st)
     after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     out["session_after"] = after
@@ -1027,6 +1029,105 @@ _PERSISTENCE_VERDICT_LABELS = {
 }
 
 
+def _resolve_probe_auth_labels(session: dict[str, Any], diag: dict[str, Any]) -> dict[str, str]:
+    """Align signed-in display with the cloud identity actually used for restore."""
+    auth_enabled = bool(diag.get("auth_enabled"))
+    authenticated = bool(diag.get("authenticated"))
+    account_email = str(diag.get("account_email") or diag.get("account_external_id") or "").strip()
+    account_user_id = str(diag.get("account_user_id") or "").strip()
+    cloud_app_key = str(diag.get("cloud_app_key") or "").strip()
+    workspace_id = str(diag.get("workspace_id") or "").strip() or "daniel"
+
+    if not auth_enabled:
+        return {
+            "signed_in_label": "n/a (auth disabled)",
+            "auth_scope_label": f"Local/demo mode · workspace `{workspace_id}`",
+            "account_email_display": account_email or "—",
+            "user_id_display": account_user_id or "—",
+        }
+
+    if authenticated:
+        return {
+            "signed_in_label": "yes",
+            "auth_scope_label": f"Signed in · cloud key `{cloud_app_key or '—'}`",
+            "account_email_display": account_email or "—",
+            "user_id_display": account_user_id or "—",
+        }
+
+    if account_user_id and not account_user_id.startswith("local:"):
+        scope = (
+            f"Not signed in this session · cloud restore used workspace `{workspace_id}` "
+            f"and user row `{account_user_id}`"
+        )
+        email_display = account_email or "— (sign in to refresh email)"
+    else:
+        scope = f"Not signed in · local/demo workspace `{workspace_id}`"
+        email_display = account_email or "—"
+
+    return {
+        "signed_in_label": "no",
+        "auth_scope_label": scope,
+        "account_email_display": email_display,
+        "user_id_display": account_user_id or "—",
+    }
+
+
+def _resolve_cloud_restore_probe_labels(
+    session: dict[str, Any],
+    *,
+    restore_pick_source: str,
+    restore_applied: bool,
+    restore_skip: str,
+    session_draft_count: int,
+    workflow_hydrate_source: str,
+) -> tuple[bool, str, str]:
+    """Consistent cloud-restore attempted/applied labels for the probe panel."""
+    fetch_attempted = bool(session.get("_suite_cloud_fetch_attempted"))
+    fetch_success = bool(session.get("_suite_cloud_fetch_success"))
+    hydrated = bool(session.get("_suite_workflow_hydrated_this_run"))
+    cloud_workspace_restored = bool(
+        session.get("_cloud_workspace_restored") or session.get("_cloud_workspace_restored_this_run")
+    )
+    source_cloud = restore_pick_source == "cloud"
+    effective = bool(
+        fetch_attempted
+        or hydrated
+        or cloud_workspace_restored
+        or (restore_applied and source_cloud)
+        or (source_cloud and session_draft_count > 0)
+    )
+
+    if restore_applied and source_cloud:
+        detail = "Yes — cloud blob applied on startup"
+        label = "yes — workspace restore applied"
+    elif hydrated:
+        detail = f"Yes — drafts hydrated from {workflow_hydrate_source or 'cloud'} before autosave"
+        label = f"yes — workflow hydrated ({workflow_hydrate_source or 'cloud'})"
+    elif cloud_workspace_restored or (source_cloud and session_draft_count > 0):
+        detail = "Yes — session drafts match cloud restore source"
+        label = "yes — cloud restore source"
+    elif fetch_attempted and fetch_success:
+        detail = "Yes — cloud row read this session"
+        label = "yes — cloud row read"
+    elif fetch_attempted:
+        detail = "Attempted — cloud fetch ran but returned no usable blob"
+        label = "attempted — no blob"
+    elif restore_skip:
+        detail = f"No — restore skipped ({restore_skip})"
+        label = "no"
+        effective = False
+    elif source_cloud:
+        detail = "Yes — restore source is cloud"
+        label = "yes — restore source cloud"
+        effective = True
+    else:
+        detail = "No — no cloud restore evidence this session"
+        label = "no"
+        effective = False
+
+    return effective, label, detail
+
+
 def _resolve_persistence_verdict(session: dict[str, Any], startup: dict[str, Any], diag: dict[str, Any]) -> str:
     verdict = str(startup.get("persistence_verdict") or "").strip()
     if verdict:
@@ -1127,16 +1228,18 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     else:
         different_workspace = "Unknown — owned workspace not resolved"
 
-    if restore_applied and restore_pick_source == "cloud":
-        cloud_restore_ran = "Yes — cloud blob applied on startup"
-    elif restore_applied and restore_pick_source == "disk":
-        cloud_restore_ran = "No — disk blob applied instead of cloud"
-    elif restore_skip:
-        cloud_restore_ran = f"No — restore skipped ({restore_skip})"
-    elif restore_pick_source == "none":
-        cloud_restore_ran = "No — no workspace restore yet this session"
-    else:
-        cloud_restore_ran = f"Unclear — pick source `{restore_pick_source or '—'}`"
+    workflow_hydrated = bool(session.get("_suite_workflow_hydrated_this_run"))
+    workflow_hydrate_source = str(session.get("_suite_workflow_hydrate_source") or "").strip()
+    cloud_restore_effective, cloud_restore_attempted_label, cloud_restore_ran = (
+        _resolve_cloud_restore_probe_labels(
+            session,
+            restore_pick_source=restore_pick_source,
+            restore_applied=restore_applied,
+            restore_skip=restore_skip,
+            session_draft_count=session_draft_count,
+            workflow_hydrate_source=workflow_hydrate_source,
+        )
+    )
 
     cloud_zero = startup_cloud_drafts <= 0
     disk_zero = startup_disk_drafts <= 0
@@ -1155,10 +1258,6 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         )
         save_readback_key = str(save_readback.get("cloud_app_key") or "").strip()
 
-    # Cloud restore telemetry (recorded during startup workspace sync).
-    cloud_restore_attempted = bool(session.get("_suite_cloud_fetch_attempted"))
-    cloud_restore_success = bool(session.get("_suite_cloud_fetch_success"))
-    cloud_restore_row_found = bool(session.get("_suite_cloud_fetch_row_found"))
     cloud_restore_error = str(session.get("_suite_cloud_fetch_error") or "").strip()
     cloud_fetch_app_key = str(session.get("_suite_cloud_fetch_app_key") or "").strip()
 
@@ -1199,6 +1298,7 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
 
     account_email = str(diag.get("account_email") or diag.get("account_external_id") or "—")
     account_user_id = str(diag.get("account_user_id") or "—")
+    auth_labels = _resolve_probe_auth_labels(session, diag)
     persistence_key_path = (
         f"session[{DRAFT_ARCHIVE_KEY}] → disk[{DRAFT_ARCHIVE_KEY}] → "
         f"cloud metrics.full_session.{DRAFT_ARCHIVE_KEY}"
@@ -1206,14 +1306,13 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     session_has_archive_key = DRAFT_ARCHIVE_KEY in session
     session_archive_len = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     empty_startup_write_blocked = str(session.get("_suite_empty_startup_write_blocked") or "").strip()
-    workflow_hydrated = bool(session.get("_suite_workflow_hydrated_this_run"))
-    workflow_hydrate_source = str(session.get("_suite_workflow_hydrate_source") or "").strip()
 
     return {
         "signed_in": bool(diag.get("authenticated")),
-        "signed_in_label": "yes" if diag.get("authenticated") else "no",
-        "account_email": account_email,
-        "user_id": account_user_id,
+        "signed_in_label": auth_labels["signed_in_label"],
+        "auth_scope_label": auth_labels["auth_scope_label"],
+        "account_email": auth_labels["account_email_display"],
+        "user_id": auth_labels["user_id_display"],
         "workspace_id": workspace_id or "—",
         "owned_workspace_id": owned_workspace_id or "—",
         "cloud_app_key": str(diag.get("cloud_app_key") or cloud_write_app_key or "—"),
@@ -1225,8 +1324,8 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "restore_source": restore_pick_source or "none",
         "persistence_verdict": verdict,
         "persistence_verdict_label": verdict_label,
-        "cloud_restore_attempted": cloud_restore_attempted,
-        "cloud_restore_attempted_label": "yes" if cloud_restore_attempted else "no",
+        "cloud_restore_attempted": cloud_restore_effective,
+        "cloud_restore_attempted_label": cloud_restore_attempted_label,
         "cloud_restore_error": cloud_restore_error or "—",
         "cloud_write_attempted": cloud_write_attempted,
         "cloud_write_attempted_label": "yes" if cloud_write_attempted else "no",

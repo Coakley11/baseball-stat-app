@@ -173,6 +173,7 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         }
         with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
             mock_diag.return_value = {
+                "auth_enabled": True,
                 "authenticated": True,
                 "account_email": "chris@example.com",
                 "account_user_id": "uid-123",
@@ -195,7 +196,8 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(probe["cloud_draft_count"], 1)
         self.assertEqual(probe["active_draft_name"], "My League")
         self.assertEqual(probe["persistence_verdict"], "ok")
-        self.assertIn("Yes — cloud blob applied", probe["diagnosis"]["Did cloud restore run?"])
+        self.assertIn("yes", probe["cloud_restore_attempted_label"])
+        self.assertIn("Yes", probe["diagnosis"]["Did cloud restore run?"])
 
     def test_build_persistence_probe_panel_restore_failure(self) -> None:
         session = {
@@ -210,6 +212,7 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         }
         with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
             mock_diag.return_value = {
+                "auth_enabled": True,
                 "authenticated": True,
                 "account_email": "chris@example.com",
                 "account_user_id": "uid-123",
@@ -466,6 +469,37 @@ class WorkflowPersistGuardTests(unittest.TestCase):
             st.session_state.get("_suite_empty_startup_write_blocked"),
             "hydrated_from_cloud_before_autosave",
         )
+
+    def test_probe_auth_labels_unsigned_with_cloud_user(self) -> None:
+        from workflow_persist_guard import _resolve_probe_auth_labels
+
+        labels = _resolve_probe_auth_labels(
+            {},
+            {
+                "auth_enabled": True,
+                "authenticated": False,
+                "account_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b",
+                "workspace_id": "daniel",
+            },
+        )
+        self.assertEqual(labels["signed_in_label"], "no")
+        self.assertIn("Not signed in this session", labels["auth_scope_label"])
+        self.assertIn("f66b85aa", labels["user_id_display"])
+
+    def test_probe_cloud_restore_labels_when_source_cloud(self) -> None:
+        from workflow_persist_guard import _resolve_cloud_restore_probe_labels
+
+        effective, label, detail = _resolve_cloud_restore_probe_labels(
+            {"_suite_persist_last_restore_source": "cloud"},
+            restore_pick_source="cloud",
+            restore_applied=False,
+            restore_skip="",
+            session_draft_count=1,
+            workflow_hydrate_source="",
+        )
+        self.assertTrue(effective)
+        self.assertIn("yes", label)
+        self.assertIn("cloud", detail.lower())
 
 
 class WorkflowPersistGuardDiskRoundtripTests(unittest.TestCase):
