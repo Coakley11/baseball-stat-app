@@ -313,6 +313,7 @@ def _merge_full_session_preserve_richer_draft(
             DRAFT_ARCHIVE_KEY,
             LEAGUE_CONTEXT_STATE_KEY,
             PROTECTED_WORKFLOW_PERSIST_KEYS,
+            _deleted_context_ids_from_store,
             _merge_deleted_draft_archive_ids,
             count_draft_archives,
             count_league_contexts,
@@ -327,7 +328,10 @@ def _merge_full_session_preserve_richer_draft(
         incoming_archives = merged.get(DRAFT_ARCHIVE_KEY)
         if isinstance(prior_archives, list) and isinstance(incoming_archives, list):
             if len(incoming_archives) < len(prior_archives):
-                merged[DRAFT_ARCHIVE_KEY] = incoming_archives
+                if tombstones:
+                    merged[DRAFT_ARCHIVE_KEY] = incoming_archives
+                else:
+                    merged[DRAFT_ARCHIVE_KEY] = prior_archives
             elif workflow_richness(DRAFT_ARCHIVE_KEY, prior_archives) > workflow_richness(
                 DRAFT_ARCHIVE_KEY, incoming_archives
             ):
@@ -348,8 +352,14 @@ def _merge_full_session_preserve_richer_draft(
         prior_contexts = prior.get(LEAGUE_CONTEXT_STATE_KEY)
         incoming_contexts = merged.get(LEAGUE_CONTEXT_STATE_KEY)
         if isinstance(prior_contexts, dict) and isinstance(incoming_contexts, dict):
+            deleted_context_ids = _deleted_context_ids_from_store(prior_contexts) | _deleted_context_ids_from_store(
+                incoming_contexts
+            )
             if count_league_contexts(incoming_contexts) < count_league_contexts(prior_contexts):
-                merged[LEAGUE_CONTEXT_STATE_KEY] = incoming_contexts
+                if deleted_context_ids:
+                    merged[LEAGUE_CONTEXT_STATE_KEY] = incoming_contexts
+                else:
+                    merged[LEAGUE_CONTEXT_STATE_KEY] = prior_contexts
             elif workflow_richness(LEAGUE_CONTEXT_STATE_KEY, prior_contexts) > workflow_richness(
                 LEAGUE_CONTEXT_STATE_KEY, incoming_contexts
             ):

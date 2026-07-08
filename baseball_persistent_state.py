@@ -694,10 +694,15 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             from workflow_persist_guard import (
                 PROTECTED_WORKFLOW_PERSIST_KEYS,
                 should_keep_session_workflow_over_blob,
+                should_skip_empty_blob_workflow_over_persisted,
             )
 
             if key in PROTECTED_WORKFLOW_PERSIST_KEYS and should_keep_session_workflow_over_blob(
                 key, ss.get(key), val
+            ):
+                continue
+            if key in PROTECTED_WORKFLOW_PERSIST_KEYS and should_skip_empty_blob_workflow_over_persisted(
+                key, val, app_id=APP_ID, st=st
             ):
                 continue
         except ImportError:

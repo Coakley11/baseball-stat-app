@@ -124,8 +124,27 @@ class TestBaseballPersistence(unittest.TestCase):
         self.assertEqual(ss["_navigate_to_page"], "Saved Draft Library")
         self.assertEqual(ss.get("_suite_page_overwrite_source"), "scheduled_navigation_preserved")
 
-
-class TestSettingsCloudSaveNotBlocked(unittest.TestCase):
+    def test_apply_disk_state_skips_empty_archives_when_cloud_has_drafts(self) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "active_page": "Historical Explorer",
+            "main_sidebar_page": "Historical Explorer",
+            "page_filter_state": {},
+        }
+        cloud_state = {
+            "active_page": "Historical Explorer",
+            "page_filter_state": {},
+            "draft_archive_teams": [],
+        }
+        persisted = {
+            "draft_archive_teams": [{"draft_id": "cloud01", "draft_name": "Cloud Draft"}],
+        }
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value={}):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=persisted):
+                apply_baseball_disk_state(st, cloud_state)
+        ss = st.session_state
+        self.assertEqual(len(ss.get("draft_archive_teams") or []), 1)
+        self.assertEqual(ss["draft_archive_teams"][0]["draft_id"], "cloud01")
     """Settings-change saves must reach the cloud even when workspace sync was skipped.
 
     Regression for: draft settings + league format reverted on refresh because

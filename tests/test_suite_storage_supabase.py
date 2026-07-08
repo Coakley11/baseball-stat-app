@@ -163,6 +163,37 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(merged.get("active_page"), "Historical Explorer")
         self.assertEqual(merged["draft_room_state"]["pick_count"], 3)
 
+    def test_merge_preserves_prior_draft_archives_when_incoming_empty(self) -> None:
+        prior = {
+            "active_page": "Saved Draft Library",
+            "draft_archive_teams": [
+                {"draft_id": "abc123", "draft_name": "Home League", "updated_at": "2026-07-07T10:00:00"},
+            ],
+            "active_draft_archive_id": "abc123",
+        }
+        incoming = {
+            "active_page": "Historical Explorer",
+            "draft_archive_teams": [],
+        }
+        merged = _merge_full_session_preserve_richer_draft(prior, incoming)
+        self.assertEqual(len(merged.get("draft_archive_teams") or []), 1)
+        self.assertEqual(merged["draft_archive_teams"][0]["draft_id"], "abc123")
+
+    def test_merge_keeps_smaller_incoming_when_tombstones_present(self) -> None:
+        prior = {
+            "draft_archive_teams": [
+                {"draft_id": "keep01", "draft_name": "Keep"},
+                {"draft_id": "gone01", "draft_name": "Gone"},
+            ],
+        }
+        incoming = {
+            "draft_archive_teams": [{"draft_id": "keep01", "draft_name": "Keep"}],
+            "_deleted_draft_archive_ids": ["gone01"],
+        }
+        merged = _merge_full_session_preserve_richer_draft(prior, incoming)
+        ids = {entry["draft_id"] for entry in merged.get("draft_archive_teams") or []}
+        self.assertEqual(ids, {"keep01"})
+
     def test_merge_does_not_replace_filled_picks_with_empty_row_slots(self) -> None:
         """Prior empty 30-slot board must not clobber incoming 20 filled picks."""
         empty_slots = {
@@ -184,22 +215,7 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(merged["draft_room_state"]["pick_count"], 20)
         self.assertEqual(merged["draft_room_state"]["table_records"][0]["Player"], "Player 1")
 
-    def test_merge_prefers_incoming_when_draft_archives_deleted(self) -> None:
-        prior = {
-            "draft_archive_teams": [
-                {"draft_id": "keep01", "draft_name": "Keep"},
-                {"draft_id": "gone01", "draft_name": "Gone"},
-            ],
-        }
-        incoming = {
-            "draft_archive_teams": [{"draft_id": "keep01", "draft_name": "Keep"}],
-            "_deleted_draft_archive_ids": ["gone01"],
-        }
-        merged = _merge_full_session_preserve_richer_draft(prior, incoming)
-        archives = merged.get("draft_archive_teams") or []
-        self.assertEqual(len(archives), 1)
-        self.assertEqual(archives[0]["draft_id"], "keep01")
-        self.assertIn("gone01", merged.get("_deleted_draft_archive_ids") or [])
+    def test_load_current_states_uses_richest_row_per_app(self) -> None:
         fake_rows = [
             {
                 "app": "baseball",

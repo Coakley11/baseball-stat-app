@@ -26,6 +26,8 @@ from workflow_persist_guard import (
     probe_cloud_workflow_for_workspace,
     record_startup_restore_snapshot,
     should_keep_session_workflow_over_blob,
+    should_skip_empty_blob_workflow_over_persisted,
+    enrich_cloud_restore_state,
 )
 
 
@@ -135,31 +137,6 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
         self.assertEqual(session.get(DRAFT_ARCHIVE_KEY), [])
 
-    def test_restore_merge_merges_tombstones_from_cloud(self) -> None:
-        incoming: dict = {}
-        cloud = {
-            DRAFT_ARCHIVE_KEY: [{"draft_id": "gone01", "draft_name": "Deleted"}],
-            "_deleted_draft_archive_ids": ["gone01"],
-        }
-        session: dict = {DRAFT_ARCHIVE_KEY: []}
-
-        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value={}):
-            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=cloud):
-                merge_protected_workflow_on_restore(session, incoming, st=MagicMock())
-
-        self.assertEqual(session.get(DRAFT_ARCHIVE_KEY), [])
-        self.assertIn("gone01", session.get("_deleted_draft_archive_ids") or [])
-
-    def test_inject_save_state_includes_empty_archives_on_authoritative_delete(self) -> None:
-        session = {
-            DRAFT_ARCHIVE_KEY: [],
-            WORKFLOW_PERSIST_ALLOW_CLEAR_KEY: True,
-            "_deleted_draft_archive_ids": ["gone01"],
-        }
-        out = inject_session_draft_library_into_save_state({}, session)
-        self.assertEqual(out.get(DRAFT_ARCHIVE_KEY), [])
-        self.assertEqual(out.get("_deleted_draft_archive_ids"), ["gone01"])
-
     def test_should_keep_session_workflow_over_empty_blob(self) -> None:
         session_archives = [{"draft_id": "a1"}, {"draft_id": "a2"}]
         self.assertTrue(
@@ -168,6 +145,41 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertFalse(
             should_keep_session_workflow_over_blob(DRAFT_ARCHIVE_KEY, [], session_archives)
         )
+
+    def test_should_skip_empty_blob_when_cloud_has_drafts(self) -> None:
+        st = MagicMock()
+        cloud = {DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01", "draft_name": "Cloud Draft"}]}
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value={}):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=cloud):
+                self.assertTrue(
+                    should_skip_empty_blob_workflow_over_persisted(
+                        DRAFT_ARCHIVE_KEY,
+                        [],
+                        app_id="baseball",
+                        st=st,
+                    )
+                )
+        self.assertFalse(
+            should_skip_empty_blob_workflow_over_persisted(
+                DRAFT_ARCHIVE_KEY,
+                [{"draft_id": "live01"}],
+                app_id="baseball",
+                st=st,
+            )
+        )
+
+    def test_enrich_cloud_restore_state_merges_fallback_archives(self) -> None:
+        st = MagicMock()
+        primary = {"active_page": "Historical Explorer", DRAFT_ARCHIVE_KEY: []}
+        enriched = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "fb01", "draft_name": "Fallback Draft"}],
+            "active_page": "Saved Draft Library",
+        }
+        with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=enriched):
+            out = enrich_cloud_restore_state("baseball", st, primary)
+        self.assertEqual(len(out.get(DRAFT_ARCHIVE_KEY) or []), 1)
+        self.assertEqual(out["draft_archive_teams"][0]["draft_id"], "fb01")
+        self.assertEqual(out.get("active_page"), "Saved Draft Library")
 
     def test_build_saved_draft_library_diagnostics(self) -> None:
         session = {

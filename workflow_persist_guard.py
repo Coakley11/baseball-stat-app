@@ -151,6 +151,26 @@ def should_keep_session_workflow_over_blob(key: str, session_val: Any, blob_val:
     return session_score >= blob_score
 
 
+def should_skip_empty_blob_workflow_over_persisted(
+    key: str,
+    blob_val: Any,
+    *,
+    app_id: str = "baseball",
+    st: Any | None = None,
+) -> bool:
+    """On cold restore, do not apply an empty/stale blob field over richer disk/cloud data."""
+    if key not in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        return False
+    blob_score = workflow_richness(key, blob_val)
+    if blob_score > 0:
+        return False
+    disk_state = _load_disk_workflow_snapshot(app_id)
+    disk_score = workflow_richness(key, disk_state.get(key))
+    cloud_state = _load_cloud_workflow_snapshot(app_id, st) if st is not None else {}
+    cloud_score = workflow_richness(key, cloud_state.get(key))
+    return max(disk_score, cloud_score) > blob_score
+
+
 def _session_allows_workflow_clear(session: dict[str, Any], save_reason: str) -> bool:
     if session.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
         return True
@@ -275,6 +295,37 @@ def _load_cloud_workflow_snapshot(app_id: str, st: Any | None) -> dict[str, Any]
     except Exception:
         pass
     return {}
+
+
+def enrich_cloud_restore_state(
+    app_id: str,
+    st: Any,
+    primary_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge workflow keys from fallback cloud rows into the primary restore blob."""
+    out = copy.deepcopy(primary_state) if isinstance(primary_state, dict) else {}
+    enriched = _load_cloud_workflow_snapshot(app_id, st)
+    if not enriched:
+        return out
+
+    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        primary_score = workflow_richness(key, out.get(key))
+        enriched_score = workflow_richness(key, enriched.get(key))
+        if enriched_score > primary_score:
+            out[key] = copy.deepcopy(enriched[key])
+
+    primary_page = str(out.get("active_page") or "").strip()
+    enriched_page = str(enriched.get("active_page") or "").strip()
+    if (
+        (not primary_page or primary_page in _DEFAULT_STARTUP_PAGES)
+        and enriched_page
+        and enriched_page not in _DEFAULT_STARTUP_PAGES
+        and workflow_richness(DRAFT_ARCHIVE_KEY, out.get(DRAFT_ARCHIVE_KEY)) > 0
+    ):
+        out["active_page"] = enriched_page
+        out.setdefault("main_sidebar_page", enriched_page)
+
+    return out
 
 
 def _pick_persisted_value(

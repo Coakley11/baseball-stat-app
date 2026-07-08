@@ -912,6 +912,12 @@ def sync_workspace_protocol(
             pass
 
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
+    try:
+        from workflow_persist_guard import enrich_cloud_restore_state
+
+        cloud_state = enrich_cloud_restore_state(app_id, st, cloud_state)
+    except ImportError:
+        pass
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
