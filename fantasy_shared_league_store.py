@@ -11,6 +11,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from fantasy_league_identity import compute_draft_fingerprint, resolve_canonical_league_id
 
 WORKFLOW_KEY_TRADE_PROPOSALS = "trade_proposals"
+WORKFLOW_KEY_LEAGUE_INVITES = "league_invites"
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "shared_leagues"
 
@@ -27,20 +28,27 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
     proposals = workflow.get(WORKFLOW_KEY_TRADE_PROPOSALS) or []
     if not isinstance(proposals, list):
         proposals = []
+    invites = workflow.get(WORKFLOW_KEY_LEAGUE_INVITES) or []
+    if not isinstance(invites, list):
+        invites = []
     ownership = context.get("team_ownership")
     if not isinstance(ownership, dict):
         meta = context.get("metadata") or {}
         ownership = meta.get("team_ownership") or {}
+    meta = context.get("metadata") or {}
     return {
         "schema_version": 1,
         "league_id": league_id,
         "draft_fingerprint": fp,
         "draft_id": str((context.get("metadata") or {}).get("source_draft_id") or "").strip(),
+        "league_name": str(context.get("league_name") or context.get("display_name") or "").strip(),
+        "commissioner_user_id": str(meta.get("commissioner_user_id") or "").strip(),
         "revision": int(revision or 1),
         "updated_at": _utc_now_iso(),
         "league_rosters": copy.deepcopy(context.get("league_rosters") or {}),
         "team_ownership": copy.deepcopy(ownership if isinstance(ownership, dict) else {}),
         "trade_proposals": copy.deepcopy(proposals),
+        "league_invites": copy.deepcopy(invites),
     }
 
 
@@ -205,6 +213,57 @@ def _merge_trade_proposals(*sources: list[Any]) -> list[dict[str, Any]]:
     return sorted(merged.values(), key=_proposal_sort_key, reverse=True)
 
 
+def _invite_sort_key(invite: dict[str, Any]) -> str:
+    return str(invite.get("responded_at") or invite.get("accepted_at") or invite.get("created_at") or "")
+
+
+def _invite_status_rank(status: str) -> int:
+    return {
+        "accepted": 5,
+        "declined": 5,
+        "revoked": 5,
+        "expired": 5,
+        "pending": 1,
+    }.get(str(status or "").strip(), 0)
+
+
+def _merge_single_invite(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    existing_rank = _invite_status_rank(str(existing.get("status") or ""))
+    incoming_rank = _invite_status_rank(str(incoming.get("status") or ""))
+    if incoming_rank > existing_rank:
+        primary, secondary = incoming, existing
+    elif existing_rank > incoming_rank:
+        primary, secondary = existing, incoming
+    elif _invite_sort_key(incoming) >= _invite_sort_key(existing):
+        primary, secondary = incoming, existing
+    else:
+        primary, secondary = existing, incoming
+    merged = copy.deepcopy(primary)
+    for key in ("claimed_team", "accepted_at", "responded_at", "invited_by_display"):
+        if not str(merged.get(key) or "").strip() and str(secondary.get(key) or "").strip():
+            merged[key] = secondary[key]
+    return merged
+
+
+def _merge_league_invites(*sources: list[Any]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for invites in sources:
+        if not isinstance(invites, list):
+            continue
+        for raw in invites:
+            if not isinstance(raw, dict):
+                continue
+            iid = str(raw.get("invite_id") or "").strip()
+            if not iid:
+                continue
+            existing = merged.get(iid)
+            if existing is None:
+                merged[iid] = copy.deepcopy(raw)
+            else:
+                merged[iid] = _merge_single_invite(existing, raw)
+    return sorted(merged.values(), key=_invite_sort_key, reverse=True)
+
+
 def _merge_team_ownership(*sources: dict[str, Any]) -> dict[str, dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for source in sources:
@@ -268,6 +327,12 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
         shared.get("trade_proposals") or [],
     )
     workflow[WORKFLOW_KEY_TRADE_PROPOSALS] = merged_proposals
+    local_invites = workflow.get(WORKFLOW_KEY_LEAGUE_INVITES) or []
+    merged_invites = _merge_league_invites(
+        local_invites if isinstance(local_invites, list) else [],
+        shared.get("league_invites") or [],
+    )
+    workflow[WORKFLOW_KEY_LEAGUE_INVITES] = merged_invites
     out["workflow"] = workflow
     return out
 
@@ -323,6 +388,10 @@ def push_league_context_to_shared(
         document["team_ownership"] = _merge_team_ownership(
             existing.get("team_ownership") or {},
             document.get("team_ownership") or {},
+        )
+        document["league_invites"] = _merge_league_invites(
+            existing.get("league_invites") or [],
+            document.get("league_invites") or [],
         )
     saved = backend.save(document)
     meta = dict(context.get("metadata") or {})

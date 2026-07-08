@@ -161,6 +161,51 @@ def assign_my_team(
     return saved, ""
 
 
+def claim_team_in_league_context(
+    session: dict[str, Any],
+    league_context_id: str,
+    team_name: str,
+    *,
+    user_id: str = "",
+    email: str = "",
+    display_name: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    """Claim a team on a specific league context (invite accept / library claim)."""
+    league_context_id = str(league_context_id or "").strip()
+    context = get_league_context(session, league_context_id)
+    if not context:
+        return None, "League context could not be loaded."
+    team = str(team_name or "").strip()
+    teams = set((context.get("league_rosters") or {}).keys())
+    if team not in teams:
+        return None, f"Team '{team}' is not in this league."
+    ownership = get_team_ownership(context)
+    uid = str(user_id or _resolve_user_id()).strip()
+    for owned_team, record in ownership.items():
+        if str(record.get("user_id") or "").strip() == uid and owned_team != team:
+            return None, f"Your account is already assigned to {owned_team}."
+        if owned_team == team:
+            other_uid = str(record.get("user_id") or "").strip()
+            if other_uid and other_uid != uid:
+                return None, f"{team} is already owned by another account."
+    context = assign_team_owner_to_context(
+        context,
+        team,
+        user_id=uid,
+        email=email,
+        display_name=display_name,
+    )
+    context["my_team_name"] = team
+    saved = upsert_league_context(session, context)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, saved)
+    except ImportError:
+        pass
+    return saved, ""
+
+
 def owned_team_for_user(context: dict[str, Any] | None, user_id: str = "") -> str:
     uid = str(user_id or _resolve_user_id()).strip()
     if not uid:

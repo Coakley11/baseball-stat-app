@@ -1,0 +1,237 @@
+"""Tests for shared uploaded league invite workflow."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
+
+import pandas as pd
+
+from draft_archive_state import DRAFT_TYPE_IMPORTED, get_draft_archive, list_draft_archives
+from fantasy_league_context import get_league_context, save_imported_league_context, upsert_league_context
+from fantasy_league_identity import resolve_canonical_league_id
+from fantasy_league_invites import (
+    INVITE_STATUS_ACCEPTED,
+    INVITE_STATUS_PENDING,
+    append_invite_to_inbox,
+    create_league_invite,
+    join_shared_league_from_invite,
+    list_pending_invites_for_session,
+)
+from fantasy_league_team_ownership import assign_team_owner_to_context, trades_enabled
+from fantasy_shared_league_store import LocalFileSharedLeagueStore, load_shared_league, set_shared_league_store
+from tests.test_fantasy_trade_proposals import _as_user, _league_board
+
+_SHARED_DRAFT_CFG = {
+    "fantasy_format": "5x5 Roto",
+    "scoring_type": "Roto (5x5)",
+    "slots": {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "UTIL": 1},
+    "slot_instances": [],
+}
+
+
+def _seed_imported_league(session: dict, *, user_id: str, team: str = "Donny", workspace: str = "daniel") -> dict:
+    session["draft_shared_settings"] = dict(_SHARED_DRAFT_CFG)
+    session["_suite_owned_workspace_id"] = workspace
+    with _as_user(user_id):
+        _, context = save_imported_league_context(
+            session,
+            _league_board(),
+            my_team_name=team,
+            draft_name="Invite Test League",
+            league_name="Invite Test League",
+            config=_SHARED_DRAFT_CFG,
+            save_only=True,
+            assign_team=True,
+        )
+    return context
+
+
+class TestFantasyLeagueInvites(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_root = Path(self._tmp.name) / "shared"
+        self.store_root.mkdir(parents=True, exist_ok=True)
+        self.workspace_root = Path(self._tmp.name) / "workspaces"
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        set_shared_league_store(LocalFileSharedLeagueStore(root=self.store_root))
+
+        def _test_workspace_dir(workspace_id: str | None = None) -> Path:
+            from suite_workspace import normalize_workspace_id
+
+            ws = normalize_workspace_id(workspace_id)
+            path = self.workspace_root / ws
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+
+        self._workspace_dir_patcher = patch("suite_workspace.workspace_dir", side_effect=_test_workspace_dir)
+        self._workspace_dir_patcher.start()
+        self._registry_backup = None
+        try:
+            from suite_workspace_registry import REGISTRY_FILE
+
+            if REGISTRY_FILE.is_file():
+                self._registry_backup = REGISTRY_FILE.read_text(encoding="utf-8")
+        except ImportError:
+            pass
+
+    def tearDown(self) -> None:
+        self._workspace_dir_patcher.stop()
+        set_shared_league_store(None)
+        self._tmp.cleanup()
+        try:
+            from suite_workspace_registry import REGISTRY_FILE
+
+            if self._registry_backup is not None:
+                REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+                REGISTRY_FILE.write_text(self._registry_backup, encoding="utf-8")
+            elif REGISTRY_FILE.is_file():
+                REGISTRY_FILE.unlink()
+        except OSError:
+            pass
+
+    def _write_registry(self, payload: dict) -> None:
+        from suite_workspace_registry import REGISTRY_FILE
+
+        REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        REGISTRY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    @contextmanager
+    def _workspace(self, workspace_id: str):
+        with patch("fantasy_league_invites._resolve_workspace_id", return_value=workspace_id), patch(
+            "suite_workspace.get_active_workspace_id", return_value=workspace_id
+        ):
+            yield
+
+    def test_save_imported_league_publishes_shared_document(self) -> None:
+        session: dict = {}
+        context = _seed_imported_league(session, user_id="user:donny")
+        league_id = resolve_canonical_league_id(context)
+        shared = load_shared_league(league_id)
+        self.assertIsNotNone(shared)
+        assert shared is not None
+        self.assertEqual(shared.get("league_name"), "Invite Test League")
+        self.assertEqual(str(shared.get("commissioner_user_id") or ""), "user:donny")
+        self.assertTrue(shared.get("league_rosters"))
+
+    def test_commissioner_invite_and_accept_links_same_league_id(self) -> None:
+        self._write_registry(
+            {
+                "by_owner": {
+                    "user:donny": {
+                        "owner_user_id": "user:donny",
+                        "owner_external_id": "donny",
+                        "workspace_id": "daniel",
+                        "label": "Daniel",
+                    },
+                    "user:seal11": {
+                        "owner_user_id": "user:seal11",
+                        "owner_external_id": "seal11",
+                        "workspace_id": "ariel",
+                        "label": "Ariel",
+                    },
+                }
+            }
+        )
+
+        session_a: dict = {}
+        context_a = _seed_imported_league(session_a, user_id="user:donny")
+        league_id = resolve_canonical_league_id(context_a)
+        assert league_id
+
+        with _as_user("user:donny"):
+            invite, err = create_league_invite(session_a, context_a, invitee_target="ariel")
+        self.assertEqual(err, "")
+        assert invite is not None
+        self.assertEqual(invite["status"], INVITE_STATUS_PENDING)
+        self.assertEqual(invite["invitee_workspace_id"], "ariel")
+
+        shared = load_shared_league(league_id)
+        assert shared is not None
+        self.assertEqual(len(shared.get("league_invites") or []), 1)
+
+        session_b: dict = {"_suite_owned_workspace_id": "ariel"}
+        with _as_user("user:seal11"), self._workspace("ariel"):
+            pending = list_pending_invites_for_session(session_b)
+            self.assertEqual(len(pending), 1)
+            entry, context_b, accept_err = join_shared_league_from_invite(
+                session_b,
+                league_id=league_id,
+                invite_id=str(invite["invite_id"]),
+                team_name="Team 2",
+            )
+        self.assertEqual(accept_err, "")
+        assert entry is not None
+        assert context_b is not None
+        self.assertEqual(entry.get("draft_type"), DRAFT_TYPE_IMPORTED)
+        self.assertEqual(entry.get("team_name"), "Team 2")
+        self.assertEqual(resolve_canonical_league_id(context_b), league_id)
+
+        archives = list_draft_archives(session_b)
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(str(archives[0].get("draft_fingerprint") or ""), str(shared.get("draft_fingerprint") or ""))
+
+        shared_after = load_shared_league(league_id)
+        assert shared_after is not None
+        invites = shared_after.get("league_invites") or []
+        self.assertEqual(invites[0]["status"], INVITE_STATUS_ACCEPTED)
+        self.assertEqual(invites[0]["claimed_team"], "Team 2")
+        self.assertEqual(str((shared_after.get("team_ownership") or {}).get("Team 2", {}).get("user_id")), "user:seal11")
+
+        with _as_user("user:donny"):
+            ctx_a = get_league_context(session_a, str(context_a.get("league_context_id") or ""))
+            assert ctx_a is not None
+            synced = upsert_league_context(session_a, ctx_a)
+            from fantasy_shared_league_store import sync_context_with_shared_store
+
+            synced = sync_context_with_shared_store(session_a, synced)
+            enabled, msg = trades_enabled(synced, session_a)
+        self.assertTrue(enabled, msg)
+
+    def test_inbox_written_for_invitee_workspace(self) -> None:
+        self._write_registry(
+            {
+                "by_owner": {
+                    "user:donny": {
+                        "owner_user_id": "user:donny",
+                        "owner_external_id": "donny",
+                        "workspace_id": "daniel",
+                    },
+                    "user:seal11": {
+                        "owner_user_id": "user:seal11",
+                        "owner_external_id": "seal11",
+                        "workspace_id": "ariel",
+                    },
+                }
+            }
+        )
+        session_a: dict = {}
+        context_a = _seed_imported_league(session_a, user_id="user:donny")
+        with _as_user("user:donny"):
+            invite, err = create_league_invite(session_a, context_a, invitee_target="ariel")
+        self.assertEqual(err, "")
+        assert invite is not None
+
+        from fantasy_league_invites import _read_inbox
+
+        inbox = _read_inbox("ariel")
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["invite_id"], invite["invite_id"])
+
+    def test_duplicate_pending_invite_blocked(self) -> None:
+        session: dict = {}
+        context = _seed_imported_league(session, user_id="user:donny")
+        with _as_user("user:donny"):
+            first, err1 = create_league_invite(session, context, invitee_target="ariel")
+            second, err2 = create_league_invite(session, context, invitee_target="ariel")
+        self.assertEqual(err1, "")
+        self.assertIn("already exists", err2.lower())
+        assert first is not None
+
+
+if __name__ == "__main__":
+    unittest.main()

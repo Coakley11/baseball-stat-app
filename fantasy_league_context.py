@@ -1286,13 +1286,6 @@ def save_imported_league_context(
                 context = upsert_league_context(session, context)
             except ImportError:
                 pass
-        else:
-            try:
-                from fantasy_shared_league_store import push_league_context_to_shared
-
-                push_league_context_to_shared(session, context)
-            except (ImportError, RuntimeError, OSError):
-                pass
     elif defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:
@@ -1306,14 +1299,25 @@ def save_imported_league_context(
                     raise ValueError(err)
             except ImportError:
                 pass
-        else:
-            try:
-                from fantasy_shared_league_store import push_league_context_to_shared
+    context = get_league_context(session, league_context_id) or context
+    meta = dict(context.get("metadata") or {})
+    if not str(meta.get("commissioner_user_id") or "").strip() and assign_team:
+        try:
+            from fantasy_league_team_ownership import _resolve_user_id
 
-                context = get_league_context(session, league_context_id) or context
-                push_league_context_to_shared(session, context)
-            except (ImportError, RuntimeError, OSError):
-                pass
+            commissioner = str(_resolve_user_id() or "").strip()
+            if commissioner:
+                meta["commissioner_user_id"] = commissioner
+                context["metadata"] = meta
+                context = upsert_league_context(session, context)
+        except ImportError:
+            pass
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, context)
+    except (ImportError, RuntimeError, OSError):
+        pass
     context = get_league_context(session, league_context_id) or context
     return entry, context
 

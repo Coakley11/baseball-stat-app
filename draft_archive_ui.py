@@ -1212,28 +1212,12 @@ def _context_badge_html(label: str, css_class: str) -> str:
 
 def _context_badges_html(session: dict[str, Any], entry: dict[str, Any]) -> str:
     context = get_league_context_for_archive(session, entry)
-    active_id = ""
-    try:
-        from draft_archive_state import get_active_draft_archive
-
-        active = get_active_draft_archive(session)
-        active_id = str((active or {}).get("draft_id") or "")
-    except ImportError:
-        pass
-    is_active = bool(active_id and str(entry.get("draft_id") or "") == active_id)
-    try:
-        from fantasy_context_terminology import saved_context_badges
-
-        badge_labels = saved_context_badges(context, entry, is_active=is_active)
-        parts = [_context_badge_html(label, "ld-archive-badge-context-type") for label in badge_labels]
-        return "".join(p for p in parts if p)
-    except ImportError:
-        parts = [
-            _draft_type_badge_html(entry),
-            _context_badge_html(league_context_coverage_badge(context), "ld-archive-badge-coverage"),
-            _context_badge_html(league_context_type_badge(context, entry), "ld-archive-badge-context-type"),
-        ]
-        return "".join(p for p in parts if p)
+    parts = [
+        _draft_type_badge_html(entry),
+        _context_badge_html(league_context_coverage_badge(context), "ld-archive-badge-coverage"),
+        _context_badge_html(league_context_type_badge(context), "ld-archive-badge-context-type"),
+    ]
+    return "".join(p for p in parts if p)
 
 
 def _format_league_matchup_label(
@@ -2261,6 +2245,14 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     )
 
     render_persistence_probe_panel(st, session)
+
+    try:
+        from fantasy_league_invite_ui import render_commissioner_invite_panel, render_pending_league_invites
+
+        render_pending_league_invites(st, session)
+        render_commissioner_invite_panel(st, session)
+    except ImportError:
+        pass
 
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:
