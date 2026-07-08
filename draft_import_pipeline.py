@@ -156,6 +156,36 @@ def teams_from_active_league_claim(session: dict[str, Any]) -> list[str]:
     return sorted(str(k).strip() for k in rosters.keys() if str(k).strip())
 
 
+def build_import_board_state_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Runtime vs persisted pick counts — surfaces richest-restore clobber risks."""
+    try:
+        from draft_room_state import (
+            DRAFT_ROOM_EDITOR_CACHE_KEY,
+            _draft_room_from_blob,
+            coerce_board_table,
+            draft_room_board_authority_active,
+            is_runtime_table,
+            table_pick_count,
+        )
+    except ImportError:
+        return {}
+
+    runtime = coerce_board_table(session.get("draft_room_table"))
+    blob = _draft_room_from_blob(session)
+    cache = session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)
+    runtime_picks = table_pick_count(runtime)
+    blob_picks = table_pick_count(blob) if isinstance(blob, dict) else 0
+    cache_picks = table_pick_count(cache) if is_runtime_table(cache) else 0
+    authority = draft_room_board_authority_active(session)
+    return {
+        "runtime_pick_count": runtime_picks,
+        "blob_pick_count": blob_picks,
+        "cache_pick_count": cache_picks,
+        "board_authority": authority,
+        "richest_restore_risk": max(blob_picks, cache_picks) > runtime_picks,
+    }
+
+
 def format_team_name_list(teams: list[str]) -> str:
     if not teams:
         return "[]"
@@ -284,6 +314,26 @@ def render_import_team_name_diagnostics_panel(
             and (not shared or diag.get("parsed_matches_shared_league"))
         ):
             st.success("Parsed CSV team names match the board and shared-league team lists.")
+
+        board_diag = build_import_board_state_diagnostics(session)
+        if board_diag:
+            st.markdown(
+                "**Board pick counts:** "
+                f"runtime={int(board_diag.get('runtime_pick_count') or 0)}, "
+                f"blob={int(board_diag.get('blob_pick_count') or 0)}, "
+                f"cache={int(board_diag.get('cache_pick_count') or 0)}"
+            )
+            auth = board_diag.get("board_authority")
+            if isinstance(auth, dict) and auth.get("reason"):
+                st.caption(
+                    f"Board authority pin: `{auth.get('reason')}` "
+                    f"({int(auth.get('pick_count') or 0)} pick(s))"
+                )
+            if board_diag.get("richest_restore_risk"):
+                st.warning(
+                    "Persisted board/cache has more picks than the runtime table. "
+                    "Draft Room prepare logic may restore stale picks unless import apply pinned board authority."
+                )
 
     session["_draft_import_team_name_diag"] = diag
     return diag
@@ -487,35 +537,64 @@ def apply_validated_import_to_board(
     remove_drafted_from_queue_fn: Callable[[], None] | None = None,
     rerun: bool = True,
 ) -> None:
-    """Write a validated import onto the Draft Room Simulator board."""
+    """Replace the Draft Room board with a validated import (never merge with stale picks)."""
     from draft_room_state import (
         ACTIVE_DRAFT_MODE_MANUAL,
+        DRAFT_ROOM_EDITOR_SEED_KEY,
+        bump_editor_version,
+        coerce_board_table,
+        mark_draft_room_board_authority,
         persist_draft_board_to_storage,
         set_canonical_draft_meta,
+        sync_board_to_session_keys,
         table_pick_count,
     )
 
-    session["draft_room_table"] = validated_df.copy()
-    if remove_drafted_from_queue_fn is not None:
-        remove_drafted_from_queue_fn()
+    board = coerce_board_table(validated_df)
+    pick_count = table_pick_count(board)
+
+    # Purge stale editor/sync artifacts so _resolve_richest_draft_board cannot resurrect old picks.
+    session.pop(DRAFT_ROOM_EDITOR_SEED_KEY, None)
+    session.pop("draft_room_board_editor_seed", None)
+    session.pop("draft_room_board_editor_cache", None)
+    session.pop("_draft_room_skip_editor_resolve_clobber", None)
+    session.pop("_draft_room_assign_submit_trace", None)
+
+    sync_board_to_session_keys(session, board, local_edit=True, reason="validated_import")
+    bump_editor_version(session)
+    mark_draft_room_board_authority(session, pick_count=pick_count, reason="validated_import")
     set_canonical_draft_meta(
         session,
         mode=ACTIVE_DRAFT_MODE_MANUAL,
         source="validated_import",
-        pick_count=table_pick_count(validated_df),
+        pick_count=pick_count,
     )
+
+    try:
+        from draft_actions import _clear_ami_draft_cache
+
+        _clear_ami_draft_cache(session)
+    except ImportError:
+        pass
+
+    if remove_drafted_from_queue_fn is not None:
+        remove_drafted_from_queue_fn()
+
     persist_draft_board_to_storage(
         st,
         session,
-        validated_df,
+        board,
         reason="validated_import",
     )
-    filled = int(validated_df["Player"].astype(str).str.strip().ne("").sum())
+    filled = int(board["Player"].astype(str).str.strip().ne("").sum()) if "Player" in board.columns else pick_count
     session["workflow_sidebar_flash"] = (
-        f"{flash_prefix} {filled} validated pick(s) into the Draft Room."
+        f"{flash_prefix} {filled} validated pick(s) into the Draft Room. "
+        "Previous board picks were replaced."
     )
     session.pop(session_key, None)
     session.pop("_draft_import_file_id", None)
+    session.pop(_STAGED_BYTES_KEY, None)
+    session.pop(_STAGED_FILENAME_KEY, None)
     if rerun:
         st.rerun()
 
@@ -938,6 +1017,7 @@ __all__ = [
     "REQUIRED_IMPORT_COLUMNS",
     "apply_validated_import_to_board",
     "build_draft_import_debug_status",
+    "build_import_board_state_diagnostics",
     "build_import_team_name_diagnostics",
     "build_import_review",
     "format_team_name_list",

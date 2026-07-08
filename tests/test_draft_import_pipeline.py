@@ -162,6 +162,68 @@ class TestDraftImportPipeline(unittest.TestCase):
         )
         self.assertFalse(diag["parsed_matches_room_settings"])
 
+    def test_apply_import_replaces_richer_stale_blob(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from draft_import_pipeline import apply_validated_import_to_board
+        from draft_room_state import (
+            build_snake_board,
+            prepare_draft_room_state,
+            sync_board_to_session_keys,
+            table_pick_count,
+            write_canonical_draft_room_state,
+        )
+
+        stale = build_snake_board(["Daniel", "Team 2", "Team 3", "Team 4"], rounds=5)
+        stale.loc[0, "Player"] = "Old Pick One"
+        stale.loc[1, "Player"] = "Old Pick Two"
+        session: dict = {
+            "room_team_count": 4,
+            "room_rounds": 5,
+            "room_team_names": "Daniel\nTeam 2\nTeam 3\nTeam 4",
+        }
+        sync_board_to_session_keys(session, stale, local_edit=True, reason="test_seed_stale")
+        self.assertEqual(table_pick_count(session["draft_room_table"]), 2)
+
+        import_df = pd.DataFrame(
+            {
+                "Round": [1, 1, 1, 1, 2, 2, 2, 2, 2, 2],
+                "Pick": list(range(1, 11)),
+                "Team": ["Daniel", "Team 2", "Team 3", "Team 4"] * 2 + ["Daniel", "Team 2"],
+                "Player": [
+                    "Aaron Judge",
+                    "Juan Soto",
+                    "Shohei Ohtani",
+                    "Francisco Lindor",
+                    "Mookie Betts",
+                    "Kyle Tucker",
+                    "Ronald Acuña Jr.",
+                    "Jose Ramirez",
+                    "Freddie Freeman",
+                    "Bobby Witt Jr.",
+                ],
+            }
+        )
+        with patch("draft_room_state.persist_draft_board_to_storage", return_value={}):
+            apply_validated_import_to_board(
+                MagicMock(),
+                session,
+                import_df,
+                rerun=False,
+            )
+
+        self.assertEqual(table_pick_count(session["draft_room_table"]), 10)
+        players = session["draft_room_table"]["Player"].astype(str).tolist()
+        self.assertNotIn("Old Pick One", players)
+        self.assertIn("Aaron Judge", players)
+
+        prepare_draft_room_state(session)
+        self.assertEqual(table_pick_count(session["draft_room_table"]), 10)
+        self.assertNotIn(
+            "Old Pick One",
+            session["draft_room_table"]["Player"].astype(str).tolist(),
+        )
+
     def test_unresolved_player_blocks_league_ready(self) -> None:
         import_df = pd.DataFrame(
             {
