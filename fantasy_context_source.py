@@ -35,9 +35,9 @@ class FantasyContextSource:
             name = self.draft_label or self.label
             return f"{_BADGE_PREFIX} **Saved Draft Library Active Draft** · Draft: **{name}**"
         if self.kind == SOURCE_LIVE_DRAFT:
-            return f"{_BADGE_PREFIX} **Live Draft Room (unsaved workspace)**"
+            return f"{_BADGE_PREFIX} **Live Draft Room (temporary / unsaved)**"
         if self.kind == SOURCE_SIMULATOR_BOARD:
-            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (unsaved workspace)**"
+            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (temporary / unsaved)**"
         return f"{_BADGE_PREFIX} **Generic/default simulator context**"
 
 
@@ -259,7 +259,7 @@ def get_effective_fantasy_context(
             session,
             room,
             my_team_name=my_team,
-            display_name=f"{label} (unsaved workspace)",
+            display_name=f"{label} (temporary / unsaved)",
             league_name=label,
             league_context_id="__ephemeral_live__",
         )
@@ -271,7 +271,7 @@ def get_effective_fantasy_context(
             session,
             board,
             my_team_name=my_team,
-            display_name="Draft Room Simulator Board (unsaved workspace)",
+            display_name="Draft Room Simulator Board (temporary / unsaved)",
             league_context_id="__ephemeral_simulator__",
         )
     return None

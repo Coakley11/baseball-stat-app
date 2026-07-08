@@ -4060,19 +4060,9 @@ def _save_draft_board_now_impl(
                 trace["cloud_write_error"] = direct.get("cloud_write_error") or direct.get("error")
             session["_suite_persist_last_save_cloud"] = False
 
-        library_trace = sync_draft_library_from_simulator_board(
-            st, session, board, reason="manual_save_library_sync"
-        )
-        for key in (
-            "library_sync",
-            "saved_drafts",
-            "league_contexts",
-            "library_draft_id",
-            "library_sync_error",
-            "library_sync_skipped",
-        ):
-            if key in library_trace:
-                trace[key] = library_trace[key]
+        # Board save persists draft_room_table only. Saved Draft Library entries are
+        # created only from explicit Save Draft actions on the Rosters tab / library UI.
+        trace["library_sync_skipped"] = "explicit_library_save_required"
 
     if trace.get("saved") and pick_count > 0:
         sync_editor_seed(session, board, force_reset=True)

@@ -535,15 +535,22 @@ def render_saved_draft_library_draft_room_navigation(
         )
 
 
-def render_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
-    """Single Active Draft block — draft name once, metadata line below."""
+def render_saved_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
+    """Saved Active Draft block — only for intentionally saved + selected library drafts."""
+    try:
+        from fantasy_league_context import get_active_league_context
+    except ImportError:
+        get_active_league_context = None  # type: ignore[assignment,misc]
+
     active = get_active_draft_archive(session)
-    active_context = get_active_league_context(session)
-    st.markdown("##### Active Draft")
+    active_context = None
+    if get_active_league_context is not None:
+        active_context = get_active_league_context(session, respect_source_priority=False)
+    st.markdown("##### Saved Active Draft")
     if not active:
         st.caption(
-            "No active saved draft selected. Standings and Lineup use the **Draft Room** board "
-            "unless you set one active in the library."
+            "No saved draft selected as Active Draft. Fantasy pages can still use a "
+            "**temporary / unsaved** simulator or live board when you enable a Fantasy Context Source override."
         )
         return
     context = active_context or get_league_context_for_archive(session, active)
@@ -555,6 +562,11 @@ def render_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
         f"{draft_type_display(active)} · "
         f"Updated {format_archive_modified(active)}"
     )
+
+
+def render_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
+    """Backward-compatible alias."""
+    render_saved_active_draft_summary(st, session)
 
 
 def render_fantasy_page_navigation(
@@ -597,15 +609,26 @@ def render_fantasy_page_header(
     key_prefix: str = "fantasy_nav",
     page_label_fn=None,
 ) -> None:
-    """Active draft summary + cross-page navigation for fantasy workflow pages."""
-    render_active_draft_summary(st, session)
-    render_fantasy_page_navigation(
-        st,
-        session,
-        active_page=active_page,
-        key_prefix=key_prefix,
-        page_label_fn=page_label_fn,
-    )
+    """Fantasy workflow header: context badge, saved active draft, navigation."""
+    try:
+        from fantasy_context_ui import render_fantasy_workflow_page_header
+
+        render_fantasy_workflow_page_header(
+            st,
+            session,
+            active_page=active_page,
+            key_prefix=key_prefix,
+            page_label_fn=page_label_fn,
+        )
+    except ImportError:
+        render_saved_active_draft_summary(st, session)
+        render_fantasy_page_navigation(
+            st,
+            session,
+            active_page=active_page,
+            key_prefix=key_prefix,
+            page_label_fn=page_label_fn,
+        )
 
 
 def _sync_draft_rename_to_league_context(

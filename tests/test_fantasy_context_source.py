@@ -96,7 +96,7 @@ class FantasyContextSourceTests(unittest.TestCase):
         session.update(_simulator_board_session())
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
-        self.assertIn("unsaved workspace", source.badge_text)
+        self.assertIn("temporary / unsaved", source.badge_text)
 
     def test_simulator_override_disabled_falls_back_to_active_draft(self) -> None:
         session = _saved_context_session()
@@ -171,6 +171,18 @@ class FantasyContextSourceTests(unittest.TestCase):
         }
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
         self.assertFalse(simulator_board_context_available(session))
+
+
+    def test_checkbox_widget_syncs_persisted_key(self) -> None:
+        from fantasy_context_ui import (
+            USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+            _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+            _sync_persisted_context_toggles_from_widgets,
+        )
+
+        session: dict = {_SIM_CONTEXT_TOGGLE_WIDGET_KEY: True}
+        _sync_persisted_context_toggles_from_widgets(session)
+        self.assertTrue(session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY])
 
 
 class DraftFingerprintDedupeTests(unittest.TestCase):

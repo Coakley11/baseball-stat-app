@@ -83,11 +83,30 @@ _LIVE_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_live_context_toggle_widget"
 _SIM_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_sim_context_toggle_widget"
 
 
+def _sync_persisted_context_toggles_from_widgets(session: dict[str, Any]) -> None:
+    """Copy widget display state into persisted source-of-truth keys."""
+    if _LIVE_CONTEXT_TOGGLE_WIDGET_KEY in session:
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = bool(
+            session.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY)
+        )
+    if _SIM_CONTEXT_TOGGLE_WIDGET_KEY in session:
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = bool(
+            session.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY)
+        )
+
+
 def _persist_context_settings() -> None:
     try:
         import streamlit as st
     except Exception:
         return
+    _sync_persisted_context_toggles_from_widgets(st.session_state)
+    try:
+        from suite_user_persistence import _local_dirty_key
+
+        st.session_state[_local_dirty_key("baseball")] = True
+    except Exception:
+        pass
     try:
         from baseball_persistent_state import force_save_baseball_state
 
@@ -145,10 +164,12 @@ def render_fantasy_context_source_controls(
     prepare_fantasy_context_source_defaults(session)
     live_available = live_draft_context_available(session)
     sim_available = simulator_board_context_available(session)
-    # Re-seed widget keys from the persisted source-of-truth so navigation / widget
-    # garbage collection cannot flip the user's saved choice.
-    session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
-    session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
+    # Seed widget keys only when absent (after navigation GC). Never overwrite an
+    # in-flight widget value before render — that clobbered the user's click.
+    if _LIVE_CONTEXT_TOGGLE_WIDGET_KEY not in session:
+        session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
+    if _SIM_CONTEXT_TOGGLE_WIDGET_KEY not in session:
+        session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
     st.checkbox(
         USE_LIVE_DRAFT_CONTEXT_LABEL,
         key=_LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
@@ -165,6 +186,7 @@ def render_fantasy_context_source_controls(
     )
     if not sim_available:
         st.caption("Simulator override stays saved, but only takes effect once the simulator workspace has picks.")
+    _sync_persisted_context_toggles_from_widgets(session)
     st.caption(
         "When both overrides are off (or unavailable), **Saved Draft Library Active Draft** "
         "controls fantasy pages."
@@ -239,7 +261,32 @@ def render_research_sync_badge(st: Any, session: dict[str, Any]) -> None:
 
 def render_fantasy_context_badge(st: Any, session: dict[str, Any]) -> None:
     """Default badge for in-season fantasy pages."""
-    render_active_league_context_badge(st, session)
+    st.caption(fantasy_context_source_badge_text(session))
+
+
+def render_fantasy_workflow_page_header(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    active_page: str,
+    key_prefix: str = "fantasy_nav",
+    page_label_fn=None,
+) -> None:
+    """Fantasy workflow pages: context badge, optional saved-active draft, nav."""
+    render_fantasy_context_badge(st, session)
+    try:
+        from draft_archive_ui import render_saved_active_draft_summary, render_fantasy_page_navigation
+
+        render_saved_active_draft_summary(st, session)
+        render_fantasy_page_navigation(
+            st,
+            session,
+            active_page=active_page,
+            key_prefix=key_prefix,
+            page_label_fn=page_label_fn,
+        )
+    except ImportError:
+        pass
 
 
 # Backward-compatible alias for tests and callers.

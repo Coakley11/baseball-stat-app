@@ -142,11 +142,11 @@ def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
     if src == "live_draft":
         team = _live_draft_team_name(session)
         if team:
-            return team, "Live Draft Room (unsaved workspace)"
+            return team, "Live Draft Room (temporary / unsaved)"
     if src == "draft_room":
         team = str(session.get(GLOBAL_TEAM_KEY) or "").strip()
         if team:
-            return team, "Draft Room Simulator Board (unsaved workspace)"
+            return team, "Draft Room Simulator Board (temporary / unsaved)"
     return None
 
 
@@ -243,9 +243,9 @@ def active_fantasy_team_label(session: dict[str, Any]) -> str:
             name = source.draft_label or source.label or "Active Draft"
             return f"{team} — Saved Active Draft: {name}"
         if source.kind == SOURCE_LIVE_DRAFT:
-            return f"{team} — Live Draft Room (unsaved workspace)"
+            return f"{team} — Live Draft Room (temporary / unsaved)"
         if source.kind == SOURCE_SIMULATOR_BOARD:
-            return f"{team} — Draft Room Simulator Board (unsaved workspace)"
+            return f"{team} — Draft Room Simulator Board (temporary / unsaved)"
     except ImportError:
         pass
     league_info = _saved_active_league_team_info(session)
@@ -254,7 +254,7 @@ def active_fantasy_team_label(session: dict[str, Any]) -> str:
         return f"{team} — Saved Active Draft: {draft_label}"
     src = active_fantasy_team_source(session)
     if src == "live_draft":
-        return f"{team} — Live Draft Room (unsaved workspace)"
+        return f"{team} — Live Draft Room (temporary / unsaved)"
     return f"{team} — Draft Room Simulator (no saved context)"
 
 

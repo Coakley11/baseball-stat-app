@@ -278,6 +278,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "live_draft_setting_changed",
     "draft_sim_settings_changed",
     "draft_assistant_settings_changed",
+    "fantasy_context_source_changed",
     "global_settings_changed",
     "historical_chart_save",
     "career_chart_save",

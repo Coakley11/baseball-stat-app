@@ -835,6 +835,26 @@ class TestDeleteActiveDraft(unittest.TestCase):
         self.assertEqual(table_pick_count(restored), 0)
 
 
+    def test_save_draft_board_now_does_not_auto_sync_library(self) -> None:
+        st = MagicMock()
+        table = _sample_table(picks=2)
+        session: dict = {
+            "room_your_team": "Daniel",
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: table,
+        }
+        with patch("draft_room_state.sync_draft_library_from_simulator_board") as mock_library:
+            with patch("baseball_persistent_state.force_save_baseball_state", return_value=True):
+                with patch("suite_cloud_state.load_cloud_full_session", return_value=({}, "2026-01-01T00:00:00Z")):
+                    with patch(
+                        "draft_room_state.save_draft_board_direct_to_cloud",
+                        return_value={"saved_cloud": True, "cloud_payload_pick_count": 2},
+                    ):
+                        trace = save_draft_board_now(st, session, board=table)
+        mock_library.assert_not_called()
+        self.assertEqual(trace.get("library_sync_skipped"), "explicit_library_save_required")
+
+
 class TestBoardPickAssignment(unittest.TestCase):
     def test_open_pick_row_options_lists_empty_slots(self) -> None:
         table = _sample_table(picks=2)

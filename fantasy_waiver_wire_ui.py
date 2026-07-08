@@ -532,8 +532,8 @@ def render_waiver_wire_page(
     context = get_active_league_context(session)
     if not context:
         st.warning(
-            "No **Active Draft**. Open **Saved Drafts**, pick a saved draft, "
-            "and click **Set Active Draft**."
+            "No fantasy context available. Set a **Saved Active Draft** in Saved Draft Library, "
+            "or enable a **temporary / unsaved** simulator or live board override there."
         )
         return
 
@@ -553,13 +553,6 @@ def render_waiver_wire_page(
             else:
                 st.info(message)
 
-    try:
-        from fantasy_context_source import fantasy_context_source_badge_text
-
-        st.caption(fantasy_context_source_badge_text(session))
-    except ImportError:
-        pass
-
     my_team = str(context.get("my_team_name") or "").strip()
     if my_team:
         st.caption(f"My team: **{my_team}**")
@@ -573,7 +566,7 @@ def render_waiver_wire_page(
         return
 
     st.caption(
-        "Waiver analysis uses **current-season MLB stats** and your **Active League Context** — "
+        "Waiver analysis uses **current-season MLB stats** and your **Fantasy Context Source** — "
         "not projections, ADP, Fantasy Edge, or draft-risk metrics."
     )
 

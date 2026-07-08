@@ -18285,6 +18285,12 @@ if active_page == "Draft Assistant Simulator":
     )
     render_page_guide(active_page)
     try:
+        from fantasy_context_ui import render_fantasy_context_badge
+
+        render_fantasy_context_badge(st, st.session_state)
+    except ImportError:
+        pass
+    try:
         from fantasy_context_ui import render_research_sync_badge
 
         render_research_sync_badge(st, st.session_state)
@@ -22739,12 +22745,6 @@ if active_page == "Fantasy Standings Tracker":
         if prepare_fantasy_in_season_hydration(st.session_state):
             _restored_at = str(st.session_state.get("_fantasy_standings_stats_loaded_at") or "")[:19]
             st.caption(f"Restored saved in-season stats from workspace (last loaded {_restored_at or 'earlier'}).")
-    except ImportError:
-        pass
-    try:
-        from fantasy_context_ui import render_fantasy_context_badge
-
-        render_fantasy_context_badge(st, st.session_state)
     except ImportError:
         pass
 
