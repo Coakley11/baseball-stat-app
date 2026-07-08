@@ -10,6 +10,8 @@ from fantasy_context_source import (
     SOURCE_GENERIC,
     fantasy_context_source_badge_text,
     fantasy_context_using_caption,
+    fantasy_context_using_display,
+    fantasy_context_using_markdown,
     live_draft_context_available,
     live_draft_sync_enabled,
     simulator_board_context_available,
@@ -259,7 +261,7 @@ def render_fantasy_context_source_controls(
 
     st.caption(FANTASY_CONTEXT_OVERRIDE_FOOTER)
     effective = resolve_fantasy_context_source(session)
-    st.caption(fantasy_context_using_caption(session))
+    st.caption(f"Effective source: {fantasy_context_using_caption(session)}")
     if effective.kind == SOURCE_GENERIC:
         try:
             from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives
@@ -342,8 +344,15 @@ def render_fantasy_context_badge(st: Any, session: dict[str, Any]) -> None:
 
 
 def render_fantasy_using_caption(st: Any, session: dict[str, Any]) -> None:
-    """Single, consistent line naming the effective fantasy source for this page."""
-    st.caption(fantasy_context_using_caption(session))
+    """Prominent banner naming the single effective fantasy source for this page."""
+    display = fantasy_context_using_display(session)
+    markdown = fantasy_context_using_markdown(session)
+    if display.get("kind") == "active_draft":
+        st.info(markdown)
+    elif display.get("kind") in ("temporary_live", "temporary_simulator"):
+        st.warning(markdown)
+    else:
+        st.info(markdown)
 
 
 def render_fantasy_workflow_page_header(

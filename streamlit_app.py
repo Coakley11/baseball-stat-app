@@ -532,8 +532,8 @@ st.markdown("""
 .small-note {color: #4f6475; font-size: 14px;}
 .page-guide {background: linear-gradient(135deg, #eef4ff 0%, #f8fbff 100%); border-left: 4px solid #1f6feb; padding: 12px 16px; border-radius: 10px; margin: 0 0 16px 0; border: 1px solid #c8daf5;}
 .page-guide-title {font-size: 13px; font-weight: 700; color: #0b3d6e; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;}
-.page-guide ul {margin: 0; padding-left: 18px; color: #2c3e50; font-size: 14px; line-height: 1.45;}
-.page-guide li {margin-bottom: 4px;}
+.page-guide-body {color: #2c3e50; font-size: 14px; line-height: 1.45;}
+.page-guide-item {margin: 0 0 6px 0;}
 .page-guide strong {color: #12324a;}
 .ctx-transfer-row {margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d5dde5;}
 .ctx-transfer-row [data-testid="stSelectbox"] label p {font-size: 12px; color: #5a6f82; font-weight: 600;}
@@ -2047,18 +2047,20 @@ def render_page_guide(page_key):
         )
         return
     extra_items = "".join(
-        f"<li>{_guide_html_line(x)}</li>" for x in (g.get("extra") or []) if str(x or "").strip()
+        f'<p class="page-guide-item">{_guide_html_line(x)}</p>'
+        for x in (g.get("extra") or [])
+        if str(x or "").strip()
     )
     st.markdown(
         f"""
         <div class="page-guide">
             <div class="page-guide-title">Quick guide</div>
-            <ul>
-                <li><strong>What it does:</strong> {_guide_html_line(g.get("purpose", ""))}</li>
-                <li><strong>When to use it:</strong> {_guide_html_line(g.get("when", ""))}</li>
-                <li><strong>Main outputs:</strong> {_guide_html_line(g.get("outputs", ""))}</li>
+            <div class="page-guide-body">
+                <p class="page-guide-item"><strong>What it does:</strong> {_guide_html_line(g.get("purpose", ""))}</p>
+                <p class="page-guide-item"><strong>When to use it:</strong> {_guide_html_line(g.get("when", ""))}</p>
+                <p class="page-guide-item"><strong>Main outputs:</strong> {_guide_html_line(g.get("outputs", ""))}</p>
                 {extra_items}
-            </ul>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -23381,13 +23383,13 @@ if active_page == "Fantasy Lineup Assistant":
         pass
 
     try:
-        from global_fantasy_settings_state import active_fantasy_team_label, get_active_fantasy_team
+        from global_fantasy_settings_state import get_active_fantasy_team
 
-        _lineup_team_hdr = active_fantasy_team_label(st.session_state) or get_active_fantasy_team(st.session_state)
+        _lineup_team_hdr = get_active_fantasy_team(st.session_state)
     except ImportError:
         _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
     _lineup_title = (
-        f"Fantasy Lineup Assistant — {_lineup_team_hdr}"
+        f"Fantasy Lineup Assistant — Team {_lineup_team_hdr}"
         if _lineup_team_hdr
         else "Fantasy Lineup Assistant / Start-Sit AI"
     )
@@ -23518,7 +23520,9 @@ if active_page == "Fantasy Lineup Assistant":
             )
 
         _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
-        l2, l3 = st.columns(2)
+        l1, l2, l3 = st.columns(3)
+        with l1:
+            st.caption(active_fantasy_team_caption(st.session_state))
         with l2:
             _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
             st.session_state["lineup_format"] = _lineup_fmt_resolved

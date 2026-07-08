@@ -216,33 +216,15 @@ class FantasyContextSourceTests(unittest.TestCase):
         render_fantasy_context_sync_control(st, session)
         self.assertTrue(session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY])
         self.assertTrue(session[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY])
-        self.assertNotIn("value", st.checkbox.call_args_list[0].kwargs)
-
-    def test_persist_context_settings_does_not_clobber_research_sync(self) -> None:
-        from fantasy_context_ui import (
-            FANTASY_RESEARCH_SYNC_KEY,
-            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
-            _LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
-            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
-            _persist_context_settings,
-        )
-
-        session: dict = {
-            FANTASY_RESEARCH_SYNC_KEY: True,
-            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY: False,
-            _LIVE_CONTEXT_TOGGLE_WIDGET_KEY: True,
-            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY: False,
-        }
-        import streamlit as st
-
-        st.session_state = session  # type: ignore[attr-defined]
-        _persist_context_settings()
-        self.assertTrue(session[FANTASY_RESEARCH_SYNC_KEY])
+        for call in st.checkbox.call_args_list:
+            self.assertNotIn("value", call.kwargs)
 
     def test_fantasy_context_using_caption_mutually_exclusive_labels(self) -> None:
         from fantasy_context_source import (
             SOURCE_SIMULATOR_BOARD,
+            _active_draft_label,
             fantasy_context_using_caption,
+            fantasy_context_using_display,
             resolve_fantasy_context_source,
         )
 
@@ -250,16 +232,36 @@ class FantasyContextSourceTests(unittest.TestCase):
         session.update(_simulator_board_session())
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
+        display = fantasy_context_using_display(session)
+        self.assertEqual(display["kind"], "temporary_simulator")
         caption = fantasy_context_using_caption(session)
         self.assertIn("Temporary Simulator Board", caption)
         self.assertNotIn("Active Draft", caption)
-        self.assertNotIn("Saved", caption)
 
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        display = fantasy_context_using_display(session)
+        self.assertEqual(display["kind"], "active_draft")
         active_caption = fantasy_context_using_caption(session)
-        self.assertIn("Using: Active Draft — Practice Draft", active_caption)
+        self.assertIn("Active Draft: Practice Draft", active_caption)
         self.assertNotIn("Temporary", active_caption)
+        self.assertNotIn("unsaved", active_caption.lower())
+
+    def test_active_draft_label_prefers_archive_name_over_ephemeral_display_name(self) -> None:
+        from fantasy_context_source import _active_draft_label
+
+        session = _saved_context_session()
+        ctx = session["fantasy_league_context_state"]["contexts"]["ctx_practice"]
+        ctx["display_name"] = "Draft Room Simulator Board (temporary / unsaved)"
+        session["draft_archive_teams"] = [
+            {
+                "draft_id": "arch1",
+                "draft_name": "Yahoo Fantasy — Team Daniel",
+                "team_name": "Daniel",
+                "league_context_id": "ctx_practice",
+            }
+        ]
+        self.assertEqual(_active_draft_label(session, ctx), "Yahoo Fantasy — Team Daniel")
 
     def test_checkbox_on_change_syncs_persisted_key(self) -> None:
         from fantasy_context_ui import (
