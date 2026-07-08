@@ -1223,9 +1223,13 @@ def save_imported_league_context(
     league_name: str = "",
     config: dict[str, Any] | None = None,
     defer_activation: bool = False,
+    save_only: bool = False,
     assign_team: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Save validated imported draft as real_league context + archive; optionally claim team."""
+    """Save validated imported draft as real_league context + archive.
+
+    save_only=True: persist to library without activating (user must Set Active separately).
+    """
     from draft_archive_state import save_imported_draft_archive
 
     my_team = str(my_team_name or "").strip()
@@ -1272,29 +1276,45 @@ def save_imported_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
-    if defer_activation:
+    if save_only:
+        if assign_team:
+            try:
+                from fantasy_league_team_ownership import assign_team_owner_to_context
+
+                context = assign_team_owner_to_context(context, my_team)
+                context["my_team_name"] = my_team
+                context = upsert_league_context(session, context)
+            except ImportError:
+                pass
+        else:
+            try:
+                from fantasy_shared_league_store import push_league_context_to_shared
+
+                push_league_context_to_shared(session, context)
+            except (ImportError, RuntimeError, OSError):
+                pass
+    elif defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:
         activate_league_context(session, league_context_id)
-    if assign_team:
-        try:
-            from fantasy_league_team_ownership import assign_my_team
+        if assign_team:
+            try:
+                from fantasy_league_team_ownership import assign_my_team
 
-            context, err = assign_my_team(session, my_team)
-            if err:
-                raise ValueError(err)
-        except ImportError:
-            pass
-    else:
-        try:
-            from fantasy_shared_league_store import push_league_context_to_shared
+                context, err = assign_my_team(session, my_team)
+                if err:
+                    raise ValueError(err)
+            except ImportError:
+                pass
+        else:
+            try:
+                from fantasy_shared_league_store import push_league_context_to_shared
 
-            context = get_league_context(session, league_context_id) or context
-            push_league_context_to_shared(session, context)
-        except (ImportError, RuntimeError, OSError):
-            pass
-    if not assign_team or defer_activation:
-        context = get_league_context(session, league_context_id) or context
+                context = get_league_context(session, league_context_id) or context
+                push_league_context_to_shared(session, context)
+            except (ImportError, RuntimeError, OSError):
+                pass
+    context = get_league_context(session, league_context_id) or context
     return entry, context
 
 
@@ -1375,6 +1395,27 @@ def league_team_count(context: dict[str, Any] | None, archive_entry: dict[str, A
     if archive_entry:
         return 1 if str(archive_entry.get("team_name") or "").strip() else 0
     return 0
+
+
+def archive_card_team_count(archive_entry: dict[str, Any] | None) -> int:
+    """Immutable team count for Saved Draft Library cards (snapshot only)."""
+    entry = dict(archive_entry or {})
+    snap = entry.get("snapshot")
+    if isinstance(snap, dict) and snap.get("team_count") is not None:
+        return int(snap.get("team_count") or 0)
+    rosters = dict(entry.get("league_rosters") or {})
+    if rosters:
+        return len([str(k).strip() for k in rosters.keys() if str(k).strip()])
+    return 1 if str(entry.get("team_name") or "").strip() else 0
+
+
+def archive_card_player_count(archive_entry: dict[str, Any] | None) -> int:
+    """Immutable roster count for Saved Draft Library cards (snapshot only)."""
+    entry = dict(archive_entry or {})
+    snap = entry.get("snapshot")
+    if isinstance(snap, dict) and snap.get("my_team_player_count") is not None:
+        return int(snap.get("my_team_player_count") or 0)
+    return archive_my_team_player_count(entry, context=None)
 
 
 def archive_my_team_player_count(

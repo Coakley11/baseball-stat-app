@@ -30,7 +30,7 @@ def _archive_list(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _set_archive_list(session: dict[str, Any], entries: list[dict[str, Any]]) -> None:
-    session[DRAFT_ARCHIVE_KEY] = entries
+    session[DRAFT_ARCHIVE_KEY] = copy.deepcopy(entries)
     try:
         from workflow_persist_guard import mark_workflow_persist_authoritative
 
@@ -42,7 +42,39 @@ def _set_archive_list(session: dict[str, Any], entries: list[dict[str, Any]]) ->
 def list_draft_archives(session: dict[str, Any]) -> list[dict[str, Any]]:
     """All saved draft teams, newest first."""
     entries = _archive_list(session)
-    return sorted(entries, key=lambda e: str(e.get("updated_at") or e.get("created_at") or ""), reverse=True)
+    return sorted(
+        [copy.deepcopy(e) for e in entries],
+        key=lambda e: str(e.get("updated_at") or e.get("created_at") or ""),
+        reverse=True,
+    )
+
+
+def _build_archive_snapshot(
+    entry: dict[str, Any],
+    *,
+    league_rosters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Frozen display metadata for library cards — never read live league context."""
+    rosters = dict(league_rosters or entry.get("league_rosters") or {})
+    team_names = sorted(str(name).strip() for name in rosters.keys() if str(name).strip())
+    if not team_names:
+        team = str(entry.get("team_name") or "").strip()
+        if team:
+            team_names = [team]
+    direct_players = [p for p in (entry.get("players") or []) if isinstance(p, dict)]
+    my_team_player_count = len(direct_players)
+    if my_team_player_count == 0 and team_names:
+        my_team = str(entry.get("team_name") or "").strip()
+        if my_team and isinstance(rosters.get(my_team), dict):
+            roster_players = rosters[my_team].get("players") or []
+            my_team_player_count = len([p for p in roster_players if isinstance(p, dict)])
+    return {
+        "team_count": len(team_names),
+        "team_names": team_names,
+        "my_team_player_count": my_team_player_count,
+        "snapshot_at": _utc_now_iso(),
+        "schema_version": 1,
+    }
 
 
 def get_draft_archive(session: dict[str, Any], draft_id: str) -> dict[str, Any] | None:
@@ -147,6 +179,7 @@ def save_draft_archive(
         entry["league_rosters"] = copy.deepcopy(league_rosters)
     if league_context_id:
         entry["league_context_id"] = str(league_context_id).strip()
+    entry["snapshot"] = _build_archive_snapshot(entry, league_rosters=league_rosters)
     entries = _archive_list(session)
     replaced = False
     for i, existing in enumerate(entries):

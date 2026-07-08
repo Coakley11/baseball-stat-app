@@ -18,6 +18,8 @@ from draft_archive_state import (
 from fantasy_league_context import (
     activate_archive_league_context,
     archive_my_team_player_count,
+    archive_card_player_count,
+    archive_card_team_count,
     clear_active_league_context,
     get_active_league_context,
     get_league_context_for_archive,
@@ -1281,8 +1283,8 @@ def _render_post_save_actions(
     league_save: bool = False,
 ) -> None:
     context = context or get_league_context_for_archive(session, entry)
-    team_count = league_team_count(context, entry)
-    player_count = archive_my_team_player_count(entry, context=context)
+    team_count = archive_card_team_count(entry)
+    player_count = archive_card_player_count(entry)
     if league_save and context:
         st.success(
             f"Saved **{entry.get('draft_name')}** as a **{league_context_coverage_badge(context)}** "
@@ -2315,8 +2317,8 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         is_active = draft_id == active_id and (
             not active_context_id or not league_context_id or league_context_id == active_context_id
         )
-        player_n = archive_my_team_player_count(entry, context=context)
-        team_n = league_team_count(context, entry)
+        player_n = archive_card_player_count(entry)
+        team_n = archive_card_team_count(entry)
         st.markdown(
             _saved_draft_card_html(entry, is_active=is_active, player_n=player_n, team_n=team_n),
             unsafe_allow_html=True,

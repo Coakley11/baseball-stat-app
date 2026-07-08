@@ -627,10 +627,12 @@ def render_shared_league_creation_panel(
     if not default_league_name:
         default_league_name = f"Imported {len(teams)}-Team League"
 
-    with st.expander("Create shared league from validated import", expanded=True):
+    with st.expander("Save imported league to library", expanded=True):
         st.caption(
-            "All players are resolved. Save as a shared league, claim your team, "
-            "and add the import to Saved Drafts as your Active League."
+            "**Apply to board** (above) loads a temporary working draft. "
+            "**Save to Saved Drafts** stores this import in your library without making it active. "
+            "Open **Saved Draft Library** and click **Set Active** when you want this league "
+            "to drive Lineup, Waiver, Standings, and Trades."
         )
         league_name = st.text_input(
             "League name",
@@ -643,12 +645,12 @@ def render_shared_league_creation_panel(
             key=f"{session_key}_shared_league_team",
         )
         if st.button(
-            "Create Shared League",
-            key=f"{session_key}_create_shared_league",
+            "Save to Saved Drafts",
+            key=f"{session_key}_save_imported_league",
             type="primary",
         ):
             if not import_review_ready_for_league(review, pool_df):
-                st.error("Resolve every imported player before creating a shared league.")
+                st.error("Resolve every imported player before saving to the library.")
                 return
             validated = build_validated_import_dataframe(review)
             try:
@@ -664,22 +666,26 @@ def render_shared_league_creation_panel(
                     remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
                     rerun=False,
                 )
-                _entry, context = save_imported_league_context(
+                entry, context = save_imported_league_context(
                     session,
                     validated,
                     my_team_name=my_team,
                     draft_name=str(league_name or default_league_name).strip(),
                     league_name=str(league_name or default_league_name).strip(),
+                    save_only=True,
                     assign_team=True,
                 )
                 league_id = str((context.get("metadata") or {}).get("league_id") or "").strip()
                 session["workflow_sidebar_flash"] = (
-                    f"Created shared league **{league_name}** and claimed **{my_team}**."
+                    f"Saved **{league_name}** to Saved Drafts (not active). "
+                    f"Claimed **{my_team}** on the saved league."
                     + (f" League ID: `{league_id}`." if league_id else "")
+                    + " Use **Set Active** in Saved Draft Library when ready."
                 )
+                session["_draft_library_last_saved_id"] = str(entry.get("draft_id") or "")
                 st.rerun()
             except Exception as exc:
-                st.error(f"Could not create shared league: {exc}")
+                st.error(f"Could not save imported league: {exc}")
 
 
 def render_validated_draft_import(

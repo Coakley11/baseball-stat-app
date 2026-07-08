@@ -76,6 +76,7 @@ class TestImportedSharedLeague(unittest.TestCase):
             draft_name="Office League 2026",
             league_name="Office League 2026",
             assign_team=False,
+            save_only=False,
         )
         self.assertEqual(entry.get("draft_type"), DRAFT_TYPE_IMPORTED)
         self.assertEqual(context.get("context_type"), CONTEXT_TYPE_REAL_LEAGUE)
@@ -84,6 +85,73 @@ class TestImportedSharedLeague(unittest.TestCase):
         self.assertEqual(get_active_draft_archive(self.session), entry)
         active_ctx = get_active_league_context(self.session, respect_source_priority=False)
         self.assertEqual(active_ctx.get("league_context_id"), context.get("league_context_id"))
+
+    def test_save_only_does_not_auto_activate(self) -> None:
+        board = _sample_board()
+        entry, _context = save_imported_league_context(
+            self.session,
+            board,
+            my_team_name="Daniel",
+            draft_name="Saved Not Active",
+            save_only=True,
+            assign_team=True,
+        )
+        self.assertTrue(str(entry.get("draft_id") or ""))
+        self.assertIsNone(get_active_draft_archive(self.session))
+
+    def test_archive_card_snapshot_ignores_live_context_team_count(self) -> None:
+        from draft_archive_state import DRAFT_TYPE_SIMULATOR, save_draft_archive
+        from fantasy_league_context import (
+            archive_card_team_count,
+            build_league_rosters_from_simulator_board,
+        )
+
+        sim_board = pd.DataFrame(
+            {
+                "Round": [1, 1],
+                "Pick": [1, 2],
+                "Team": ["Alpha", "Beta"],
+                "Player": ["Aaron Judge", "Juan Soto"],
+            }
+        )
+        rosters_2 = build_league_rosters_from_simulator_board(sim_board, "Alpha")
+        sim_entry = save_draft_archive(
+            self.session,
+            draft_type=DRAFT_TYPE_SIMULATOR,
+            draft_name="Simulator - judge, soto",
+            team_name="Alpha",
+            config={"fantasy_format": "5x5 Roto"},
+            roster_rows=[{"Player": "Aaron Judge"}, {"Player": "Juan Soto"}],
+            league_rosters=rosters_2,
+        )
+        self.assertEqual(archive_card_team_count(sim_entry), 2)
+
+        import_board = _sample_board()
+        save_imported_league_context(
+            self.session,
+            import_board,
+            my_team_name="Daniel",
+            draft_name="Imported 4-team",
+            save_only=True,
+            assign_team=False,
+        )
+
+        mutated = dict(rosters_2)
+        mutated["Team 3"] = {"team_name": "Team 3", "is_user_team": False, "players": []}
+        mutated["Team 4"] = {"team_name": "Team 4", "is_user_team": False, "players": []}
+        context_id = str(sim_entry.get("league_context_id") or "")
+        if context_id:
+            ctx = get_league_context(self.session, context_id)
+            if ctx:
+                ctx = dict(ctx)
+                ctx["league_rosters"] = mutated
+                upsert_league_context(self.session, ctx)
+
+        refreshed = next(
+            e for e in list_draft_archives(self.session) if e.get("draft_id") == sim_entry.get("draft_id")
+        )
+        self.assertEqual(archive_card_team_count(refreshed), 2)
+        self.assertEqual(int((refreshed.get("snapshot") or {}).get("team_count") or 0), 2)
 
     def test_identical_import_reuses_fingerprint_ids(self) -> None:
         board = _sample_board()
