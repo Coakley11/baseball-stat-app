@@ -12,6 +12,7 @@ import pandas as pd
 from draft_import_pipeline import (
     ENTRY_DRAFT_ROOM,
     ENTRY_STANDINGS,
+    build_draft_import_debug_status,
     build_import_review,
     get_entry_config,
     import_columns_valid,
@@ -19,6 +20,8 @@ from draft_import_pipeline import (
     import_review_ready_for_league,
     normalize_imported_draft_columns,
     parse_uploaded_draft_file,
+    resolve_uploaded_file_for_import,
+    stage_draft_import_upload,
     validate_imported_draft_df,
 )
 from draft_player_names import classify_draft_player_import_name, build_draft_player_name_index
@@ -84,6 +87,47 @@ class TestDraftImportPipeline(unittest.TestCase):
 
         self.assertTrue(callable(render_import_pending_banner))
         self.assertTrue(callable(render_draft_room_import_block))
+
+    def test_staged_upload_survives_empty_widget(self) -> None:
+        session: dict = {}
+        upload = MagicMock()
+        upload.getvalue.return_value = b"Team,Player,Pick\nDaniel,Aaron Judge,1\n"
+        upload.name = "draft.csv"
+        session["draft_room_import_uploader"] = upload
+        stage_draft_import_upload(session, widget_key="draft_room_import_uploader")
+        session.pop("draft_room_import_uploader", None)
+        resolved = resolve_uploaded_file_for_import(session, None, widget_key="draft_room_import_uploader")
+        self.assertIsNotNone(resolved)
+        df, err = parse_uploaded_draft_file(resolved, read_table_fn=_read_csv_table)
+        self.assertEqual(err, "")
+        self.assertEqual(len(df), 1)
+
+    def test_debug_status_reports_pipeline_fields(self) -> None:
+        session: dict = {}
+        upload = MagicMock()
+        upload.getvalue.return_value = b"Team,Player,Pick\nDaniel,Aaron Judge,1\n"
+        upload.name = "office.csv"
+        review = build_import_review(
+            parse_uploaded_draft_file(upload, read_table_fn=_read_csv_table)[0],
+            self.pool,
+        )
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=ENTRY_DRAFT_ROOM,
+            uploaded_file=upload,
+            widget_key="draft_room_import_uploader",
+            import_block_entered=True,
+            pipeline_called=True,
+            raw_df=pd.read_csv(io.BytesIO(upload.getvalue())),
+            parsed_df=review.get("import_df"),
+            review=review,
+            pool_size=len(self.pool),
+        )
+        self.assertTrue(status["uploaded_file_present"])
+        self.assertEqual(status["uploaded_filename"], "office.csv")
+        self.assertTrue(status["validation_review_created"])
+        self.assertEqual(status["session_key_used_for_review"], "_draft_import_review")
+        self.assertTrue(status["render_uploaded_draft_import_section_called"])
 
     def test_unresolved_player_blocks_league_ready(self) -> None:
         import_df = pd.DataFrame(
@@ -193,7 +237,7 @@ class TestDraftImportPipeline(unittest.TestCase):
         app_path = Path(__file__).resolve().parents[1] / "streamlit_app.py"
         source = app_path.read_text(encoding="utf-8")
         self.assertIn("render_draft_room_import_block", source)
-        self.assertIn("render_import_pending_banner", source)
+        self.assertIn("pool_fn=", source)
         self.assertNotIn("League setup & import", source)
         self.assertIn("ENTRY_STANDINGS", source)
         self.assertNotIn("def normalize_imported_draft_columns", source)

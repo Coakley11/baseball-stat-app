@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import pandas as pd
@@ -18,7 +19,13 @@ from draft_player_names import classify_draft_player_import_name
 ENTRY_DRAFT_ROOM = "draft_room"
 ENTRY_STANDINGS = "standings"
 
+IMPORT_BLOCK_PLACEMENT_LABEL = "above Board / Rosters / League setup tabs"
+
 REQUIRED_IMPORT_COLUMNS = ("Round", "Pick", "Team", "Player")
+
+_STAGED_BYTES_KEY = "_draft_import_staged_bytes"
+_STAGED_FILENAME_KEY = "_draft_import_staged_filename"
+_DEBUG_STATUS_KEY = "_draft_import_debug_status"
 
 _ENTRY_CONFIG: dict[str, dict[str, str]] = {
     ENTRY_DRAFT_ROOM: {
@@ -34,6 +41,149 @@ _ENTRY_CONFIG: dict[str, dict[str, str]] = {
         "flash_prefix": "Standings: loaded",
     },
 }
+
+
+@dataclass(frozen=True)
+class StagedUploadFile:
+    """Minimal uploaded-file shape backed by session-staged bytes."""
+
+    name: str
+    data: bytes
+
+    def getvalue(self) -> bytes:
+        return self.data
+
+
+def stage_draft_import_upload(session: dict[str, Any], *, widget_key: str) -> None:
+    """Persist latest uploader payload so reruns can still parse after widget clears."""
+    uploaded = session.get(widget_key)
+    if uploaded is None:
+        return
+    try:
+        session[_STAGED_BYTES_KEY] = uploaded.getvalue()
+    except Exception:
+        session.pop(_STAGED_BYTES_KEY, None)
+        return
+    session[_STAGED_FILENAME_KEY] = str(getattr(uploaded, "name", "") or "")
+    session.pop(_DEBUG_STATUS_KEY, None)
+
+
+def resolve_uploaded_file_for_import(
+    session: dict[str, Any],
+    uploaded_file: Any,
+    *,
+    widget_key: str,
+) -> Any | None:
+    """Prefer live widget value; fall back to staged bytes captured on upload."""
+    if uploaded_file is not None:
+        stage_draft_import_upload(session, widget_key=widget_key)
+        return uploaded_file
+    staged = session.get(_STAGED_BYTES_KEY)
+    if isinstance(staged, (bytes, bytearray)) and staged:
+        return StagedUploadFile(
+            name=str(session.get(_STAGED_FILENAME_KEY) or "uploaded_draft.csv"),
+            data=bytes(staged),
+        )
+    return None
+
+
+def _unresolved_player_count(review: dict[str, Any] | None) -> int:
+    if not isinstance(review, dict):
+        return 0
+    count = 0
+    for row in review.get("rows") or []:
+        if row.get("status") == "empty":
+            continue
+        if row.get("skip"):
+            continue
+        if str(row.get("resolved_canonical") or "").strip():
+            continue
+        if row.get("status") == "exact":
+            continue
+        count += 1
+    return count
+
+
+def build_draft_import_debug_status(
+    session: dict[str, Any],
+    *,
+    entry_point: str,
+    uploaded_file: Any,
+    widget_key: str,
+    import_block_entered: bool = False,
+    pipeline_called: bool = False,
+    raw_df: pd.DataFrame | None = None,
+    parsed_df: pd.DataFrame | None = None,
+    parse_error: str = "",
+    review: dict[str, Any] | None = None,
+    pool_size: int = 0,
+    layout_label: str = IMPORT_BLOCK_PLACEMENT_LABEL,
+) -> dict[str, Any]:
+    config = get_entry_config(entry_point)
+    session_key = config["session_key"]
+    resolved = resolve_uploaded_file_for_import(session, uploaded_file, widget_key=widget_key)
+    raw_columns: list[str] = []
+    if isinstance(raw_df, pd.DataFrame):
+        raw_columns = [str(c) for c in raw_df.columns.tolist()]
+    status = {
+        "entry_point": entry_point,
+        "layout_label": layout_label,
+        "import_block_entered": bool(import_block_entered),
+        "render_uploaded_draft_import_section_called": bool(pipeline_called),
+        "uploaded_file_present": resolved is not None,
+        "widget_uploaded_file_present": uploaded_file is not None,
+        "staged_bytes_present": bool(session.get(_STAGED_BYTES_KEY)),
+        "uploaded_filename": str(
+            getattr(resolved, "name", None)
+            or session.get(_STAGED_FILENAME_KEY)
+            or session.get("draft_room_import_uploaded_filename")
+            or ""
+        ),
+        "detected_columns": raw_columns,
+        "parsed_row_count": int(len(parsed_df)) if isinstance(parsed_df, pd.DataFrame) else 0,
+        "parse_error": str(parse_error or ""),
+        "validation_review_created": bool(isinstance(review, dict) and review.get("rows")),
+        "unresolved_player_count": _unresolved_player_count(review),
+        "session_key_used_for_review": session_key,
+        "review_row_count": len((review or {}).get("rows") or []),
+        "pool_size": int(pool_size or 0),
+        "session_has_review": bool(isinstance(session.get(session_key), dict) and session.get(session_key, {}).get("rows")),
+    }
+    session[_DEBUG_STATUS_KEY] = status
+    return status
+
+
+def render_draft_import_debug_panel(st: Any, status: dict[str, Any]) -> None:
+    """Always-visible import pipeline diagnostics for deploy troubleshooting."""
+    with st.expander("Import pipeline status", expanded=True):
+        st.markdown(
+            f"**Placement:** {status.get('layout_label') or IMPORT_BLOCK_PLACEMENT_LABEL}"
+        )
+        st.markdown(f"1. **uploaded_file is present:** {'yes' if status.get('uploaded_file_present') else 'no'}")
+        st.markdown(f"2. **uploaded filename:** `{status.get('uploaded_filename') or '—'}`")
+        cols = status.get("detected_columns") or []
+        st.markdown(f"3. **detected columns:** `{', '.join(cols) if cols else '—'}`")
+        st.markdown(f"4. **parsed row count:** {int(status.get('parsed_row_count') or 0)}")
+        st.markdown(
+            f"5. **validation review created:** {'yes' if status.get('validation_review_created') else 'no'}"
+        )
+        st.markdown(f"6. **unresolved player count:** {int(status.get('unresolved_player_count') or 0)}")
+        st.markdown(f"7. **session key used for review:** `{status.get('session_key_used_for_review') or '—'}`")
+        st.markdown(
+            "8. **render_uploaded_draft_import_section called:** "
+            f"{'yes' if status.get('render_uploaded_draft_import_section_called') else 'no'}"
+        )
+        st.caption(
+            "Widget file present: "
+            f"{'yes' if status.get('widget_uploaded_file_present') else 'no'} · "
+            "Staged bytes present: "
+            f"{'yes' if status.get('staged_bytes_present') else 'no'} · "
+            f"Pool size: {int(status.get('pool_size') or 0)} · "
+            f"Session review cached: {'yes' if status.get('session_has_review') else 'no'}"
+        )
+        parse_error = str(status.get("parse_error") or "").strip()
+        if parse_error:
+            st.warning(parse_error)
 
 
 def get_entry_config(entry_point: str) -> dict[str, str]:
@@ -321,22 +471,67 @@ def render_uploaded_draft_import_section(
     remove_drafted_from_queue_fn: Callable[[], None] | None = None,
     render_preview_table_fn: Callable[..., None] | None = None,
     uploaded_filename_session_key: str = "",
-) -> None:
+    widget_key: str = "",
+    layout_label: str = IMPORT_BLOCK_PLACEMENT_LABEL,
+) -> dict[str, Any]:
     """Full upload → parse → validate pipeline used by Draft Room and Standings."""
     config = get_entry_config(entry_point)
-    if uploaded_filename_session_key:
+    session_key = config["session_key"]
+    raw_df: pd.DataFrame | None = None
+    parsed_df: pd.DataFrame | None = None
+    parse_error = ""
+    review: dict[str, Any] | None = None
+
+    if uploaded_filename_session_key and uploaded_file is not None:
         session[uploaded_filename_session_key] = str(getattr(uploaded_file, "name", "") or "")
 
-    imported_df, parse_error = parse_uploaded_draft_file(
+    try:
+        raw_df = read_imported_draft_file(uploaded_file, read_table_fn=read_table_fn)
+    except Exception as exc:
+        parse_error = str(exc)
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=entry_point,
+            uploaded_file=uploaded_file,
+            widget_key=widget_key,
+            import_block_entered=True,
+            pipeline_called=True,
+            raw_df=raw_df,
+            parsed_df=parsed_df,
+            parse_error=parse_error,
+            review=review,
+            pool_size=len(pool_df) if isinstance(pool_df, pd.DataFrame) else 0,
+            layout_label=layout_label,
+        )
+        render_draft_import_debug_panel(st, status)
+        st.error(f"Could not read uploaded draft file: {parse_error}")
+        return status
+
+    parsed_df, parse_error = parse_uploaded_draft_file(
         uploaded_file,
         read_table_fn=read_table_fn,
     )
     if parse_error:
-        if imported_df.empty:
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=entry_point,
+            uploaded_file=uploaded_file,
+            widget_key=widget_key,
+            import_block_entered=True,
+            pipeline_called=True,
+            raw_df=raw_df,
+            parsed_df=parsed_df,
+            parse_error=parse_error,
+            review=review,
+            pool_size=len(pool_df) if isinstance(pool_df, pd.DataFrame) else 0,
+            layout_label=layout_label,
+        )
+        render_draft_import_debug_panel(st, status)
+        if parsed_df is None or parsed_df.empty:
             st.warning(parse_error)
         else:
             st.error(parse_error)
-        return
+        return status
 
     file_hash_key = config.get("file_hash_session_key") or ""
     if file_hash_key:
@@ -348,13 +543,28 @@ def render_uploaded_draft_import_section(
             session.pop(config["session_key"], None)
 
     if pool_df.empty:
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=entry_point,
+            uploaded_file=uploaded_file,
+            widget_key=widget_key,
+            import_block_entered=True,
+            pipeline_called=True,
+            raw_df=raw_df,
+            parsed_df=parsed_df,
+            parse_error="Player pool is empty — cannot validate import names.",
+            review=review,
+            pool_size=0,
+            layout_label=layout_label,
+        )
+        render_draft_import_debug_panel(st, status)
         st.error("Player pool is empty — cannot validate import names.")
-        return
+        return status
 
     render_validated_draft_import(
         st,
         session,
-        imported_df,
+        parsed_df,
         pool_df,
         entry_point=entry_point,
         strict=strict,
@@ -362,6 +572,23 @@ def render_uploaded_draft_import_section(
         remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
         render_preview_table_fn=render_preview_table_fn,
     )
+    review = session.get(session_key)
+    status = build_draft_import_debug_status(
+        session,
+        entry_point=entry_point,
+        uploaded_file=uploaded_file,
+        widget_key=widget_key,
+        import_block_entered=True,
+        pipeline_called=True,
+        raw_df=raw_df,
+        parsed_df=parsed_df,
+        parse_error="",
+        review=review if isinstance(review, dict) else None,
+        pool_size=len(pool_df) if isinstance(pool_df, pd.DataFrame) else 0,
+        layout_label=layout_label,
+    )
+    render_draft_import_debug_panel(st, status)
+    return status
 
 
 def render_import_pending_banner(st: Any, session: dict[str, Any]) -> None:
@@ -384,38 +611,115 @@ def render_draft_room_import_block(
     session: dict[str, Any],
     *,
     read_table_fn: Callable[[bytes, str], pd.DataFrame],
-    pool_df: pd.DataFrame,
+    pool_fn: Callable[[], pd.DataFrame],
     remove_drafted_from_queue_fn: Callable[[], None] | None = None,
     render_preview_table_fn: Callable[..., None] | None = None,
+    layout_label: str = IMPORT_BLOCK_PLACEMENT_LABEL,
 ) -> None:
     """Always-visible Draft Room import entry (must not be hidden inside a inactive tab)."""
+    session["_draft_import_block_entered"] = True
+    widget_key = "draft_room_import_uploader"
+    config = get_entry_config(ENTRY_DRAFT_ROOM)
+    session_key = config["session_key"]
+
     st.subheader("Import existing draft")
     st.caption(
-        "Upload CSV or Excel with **Team/Owner** and **Player** columns (optional Pick/Round). "
-        "Validation appears here immediately after upload — you do **not** need to match team count or "
-        "rounds in League setup first; the file defines teams and picks. Scoring format only affects "
-        "which player pool is used for name matching."
+        f"Upload CSV or Excel with **Team/Owner** and **Player** columns (optional Pick/Round). "
+        f"Placement: **{layout_label}**. Validation appears here immediately after upload."
     )
+
+    def _on_upload_change() -> None:
+        stage_draft_import_upload(session, widget_key=widget_key)
+
     imported_draft_file = st.file_uploader(
         "Upload existing draft board CSV or Excel",
         type=["csv", "xlsx", "xls"],
-        key="draft_room_import_uploader",
+        key=widget_key,
+        on_change=_on_upload_change,
     )
-    if imported_draft_file is None:
+    resolved_file = resolve_uploaded_file_for_import(session, imported_draft_file, widget_key=widget_key)
+    cached_review = session.get(session_key)
+
+    if resolved_file is None:
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=ENTRY_DRAFT_ROOM,
+            uploaded_file=imported_draft_file,
+            widget_key=widget_key,
+            import_block_entered=True,
+            pipeline_called=False,
+            review=cached_review if isinstance(cached_review, dict) else None,
+            layout_label=layout_label,
+        )
+        render_draft_import_debug_panel(st, status)
+        if isinstance(cached_review, dict) and cached_review.get("rows"):
+            import_df = cached_review.get("import_df")
+            if isinstance(import_df, pd.DataFrame) and not import_df.empty:
+                st.info("Restored cached import review from session — widget file is empty on this rerun.")
+                try:
+                    pool_df = pool_fn()
+                except Exception as exc:
+                    st.error(f"Player pool failed to load: {exc}")
+                    return
+                render_validated_draft_import(
+                    st,
+                    session,
+                    import_df,
+                    pool_df,
+                    entry_point=ENTRY_DRAFT_ROOM,
+                    remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
+                    render_preview_table_fn=render_preview_table_fn,
+                )
+        elif str(session.get(_STAGED_FILENAME_KEY) or session.get("draft_room_import_uploaded_filename") or "").strip():
+            st.warning(
+                "A filename is remembered but no upload bytes are available on this rerun. "
+                "Please re-select the CSV file once to continue."
+            )
         return
+
+    try:
+        pool_df = pool_fn()
+    except Exception as exc:
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=ENTRY_DRAFT_ROOM,
+            uploaded_file=resolved_file,
+            widget_key=widget_key,
+            import_block_entered=True,
+            pipeline_called=False,
+            parse_error=f"Player pool failed to load: {exc}",
+            layout_label=layout_label,
+        )
+        render_draft_import_debug_panel(st, status)
+        st.error(f"Player pool failed to load: {exc}")
+        return
+
     try:
         render_uploaded_draft_import_section(
             st,
             session,
-            imported_draft_file,
+            resolved_file,
             pool_df,
             entry_point=ENTRY_DRAFT_ROOM,
             read_table_fn=read_table_fn,
             remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
             render_preview_table_fn=render_preview_table_fn,
             uploaded_filename_session_key="draft_room_import_uploaded_filename",
+            widget_key=widget_key,
+            layout_label=layout_label,
         )
     except Exception as exc:
+        status = build_draft_import_debug_status(
+            session,
+            entry_point=ENTRY_DRAFT_ROOM,
+            uploaded_file=resolved_file,
+            widget_key=widget_key,
+            import_block_entered=True,
+            pipeline_called=True,
+            parse_error=str(exc),
+            layout_label=layout_label,
+        )
+        render_draft_import_debug_panel(st, status)
         st.error(f"Could not read uploaded draft file: {exc}")
 
 
@@ -424,6 +728,7 @@ __all__ = [
     "ENTRY_STANDINGS",
     "REQUIRED_IMPORT_COLUMNS",
     "apply_validated_import_to_board",
+    "build_draft_import_debug_status",
     "build_import_review",
     "build_validated_import_dataframe",
     "classify_draft_player_import_name",
@@ -434,11 +739,14 @@ __all__ = [
     "normalize_imported_draft_columns",
     "parse_uploaded_draft_file",
     "read_imported_draft_file",
+    "render_draft_import_debug_panel",
     "render_draft_import_validation_ui",
     "render_draft_room_import_block",
     "render_import_pending_banner",
     "render_shared_league_creation_panel",
     "render_uploaded_draft_import_section",
     "render_validated_draft_import",
+    "resolve_uploaded_file_for_import",
+    "stage_draft_import_upload",
     "validate_imported_draft_df",
 ]

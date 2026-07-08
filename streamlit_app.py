@@ -19441,12 +19441,11 @@ if active_page == "Draft Room Simulator":
         from draft_import_pipeline import render_draft_room_import_block, render_import_pending_banner
 
         render_import_pending_banner(st, st.session_state)
-        pool_for_import = _draft_room_pool_for_import_validation()
         render_draft_room_import_block(
             st,
             st.session_state,
             read_table_fn=read_uploaded_table_cached,
-            pool_df=pool_for_import,
+            pool_fn=_draft_room_pool_for_import_validation,
             remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
             render_preview_table_fn=lambda df, **kw: render_output_table(
                 clean_ui_columns(df),
@@ -22908,6 +22907,8 @@ if active_page == "Fantasy Standings Tracker":
                         clean_ui_columns(df),
                         **kw,
                     ),
+                    widget_key="standings_draft_import_uploader",
+                    layout_label="Fantasy Standings Tracker expander",
                 )
             except Exception as e:
                 st.error(f"Could not read draft board upload: {e}")
