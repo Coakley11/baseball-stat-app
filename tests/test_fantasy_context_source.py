@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -196,22 +197,28 @@ class FantasyContextSourceTests(unittest.TestCase):
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_ACTIVE_DRAFT)
 
-    def test_checkbox_widget_matches_persisted_on_navigation(self) -> None:
+    def test_persisted_checkbox_uses_value_from_persisted_key(self) -> None:
+        from fantasy_context_source import USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY
         from fantasy_context_ui import (
-            USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
             _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
-            _sync_widget_toggles_from_persisted,
+            render_fantasy_context_sync_control,
         )
 
         session: dict = {
             USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY: True,
-            _SIM_CONTEXT_TOGGLE_WIDGET_KEY: False,
+            "use_active_league_context_waiver_filter": True,
         }
-        _sync_widget_toggles_from_persisted(session)
-        self.assertTrue(session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY])
-        self.assertTrue(session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY])
+        st = MagicMock()
+        st.markdown = MagicMock()
+        st.caption = MagicMock()
+        st.checkbox = MagicMock(return_value=True)
+        render_fantasy_context_sync_control(st, session)
+        by_key = {call.kwargs.get("key"): call.kwargs for call in st.checkbox.call_args_list}
+        self.assertTrue(by_key[_SIM_CONTEXT_TOGGLE_WIDGET_KEY].get("value"))
+        self.assertTrue(by_key[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY].get("value"))
 
-    def test_checkbox_widget_syncs_persisted_key(self) -> None:
+    def test_checkbox_on_change_syncs_persisted_key(self) -> None:
         from fantasy_context_ui import (
             USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
             _SIM_CONTEXT_TOGGLE_WIDGET_KEY,

@@ -90,16 +90,16 @@ def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
 
 # Separate widget keys from the persisted source-of-truth keys. Streamlit garbage
 # collects widget-owned session keys when the widget is not rendered (e.g. after
-# navigating to another page), which flipped the checkbox back to its default. The
-# persisted keys (USE_*_AS_FANTASY_CONTEXT_KEY) live in the workspace blob and are
-# re-seeded into the widget keys on every render, so the user's choice is stable.
+# navigating to another page). Persisted keys live in the workspace blob; checkbox
+# widgets receive value= from persisted state and never get session_state writes
+# after render (which raises StreamlitAPIException).
 _LIVE_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_live_context_toggle_widget"
 _SIM_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_sim_context_toggle_widget"
 _RESEARCH_SYNC_TOGGLE_WIDGET_KEY = "_fcs_research_sync_toggle_widget"
 
 
 def _sync_persisted_context_toggles_from_widgets(session: dict[str, Any]) -> None:
-    """Copy widget display state into persisted source-of-truth keys."""
+    """Copy widget display state into persisted source-of-truth keys (on_change only)."""
     if _LIVE_CONTEXT_TOGGLE_WIDGET_KEY in session:
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = bool(
             session.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY)
@@ -172,11 +172,25 @@ def _on_sim_context_toggle_changed() -> None:
     _persist_context_settings()
 
 
-def _sync_widget_toggles_from_persisted(session: dict[str, Any]) -> None:
-    """Persisted keys are source of truth for checkbox display after navigation."""
-    session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
-    session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
-    session[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY] = research_league_sync_enabled(session)
+def _render_persisted_context_checkbox(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    label: str,
+    persisted_key: str,
+    widget_key: str,
+    help: str,
+    on_change,
+) -> None:
+    """Checkbox backed by a persisted key — value from persisted, never post-render widget writes."""
+    persisted_value = bool(session.get(persisted_key))
+    st.checkbox(
+        label,
+        value=persisted_value,
+        key=widget_key,
+        help=help,
+        on_change=on_change,
+    )
 
 
 def render_fantasy_context_source_controls(
@@ -191,15 +205,17 @@ def render_fantasy_context_source_controls(
     from fantasy_context_source import prepare_fantasy_context_source_defaults, resolve_fantasy_context_source
 
     prepare_fantasy_context_source_defaults(session)
-    _sync_widget_toggles_from_persisted(session)
 
     effective = resolve_fantasy_context_source(session)
     live_available = live_draft_context_available(session)
     sim_available = simulator_board_context_available(session)
 
-    st.checkbox(
-        USE_LIVE_DRAFT_CONTEXT_LABEL,
-        key=_LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
+    _render_persisted_context_checkbox(
+        st,
+        session,
+        label=USE_LIVE_DRAFT_CONTEXT_LABEL,
+        persisted_key=USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
+        widget_key=_LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
         help=USE_LIVE_DRAFT_CONTEXT_HELP,
         on_change=_on_live_context_toggle_changed,
     )
@@ -211,9 +227,12 @@ def render_fantasy_context_source_controls(
     elif not live_available:
         st.caption("No Live Draft Room board with picks yet.")
 
-    st.checkbox(
-        USE_SIMULATOR_BOARD_CONTEXT_LABEL,
-        key=_SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+    _render_persisted_context_checkbox(
+        st,
+        session,
+        label=USE_SIMULATOR_BOARD_CONTEXT_LABEL,
+        persisted_key=USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+        widget_key=_SIM_CONTEXT_TOGGLE_WIDGET_KEY,
         help=USE_SIMULATOR_BOARD_CONTEXT_HELP,
         on_change=_on_sim_context_toggle_changed,
     )
@@ -225,7 +244,6 @@ def render_fantasy_context_source_controls(
     elif not sim_available:
         st.caption("No simulator board with picks yet.")
 
-    _sync_persisted_context_toggles_from_widgets(session)
     st.caption(FANTASY_CONTEXT_OVERRIDE_FOOTER)
     effective = resolve_fantasy_context_source(session)
     st.caption(fantasy_context_using_caption(session))
@@ -250,16 +268,17 @@ def render_fantasy_context_sync_control(
 ) -> None:
     """Research-page sync toggle + temporary workspace overrides."""
     render_fantasy_context_source_controls(st, session, key_prefix=key)
-    _sync_widget_toggles_from_persisted(session)
     st.markdown("##### Research Mode Sync")
     st.caption(RESEARCH_SYNC_INTRO)
-    st.checkbox(
-        FANTASY_RESEARCH_SYNC_LABEL,
-        key=_RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
+    _render_persisted_context_checkbox(
+        st,
+        session,
+        label=FANTASY_RESEARCH_SYNC_LABEL,
+        persisted_key=FANTASY_RESEARCH_SYNC_KEY,
+        widget_key=_RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
         help=FANTASY_RESEARCH_SYNC_HELP,
         on_change=_on_research_sync_toggle_changed,
     )
-    _sync_persisted_context_toggles_from_widgets(session)
 
 
 def active_league_context_badge_text(session: dict[str, Any]) -> str:

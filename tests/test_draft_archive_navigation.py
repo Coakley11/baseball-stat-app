@@ -31,6 +31,7 @@ from draft_archive_ui import (
     schedule_saved_draft_library_navigation,
 )
 from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, save_simulator_team_archive
+from fantasy_context_source import USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY
 from fantasy_league_context import (
     PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY,
     apply_pending_league_context_activation,
@@ -241,6 +242,62 @@ class SavedDraftLibraryRenderTests(unittest.TestCase):
         st = self._mock_st()
         render_saved_draft_library_page(st, session, page_label_fn=lambda key: key)
         st.markdown.assert_called()
+
+    def test_saved_draft_library_fantasy_sync_no_post_render_widget_assign(self) -> None:
+        """Regression: assigning widget keys after checkbox render raises StreamlitAPIException."""
+        from fantasy_context_ui import (
+            _LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
+            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
+            _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+        )
+
+        class StreamlitAPIException(Exception):
+            pass
+
+        session: dict = {
+            "room_your_team": "Daniel",
+            "draft_shared_settings": {},
+            USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY: True,
+            "use_active_league_context_waiver_filter": True,
+        }
+        board = pd.DataFrame([{"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1}])
+        from fantasy_league_context import save_simulator_league_context
+
+        save_simulator_league_context(session, board, my_team_name="Daniel", defer_activation=True)
+
+        rendered_widget_keys: set[str] = set()
+        widget_keys = {
+            _LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
+            _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
+        }
+
+        class GuardSession(dict):
+            def __setitem__(self, key, value) -> None:
+                if key in rendered_widget_keys and key in widget_keys:
+                    raise StreamlitAPIException(
+                        f"Cannot set widget value after widget is instantiated: {key}"
+                    )
+                super().__setitem__(key, value)
+
+        guarded = GuardSession(session)
+
+        st = self._mock_st()
+
+        def _checkbox_side_effect(*_args, **kwargs):
+            key = kwargs.get("key")
+            if key:
+                rendered_widget_keys.add(key)
+            return bool(kwargs.get("value"))
+
+        st.checkbox.side_effect = _checkbox_side_effect
+
+        render_saved_draft_library_page(st, guarded, page_label_fn=lambda key: key)
+        self.assertEqual(
+            rendered_widget_keys,
+            widget_keys,
+            "Expected all fantasy context checkboxes to render once",
+        )
 
 
 class FantasyNavWidgetKeyTests(unittest.TestCase):
