@@ -87,6 +87,208 @@ def resolve_uploaded_file_for_import(
     return None
 
 
+def teams_in_pick_order_from_df(df: pd.DataFrame | None) -> list[str]:
+    """Unique team names in first-seen pick order from an import/board dataframe."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    team_col = "Team"
+    if team_col not in df.columns:
+        if "Fantasy Team" in df.columns:
+            team_col = "Fantasy Team"
+        else:
+            return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    sort_col = "Pick" if "Pick" in df.columns else None
+    rows = df.sort_values(sort_col, kind="stable") if sort_col else df
+    for raw in rows[team_col].astype(str).tolist():
+        name = str(raw).strip()
+        if name and name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+def teams_sorted_from_df(df: pd.DataFrame | None) -> list[str]:
+    """Alphabetical unique teams — matches Create Shared League selectbox ordering."""
+    return sorted(teams_in_pick_order_from_df(df))
+
+
+def teams_from_room_settings(session: dict[str, Any]) -> list[str]:
+    """Draft Room League setup names (room_team_names) — not used by import pipeline."""
+    lines = str(session.get("room_team_names") or "").strip()
+    if not lines:
+        return []
+    return [x.strip() for x in lines.splitlines() if x.strip()]
+
+
+def teams_from_draft_board(session: dict[str, Any]) -> list[str]:
+    """Teams on the live Draft Room board after apply (draft_room_table)."""
+    try:
+        from draft_room_state import coerce_board_table
+
+        table = coerce_board_table(session.get("draft_room_table"))
+    except ImportError:
+        table = None
+    return teams_in_pick_order_from_df(table)
+
+
+def teams_for_shared_league_creation(review: dict[str, Any] | None) -> list[str]:
+    """Teams offered in Create Shared League — derived from validated import review."""
+    if not isinstance(review, dict):
+        return []
+    import_df = review.get("import_df")
+    return teams_sorted_from_df(import_df if isinstance(import_df, pd.DataFrame) else None)
+
+
+def teams_from_active_league_claim(session: dict[str, Any]) -> list[str]:
+    """Teams in the active real_league context roster (post-create claim list)."""
+    try:
+        from fantasy_league_context import get_active_league_context
+    except ImportError:
+        return []
+    context = get_active_league_context(session, respect_source_priority=False)
+    if not isinstance(context, dict) or str(context.get("context_type") or "") != "real_league":
+        return []
+    rosters = context.get("league_rosters")
+    if not isinstance(rosters, dict):
+        return []
+    return sorted(str(k).strip() for k in rosters.keys() if str(k).strip())
+
+
+def format_team_name_list(teams: list[str]) -> str:
+    if not teams:
+        return "[]"
+    return "[" + ", ".join(teams) + "]"
+
+
+def build_import_team_name_diagnostics(
+    session: dict[str, Any],
+    *,
+    review: dict[str, Any] | None = None,
+    parsed_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Compare team-name sources across CSV parse, board, settings, and league creation."""
+    import_df = None
+    if isinstance(review, dict):
+        candidate = review.get("import_df")
+        if isinstance(candidate, pd.DataFrame):
+            import_df = candidate
+    if import_df is None and isinstance(parsed_df, pd.DataFrame):
+        import_df = parsed_df
+
+    parsed_teams = teams_in_pick_order_from_df(import_df)
+    room_teams = teams_from_room_settings(session)
+    board_teams = teams_from_draft_board(session)
+    shared_league_teams = teams_for_shared_league_creation(review)
+    claim_teams = teams_from_active_league_claim(session)
+
+    board_applied = bool(board_teams)
+    league_created = bool(claim_teams)
+
+    return {
+        "parsed_csv_teams": parsed_teams,
+        "draft_room_settings_teams": room_teams,
+        "board_teams": board_teams,
+        "shared_league_teams": shared_league_teams,
+        "shared_league_claim_teams": claim_teams,
+        "board_applied": board_applied,
+        "league_created": league_created,
+        "parsed_matches_board": parsed_teams == board_teams if board_applied else None,
+        "parsed_matches_shared_league": parsed_teams == shared_league_teams if shared_league_teams else None,
+        "parsed_matches_room_settings": parsed_teams == room_teams if room_teams else None,
+        "shared_league_matches_claim": shared_league_teams == claim_teams if league_created else None,
+    }
+
+
+def render_import_team_name_diagnostics_panel(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    review: dict[str, Any] | None = None,
+    parsed_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Show which team-name source feeds each import workflow step."""
+    diag = build_import_team_name_diagnostics(session, review=review, parsed_df=parsed_df)
+    if not (
+        diag.get("parsed_csv_teams")
+        or diag.get("draft_room_settings_teams")
+        or diag.get("board_teams")
+        or diag.get("shared_league_teams")
+        or diag.get("shared_league_claim_teams")
+    ):
+        return diag
+
+    with st.expander("Import team name sources", expanded=True):
+        st.caption(
+            "Use this panel to see whether team names come from the CSV, Draft Room League setup, "
+            "the applied board, or shared-league creation."
+        )
+        st.markdown(
+            f"**Parsed CSV teams:** `{format_team_name_list(diag.get('parsed_csv_teams') or [])}`"
+        )
+        st.markdown(
+            "**Draft Room settings (room_team_names):** "
+            f"`{format_team_name_list(diag.get('draft_room_settings_teams') or [])}`"
+        )
+        if diag.get("board_applied"):
+            st.markdown(
+                f"**Board teams (draft_room_table after apply):** "
+                f"`{format_team_name_list(diag.get('board_teams') or [])}`"
+            )
+        else:
+            st.markdown("**Board teams (draft_room_table after apply):** `(not applied yet)`")
+
+        if diag.get("shared_league_teams"):
+            st.markdown(
+                "**Create Shared League teams:** "
+                f"`{format_team_name_list(diag.get('shared_league_teams') or [])}`"
+            )
+        else:
+            st.markdown("**Create Shared League teams:** `(validation review not ready)`")
+
+        if diag.get("league_created"):
+            st.markdown(
+                "**Shared League claim teams:** "
+                f"`{format_team_name_list(diag.get('shared_league_claim_teams') or [])}`"
+            )
+        else:
+            st.markdown("**Shared League claim teams:** `(league not created yet)`")
+
+        parsed = diag.get("parsed_csv_teams") or []
+        room = diag.get("draft_room_settings_teams") or []
+        board = diag.get("board_teams") or []
+        shared = diag.get("shared_league_teams") or []
+        claim = diag.get("shared_league_claim_teams") or []
+
+        if room and parsed and parsed != room:
+            st.info(
+                "Draft Room League setup names differ from the parsed CSV. "
+                "Import validation and Create Shared League use **CSV teams**, not `room_team_names`."
+            )
+        if diag.get("board_applied") and parsed and parsed != board:
+            st.warning(
+                "Board teams differ from the parsed CSV. The board may have been edited separately "
+                "or not refreshed from the latest validated import."
+            )
+        if shared and parsed and parsed != shared:
+            st.warning("Create Shared League team list differs from parsed CSV teams.")
+        if diag.get("league_created") and shared and shared != claim:
+            st.warning(
+                "Active league claim teams differ from the Create Shared League team list."
+            )
+        if (
+            parsed
+            and diag.get("board_applied")
+            and diag.get("parsed_matches_board")
+            and (not shared or diag.get("parsed_matches_shared_league"))
+        ):
+            st.success("Parsed CSV team names match the board and shared-league team lists.")
+
+    session["_draft_import_team_name_diag"] = diag
+    return diag
+
+
 def _unresolved_player_count(review: dict[str, Any] | None) -> int:
     if not isinstance(review, dict):
         return 0
@@ -419,6 +621,13 @@ def render_validated_draft_import(
     review = build_import_review(imported_df, pool_df)
     session[session_key] = review
 
+    render_import_team_name_diagnostics_panel(
+        st,
+        session,
+        review=review,
+        parsed_df=imported_df,
+    )
+
     render_draft_import_validation_ui(
         st,
         review=review,
@@ -637,16 +846,8 @@ def render_draft_room_import_block(
         key=widget_key,
         on_change=_on_upload_change,
     )
-    if imported_draft_file is not None:
-        stage_draft_import_upload(session, widget_key=widget_key)
     resolved_file = resolve_uploaded_file_for_import(session, imported_draft_file, widget_key=widget_key)
     cached_review = session.get(session_key)
-    probe_pool_size = 0
-    try:
-        probe_pool = pool_fn()
-        probe_pool_size = int(len(probe_pool)) if isinstance(probe_pool, pd.DataFrame) else 0
-    except Exception:
-        probe_pool_size = 0
 
     if resolved_file is None:
         status = build_draft_import_debug_status(
@@ -657,7 +858,6 @@ def render_draft_room_import_block(
             import_block_entered=True,
             pipeline_called=False,
             review=cached_review if isinstance(cached_review, dict) else None,
-            pool_size=probe_pool_size,
             layout_label=layout_label,
         )
         render_draft_import_debug_panel(st, status)
@@ -738,7 +938,9 @@ __all__ = [
     "REQUIRED_IMPORT_COLUMNS",
     "apply_validated_import_to_board",
     "build_draft_import_debug_status",
+    "build_import_team_name_diagnostics",
     "build_import_review",
+    "format_team_name_list",
     "build_validated_import_dataframe",
     "classify_draft_player_import_name",
     "get_entry_config",
@@ -757,5 +959,9 @@ __all__ = [
     "render_validated_draft_import",
     "resolve_uploaded_file_for_import",
     "stage_draft_import_upload",
+    "teams_for_shared_league_creation",
+    "teams_from_draft_board",
+    "teams_from_room_settings",
+    "teams_in_pick_order_from_df",
     "validate_imported_draft_df",
 ]

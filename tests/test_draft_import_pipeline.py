@@ -129,6 +129,39 @@ class TestDraftImportPipeline(unittest.TestCase):
         self.assertEqual(status["session_key_used_for_review"], "_draft_import_review")
         self.assertTrue(status["render_uploaded_draft_import_section_called"])
 
+    def test_team_name_diagnostics_compare_sources(self) -> None:
+        from draft_import_pipeline import build_import_team_name_diagnostics
+
+        import_df = pd.DataFrame(
+            {
+                "Round": [1, 1, 1, 1],
+                "Pick": [1, 2, 3, 4],
+                "Team": ["Team 1", "Team 2", "Team 3", "Team 4"],
+                "Player": ["Aaron Judge", "Juan Soto", "Shohei Ohtani", "Bobby Witt Jr."],
+            }
+        )
+        review = build_import_review(import_df, self.pool)
+        session = {
+            "room_team_names": "Daniel\nTeam 2\nTeam 3\nTeam 4",
+            "draft_room_table": pd.DataFrame(
+                {
+                    "Round": [1, 1],
+                    "Pick": [1, 2],
+                    "Team": ["Team 1", "Team 2"],
+                    "Player": ["Aaron Judge", "Juan Soto"],
+                }
+            ),
+        }
+        diag = build_import_team_name_diagnostics(session, review=review)
+        self.assertEqual(diag["parsed_csv_teams"], ["Team 1", "Team 2", "Team 3", "Team 4"])
+        self.assertEqual(diag["draft_room_settings_teams"], ["Daniel", "Team 2", "Team 3", "Team 4"])
+        self.assertEqual(diag["board_teams"], ["Team 1", "Team 2"])
+        self.assertEqual(
+            diag["shared_league_teams"],
+            ["Team 1", "Team 2", "Team 3", "Team 4"],
+        )
+        self.assertFalse(diag["parsed_matches_room_settings"])
+
     def test_unresolved_player_blocks_league_ready(self) -> None:
         import_df = pd.DataFrame(
             {
