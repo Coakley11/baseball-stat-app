@@ -98,7 +98,7 @@ class TestTeamPropagation(unittest.TestCase):
         }
         self.assertEqual(active_fantasy_team_source(session), "active_draft")
         self.assertEqual(get_active_fantasy_team(session), "Daniel")
-        self.assertEqual(active_fantasy_team_label(session), "Daniel (Practice Draft)")
+        self.assertEqual(active_fantasy_team_label(session), "Daniel — Saved Draft Library: Practice Draft")
 
     def test_active_team_from_live_draft_when_in_progress(self) -> None:
         from global_fantasy_settings_state import active_fantasy_team_source, get_active_fantasy_team

@@ -19583,6 +19583,12 @@ if active_page == "Draft Room Simulator":
                     st.session_state.get("draft_room_table"),
                     reason="reset_canonical_board",
                 )
+                try:
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    force_save_baseball_state(st, reason="reset_simulator_board")
+                except Exception:
+                    pass
                 st.success("Simulator board cleared.")
                 st.rerun()
         with delete_live_col:
@@ -23315,11 +23321,7 @@ if active_page == "Fantasy Lineup Assistant":
         _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
         l1, l2, l3 = st.columns(3)
         with l1:
-            st.caption(
-                f"**Active fantasy team:** {active_fantasy_team_label(st.session_state)}. "
-                "You can change this in **Draft Room Simulator**, **Live Draft Room**, "
-                "or **Saved Draft Library** (by changing the Active Draft)."
-            )
+            st.caption(active_fantasy_team_caption(st.session_state))
         with l2:
             _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
             st.session_state["lineup_format"] = _lineup_fmt_resolved

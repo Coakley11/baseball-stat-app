@@ -882,9 +882,9 @@ def undo_last_simulator_pick(session: dict[str, Any]) -> dict[str, Any]:
         "message": "",
         "error": "",
     }
-    if resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE:
+    if is_live_draft_runtime_active(session):
         result["error"] = "live_active"
-        result["message"] = "Undo is only available in Draft Room Simulator."
+        result["message"] = "Undo is unavailable while Live Draft Room is in progress."
         return result
 
     table = get_canonical_draft_board(session)
@@ -1417,17 +1417,29 @@ def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 
 def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     """Option B: clear practice board only; Live Draft Room record stays if present."""
-    clear_draft_room_local_edit(session)
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
     session.pop("draft_room_board_editor_cache", None)
     session.pop("draft_room_board_editor_seed", None)
-    out = ensure_simulator_board_for_settings(session)
+    session.pop(_BOARD_ASSIGN_SUBMIT_TRACE_KEY, None)
+    session.pop("_draft_room_picks_fp", None)
+    session.pop("_draft_room_save_fp", None)
+    teams = _simulator_team_names(session)
+    rounds = int(session.get("room_rounds") or 20)
+    table = build_snake_board(teams, rounds=rounds)
+    out = apply_programmatic_board_update(session, table, reason="simulator_reset_only")
     set_canonical_draft_meta(
         session,
         mode=ACTIVE_DRAFT_MODE_MANUAL,
         source="simulator_reset_only",
         pick_count=0,
     )
+    session.pop("_draft_room_skip_editor_resolve_clobber", None)
+    try:
+        from draft_actions import _clear_ami_draft_cache
+
+        _clear_ami_draft_cache(session)
+    except ImportError:
+        pass
     return out
 
 

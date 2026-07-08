@@ -260,6 +260,23 @@ class TestDraftQueueAndUndo(unittest.TestCase):
         row = updated[updated["Pick"] == 3].iloc[0]
         self.assertEqual(str(row["Player"]).strip(), "")
 
+    def test_undo_allowed_when_completed_live_draft_exists(self) -> None:
+        from draft_room_state import undo_last_simulator_pick
+
+        board = _four_team_board(filled_through_pick=2)
+        session = {
+            "room_your_team": "Team B",
+            "draft_room_table": board.copy(),
+            "live_draft_room": {
+                "status": "complete",
+                "draft_room_id": "done1",
+                "draft_board": [{"Team": "Team A", "Player": "Aaron Judge", "Pick": 1}],
+                "pick_order": [{"Team": "Team A", "Pick": 1, "Round": 1}],
+            },
+        }
+        result = undo_last_simulator_pick(session)
+        self.assertTrue(result["ok"], result.get("message"))
+
 
 class TestOnClockLabel(unittest.TestCase):
     def test_resolve_on_clock_from_live_room_slot(self) -> None:

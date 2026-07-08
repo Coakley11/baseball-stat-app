@@ -29,13 +29,14 @@ class FantasyContextSource:
 
     @property
     def badge_text(self) -> str:
+        """Compact badge without team — prefer ``fantasy_context_source_badge_text(session)``."""
         if self.kind == SOURCE_ACTIVE_DRAFT:
             name = self.draft_label or self.label
-            return f"{_BADGE_PREFIX} Active Draft: **{name}**"
+            return f"{_BADGE_PREFIX} **Saved Draft Library Active Draft** · Draft: **{name}**"
         if self.kind == SOURCE_LIVE_DRAFT:
             return f"{_BADGE_PREFIX} **Live Draft Room**"
         if self.kind == SOURCE_SIMULATOR_BOARD:
-            return f"{_BADGE_PREFIX} **Draft Room Simulator**"
+            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (unsaved)**"
         return f"{_BADGE_PREFIX} **Generic/default simulator context**"
 
 
@@ -140,8 +141,30 @@ def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSou
     return FantasyContextSource(SOURCE_GENERIC, "Generic/default simulator context")
 
 
+def _context_team_name(session: dict[str, Any]) -> str:
+    saved = _get_saved_active_league_context(session)
+    if isinstance(saved, dict):
+        team = str(saved.get("my_team_name") or "").strip()
+        if team:
+            return team
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+        for key in ("user_team", "your_team"):
+            val = cfg.get(key)
+            if val:
+                return str(val).strip()
+    return str(session.get("room_your_team") or "").strip()
+
+
 def fantasy_context_source_badge_text(session: dict[str, Any]) -> str:
-    return resolve_fantasy_context_source(session).badge_text
+    """Full context-source badge including team when known."""
+    source = resolve_fantasy_context_source(session)
+    team = _context_team_name(session)
+    text = source.badge_text
+    if team and "Team:" not in text:
+        text = f"{text} · Team: **{team}**"
+    return text
 
 
 def _resolve_live_room(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -231,3 +254,9 @@ def get_effective_fantasy_context(
             league_context_id="__ephemeral_simulator__",
         )
     return None
+
+
+def prepare_fantasy_context_source_defaults(session: dict[str, Any]) -> None:
+    """Default live/simulator context sync toggles to enabled."""
+    session.setdefault(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, True)
+    session.setdefault(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, True)
