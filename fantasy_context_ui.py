@@ -25,16 +25,16 @@ FANTASY_RESEARCH_SYNC_HELP = (
 
 USE_LIVE_DRAFT_CONTEXT_LABEL = "Use Live Draft Room as active fantasy context"
 USE_LIVE_DRAFT_CONTEXT_HELP = (
-    "When enabled and a live draft is in progress, the Live Draft Room feeds Draft "
-    "Assistant, research pages, waiver wire, lineup, standings, and trades. Turn off "
-    "to keep using your Saved Draft Library Active Draft during a live draft."
+    "When enabled and a Live Draft Room workspace has picks, that **unsaved** live "
+    "draft feeds fantasy and research pages. This does **not** save the draft to "
+    "Saved Draft Library. Turn off to keep using your Saved Active Draft instead."
 )
 
 USE_SIMULATOR_BOARD_CONTEXT_LABEL = "Use Draft Room Simulator board as active fantasy context"
 USE_SIMULATOR_BOARD_CONTEXT_HELP = (
-    "When enabled and the simulator draft board has picks, that board feeds fantasy "
-    "and research pages. Turn off if you uploaded a board for reference but want your "
-    "Saved Draft Library Active Draft to control the app."
+    "When enabled and the simulator workspace has picks, that **unsaved** board feeds "
+    "fantasy and research pages. This does **not** create a Saved Draft or Active Draft. "
+    "Turn off to keep using your Saved Draft Library Active Draft."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (
@@ -95,29 +95,35 @@ def render_fantasy_context_source_controls(
     """User toggles for which draft source feeds fantasy/research pages."""
     st.markdown("##### Fantasy Context Source")
     st.caption(
-        "Default priority: **Live Draft Room** → **Draft Room Simulator board** → "
-        "**Saved Draft Library Active Draft** → generic simulator defaults."
+        "**Saved Draft Library** = drafts you intentionally saved. "
+        "**Active Draft** = the saved draft you selected. "
+        "**Simulator / Live boards** = unsaved workspaces only — they never appear in the library unless you save them."
     )
+    st.caption(
+        "Priority when enabled: **Live Draft Room (unsaved)** → "
+        "**Draft Room Simulator board (unsaved)** → **Saved Active Draft** → generic defaults."
+    )
+    from fantasy_context_source import prepare_fantasy_context_source_defaults
+
+    prepare_fantasy_context_source_defaults(session)
     live_available = live_draft_context_available(session)
     sim_available = simulator_board_context_available(session)
     st.checkbox(
         USE_LIVE_DRAFT_CONTEXT_LABEL,
         key=USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
         help=USE_LIVE_DRAFT_CONTEXT_HELP,
-        disabled=not live_available,
         on_change=_on_context_setting_changed,
     )
     if not live_available:
-        st.caption("No active Live Draft Room detected.")
+        st.caption("Live override is off until a Live Draft Room workspace has picks.")
     st.checkbox(
         USE_SIMULATOR_BOARD_CONTEXT_LABEL,
         key=USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
         help=USE_SIMULATOR_BOARD_CONTEXT_HELP,
-        disabled=not sim_available,
         on_change=_on_context_setting_changed,
     )
     if not sim_available:
-        st.caption("Draft Room Simulator board is empty.")
+        st.caption("Simulator override is off until the simulator workspace has picks.")
     st.caption(
         "When both overrides are off (or unavailable), **Saved Draft Library Active Draft** "
         "controls fantasy pages."

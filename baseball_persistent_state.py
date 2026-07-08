@@ -133,6 +133,8 @@ _WORKFLOW_KEYS = (
     "fantasy_in_season_state",
     "draft_lab_persisted_state",
     "use_active_league_context_waiver_filter",
+    "use_live_draft_as_fantasy_context",
+    "use_simulator_board_as_fantasy_context",
     "_waiver_pending_move_pairs",
     "waiver_planner_add_pick",
     "waiver_planner_drop_pick",

@@ -83,11 +83,20 @@ class FantasyContextSourceTests(unittest.TestCase):
         self.assertEqual(source.kind, SOURCE_ACTIVE_DRAFT)
         self.assertIn("Practice Draft", source.badge_text)
 
-    def test_simulator_board_wins_over_active_draft_by_default(self) -> None:
+    def test_active_draft_wins_when_toggles_default_off(self) -> None:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session.pop(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, None)
+        session.pop(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, None)
+        source = resolve_fantasy_context_source(session)
+        self.assertEqual(source.kind, SOURCE_ACTIVE_DRAFT)
+
+    def test_simulator_board_wins_when_toggle_enabled(self) -> None:
         session = _saved_context_session()
         session.update(_simulator_board_session())
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
+        self.assertIn("unsaved workspace", source.badge_text)
 
     def test_simulator_override_disabled_falls_back_to_active_draft(self) -> None:
         session = _saved_context_session()
@@ -131,6 +140,37 @@ class FantasyContextSourceTests(unittest.TestCase):
         assert ctx is not None
         self.assertEqual(ctx.get("my_team_name"), "Daniel")
         self.assertEqual(ctx.get("display_name"), "Practice Draft")
+
+    def test_context_toggle_keys_persist_in_workspace_blob(self) -> None:
+        from unittest.mock import MagicMock
+
+        from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
+
+        session = _saved_context_session()
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = True
+        st = MagicMock()
+        st.session_state = session
+        blob = build_baseball_disk_state(st)
+        restored: dict = {}
+        st2 = MagicMock()
+        st2.session_state = restored
+        apply_baseball_disk_state(st2, blob)
+        self.assertFalse(restored.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY))
+        self.assertTrue(restored.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY))
+
+    def test_simulator_unavailable_when_live_override_enabled(self) -> None:
+        from fantasy_context_source import simulator_board_context_available
+
+        session = _simulator_board_session()
+        session["live_draft_room"] = {
+            "draft_room_id": "room1",
+            "status": "in_progress",
+            "config": {"user_team": "Daniel"},
+            "draft_board": [{"Team": "Daniel", "Player": "Aaron Judge"}],
+        }
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
+        self.assertFalse(simulator_board_context_available(session))
 
 
 class DraftFingerprintDedupeTests(unittest.TestCase):

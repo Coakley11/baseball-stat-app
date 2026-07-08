@@ -2042,9 +2042,9 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     active_context_id = str((active_context or {}).get("league_context_id") or "")
 
     st.caption(
-        "Keep multiple **saved drafts** from mock drafts, live drafts, uploads, and imports. "
-        "Set one **Active Draft** for Standings, Lineup, and Waiver Wire. "
-        "Use **Fantasy Context Sync** to make research pages league-aware."
+        "Only **intentionally saved drafts** appear here. "
+        "Set one **Active Draft** (a saved draft you select) for Standings, Lineup, and Waiver Wire. "
+        "Unsaved simulator or live boards stay in their workspace pages — use **Fantasy Context Source** toggles to point at them temporarily."
     )
 
     render_persistence_durability_banner(st, session)

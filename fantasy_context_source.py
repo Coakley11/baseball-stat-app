@@ -7,9 +7,10 @@ from typing import Any
 
 import pandas as pd
 
-# User toggles (default True — live/simulator feed the app when available).
+# User toggles — persisted in cloud/disk; default False (explicit opt-in).
 USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY = "use_live_draft_as_fantasy_context"
 USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY = "use_simulator_board_as_fantasy_context"
+FANTASY_CONTEXT_TOGGLE_DEFAULT = False
 
 SOURCE_LIVE_DRAFT = "live_draft"
 SOURCE_SIMULATOR_BOARD = "simulator_board"
@@ -34,18 +35,36 @@ class FantasyContextSource:
             name = self.draft_label or self.label
             return f"{_BADGE_PREFIX} **Saved Draft Library Active Draft** · Draft: **{name}**"
         if self.kind == SOURCE_LIVE_DRAFT:
-            return f"{_BADGE_PREFIX} **Live Draft Room**"
+            return f"{_BADGE_PREFIX} **Live Draft Room (unsaved workspace)**"
         if self.kind == SOURCE_SIMULATOR_BOARD:
-            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (unsaved)**"
+            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (unsaved workspace)**"
         return f"{_BADGE_PREFIX} **Generic/default simulator context**"
 
 
 def live_draft_sync_enabled(session: dict[str, Any]) -> bool:
-    return bool(session.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, True))
+    return bool(session.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, FANTASY_CONTEXT_TOGGLE_DEFAULT))
 
 
 def simulator_board_sync_enabled(session: dict[str, Any]) -> bool:
-    return bool(session.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, True))
+    return bool(session.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, FANTASY_CONTEXT_TOGGLE_DEFAULT))
+
+
+def _simulator_board_table(session: dict[str, Any]) -> pd.DataFrame:
+    """Raw simulator board only — never hydrate/sync from live or saved archive."""
+    try:
+        from draft_room_state import DRAFT_ROOM_TABLE_KEY, coerce_board_table
+
+        return coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    except ImportError:
+        table = session.get("draft_room_table")
+        return table.copy() if isinstance(table, pd.DataFrame) else pd.DataFrame()
+
+
+def _simulator_board_pick_count(session: dict[str, Any]) -> int:
+    table = _simulator_board_table(session)
+    if table.empty or "Player" not in table.columns:
+        return 0
+    return int(table["Player"].astype(str).str.strip().ne("").sum())
 
 
 def live_draft_context_available(session: dict[str, Any]) -> bool:
@@ -74,20 +93,17 @@ def live_draft_context_available(session: dict[str, Any]) -> bool:
 
 
 def simulator_board_context_available(session: dict[str, Any]) -> bool:
-    """True when the Draft Room Simulator board has at least one pick."""
-    table = session.get("draft_room_table")
-    if isinstance(table, pd.DataFrame) and not table.empty:
-        if "Player" in table.columns:
-            filled = table["Player"].astype(str).str.strip().ne("").sum()
-            if int(filled) > 0:
-                return True
+    """True when the Draft Room Simulator workspace has picks and live is not overriding."""
+    if _simulator_board_pick_count(session) <= 0:
+        return False
     try:
-        from draft_room_state import get_canonical_draft_board, table_pick_count
+        from draft_room_state import is_live_draft_runtime_active
 
-        board = get_canonical_draft_board(session)
-        return table_pick_count(board) > 0
+        if is_live_draft_runtime_active(session) and live_draft_sync_enabled(session):
+            return False
     except ImportError:
-        return isinstance(table, pd.DataFrame) and not table.empty
+        pass
+    return True
 
 
 def saved_active_draft_available(session: dict[str, Any]) -> bool:
@@ -142,18 +158,30 @@ def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSou
 
 
 def _context_team_name(session: dict[str, Any]) -> str:
-    saved = _get_saved_active_league_context(session)
-    if isinstance(saved, dict):
-        team = str(saved.get("my_team_name") or "").strip()
-        if team:
-            return team
-    room = session.get("live_draft_room")
-    if isinstance(room, dict):
-        cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
-        for key in ("user_team", "your_team"):
-            val = cfg.get(key)
-            if val:
-                return str(val).strip()
+    source = resolve_fantasy_context_source(session)
+    if source.kind == SOURCE_ACTIVE_DRAFT:
+        saved = _get_saved_active_league_context(session)
+        if isinstance(saved, dict):
+            team = str(saved.get("my_team_name") or "").strip()
+            if team:
+                return team
+    if source.kind == SOURCE_LIVE_DRAFT:
+        room = _resolve_live_room(session)
+        if isinstance(room, dict):
+            cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+            for key in ("user_team", "your_team"):
+                val = cfg.get(key)
+                if val:
+                    return str(val).strip()
+    if source.kind == SOURCE_SIMULATOR_BOARD:
+        table = _simulator_board_table(session)
+        my_team = str(session.get("room_your_team") or "").strip()
+        if my_team:
+            return my_team
+        if not table.empty and "Team" in table.columns and "Player" in table.columns:
+            filled = table[table["Player"].astype(str).str.strip().ne("")]
+            if not filled.empty:
+                return str(filled.iloc[0]["Team"]).strip()
     return str(session.get("room_your_team") or "").strip()
 
 
@@ -182,14 +210,7 @@ def _resolve_live_room(session: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _resolve_simulator_board(session: dict[str, Any]) -> pd.DataFrame:
-    try:
-        from draft_room_state import get_canonical_draft_board
-
-        board = get_canonical_draft_board(session)
-        return board if isinstance(board, pd.DataFrame) else pd.DataFrame()
-    except ImportError:
-        table = session.get("draft_room_table")
-        return table.copy() if isinstance(table, pd.DataFrame) else pd.DataFrame()
+    return _simulator_board_table(session)
 
 
 def _resolve_my_team_for_ephemeral(session: dict[str, Any], *, source: FantasyContextSource) -> str:
@@ -233,12 +254,12 @@ def get_effective_fantasy_context(
         if not isinstance(room, dict):
             return _get_saved_active_league_context(session)
         cfg = dict(room.get("config") or {})
-        label = str(cfg.get("league_name") or "Live Draft").strip() or "Live Draft"
+        label = str(cfg.get("league_name") or "Live Draft Room").strip() or "Live Draft Room"
         return create_league_context_from_live_room(
             session,
             room,
             my_team_name=my_team,
-            display_name=f"{label} (live)",
+            display_name=f"{label} (unsaved workspace)",
             league_name=label,
             league_context_id="__ephemeral_live__",
         )
@@ -250,13 +271,13 @@ def get_effective_fantasy_context(
             session,
             board,
             my_team_name=my_team,
-            display_name="Draft Room Simulator (board)",
+            display_name="Draft Room Simulator Board (unsaved workspace)",
             league_context_id="__ephemeral_simulator__",
         )
     return None
 
 
 def prepare_fantasy_context_source_defaults(session: dict[str, Any]) -> None:
-    """Default live/simulator context sync toggles to enabled."""
-    session.setdefault(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, True)
-    session.setdefault(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, True)
+    """Seed missing toggle keys once — never overwrite an explicit user choice."""
+    session.setdefault(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, FANTASY_CONTEXT_TOGGLE_DEFAULT)
+    session.setdefault(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, FANTASY_CONTEXT_TOGGLE_DEFAULT)

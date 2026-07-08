@@ -618,9 +618,9 @@ def research_mode_signature(session: dict[str, Any]) -> tuple[Any, ...]:
 def active_team_context_badge(ctx: ActiveTeamContext) -> str:
     """Human-readable badge describing which source supplied the active team."""
     if ctx.source == SOURCE_LEAGUE:
-        return f"Active team: **{ctx.active_team}** (Active Draft)"
+        return f"Active team: **{ctx.active_team}** (Saved Active Draft)"
     if ctx.source == SOURCE_LIVE_DRAFT:
-        return f"Active team: **{ctx.active_team}** (Live Draft Room)"
+        return f"Active team: **{ctx.active_team}** (Live Draft Room — unsaved workspace)"
     if ctx.source == SOURCE_SIMULATOR:
-        return f"Active team: **{ctx.active_team}** (Draft Room Simulator)"
-    return "Active team: **Not set** — start a simulator draft or select an Active Draft"
+        return f"Active team: **{ctx.active_team}** (Draft Room Simulator Board — unsaved workspace)"
+    return "Active team: **Not set** — select a Saved Active Draft or enable a workspace override"
