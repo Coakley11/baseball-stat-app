@@ -19,9 +19,10 @@ FANTASY_RESEARCH_SYNC_KEY = "use_active_league_context_waiver_filter"
 
 FANTASY_RESEARCH_SYNC_LABEL = "Research Mode — treat drafted players as unavailable"
 FANTASY_RESEARCH_SYNC_HELP = (
-    "When enabled, research pages treat players already drafted in the active fantasy "
+    "When enabled, broader research pages treat players already drafted in the active fantasy "
     "context as **unavailable** and recalculate rankings using only remaining players. "
-    "Source follows your **Fantasy Context Source** priority (Live Draft, Simulator "
+    "Also enables Draft Assistant Simulator for Saved Active Draft and Simulator override "
+    "contexts. Source follows your **Fantasy Context Source** priority (Live Draft, Simulator "
     "board, or Saved Draft Library Active Draft)."
 )
 
@@ -40,15 +41,21 @@ USE_SIMULATOR_BOARD_CONTEXT_HELP = (
 FANTASY_CONTEXT_INTRO = (
     "Your **Active Draft** feeds the main fantasy management tools: "
     "Standings Tracker, Lineup Assistant, Waiver Wire, and Trades.\n\n"
+    "It does **not** automatically feed Draft Assistant Simulator or broader research pages "
+    "unless **Research Mode Sync** is on.\n\n"
     "Want to practice without changing your Active Draft? Turn on an override below."
 )
 
 FANTASY_CONTEXT_OVERRIDE_FOOTER = "Turn the override off to go back to your Active Draft."
 
 RESEARCH_SYNC_INTRO = (
-    "When **Research Mode Sync** is enabled, the same fantasy context also affects "
-    "research and recommendation pages (Comparison Tool, Trend Value, Valuation, "
-    "Sleepers & Busts, Draft Assistant Simulator, Rankings, and similar)."
+    "When **Research Mode Sync** is enabled, the current fantasy context also affects "
+    "broader research and recommendation pages (Comparison Tool, Trend Value, Valuation, "
+    "Sleepers & Busts, Rankings, and similar) — drafted players are removed and the "
+    "remaining pool recalculates.\n\n"
+    "**Live Draft Room** is different: while a draft is **in progress**, Draft Assistant "
+    "Simulator follows the live board even when Research Mode Sync is off. Broader research "
+    "pages still require Research Mode Sync."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (

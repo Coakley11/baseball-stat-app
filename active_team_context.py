@@ -475,10 +475,11 @@ def apply_research_recommendation_adjustments(
     *,
     score_col: str,
     name_col: str = "fullName",
+    page_name: str | None = None,
 ) -> pd.DataFrame:
     """Research Mode pipeline for research recommendation tables (not lookup pickers).
 
-    1. Removes players already drafted in the active draft (Research Mode ON).
+    1. Removes players already drafted in the active draft when routing applies.
     2. Dense re-ranks the remaining available pool.
     3. Applies **position-need** boosts when the position-needs sync toggle is on.
 
@@ -488,10 +489,19 @@ def apply_research_recommendation_adjustments(
     if df is None or getattr(df, "empty", True):
         return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
     try:
-        from fantasy_waiver_wire import filter_unrostered_players
+        from fantasy_context_source import fantasy_drafted_pool_filter_applies
+        from fantasy_waiver_wire import filter_unrostered_players, research_league_sync_enabled
+
+        applies = (
+            fantasy_drafted_pool_filter_applies(session, page_name)
+            if page_name
+            else research_league_sync_enabled(session)
+        )
+        if not applies:
+            return df
 
         before = len(df)
-        out = filter_unrostered_players(session, df, name_col=name_col)
+        out = filter_unrostered_players(session, df, name_col=name_col, page_name=page_name)
         if len(out) != before:
             out = recalculate_pool_ranks(out)
         ctx = resolve_active_team_context(session)
@@ -577,27 +587,33 @@ def effective_category_boosts(session: dict[str, Any], ctx: ActiveTeamContext) -
     return list(ctx.category_needs or [])
 
 
-def research_mode_signature(session: dict[str, Any]) -> tuple[Any, ...]:
-    """Stable cache signature reflecting Research Mode state + unavailable players.
+def research_mode_signature(session: dict[str, Any], *, page_name: str | None = None) -> tuple[Any, ...]:
+    """Stable cache signature reflecting fantasy-context filter state + unavailable players.
 
     Include this in scoring cache keys so that toggling Research Mode (or changing
     the active draft) invalidates stale scored pools that still contain drafted
-    players. Without it, a pool scored while Research Mode was OFF could be reused
+    players. Without it, a pool scored while filtering was OFF could be reused
     after it turns ON, re-surfacing already-drafted players.
     """
+    page = str(page_name or "Draft Assistant Simulator").strip()
     try:
-        from fantasy_waiver_wire import research_league_sync_enabled
+        from fantasy_context_source import fantasy_drafted_pool_filter_applies
 
-        enabled = bool(research_league_sync_enabled(session))
-    except Exception:
-        enabled = False
-    if not enabled:
-        return ("research_off",)
+        if not fantasy_drafted_pool_filter_applies(session, page):
+            return ("context_filter_off",)
+    except ImportError:
+        try:
+            from fantasy_waiver_wire import research_league_sync_enabled
+
+            if not research_league_sync_enabled(session):
+                return ("context_filter_off",)
+        except Exception:
+            return ("context_filter_off",)
     try:
         ctx = resolve_active_team_context(session)
-        return ("research_on", ctx.source, tuple(sorted(ctx.drafted_keys)))
+        return ("context_filter_on", ctx.source, tuple(sorted(ctx.drafted_keys)))
     except Exception:
-        return ("research_on", "unknown", ())
+        return ("context_filter_on", "unknown", ())
 
 
 def active_team_context_badge(ctx: ActiveTeamContext) -> str:

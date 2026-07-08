@@ -6,6 +6,7 @@ import unittest
 
 import pandas as pd
 
+from fantasy_context_source import DRAFT_ASSISTANT_PAGE, USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY
 from fantasy_context_ui import (
     FANTASY_RESEARCH_SYNC_KEY,
     active_league_context_badge_text,
@@ -57,6 +58,38 @@ class FantasyContextSyncTests(unittest.TestCase):
         self.assertTrue(research_league_sync_enabled(session))
         filtered = filter_unrostered_players(session, players)
         self.assertEqual(filtered["Player"].tolist(), ["Mike Trout"])
+
+    def test_trend_value_skips_filter_without_research_sync_even_with_active_league(self) -> None:
+        session = _session_with_rosters(sync=False)
+        players = pd.DataFrame({"fullName": ["Aaron Judge", "Juan Soto", "Mike Trout"]})
+        filtered = filter_unrostered_players(session, players, name_col="fullName", page_name="Trend Value")
+        pd.testing.assert_frame_equal(filtered, players)
+
+    def test_live_draft_filters_das_without_research_sync(self) -> None:
+        session = _session_with_rosters(sync=False)
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
+        session["live_draft_room"] = {
+            "draft_room_id": "room1",
+            "status": "in_progress",
+            "config": {"user_team": "Daniel"},
+            "draft_board": [
+                {"Team": "Daniel", "Player": "Aaron Judge"},
+                {"Team": "Rivals", "Player": "Juan Soto"},
+            ],
+        }
+        session["draft_room_table"] = pd.DataFrame(
+            {
+                "Round": [1, 1],
+                "Pick": [1, 2],
+                "Team": ["Daniel", "Rivals"],
+                "Player": ["Aaron Judge", "Juan Soto"],
+            }
+        )
+        players = pd.DataFrame({"fullName": ["Aaron Judge", "Juan Soto", "Mike Trout"]})
+        filtered = filter_unrostered_players(
+            session, players, name_col="fullName", page_name=DRAFT_ASSISTANT_PAGE
+        )
+        self.assertEqual(filtered["fullName"].tolist(), ["Mike Trout"])
 
     def test_active_league_badge_independent_of_sync(self) -> None:
         session = {

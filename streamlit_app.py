@@ -16761,6 +16761,7 @@ if active_page == "Trend Value":
             trend_value_df,
             score_col="OPS_trend" if "OPS_trend" in trend_value_df.columns else "HR_trend",
             name_col="fullName",
+            page_name="Trend Value",
         )
     except ImportError:
         pass
@@ -18305,7 +18306,8 @@ if active_page == "Draft Assistant Simulator":
     )
     pp.instructional_caption(
         st,
-        "Log picks in Draft Room Simulator first — this page excludes drafted players automatically.",
+        "During an in-progress Live Draft, drafted players are excluded automatically. "
+        "For Saved Active Draft or Simulator practice boards, turn on Research Mode Sync.",
     )
 
     market_df = load_fantasypros_market_data()
@@ -18447,6 +18449,13 @@ if active_page == "Draft Assistant Simulator":
                 active_fantasy_team_label = lambda s: str(s.get("room_your_team") or "—")  # type: ignore[assignment,misc]
                 active_fantasy_team_caption = lambda s, label="Your team": f"**{label}:** {s.get('room_your_team') or '—'}"  # type: ignore[assignment,misc]
 
+            try:
+                from fantasy_context_source import draft_assistant_context_mode
+
+                _da_context_mode = draft_assistant_context_mode(st.session_state)
+            except ImportError:
+                _da_context_mode = "live_board"
+
             draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
             handoff_diag = draft_handoff_diagnostics(st.session_state)
             board_has_players = (
@@ -18459,25 +18468,71 @@ if active_page == "Draft Assistant Simulator":
                 live_draft_handoff_pick_count(live_room) if isinstance(live_room, dict) else 0
             )
 
-            if not board_has_players:
-                if live_pick_count > 0:
-                    st.warning(
-                        "Live Draft Room has picks but they did not sync to the Draft Room board. "
-                        "Open Live Draft Room once or check developer diagnostics below."
-                    )
-                    if handoff_diag.get("last_sync_error"):
-                        st.caption(f"Sync error: {handoff_diag['last_sync_error']}")
+            assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+            my_roster: list[str] = []
+            drafted_players: list[str] = []
+
+            if _da_context_mode == "live_board":
+                if not board_has_players:
+                    if live_pick_count > 0:
+                        st.warning(
+                            "Live Draft Room has picks but they did not sync to the Draft Room board. "
+                            "Open Live Draft Room once or check developer diagnostics below."
+                        )
+                        if handoff_diag.get("last_sync_error"):
+                            st.caption(f"Sync error: {handoff_diag['last_sync_error']}")
+                    else:
+                        st.warning(
+                            "No Live Draft picks on the board yet. Add picks in Live Draft Room, then return here."
+                        )
                 else:
-                    st.warning("No Draft Room picks yet. Add picks in Draft Room Simulator or Live Draft Room, then return here.")
-                drafted_players = []
-                my_roster = []
-                assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+                    assistant_team_names = sorted(
+                        draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist()
+                    )
+                    if not assistant_team_names:
+                        assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+            elif _da_context_mode == "research_context":
+                try:
+                    from active_team_context import resolve_active_team_context
+
+                    _da_team_ctx = resolve_active_team_context(st.session_state)
+                    if _da_team_ctx.active_team:
+                        assistant_team_names = [str(_da_team_ctx.active_team)]
+                    _roster_df = _da_team_ctx.my_roster_df
+                    if isinstance(_roster_df, pd.DataFrame) and not _roster_df.empty:
+                        name_col = (
+                            "Player"
+                            if "Player" in _roster_df.columns
+                            else ("fullName" if "fullName" in _roster_df.columns else None)
+                        )
+                        if name_col:
+                            my_roster = [
+                                str(p).strip()
+                                for p in _roster_df[name_col].dropna().astype(str).tolist()
+                                if str(p).strip()
+                            ]
+                    drafted_players = [
+                        n for n in (_da_team_ctx.drafted_names or []) if str(n).strip() and n not in my_roster
+                    ]
+                except Exception:
+                    pass
+                if not my_roster and not drafted_players:
+                    st.info(
+                        "Research Mode Sync is on, but no drafted players were found in the active fantasy context."
+                    )
             else:
-                assistant_team_names = sorted(
-                    draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist()
-                )
-                if not assistant_team_names:
-                    assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+                if board_has_players:
+                    st.info(
+                        "Draft Assistant is not syncing drafted players from this board. "
+                        "Turn on **Research Mode Sync** for Saved Active Draft / Simulator practice, "
+                        "or use an **in-progress Live Draft** override."
+                    )
+                else:
+                    st.info(
+                        "Draft Assistant is showing the full player pool. "
+                        "Turn on **Research Mode Sync** or start an **in-progress Live Draft** "
+                        "to exclude drafted players and update team needs."
+                    )
 
             default_team_name = get_active_fantasy_team(st.session_state) or (
                 assistant_team_names[0] if assistant_team_names else "My Team"
@@ -18497,7 +18552,7 @@ if active_page == "Draft Assistant Simulator":
                     st.session_state.pop("pending_draft_assistant_player", None)
                     st.rerun()
 
-            if board_has_players:
+            if _da_context_mode == "live_board" and board_has_players:
                 my_roster = (
                     draft_room_table_for_assistant[
                         draft_room_table_for_assistant["Team"].astype(str) == str(assistant_my_team_name)
@@ -18508,13 +18563,15 @@ if active_page == "Draft Assistant Simulator":
                         draft_room_table_for_assistant["Team"].astype(str) != str(assistant_my_team_name)
                     ]["Player"].dropna().astype(str).tolist()
                 )
-            else:
-                my_roster = []
-                drafted_players = []
 
             my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
             drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
-            drafted_or_owned_players = set(drafted_players).union(set(my_roster))
+            drafted_or_owned_players = (
+                set(drafted_players).union(set(my_roster))
+                if _da_context_mode in ("live_board", "research_context")
+                else set()
+            )
+            board_has_players_for_summary = board_has_players and _da_context_mode == "live_board"
 
             if developer_mode_enabled():
                 with st.expander("Live draft handoff diagnostics", expanded=False):
@@ -18542,7 +18599,7 @@ if active_page == "Draft Assistant Simulator":
 
             pick_adjustment = int(st.session_state.get("draft_pick_adjustment") or 0)
             draft_summary = draft_board_summary_for_team(
-                draft_room_table_for_assistant if board_has_players else pd.DataFrame(),
+                draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
                 your_team=assistant_my_team_name,
                 team_names=assistant_team_names,
                 pick_adjustment=pick_adjustment,
@@ -18578,6 +18635,31 @@ if active_page == "Draft Assistant Simulator":
 
             _slot_cfg = resolve_draft_slot_config_from_session(st.session_state)
             _draft_ctx = resolve_draft_context(st.session_state)
+            if _da_context_mode == "none":
+                _draft_ctx = type(_draft_ctx)(
+                    active=False,
+                    fantasy_format=getattr(_draft_ctx, "fantasy_format", "5x5 Roto"),
+                )
+            elif _da_context_mode == "research_context":
+                try:
+                    from active_team_context import resolve_active_team_context
+                    from draft_context import DraftContext
+
+                    _atc = resolve_active_team_context(st.session_state)
+                    _draft_ctx = DraftContext(
+                        active=bool(_atc.drafted_keys),
+                        active_team=_atc.active_team,
+                        drafted_names=list(_atc.drafted_names),
+                        drafted_keys=_atc.drafted_keys,
+                        fantasy_format=_atc.fantasy_format,
+                        draft_complete=bool(_atc.draft_complete),
+                        source="research_context",
+                    )
+                except Exception:
+                    _draft_ctx = type(_draft_ctx)(
+                        active=False,
+                        fantasy_format=getattr(_draft_ctx, "fantasy_format", "5x5 Roto"),
+                    )
             target_position_counts = (
                 get_required_position_counts(_slot_cfg)
                 if _slot_cfg.get("slots")
@@ -18740,7 +18822,11 @@ if active_page == "Draft Assistant Simulator":
         try:
             from fantasy_waiver_wire import filter_unrostered_players
 
-            available = filter_unrostered_players(st.session_state, available, name_col="fullName")
+            from fantasy_context_source import DRAFT_ASSISTANT_PAGE
+
+            available = filter_unrostered_players(
+                st.session_state, available, name_col="fullName", page_name=DRAFT_ASSISTANT_PAGE
+            )
         except ImportError:
             pass
 
@@ -18757,7 +18843,7 @@ if active_page == "Draft Assistant Simulator":
             try:
                 from active_team_context import research_mode_signature
 
-                _research_sig = research_mode_signature(st.session_state)
+                _research_sig = research_mode_signature(st.session_state, page_name="Draft Assistant Simulator")
             except ImportError:
                 _research_sig = None
             _da_key = draft_assistant_scoring_cache_key(
@@ -24517,6 +24603,7 @@ if active_page == "Valuation":
             valuation_df,
             score_col="Valuation_Score",
             name_col="fullName",
+            page_name="Valuation",
         )
     except ImportError:
         pass

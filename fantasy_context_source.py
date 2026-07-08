@@ -24,8 +24,10 @@ CORE_FANTASY_PAGES: frozenset[str] = frozenset({
     "Trades",
 })
 
-RESEARCH_FANTASY_PAGES: frozenset[str] = frozenset({
-    "Draft Assistant Simulator",
+DRAFT_ASSISTANT_PAGE = "Draft Assistant Simulator"
+
+# Broader research/recommendation pages — require Research Mode Sync.
+BROADER_RESEARCH_FANTASY_PAGES: frozenset[str] = frozenset({
     "Comparison Tool",
     "Trend Value",
     "Valuation",
@@ -34,6 +36,8 @@ RESEARCH_FANTASY_PAGES: frozenset[str] = frozenset({
     "Leaderboards",
     "Player Search",
 })
+
+RESEARCH_FANTASY_PAGES: frozenset[str] = BROADER_RESEARCH_FANTASY_PAGES | {DRAFT_ASSISTANT_PAGE}
 
 _BADGE_PREFIX = "Fantasy Context Source:"
 
@@ -216,18 +220,88 @@ def is_research_fantasy_page(page_name: str) -> bool:
     return str(page_name or "").strip() in RESEARCH_FANTASY_PAGES
 
 
+def is_broader_research_fantasy_page(page_name: str) -> bool:
+    return str(page_name or "").strip() in BROADER_RESEARCH_FANTASY_PAGES
+
+
+def is_live_draft_in_progress(session: dict[str, Any]) -> bool:
+    """True when the live draft room is actively in progress (not merely complete)."""
+    room = _resolve_live_room(session)
+    if not isinstance(room, dict):
+        return False
+    status = str(room.get("status") or "").strip()
+    return status in ("in_progress", "paused")
+
+
+def _research_sync_enabled(session: dict[str, Any]) -> bool:
+    try:
+        from fantasy_context_ui import research_league_sync_enabled
+
+        return research_league_sync_enabled(session)
+    except ImportError:
+        return bool(session.get("use_active_league_context_waiver_filter"))
+
+
+def _has_filterable_fantasy_source(session: dict[str, Any]) -> bool:
+    return resolve_fantasy_context_source(session).kind != SOURCE_GENERIC
+
+
+def live_draft_feeds_draft_assistant(session: dict[str, Any]) -> bool:
+    """Live Draft Room feeds Draft Assistant during in-progress drafts (no Research Mode required)."""
+    source = resolve_fantasy_context_source(session)
+    if source.kind != SOURCE_LIVE_DRAFT:
+        return False
+    return is_live_draft_in_progress(session)
+
+
+def fantasy_drafted_pool_filter_applies(session: dict[str, Any], page_name: str) -> bool:
+    """Whether drafted/rostered players should be removed from this page's player pool.
+
+    Routing matrix:
+    - Core management pages: never via this filter (they use league context directly).
+    - Saved Active Draft / Simulator override: broader research + DAS only when Research Mode Sync ON.
+    - Live Draft override (in progress): DAS always; broader research only when Research Mode Sync ON.
+    - Completed / non-live drafts: same as saved/simulator (Research Mode Sync required for DAS).
+    """
+    page = str(page_name or "").strip()
+    research_on = _research_sync_enabled(session)
+
+    if page in CORE_FANTASY_PAGES:
+        return False
+
+    if page == DRAFT_ASSISTANT_PAGE:
+        if research_on and _has_filterable_fantasy_source(session):
+            return True
+        return live_draft_feeds_draft_assistant(session)
+
+    if page in BROADER_RESEARCH_FANTASY_PAGES:
+        return research_on and _has_filterable_fantasy_source(session)
+
+    return False
+
+
+def draft_assistant_context_mode(session: dict[str, Any]) -> str:
+    """How Draft Assistant should source roster/drafted state.
+
+    Returns one of:
+    - ``live_board`` — sync picks and needs from the in-progress live draft board.
+    - ``research_context`` — filter via unified active-team / league context (Research Mode).
+    - ``none`` — no fantasy-context filtering on Draft Assistant.
+    """
+    if live_draft_feeds_draft_assistant(session):
+        return "live_board"
+    if fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE):
+        return "research_context"
+    return "none"
+
+
 def fantasy_context_applies_to_page(session: dict[str, Any], page_name: str) -> bool:
-    """Core league pages always use fantasy context; research pages only when sync is on."""
+    """Whether fantasy context should drive this page's recommendations."""
     page = str(page_name or "").strip()
     if page in CORE_FANTASY_PAGES:
         return True
     if page in RESEARCH_FANTASY_PAGES:
-        try:
-            from fantasy_context_ui import research_league_sync_enabled
-
-            return research_league_sync_enabled(session)
-        except ImportError:
-            return bool(session.get("use_active_league_context_waiver_filter"))
+        return fantasy_drafted_pool_filter_applies(session, page)
     return False
 
 

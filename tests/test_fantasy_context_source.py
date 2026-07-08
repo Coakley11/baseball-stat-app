@@ -7,14 +7,21 @@ import unittest
 import pandas as pd
 
 from fantasy_context_source import (
+    DRAFT_ASSISTANT_PAGE,
     SOURCE_ACTIVE_DRAFT,
     SOURCE_LIVE_DRAFT,
     SOURCE_SIMULATOR_BOARD,
     USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
     USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+    draft_assistant_context_mode,
+    fantasy_context_applies_to_page,
+    fantasy_drafted_pool_filter_applies,
     get_effective_fantasy_context,
+    is_live_draft_in_progress,
+    live_draft_feeds_draft_assistant,
     resolve_fantasy_context_source,
 )
+from fantasy_context_ui import FANTASY_RESEARCH_SYNC_KEY
 from fantasy_league_context import (
     build_league_rosters_from_simulator_board,
     compute_save_draft_fingerprint,
@@ -214,6 +221,79 @@ class FantasyContextSourceTests(unittest.TestCase):
         session: dict = {_SIM_CONTEXT_TOGGLE_WIDGET_KEY: True}
         _sync_persisted_context_toggles_from_widgets(session)
         self.assertTrue(session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY])
+
+
+class FantasyContextRoutingTests(unittest.TestCase):
+    def _live_room_session(self, *, status: str = "in_progress") -> dict:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session["live_draft_room"] = {
+            "draft_room_id": "room1",
+            "status": status,
+            "config": {"user_team": "Daniel", "fantasy_format": "5x5 Roto"},
+            "draft_board": [{"Team": "Daniel", "Player": "Aaron Judge"}],
+            "teams": ["Daniel", "Rivals"],
+        }
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        return session
+
+    def test_active_draft_feeds_management_not_das_without_research_sync(self) -> None:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        session[FANTASY_RESEARCH_SYNC_KEY] = False
+        self.assertTrue(fantasy_context_applies_to_page(session, "Waiver Wire"))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
+        self.assertEqual(draft_assistant_context_mode(session), "none")
+
+    def test_active_draft_feeds_das_with_research_sync(self) -> None:
+        session = _saved_context_session()
+        session[FANTASY_RESEARCH_SYNC_KEY] = True
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, "Valuation"))
+        self.assertEqual(draft_assistant_context_mode(session), "research_context")
+
+    def test_simulator_override_management_only_without_research_sync(self) -> None:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session[FANTASY_RESEARCH_SYNC_KEY] = False
+        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_SIMULATOR_BOARD)
+        self.assertTrue(fantasy_context_applies_to_page(session, "Trades"))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Rankings"))
+
+    def test_simulator_override_feeds_research_with_research_sync(self) -> None:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session[FANTASY_RESEARCH_SYNC_KEY] = True
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, "Comparison Tool"))
+
+    def test_live_override_feeds_das_without_research_sync_while_in_progress(self) -> None:
+        session = self._live_room_session(status="in_progress")
+        session[FANTASY_RESEARCH_SYNC_KEY] = False
+        self.assertTrue(is_live_draft_in_progress(session))
+        self.assertTrue(live_draft_feeds_draft_assistant(session))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
+        self.assertEqual(draft_assistant_context_mode(session), "live_board")
+
+    def test_completed_live_draft_stops_das_special_case_without_research_sync(self) -> None:
+        session = self._live_room_session(status="complete")
+        session[FANTASY_RESEARCH_SYNC_KEY] = False
+        self.assertFalse(is_live_draft_in_progress(session))
+        self.assertFalse(live_draft_feeds_draft_assistant(session))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertEqual(draft_assistant_context_mode(session), "none")
+
+    def test_live_override_feeds_broader_research_only_with_research_sync(self) -> None:
+        session = self._live_room_session(status="in_progress")
+        session[FANTASY_RESEARCH_SYNC_KEY] = True
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, "Fantasy Sleepers & Busts"))
 
 
 class DraftFingerprintDedupeTests(unittest.TestCase):

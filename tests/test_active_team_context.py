@@ -192,7 +192,7 @@ class ResearchModeSignatureTests(unittest.TestCase):
     def test_signature_off_when_research_disabled(self) -> None:
         session = _league_session()
         session["use_active_league_context_waiver_filter"] = False
-        self.assertEqual(research_mode_signature(session), ("research_off",))
+        self.assertEqual(research_mode_signature(session), ("context_filter_off",))
 
     def test_signature_changes_when_research_enabled(self) -> None:
         session = _league_session()
@@ -200,7 +200,7 @@ class ResearchModeSignatureTests(unittest.TestCase):
         session["use_active_league_context_waiver_filter"] = True
         on_sig = research_mode_signature(session)
         self.assertNotEqual(off_sig, on_sig)
-        self.assertEqual(on_sig[0], "research_on")
+        self.assertEqual(on_sig[0], "context_filter_on")
         # Drafted keys from the active league are part of the signature.
         self.assertIn("aaron judge", on_sig[2])
 

@@ -263,16 +263,28 @@ def filter_unrostered_players(
     df: pd.DataFrame,
     *,
     name_col: str | None = None,
+    page_name: str | None = None,
 ) -> pd.DataFrame:
-    """Exclude already-drafted players when Research Mode (sync) is ON.
+    """Exclude already-drafted players when fantasy context routing applies to this page.
 
     Uses the unified active-team context so the correct source is applied:
     Active League when one is selected, otherwise the Draft Assistant Simulator
     draft board. Rows for any drafted/rostered player are removed so downstream
     ranking and recommendation code recalculates on the remaining pool.
+
+    When ``page_name`` is omitted, only Research Mode Sync gates filtering (legacy).
     """
-    if not research_league_sync_enabled(session):
-        return df
+    try:
+        from fantasy_context_source import fantasy_drafted_pool_filter_applies
+
+        if page_name:
+            if not fantasy_drafted_pool_filter_applies(session, page_name):
+                return df
+        elif not research_league_sync_enabled(session):
+            return df
+    except ImportError:
+        if not research_league_sync_enabled(session):
+            return df
     if df is None or getattr(df, "empty", True):
         return df
     col = name_col or _player_name_col(df)
