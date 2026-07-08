@@ -233,6 +233,7 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "_draft_import_review",
     "_standings_draft_import_review",
     "_draft_import_block_entered",
+    "_draft_import_just_staged",
     "_simulator_to_live_show_confirm",
     "_start_live_draft_pending",
     "_start_live_draft_mode",

@@ -28,6 +28,9 @@ _STAGED_FILENAME_KEY = "_draft_import_staged_filename"
 _STAGED_BYTES_LEN_KEY = "_draft_import_staged_bytes_len"
 _ACTIVE_FILE_SIG_KEY = "_draft_import_active_file_sig"
 _DEBUG_STATUS_KEY = "_draft_import_debug_status"
+_JUST_STAGED_KEY = "_draft_import_just_staged"
+_DRAFT_ROOM_CLEAR_TOKEN_KEY = "draft_room_import_pending_clear_token"
+_DRAFT_ROOM_IMPORT_WIDGET_BASE = "draft_room_import_uploader"
 
 _ENTRY_CONFIG: dict[str, dict[str, str]] = {
     ENTRY_DRAFT_ROOM: {
@@ -56,6 +59,123 @@ class StagedUploadFile:
         return self.data
 
 
+def draft_room_import_widget_key(session: dict[str, Any]) -> str:
+    """Streamlit file_uploader key — bump clear token to reset widget after Clear import."""
+    token = int(session.get(_DRAFT_ROOM_CLEAR_TOKEN_KEY) or 0)
+    if token <= 0:
+        return _DRAFT_ROOM_IMPORT_WIDGET_BASE
+    return f"{_DRAFT_ROOM_IMPORT_WIDGET_BASE}_{token}"
+
+
+def _entry_point_for_widget_key(widget_key: str) -> str:
+    key = str(widget_key or "")
+    if key.startswith(_DRAFT_ROOM_IMPORT_WIDGET_BASE) or key == _DRAFT_ROOM_IMPORT_WIDGET_BASE:
+        return ENTRY_DRAFT_ROOM
+    if key == "standings_draft_import_uploader":
+        return ENTRY_STANDINGS
+    return ENTRY_DRAFT_ROOM
+
+
+def purge_draft_import_correction_widgets(
+    session: dict[str, Any],
+    *,
+    session_key: str = "_draft_import_review",
+) -> None:
+    """Remove row-level validation widgets (selectboxes, search, skip toggles)."""
+    sk = str(session_key or "_draft_import_review")
+    prefixes = (
+        f"{sk}_draft_import_row_",
+        f"{sk}_shared_league_",
+        f"{sk}_apply",
+        f"{sk}_preview",
+        "draft_import_row_",
+    )
+    doomed = [
+        k
+        for k in list(session.keys())
+        if isinstance(k, str) and any(k.startswith(prefix) for prefix in prefixes)
+    ]
+    for key in doomed:
+        session.pop(key, None)
+
+
+def clear_draft_import_workflow(
+    session: dict[str, Any],
+    *,
+    entry_point: str = "",
+    widget_key: str = "",
+    bump_clear_token: bool = False,
+) -> None:
+    """Reset upload bytes, validation review, file signatures, and correction widgets."""
+    entry_points = (
+        [str(entry_point)]
+        if str(entry_point or "") in _ENTRY_CONFIG
+        else list(_ENTRY_CONFIG.keys())
+    )
+    for ep in entry_points:
+        cfg = _ENTRY_CONFIG[ep]
+        sk = str(cfg.get("session_key") or "")
+        purge_draft_import_correction_widgets(session, session_key=sk)
+        session.pop(sk, None)
+        session.pop(str(cfg.get("file_hash_session_key") or ""), None)
+
+    session.pop(_STAGED_BYTES_KEY, None)
+    session.pop(_STAGED_FILENAME_KEY, None)
+    session.pop(_STAGED_BYTES_LEN_KEY, None)
+    session.pop(_ACTIVE_FILE_SIG_KEY, None)
+    session.pop(_DEBUG_STATUS_KEY, None)
+    session.pop(_JUST_STAGED_KEY, None)
+    session.pop("_draft_import_file_id", None)
+    session.pop("_draft_import_team_name_diag", None)
+    session.pop("draft_room_import_uploaded_filename", None)
+
+    if widget_key:
+        session.pop(widget_key, None)
+    else:
+        for legacy_key in (
+            _DRAFT_ROOM_IMPORT_WIDGET_BASE,
+            "standings_draft_import_uploader",
+        ):
+            session.pop(legacy_key, None)
+        token = int(session.get(_DRAFT_ROOM_CLEAR_TOKEN_KEY) or 0)
+        for t in range(1, token + 1):
+            session.pop(f"{_DRAFT_ROOM_IMPORT_WIDGET_BASE}_{t}", None)
+
+    if bump_clear_token:
+        session[_DRAFT_ROOM_CLEAR_TOKEN_KEY] = int(session.get(_DRAFT_ROOM_CLEAR_TOKEN_KEY) or 0) + 1
+
+
+def has_active_draft_import_upload(
+    session: dict[str, Any],
+    *,
+    entry_point: str = ENTRY_DRAFT_ROOM,
+    widget_key: str = "",
+) -> bool:
+    """True when an upload is in-flight (widget file or same-rerun staged fallback)."""
+    wkey = str(widget_key or draft_room_import_widget_key(session))
+    if session.get(wkey) is not None:
+        return True
+    return bool(session.get(_JUST_STAGED_KEY))
+
+
+def _purge_stale_import_state_if_unanchored(
+    session: dict[str, Any],
+    *,
+    entry_point: str,
+    widget_key: str,
+) -> None:
+    """Drop persisted review/staged bytes when no uploader file is selected."""
+    if session.get(widget_key) is not None:
+        return
+    if session.get(_JUST_STAGED_KEY):
+        return
+    cfg = get_entry_config(entry_point)
+    session_key = cfg["session_key"]
+    if not session.get(_STAGED_BYTES_KEY) and not session.get(session_key):
+        return
+    clear_draft_import_workflow(session, entry_point=entry_point, widget_key=widget_key)
+
+
 def compute_upload_file_signature(file_bytes: bytes | bytearray) -> str:
     """Stable signature for uploaded bytes — used to invalidate stale import reviews."""
     import hashlib
@@ -71,27 +191,35 @@ def _clear_import_reviews_for_new_upload(session: dict[str, Any], *, file_sig: s
         return
     session[_ACTIVE_FILE_SIG_KEY] = file_sig
     for cfg in _ENTRY_CONFIG.values():
-        session.pop(str(cfg.get("session_key") or ""), None)
+        sk = str(cfg.get("session_key") or "")
+        purge_draft_import_correction_widgets(session, session_key=sk)
+        session.pop(sk, None)
     session.pop("_draft_import_file_id", None)
     session.pop(_DEBUG_STATUS_KEY, None)
+    session.pop(_JUST_STAGED_KEY, None)
 
 
 def stage_draft_import_upload(session: dict[str, Any], *, widget_key: str) -> None:
     """Persist latest uploader payload so reruns can still parse after widget clears."""
+    entry_point = _entry_point_for_widget_key(widget_key)
     uploaded = session.get(widget_key)
     if uploaded is None:
+        clear_draft_import_workflow(session, entry_point=entry_point, widget_key=widget_key)
         return
     try:
         payload = uploaded.getvalue()
     except Exception:
-        session.pop(_STAGED_BYTES_KEY, None)
-        session.pop(_STAGED_BYTES_LEN_KEY, None)
+        clear_draft_import_workflow(session, entry_point=entry_point, widget_key=widget_key)
+        return
+    if not payload:
+        clear_draft_import_workflow(session, entry_point=entry_point, widget_key=widget_key)
         return
     file_sig = compute_upload_file_signature(payload)
     _clear_import_reviews_for_new_upload(session, file_sig=file_sig)
     session[_STAGED_BYTES_KEY] = payload
     session[_STAGED_FILENAME_KEY] = str(getattr(uploaded, "name", "") or "")
     session[_STAGED_BYTES_LEN_KEY] = len(payload)
+    session[_JUST_STAGED_KEY] = True
     session.pop(_DEBUG_STATUS_KEY, None)
 
 
@@ -101,10 +229,12 @@ def resolve_uploaded_file_for_import(
     *,
     widget_key: str,
 ) -> Any | None:
-    """Prefer live widget value; fall back to staged bytes captured on upload."""
+    """Prefer live widget value; fall back to staged bytes only on the upload rerun."""
     if uploaded_file is not None:
         stage_draft_import_upload(session, widget_key=widget_key)
         return uploaded_file
+    if not session.get(_JUST_STAGED_KEY):
+        return None
     staged = session.get(_STAGED_BYTES_KEY)
     if isinstance(staged, (bytes, bytearray)) and staged:
         return StagedUploadFile(
@@ -714,6 +844,7 @@ def apply_validated_import_to_board(
     session.pop(_STAGED_FILENAME_KEY, None)
     session.pop(_STAGED_BYTES_LEN_KEY, None)
     session.pop(_ACTIVE_FILE_SIG_KEY, None)
+    session.pop(_JUST_STAGED_KEY, None)
     if rerun:
         st.rerun()
 
@@ -951,13 +1082,22 @@ def render_uploaded_draft_import_section(
         return status
 
     file_hash_key = config.get("file_hash_session_key") or ""
-    if file_hash_key:
-        import hashlib
-
-        file_sig = hashlib.md5(uploaded_file.getvalue()).hexdigest()[:12]
-        if session.get(file_hash_key) != file_sig:
+    file_sig = ""
+    try:
+        file_sig = compute_upload_file_signature(uploaded_file.getvalue())
+    except Exception:
+        file_sig = ""
+    if file_sig:
+        session[_ACTIVE_FILE_SIG_KEY] = file_sig
+        if file_hash_key and session.get(file_hash_key) != file_sig:
             session[file_hash_key] = file_sig
-            session.pop(config["session_key"], None)
+            purge_draft_import_correction_widgets(session, session_key=session_key)
+            session.pop(session_key, None)
+    cached_review = session.get(session_key)
+    if isinstance(cached_review, dict) and cached_review.get("rows"):
+        if not _review_matches_active_upload(session, cached_review):
+            purge_draft_import_correction_widgets(session, session_key=session_key)
+            session.pop(session_key, None)
 
     if pool_df.empty:
         status = build_draft_import_debug_status(
@@ -1011,6 +1151,14 @@ def render_uploaded_draft_import_section(
 
 def render_import_pending_banner(st: Any, session: dict[str, Any]) -> None:
     """Surface in-progress import review above tabbed layouts (Streamlit resets to tab 1 on rerun)."""
+    widget_key = draft_room_import_widget_key(session)
+    _purge_stale_import_state_if_unanchored(
+        session,
+        entry_point=ENTRY_DRAFT_ROOM,
+        widget_key=widget_key,
+    )
+    if not has_active_draft_import_upload(session, entry_point=ENTRY_DRAFT_ROOM, widget_key=widget_key):
+        return
     review = session.get("_draft_import_review") or session.get("_standings_draft_import_review")
     if not isinstance(review, dict) or not review.get("rows"):
         return
@@ -1021,6 +1169,18 @@ def render_import_pending_banner(st: Any, session: dict[str, Any]) -> None:
         f"**Draft import ready for review** — {exact} exact match(es), {needs} row(s) need confirmation. "
         "Use the **Import existing draft** section below to validate names, apply to the board, "
         "or create a shared league."
+    )
+
+
+def _on_click_clear_draft_import(*, widget_key: str) -> None:
+    import streamlit as st
+
+    entry_point = _entry_point_for_widget_key(widget_key)
+    clear_draft_import_workflow(
+        st.session_state,
+        entry_point=entry_point,
+        widget_key=widget_key,
+        bump_clear_token=entry_point == ENTRY_DRAFT_ROOM,
     )
 
 
@@ -1036,9 +1196,13 @@ def render_draft_room_import_block(
 ) -> None:
     """Always-visible Draft Room import entry (must not be hidden inside a inactive tab)."""
     session["_draft_import_block_entered"] = True
-    widget_key = "draft_room_import_uploader"
-    config = get_entry_config(ENTRY_DRAFT_ROOM)
-    session_key = config["session_key"]
+    widget_key = draft_room_import_widget_key(session)
+
+    _purge_stale_import_state_if_unanchored(
+        session,
+        entry_point=ENTRY_DRAFT_ROOM,
+        widget_key=widget_key,
+    )
 
     st.subheader("Import existing draft")
     st.caption(
@@ -1046,17 +1210,28 @@ def render_draft_room_import_block(
         f"Placement: **{layout_label}**. Validation appears here immediately after upload."
     )
 
+    upload_col, clear_col = st.columns([4, 1])
+    with clear_col:
+        st.button(
+            "Clear import",
+            key=f"{widget_key}__clear_import_btn",
+            use_container_width=True,
+            on_click=_on_click_clear_draft_import,
+            kwargs={"widget_key": widget_key},
+            help="Clear uploaded file, validation review, staged bytes, and correction selections.",
+        )
+
     def _on_upload_change() -> None:
         stage_draft_import_upload(session, widget_key=widget_key)
 
-    imported_draft_file = st.file_uploader(
-        "Upload existing draft board CSV or Excel",
-        type=["csv", "xlsx", "xls"],
-        key=widget_key,
-        on_change=_on_upload_change,
-    )
+    with upload_col:
+        imported_draft_file = st.file_uploader(
+            "Upload existing draft board CSV or Excel",
+            type=["csv", "xlsx", "xls"],
+            key=widget_key,
+            on_change=_on_upload_change,
+        )
     resolved_file = resolve_uploaded_file_for_import(session, imported_draft_file, widget_key=widget_key)
-    cached_review = session.get(session_key)
 
     if resolved_file is None:
         status = build_draft_import_debug_status(
@@ -1066,20 +1241,11 @@ def render_draft_room_import_block(
             widget_key=widget_key,
             import_block_entered=True,
             pipeline_called=False,
-            review=cached_review if isinstance(cached_review, dict) else None,
+            review=None,
             layout_label=layout_label,
         )
         render_draft_import_debug_panel(st, status)
-        if isinstance(cached_review, dict) and cached_review.get("rows"):
-            st.warning(
-                "A cached import review exists but no upload bytes are available on this rerun. "
-                "Re-select the CSV file — the parser only reads uploaded file bytes, not the draft board."
-            )
-        elif str(session.get(_STAGED_FILENAME_KEY) or session.get("draft_room_import_uploaded_filename") or "").strip():
-            st.warning(
-                "A filename is remembered but no upload bytes are available on this rerun. "
-                "Please re-select the CSV file once to continue."
-            )
+        session.pop(_JUST_STAGED_KEY, None)
         return
 
     try:
@@ -1127,6 +1293,8 @@ def render_draft_room_import_block(
         render_draft_import_debug_panel(st, status)
         st.error(f"Could not read uploaded draft file: {exc}")
 
+    session.pop(_JUST_STAGED_KEY, None)
+
 
 __all__ = [
     "ENTRY_DRAFT_ROOM",
@@ -1139,13 +1307,17 @@ __all__ = [
     "build_import_review",
     "format_team_name_list",
     "build_validated_import_dataframe",
+    "clear_draft_import_workflow",
     "compute_upload_file_signature",
+    "draft_room_import_widget_key",
+    "has_active_draft_import_upload",
     "get_entry_config",
     "import_columns_valid",
     "import_review_ready",
     "import_review_ready_for_league",
     "normalize_imported_draft_columns",
     "parse_uploaded_draft_file",
+    "purge_draft_import_correction_widgets",
     "read_imported_draft_file",
     "render_draft_import_debug_panel",
     "render_draft_import_validation_ui",

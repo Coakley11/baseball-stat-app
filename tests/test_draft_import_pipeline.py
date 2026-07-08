@@ -14,7 +14,10 @@ from draft_import_pipeline import (
     ENTRY_STANDINGS,
     build_draft_import_debug_status,
     build_import_review,
+    clear_draft_import_workflow,
+    draft_room_import_widget_key,
     get_entry_config,
+    has_active_draft_import_upload,
     import_columns_valid,
     import_review_ready,
     import_review_ready_for_league,
@@ -101,6 +104,69 @@ class TestDraftImportPipeline(unittest.TestCase):
         df, err = parse_uploaded_draft_file(resolved, read_table_fn=_read_csv_table)
         self.assertEqual(err, "")
         self.assertEqual(len(df), 1)
+        self.assertTrue(session.get("_draft_import_just_staged"))
+
+    def test_orphan_staged_bytes_not_resolved_without_just_staged_flag(self) -> None:
+        session: dict = {
+            "_draft_import_staged_bytes": b"Team,Player,Pick\nDaniel,Aaron Judge,1\n",
+            "_draft_import_staged_filename": "draft.csv",
+            "_draft_import_active_file_sig": "abc123",
+            "_draft_import_review": {"rows": [{"status": "exact"}], "file_sig": "abc123"},
+        }
+        widget_key = draft_room_import_widget_key(session)
+        resolved = resolve_uploaded_file_for_import(session, None, widget_key=widget_key)
+        self.assertIsNone(resolved)
+        self.assertFalse(has_active_draft_import_upload(session, widget_key=widget_key))
+
+    def test_purge_stale_import_state_if_unanchored_clears_orphan_review(self) -> None:
+        from draft_import_pipeline import _purge_stale_import_state_if_unanchored
+
+        session: dict = {
+            "_draft_import_staged_bytes": b"Team,Player,Pick\nDaniel,Aaron Judge,1\n",
+            "_draft_import_staged_filename": "draft.csv",
+            "_draft_import_active_file_sig": "abc123",
+            "_draft_import_review": {"rows": [{"status": "exact"}], "file_sig": "abc123"},
+            "_draft_import_debug_status": {"parsed_row_count": 1},
+            "draft_room_import_uploaded_filename": "draft.csv",
+        }
+        widget_key = draft_room_import_widget_key(session)
+        _purge_stale_import_state_if_unanchored(
+            session,
+            entry_point=ENTRY_DRAFT_ROOM,
+            widget_key=widget_key,
+        )
+        self.assertNotIn("_draft_import_staged_bytes", session)
+        self.assertNotIn("_draft_import_review", session)
+        self.assertNotIn("_draft_import_active_file_sig", session)
+        self.assertNotIn("_draft_import_debug_status", session)
+        self.assertNotIn("draft_room_import_uploaded_filename", session)
+
+    def test_clear_draft_import_workflow_resets_upload_state(self) -> None:
+        session: dict = {
+            "draft_room_import_uploader": MagicMock(),
+            "_draft_import_staged_bytes": b"data",
+            "_draft_import_staged_filename": "draft.csv",
+            "_draft_import_active_file_sig": "sig1",
+            "_draft_import_review": {"rows": [{"status": "exact"}], "file_sig": "sig1"},
+            "_draft_import_debug_status": {"parsed_row_count": 9},
+            "draft_room_import_uploaded_filename": "draft.csv",
+            "draft_room_import_last_processed_hash": "sig1",
+            "_draft_import_review_draft_import_row_0": "x",
+        }
+        clear_draft_import_workflow(
+            session,
+            entry_point=ENTRY_DRAFT_ROOM,
+            widget_key="draft_room_import_uploader",
+            bump_clear_token=True,
+        )
+        self.assertEqual(session.get("draft_room_import_pending_clear_token"), 1)
+        self.assertEqual(draft_room_import_widget_key(session), "draft_room_import_uploader_1")
+        self.assertNotIn("draft_room_import_uploader", session)
+        self.assertNotIn("_draft_import_staged_bytes", session)
+        self.assertNotIn("_draft_import_review", session)
+        self.assertNotIn("_draft_import_active_file_sig", session)
+        self.assertNotIn("draft_room_import_last_processed_hash", session)
+        self.assertNotIn("_draft_import_review_draft_import_row_0", session)
 
     def test_new_upload_clears_stale_cached_review(self) -> None:
         from draft_import_pipeline import compute_upload_file_signature
