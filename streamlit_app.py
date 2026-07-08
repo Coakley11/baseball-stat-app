@@ -22756,24 +22756,34 @@ if active_page == "Fantasy Standings Tracker":
 
     draft_import_for_standings = None
     with st.expander("Optional: import draft board (if Draft Room is empty)", expanded=False):
+        st.caption(
+            "Upload a draft board CSV/Excel. Player names are validated before loading onto "
+            "the Draft Room Simulator board."
+        )
         draft_import_for_standings = st.file_uploader(
             "Upload draft board CSV/Excel",
             type=["csv", "xlsx", "xls"],
         )
-
-    if draft_import_for_standings is not None:
-        try:
-            draft_import_raw = read_imported_draft_file(draft_import_for_standings)
-            draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
-            if st.button("Use Uploaded Draft Board For Standings"):
-                st.session_state["draft_room_table"] = draft_import_norm.copy()
-                _auto_remove_drafted_from_queue()
-                st.session_state["workflow_sidebar_flash"] = (
-                    f"Loaded {len(draft_import_norm)} picks for standings/trade analysis."
-                )
-                st.rerun()
-        except Exception as e:
-            st.error(f"Could not read draft board upload: {e}")
+        if draft_import_for_standings is not None:
+            try:
+                draft_import_raw = read_imported_draft_file(draft_import_for_standings)
+                draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
+                if draft_import_norm.empty:
+                    st.warning("No usable Team/Player rows were found in the uploaded draft.")
+                else:
+                    pool_for_import = _draft_room_pool_for_import_validation()
+                    if pool_for_import.empty:
+                        st.error("Player pool is empty — cannot validate import names.")
+                    else:
+                        _render_validated_draft_import(
+                            draft_import_norm,
+                            pool_for_import,
+                            session_key="_standings_draft_import_review",
+                            apply_label="Apply validated import to Draft Room Simulator board",
+                            flash_prefix="Standings: loaded",
+                        )
+            except Exception as e:
+                st.error(f"Could not read draft board upload: {e}")
 
     if stats_source == "MLB API Auto-Fetch" and _should_fetch_api:
         try:

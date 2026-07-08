@@ -74,7 +74,24 @@ def global_settings_snapshot_excluded_keys() -> frozenset[str]:
 
 def active_fantasy_team_source(session: dict[str, Any]) -> str:
     """Which subsystem owns the active fantasy team."""
-    if _active_league_team_info(session):
+    try:
+        from fantasy_context_source import (
+            SOURCE_ACTIVE_DRAFT,
+            SOURCE_LIVE_DRAFT,
+            SOURCE_SIMULATOR_BOARD,
+            resolve_fantasy_context_source,
+        )
+
+        kind = resolve_fantasy_context_source(session).kind
+        if kind == SOURCE_LIVE_DRAFT:
+            return "live_draft"
+        if kind == SOURCE_SIMULATOR_BOARD:
+            return "draft_room"
+        if kind == SOURCE_ACTIVE_DRAFT:
+            return "active_draft"
+    except ImportError:
+        pass
+    if _saved_active_league_team_info(session):
         return "active_draft"
     try:
         from live_draft_state import has_active_live_draft
@@ -91,12 +108,12 @@ def active_fantasy_team_source(session: dict[str, Any]) -> str:
     return "draft_room"
 
 
-def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
-    """Return (team_name, draft_label) when an Active Draft/league context is set."""
+def _saved_active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
+    """Return (team_name, draft_label) for the Saved Draft Library Active Draft only."""
     try:
         from fantasy_league_context import get_active_league_context
 
-        ctx = get_active_league_context(session)
+        ctx = get_active_league_context(session, respect_source_priority=False)
     except ImportError:
         return None
     if not isinstance(ctx, dict):
@@ -117,6 +134,36 @@ def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
     return team, label or "Active Draft"
 
 
+def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
+    """Return (team_name, draft_label) when the effective fantasy context has a team."""
+    src = active_fantasy_team_source(session)
+    if src == "active_draft":
+        return _saved_active_league_team_info(session)
+    if src == "live_draft":
+        team = _live_draft_team_name(session)
+        if team:
+            return team, "Live Draft"
+    if src == "draft_room":
+        team = str(session.get(GLOBAL_TEAM_KEY) or "").strip()
+        if team:
+            return team, "Draft Room Simulator"
+    return None
+
+
+def _live_draft_team_name(session: dict[str, Any]) -> str:
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+        for key in ("user_team", "your_team"):
+            val = cfg.get(key)
+            if val:
+                return str(val).strip()
+        teams = room.get("teams")
+        if isinstance(teams, list) and teams:
+            return str(teams[0]).strip()
+    return ""
+
+
 def get_active_fantasy_team(session: dict[str, Any]) -> str:
     """Single active fantasy team for the whole app."""
     try:
@@ -135,42 +182,40 @@ def get_active_fantasy_team(session: dict[str, Any]) -> str:
                 return mp_team
     except ImportError:
         pass
-    league_info = _active_league_team_info(session)
-    if league_info:
-        return league_info[0]
-    if active_fantasy_team_source(session) == "live_draft":
-        room = session.get("live_draft_room")
-        if isinstance(room, dict):
-            cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
-            for key in ("user_team", "your_team"):
-                val = cfg.get(key)
-                if val:
-                    return str(val).strip()
-            teams = room.get("teams")
-            if isinstance(teams, list) and teams:
-                return str(teams[0]).strip()
+    src = active_fantasy_team_source(session)
+    if src == "live_draft":
+        team = _live_draft_team_name(session)
+        if team:
+            return team
+    if src == "active_draft":
+        league_info = _saved_active_league_team_info(session)
+        if league_info:
+            return league_info[0]
     return str(session.get(GLOBAL_TEAM_KEY) or "").strip()
 
 
 def sync_active_fantasy_team_to_canonical(session: dict[str, Any]) -> str:
     """Push the active source-of-truth team into ``room_your_team`` and aliases."""
-    league_info = _active_league_team_info(session)
-    if league_info:
-        team = league_info[0]
-        session[GLOBAL_TEAM_KEY] = team
-        _mirror_globals_to_aliases(session)
-        session["_active_fantasy_team_source"] = "active_draft"
-        propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
-        session["_global_settings_last_propagated"] = propagated
-        return team
+    src = active_fantasy_team_source(session)
+    if src == "active_draft":
+        league_info = _saved_active_league_team_info(session)
+        if league_info:
+            team = league_info[0]
+            session[GLOBAL_TEAM_KEY] = team
+            _mirror_globals_to_aliases(session)
+            session["_active_fantasy_team_source"] = "active_draft"
+            propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
+            session["_global_settings_last_propagated"] = propagated
+            return team
     team = get_active_fantasy_team(session)
     if team:
         session[GLOBAL_TEAM_KEY] = team
         _mirror_globals_to_aliases(session)
-        _sync_live_draft_room_team(session)
+        if src == "live_draft":
+            _sync_live_draft_room_team(session)
         propagated = {alias: session.get(alias) for alias in _ALL_ALIASES}
         session["_global_settings_last_propagated"] = propagated
-    session["_active_fantasy_team_source"] = active_fantasy_team_source(session)
+    session["_active_fantasy_team_source"] = src
     return team
 
 
@@ -351,6 +396,12 @@ def prepare_global_fantasy_settings(
     """
     team = session.get(GLOBAL_TEAM_KEY)
     fmt = session.get(GLOBAL_FORMAT_KEY)
+    try:
+        from fantasy_context_source import prepare_fantasy_context_source_defaults
+
+        prepare_fantasy_context_source_defaults(session)
+    except ImportError:
+        pass
     if team is None and fmt is None:
         return
     normalized_fmt = normalize_league_format(fmt or CANONICAL_ROTO) if fmt is not None else None

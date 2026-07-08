@@ -636,12 +636,174 @@ def get_league_context(session: dict[str, Any], league_context_id: str) -> dict[
     return copy.deepcopy(ctx)
 
 
-def get_active_league_context(session: dict[str, Any]) -> dict[str, Any] | None:
+def get_active_league_context(
+    session: dict[str, Any],
+    *,
+    respect_source_priority: bool = True,
+) -> dict[str, Any] | None:
+    """Return the league context feeding fantasy pages.
+
+    When ``respect_source_priority`` is True (default), delegates to
+    ``fantasy_context_source.get_effective_fantasy_context`` so live/simulator
+    overrides can win over the Saved Draft Library Active Draft. Pass False to
+    read only the persisted Active Draft (library UI, activation flows).
+    """
+    if respect_source_priority:
+        try:
+            from fantasy_context_source import get_effective_fantasy_context
+
+            effective = get_effective_fantasy_context(session)
+            if effective is not None:
+                return effective
+        except ImportError:
+            pass
     store = ensure_fantasy_league_context_state(session)
     active_id = str(store.get("active_league_context_id") or "").strip()
     if not active_id:
         return None
     return get_league_context(session, active_id)
+
+
+def fingerprint_payload_for_archive_save(
+    *,
+    league_rosters: dict[str, dict[str, Any]],
+    config: dict[str, Any] | None = None,
+    fantasy_format: str = "",
+) -> dict[str, Any]:
+    """Build a content-only payload for canonical draft fingerprinting."""
+    cfg = dict(config or {})
+    return {
+        "league_rosters": league_rosters,
+        "fantasy_format": str(
+            fantasy_format or cfg.get("fantasy_format") or cfg.get("scoring_type") or ""
+        ).strip(),
+        "scoring_settings": {
+            "projection_window": cfg.get("projection_window"),
+            "projection_style": cfg.get("projection_style"),
+            "use_ml_blend": cfg.get("use_ml_blend"),
+            "ml_blend_weight": cfg.get("ml_blend_weight"),
+            "scoring_type": cfg.get("scoring_type"),
+        },
+        "roster_settings": {
+            "roster_slots": dict(cfg.get("slots") or {}),
+            "slot_instances": list(cfg.get("slot_instances") or []),
+        },
+    }
+
+
+def compute_save_draft_fingerprint(
+    *,
+    league_rosters: dict[str, dict[str, Any]],
+    config: dict[str, Any] | None = None,
+    fantasy_format: str = "",
+) -> str:
+    try:
+        from fantasy_league_identity import compute_draft_fingerprint
+
+        payload = fingerprint_payload_for_archive_save(
+            league_rosters=league_rosters,
+            config=config,
+            fantasy_format=fantasy_format,
+        )
+        return compute_draft_fingerprint(payload)
+    except ImportError:
+        return ""
+
+
+def find_archive_by_draft_fingerprint(session: dict[str, Any], fingerprint: str) -> dict[str, Any] | None:
+    """Return the first saved archive matching a canonical draft fingerprint."""
+    fingerprint = str(fingerprint or "").strip()
+    if not fingerprint:
+        return None
+    try:
+        from draft_archive_state import get_draft_archive, list_draft_archives
+    except ImportError:
+        return None
+    for entry in list_draft_archives(session):
+        stored = str(entry.get("draft_fingerprint") or "").strip()
+        if stored and stored == fingerprint:
+            return get_draft_archive(session, str(entry.get("draft_id") or ""))
+        rosters = entry.get("league_rosters")
+        if isinstance(rosters, dict) and rosters:
+            fp = compute_save_draft_fingerprint(
+                league_rosters=rosters,
+                config={
+                    "fantasy_format": entry.get("fantasy_format"),
+                    "slots": entry.get("roster_slots"),
+                    "slot_instances": entry.get("slot_instances"),
+                    **(entry.get("projection_settings") or {}),
+                },
+                fantasy_format=str(entry.get("fantasy_format") or ""),
+            )
+            if fp and fp == fingerprint:
+                return get_draft_archive(session, str(entry.get("draft_id") or ""))
+    return None
+
+
+def find_league_context_by_draft_fingerprint(
+    session: dict[str, Any],
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    """Return a saved league context with the same canonical draft fingerprint."""
+    fingerprint = str(fingerprint or "").strip()
+    if not fingerprint:
+        return None
+    store = ensure_fantasy_league_context_state(session)
+    contexts = store.get("contexts") or {}
+    if not isinstance(contexts, dict):
+        return None
+    for ctx in contexts.values():
+        if not isinstance(ctx, dict):
+            continue
+        meta = ctx.get("metadata") or {}
+        stored = str(meta.get("draft_fingerprint") or "").strip()
+        if stored and stored == fingerprint:
+            return copy.deepcopy(ctx)
+        fp = compute_save_draft_fingerprint(
+            league_rosters=dict(ctx.get("league_rosters") or {}),
+            config={
+                "fantasy_format": ctx.get("fantasy_format"),
+                "slots": (ctx.get("roster_settings") or {}).get("roster_slots"),
+                "slot_instances": (ctx.get("roster_settings") or {}).get("slot_instances"),
+                **(ctx.get("scoring_settings") or {}),
+            },
+            fantasy_format=str(ctx.get("fantasy_format") or ""),
+        )
+        if fp and fp == fingerprint:
+            return copy.deepcopy(ctx)
+    return None
+
+
+def resolve_canonical_save_ids(
+    session: dict[str, Any],
+    *,
+    league_rosters: dict[str, dict[str, Any]],
+    config: dict[str, Any] | None = None,
+    fantasy_format: str = "",
+    draft_id: str | None = None,
+    league_context_id: str | None = None,
+) -> tuple[str | None, str | None, str]:
+    """Resolve stable archive/context ids for duplicate saves of the same draft content."""
+    fingerprint = compute_save_draft_fingerprint(
+        league_rosters=league_rosters,
+        config=config,
+        fantasy_format=fantasy_format,
+    )
+    if not fingerprint:
+        return (str(draft_id).strip() or None, str(league_context_id).strip() or None, "")
+
+    existing_archive = find_archive_by_draft_fingerprint(session, fingerprint)
+    if existing_archive:
+        draft_id = str(existing_archive.get("draft_id") or draft_id or "").strip() or None
+        league_context_id = (
+            str(existing_archive.get("league_context_id") or league_context_id or "").strip() or None
+        )
+    existing_context = find_league_context_by_draft_fingerprint(session, fingerprint)
+    if existing_context and not league_context_id:
+        league_context_id = str(existing_context.get("league_context_id") or "").strip() or None
+    if draft_id and not league_context_id:
+        league_context_id = context_id_for_archive(str(draft_id))
+    return draft_id, league_context_id, fingerprint
 
 
 def context_has_roster_slots(context: dict[str, Any] | None) -> bool:
@@ -1129,14 +1291,24 @@ def save_live_draft_league_context(
     league_rosters = build_league_rosters_from_live_room(room, my_team)
     cfg = dict(room.get("config") or {})
     label = str(draft_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — {my_team}"
+    draft_id, league_context_id, _fp = resolve_canonical_save_ids(
+        session,
+        league_rosters=league_rosters,
+        config=cfg,
+        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+    )
     entry = save_live_draft_team_archive(
         session,
         room,
         team_name=my_team,
         draft_name=label,
+        league_rosters=league_rosters,
+        draft_id=draft_id,
     )
     draft_id = str(entry.get("draft_id") or "")
-    league_context_id = context_id_for_archive(draft_id)
+    league_context_id = str(
+        entry.get("league_context_id") or league_context_id or context_id_for_archive(draft_id)
+    ).strip()
     entry = save_draft_archive_with_league_context(
         session,
         draft_id=draft_id,
@@ -1152,6 +1324,7 @@ def save_live_draft_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
+    context = upsert_league_context(session, context)
     if defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:
@@ -1194,6 +1367,13 @@ def save_simulator_league_context(
         resolved_draft_id = str(resolve_simulator_library_draft_id(session) or "").strip() or None
     else:
         resolved_draft_id = str(draft_id or "").strip() or None
+    resolved_draft_id, league_context_id, _fp = resolve_canonical_save_ids(
+        session,
+        league_rosters=league_rosters,
+        config=cfg,
+        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+        draft_id=resolved_draft_id,
+    )
     entry = save_simulator_team_archive(
         session,
         board_df,
@@ -1201,10 +1381,13 @@ def save_simulator_league_context(
         draft_name=label,
         config=cfg,
         draft_id=resolved_draft_id,
+        league_rosters=league_rosters,
     )
     draft_id = str(entry.get("draft_id") or "")
     session[SIMULATOR_SESSION_LIBRARY_DRAFT_KEY] = draft_id
-    league_context_id = context_id_for_archive(draft_id)
+    league_context_id = str(
+        entry.get("league_context_id") or league_context_id or context_id_for_archive(draft_id)
+    ).strip()
     entry = save_draft_archive_with_league_context(
         session,
         draft_id=draft_id,
@@ -1220,6 +1403,7 @@ def save_simulator_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
+    context = upsert_league_context(session, context)
     if defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:

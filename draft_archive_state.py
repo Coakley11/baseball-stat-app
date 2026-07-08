@@ -101,8 +101,24 @@ def save_draft_archive(
 ) -> dict[str, Any]:
     """Persist one saved draft team snapshot."""
     now = _utc_now_iso()
-    entry_id = str(draft_id or uuid.uuid4().hex[:12])
     cfg = copy.deepcopy(config or {})
+    draft_fingerprint = ""
+    entry_id = str(draft_id or "").strip() or None
+    if isinstance(league_rosters, dict) and league_rosters:
+        try:
+            from fantasy_league_context import resolve_canonical_save_ids
+
+            entry_id, league_context_id, draft_fingerprint = resolve_canonical_save_ids(
+                session,
+                league_rosters=league_rosters,
+                config=cfg,
+                fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+                draft_id=entry_id,
+                league_context_id=str(league_context_id or "").strip() or None,
+            )
+        except ImportError:
+            pass
+    entry_id = str(entry_id or uuid.uuid4().hex[:12])
     entry: dict[str, Any] = {
         "draft_id": entry_id,
         "draft_type": str(draft_type or DRAFT_TYPE_SIMULATOR),
@@ -124,6 +140,8 @@ def save_draft_archive(
         "picks": copy.deepcopy(pick_rows or []),
         "draft_board": copy.deepcopy(draft_board_rows or []),
     }
+    if draft_fingerprint:
+        entry["draft_fingerprint"] = draft_fingerprint
     if league_rosters is not None:
         entry["league_rosters"] = copy.deepcopy(league_rosters)
     if league_context_id:
@@ -133,9 +151,20 @@ def save_draft_archive(
     for i, existing in enumerate(entries):
         if str(existing.get("draft_id") or "") == entry_id:
             entry["created_at"] = existing.get("created_at") or now
+            if not draft_fingerprint:
+                entry["draft_fingerprint"] = str(existing.get("draft_fingerprint") or "").strip()
             entries[i] = entry
             replaced = True
             break
+    if not replaced and draft_fingerprint:
+        for i, existing in enumerate(entries):
+            if str(existing.get("draft_fingerprint") or "").strip() == draft_fingerprint:
+                entry["draft_id"] = str(existing.get("draft_id") or entry_id)
+                entry_id = entry["draft_id"]
+                entry["created_at"] = existing.get("created_at") or now
+                entries[i] = entry
+                replaced = True
+                break
     if not replaced:
         entries.append(entry)
     _set_archive_list(session, entries)
@@ -148,6 +177,8 @@ def save_live_draft_team_archive(
     *,
     team_name: str,
     draft_name: str = "",
+    league_rosters: dict[str, dict[str, Any]] | None = None,
+    draft_id: str | None = None,
 ) -> dict[str, Any]:
     cfg = dict(room.get("config") or {})
     roster = _roster_rows_from_live_room(room, team_name)
@@ -167,6 +198,8 @@ def save_live_draft_team_archive(
         roster_rows=roster,
         pick_rows=picks,
         draft_board_rows=full_board,
+        league_rosters=league_rosters,
+        draft_id=draft_id,
     )
 
 
@@ -178,6 +211,7 @@ def save_simulator_team_archive(
     draft_name: str = "",
     config: dict[str, Any] | None = None,
     draft_id: str | None = None,
+    league_rosters: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cfg = dict(config or session.get("draft_shared_settings") or {})
     picks = _board_rows_for_team(board_df, team_name)
@@ -193,6 +227,7 @@ def save_simulator_team_archive(
         pick_rows=picks,
         draft_board_rows=board_df.to_dict(orient="records") if board_df is not None else [],
         draft_id=draft_id,
+        league_rosters=league_rosters,
     )
 
 

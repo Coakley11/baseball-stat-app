@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -84,6 +85,23 @@ def _live_room_fixture() -> dict:
             {"Fantasy Team": "Team 2", "fullName": "Juan Soto", "Pick": 2, "Round": 1},
         ],
     }
+
+
+@contextmanager
+def _isolated_disk_workflow():
+    """Keep disk round-trip tests off the developer's real workspace snapshot."""
+
+    def _passthrough_save(state, session, **kwargs):
+        return state
+
+    with (
+        patch(
+            "workflow_persist_guard.merge_protected_workflow_into_save",
+            side_effect=_passthrough_save,
+        ),
+        patch("workflow_persist_guard.merge_protected_workflow_on_restore"),
+    ):
+        yield
 
 
 class FantasyLeagueContextModelTests(unittest.TestCase):
@@ -269,7 +287,8 @@ class FantasyLeagueContextPersistenceTests(unittest.TestCase):
             league_context_id="live:disk001",
         )
         activate_league_context(session, "live:disk001")
-        blob = build_baseball_disk_state(st1)
+        with _isolated_disk_workflow():
+            blob = build_baseball_disk_state(st1)
         self.assertIn(FANTASY_LEAGUE_CONTEXT_STATE_KEY, blob)
         store = blob[FANTASY_LEAGUE_CONTEXT_STATE_KEY]
         self.assertEqual(store["active_league_context_id"], "live:disk001")
@@ -278,7 +297,8 @@ class FantasyLeagueContextPersistenceTests(unittest.TestCase):
 
         st2 = MagicMock()
         st2.session_state = {}
-        apply_baseball_disk_state(st2, blob)
+        with _isolated_disk_workflow():
+            apply_baseball_disk_state(st2, blob)
         restored = get_active_league_context(st2.session_state)
         assert restored is not None
         self.assertEqual(restored["league_context_id"], "live:disk001")
@@ -292,11 +312,13 @@ class FantasyLeagueContextPersistenceTests(unittest.TestCase):
         activate_draft_archive(session, entry["draft_id"])
         st1 = MagicMock()
         st1.session_state = session
-        blob = build_baseball_disk_state(st1)
+        with _isolated_disk_workflow():
+            blob = build_baseball_disk_state(st1)
 
         st2 = MagicMock()
         st2.session_state = {DRAFT_ARCHIVE_KEY: blob[DRAFT_ARCHIVE_KEY], ACTIVE_DRAFT_ARCHIVE_KEY: entry["draft_id"]}
-        apply_baseball_disk_state(st2, blob)
+        with _isolated_disk_workflow():
+            apply_baseball_disk_state(st2, blob)
         ss = st2.session_state
         contexts = list_league_contexts(ss)
         self.assertEqual(len(contexts), 1)
@@ -381,11 +403,13 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         )
         st = MagicMock()
         st.session_state = session
-        blob = build_baseball_disk_state(st)
+        with _isolated_disk_workflow():
+            blob = build_baseball_disk_state(st)
 
         restored_st = MagicMock()
         restored_st.session_state = {}
-        apply_baseball_disk_state(restored_st, blob)
+        with _isolated_disk_workflow():
+            apply_baseball_disk_state(restored_st, blob)
 
         restored = get_draft_archive(restored_st.session_state, str(entry["draft_id"]))
         self.assertIsNotNone(restored)

@@ -81,7 +81,7 @@ class FantasyContextSyncTests(unittest.TestCase):
         badge = active_league_context_badge_text(session)
         self.assertIn("2026 Main League", badge)
         self.assertIn("Active", badge)
-        self.assertEqual(research_sync_badge_text(session), "Research mode: **General MLB** (off)")
+        self.assertEqual(research_sync_badge_text(session), "Research mode: **General MLB** (off) · Fantasy Context Source: Active Draft: **2026 Main League**")
 
 
 if __name__ == "__main__":

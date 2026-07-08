@@ -1,15 +1,15 @@
 """Unified active-team context — one resolver for the whole app.
 
-This module encodes the single source-of-truth priority rule requested by the
-product owner:
+This module encodes the user-controlled fantasy context priority:
 
-    Active League Team  >  Draft Assistant Simulator Team
+    Live Draft Room (when sync enabled)
+    > Draft Room Simulator board (when sync enabled)
+    > Saved Draft Library Active Draft
+    > Generic/default simulator context
 
-- If an **Active League** (saved Active Draft) is selected, it wins: use that
-  league's user team, its rostered players, and its position/category context.
-- Otherwise, fall back to the **Draft Assistant Simulator** (the live/simulator
-  draft board via ``draft_context.resolve_draft_context``): the simulator team
-  becomes the active team.
+Use ``fantasy_context_source.resolve_fantasy_context_source`` for badges and
+``get_effective_fantasy_context`` for league-shaped data. ``resolve_active_team_context``
+composes those rules into a single ``ActiveTeamContext`` snapshot.
 
 Every draft- and research-aware page should resolve context through
 ``resolve_active_team_context`` instead of reaching into league context or the
@@ -36,6 +36,7 @@ import pandas as pd
 
 SOURCE_LEAGUE = "active_league"
 SOURCE_SIMULATOR = "simulator"
+SOURCE_LIVE_DRAFT = "live_draft"
 SOURCE_NONE = "none"
 
 
@@ -256,21 +257,68 @@ def resolve_active_team_context(
     *,
     pool_df: pd.DataFrame | None = None,
 ) -> ActiveTeamContext:
-    """Resolve the active team context using the Active League > Simulator rule.
+    """Resolve active team context using the fantasy context source priority.
 
-    1. If a saved Active League context exists with a user team, use it.
-    2. Otherwise fall back to the live/simulator draft board.
-    3. If neither is present, return an empty context (general MLB mode).
+    1. Live Draft Room when live-draft sync is enabled.
+    2. Draft Room Simulator board when simulator-board sync is enabled.
+    3. Saved Draft Library Active Draft.
+    4. Empty context (general MLB mode) when none apply.
 
     ``pool_df`` (the unified projection pool) is optional but recommended: it lets
     the resolver compute hitter category needs and lets callers immediately call
     ``ctx.available_pool(pool_df)`` to recalculate on the remaining player pool.
     """
+    try:
+        from fantasy_context_source import (
+            SOURCE_ACTIVE_DRAFT,
+            SOURCE_LIVE_DRAFT,
+            SOURCE_SIMULATOR_BOARD,
+            get_effective_fantasy_context,
+            resolve_fantasy_context_source,
+        )
+    except ImportError:
+        resolve_fantasy_context_source = None  # type: ignore[assignment]
+        get_effective_fantasy_context = None  # type: ignore[assignment]
+        SOURCE_ACTIVE_DRAFT = SOURCE_LEAGUE  # type: ignore[misc]
+        SOURCE_LIVE_DRAFT = SOURCE_SIMULATOR  # type: ignore[misc]
+        SOURCE_SIMULATOR_BOARD = SOURCE_SIMULATOR  # type: ignore[misc]
+
+    if resolve_fantasy_context_source is not None:
+        source = resolve_fantasy_context_source(session)
+        if source.kind == SOURCE_ACTIVE_DRAFT:
+            context = get_effective_fantasy_context(session) if get_effective_fantasy_context else None
+            if isinstance(context, dict) and str(context.get("my_team_name") or "").strip():
+                return _resolve_from_league(context, pool_df=pool_df)
+        elif source.kind in (SOURCE_LIVE_DRAFT, SOURCE_SIMULATOR_BOARD):
+            sim = _resolve_from_simulator(session, pool_df=pool_df)
+            if sim is not None:
+                sim_source = SOURCE_LIVE_DRAFT if source.kind == SOURCE_LIVE_DRAFT else SOURCE_SIMULATOR
+                return ActiveTeamContext(
+                    source=sim_source,
+                    active_team=sim.active_team,
+                    fantasy_format=sim.fantasy_format,
+                    drafted_names=sim.drafted_names,
+                    drafted_keys=sim.drafted_keys,
+                    my_roster_df=sim.my_roster_df,
+                    position_needs=sim.position_needs,
+                    category_needs=sim.category_needs,
+                    draft_complete=sim.draft_complete,
+                )
+        elif source.kind != SOURCE_ACTIVE_DRAFT:
+            fmt = "5x5 Roto"
+            try:
+                from shared_draft_context import read_canonical_draft_settings
+
+                fmt = str(read_canonical_draft_settings(session).get("fantasy_format") or fmt)
+            except Exception:
+                pass
+            return ActiveTeamContext(source=SOURCE_NONE, fantasy_format=fmt)
+
     context = None
     try:
         from fantasy_league_context import get_active_league_context
 
-        context = get_active_league_context(session)
+        context = get_active_league_context(session, respect_source_priority=False)
     except Exception:
         context = None
 
@@ -571,6 +619,8 @@ def active_team_context_badge(ctx: ActiveTeamContext) -> str:
     """Human-readable badge describing which source supplied the active team."""
     if ctx.source == SOURCE_LEAGUE:
         return f"Active team: **{ctx.active_team}** (Active Draft)"
+    if ctx.source == SOURCE_LIVE_DRAFT:
+        return f"Active team: **{ctx.active_team}** (Live Draft Room)"
     if ctx.source == SOURCE_SIMULATOR:
-        return f"Active team: **{ctx.active_team}** (Draft Room)"
+        return f"Active team: **{ctx.active_team}** (Draft Room Simulator)"
     return "Active team: **Not set** — start a simulator draft or select an Active Draft"
