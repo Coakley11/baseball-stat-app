@@ -145,6 +145,9 @@ class TestBaseballPersistence(unittest.TestCase):
         ss = st.session_state
         self.assertEqual(len(ss.get("draft_archive_teams") or []), 1)
         self.assertEqual(ss["draft_archive_teams"][0]["draft_id"], "cloud01")
+
+
+class TestSettingsCloudSaveNotBlocked(unittest.TestCase):
     """Settings-change saves must reach the cloud even when workspace sync was skipped.
 
     Regression for: draft settings + league format reverted on refresh because

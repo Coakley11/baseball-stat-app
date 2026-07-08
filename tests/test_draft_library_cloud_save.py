@@ -98,6 +98,63 @@ class DraftLibraryCloudSaveTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("readback", err)
 
+    @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
+    @patch("suite_cloud_state._import_storage")
+    def test_save_cloud_draft_library_with_contexts_does_not_nameerror(
+        self, mock_import: MagicMock, _enabled: object
+    ) -> None:
+        """Regression: has_contexts check referenced LEAGUE_CONTEXT_STATE_KEY out of scope."""
+        storage = MagicMock()
+        storage.normalize_app_key.return_value = "baseball"
+        storage.estimate_metrics_payload_bytes.return_value = 1200
+        storage.save_current_state_with_result.return_value = {
+            "ok": True,
+            "write_mode": "patch",
+            "payload_bytes": 1200,
+        }
+        storage.load_current_state_for_app.return_value = {
+            "metrics": {
+                "full_session": {
+                    "draft_archive_teams": [{"draft_id": "d1", "draft_name": "Judge, Soto Sim"}],
+                    "active_draft_archive_id": "d1",
+                    "fantasy_league_context_state": {
+                        "contexts": {"ctx:d1": {"league_context_id": "ctx:d1"}},
+                    },
+                }
+            }
+        }
+        mock_import.return_value = (storage, None)
+
+        state = {
+            "draft_archive_teams": [{"draft_id": "d1", "draft_name": "Judge, Soto Sim"}],
+            "active_draft_archive_id": "d1",
+            "fantasy_league_context_state": {
+                "contexts": {"ctx:d1": {"league_context_id": "ctx:d1"}},
+                "active_league_context_id": "ctx:d1",
+            },
+        }
+        ok, err, app_key = save_cloud_draft_library_with_details("baseball", state)
+        self.assertTrue(ok, msg=err)
+        self.assertNotIn("NameError", err)
+        self.assertEqual(app_key, "baseball")
+
+    def test_force_save_retry_bypasses_autosave_throttle(self) -> None:
+        from suite_user_persistence import _egress_cloud_autosave_block
+
+        st = MagicMock()
+        st.session_state = {
+            "_suite_last_cloud_autosave_ts": __import__("time").time(),
+            "_suite_defer_cloud_autosave_until": __import__("time").time() + 60,
+        }
+        state = {
+            "draft_archive_teams": [{"draft_id": "d1", "draft_name": "Retry Draft"}],
+            "active_draft_archive_id": "d1",
+        }
+        blocked = _egress_cloud_autosave_block(
+            st, "baseball", state, save_reason="draft_archive_saved_retry"
+        )
+        self.assertIsNone(blocked)
+
     @patch("suite_user_persistence.save_user_state", return_value=True)
     @patch("suite_cloud_state.session_page_summary", return_value=("Saved Draft Library", "Saved Draft Library"))
     @patch("suite_cloud_state.save_cloud_draft_library_with_details", return_value=(True, "", "baseball"))

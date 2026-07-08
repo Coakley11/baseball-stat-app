@@ -286,6 +286,17 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
 })
 
 
+def _normalize_force_save_reason(reason: str) -> str:
+    raw = str(reason or "").strip()
+    if raw.endswith("_retry"):
+        return raw[:-6]
+    return raw
+
+
+def _is_force_save_cloud_reason(reason: str) -> bool:
+    return _normalize_force_save_reason(reason) in _FORCE_SAVE_CLOUD_REASONS
+
+
 def _egress_cloud_autosave_block(
     st: Any,
     app_id: str,
@@ -293,10 +304,11 @@ def _egress_cloud_autosave_block(
     *,
     save_reason: str,
 ) -> str | None:
+    force_save = _is_force_save_cloud_reason(save_reason)
     cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=save_reason)
     if cloud_block:
         return cloud_block
-    if save_reason in _FORCE_SAVE_CLOUD_REASONS:
+    if force_save:
         return None
     try:
         from suite_egress_policy import cloud_autosave_allowed, poll_sync_defer_active
@@ -316,11 +328,8 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
-    if save_reason in _FORCE_SAVE_CLOUD_REASONS:
-        if save_reason == "live_draft_pick":
-            return None
-        if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
-            return None
+    if _is_force_save_cloud_reason(save_reason):
+        return None
     elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
     if app_id != "baseball":
@@ -350,7 +359,7 @@ def _cloud_autosave_blocked_reason(
                     ws = str(get_active_workspace_id(st))
                     probe = probe_cloud_workflow_for_workspace(ws)
                 cloud_draft_count = int(probe.get("draft_archive_count") or 0)
-                if cloud_draft_count > 0 and save_reason not in _FORCE_SAVE_CLOUD_REASONS:
+                if cloud_draft_count > 0 and not _is_force_save_cloud_reason(save_reason):
                     return "post_draft_save_empty_session_would_erase_cloud"
         except ImportError:
             pass
@@ -1623,31 +1632,7 @@ def force_autosave(
         from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
 
         block_key = _autosave_block_key(app_id)
-        bypass_block = reason in (
-            "comparison_edit",
-            "trend_edit",
-            "career_edit",
-            "draft_edit",
-            "historical_edit",
-            "valuation_edit",
-            "projections_edit",
-            "leaderboards_edit",
-            "fantasy_edit",
-            "insight_persist",
-            "insight_hydrate",
-            "applied_math_send",
-            "music_coach_send",
-            "team_change",
-            "nba_settings_change",
-            "simulator_league_context_saved",
-            "live_draft_league_context_saved",
-            "manual_save_library_sync",
-            "league_context_activated",
-            "draft_archive_saved",
-            "draft_archive_renamed",
-            "draft_archive_duplicated",
-            "draft_archive_deleted",
-        )
+        bypass_block = _is_force_save_cloud_reason(reason)
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
             st.session_state["_suite_autosave_block_reason"] = st.session_state.get(
@@ -1663,7 +1648,7 @@ def force_autosave(
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         fp_key = f"_suite_autosave_fp::{app_id}"
-        bypass_fp = reason in _FORCE_SAVE_CLOUD_REASONS
+        bypass_fp = _is_force_save_cloud_reason(reason)
         if st.session_state.get(fp_key) == fp and not bypass_fp:
             return False
         saved_disk = save_user_state(app_id, state)

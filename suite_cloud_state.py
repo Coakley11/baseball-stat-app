@@ -890,6 +890,10 @@ def save_cloud_draft_library_with_details(
         except ImportError:
             from workflow_persist_guard import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
             DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
+        try:
+            from workflow_persist_guard import LEAGUE_CONTEXT_STATE_KEY
+        except ImportError:
+            LEAGUE_CONTEXT_STATE_KEY = "fantasy_league_context_state"
         has_archives = DRAFT_ARCHIVE_KEY in draft_slice
         has_tombstones = bool(draft_slice.get(DELETED_DRAFT_ARCHIVE_IDS_KEY))
         has_contexts = bool(draft_slice.get(LEAGUE_CONTEXT_STATE_KEY))
