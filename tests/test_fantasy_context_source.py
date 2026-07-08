@@ -281,6 +281,18 @@ class FantasyContextSourceTests(unittest.TestCase):
         self.assertIn("Draft Room Simulator", temp_html)
         self.assertNotIn("fantasy-source-card-active", temp_html)
 
+    def test_streamlit_app_has_no_active_fantasy_team_caption_calls(self) -> None:
+        """Regression: bare active_fantasy_team_caption() calls caused NameError on deployed builds."""
+        from pathlib import Path
+
+        app_path = Path(__file__).resolve().parents[1] / "streamlit_app.py"
+        source = app_path.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "active_fantasy_team_caption(",
+            source,
+            "streamlit_app.py must not call active_fantasy_team_caption(); use render_fantasy_using_caption or fantasy_context_using_caption",
+        )
+
     def test_checkbox_on_change_syncs_persisted_key(self) -> None:
         from fantasy_context_ui import (
             USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,

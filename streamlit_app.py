@@ -15976,15 +15976,11 @@ if active_page == "Comparison Tool":
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
     try:
-        from global_fantasy_settings_state import (
-            ACTIVE_TEAM_CHANGE_GUIDANCE,
-            active_fantasy_team_caption,
-            active_fantasy_team_label,
-            get_active_fantasy_team,
-        )
+        from global_fantasy_settings_state import get_active_fantasy_team
+        from fantasy_context_source import fantasy_context_using_caption
 
         comparison_action_team = get_active_fantasy_team(st.session_state)
-        st.caption(active_fantasy_team_caption(st.session_state))
+        st.caption(fantasy_context_using_caption(st.session_state))
     except ImportError:
         comparison_action_team = st.session_state.get("room_your_team")
     comparison_teams = get_draft_room_team_options()
@@ -16761,10 +16757,11 @@ if active_page == "Trend Value":
             trend_drafted_names = _drafted_player_names_canonical()
             if trend_drafted_names:
                 try:
-                    from global_fantasy_settings_state import active_fantasy_team_caption, get_active_fantasy_team
+                    from global_fantasy_settings_state import get_active_fantasy_team
+                    from fantasy_context_source import fantasy_context_using_caption
 
                     trend_sync_team = get_active_fantasy_team(st.session_state)
-                    st.caption(active_fantasy_team_caption(st.session_state))
+                    st.caption(fantasy_context_using_caption(st.session_state))
                 except ImportError:
                     trend_sync_team = st.session_state.get("room_your_team")
                 st.caption(f"Removed {len(set(trend_drafted_names))} already drafted player(s) from Trend page views.")
@@ -17643,10 +17640,11 @@ if active_page == "Fantasy Sleepers & Busts":
             sleeper_team_options = sorted(draft_room_for_sleepers["Team"].dropna().astype(str).unique().tolist())
             if sleeper_team_options:
                 try:
-                    from global_fantasy_settings_state import active_fantasy_team_caption, get_active_fantasy_team
+                    from global_fantasy_settings_state import get_active_fantasy_team
+                    from fantasy_context_source import fantasy_context_using_caption
 
                     sleeper_team_name = get_active_fantasy_team(st.session_state) or sleeper_team_options[0]
-                    st.caption(active_fantasy_team_caption(st.session_state))
+                    st.caption(fantasy_context_using_caption(st.session_state))
                 except ImportError:
                     sleeper_team_name = st.session_state.get("room_your_team", sleeper_team_options[0])
                 if sleeper_team_name not in sleeper_team_options:
@@ -18480,15 +18478,9 @@ if active_page == "Draft Assistant Simulator":
             except ImportError:
                 LIVE_DRAFT_ROOM_KEY = "live_draft_room"
             try:
-                from global_fantasy_settings_state import (
-                    active_fantasy_team_caption,
-                    active_fantasy_team_label,
-                    get_active_fantasy_team,
-                )
+                from global_fantasy_settings_state import get_active_fantasy_team
             except ImportError:
                 get_active_fantasy_team = lambda s: str(s.get("room_your_team") or "")  # type: ignore[assignment,misc]
-                active_fantasy_team_label = lambda s: str(s.get("room_your_team") or "—")  # type: ignore[assignment,misc]
-                active_fantasy_team_caption = lambda s, label="Your team": f"**{label}:** {s.get('room_your_team') or '—'}"  # type: ignore[assignment,misc]
 
             try:
                 from fantasy_context_source import draft_assistant_context_mode
@@ -18581,7 +18573,6 @@ if active_page == "Draft Assistant Simulator":
             if default_team_name not in assistant_team_names and assistant_team_names:
                 default_team_name = assistant_team_names[0]
             assistant_my_team_name = default_team_name
-            st.caption(active_fantasy_team_caption(st.session_state))
 
             _da_highlight = st.session_state.get("pending_draft_assistant_player")
             if _da_highlight:
@@ -23533,7 +23524,6 @@ if active_page == "Fantasy Lineup Assistant":
                 })
     else:
         from global_fantasy_settings_state import (
-            active_fantasy_team_label,
             get_active_fantasy_team,
             resolve_lineup_scoring_format,
             sync_lineup_format_from_canonical,
@@ -23549,9 +23539,7 @@ if active_page == "Fantasy Lineup Assistant":
             )
 
         _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
-        l1, l2, l3 = st.columns(3)
-        with l1:
-            st.caption(active_fantasy_team_caption(st.session_state))
+        l2, l3 = st.columns(2)
         with l2:
             _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
             st.session_state["lineup_format"] = _lineup_fmt_resolved
@@ -24549,10 +24537,11 @@ if active_page == "Valuation":
             value_drafted_names = _drafted_player_names_canonical()
             if value_drafted_names:
                 try:
-                    from global_fantasy_settings_state import active_fantasy_team_caption, get_active_fantasy_team
+                    from global_fantasy_settings_state import get_active_fantasy_team
+                    from fantasy_context_source import fantasy_context_using_caption
 
                     value_sync_team = get_active_fantasy_team(st.session_state)
-                    st.caption(active_fantasy_team_caption(st.session_state))
+                    st.caption(fantasy_context_using_caption(st.session_state))
                 except ImportError:
                     value_sync_team = st.session_state.get("room_your_team")
                 st.caption(f"Removed {len(set(value_drafted_names))} already drafted player(s) from this page.")
