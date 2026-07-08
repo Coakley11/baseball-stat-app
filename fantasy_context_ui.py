@@ -376,6 +376,53 @@ def render_fantasy_workflow_page_header(
 fantasy_context_badge_text = fantasy_context_source_badge_text
 
 
+def render_fantasy_context_activation_prompt(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    key_prefix: str = "fantasy_activate",
+    page_label_fn=None,
+) -> bool:
+    """Prompt user to activate a league/draft when none is selected. Returns True when active."""
+    try:
+        from draft_archive_state import get_active_draft_archive
+        from fantasy_league_context import get_active_league_context
+        from fantasy_context_terminology import no_active_context_message
+        from draft_archive_ui import (
+            DRAFT_SIMULATOR_PAGE,
+            SAVED_DRAFT_LIBRARY_PAGE,
+            _nav_label,
+            _on_click_navigate_to_page,
+        )
+    except ImportError:
+        return False
+
+    active_archive = get_active_draft_archive(session)
+    active_context = get_active_league_context(session, respect_source_priority=False)
+    if active_archive or active_context:
+        return True
+
+    st.info(no_active_context_message())
+    nav1, nav2 = st.columns(2)
+    with nav1:
+        st.button(
+            _nav_label(DRAFT_SIMULATOR_PAGE, "Draft Room Simulator", page_label_fn),
+            key=f"{key_prefix}__go_draft_simulator_btn",
+            use_container_width=True,
+            on_click=_on_click_navigate_to_page,
+            args=(DRAFT_SIMULATOR_PAGE, f"{key_prefix}__go_draft_simulator_btn", "draft_room_simulator"),
+        )
+    with nav2:
+        st.button(
+            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Saved Draft Library", page_label_fn),
+            key=f"{key_prefix}__go_saved_library_btn",
+            use_container_width=True,
+            on_click=_on_click_navigate_to_page,
+            args=(SAVED_DRAFT_LIBRARY_PAGE, f"{key_prefix}__go_saved_library_btn", "saved_draft_library"),
+        )
+    return False
+
+
 def render_fantasy_context_library_block(
     st: Any,
     session: dict[str, Any],

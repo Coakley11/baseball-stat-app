@@ -59,7 +59,8 @@ class FantasyContextSource:
         """Compact badge without team — prefer ``fantasy_context_source_badge_text(session)``."""
         if self.kind == SOURCE_ACTIVE_DRAFT:
             name = self.draft_label or self.label
-            return f"{_BADGE_PREFIX} **Saved Draft Library Active Draft** · Draft: **{name}**"
+            heading = self.label.split(":", 1)[0].strip() if ":" in self.label else "Active Draft"
+            return f"{_BADGE_PREFIX} **Saved Draft Library {heading}** · **{name}**"
         if self.kind == SOURCE_LIVE_DRAFT:
             return f"{_BADGE_PREFIX} **Live Draft Room (temporary / unsaved)**"
         if self.kind == SOURCE_SIMULATOR_BOARD:
@@ -170,6 +171,22 @@ def _looks_ephemeral_draft_label(label: str) -> bool:
     return any(bit in low for bit in ephemeral_bits)
 
 
+def _active_context_heading(session: dict[str, Any], ctx: dict[str, Any]) -> str:
+    archive = None
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        archive = get_active_draft_archive(session)
+    except ImportError:
+        pass
+    try:
+        from fantasy_context_terminology import active_context_label
+
+        return active_context_label(ctx, archive)
+    except ImportError:
+        return "Active Draft"
+
+
 def _active_draft_label(session: dict[str, Any], ctx: dict[str, Any]) -> str:
     """User-facing saved Active Draft name — never ephemeral simulator/live board copy."""
     archive = None
@@ -240,9 +257,10 @@ def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSou
     saved = _get_saved_active_league_context(session)
     if isinstance(saved, dict) and str(saved.get("my_team_name") or "").strip():
         name = _active_draft_label(session, saved)
+        heading = _active_context_heading(session, saved)
         return FantasyContextSource(
             SOURCE_ACTIVE_DRAFT,
-            f"Active Draft: {name}",
+            f"{heading}: {name}",
             draft_label=name,
             origin="active_draft",
         )
@@ -390,10 +408,11 @@ def fantasy_context_using_caption(session: dict[str, Any]) -> str:
     display = fantasy_context_using_display(session)
     if display["kind"] == "active_draft":
         name = display.get("draft_name") or "Active Draft"
+        heading = str(display.get("active_heading") or "Active Draft").strip()
         team = str(display.get("team") or "").strip()
         if team:
-            return f"Active Draft: {name} — Team {team}"
-        return f"Active Draft: {name}"
+            return f"{heading}: {name} — Team {team}"
+        return f"{heading}: {name}"
     if display["kind"] == "temporary_live":
         team = str(display.get("team") or "").strip()
         return f"Temporary Live Draft Board — unsaved — Team {team}" if team else "Temporary Live Draft Board — unsaved"
@@ -411,7 +430,14 @@ def fantasy_context_using_display(session: dict[str, Any]) -> dict[str, str]:
     if source.kind == SOURCE_ACTIVE_DRAFT:
         saved = _get_saved_active_league_context(session)
         name = _active_draft_label(session, saved or {})
-        return {"kind": "active_draft", "draft_name": name, "board_label": "", "team": team}
+        heading = _active_context_heading(session, saved or {})
+        return {
+            "kind": "active_draft",
+            "draft_name": name,
+            "active_heading": heading,
+            "board_label": "",
+            "team": team,
+        }
 
     if source.kind == SOURCE_LIVE_DRAFT:
         return {
@@ -449,9 +475,10 @@ def fantasy_context_using_html(session: dict[str, Any]) -> str:
 
     if kind == "active_draft":
         name = _html_esc(display.get("draft_name") or "Active Draft")
+        heading = _html_esc(display.get("active_heading") or "Active Draft")
         return f"""
 <div class="fantasy-source-card fantasy-source-card-active">
-  <div class="fantasy-source-kicker">Active Draft</div>
+  <div class="fantasy-source-kicker">{heading}</div>
   <div class="fantasy-source-name">{name}</div>
   {team_row}
 </div>"""
@@ -468,7 +495,7 @@ def fantasy_context_using_html(session: dict[str, Any]) -> str:
     return f"""
 <div class="fantasy-source-card fantasy-source-card-generic">
   <div class="fantasy-source-kicker">No draft context</div>
-  <div class="fantasy-source-sub">General MLB — choose an Active Draft in Saved Draft Library</div>
+  <div class="fantasy-source-sub">General MLB — choose an Active League or Active Draft in Saved Draft Library</div>
   {team_row}
 </div>"""
 
@@ -481,7 +508,8 @@ def fantasy_context_using_markdown(session: dict[str, Any]) -> str:
 
     if display["kind"] == "active_draft":
         name = display.get("draft_name") or "Active Draft"
-        lines = [f"**Active Draft:** {name}"]
+        heading = str(display.get("active_heading") or "Active Draft").strip()
+        lines = [f"**{heading}:** {name}"]
         if team_line:
             lines.append(team_line)
         return "\n\n".join(lines)

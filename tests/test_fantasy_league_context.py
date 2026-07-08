@@ -276,6 +276,126 @@ class FantasyLeagueContextPersistenceTests(unittest.TestCase):
         )
         self.assertNotIn(ACTIVE_DRAFT_ARCHIVE_KEY, session)
 
+    def test_save_simulator_context_save_only_does_not_change_active_ids(self) -> None:
+        session: dict = {
+            ACTIVE_DRAFT_ARCHIVE_KEY: "real-draft",
+            FANTASY_LEAGUE_CONTEXT_STATE_KEY: {
+                "schema_version": 1,
+                "contexts": {
+                    "real-context": {
+                        "league_context_id": "real-context",
+                        "display_name": "Real League",
+                    }
+                },
+                "active_league_context_id": "real-context",
+            },
+        }
+        board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Round": 1},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2, "Round": 1},
+            ]
+        )
+
+        entry, context = save_simulator_league_context(
+            session,
+            board,
+            my_team_name="Daniel",
+            draft_name="Judge, Soto Sim",
+            defer_activation=True,
+            save_only=True,
+            reuse_session_draft_id=False,
+        )
+
+        self.assertTrue(entry.get("draft_id"))
+        self.assertTrue(context.get("league_context_id"))
+        self.assertNotEqual(entry.get("draft_id"), "real-draft")
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), "real-draft")
+        self.assertEqual(
+            ensure_fantasy_league_context_state(session).get("active_league_context_id"),
+            "real-context",
+        )
+        self.assertNotIn("_pending_active_archive_id", session)
+        self.assertNotIn("_pending_active_league_context_id", session)
+
+    def test_save_only_simulator_does_not_reuse_active_simulator_archive(self) -> None:
+        session: dict = {}
+        active_board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Mookie Betts", "Pick": 1, "Round": 1},
+                {"Team": "Rivals", "Player": "Freddie Freeman", "Pick": 2, "Round": 1},
+            ]
+        )
+        active_entry, active_context = save_simulator_league_context(
+            session,
+            active_board,
+            my_team_name="Daniel",
+            draft_name="Real Active Sim",
+            defer_activation=False,
+        )
+        active_draft_id = str(active_entry.get("draft_id") or "")
+        active_context_id = str(active_context.get("league_context_id") or "")
+
+        test_board = pd.DataFrame(
+            [
+                {"Team": "Daniel", "Player": "Aaron Judge", "Pick": 1, "Round": 1},
+                {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2, "Round": 1},
+            ]
+        )
+        saved_entry, _saved_context = save_simulator_league_context(
+            session,
+            test_board,
+            my_team_name="Daniel",
+            draft_name="Judge, Soto Sim",
+            defer_activation=True,
+            save_only=True,
+        )
+
+        self.assertNotEqual(saved_entry.get("draft_id"), active_draft_id)
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), active_draft_id)
+        self.assertEqual(
+            ensure_fantasy_league_context_state(session).get("active_league_context_id"),
+            active_context_id,
+        )
+        active_context_after = get_league_context(session, active_context_id)
+        assert active_context_after is not None
+        self.assertIn("mookie betts", active_context_after.get("ownership_map") or {})
+        self.assertNotIn("aaron judge", active_context_after.get("ownership_map") or {})
+
+    def test_save_live_context_save_only_does_not_change_active_ids(self) -> None:
+        session: dict = {
+            ACTIVE_DRAFT_ARCHIVE_KEY: "real-draft",
+            FANTASY_LEAGUE_CONTEXT_STATE_KEY: {
+                "schema_version": 1,
+                "contexts": {
+                    "real-context": {
+                        "league_context_id": "real-context",
+                        "display_name": "Real League",
+                    }
+                },
+                "active_league_context_id": "real-context",
+            },
+        }
+
+        entry, context = save_live_draft_league_context(
+            session,
+            _live_room_fixture(),
+            my_team_name="Daniel",
+            draft_name="Live Save Only",
+            defer_activation=True,
+            save_only=True,
+        )
+
+        self.assertTrue(entry.get("draft_id"))
+        self.assertTrue(context.get("league_context_id"))
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), "real-draft")
+        self.assertEqual(
+            ensure_fantasy_league_context_state(session).get("active_league_context_id"),
+            "real-context",
+        )
+        self.assertNotIn("_pending_active_archive_id", session)
+        self.assertNotIn("_pending_active_league_context_id", session)
+
     def test_disk_persistence_round_trip(self) -> None:
         st1 = MagicMock()
         st1.session_state = {}
@@ -436,7 +556,7 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         )
         self.assertEqual(len(entry.get("league_rosters") or {}), 2)
         self.assertEqual(context["context_type"], CONTEXT_TYPE_MOCK_DRAFT_SIMULATION)
-        self.assertEqual(league_context_type_badge(context), "Mock Draft Simulation")
+        self.assertEqual(league_context_type_badge(context), "Simulator Draft")
         self.assertEqual(league_context_coverage_badge(context), "Full League Draft")
 
     def test_legacy_archive_badges(self) -> None:
@@ -447,7 +567,7 @@ class FantasyLeagueContextSaveFlowTests(unittest.TestCase):
         context = get_league_context_for_archive(session, entry)
         assert context is not None
         self.assertEqual(league_context_coverage_badge(context), "Incomplete — re-save draft")
-        self.assertEqual(league_context_type_badge(context), "Mock Draft Simulation")
+        self.assertEqual(league_context_type_badge(context), "Mock Draft")
         self.assertEqual(league_team_count(context, entry), 1)
 
     def test_activate_archive_league_context(self) -> None:

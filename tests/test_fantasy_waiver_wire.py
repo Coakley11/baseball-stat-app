@@ -44,6 +44,7 @@ from fantasy_waiver_wire import (
     recommend_adds_current,
     record_league_activity,
     recommend_adds,
+    recommend_adds_personalized,
     rostered_player_names,
     waiver_categories_for_context,
 )
@@ -764,6 +765,55 @@ class WaiverWireUiRenderTests(unittest.TestCase):
             "fantasy_waiver_wire_ui.recommend_drops_current", return_value=pd.DataFrame()
         ):
             render_waiver_wire_page(st, session, current_stats_pool=self._stats_pool())
+
+
+class WaiverNeedsAndPitcherFilterTests(unittest.TestCase):
+    def test_build_waiver_pool_excludes_pitchers_without_p_slots(self) -> None:
+        context = {
+            "league_rosters": {
+                "Mine": {"players": [{"player_name": "Aaron Judge"}]},
+                "Other": {"players": [{"player_name": "Juan Soto"}]},
+            },
+            "ownership_map": {},
+            "fantasy_format": "5x5 Roto",
+            "roster_settings": {"roster_slots": {"C": 1, "1B": 1, "2B": 1, "SS": 1, "OF": 3, "P": 0}},
+        }
+        pool = pd.DataFrame(
+            [
+                {"Player": "Free Catcher", "Primary Position": "C", "HR": 8},
+                {"Player": "Free Pitcher", "Primary Position": "P", "W": 4, "K": 40},
+            ]
+        )
+        waiver = build_waiver_pool(pool, context)
+        names = set(waiver["Player"].astype(str))
+        self.assertIn("Free Catcher", names)
+        self.assertNotIn("Free Pitcher", names)
+
+    def test_personalized_adds_prioritize_missing_positions(self) -> None:
+        context = {
+            "fantasy_format": "5x5 Roto",
+            "roster_settings": {"roster_slots": {"C": 1, "1B": 1, "2B": 1, "SS": 1, "OF": 3, "P": 0}},
+        }
+        my_roster = pd.DataFrame(
+            [
+                {"Player": "Only OF", "Primary Position": "OF", "HR": 20, "Expected Fantasy Value": 0.80},
+            ]
+        )
+        waiver_pool = pd.DataFrame(
+            [
+                {"Player": "Elite OF", "Primary Position": "OF", "HR": 30, "Expected Fantasy Value": 0.95},
+                {"Player": "Weak C", "Primary Position": "C", "HR": 6, "Expected Fantasy Value": 0.45},
+            ]
+        )
+        needs = {"targets": ["HR"], "weaknesses": ["HR"]}
+        rec = recommend_adds_personalized(
+            waiver_pool,
+            needs,
+            context=context,
+            my_roster=my_roster,
+            limit=1,
+        )
+        self.assertEqual(str(rec.iloc[0]["Player"]), "Weak C")
 
 
 if __name__ == "__main__":

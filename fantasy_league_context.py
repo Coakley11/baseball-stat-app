@@ -1336,17 +1336,27 @@ def league_context_coverage_badge(context: dict[str, Any] | None) -> str:
     return "Incomplete — re-save draft"
 
 
-def league_context_type_badge(context: dict[str, Any] | None) -> str:
-    if not context:
+def league_context_type_badge(
+    context: dict[str, Any] | None,
+    archive_entry: dict[str, Any] | None = None,
+) -> str:
+    if not context and not archive_entry:
         return ""
-    context_type = str(context.get("context_type") or "")
-    if context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION:
-        return "Mock Draft Simulation"
-    if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
-        return "Live Draft Result"
-    if context_type == CONTEXT_TYPE_REAL_LEAGUE:
-        return "Real League"
-    return ""
+    try:
+        from fantasy_context_terminology import league_context_type_badge as _terminology_badge
+
+        return _terminology_badge(context, archive_entry)
+    except ImportError:
+        if not context:
+            return ""
+        context_type = str(context.get("context_type") or "")
+        if context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION:
+            return "Mock Draft"
+        if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
+            return "Live Draft"
+        if context_type == CONTEXT_TYPE_REAL_LEAGUE:
+            return "Uploaded League"
+        return ""
 
 
 def league_team_names(context: dict[str, Any] | None, archive_entry: dict[str, Any] | None = None) -> list[str]:
@@ -1452,6 +1462,7 @@ def save_live_draft_league_context(
     my_team_name: str,
     draft_name: str = "",
     defer_activation: bool = False,
+    save_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Save full live-draft league context plus linked archive entry."""
     from draft_archive_state import save_live_draft_team_archive
@@ -1494,7 +1505,10 @@ def save_live_draft_league_context(
         source_draft_id=draft_id,
     )
     context = upsert_league_context(session, context)
-    if defer_activation:
+    if save_only:
+        session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
+        session.pop(PENDING_ARCHIVE_ACTIVATION_KEY, None)
+    elif defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:
         activate_league_context(session, league_context_id)
@@ -1524,6 +1538,7 @@ def save_simulator_league_context(
     defer_activation: bool = False,
     draft_id: str | None = None,
     reuse_session_draft_id: bool = True,
+    save_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Save full mock-draft league context plus linked archive entry."""
     from draft_archive_state import save_simulator_team_archive
@@ -1533,7 +1548,13 @@ def save_simulator_league_context(
     league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
     label = str(draft_name or "").strip() or f"Simulator — {my_team}"
     if reuse_session_draft_id and not draft_id:
-        resolved_draft_id = str(resolve_simulator_library_draft_id(session) or "").strip() or None
+        if save_only:
+            # Save Draft must not mutate the currently active simulator league.
+            session_library_id = str(session.get(SIMULATOR_SESSION_LIBRARY_DRAFT_KEY) or "").strip()
+            active_draft_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+            resolved_draft_id = session_library_id if session_library_id and session_library_id != active_draft_id else None
+        else:
+            resolved_draft_id = str(resolve_simulator_library_draft_id(session) or "").strip() or None
     else:
         resolved_draft_id = str(draft_id or "").strip() or None
     resolved_draft_id, league_context_id, _fp = resolve_canonical_save_ids(
@@ -1573,7 +1594,10 @@ def save_simulator_league_context(
         source_draft_id=draft_id,
     )
     context = upsert_league_context(session, context)
-    if defer_activation:
+    if save_only:
+        session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
+        session.pop(PENDING_ARCHIVE_ACTIVATION_KEY, None)
+    elif defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:
         activate_league_context(session, league_context_id)

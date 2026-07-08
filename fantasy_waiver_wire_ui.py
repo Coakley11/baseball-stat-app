@@ -531,11 +531,17 @@ def render_waiver_wire_page(
 ) -> None:
     context = get_active_league_context(session)
     if not context:
-        st.warning(
-            "No fantasy context available. Set a **Saved Active Draft** in Saved Draft Library, "
-            "or enable a **temporary / unsaved** simulator or live board override there."
-        )
-        return
+        try:
+            from fantasy_context_terminology import no_active_context_message
+            from fantasy_context_ui import render_fantasy_context_activation_prompt
+
+            if not render_fantasy_context_activation_prompt(st, session, key_prefix="waiver_activate", page_label_fn=page_label_fn):
+                return
+        except ImportError:
+            st.warning(
+                "No fantasy context available. Set an **Active League** or **Active Draft** in Saved Draft Library."
+            )
+            return
 
     purge_waiver_action_widget_keys(session)
 

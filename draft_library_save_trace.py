@@ -39,6 +39,19 @@ def _workspace_id(session: dict[str, Any]) -> str:
         return str(session.get("_suite_active_workspace_id") or session.get("_suite_owned_workspace_id") or "")
 
 
+def _active_state_snapshot(session: dict[str, Any]) -> dict[str, str]:
+    store = session.get("fantasy_league_context_state")
+    active_league = ""
+    if isinstance(store, dict):
+        active_league = str(store.get("active_league_context_id") or "").strip()
+    return {
+        "active_draft_archive_id": str(session.get("active_draft_archive_id") or "").strip(),
+        "active_league_context_id": active_league,
+        "pending_active_draft_archive_id": str(session.get("_pending_active_archive_id") or "").strip(),
+        "pending_active_league_context_id": str(session.get("_pending_active_league_context_id") or "").strip(),
+    }
+
+
 def draft_id_in_archives(draft_id: str, archives: Any) -> bool:
     target = str(draft_id or "").strip()
     if not target or not isinstance(archives, list):
@@ -206,6 +219,7 @@ def record_save_button_click(
     save_reason = str(reason or "").strip() or f"{source.replace(' ', '_')}_saved"
     counts = _workflow_counts(session)
     ws = _workspace_id(session)
+    active_before = _active_state_snapshot(session)
     draft_id = str(
         session.get("active_draft_archive_id")
         or session.get("simulator_session_library_draft_id")
@@ -218,6 +232,10 @@ def record_save_button_click(
         "workspace_id": ws,
         "team_name": str(team_name or ""),
         "draft_id": draft_id,
+        "active_draft_before_save": active_before["active_draft_archive_id"],
+        "active_league_before_save": active_before["active_league_context_id"],
+        "pending_active_draft_before_save": active_before["pending_active_draft_archive_id"],
+        "pending_active_league_before_save": active_before["pending_active_league_context_id"],
         "archive_count_before": int(counts.get("draft_archive_count") or 0),
         "context_count_before": int(counts.get("league_context_count") or 0),
         "source": str(source or ""),
@@ -261,12 +279,17 @@ def begin_save_trace(
 ) -> None:
     """Mark that an explicit save button was clicked."""
     counts = _workflow_counts(session)
+    active_before = _active_state_snapshot(session)
     session[DRAFT_LIBRARY_SAVE_DIAG_KEY] = {
         "save_request_received": True,
         "save_request_at": _utc_now(),
         "save_source": str(source or ""),
         "reason": str(reason or ""),
         "draft_name_requested": str(draft_name or ""),
+        "active_draft_before_save": active_before["active_draft_archive_id"],
+        "active_league_before_save": active_before["active_league_context_id"],
+        "pending_active_draft_before_save": active_before["pending_active_draft_archive_id"],
+        "pending_active_league_before_save": active_before["pending_active_league_context_id"],
         "draft_archive_count_before": int(counts.get("draft_archive_count") or 0),
         "league_context_count_before": int(counts.get("league_context_count") or 0),
         "restore_source": str(
@@ -400,14 +423,46 @@ def finalize_save_trace(
     else:
         effective_persist_ok = bool(persist_ok)
 
+    active_after = _active_state_snapshot(session)
+    active_draft_before = str(diag.get("active_draft_before_save") or "").strip()
+    active_league_before = str(diag.get("active_league_before_save") or "").strip()
+    pending_draft_before = str(diag.get("pending_active_draft_before_save") or "").strip()
+    pending_league_before = str(diag.get("pending_active_league_before_save") or "").strip()
+    active_draft_changed = active_after["active_draft_archive_id"] != active_draft_before
+    active_league_changed = active_after["active_league_context_id"] != active_league_before
+    pending_draft_changed = active_after["pending_active_draft_archive_id"] != pending_draft_before
+    pending_league_changed = active_after["pending_active_league_context_id"] != pending_league_before
+
     payload: dict[str, Any] = {
         **diag,
         **mode,
         "reason": str(reason or diag.get("reason") or ""),
         "persist_ok": effective_persist_ok,
         "draft_id": draft_id,
+        "saved_draft_id": draft_id,
         "league_context_id": league_context_id,
+        "saved_league_context_id": league_context_id,
         "draft_name": str((entry or {}).get("draft_name") or diag.get("draft_name_requested") or ""),
+        "active_draft_before_save": active_draft_before,
+        "active_draft_after_save": active_after["active_draft_archive_id"],
+        "active_draft_changed_during_save": bool(active_draft_changed),
+        "active_league_before_save": active_league_before,
+        "active_league_after_save": active_after["active_league_context_id"],
+        "active_league_changed_during_save": bool(active_league_changed),
+        "pending_active_draft_before_save": pending_draft_before,
+        "pending_active_draft_after_save": active_after["pending_active_draft_archive_id"],
+        "pending_active_draft_changed_during_save": bool(pending_draft_changed),
+        "pending_active_league_before_save": pending_league_before,
+        "pending_active_league_after_save": active_after["pending_active_league_context_id"],
+        "pending_active_league_changed_during_save": bool(pending_league_changed),
+        "saved_draft_became_active": bool(
+            draft_id and active_after["active_draft_archive_id"] == draft_id and active_draft_before != draft_id
+        ),
+        "saved_league_became_active": bool(
+            league_context_id
+            and active_after["active_league_context_id"] == league_context_id
+            and active_league_before != league_context_id
+        ),
         "draft_archive_count_before": int(before.get("draft_archive_count") or 0),
         "draft_archive_count_after": int(after.get("draft_archive_count") or 0),
         "league_context_count_before": int(before.get("league_context_count") or 0),
@@ -530,6 +585,22 @@ def save_trace_checklist(diag: dict[str, Any] | None) -> list[tuple[str, str, st
         "Archive id written",
         bool(diag.get("draft_id")),
         str(diag.get("draft_id") or "—"),
+    )
+    active_changed = bool(
+        diag.get("active_draft_changed_during_save")
+        or diag.get("active_league_changed_during_save")
+        or diag.get("pending_active_draft_changed_during_save")
+        or diag.get("pending_active_league_changed_during_save")
+    )
+    _row(
+        "Active draft unchanged by save",
+        not active_changed,
+        (
+            f"draft {diag.get('active_draft_before_save') or '—'} → {diag.get('active_draft_after_save') or '—'}; "
+            f"league {diag.get('active_league_before_save') or '—'} → {diag.get('active_league_after_save') or '—'}; "
+            f"pending draft {diag.get('pending_active_draft_before_save') or '—'} → "
+            f"{diag.get('pending_active_draft_after_save') or '—'}"
+        ),
     )
     before = int(diag.get("draft_archive_count_before") or 0)
     after = int(diag.get("draft_archive_count_after") or 0)
@@ -691,6 +762,19 @@ def render_save_trace_inline(
             f"session/disk/cloud={diag.get('draft_in_session')}/"
             f"{diag.get('draft_in_disk')}/{diag.get('draft_in_cloud')}"
         )
+        st.markdown(
+            f"**Active IDs:** draft `{diag.get('active_draft_before_save') or '—'}` → "
+            f"`{diag.get('active_draft_after_save') or '—'}` · league "
+            f"`{diag.get('active_league_before_save') or '—'}` → "
+            f"`{diag.get('active_league_after_save') or '—'}` · changed="
+            f"{bool(diag.get('active_draft_changed_during_save') or diag.get('active_league_changed_during_save'))}"
+        )
+        if diag.get("pending_active_draft_changed_during_save") or diag.get(
+            "pending_active_league_changed_during_save"
+        ):
+            st.warning(
+                "Save changed a pending active draft/league id. That means this save attempted to schedule activation."
+            )
         if diag.get("demo_disk_only_ok") and diag.get("disk_write_success"):
             st.warning(
                 "**Temporary local save only — will not survive Streamlit Cloud reboot.** "

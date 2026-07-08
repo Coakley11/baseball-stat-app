@@ -22879,42 +22879,17 @@ if active_page == "Fantasy Standings Tracker":
             pitcher_stats = pd.DataFrame()
 
     draft_import_for_standings = None
-    _standings_import_review = st.session_state.get("_standings_draft_import_review")
-    with st.expander(
-        "Optional: import draft board (if Draft Room is empty)",
-        expanded=bool(isinstance(_standings_import_review, dict) and _standings_import_review.get("rows")),
-    ):
-        st.caption(
-            "Upload a draft board CSV/Excel with Team/Owner and Player columns. "
-            "Validation appears immediately — League setup settings do not need to match first."
-        )
-        draft_import_for_standings = st.file_uploader(
-            "Upload draft board CSV/Excel",
-            type=["csv", "xlsx", "xls"],
-            key="standings_draft_import_uploader",
-        )
-        if draft_import_for_standings is not None:
-            try:
-                from draft_import_pipeline import ENTRY_STANDINGS, render_uploaded_draft_import_section
+    try:
+        from fantasy_context_ui import render_fantasy_context_activation_prompt
 
-                pool_for_import = _draft_room_pool_for_import_validation()
-                render_uploaded_draft_import_section(
-                    st,
-                    st.session_state,
-                    draft_import_for_standings,
-                    pool_for_import,
-                    entry_point=ENTRY_STANDINGS,
-                    read_table_fn=read_uploaded_table_cached,
-                    remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
-                    render_preview_table_fn=lambda df, **kw: render_output_table(
-                        clean_ui_columns(df),
-                        **kw,
-                    ),
-                    widget_key="standings_draft_import_uploader",
-                    layout_label="Fantasy Standings Tracker expander",
-                )
-            except Exception as e:
-                st.error(f"Could not read draft board upload: {e}")
+        _has_active_context = render_fantasy_context_activation_prompt(
+            st,
+            st.session_state,
+            key_prefix="standings_activate",
+            page_label_fn=page_option_label,
+        )
+    except ImportError:
+        _has_active_context = True
 
     if stats_source == "MLB API Auto-Fetch" and _should_fetch_api:
         try:
@@ -23098,22 +23073,8 @@ if active_page == "Fantasy Standings Tracker":
                     )
                     _standings_team_ctx = str(active_archive.get("team_name") or "")
                 else:
-                    draft_table = _session_draft_board_df()
-                    if draft_table.empty:
-                        st.warning(
-                            "No Draft Room picks found yet. Enter picks in Draft Room Simulator first, "
-                            "or load a saved draft team above."
-                        )
-                        roster_stats = pd.DataFrame()
-                    else:
-                        drafted = draft_table[draft_table["Player"].astype(str).str.strip() != ""].copy()
-                        drafted["Player Key"] = drafted["Player"].apply(normalize_player_name_for_merge)
-                        roster_stats = drafted.merge(
-                            merged_current_stats, on="Player Key", how="left", suffixes=("", "_stats")
-                        )
-                        if "Player_stats" in roster_stats.columns:
-                            roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
-                    _standings_team_ctx = str(st.session_state.get("room_your_team") or "")
+                    roster_stats = pd.DataFrame()
+                    _standings_team_ctx = ""
                 if not roster_stats.empty:
                     standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
             try:

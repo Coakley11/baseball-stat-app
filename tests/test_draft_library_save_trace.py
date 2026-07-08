@@ -39,9 +39,25 @@ def _mock_board(picks: int = 12) -> pd.DataFrame:
 
 class DraftLibrarySaveTraceTests(unittest.TestCase):
     def test_begin_and_finalize_save_trace(self) -> None:
-        session: dict = {"room_your_team": "Daniel", "draft_shared_settings": {}}
+        session: dict = {
+            "room_your_team": "Daniel",
+            "draft_shared_settings": {},
+            "active_draft_archive_id": "real-draft",
+            "fantasy_league_context_state": {
+                "schema_version": 1,
+                "contexts": {"real-context": {"league_context_id": "real-context"}},
+                "active_league_context_id": "real-context",
+            },
+        }
         begin_save_trace(session, source="draft_room_simulator", reason="simulator_league_context_saved")
-        entry, _ctx = save_simulator_league_context(session, _mock_board(), my_team_name="Daniel", defer_activation=True)
+        entry, _ctx = save_simulator_league_context(
+            session,
+            _mock_board(),
+            my_team_name="Daniel",
+            defer_activation=True,
+            save_only=True,
+            reuse_session_draft_id=False,
+        )
         before = {"draft_archive_count": 0, "league_context_count": 0}
         after = {"draft_archive_count": len(list_draft_archives(session)), "league_context_count": 1}
         diag = finalize_save_trace(
@@ -57,11 +73,20 @@ class DraftLibrarySaveTraceTests(unittest.TestCase):
         )
         self.assertTrue(diag.get("save_request_received"))
         self.assertTrue(diag.get("draft_id"))
+        self.assertEqual(diag.get("active_draft_before_save"), "real-draft")
+        self.assertEqual(diag.get("active_draft_after_save"), "real-draft")
+        self.assertEqual(diag.get("active_league_before_save"), "real-context")
+        self.assertEqual(diag.get("active_league_after_save"), "real-context")
+        self.assertFalse(diag.get("active_draft_changed_during_save"))
+        self.assertFalse(diag.get("active_league_changed_during_save"))
+        self.assertFalse(diag.get("pending_active_draft_changed_during_save"))
+        self.assertFalse(diag.get("pending_active_league_changed_during_save"))
         self.assertEqual(int(diag.get("draft_archive_count_after") or 0), 1)
         checklist = save_trace_checklist(diag)
         labels = [row[0] for row in checklist]
         self.assertIn("Save request received", labels)
         self.assertIn("Archive id written", labels)
+        self.assertIn("Active draft unchanged by save", labels)
         self.assertIn("Persist OK (overall)", labels)
 
     def test_draft_id_in_archives(self) -> None:

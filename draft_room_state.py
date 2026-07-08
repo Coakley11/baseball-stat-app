@@ -3485,9 +3485,23 @@ MANUAL_SAVE_REQUEST_KEY = "_draft_room_manual_save_requested"
 MANUAL_SAVE_BUTTON_KEY = "dr_manual_save_board_v14"
 
 
+def _active_save_state_snapshot(session: dict[str, Any]) -> dict[str, str]:
+    store = session.get("fantasy_league_context_state")
+    active_league = ""
+    if isinstance(store, dict):
+        active_league = str(store.get("active_league_context_id") or "").strip()
+    return {
+        "active_draft_archive_id": str(session.get("active_draft_archive_id") or "").strip(),
+        "active_league_context_id": active_league,
+        "pending_active_draft_archive_id": str(session.get("_pending_active_archive_id") or "").strip(),
+        "pending_active_league_context_id": str(session.get("_pending_active_league_context_id") or "").strip(),
+    }
+
+
 def record_manual_save_button_click(session: dict[str, Any]) -> dict[str, Any]:
     """Stamp session immediately when Save Draft Board Now is clicked."""
     ts = _utc_now_iso()
+    active_before = _active_save_state_snapshot(session)
     stub: dict[str, Any] = {
         "path": "save_draft_board_now",
         "save_button_clicked": True,
@@ -3498,6 +3512,10 @@ def record_manual_save_button_click(session: dict[str, Any]) -> dict[str, Any]:
         "direct_cloud_save_attempted": False,
         "direct_cloud_save_ok": False,
         "cloud_payload_pick_count": session.get("cloud_payload_pick_count"),
+        "active_draft_before_save": active_before["active_draft_archive_id"],
+        "active_league_before_save": active_before["active_league_context_id"],
+        "pending_active_draft_before_save": active_before["pending_active_draft_archive_id"],
+        "pending_active_league_before_save": active_before["pending_active_league_context_id"],
     }
     session[_BOARD_MANUAL_SAVE_TRACE_KEY] = stub
     session["_draft_room_last_save_trace"] = stub
@@ -3544,6 +3562,18 @@ _MANUAL_SAVE_READBACK_FIELDS = (
     "cloud_fetch_pick_count",
     "cloud_fetch_updated_at",
     "error",
+    "active_draft_before_save",
+    "active_draft_after_save",
+    "active_draft_changed_during_save",
+    "active_league_before_save",
+    "active_league_after_save",
+    "active_league_changed_during_save",
+    "pending_active_draft_before_save",
+    "pending_active_draft_after_save",
+    "pending_active_draft_changed_during_save",
+    "pending_active_league_before_save",
+    "pending_active_league_after_save",
+    "pending_active_league_changed_during_save",
 )
 
 
@@ -3924,6 +3954,7 @@ def sync_draft_library_from_simulator_board(
             draft_name=draft_name,
             config=dict(session.get("draft_shared_settings") or {}),
             defer_activation=True,
+            save_only=True,
         )
         from baseball_persistent_state import force_save_baseball_state
 
@@ -3948,6 +3979,7 @@ def save_draft_board_now(
 ) -> dict[str, Any]:
     """Explicit Board-tab save: editor → draft_room_state → disk + cloud."""
     click_ts = session.get("save_button_timestamp") or _utc_now_iso()
+    active_before = _active_save_state_snapshot(session)
     trace: dict[str, Any] = {
         "path": "save_draft_board_now",
         "save_button_clicked": True,
@@ -3964,6 +3996,10 @@ def save_draft_board_now(
         "direct_cloud_save_attempted": False,
         "direct_cloud_save_ok": False,
         "error": "",
+        "active_draft_before_save": active_before["active_draft_archive_id"],
+        "active_league_before_save": active_before["active_league_context_id"],
+        "pending_active_draft_before_save": active_before["pending_active_draft_archive_id"],
+        "pending_active_league_before_save": active_before["pending_active_league_context_id"],
     }
     prior = session.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
     if isinstance(prior, dict):
@@ -4116,6 +4152,23 @@ def _save_draft_board_now_impl(
     trace["cloud_draft_room_pick_count_after"] = cloud_stats.get("cloud_draft_room_pick_count")
     trace["last_save_reason"] = session.get("_suite_persist_last_save_reason")
     _attach_cloud_boundary_diagnostics(trace)
+    active_after = _active_save_state_snapshot(session)
+    trace["active_draft_after_save"] = active_after["active_draft_archive_id"]
+    trace["active_league_after_save"] = active_after["active_league_context_id"]
+    trace["pending_active_draft_after_save"] = active_after["pending_active_draft_archive_id"]
+    trace["pending_active_league_after_save"] = active_after["pending_active_league_context_id"]
+    trace["active_draft_changed_during_save"] = (
+        trace.get("active_draft_before_save") != trace.get("active_draft_after_save")
+    )
+    trace["active_league_changed_during_save"] = (
+        trace.get("active_league_before_save") != trace.get("active_league_after_save")
+    )
+    trace["pending_active_draft_changed_during_save"] = (
+        trace.get("pending_active_draft_before_save") != trace.get("pending_active_draft_after_save")
+    )
+    trace["pending_active_league_changed_during_save"] = (
+        trace.get("pending_active_league_before_save") != trace.get("pending_active_league_after_save")
+    )
 
     session[_BOARD_MANUAL_SAVE_TRACE_KEY] = trace
     session["_draft_room_last_save_trace"] = trace

@@ -111,6 +111,7 @@ def _execute_simulator_league_context_save(
     *,
     team_name: str,
     key_prefix: str,
+    save_only: bool = True,
 ) -> None:
     """Run simulator league-context save (Streamlit on_click callback body)."""
     draft_name = str(session.get(f"{key_prefix}_name_input") or f"Simulator — {team_name}")
@@ -175,6 +176,7 @@ def _execute_simulator_league_context_save(
             config=dict(session.get("draft_shared_settings") or {}),
             defer_activation=True,
             reuse_session_draft_id=False,
+            save_only=save_only,
         )
         counts_after_save = _workflow_counts(session)
         if not list_draft_archives(session):
@@ -239,7 +241,7 @@ def _execute_simulator_league_context_save(
         _set_draft_save_ui_flash(session, level="error", message=f"Could not save draft: {exc}")
 
 
-def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
+def _on_simulator_save_click(team_name: str = "", key_prefix: str = "", save_only: bool = True) -> None:
     import streamlit as st
 
     _execute_simulator_league_context_save(
@@ -247,6 +249,7 @@ def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
         st.session_state,
         team_name=str(team_name or ""),
         key_prefix=str(key_prefix or ""),
+        save_only=bool(save_only),
     )
 
 
@@ -1209,12 +1212,28 @@ def _context_badge_html(label: str, css_class: str) -> str:
 
 def _context_badges_html(session: dict[str, Any], entry: dict[str, Any]) -> str:
     context = get_league_context_for_archive(session, entry)
-    parts = [
-        _draft_type_badge_html(entry),
-        _context_badge_html(league_context_coverage_badge(context), "ld-archive-badge-coverage"),
-        _context_badge_html(league_context_type_badge(context), "ld-archive-badge-context-type"),
-    ]
-    return "".join(p for p in parts if p)
+    active_id = ""
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        active = get_active_draft_archive(session)
+        active_id = str((active or {}).get("draft_id") or "")
+    except ImportError:
+        pass
+    is_active = bool(active_id and str(entry.get("draft_id") or "") == active_id)
+    try:
+        from fantasy_context_terminology import saved_context_badges
+
+        badge_labels = saved_context_badges(context, entry, is_active=is_active)
+        parts = [_context_badge_html(label, "ld-archive-badge-context-type") for label in badge_labels]
+        return "".join(p for p in parts if p)
+    except ImportError:
+        parts = [
+            _draft_type_badge_html(entry),
+            _context_badge_html(league_context_coverage_badge(context), "ld-archive-badge-coverage"),
+            _context_badge_html(league_context_type_badge(context, entry), "ld-archive-badge-context-type"),
+        ]
+        return "".join(p for p in parts if p)
 
 
 def _format_league_matchup_label(
@@ -1478,6 +1497,7 @@ def _execute_live_draft_save(
         my_team_name=team_name,
         draft_name=draft_name,
         defer_activation=defer_activation,
+        save_only=defer_activation,
     )
     if not list_draft_archives(session):
         try:
@@ -1846,7 +1866,7 @@ def render_save_simulator_draft_team(
             key=f"{key_prefix}_save_league_btn",
             type="primary",
             on_click=_on_simulator_save_click,
-            kwargs={"team_name": team_name, "key_prefix": key_prefix},
+            kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": False},
         )
         try:
             from draft_library_save_trace import render_save_trace_inline
