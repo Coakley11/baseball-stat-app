@@ -818,11 +818,15 @@ def render_validated_draft_import(
     show_league_readiness: bool = True,
     remove_drafted_from_queue_fn: Callable[[], None] | None = None,
     render_preview_table_fn: Callable[..., None] | None = None,
+    file_sig: str = "",
 ) -> None:
     """Shared validation UI + optional board apply for any entry point."""
     config = get_entry_config(entry_point)
     session_key = config["session_key"]
     review = build_import_review(imported_df, pool_df)
+    active_sig = str(file_sig or session.get(_ACTIVE_FILE_SIG_KEY) or "").strip()
+    if active_sig:
+        review["file_sig"] = active_sig
     session[session_key] = review
 
     render_import_team_name_diagnostics_panel(
@@ -1067,23 +1071,10 @@ def render_draft_room_import_block(
         )
         render_draft_import_debug_panel(st, status)
         if isinstance(cached_review, dict) and cached_review.get("rows"):
-            import_df = cached_review.get("import_df")
-            if isinstance(import_df, pd.DataFrame) and not import_df.empty:
-                st.info("Restored cached import review from session — widget file is empty on this rerun.")
-                try:
-                    pool_df = pool_fn()
-                except Exception as exc:
-                    st.error(f"Player pool failed to load: {exc}")
-                    return
-                render_validated_draft_import(
-                    st,
-                    session,
-                    import_df,
-                    pool_df,
-                    entry_point=ENTRY_DRAFT_ROOM,
-                    remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
-                    render_preview_table_fn=render_preview_table_fn,
-                )
+            st.warning(
+                "A cached import review exists but no upload bytes are available on this rerun. "
+                "Re-select the CSV file — the parser only reads uploaded file bytes, not the draft board."
+            )
         elif str(session.get(_STAGED_FILENAME_KEY) or session.get("draft_room_import_uploaded_filename") or "").strip():
             st.warning(
                 "A filename is remembered but no upload bytes are available on this rerun. "
