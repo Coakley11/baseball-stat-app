@@ -23518,9 +23518,7 @@ if active_page == "Fantasy Lineup Assistant":
             )
 
         _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
-        l1, l2, l3 = st.columns(3)
-        with l1:
-            st.caption(active_fantasy_team_caption(st.session_state))
+        l2, l3 = st.columns(2)
         with l2:
             _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
             st.session_state["lineup_format"] = _lineup_fmt_resolved

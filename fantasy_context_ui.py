@@ -119,7 +119,6 @@ def _persist_context_settings() -> None:
         import streamlit as st
     except Exception:
         return
-    _sync_persisted_context_toggles_from_widgets(st.session_state)
     try:
         from suite_user_persistence import _local_dirty_key
 
@@ -172,6 +171,21 @@ def _on_sim_context_toggle_changed() -> None:
     _persist_context_settings()
 
 
+def _prepare_context_checkbox_widget(
+    session: dict[str, Any],
+    *,
+    persisted_key: str,
+    widget_key: str,
+) -> None:
+    """Seed widget key from persisted state only before first render — never after."""
+    session.setdefault(persisted_key, False)
+    persisted = bool(session.get(persisted_key))
+    if widget_key in session and bool(session.get(widget_key)) != persisted:
+        session.pop(widget_key, None)
+    if widget_key not in session:
+        session[widget_key] = persisted
+
+
 def _render_persisted_context_checkbox(
     st: Any,
     session: dict[str, Any],
@@ -182,11 +196,10 @@ def _render_persisted_context_checkbox(
     help: str,
     on_change,
 ) -> None:
-    """Checkbox backed by a persisted key — value from persisted, never post-render widget writes."""
-    persisted_value = bool(session.get(persisted_key))
+    """Checkbox backed by a persisted key — widget seeded once, synced back on change only."""
+    _prepare_context_checkbox_widget(session, persisted_key=persisted_key, widget_key=widget_key)
     st.checkbox(
         label,
-        value=persisted_value,
         key=widget_key,
         help=help,
         on_change=on_change,

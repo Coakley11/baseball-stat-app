@@ -288,7 +288,9 @@ class SavedDraftLibraryRenderTests(unittest.TestCase):
             key = kwargs.get("key")
             if key:
                 rendered_widget_keys.add(key)
-            return bool(kwargs.get("value"))
+            if key in guarded:
+                return bool(guarded[key])
+            return False
 
         st.checkbox.side_effect = _checkbox_side_effect
 

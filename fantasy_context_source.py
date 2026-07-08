@@ -354,32 +354,21 @@ def fantasy_context_source_badge_text(session: dict[str, Any]) -> str:
 def fantasy_context_using_caption(session: dict[str, Any]) -> str:
     """One short, plain line naming the single effective fantasy source.
 
-    Examples:
-    - ``Using: Active Draft — Robins League``
-    - ``Using: Draft Room Simulator override``
-    - ``Using: Live Draft Room override``
-    - ``Using: Draft Room Simulator — unsaved temporary board — Team Daniel``
-    - ``Using: General MLB (no draft context)``
+    Active Draft and temporary boards are mutually exclusive labels — never combine them.
     """
     source = resolve_fantasy_context_source(session)
     team = _context_team_name(session)
+    team_suffix = f" — Team {team}" if team else ""
 
     if source.kind == SOURCE_ACTIVE_DRAFT:
         name = source.draft_label or source.label or "Active Draft"
-        return f"Using: Active Draft — {name}"
-
-    if source.origin == "override":
-        if source.kind == SOURCE_LIVE_DRAFT:
-            return "Using: Live Draft Room override"
-        return "Using: Draft Room Simulator override"
+        return f"Using: Active Draft — {name}{team_suffix}"
 
     if source.kind == SOURCE_LIVE_DRAFT:
-        base = "Using: Live Draft Room — unsaved temporary board"
-        return f"{base} — Team {team}" if team else base
+        return f"Using: Temporary Live Draft Board — unsaved{team_suffix}"
 
     if source.kind == SOURCE_SIMULATOR_BOARD:
-        base = "Using: Draft Room Simulator — unsaved temporary board"
-        return f"{base} — Team {team}" if team else base
+        return f"Using: Temporary Simulator Board — unsaved{team_suffix}"
 
     return "Using: General MLB (no draft context)"
 
@@ -470,3 +459,9 @@ def prepare_fantasy_context_source_defaults(session: dict[str, Any]) -> None:
     """Seed missing toggle keys once — never overwrite an explicit user choice."""
     session.setdefault(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, FANTASY_CONTEXT_TOGGLE_DEFAULT)
     session.setdefault(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, FANTASY_CONTEXT_TOGGLE_DEFAULT)
+    try:
+        from fantasy_context_ui import FANTASY_RESEARCH_SYNC_KEY
+
+        session.setdefault(FANTASY_RESEARCH_SYNC_KEY, False)
+    except ImportError:
+        session.setdefault("use_active_league_context_waiver_filter", False)

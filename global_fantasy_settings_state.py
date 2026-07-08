@@ -220,42 +220,15 @@ def sync_active_fantasy_team_to_canonical(session: dict[str, Any]) -> str:
 
 
 def active_fantasy_team_label(session: dict[str, Any]) -> str:
-    """Human-readable label for dev UI / captions — includes explicit context source."""
+    """Team name only — source labels belong on ``fantasy_context_using_caption``."""
     try:
         from draft_room_context import is_multiplayer_draft_active
 
         if is_multiplayer_draft_active(session):
-            team = get_active_fantasy_team(session) or "—"
-            return f"{team} (Shared Draft Room)"
+            return str(get_active_fantasy_team(session) or "—")
     except ImportError:
         pass
-    team = get_active_fantasy_team(session) or "—"
-    try:
-        from fantasy_context_source import (
-            SOURCE_ACTIVE_DRAFT,
-            SOURCE_LIVE_DRAFT,
-            SOURCE_SIMULATOR_BOARD,
-            resolve_fantasy_context_source,
-        )
-
-        source = resolve_fantasy_context_source(session)
-        if source.kind == SOURCE_ACTIVE_DRAFT:
-            name = source.draft_label or source.label or "Active Draft"
-            return f"{team} — Saved Active Draft: {name}"
-        if source.kind == SOURCE_LIVE_DRAFT:
-            return f"{team} — Live Draft Room (temporary / unsaved)"
-        if source.kind == SOURCE_SIMULATOR_BOARD:
-            return f"{team} — Draft Room Simulator Board (temporary / unsaved)"
-    except ImportError:
-        pass
-    league_info = _saved_active_league_team_info(session)
-    if league_info:
-        draft_label = league_info[1]
-        return f"{team} — Saved Active Draft: {draft_label}"
-    src = active_fantasy_team_source(session)
-    if src == "live_draft":
-        return f"{team} — Live Draft Room (temporary / unsaved)"
-    return f"{team} — Draft Room Simulator (no saved context)"
+    return str(get_active_fantasy_team(session) or "—")
 
 
 ACTIVE_TEAM_CHANGE_GUIDANCE = (
@@ -267,9 +240,9 @@ ACTIVE_TEAM_CHANGE_GUIDANCE = (
 def active_fantasy_team_caption(session: dict[str, Any], *, label: str = "Your team") -> str:
     """Caption explaining the active fantasy context source and where to change it."""
     try:
-        from fantasy_context_source import fantasy_context_source_badge_text
+        from fantasy_context_source import fantasy_context_using_caption
 
-        return f"{fantasy_context_source_badge_text(session)}. {ACTIVE_TEAM_CHANGE_GUIDANCE}"
+        return f"{fantasy_context_using_caption(session)}. {ACTIVE_TEAM_CHANGE_GUIDANCE}"
     except ImportError:
         return f"**{label}:** {active_fantasy_team_label(session)}. {ACTIVE_TEAM_CHANGE_GUIDANCE}"
 

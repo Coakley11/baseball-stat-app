@@ -197,7 +197,7 @@ class FantasyContextSourceTests(unittest.TestCase):
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_ACTIVE_DRAFT)
 
-    def test_persisted_checkbox_uses_value_from_persisted_key(self) -> None:
+    def test_persisted_checkbox_seeds_widget_from_persisted_key(self) -> None:
         from fantasy_context_source import USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY
         from fantasy_context_ui import (
             _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
@@ -214,9 +214,52 @@ class FantasyContextSourceTests(unittest.TestCase):
         st.caption = MagicMock()
         st.checkbox = MagicMock(return_value=True)
         render_fantasy_context_sync_control(st, session)
-        by_key = {call.kwargs.get("key"): call.kwargs for call in st.checkbox.call_args_list}
-        self.assertTrue(by_key[_SIM_CONTEXT_TOGGLE_WIDGET_KEY].get("value"))
-        self.assertTrue(by_key[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY].get("value"))
+        self.assertTrue(session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY])
+        self.assertTrue(session[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY])
+        self.assertNotIn("value", st.checkbox.call_args_list[0].kwargs)
+
+    def test_persist_context_settings_does_not_clobber_research_sync(self) -> None:
+        from fantasy_context_ui import (
+            FANTASY_RESEARCH_SYNC_KEY,
+            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
+            _LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
+            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
+            _persist_context_settings,
+        )
+
+        session: dict = {
+            FANTASY_RESEARCH_SYNC_KEY: True,
+            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY: False,
+            _LIVE_CONTEXT_TOGGLE_WIDGET_KEY: True,
+            _RESEARCH_SYNC_TOGGLE_WIDGET_KEY: False,
+        }
+        import streamlit as st
+
+        st.session_state = session  # type: ignore[attr-defined]
+        _persist_context_settings()
+        self.assertTrue(session[FANTASY_RESEARCH_SYNC_KEY])
+
+    def test_fantasy_context_using_caption_mutually_exclusive_labels(self) -> None:
+        from fantasy_context_source import (
+            SOURCE_SIMULATOR_BOARD,
+            fantasy_context_using_caption,
+            resolve_fantasy_context_source,
+        )
+
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        source = resolve_fantasy_context_source(session)
+        self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
+        caption = fantasy_context_using_caption(session)
+        self.assertIn("Temporary Simulator Board", caption)
+        self.assertNotIn("Active Draft", caption)
+        self.assertNotIn("Saved", caption)
+
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        active_caption = fantasy_context_using_caption(session)
+        self.assertIn("Using: Active Draft — Practice Draft", active_caption)
+        self.assertNotIn("Temporary", active_caption)
 
     def test_checkbox_on_change_syncs_persisted_key(self) -> None:
         from fantasy_context_ui import (
