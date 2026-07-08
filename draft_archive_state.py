@@ -15,6 +15,7 @@ DELETED_DRAFT_ARCHIVE_IDS_KEY = "_deleted_draft_archive_ids"
 
 DRAFT_TYPE_SIMULATOR = "simulator"
 DRAFT_TYPE_LIVE = "live_draft_room"
+DRAFT_TYPE_IMPORTED = "imported_draft"
 
 
 def _utc_now_iso() -> str:
@@ -203,6 +204,38 @@ def save_live_draft_team_archive(
     )
 
 
+def save_imported_draft_archive(
+    session: dict[str, Any],
+    board_df: pd.DataFrame,
+    *,
+    team_name: str,
+    draft_name: str = "",
+    config: dict[str, Any] | None = None,
+    draft_id: str | None = None,
+    league_rosters: dict[str, dict[str, Any]] | None = None,
+    league_context_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a validated uploaded draft as a full imported league archive."""
+    cfg = dict(config or session.get("draft_shared_settings") or {})
+    my_team = str(team_name or "").strip()
+    picks = _board_rows_for_team(board_df, my_team)
+    players = [dict(p) for p in picks if str(p.get("Player") or p.get("fullName") or "").strip()]
+    label = str(draft_name or "").strip() or f"Imported League — {my_team}"
+    return save_draft_archive(
+        session,
+        draft_type=DRAFT_TYPE_IMPORTED,
+        draft_name=label,
+        team_name=my_team,
+        config=cfg,
+        roster_rows=players,
+        pick_rows=picks,
+        draft_board_rows=board_df.to_dict(orient="records") if board_df is not None else [],
+        draft_id=draft_id,
+        league_rosters=league_rosters,
+        league_context_id=league_context_id,
+    )
+
+
 def save_simulator_team_archive(
     session: dict[str, Any],
     board_df: pd.DataFrame,
@@ -278,6 +311,8 @@ def draft_type_display(entry: dict[str, Any] | None) -> str:
     draft_type = str(entry.get("draft_type") or DRAFT_TYPE_SIMULATOR)
     if draft_type == DRAFT_TYPE_LIVE:
         return "Live Draft"
+    if draft_type == DRAFT_TYPE_IMPORTED:
+        return "Imported League"
     return "Simulator"
 
 

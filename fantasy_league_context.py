@@ -32,6 +32,7 @@ MIGRATION_STATUS_SINGLE_TEAM_LEGACY = "single_team_legacy"
 
 SOURCE_LIVE_DRAFT_ROOM = "live_draft_room"
 SOURCE_DRAFT_SIMULATOR = "draft_simulator"
+SOURCE_IMPORTED_DRAFT = "imported_draft"
 SOURCE_LEGACY_MIGRATION = "legacy_migration"
 
 
@@ -1168,6 +1169,133 @@ def create_league_context_from_simulator_board(
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
     return upsert_league_context(session, context)
+
+
+def create_league_context_from_imported_board(
+    session: dict[str, Any],
+    board_df: pd.DataFrame,
+    *,
+    my_team_name: str,
+    config: dict[str, Any] | None = None,
+    league_name: str = "",
+    display_name: str = "",
+    league_context_id: str | None = None,
+    source_draft_id: str = "",
+) -> dict[str, Any]:
+    """Build a real_league Fantasy League Context from a validated imported board."""
+    cfg = dict(config or session.get("draft_shared_settings") or {})
+    my_team = str(my_team_name or "").strip()
+    league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
+    label = str(display_name or league_name or "").strip() or f"Imported League — {my_team}"
+    context_id = str(league_context_id or f"import:{uuid.uuid4().hex[:12]}")
+    context = create_league_context(
+        league_context_id=context_id,
+        context_type=CONTEXT_TYPE_REAL_LEAGUE,
+        league_name=str(league_name or label).strip() or label,
+        my_team_name=my_team,
+        league_rosters=league_rosters,
+        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or "").strip(),
+        scoring_settings={
+            "projection_window": cfg.get("projection_window"),
+            "projection_style": cfg.get("projection_style"),
+            "use_ml_blend": cfg.get("use_ml_blend"),
+            "ml_blend_weight": cfg.get("ml_blend_weight"),
+            "scoring_type": cfg.get("scoring_type"),
+        },
+        roster_settings={
+            "roster_slots": dict(cfg.get("slots") or {}),
+            "slot_instances": list(cfg.get("slot_instances") or []),
+        },
+        display_name=label,
+        source=SOURCE_IMPORTED_DRAFT,
+        source_draft_id=str(source_draft_id or "").strip(),
+        migration_status=MIGRATION_STATUS_FULL_LEAGUE,
+    )
+    return upsert_league_context(session, context)
+
+
+def save_imported_league_context(
+    session: dict[str, Any],
+    board_df: pd.DataFrame,
+    *,
+    my_team_name: str,
+    draft_name: str = "",
+    league_name: str = "",
+    config: dict[str, Any] | None = None,
+    defer_activation: bool = False,
+    assign_team: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Save validated imported draft as real_league context + archive; optionally claim team."""
+    from draft_archive_state import save_imported_draft_archive
+
+    my_team = str(my_team_name or "").strip()
+    if not my_team:
+        raise ValueError("my_team_name is required to save an imported league.")
+    cfg = dict(config or session.get("draft_shared_settings") or {})
+    league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
+    if not league_rosters:
+        raise ValueError("Imported board has no team rosters.")
+    label = str(draft_name or league_name or "").strip() or f"Imported League — {my_team}"
+    draft_id, league_context_id, _fp = resolve_canonical_save_ids(
+        session,
+        league_rosters=league_rosters,
+        config=cfg,
+        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+    )
+    entry = save_imported_draft_archive(
+        session,
+        board_df,
+        team_name=my_team,
+        draft_name=label,
+        config=cfg,
+        draft_id=draft_id,
+        league_rosters=league_rosters,
+        league_context_id=league_context_id,
+    )
+    draft_id = str(entry.get("draft_id") or "")
+    league_context_id = str(
+        entry.get("league_context_id") or league_context_id or context_id_for_archive(draft_id)
+    ).strip()
+    entry = save_draft_archive_with_league_context(
+        session,
+        draft_id=draft_id,
+        league_rosters=league_rosters,
+        league_context_id=league_context_id,
+    )
+    context = create_league_context_from_imported_board(
+        session,
+        board_df,
+        my_team_name=my_team,
+        display_name=label,
+        league_name=str(league_name or label).strip() or label,
+        config=cfg,
+        league_context_id=league_context_id,
+        source_draft_id=draft_id,
+    )
+    if defer_activation:
+        schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
+    else:
+        activate_league_context(session, league_context_id)
+    if assign_team:
+        try:
+            from fantasy_league_team_ownership import assign_my_team
+
+            context, err = assign_my_team(session, my_team)
+            if err:
+                raise ValueError(err)
+        except ImportError:
+            pass
+    else:
+        try:
+            from fantasy_shared_league_store import push_league_context_to_shared
+
+            context = get_league_context(session, league_context_id) or context
+            push_league_context_to_shared(session, context)
+        except (ImportError, RuntimeError, OSError):
+            pass
+    if not assign_team or defer_activation:
+        context = get_league_context(session, league_context_id) or context
+    return entry, context
 
 
 def get_league_context_for_archive(session: dict[str, Any], archive_entry: dict[str, Any]) -> dict[str, Any] | None:

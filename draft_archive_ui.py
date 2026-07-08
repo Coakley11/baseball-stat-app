@@ -2257,6 +2257,12 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         active_context=active_context,
         page_label_fn=page_label_fn,
     )
+    try:
+        from fantasy_league_team_claim_ui import render_active_league_team_claim
+
+        render_active_league_team_claim(st, session, key_prefix="library_team_claim")
+    except ImportError:
+        pass
     st.divider()
     _render_fantasy_sync_section(st, session)
     st.divider()

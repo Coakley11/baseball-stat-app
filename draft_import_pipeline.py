@@ -126,6 +126,7 @@ def apply_validated_import_to_board(
     flash_prefix: str = "Loaded",
     session_key: str = "_draft_import_review",
     remove_drafted_from_queue_fn: Callable[[], None] | None = None,
+    rerun: bool = True,
 ) -> None:
     """Write a validated import onto the Draft Room Simulator board."""
     from draft_room_state import (
@@ -156,7 +157,91 @@ def apply_validated_import_to_board(
     )
     session.pop(session_key, None)
     session.pop("_draft_import_file_id", None)
-    st.rerun()
+    if rerun:
+        st.rerun()
+
+
+def render_shared_league_creation_panel(
+    st: Any,
+    session: dict[str, Any],
+    review: dict[str, Any],
+    pool_df: pd.DataFrame,
+    *,
+    session_key: str,
+    entry_point: str,
+    remove_drafted_from_queue_fn: Callable[[], None] | None = None,
+) -> None:
+    """Create real_league from a fully validated import review (strict gate)."""
+    if not import_review_ready_for_league(review, pool_df):
+        return
+
+    import_df = review.get("import_df")
+    if not isinstance(import_df, pd.DataFrame) or import_df.empty:
+        return
+
+    teams = sorted({str(t).strip() for t in import_df["Team"].astype(str).tolist() if str(t).strip()})
+    if not teams:
+        return
+
+    default_league_name = str(session.get("draft_room_import_uploaded_filename") or "").strip()
+    if default_league_name.lower().endswith((".csv", ".xlsx", ".xls")):
+        default_league_name = default_league_name.rsplit(".", 1)[0]
+    if not default_league_name:
+        default_league_name = f"Imported {len(teams)}-Team League"
+
+    with st.expander("Create shared league from validated import", expanded=True):
+        st.caption(
+            "All players are resolved. Save as a shared league, claim your team, "
+            "and add the import to Saved Drafts as your Active League."
+        )
+        league_name = st.text_input(
+            "League name",
+            value=default_league_name,
+            key=f"{session_key}_shared_league_name",
+        )
+        my_team = st.selectbox(
+            "Which team is yours?",
+            teams,
+            key=f"{session_key}_shared_league_team",
+        )
+        if st.button(
+            "Create Shared League",
+            key=f"{session_key}_create_shared_league",
+            type="primary",
+        ):
+            if not import_review_ready_for_league(review, pool_df):
+                st.error("Resolve every imported player before creating a shared league.")
+                return
+            validated = build_validated_import_dataframe(review)
+            try:
+                from fantasy_league_context import save_imported_league_context
+
+                config = get_entry_config(entry_point)
+                apply_validated_import_to_board(
+                    st,
+                    session,
+                    validated,
+                    flash_prefix=config["flash_prefix"],
+                    session_key=session_key,
+                    remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
+                    rerun=False,
+                )
+                _entry, context = save_imported_league_context(
+                    session,
+                    validated,
+                    my_team_name=my_team,
+                    draft_name=str(league_name or default_league_name).strip(),
+                    league_name=str(league_name or default_league_name).strip(),
+                    assign_team=True,
+                )
+                league_id = str((context.get("metadata") or {}).get("league_id") or "").strip()
+                session["workflow_sidebar_flash"] = (
+                    f"Created shared league **{league_name}** and claimed **{my_team}**."
+                    + (f" League ID: `{league_id}`." if league_id else "")
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not create shared league: {exc}")
 
 
 def render_validated_draft_import(
@@ -193,6 +278,17 @@ def render_validated_draft_import(
             session_key=session_key,
             remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
         ),
+    )
+
+    live_review = session.get(session_key) or review
+    render_shared_league_creation_panel(
+        st,
+        session,
+        live_review,
+        pool_df,
+        session_key=session_key,
+        entry_point=entry_point,
+        remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
     )
 
     if render_preview_table_fn is not None:
@@ -277,6 +373,7 @@ __all__ = [
     "parse_uploaded_draft_file",
     "read_imported_draft_file",
     "render_draft_import_validation_ui",
+    "render_shared_league_creation_panel",
     "render_uploaded_draft_import_section",
     "render_validated_draft_import",
     "validate_imported_draft_df",
