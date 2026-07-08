@@ -1,4 +1,4 @@
-# deploy-bump: 2026-07-06-reboot-backend-health (forces Streamlit Cloud full redeploy)
+# deploy-bump: 2026-07-08-fantasy-source-hotfix (forces Streamlit Cloud full redeploy)
 streamlit-sortables>=0.3.1
 streamlit
 pandas
