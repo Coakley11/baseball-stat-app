@@ -19266,6 +19266,116 @@ if active_page == "Draft Assistant Simulator":
     render_page_filters_debug(active_page)
 
 
+def _on_reset_draft_room_simulator_click() -> None:
+    import streamlit as st
+
+    from draft_room_state import (
+        effective_board_pick_count,
+        persist_draft_board_to_storage,
+        record_draft_room_button_trace,
+        record_draft_room_handler_entry_trace,
+        reset_simulator_board_only,
+    )
+
+    ss = st.session_state
+    picks_before = effective_board_pick_count(ss)
+    record_draft_room_handler_entry_trace(
+        ss,
+        button_name="Reset Draft Room Simulator",
+        action="reset_simulator",
+        picks_before=picks_before,
+    )
+    try:
+        reset_simulator_board_only(ss)
+        picks_after = effective_board_pick_count(ss)
+        record_draft_room_button_trace(
+            ss,
+            action="reset_simulator",
+            picks_before=picks_before,
+            picks_after=picks_after,
+            ok=True,
+            message="Simulator board cleared.",
+        )
+        persist_draft_board_to_storage(
+            st,
+            ss,
+            ss.get("draft_room_table"),
+            reason="reset_canonical_board",
+        )
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="reset_simulator_board")
+        except Exception as exc:
+            trace = dict(ss.get("_draft_room_action_trace") or {})
+            trace["force_save_error"] = str(exc)
+            ss["_draft_room_action_trace"] = trace
+        ss["_draft_room_reset_flash"] = "Simulator board cleared."
+    except Exception as exc:
+        trace = dict(ss.get("_draft_room_action_trace") or {})
+        trace["handler_error"] = f"{type(exc).__name__}: {exc}"
+        trace["phase"] = "handler_failed"
+        ss["_draft_room_action_trace"] = trace
+
+
+def _on_undo_last_simulator_pick_click() -> None:
+    import streamlit as st
+
+    from draft_room_state import (
+        effective_board_pick_count,
+        persist_draft_board_to_storage,
+        record_draft_room_button_trace,
+        record_draft_room_handler_entry_trace,
+        undo_last_simulator_pick,
+    )
+
+    ss = st.session_state
+    picks_before = effective_board_pick_count(ss)
+    record_draft_room_handler_entry_trace(
+        ss,
+        button_name="Undo Last Pick",
+        action="undo_last_pick",
+        picks_before=picks_before,
+    )
+    try:
+        result = undo_last_simulator_pick(ss)
+        picks_after = effective_board_pick_count(ss)
+        record_draft_room_button_trace(
+            ss,
+            action="undo_last_pick",
+            picks_before=picks_before,
+            picks_after=picks_after,
+            ok=bool(result.get("ok")),
+            message=str(result.get("message") or ""),
+        )
+        if result.get("ok"):
+            persist_draft_board_to_storage(
+                st,
+                ss,
+                ss.get("draft_room_table"),
+                reason="undo_last_pick",
+            )
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="undo_last_pick")
+            except Exception as exc:
+                trace = dict(ss.get("_draft_room_action_trace") or {})
+                trace["force_save_error"] = str(exc)
+                ss["_draft_room_action_trace"] = trace
+            ss["_draft_room_undo_flash"] = str(result.get("message") or "Undid last pick.")
+        else:
+            ss["_draft_room_undo_flash"] = str(result.get("message") or "Could not undo pick.")
+            trace = dict(ss.get("_draft_room_action_trace") or {})
+            trace["phase"] = "handler_rejected"
+            ss["_draft_room_action_trace"] = trace
+    except Exception as exc:
+        trace = dict(ss.get("_draft_room_action_trace") or {})
+        trace["handler_error"] = f"{type(exc).__name__}: {exc}"
+        trace["phase"] = "handler_failed"
+        ss["_draft_room_action_trace"] = trace
+
+
 if active_page == "Draft Room Simulator":
     _page_perf_start(active_page)
     render_section_header(
@@ -19557,86 +19667,39 @@ if active_page == "Draft Room Simulator":
 
         reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
         with undo_col:
-            try:
-                from draft_room_state import (
-                    record_draft_room_button_trace,
-                    undo_last_simulator_pick,
-                )
-
-                if st.button(
-                    "Undo Last Pick",
-                    key="draft_room_undo_last_pick_btn",
-                    help="Remove the most recent simulator pick and restore the previous on-clock team.",
-                ):
-                    picks_before = effective_board_pick_count(st.session_state)
-                    result = undo_last_simulator_pick(st.session_state)
-                    picks_after = effective_board_pick_count(st.session_state)
-                    record_draft_room_button_trace(
-                        st.session_state,
-                        action="undo_last_pick",
-                        picks_before=picks_before,
-                        picks_after=picks_after,
-                        ok=bool(result.get("ok")),
-                        message=str(result.get("message") or ""),
-                    )
-                    if result.get("ok"):
-                        from draft_room_state import persist_draft_board_to_storage
-
-                        persist_draft_board_to_storage(
-                            st,
-                            st.session_state,
-                            st.session_state.get("draft_room_table"),
-                            reason="undo_last_pick",
-                        )
-                        try:
-                            from baseball_persistent_state import force_save_baseball_state
-
-                            force_save_baseball_state(st, reason="undo_last_pick")
-                        except Exception:
-                            pass
-                        st.success(str(result.get("message") or "Undid last pick."))
-                        st.rerun()
-                    else:
-                        st.warning(str(result.get("message") or "Could not undo pick."))
-            except ImportError:
-                pass
+            st.button(
+                "Undo Last Pick",
+                key="draft_room_undo_last_pick_btn",
+                help="Remove the most recent simulator pick and restore the previous on-clock team.",
+                on_click=_on_undo_last_simulator_pick_click,
+            )
         with reset_col:
-            if st.button(
+            st.button(
                 "Reset Draft Room Simulator",
                 key="draft_room_reset_simulator_btn",
                 help="Clear the practice/canonical board only. Use for a fresh mock draft.",
-            ):
-                from draft_room_state import (
-                    persist_draft_board_to_storage,
-                    record_draft_room_button_trace,
-                    reset_simulator_board_only,
-                )
+                on_click=_on_reset_draft_room_simulator_click,
+            )
+        _undo_flash = st.session_state.pop("_draft_room_undo_flash", None)
+        if _undo_flash:
+            if st.session_state.get("_draft_room_action_trace", {}).get("ok"):
+                st.success(_undo_flash)
+            else:
+                st.warning(_undo_flash)
+        _reset_flash = st.session_state.pop("_draft_room_reset_flash", None)
+        if _reset_flash:
+            st.success(_reset_flash)
+        if developer_mode_enabled():
+            try:
+                from draft_room_state import render_draft_room_action_trace_panel
 
-                picks_before = effective_board_pick_count(st.session_state)
-                reset_simulator_board_only(st.session_state)
-                picks_after = effective_board_pick_count(st.session_state)
-                record_draft_room_button_trace(
-                    st.session_state,
-                    action="reset_simulator",
-                    picks_before=picks_before,
-                    picks_after=picks_after,
-                    ok=True,
-                    message="Simulator board cleared.",
-                )
-                persist_draft_board_to_storage(
+                render_draft_room_action_trace_panel(
                     st,
                     st.session_state,
-                    st.session_state.get("draft_room_table"),
-                    reason="reset_canonical_board",
+                    developer_mode=True,
                 )
-                try:
-                    from baseball_persistent_state import force_save_baseball_state
-
-                    force_save_baseball_state(st, reason="reset_simulator_board")
-                except Exception:
-                    pass
-                st.success("Simulator board cleared.")
-                st.rerun()
+            except Exception as _board_trace_exc:
+                st.error(f"Board-tab trace panel failed: {_board_trace_exc}")
         with delete_live_col:
             if st.button(
                 "Delete Live Draft Room draft",

@@ -95,6 +95,26 @@ def draft_room_authority_blocks_richest_restore(session: dict[str, Any]) -> bool
     return table_pick_count(runtime) == auth_picks
 
 
+def record_draft_room_handler_entry_trace(
+    session: dict[str, Any],
+    *,
+    button_name: str,
+    action: str,
+    picks_before: int,
+) -> dict[str, Any]:
+    """First write on button on_click — before any reset/undo logic runs."""
+    trace: dict[str, Any] = {
+        "action": action,
+        "clicked_at": _utc_now_iso(),
+        "button_name": str(button_name or ""),
+        "entered_handler": True,
+        "picks_before": int(picks_before),
+        "phase": "handler_entry",
+    }
+    session[DRAFT_ROOM_ACTION_TRACE_KEY] = trace
+    return trace
+
+
 def record_draft_room_button_trace(
     session: dict[str, Any],
     *,
@@ -104,15 +124,21 @@ def record_draft_room_button_trace(
     ok: bool = True,
     message: str = "",
 ) -> dict[str, Any]:
-    trace: dict[str, Any] = {
-        "action": action,
-        "clicked_at": _utc_now_iso(),
-        "picks_before": int(picks_before),
-        "picks_after": int(picks_after),
-        "ok": bool(ok),
-        "message": str(message or ""),
-        "rerun_requested": bool(ok),
-    }
+    trace: dict[str, Any] = dict(session.get(DRAFT_ROOM_ACTION_TRACE_KEY) or {})
+    trace.update(
+        {
+            "action": action,
+            "clicked_at": trace.get("clicked_at") or _utc_now_iso(),
+            "button_name": trace.get("button_name") or action,
+            "entered_handler": True,
+            "picks_before": int(picks_before),
+            "picks_after": int(picks_after),
+            "ok": bool(ok),
+            "message": str(message or ""),
+            "rerun_requested": bool(ok),
+            "phase": "handler_complete",
+        }
+    )
     session[DRAFT_ROOM_ACTION_TRACE_KEY] = trace
     if ok:
         mark_draft_room_board_authority(session, pick_count=picks_after, reason=action)
