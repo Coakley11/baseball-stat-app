@@ -899,6 +899,171 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     }
 
 
+_PERSISTENCE_VERDICT_LABELS = {
+    "A_persistence_failed_or_never_saved": "A — not persisted (or wiped before reboot)",
+    "B_restore_failed": "B — restore failed (storage has drafts, session empty)",
+    "ok": "OK — session matches storage",
+}
+
+
+def _resolve_persistence_verdict(session: dict[str, Any], startup: dict[str, Any], diag: dict[str, Any]) -> str:
+    verdict = str(startup.get("persistence_verdict") or "").strip()
+    if verdict:
+        return verdict
+    restore_applied = str(session.get("_suite_restore_decision") or "") == "applied"
+    restore_skip = str(
+        session.get("_suite_restore_skip_reason")
+        or session.get("_suite_persist_restore_skip_reason")
+        or ""
+    )
+    cloud_count = max(
+        int(startup.get("cloud_saved_draft_count") or 0),
+        int(diag.get("cloud_saved_draft_count_active") or 0),
+        int(diag.get("cloud_saved_draft_count_owned") or 0),
+        int(diag.get("cloud_saved_draft_count_legacy") or 0),
+    )
+    disk_count = max(
+        int(startup.get("disk_saved_draft_count") or 0),
+        int(diag.get("disk_saved_draft_count") or 0),
+    )
+    session_count = int(diag.get("draft_archive_count") or 0)
+    cloud_tracked = int(startup.get("cloud_tracked_player_count") or 0)
+    session_tracked = tracked_player_count_from_blob(session)
+    return infer_restore_persistence_verdict(
+        cloud_draft_count=cloud_count,
+        disk_draft_count=disk_count,
+        session_draft_count=session_count,
+        cloud_tracked_count=cloud_tracked,
+        session_tracked_count=session_tracked,
+        restore_applied=restore_applied,
+        restore_skip_reason=restore_skip,
+    )
+
+
+def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
+    """Single read-only probe for post-reboot saved-draft persistence diagnosis."""
+    diag = build_saved_draft_library_diagnostics(session)
+    startup = session.get("_suite_startup_restore_snapshot")
+    if not isinstance(startup, dict):
+        startup = {}
+
+    active_draft_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    active_draft_name = ""
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        active_entry = get_active_draft_archive(session)
+        if isinstance(active_entry, dict):
+            active_draft_id = active_draft_id or str(active_entry.get("draft_id") or "").strip()
+            active_draft_name = str(active_entry.get("draft_name") or "").strip()
+    except ImportError:
+        pass
+
+    session_draft_count = int(diag.get("draft_archive_count") or 0)
+    cloud_draft_count = int(diag.get("cloud_saved_draft_count_active") or 0)
+    disk_draft_count = int(diag.get("disk_saved_draft_count") or 0)
+    cloud_owned_count = int(diag.get("cloud_saved_draft_count_owned") or 0)
+    cloud_legacy_count = int(diag.get("cloud_saved_draft_count_legacy") or 0)
+    cloud_any_count = max(cloud_draft_count, cloud_owned_count, cloud_legacy_count)
+
+    verdict = _resolve_persistence_verdict(session, startup, diag)
+    verdict_label = _PERSISTENCE_VERDICT_LABELS.get(verdict, verdict or "—")
+
+    workspace_id = str(diag.get("workspace_id") or "").strip()
+    owned_workspace_id = str(diag.get("owned_workspace_id") or "").strip()
+    restored_workspace_id = str(startup.get("restored_workspace_id") or workspace_id).strip()
+
+    restore_pick_source = str(
+        session.get("_suite_restore_pick_source")
+        or session.get("_suite_persist_last_restore_source")
+        or diag.get("restore_source")
+        or "none"
+    ).strip().lower()
+    restore_applied = str(session.get("_suite_restore_decision") or "") == "applied"
+    restore_skip = str(
+        session.get("_suite_restore_skip_reason")
+        or session.get("_suite_persist_restore_skip_reason")
+        or startup.get("restore_skip_reason")
+        or ""
+    ).strip()
+
+    startup_cloud_drafts = int(startup.get("cloud_saved_draft_count") or cloud_draft_count)
+    startup_disk_drafts = int(startup.get("disk_saved_draft_count") or disk_draft_count)
+
+    if workspace_id and owned_workspace_id and workspace_id != owned_workspace_id:
+        different_workspace = f"Yes — active `{workspace_id}` ≠ owned `{owned_workspace_id}`"
+    elif restored_workspace_id and owned_workspace_id and restored_workspace_id != owned_workspace_id:
+        different_workspace = f"Yes — restored `{restored_workspace_id}` ≠ owned `{owned_workspace_id}`"
+    elif workspace_id and owned_workspace_id:
+        different_workspace = f"No — active and owned both `{workspace_id}`"
+    else:
+        different_workspace = "Unknown — owned workspace not resolved"
+
+    if restore_applied and restore_pick_source == "cloud":
+        cloud_restore_ran = "Yes — cloud blob applied on startup"
+    elif restore_applied and restore_pick_source == "disk":
+        cloud_restore_ran = "No — disk blob applied instead of cloud"
+    elif restore_skip:
+        cloud_restore_ran = f"No — restore skipped ({restore_skip})"
+    elif restore_pick_source == "none":
+        cloud_restore_ran = "No — no workspace restore yet this session"
+    else:
+        cloud_restore_ran = f"Unclear — pick source `{restore_pick_source or '—'}`"
+
+    cloud_zero = startup_cloud_drafts <= 0
+    disk_zero = startup_disk_drafts <= 0
+
+    readback_ok = bool(session.get("_suite_draft_library_readback_ok"))
+    save_readback = session.get("_suite_last_draft_save_readback")
+    save_readback_count = 0
+    if isinstance(save_readback, dict):
+        save_readback_count = int(save_readback.get("draft_archive_count") or 0)
+
+    if cloud_any_count > 0 or disk_draft_count > 0:
+        ever_persisted = (
+            f"Yes — storage has drafts (cloud active {cloud_draft_count}, "
+            f"owned {cloud_owned_count}, legacy {cloud_legacy_count}, disk {disk_draft_count})"
+        )
+    elif readback_ok or save_readback_count > 0:
+        ever_persisted = "Yes — save readback confirmed drafts this session"
+    elif bool(diag.get("cloud_enabled")):
+        ever_persisted = "No evidence — cloud and disk both show 0 saved drafts"
+    else:
+        ever_persisted = "Unknown — cloud storage not configured; disk-only"
+
+    account_email = str(diag.get("account_email") or diag.get("account_external_id") or "—")
+    account_user_id = str(diag.get("account_user_id") or "—")
+
+    return {
+        "signed_in": bool(diag.get("authenticated")),
+        "signed_in_label": "yes" if diag.get("authenticated") else "no",
+        "account_email": account_email,
+        "user_id": account_user_id,
+        "workspace_id": workspace_id or "—",
+        "owned_workspace_id": owned_workspace_id or "—",
+        "cloud_app_key": str(diag.get("cloud_app_key") or "—"),
+        "session_draft_count": session_draft_count,
+        "cloud_draft_count": cloud_draft_count,
+        "disk_draft_count": disk_draft_count,
+        "active_draft_id": active_draft_id or "—",
+        "active_draft_name": active_draft_name or "—",
+        "restore_source": restore_pick_source or "none",
+        "persistence_verdict": verdict,
+        "persistence_verdict_label": verdict_label,
+        "diagnosis": {
+            "Did the reboot load a different workspace?": different_workspace,
+            "Did cloud restore run?": cloud_restore_ran,
+            "Did cloud restore return zero drafts?": "Yes" if cloud_zero else f"No ({startup_cloud_drafts} in cloud blob)",
+            "Did disk restore return zero drafts?": "Yes" if disk_zero else f"No ({startup_disk_drafts} on disk)",
+            "Were my drafts ever successfully persisted?": ever_persisted,
+        },
+        "cloud_draft_count_owned": cloud_owned_count,
+        "cloud_draft_count_legacy": cloud_legacy_count,
+        "restore_skip_reason": restore_skip or None,
+        "restore_applied": restore_applied,
+    }
+
+
 def tracked_player_count_from_blob(blob: dict[str, Any] | None) -> int:
     if not isinstance(blob, dict):
         return 0

@@ -14,6 +14,7 @@ from workflow_persist_guard import (
     LEAGUE_CONTEXT_STATE_KEY,
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
     build_saved_draft_library_diagnostics,
+    build_persistence_probe_panel,
     build_startup_restore_snapshot,
     evaluate_cloud_durability_status,
     hydrate_session_workflow_from_disk,
@@ -23,7 +24,6 @@ from workflow_persist_guard import (
     probe_cloud_workflow_for_workspace,
     record_startup_restore_snapshot,
     should_keep_session_workflow_over_blob,
-    verify_cloud_draft_library_readback,
 )
 
 
@@ -154,6 +154,78 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(diag["league_context_count"], 1)
         self.assertEqual(diag["restore_source"], "cloud")
         self.assertIn("cloud", diag["restore_source_label"].lower())
+
+    def test_build_persistence_probe_panel_fields(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "My League"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "x1",
+            "_suite_startup_restore_snapshot": {
+                "persistence_verdict": "ok",
+                "cloud_saved_draft_count": 1,
+                "disk_saved_draft_count": 0,
+                "restored_workspace_id": "coakley11",
+            },
+            "_suite_restore_decision": "applied",
+            "_suite_restore_pick_source": "cloud",
+            "_suite_persist_last_restore_source": "cloud",
+        }
+        with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+            mock_diag.return_value = {
+                "authenticated": True,
+                "account_email": "chris@example.com",
+                "account_user_id": "uid-123",
+                "workspace_id": "coakley11",
+                "owned_workspace_id": "coakley11",
+                "cloud_app_key": "baseball__coakley11",
+                "draft_archive_count": 1,
+                "cloud_saved_draft_count_active": 1,
+                "disk_saved_draft_count": 0,
+                "cloud_saved_draft_count_owned": 1,
+                "cloud_saved_draft_count_legacy": 0,
+                "restore_source": "cloud",
+                "cloud_enabled": True,
+            }
+            probe = build_persistence_probe_panel(session)
+        self.assertEqual(probe["signed_in_label"], "yes")
+        self.assertEqual(probe["account_email"], "chris@example.com")
+        self.assertEqual(probe["user_id"], "uid-123")
+        self.assertEqual(probe["session_draft_count"], 1)
+        self.assertEqual(probe["cloud_draft_count"], 1)
+        self.assertEqual(probe["active_draft_name"], "My League")
+        self.assertEqual(probe["persistence_verdict"], "ok")
+        self.assertIn("Yes — cloud blob applied", probe["diagnosis"]["Did cloud restore run?"])
+
+    def test_build_persistence_probe_panel_restore_failure(self) -> None:
+        session = {
+            "_suite_startup_restore_snapshot": {
+                "persistence_verdict": "B_restore_failed",
+                "cloud_saved_draft_count": 2,
+                "disk_saved_draft_count": 0,
+                "restored_workspace_id": "coakley11",
+            },
+            "_suite_restore_decision": "applied",
+            "_suite_restore_pick_source": "cloud",
+        }
+        with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+            mock_diag.return_value = {
+                "authenticated": True,
+                "account_email": "chris@example.com",
+                "account_user_id": "uid-123",
+                "workspace_id": "coakley11",
+                "owned_workspace_id": "daniel",
+                "cloud_app_key": "baseball__coakley11",
+                "draft_archive_count": 0,
+                "cloud_saved_draft_count_active": 2,
+                "disk_saved_draft_count": 0,
+                "cloud_saved_draft_count_owned": 0,
+                "cloud_saved_draft_count_legacy": 3,
+                "restore_source": "cloud",
+                "cloud_enabled": True,
+            }
+            probe = build_persistence_probe_panel(session)
+        self.assertEqual(probe["persistence_verdict"], "B_restore_failed")
+        self.assertIn("≠ owned", probe["diagnosis"]["Did the reboot load a different workspace?"])
+        self.assertIn("storage has drafts", probe["diagnosis"]["Were my drafts ever successfully persisted?"])
 
     def test_diagnostics_durable_when_cloud_has_verified_drafts(self) -> None:
         session = {

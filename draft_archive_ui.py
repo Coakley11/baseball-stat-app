@@ -248,6 +248,52 @@ def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
     )
 
 
+def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
+    """Always-visible post-reboot probe: account, workspace, counts, restore verdict."""
+    try:
+        from workflow_persist_guard import build_persistence_probe_panel
+    except ImportError:
+        return
+
+    probe = build_persistence_probe_panel(session)
+    verdict = str(probe.get("persistence_verdict") or "")
+    if verdict == "B_restore_failed":
+        st.error("**Saved Draft Persistence Probe** — restore failed; storage may still have your drafts.")
+    elif verdict == "A_persistence_failed_or_never_saved":
+        st.warning("**Saved Draft Persistence Probe** — no durable saved drafts found in cloud or disk.")
+    else:
+        st.info("**Saved Draft Persistence Probe** — use after reboot to confirm account, workspace, and restore.")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(f"**Signed in?** {probe.get('signed_in_label') or '—'}")
+        st.markdown(f"**Account email:** {probe.get('account_email') or '—'}")
+        st.markdown(f"**User ID:** `{probe.get('user_id') or '—'}`")
+        st.markdown(f"**Workspace ID:** `{probe.get('workspace_id') or '—'}`")
+        st.markdown(f"**Owned workspace ID:** `{probe.get('owned_workspace_id') or '—'}`")
+        st.markdown(f"**Cloud app key:** `{probe.get('cloud_app_key') or '—'}`")
+    with col_b:
+        st.markdown(f"**Session draft count:** {int(probe.get('session_draft_count') or 0)}")
+        st.markdown(f"**Cloud draft count:** {int(probe.get('cloud_draft_count') or 0)}")
+        st.markdown(f"**Disk draft count:** {int(probe.get('disk_draft_count') or 0)}")
+        st.markdown(f"**Active draft ID:** `{probe.get('active_draft_id') or '—'}`")
+        st.markdown(f"**Active draft name:** {probe.get('active_draft_name') or '—'}")
+        st.markdown(f"**Restore source:** `{probe.get('restore_source') or '—'}`")
+        st.markdown(f"**Persistence verdict:** {probe.get('persistence_verdict_label') or '—'}")
+
+    owned_n = int(probe.get("cloud_draft_count_owned") or 0)
+    legacy_n = int(probe.get("cloud_draft_count_legacy") or 0)
+    if owned_n or legacy_n:
+        st.caption(
+            f"Other cloud rows (diagnostic): owned workspace **{owned_n}** · legacy daniel **{legacy_n}**"
+        )
+
+    st.markdown("**Reboot diagnosis**")
+    diagnosis = probe.get("diagnosis") or {}
+    for question, answer in diagnosis.items():
+        st.markdown(f"- **{question}** {answer}")
+
+
 def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bool:
     """Visible (non-dev) warning when saves are not durable across app reboot.
 
@@ -2070,7 +2116,7 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         "Unsaved simulator or live boards stay in their workspace pages — use **Fantasy Context Source** toggles to point at them temporarily."
     )
 
-    render_persistence_durability_banner(st, session)
+    render_persistence_probe_panel(st, session)
 
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:
