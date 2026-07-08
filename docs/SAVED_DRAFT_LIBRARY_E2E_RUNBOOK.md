@@ -11,6 +11,15 @@ python scripts/verify_saved_draft_library_e2e.py
 python -m unittest tests.test_draft_library_save_trace tests.test_draft_library_cloud_fixes -v
 ```
 
+### Shared league invite + trade (two accounts)
+
+```bash
+python scripts/smoke_shared_league_invite_trade_manual.py
+python -m pytest tests/test_fantasy_league_invites.py tests/test_fantasy_league_invite_trade_e2e.py -q
+```
+
+See [SHARED_LEAGUE_INVITE_TRADE_SMOKE_RUNBOOK.md](./SHARED_LEAGUE_INVITE_TRADE_SMOKE_RUNBOOK.md) for manual UI steps.
+
 ## Draft Room Simulator
 
 1. Complete a mock draft (picks on board).

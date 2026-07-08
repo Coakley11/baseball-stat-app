@@ -12,6 +12,7 @@ from fantasy_league_identity import compute_draft_fingerprint, resolve_canonical
 
 WORKFLOW_KEY_TRADE_PROPOSALS = "trade_proposals"
 WORKFLOW_KEY_LEAGUE_INVITES = "league_invites"
+WORKFLOW_KEY_LEAGUE_ACTIVITY = "league_activity"
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "shared_leagues"
 
@@ -31,6 +32,9 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
     invites = workflow.get(WORKFLOW_KEY_LEAGUE_INVITES) or []
     if not isinstance(invites, list):
         invites = []
+    activity = workflow.get(WORKFLOW_KEY_LEAGUE_ACTIVITY) or []
+    if not isinstance(activity, list):
+        activity = []
     ownership = context.get("team_ownership")
     if not isinstance(ownership, dict):
         meta = context.get("metadata") or {}
@@ -49,6 +53,7 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
         "team_ownership": copy.deepcopy(ownership if isinstance(ownership, dict) else {}),
         "trade_proposals": copy.deepcopy(proposals),
         "league_invites": copy.deepcopy(invites),
+        "league_activity": copy.deepcopy(activity),
     }
 
 
@@ -264,6 +269,39 @@ def _merge_league_invites(*sources: list[Any]) -> list[dict[str, Any]]:
     return sorted(merged.values(), key=_invite_sort_key, reverse=True)
 
 
+def _activity_sort_key(entry: dict[str, Any]) -> str:
+    return str(entry.get("recorded_at") or entry.get("created_at") or "")
+
+
+def _activity_merge_key(entry: dict[str, Any]) -> str:
+    proposal_id = str(entry.get("proposal_id") or "").strip()
+    action = str(entry.get("action") or "").strip()
+    recorded = str(entry.get("recorded_at") or "").strip()
+    if proposal_id and action:
+        return f"{proposal_id}::{action}::{recorded}"
+    summary = str(entry.get("summary") or "").strip()
+    team = str(entry.get("team_name") or "").strip()
+    return f"{team}::{action}::{recorded}::{summary}"
+
+
+def _merge_league_activity(*sources: list[Any]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for activities in sources:
+        if not isinstance(activities, list):
+            continue
+        for raw in activities:
+            if not isinstance(raw, dict):
+                continue
+            key = _activity_merge_key(raw)
+            if not key.strip(":"):
+                continue
+            existing = merged.get(key)
+            if existing is None or _activity_sort_key(raw) >= _activity_sort_key(existing):
+                merged[key] = copy.deepcopy(raw)
+    ordered = sorted(merged.values(), key=_activity_sort_key, reverse=True)
+    return ordered[:100]
+
+
 def _merge_team_ownership(*sources: dict[str, Any]) -> dict[str, dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for source in sources:
@@ -333,6 +371,12 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
         shared.get("league_invites") or [],
     )
     workflow[WORKFLOW_KEY_LEAGUE_INVITES] = merged_invites
+    local_activity = workflow.get(WORKFLOW_KEY_LEAGUE_ACTIVITY) or []
+    merged_activity = _merge_league_activity(
+        local_activity if isinstance(local_activity, list) else [],
+        shared.get("league_activity") or [],
+    )
+    workflow[WORKFLOW_KEY_LEAGUE_ACTIVITY] = merged_activity
     out["workflow"] = workflow
     return out
 
@@ -392,6 +436,10 @@ def push_league_context_to_shared(
         document["league_invites"] = _merge_league_invites(
             existing.get("league_invites") or [],
             document.get("league_invites") or [],
+        )
+        document["league_activity"] = _merge_league_activity(
+            existing.get("league_activity") or [],
+            document.get("league_activity") or [],
         )
     saved = backend.save(document)
     meta = dict(context.get("metadata") or {})

@@ -255,6 +255,14 @@ def _render_trade_history(st: Any, context: dict[str, Any], *, key_prefix: str) 
                 f"{_status_badge(status)} · {proposer} → {recipient}: {gives} for {receives} "
                 f"({_format_time(str(proposal.get('created_at') or ''))})"
             )
+    activity_rows = history.get("activity") or []
+    if activity_rows:
+        st.markdown("**League activity**")
+        for row in activity_rows[:12]:
+            st.caption(
+                f"{str(row.get('summary') or row.get('action') or 'Trade event')} "
+                f"({_format_time(str(row.get('recorded_at') or ''))})"
+            )
 
 
 def render_trade_proposals_section(
@@ -272,7 +280,7 @@ def render_trade_proposals_section(
     """Incoming/outgoing inbox plus Propose Trade action."""
     context = get_active_league_context(session)
     if not context:
-        st.caption("Set an **Active League** or **Active Draft** in Saved Draft Library to propose league trades.")
+        st.caption("Set an **Active Draft** in Saved Draft Library to propose league trades.")
         return
 
     my_team_name = str(my_team or resolve_trade_team_for_session(context, session) or context.get("my_team_name") or "").strip()

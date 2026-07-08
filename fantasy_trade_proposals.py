@@ -115,18 +115,35 @@ def get_trade_history(context: dict[str, Any] | None) -> dict[str, list[dict[str
     pending: list[dict[str, Any]] = []
     accepted: list[dict[str, Any]] = []
     declined: list[dict[str, Any]] = []
+    activity: list[dict[str, Any]] = []
     if not context:
-        return {"pending": pending, "accepted": accepted, "declined": declined}
+        return {"pending": pending, "accepted": accepted, "declined": declined, "activity": activity}
+    league_id = resolve_canonical_league_id(context)
     for proposal in get_trade_proposals(context):
         status = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
         display = get_display_status(context, proposal)
+        row = copy.deepcopy(proposal)
+        if league_id:
+            row["league_id"] = league_id
         if display == TRADE_PROPOSAL_STATUS_PENDING:
-            pending.append(copy.deepcopy(proposal))
+            pending.append(row)
         elif status == TRADE_PROPOSAL_STATUS_ACCEPTED:
-            accepted.append(copy.deepcopy(proposal))
+            accepted.append(row)
         elif status == TRADE_PROPOSAL_STATUS_DECLINED:
-            declined.append(copy.deepcopy(proposal))
-    return {"pending": pending, "accepted": accepted, "declined": declined}
+            declined.append(row)
+    workflow = context.get("workflow") or {}
+    for raw in workflow.get("league_activity") or []:
+        if not isinstance(raw, dict):
+            continue
+        action = str(raw.get("action") or "")
+        if not action.startswith("trade_"):
+            continue
+        entry = copy.deepcopy(raw)
+        if league_id:
+            entry["league_id"] = league_id
+        activity.append(entry)
+    activity.sort(key=lambda row: str(row.get("recorded_at") or ""), reverse=True)
+    return {"pending": pending, "accepted": accepted, "declined": declined, "activity": activity}
 
 
 def _normalize_player_ref(player_name: str) -> dict[str, str]:
@@ -321,6 +338,7 @@ def _record_trade_activity(context: dict[str, Any], proposal: dict[str, Any], ac
         TRADE_PROPOSAL_STATUS_COUNTERED: f"{recipient} countered {proposer}'s trade offer.",
         TRADE_PROPOSAL_STATUS_EXPIRED: f"Trade offer from {proposer} to {recipient} expired: {gives_fmt} for {receives_fmt}.",
     }
+    league_id = resolve_canonical_league_id(context)
     activity = list(workflow.get("league_activity") or [])
     activity.append(
         {
@@ -330,6 +348,7 @@ def _record_trade_activity(context: dict[str, Any], proposal: dict[str, Any], ac
             "counterparty": recipient,
             "summary": labels.get(action_norm, _trade_summary(proposal)),
             "proposal_id": str(proposal.get("proposal_id") or ""),
+            "league_id": league_id,
             "recorded_at": _utc_now_iso(),
         }
     )
