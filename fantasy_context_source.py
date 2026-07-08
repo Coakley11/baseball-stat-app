@@ -49,6 +49,9 @@ class FantasyContextSource:
     kind: str
     label: str
     draft_label: str = ""
+    # How this source was selected: "override" (explicit checkbox), "natural"
+    # (unsaved board used because there is no Active Draft), "active_draft", or "generic".
+    origin: str = ""
 
     @property
     def badge_text(self) -> str:
@@ -167,9 +170,13 @@ def _active_draft_label(session: dict[str, Any], ctx: dict[str, Any]) -> str:
 def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | None:
     """Temporary override only — user explicitly checked a workspace override box."""
     if live_draft_sync_enabled(session) and live_draft_context_available(session):
-        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)")
+        return FantasyContextSource(
+            SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)", origin="override"
+        )
     if simulator_board_sync_enabled(session) and simulator_board_context_available(session):
-        return FantasyContextSource(SOURCE_SIMULATOR_BOARD, "Draft Room Simulator (temporary override)")
+        return FantasyContextSource(
+            SOURCE_SIMULATOR_BOARD, "Draft Room Simulator (temporary override)", origin="override"
+        )
     return None
 
 
@@ -178,9 +185,9 @@ def _resolve_natural_board_source(session: dict[str, Any]) -> FantasyContextSour
     if saved_active_draft_available(session):
         return None
     if live_draft_context_available(session):
-        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room")
+        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room", origin="natural")
     if simulator_board_context_available(session, ignore_live_override=True):
-        return FantasyContextSource(SOURCE_SIMULATOR_BOARD, "Draft Room Simulator")
+        return FantasyContextSource(SOURCE_SIMULATOR_BOARD, "Draft Room Simulator", origin="natural")
     return None
 
 
@@ -203,13 +210,14 @@ def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSou
             SOURCE_ACTIVE_DRAFT,
             f"Active Draft: {name}",
             draft_label=name,
+            origin="active_draft",
         )
 
     natural = _resolve_natural_board_source(session)
     if natural is not None:
         return natural
 
-    return FantasyContextSource(SOURCE_GENERIC, "Generic/default simulator context")
+    return FantasyContextSource(SOURCE_GENERIC, "Generic/default simulator context", origin="generic")
 
 
 def is_core_fantasy_page(page_name: str) -> bool:
@@ -341,6 +349,39 @@ def fantasy_context_source_badge_text(session: dict[str, Any]) -> str:
     if team and "Team:" not in text:
         text = f"{text} · Team: **{team}**"
     return text
+
+
+def fantasy_context_using_caption(session: dict[str, Any]) -> str:
+    """One short, plain line naming the single effective fantasy source.
+
+    Examples:
+    - ``Using: Active Draft — Robins League``
+    - ``Using: Draft Room Simulator override``
+    - ``Using: Live Draft Room override``
+    - ``Using: Draft Room Simulator — unsaved temporary board — Team Daniel``
+    - ``Using: General MLB (no draft context)``
+    """
+    source = resolve_fantasy_context_source(session)
+    team = _context_team_name(session)
+
+    if source.kind == SOURCE_ACTIVE_DRAFT:
+        name = source.draft_label or source.label or "Active Draft"
+        return f"Using: Active Draft — {name}"
+
+    if source.origin == "override":
+        if source.kind == SOURCE_LIVE_DRAFT:
+            return "Using: Live Draft Room override"
+        return "Using: Draft Room Simulator override"
+
+    if source.kind == SOURCE_LIVE_DRAFT:
+        base = "Using: Live Draft Room — unsaved temporary board"
+        return f"{base} — Team {team}" if team else base
+
+    if source.kind == SOURCE_SIMULATOR_BOARD:
+        base = "Using: Draft Room Simulator — unsaved temporary board"
+        return f"{base} — Team {team}" if team else base
+
+    return "Using: General MLB (no draft context)"
 
 
 def _resolve_live_room(session: dict[str, Any]) -> dict[str, Any] | None:

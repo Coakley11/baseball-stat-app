@@ -674,7 +674,7 @@ def render_saved_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
         else:
             st.caption(
                 "No saved draft selected as Active Draft. Fantasy pages can still use a "
-                "**temporary / unsaved** simulator or live board when you enable a Fantasy Context Source override."
+                "**temporary / unsaved** simulator or live board when you enable a **Fantasy Source** override."
             )
         return
     context = active_context or get_league_context_for_archive(session, active)

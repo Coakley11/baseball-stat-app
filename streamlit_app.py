@@ -18302,12 +18302,6 @@ if active_page == "Draft Assistant Simulator":
     )
     render_page_guide(active_page)
     try:
-        from fantasy_context_ui import render_fantasy_context_badge
-
-        render_fantasy_context_badge(st, st.session_state)
-    except ImportError:
-        pass
-    try:
         from fantasy_context_ui import render_research_sync_badge
 
         render_research_sync_badge(st, st.session_state)
@@ -23369,12 +23363,6 @@ if active_page == "Fantasy Lineup Assistant":
         from fantasy_in_season_state import prepare_fantasy_in_season_hydration
 
         prepare_fantasy_in_season_hydration(st.session_state)
-    except ImportError:
-        pass
-    try:
-        from fantasy_context_ui import render_active_league_context_badge
-
-        render_active_league_context_badge(st, st.session_state)
     except ImportError:
         pass
 

@@ -566,7 +566,7 @@ def render_waiver_wire_page(
         return
 
     st.caption(
-        "Waiver analysis uses **current-season MLB stats** and your **Fantasy Context Source** — "
+        "Waiver analysis uses **current-season MLB stats** and your **Fantasy Source** — "
         "not projections, ADP, Fantasy Edge, or draft-risk metrics."
     )
 

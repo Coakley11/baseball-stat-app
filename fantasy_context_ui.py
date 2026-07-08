@@ -9,6 +9,7 @@ from fantasy_context_source import (
     USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
     SOURCE_GENERIC,
     fantasy_context_source_badge_text,
+    fantasy_context_using_caption,
     live_draft_context_available,
     live_draft_sync_enabled,
     simulator_board_context_available,
@@ -23,7 +24,7 @@ FANTASY_RESEARCH_SYNC_HELP = (
     "When enabled, broader research pages treat players already drafted in the active fantasy "
     "context as **unavailable** and recalculate rankings using only remaining players. "
     "Also enables Draft Assistant Simulator for Saved Active Draft and Simulator override "
-    "contexts. Source follows your **Fantasy Context Source** priority (Live Draft, Simulator "
+    "contexts. Source follows your **Fantasy Source** priority (Live Draft, Simulator "
     "board, or Saved Draft Library Active Draft)."
 )
 
@@ -40,23 +41,16 @@ USE_SIMULATOR_BOARD_CONTEXT_HELP = (
 )
 
 FANTASY_CONTEXT_INTRO = (
-    "Your **Active Draft** feeds the main fantasy management tools: "
-    "Standings Tracker, Lineup Assistant, Waiver Wire, and Trades.\n\n"
-    "It does **not** automatically feed Draft Assistant Simulator or broader research pages "
-    "unless **Research Mode Sync** is on.\n\n"
-    "Want to practice without changing your Active Draft? Turn on an override below."
+    "Your Active Draft is the normal source for your fantasy tools.\n\n"
+    "Practicing? Turn on an override to temporarily use your Live Draft Room or "
+    "Draft Room Simulator board instead."
 )
 
 FANTASY_CONTEXT_OVERRIDE_FOOTER = "Turn the override off to go back to your Active Draft."
 
 RESEARCH_SYNC_INTRO = (
-    "When **Research Mode Sync** is enabled, the current fantasy context also affects "
-    "broader research and recommendation pages (Comparison Tool, Trend Value, Valuation, "
-    "Sleepers & Busts, Rankings, and similar) — drafted players are removed and the "
-    "remaining pool recalculates.\n\n"
-    "**Live Draft Room** is different: while a draft is **in progress**, Draft Assistant "
-    "Simulator follows the live board even when Research Mode Sync is off. Broader research "
-    "pages still require Research Mode Sync."
+    "Research Mode Sync removes players from your current draft context on research pages too, "
+    "so recommendations recalculate without already-drafted players."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (
@@ -101,6 +95,7 @@ def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
 # re-seeded into the widget keys on every render, so the user's choice is stable.
 _LIVE_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_live_context_toggle_widget"
 _SIM_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_sim_context_toggle_widget"
+_RESEARCH_SYNC_TOGGLE_WIDGET_KEY = "_fcs_research_sync_toggle_widget"
 
 
 def _sync_persisted_context_toggles_from_widgets(session: dict[str, Any]) -> None:
@@ -112,6 +107,10 @@ def _sync_persisted_context_toggles_from_widgets(session: dict[str, Any]) -> Non
     if _SIM_CONTEXT_TOGGLE_WIDGET_KEY in session:
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = bool(
             session.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY)
+        )
+    if _RESEARCH_SYNC_TOGGLE_WIDGET_KEY in session:
+        session[FANTASY_RESEARCH_SYNC_KEY] = bool(
+            session.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY)
         )
 
 
@@ -137,6 +136,17 @@ def _persist_context_settings() -> None:
 
 def _on_context_setting_changed(*_args, **_kwargs) -> None:
     """Persist fantasy context toggles immediately on change (Research Mode toggle)."""
+    _persist_context_settings()
+
+
+def _on_research_sync_toggle_changed() -> None:
+    try:
+        import streamlit as st
+    except Exception:
+        return
+    st.session_state[FANTASY_RESEARCH_SYNC_KEY] = bool(
+        st.session_state.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY)
+    )
     _persist_context_settings()
 
 
@@ -166,6 +176,7 @@ def _sync_widget_toggles_from_persisted(session: dict[str, Any]) -> None:
     """Persisted keys are source of truth for checkbox display after navigation."""
     session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
     session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
+    session[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY] = research_league_sync_enabled(session)
 
 
 def render_fantasy_context_source_controls(
@@ -175,7 +186,7 @@ def render_fantasy_context_source_controls(
     key_prefix: str = "fantasy_context_source",
 ) -> None:
     """Temporary workspace overrides — do not create saved leagues or replace Active Draft."""
-    st.markdown("##### Fantasy Context Source")
+    st.markdown("##### Fantasy Source")
     st.markdown(FANTASY_CONTEXT_INTRO)
     from fantasy_context_source import prepare_fantasy_context_source_defaults, resolve_fantasy_context_source
 
@@ -217,7 +228,7 @@ def render_fantasy_context_source_controls(
     _sync_persisted_context_toggles_from_widgets(session)
     st.caption(FANTASY_CONTEXT_OVERRIDE_FOOTER)
     effective = resolve_fantasy_context_source(session)
-    st.caption(f"Effective context: {fantasy_context_source_badge_text(session)}")
+    st.caption(fantasy_context_using_caption(session))
     if effective.kind == SOURCE_GENERIC:
         try:
             from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives
@@ -239,14 +250,16 @@ def render_fantasy_context_sync_control(
 ) -> None:
     """Research-page sync toggle + temporary workspace overrides."""
     render_fantasy_context_source_controls(st, session, key_prefix=key)
+    _sync_widget_toggles_from_persisted(session)
     st.markdown("##### Research Mode Sync")
     st.caption(RESEARCH_SYNC_INTRO)
     st.checkbox(
         FANTASY_RESEARCH_SYNC_LABEL,
-        key=FANTASY_RESEARCH_SYNC_KEY,
+        key=_RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
         help=FANTASY_RESEARCH_SYNC_HELP,
-        on_change=_on_context_setting_changed,
+        on_change=_on_research_sync_toggle_changed,
     )
+    _sync_persisted_context_toggles_from_widgets(session)
 
 
 def active_league_context_badge_text(session: dict[str, Any]) -> str:
@@ -296,6 +309,11 @@ def render_fantasy_context_badge(st: Any, session: dict[str, Any]) -> None:
     st.caption(fantasy_context_source_badge_text(session))
 
 
+def render_fantasy_using_caption(st: Any, session: dict[str, Any]) -> None:
+    """Single, consistent line naming the effective fantasy source for this page."""
+    st.caption(fantasy_context_using_caption(session))
+
+
 def render_fantasy_workflow_page_header(
     st: Any,
     session: dict[str, Any],
@@ -304,12 +322,11 @@ def render_fantasy_workflow_page_header(
     key_prefix: str = "fantasy_nav",
     page_label_fn=None,
 ) -> None:
-    """Fantasy workflow pages: context badge, optional saved-active draft, nav."""
-    render_fantasy_context_badge(st, session)
+    """Fantasy workflow pages: one context line + nav (no duplicate source blocks)."""
+    render_fantasy_using_caption(st, session)
     try:
-        from draft_archive_ui import render_saved_active_draft_summary, render_fantasy_page_navigation
+        from draft_archive_ui import render_fantasy_page_navigation
 
-        render_saved_active_draft_summary(st, session)
         render_fantasy_page_navigation(
             st,
             session,
