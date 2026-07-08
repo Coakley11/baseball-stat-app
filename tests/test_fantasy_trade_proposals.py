@@ -18,6 +18,7 @@ from fantasy_league_context import (
     build_ownership_map,
     get_active_league_context,
     get_league_context,
+    save_imported_league_context,
     save_simulator_league_context,
     upsert_league_context,
 )
@@ -84,11 +85,14 @@ def _multi_player_board() -> pd.DataFrame:
 def _seed_league(session: dict, *, assign_ownership: bool = True) -> dict:
     cfg = dict(session.get("draft_shared_settings") or _SHARED_DRAFT_CFG)
     session["draft_shared_settings"] = cfg
-    _, context = save_simulator_league_context(
+    _, context = save_imported_league_context(
         session,
         _league_board(),
         my_team_name="Donny",
+        draft_name="Trade Test League",
+        league_name="Trade Test League",
         config=cfg,
+        assign_team=False,
     )
     if assign_ownership:
         league_context_id = str(context.get("league_context_id") or "").strip()
@@ -114,11 +118,14 @@ def _seed_league(session: dict, *, assign_ownership: bool = True) -> dict:
 def _seed_multi_player_league(session: dict, *, assign_ownership: bool = True) -> dict:
     cfg = dict(session.get("draft_shared_settings") or _SHARED_DRAFT_CFG)
     session["draft_shared_settings"] = cfg
-    _, context = save_simulator_league_context(
+    _, context = save_imported_league_context(
         session,
         _multi_player_board(),
         my_team_name="Donny",
+        draft_name="Trade Test League",
+        league_name="Trade Test League",
         config=cfg,
+        assign_team=False,
     )
     if assign_ownership:
         league_context_id = str(context.get("league_context_id") or "").strip()

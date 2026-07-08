@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fantasy_league_context import (
+    CONTEXT_TYPE_REAL_LEAGUE,
     MIGRATION_STATUS_SINGLE_TEAM_LEGACY,
     get_active_league_context,
     get_league_context,
@@ -14,9 +15,13 @@ from fantasy_league_context import (
 )
 from fantasy_league_identity import ensure_league_identity, resolve_canonical_league_id
 
-TRADES_DISABLED_MESSAGE = (
-    "Trades require a shared saved league with team ownership assigned to multiple accounts."
+TRADES_MOCK_SIM_DISABLED_MESSAGE = (
+    "Trades are unavailable for solo mock drafts and draft simulations."
 )
+TRADES_AWAITING_CLAIMS_MESSAGE = (
+    "Trades unlock after at least two teams are claimed by different accounts."
+)
+TRADES_DISABLED_MESSAGE = TRADES_AWAITING_CLAIMS_MESSAGE
 TEAM_ASSIGNMENT_PROMPT = "Which team is yours?"
 
 
@@ -197,6 +202,14 @@ def distinct_account_owner_count(context: dict[str, Any] | None) -> int:
     return len(user_ids)
 
 
+def claimed_team_count(context: dict[str, Any] | None) -> int:
+    return sum(
+        1
+        for record in get_team_ownership(context).values()
+        if str(record.get("user_id") or "").strip()
+    )
+
+
 def needs_team_assignment(context: dict[str, Any] | None, user_id: str = "") -> bool:
     if not isinstance(context, dict):
         return False
@@ -210,42 +223,38 @@ def needs_team_assignment(context: dict[str, Any] | None, user_id: str = "") -> 
 
 
 def trades_enabled(context: dict[str, Any] | None, session: dict[str, Any] | None = None) -> tuple[bool, str]:
+    del session
     if not isinstance(context, dict):
-        return False, TRADES_DISABLED_MESSAGE
+        return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
+
+    context_type = str(context.get("context_type") or "").strip()
+    if context_type != CONTEXT_TYPE_REAL_LEAGUE:
+        return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
 
     context = ensure_league_identity(context)
     league_id = resolve_canonical_league_id(context)
     if not league_id:
-        return False, TRADES_DISABLED_MESSAGE
+        return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
 
     meta = context.get("metadata") or {}
     source_draft_id = str(meta.get("source_draft_id") or meta.get("draft_id") or "").strip()
     if not source_draft_id:
-        return False, TRADES_DISABLED_MESSAGE
+        return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
 
     if str(meta.get("migration_status") or "") == MIGRATION_STATUS_SINGLE_TEAM_LEGACY:
-        return False, TRADES_DISABLED_MESSAGE
+        return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
 
     rosters = context.get("league_rosters") or {}
     if not isinstance(rosters, dict) or len(rosters) < 2:
-        return False, TRADES_DISABLED_MESSAGE
+        return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
 
-    ownership = get_team_ownership(context)
-    user_ids = {
-        str(record.get("user_id") or "").strip()
-        for record in ownership.values()
-        if str(record.get("user_id") or "").strip()
-    }
-    if len(user_ids) < 2:
-        return False, TRADES_DISABLED_MESSAGE
+    if claimed_team_count(context) < 2 or distinct_account_owner_count(context) < 2:
+        return False, TRADES_AWAITING_CLAIMS_MESSAGE
 
     uid = _resolve_user_id()
     my_team = owned_team_for_user(context, uid)
     if not my_team:
         return False, TEAM_ASSIGNMENT_PROMPT
-
-    if len(user_ids) == 1:
-        return False, TRADES_DISABLED_MESSAGE
 
     return True, ""
 

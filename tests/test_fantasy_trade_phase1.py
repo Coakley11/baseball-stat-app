@@ -13,12 +13,14 @@ from draft_archive_state import get_draft_archive
 from fantasy_league_context import (
     get_active_league_context,
     get_league_context,
+    save_imported_league_context,
     save_simulator_league_context,
     upsert_league_context,
 )
 from fantasy_league_identity import compute_draft_fingerprint, ensure_league_identity, resolve_canonical_league_id
 from fantasy_league_team_ownership import (
-    TRADES_DISABLED_MESSAGE,
+    TRADES_AWAITING_CLAIMS_MESSAGE,
+    TRADES_MOCK_SIM_DISABLED_MESSAGE,
     assign_team_owner_to_context,
     trades_enabled,
 )
@@ -78,14 +80,51 @@ class TradePhase1EligibilityTests(unittest.TestCase):
 
     def test_solo_simulator_without_ownership_disables_trades(self) -> None:
         session: dict = {}
-        context = _seed_league(session, assign_ownership=False)
+        board = _league_board()
+        _, context = save_simulator_league_context(session, board, my_team_name="Donny")
         enabled, msg = trades_enabled(context, session)
         self.assertFalse(enabled)
-        self.assertEqual(msg, TRADES_DISABLED_MESSAGE)
+        self.assertEqual(msg, TRADES_MOCK_SIM_DISABLED_MESSAGE)
 
-    def test_two_account_ownership_enables_trades(self) -> None:
+    def test_mock_league_with_two_owners_still_disables_trades(self) -> None:
         session: dict = {}
-        context = _seed_league(session)
+        board = _league_board()
+        _, context = save_simulator_league_context(session, board, my_team_name="Donny")
+        league_context_id = str(context.get("league_context_id") or "").strip()
+        loaded = get_league_context(session, league_context_id) or context
+        loaded = assign_team_owner_to_context(
+            loaded, "Donny", user_id="user:donny", email="donny@test", display_name="Daniel"
+        )
+        loaded = assign_team_owner_to_context(
+            loaded, "Team 2", user_id="user:seal11", email="seal11@test", display_name="Seal11"
+        )
+        context = upsert_league_context(session, loaded)
+        with _as_user("user:donny"):
+            enabled, msg = trades_enabled(context, session)
+        self.assertFalse(enabled)
+        self.assertEqual(msg, TRADES_MOCK_SIM_DISABLED_MESSAGE)
+
+    def test_two_account_real_league_enables_trades(self) -> None:
+        session: dict = {}
+        board = _league_board()
+        _, context = save_imported_league_context(
+            session,
+            board,
+            my_team_name="Donny",
+            draft_name="Imported Trade League",
+            league_name="Imported Trade League",
+            config=dict(_SHARED_DRAFT_CFG),
+            assign_team=False,
+        )
+        league_context_id = str(context.get("league_context_id") or "").strip()
+        loaded = get_league_context(session, league_context_id) or context
+        loaded = assign_team_owner_to_context(
+            loaded, "Donny", user_id="user:donny", email="donny@test", display_name="Daniel"
+        )
+        loaded = assign_team_owner_to_context(
+            loaded, "Team 2", user_id="user:seal11", email="seal11@test", display_name="Seal11"
+        )
+        context = upsert_league_context(session, loaded)
         with _as_user("user:donny"):
             enabled, msg = trades_enabled(context, session)
         self.assertTrue(enabled)
@@ -129,7 +168,15 @@ class TradePhase1CrossAccountTests(unittest.TestCase):
 
         session_b: dict = {"draft_shared_settings": dict(_SHARED_DRAFT_CFG)}
         board = _league_board()
-        _, ctx_b = save_simulator_league_context(session_b, board, my_team_name="Team 2", config=_SHARED_DRAFT_CFG)
+        _, ctx_b = save_imported_league_context(
+            session_b,
+            board,
+            my_team_name="Team 2",
+            draft_name="Imported Trade League B",
+            league_name="Imported Trade League B",
+            config=_SHARED_DRAFT_CFG,
+            assign_team=False,
+        )
         loaded = get_league_context(session_b, str(ctx_b.get("league_context_id") or ""))
         assert loaded is not None
         loaded = assign_team_owner_to_context(loaded, "Donny", user_id="user:donny", email="donny@test", display_name="Daniel")
