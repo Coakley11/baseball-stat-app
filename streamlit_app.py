@@ -19283,6 +19283,25 @@ if active_page == "Draft Room Simulator":
     )
     st.caption("Use **League setup** first, then **Board** to log picks. **Draft Assistant** reads this board automatically.")
 
+    if developer_mode_enabled():
+        try:
+            from draft_room_state import (
+                ensure_simulator_board_for_settings,
+                prepare_draft_room_state,
+                render_draft_room_action_trace_panel,
+            )
+
+            prepare_draft_room_state(st.session_state)
+            ensure_simulator_board_for_settings(st.session_state)
+            render_draft_room_action_trace_panel(
+                st,
+                st.session_state,
+                developer_mode=True,
+            )
+        except Exception as _trace_panel_exc:
+            with st.expander("Draft board action trace (last reset/undo)", expanded=True):
+                st.error(f"Trace panel failed to load: {_trace_panel_exc}")
+
     market_df = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_room")
 
@@ -19494,13 +19513,11 @@ if active_page == "Draft Room Simulator":
             ensure_simulator_board_for_settings,
             is_draft_room_locally_dirty,
             prepare_draft_room_state,
-            render_draft_room_action_trace_panel,
         )
 
         prepare_draft_room_state(st.session_state)
         ensure_simulator_board_for_settings(st.session_state)
         _canonical_pick_count = draft_room_restore_stats(st.session_state).get("pick_count", 0)
-        render_draft_room_action_trace_panel(st, st.session_state)
     except Exception:
         _canonical_pick_count = 0
         effective_board_pick_count = None  # type: ignore[assignment,misc]

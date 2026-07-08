@@ -139,11 +139,37 @@ def refresh_draft_room_action_trace_after_prepare(session: dict[str, Any]) -> No
     session[DRAFT_ROOM_ACTION_TRACE_KEY] = trace
 
 
-def render_draft_room_action_trace_panel(st: Any, session: dict[str, Any]) -> None:
+def render_draft_room_action_trace_panel(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    developer_mode: bool = False,
+) -> None:
     trace = session.get(DRAFT_ROOM_ACTION_TRACE_KEY)
-    if not isinstance(trace, dict):
+    if not developer_mode and not isinstance(trace, dict):
         return
     with st.expander("Draft board action trace (last reset/undo)", expanded=True):
+        if developer_mode:
+            try:
+                from suite_deploy_marker import (
+                    GIT_COMMIT_SHORT,
+                    format_build_label,
+                    resolve_commit_source,
+                )
+
+                st.caption(
+                    f"Build `{format_build_label()}` · deploy_commit `{GIT_COMMIT_SHORT}` · "
+                    f"source `{resolve_commit_source()}`"
+                )
+            except Exception:
+                st.caption("deploy_commit: unknown (suite_deploy_marker unavailable)")
+        if not isinstance(trace, dict):
+            st.info("No reset/undo action trace yet.")
+            st.caption(
+                f"Click **Reset Draft Room Simulator** or **Undo Last Pick** on the **Board** tab. "
+                f"Session key `{DRAFT_ROOM_ACTION_TRACE_KEY}` is not set."
+            )
+            return
         st.json(trace)
 
 
