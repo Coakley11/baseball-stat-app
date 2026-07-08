@@ -314,21 +314,6 @@ def resolve_active_team_context(
                 pass
             return ActiveTeamContext(source=SOURCE_NONE, fantasy_format=fmt)
 
-    context = None
-    try:
-        from fantasy_league_context import get_active_league_context
-
-        context = get_active_league_context(session, respect_source_priority=False)
-    except Exception:
-        context = None
-
-    if isinstance(context, dict) and str(context.get("my_team_name") or "").strip():
-        return _resolve_from_league(context, pool_df=pool_df)
-
-    sim = _resolve_from_simulator(session, pool_df=pool_df)
-    if sim is not None:
-        return sim
-
     fmt = "5x5 Roto"
     try:
         from shared_draft_context import read_canonical_draft_settings

@@ -105,12 +105,28 @@ class ActiveTeamContextTests(unittest.TestCase):
         self.assertEqual(ctx.source, SOURCE_LEAGUE)
         self.assertEqual(ctx.active_team, "Daniel")
 
-    def test_simulator_used_when_no_active_league(self) -> None:
+    def test_live_draft_used_when_no_active_league(self) -> None:
         ctx = resolve_active_team_context(_simulator_session(), pool_df=_pool())
-        self.assertEqual(ctx.source, SOURCE_SIMULATOR)
+        from active_team_context import SOURCE_LIVE_DRAFT
+
+        self.assertEqual(ctx.source, SOURCE_LIVE_DRAFT)
         self.assertEqual(ctx.active_team, "Sim Team")
         self.assertTrue(ctx.is_unavailable("Aaron Judge"))
         self.assertTrue(ctx.is_unavailable("Juan Soto"))
+
+    def test_simulator_board_used_when_no_active_league_or_live_room(self) -> None:
+        board = pd.DataFrame(
+            {
+                "Round": [1, 1],
+                "Pick": [1, 2],
+                "Team": ["Sim Team", "Opponent"],
+                "Player": ["Aaron Judge", "Juan Soto"],
+            }
+        )
+        session = {"draft_room_table": board, "room_your_team": "Sim Team"}
+        ctx = resolve_active_team_context(session, pool_df=_pool())
+        self.assertEqual(ctx.source, SOURCE_SIMULATOR)
+        self.assertEqual(ctx.active_team, "Sim Team")
 
     def test_no_context_returns_empty_and_leaves_pool_untouched(self) -> None:
         ctx = resolve_active_team_context({}, pool_df=_pool())

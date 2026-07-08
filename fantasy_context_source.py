@@ -17,6 +17,24 @@ SOURCE_SIMULATOR_BOARD = "simulator_board"
 SOURCE_ACTIVE_DRAFT = "active_draft"
 SOURCE_GENERIC = "generic"
 
+CORE_FANTASY_PAGES: frozenset[str] = frozenset({
+    "Fantasy Standings Tracker",
+    "Fantasy Lineup Assistant",
+    "Waiver Wire",
+    "Trades",
+})
+
+RESEARCH_FANTASY_PAGES: frozenset[str] = frozenset({
+    "Draft Assistant Simulator",
+    "Comparison Tool",
+    "Trend Value",
+    "Valuation",
+    "Fantasy Sleepers & Busts",
+    "Rankings",
+    "Leaderboards",
+    "Player Search",
+})
+
 _BADGE_PREFIX = "Fantasy Context Source:"
 
 
@@ -92,10 +110,12 @@ def live_draft_context_available(session: dict[str, Any]) -> bool:
     return False
 
 
-def simulator_board_context_available(session: dict[str, Any]) -> bool:
-    """True when the Draft Room Simulator workspace has picks and live is not overriding."""
+def simulator_board_context_available(session: dict[str, Any], *, ignore_live_override: bool = False) -> bool:
+    """True when the Draft Room Simulator workspace has picks."""
     if _simulator_board_pick_count(session) <= 0:
         return False
+    if ignore_live_override:
+        return True
     try:
         from draft_room_state import is_live_draft_runtime_active
 
@@ -140,12 +160,38 @@ def _active_draft_label(session: dict[str, Any], ctx: dict[str, Any]) -> str:
     return label or str(ctx.get("my_team_name") or "Active Draft").strip()
 
 
-def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSource:
-    """Canonical priority: Live Draft > Simulator Board > Saved Active Draft > Generic."""
+def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | None:
+    """Temporary override only — user explicitly checked a workspace override box."""
     if live_draft_sync_enabled(session) and live_draft_context_available(session):
-        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room")
+        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)")
     if simulator_board_sync_enabled(session) and simulator_board_context_available(session):
+        return FantasyContextSource(SOURCE_SIMULATOR_BOARD, "Draft Room Simulator (temporary override)")
+    return None
+
+
+def _resolve_natural_board_source(session: dict[str, Any]) -> FantasyContextSource | None:
+    """Unsaved workspace boards when there is no Saved Active Draft (no override required)."""
+    if saved_active_draft_available(session):
+        return None
+    if live_draft_context_available(session):
+        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room")
+    if simulator_board_context_available(session, ignore_live_override=True):
         return FantasyContextSource(SOURCE_SIMULATOR_BOARD, "Draft Room Simulator")
+    return None
+
+
+def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSource:
+    """Canonical priority for core fantasy + research (when Research Mode Sync is on).
+
+    1. Temporary workspace override (Live or Simulator checkbox), if enabled.
+    2. Saved Active Draft / Active League.
+    3. Current unsaved Live or Simulator board when no Active Draft exists.
+    4. Generic/default team context.
+    """
+    override = _resolve_override_source(session)
+    if override is not None:
+        return override
+
     saved = _get_saved_active_league_context(session)
     if isinstance(saved, dict) and str(saved.get("my_team_name") or "").strip():
         name = _active_draft_label(session, saved)
@@ -154,7 +200,35 @@ def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSou
             f"Active Draft: {name}",
             draft_label=name,
         )
+
+    natural = _resolve_natural_board_source(session)
+    if natural is not None:
+        return natural
+
     return FantasyContextSource(SOURCE_GENERIC, "Generic/default simulator context")
+
+
+def is_core_fantasy_page(page_name: str) -> bool:
+    return str(page_name or "").strip() in CORE_FANTASY_PAGES
+
+
+def is_research_fantasy_page(page_name: str) -> bool:
+    return str(page_name or "").strip() in RESEARCH_FANTASY_PAGES
+
+
+def fantasy_context_applies_to_page(session: dict[str, Any], page_name: str) -> bool:
+    """Core league pages always use fantasy context; research pages only when sync is on."""
+    page = str(page_name or "").strip()
+    if page in CORE_FANTASY_PAGES:
+        return True
+    if page in RESEARCH_FANTASY_PAGES:
+        try:
+            from fantasy_context_ui import research_league_sync_enabled
+
+            return research_league_sync_enabled(session)
+        except ImportError:
+            return bool(session.get("use_active_league_context_waiver_filter"))
+    return False
 
 
 def _context_team_name(session: dict[str, Any]) -> str:

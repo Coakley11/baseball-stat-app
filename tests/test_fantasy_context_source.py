@@ -172,6 +172,37 @@ class FantasyContextSourceTests(unittest.TestCase):
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
         self.assertFalse(simulator_board_context_available(session))
 
+    def test_natural_simulator_when_no_active_draft_and_no_override(self) -> None:
+        session = _simulator_board_session()
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        session.pop("fantasy_league_context_state", None)
+        session.pop("draft_archive_teams", None)
+        source = resolve_fantasy_context_source(session)
+        self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
+
+    def test_active_draft_blocks_natural_simulator_without_override(self) -> None:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        source = resolve_fantasy_context_source(session)
+        self.assertEqual(source.kind, SOURCE_ACTIVE_DRAFT)
+
+    def test_checkbox_widget_matches_persisted_on_navigation(self) -> None:
+        from fantasy_context_ui import (
+            USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+            _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+            _sync_widget_toggles_from_persisted,
+        )
+
+        session: dict = {
+            USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY: True,
+            _SIM_CONTEXT_TOGGLE_WIDGET_KEY: False,
+        }
+        _sync_widget_toggles_from_persisted(session)
+        self.assertTrue(session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY])
+        self.assertTrue(session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY])
 
     def test_checkbox_widget_syncs_persisted_key(self) -> None:
         from fantasy_context_ui import (

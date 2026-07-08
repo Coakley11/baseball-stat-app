@@ -25,18 +25,30 @@ FANTASY_RESEARCH_SYNC_HELP = (
     "board, or Saved Draft Library Active Draft)."
 )
 
-USE_LIVE_DRAFT_CONTEXT_LABEL = "Use Live Draft Room as active fantasy context"
+USE_LIVE_DRAFT_CONTEXT_LABEL = "Live Draft Room override"
 USE_LIVE_DRAFT_CONTEXT_HELP = (
-    "When enabled and a Live Draft Room workspace has picks, that **unsaved** live "
-    "draft feeds fantasy and research pages. This does **not** save the draft to "
-    "Saved Draft Library. Turn off to keep using your Saved Active Draft instead."
+    "Temporarily use your current Live Draft Room board instead of your Active Draft. "
+    "Does not save a draft or change your Active Draft."
 )
 
-USE_SIMULATOR_BOARD_CONTEXT_LABEL = "Use Draft Room Simulator board as active fantasy context"
+USE_SIMULATOR_BOARD_CONTEXT_LABEL = "Draft Room Simulator override"
 USE_SIMULATOR_BOARD_CONTEXT_HELP = (
-    "When enabled and the simulator workspace has picks, that **unsaved** board feeds "
-    "fantasy and research pages. This does **not** create a Saved Draft or Active Draft. "
-    "Turn off to keep using your Saved Draft Library Active Draft."
+    "Temporarily use your Draft Room Simulator board instead of your Active Draft. "
+    "Does not save a draft or change your Active Draft."
+)
+
+FANTASY_CONTEXT_INTRO = (
+    "Your **Active Draft** feeds the main fantasy management tools: "
+    "Standings Tracker, Lineup Assistant, Waiver Wire, and Trades.\n\n"
+    "Want to practice without changing your Active Draft? Turn on an override below."
+)
+
+FANTASY_CONTEXT_OVERRIDE_FOOTER = "Turn the override off to go back to your Active Draft."
+
+RESEARCH_SYNC_INTRO = (
+    "When **Research Mode Sync** is enabled, the same fantasy context also affects "
+    "research and recommendation pages (Comparison Tool, Trend Value, Valuation, "
+    "Sleepers & Busts, Draft Assistant Simulator, Rankings, and similar)."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (
@@ -142,56 +154,61 @@ def _on_sim_context_toggle_changed() -> None:
     _persist_context_settings()
 
 
+def _sync_widget_toggles_from_persisted(session: dict[str, Any]) -> None:
+    """Persisted keys are source of truth for checkbox display after navigation."""
+    session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
+    session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
+
+
 def render_fantasy_context_source_controls(
     st: Any,
     session: dict[str, Any],
     *,
     key_prefix: str = "fantasy_context_source",
 ) -> None:
-    """User toggles for which draft source feeds fantasy/research pages."""
+    """Temporary workspace overrides — do not create saved leagues or replace Active Draft."""
     st.markdown("##### Fantasy Context Source")
-    st.caption(
-        "**Saved Draft Library** = drafts you intentionally saved. "
-        "**Active Draft** = the saved draft you selected. "
-        "**Simulator / Live boards** = unsaved workspaces only — they never appear in the library unless you save them."
-    )
-    st.caption(
-        "Priority when enabled: **Live Draft Room (unsaved)** → "
-        "**Draft Room Simulator board (unsaved)** → **Saved Active Draft** → generic defaults."
-    )
-    from fantasy_context_source import prepare_fantasy_context_source_defaults
+    st.markdown(FANTASY_CONTEXT_INTRO)
+    from fantasy_context_source import prepare_fantasy_context_source_defaults, resolve_fantasy_context_source
 
     prepare_fantasy_context_source_defaults(session)
+    _sync_widget_toggles_from_persisted(session)
+
+    effective = resolve_fantasy_context_source(session)
     live_available = live_draft_context_available(session)
     sim_available = simulator_board_context_available(session)
-    # Seed widget keys only when absent (after navigation GC). Never overwrite an
-    # in-flight widget value before render — that clobbered the user's click.
-    if _LIVE_CONTEXT_TOGGLE_WIDGET_KEY not in session:
-        session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
-    if _SIM_CONTEXT_TOGGLE_WIDGET_KEY not in session:
-        session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
+
     st.checkbox(
         USE_LIVE_DRAFT_CONTEXT_LABEL,
         key=_LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
         help=USE_LIVE_DRAFT_CONTEXT_HELP,
         on_change=_on_live_context_toggle_changed,
     )
-    if not live_available:
-        st.caption("Live override stays saved, but only takes effect once a Live Draft Room workspace has picks.")
+    if live_draft_sync_enabled(session):
+        if effective.kind == "live_draft":
+            st.caption("✓ Live Draft Room is currently driving fantasy context.")
+        elif not live_available:
+            st.caption("Override is on, but no Live Draft Room picks are available yet.")
+    elif not live_available:
+        st.caption("No Live Draft Room board with picks yet.")
+
     st.checkbox(
         USE_SIMULATOR_BOARD_CONTEXT_LABEL,
         key=_SIM_CONTEXT_TOGGLE_WIDGET_KEY,
         help=USE_SIMULATOR_BOARD_CONTEXT_HELP,
         on_change=_on_sim_context_toggle_changed,
     )
-    if not sim_available:
-        st.caption("Simulator override stays saved, but only takes effect once the simulator workspace has picks.")
+    if simulator_board_sync_enabled(session):
+        if effective.kind == "simulator_board":
+            st.caption("✓ Draft Room Simulator is currently driving fantasy context.")
+        elif not sim_available:
+            st.caption("Override is on, but the simulator board has no picks yet.")
+    elif not sim_available:
+        st.caption("No simulator board with picks yet.")
+
     _sync_persisted_context_toggles_from_widgets(session)
-    st.caption(
-        "When both overrides are off (or unavailable), **Saved Draft Library Active Draft** "
-        "controls fantasy pages."
-    )
-    st.caption("Affected: " + ", ".join(FANTASY_CONTEXT_PAGES) + ".")
+    st.caption(FANTASY_CONTEXT_OVERRIDE_FOOTER)
+    st.caption(f"Effective context: {fantasy_context_source_badge_text(session)}")
 
 
 def render_fantasy_context_sync_control(
@@ -200,20 +217,15 @@ def render_fantasy_context_sync_control(
     *,
     key: str = "library_fantasy_context_sync",
 ) -> None:
-    """Research-page sync toggle + context source controls."""
+    """Research-page sync toggle + temporary workspace overrides."""
     render_fantasy_context_source_controls(st, session, key_prefix=key)
     st.markdown("##### Research Mode Sync")
+    st.caption(RESEARCH_SYNC_INTRO)
     st.checkbox(
         FANTASY_RESEARCH_SYNC_LABEL,
         key=FANTASY_RESEARCH_SYNC_KEY,
         help=FANTASY_RESEARCH_SYNC_HELP,
         on_change=_on_context_setting_changed,
-    )
-    st.caption(
-        "Affected research pages: "
-        + ", ".join(RESEARCH_SYNC_PAGES)
-        + ". When enabled, recommendation tables exclude drafted players and re-rank the "
-        "remaining pool. Player lookup still allows viewing any player you search for."
     )
 
 
