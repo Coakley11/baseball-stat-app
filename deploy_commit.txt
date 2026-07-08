@@ -1,3 +1,2 @@
-6357021  # auto-generated; Streamlit Cloud reads this at runtime; rebuild 2026-07-08
-
+7fecfa8  # auto-generated; Streamlit Cloud reads this at runtime
 branch: dev
