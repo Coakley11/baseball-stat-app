@@ -9,7 +9,9 @@ from fantasy_context_source import (
     USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
     fantasy_context_source_badge_text,
     live_draft_context_available,
+    live_draft_sync_enabled,
     simulator_board_context_available,
+    simulator_board_sync_enabled,
 )
 
 # Persisted session key (legacy name retained for cloud/disk compatibility).
@@ -72,8 +74,16 @@ def fantasy_context_sync_enabled(session: dict[str, Any]) -> bool:
     return research_league_sync_enabled(session)
 
 
-def _on_context_setting_changed(*_args, **_kwargs) -> None:
-    """Persist fantasy context toggles immediately on change."""
+# Separate widget keys from the persisted source-of-truth keys. Streamlit garbage
+# collects widget-owned session keys when the widget is not rendered (e.g. after
+# navigating to another page), which flipped the checkbox back to its default. The
+# persisted keys (USE_*_AS_FANTASY_CONTEXT_KEY) live in the workspace blob and are
+# re-seeded into the widget keys on every render, so the user's choice is stable.
+_LIVE_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_live_context_toggle_widget"
+_SIM_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_sim_context_toggle_widget"
+
+
+def _persist_context_settings() -> None:
     try:
         import streamlit as st
     except Exception:
@@ -84,6 +94,33 @@ def _on_context_setting_changed(*_args, **_kwargs) -> None:
         force_save_baseball_state(st, reason="fantasy_context_source_changed")
     except Exception:
         pass
+
+
+def _on_context_setting_changed(*_args, **_kwargs) -> None:
+    """Persist fantasy context toggles immediately on change (Research Mode toggle)."""
+    _persist_context_settings()
+
+
+def _on_live_context_toggle_changed() -> None:
+    try:
+        import streamlit as st
+    except Exception:
+        return
+    st.session_state[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = bool(
+        st.session_state.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY)
+    )
+    _persist_context_settings()
+
+
+def _on_sim_context_toggle_changed() -> None:
+    try:
+        import streamlit as st
+    except Exception:
+        return
+    st.session_state[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = bool(
+        st.session_state.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY)
+    )
+    _persist_context_settings()
 
 
 def render_fantasy_context_source_controls(
@@ -108,22 +145,26 @@ def render_fantasy_context_source_controls(
     prepare_fantasy_context_source_defaults(session)
     live_available = live_draft_context_available(session)
     sim_available = simulator_board_context_available(session)
+    # Re-seed widget keys from the persisted source-of-truth so navigation / widget
+    # garbage collection cannot flip the user's saved choice.
+    session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = live_draft_sync_enabled(session)
+    session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = simulator_board_sync_enabled(session)
     st.checkbox(
         USE_LIVE_DRAFT_CONTEXT_LABEL,
-        key=USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
+        key=_LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
         help=USE_LIVE_DRAFT_CONTEXT_HELP,
-        on_change=_on_context_setting_changed,
+        on_change=_on_live_context_toggle_changed,
     )
     if not live_available:
-        st.caption("Live override is off until a Live Draft Room workspace has picks.")
+        st.caption("Live override stays saved, but only takes effect once a Live Draft Room workspace has picks.")
     st.checkbox(
         USE_SIMULATOR_BOARD_CONTEXT_LABEL,
-        key=USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+        key=_SIM_CONTEXT_TOGGLE_WIDGET_KEY,
         help=USE_SIMULATOR_BOARD_CONTEXT_HELP,
-        on_change=_on_context_setting_changed,
+        on_change=_on_sim_context_toggle_changed,
     )
     if not sim_available:
-        st.caption("Simulator override is off until the simulator workspace has picks.")
+        st.caption("Simulator override stays saved, but only takes effect once the simulator workspace has picks.")
     st.caption(
         "When both overrides are off (or unavailable), **Saved Draft Library Active Draft** "
         "controls fantasy pages."

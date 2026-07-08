@@ -553,6 +553,13 @@ def render_waiver_wire_page(
             else:
                 st.info(message)
 
+    try:
+        from fantasy_context_source import fantasy_context_source_badge_text
+
+        st.caption(fantasy_context_source_badge_text(session))
+    except ImportError:
+        pass
+
     my_team = str(context.get("my_team_name") or "").strip()
     if my_team:
         st.caption(f"My team: **{my_team}**")
