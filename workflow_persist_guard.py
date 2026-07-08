@@ -1398,6 +1398,15 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
 
     account_email = str(diag.get("account_email") or diag.get("account_external_id") or "—")
     account_user_id = str(diag.get("account_user_id") or "—")
+    account_external_id = str(diag.get("account_external_id") or "—")
+    allowed_workspaces: tuple[str, ...] = ()
+    try:
+        from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(session):
+            allowed_workspaces = tuple(allowed_workspaces_for_session(session))
+    except ImportError:
+        pass
     auth_labels = _resolve_probe_auth_labels(session, diag)
     persistence_key_path = (
         f"session[{DRAFT_ARCHIVE_KEY}] → disk[{DRAFT_ARCHIVE_KEY}] → "
@@ -1415,6 +1424,8 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "user_id": auth_labels["user_id_display"],
         "workspace_id": workspace_id or "—",
         "owned_workspace_id": owned_workspace_id or "—",
+        "account_external_id": account_external_id or "—",
+        "allowed_workspaces": allowed_workspaces,
         "cloud_app_key": str(diag.get("cloud_app_key") or cloud_write_app_key or "—"),
         "session_draft_count": session_draft_count,
         "cloud_draft_count": cloud_draft_count,

@@ -264,6 +264,66 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
                 self.assertEqual(first, "coakley11")
                 self.assertEqual(second, "coakley11")
 
+    def test_owned_workspace_resolves_when_disk_readonly(self) -> None:
+        """Read-only cloud disk must not blank the owned slug or leak daniel.
+
+        Regression for the production bug: coakley11 authenticated but shown
+        Workspace daniel / owned blank / cloud key baseball. The un-guarded
+        workspace_dir().mkdir() raised OSError, ensure() never cached the slug,
+        the clamp no-oped, and daniel stuck.
+        """
+        session = _auth_session(
+            user_id="961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        session["_suite_active_workspace_id"] = "daniel"
+        st = _FakeSt(session)
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch(
+            "suite_workspace_registry._write_registry", return_value=False
+        ), patch(
+            "suite_workspace.workspace_dir",
+            side_effect=OSError("read-only file system"),
+        ), patch("suite_workspace.persist_active_workspace_id", return_value=False):
+            # ensure_owned_workspace_for_session must not raise and must cache slug.
+            record = ensure_owned_workspace_for_session(session)
+            self.assertEqual(record["workspace_id"], "coakley11")
+            self.assertEqual(get_owned_workspace_id(session), "coakley11")
+            # enforce clamps daniel -> coakley11 even though disk writes fail.
+            enforce_workspace_ownership(session)
+            self.assertEqual(session["_suite_active_workspace_id"], "coakley11")
+
+    def test_clamp_failure_does_not_clear_auth_session(self) -> None:
+        """restore_auth_session must keep a valid session even if the clamp raises."""
+        from suite_auth import AUTH_SESSION_KEY, restore_auth_session
+
+        session = _auth_session(
+            user_id="961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        # Force the token-restore path to be treated as "already authenticated"
+        # after apply, then blow up inside the clamp.
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", side_effect=[False, True]
+        ), patch(
+            "suite_auth._auth_api"
+        ) as auth_api, patch(
+            "suite_auth._user_from_auth_response",
+            return_value={"id": session["_suite_auth_user_id"], "email": session["_suite_auth_user_email"]},
+        ), patch(
+            "suite_auth._tokens_from_auth_response", return_value={}
+        ), patch(
+            "suite_auth.enforce_workspace_ownership", side_effect=OSError("disk")
+        ):
+            session["_suite_auth_tokens"] = {"access_token": "a", "refresh_token": "r"}
+            auth_api.return_value.set_session.return_value = object()
+            ok = restore_auth_session(session)
+            self.assertTrue(ok)
+            self.assertTrue(session.get(AUTH_SESSION_KEY))
+
 
 if __name__ == "__main__":
     unittest.main()

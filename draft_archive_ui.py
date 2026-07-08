@@ -292,6 +292,10 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         st.markdown(f"**Cloud user ID:** `{probe.get('user_id') or '—'}`")
         st.markdown(f"**Workspace ID:** `{probe.get('workspace_id') or '—'}`")
         st.markdown(f"**Owned workspace ID:** `{probe.get('owned_workspace_id') or '—'}`")
+        st.markdown(f"**Account scope (external id):** `{probe.get('account_external_id') or '—'}`")
+        _allowed = probe.get("allowed_workspaces") or ()
+        if _allowed:
+            st.caption(f"Allowed workspaces: {', '.join(f'`{w}`' for w in _allowed)}")
         st.markdown(f"**Cloud app key:** `{probe.get('cloud_app_key') or '—'}`")
     with col_b:
         st.markdown(f"**Session draft count:** {int(probe.get('session_draft_count') or 0)}")

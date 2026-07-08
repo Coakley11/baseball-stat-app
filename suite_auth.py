@@ -150,31 +150,40 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         from suite_workspace import get_active_workspace_id, normalize_workspace_id, set_active_workspace_id
         from suite_workspace_registry import (
             ensure_owned_workspace_for_session,
-            get_owned_workspace_id,
+            is_admin_account,
+            resolve_owned_workspace_id,
             workspace_access_allowed,
         )
 
         st = SimpleNamespace(session_state=session_state)
         ensure_owned_workspace_for_session(session_state)
-        owned = normalize_workspace_id(get_owned_workspace_id(session_state))
+        # Use resolve_owned_workspace_id (derives from email/external id even when
+        # the registry/session cache is empty). We are already past the
+        # authenticated guard above, so this is non-empty for real accounts —
+        # preventing the clamp from silently no-oping into shared "daniel".
+        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state))
         allowed = tuple(
             normalize_workspace_id(w)
             for w in allowed_workspaces_for_session(session_state)
         )
         active = normalize_workspace_id(get_active_workspace_id(st))
+        admin = is_admin_account(session_state=session_state)
+
+        # Non-admin accounts are hard-clamped to their single owned workspace.
+        # A stale ?suite_workspace=daniel, persisted file, or session key can
+        # never override the signed-in account's owned workspace.
+        if owned and not admin:
+            if active != owned:
+                set_active_workspace_id(st, owned)
+            return
+
+        # Admin (daniel) retains multi-workspace switching, but cannot remain on
+        # a workspace outside the allowed set.
         if owned and active != owned and not workspace_access_allowed(active, session_state=session_state):
             set_active_workspace_id(st, owned)
             return
-        if owned and len(allowed) == 1 and active != owned:
-            set_active_workspace_id(st, owned)
-            return
-        if preferred := normalize_workspace_id(resolve_auth_external_id(session_state)):
-            if preferred in allowed and active != preferred and len(allowed) == 1:
-                set_active_workspace_id(st, preferred)
-                return
         if active not in allowed and allowed:
-            target = owned or allowed[0]
-            set_active_workspace_id(st, target)
+            set_active_workspace_id(st, owned or allowed[0])
     except ImportError:
         pass
 
@@ -429,11 +438,16 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
                 )
             except ImportError:
                 pass
-        enforce_workspace_ownership(session_state)
-        return True
     except Exception:
         _clear_auth_session(session_state, st=st)
         return False
+    # Clamp workspace outside the session-clearing try: a workspace resolution
+    # failure must never invalidate an otherwise-valid authenticated session.
+    try:
+        enforce_workspace_ownership(session_state)
+    except Exception:
+        pass
+    return True
 
 
 def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:

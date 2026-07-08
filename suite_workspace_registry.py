@@ -205,25 +205,32 @@ def ensure_owned_workspace_for_session(session_state: dict[str, Any]) -> dict[st
     if existing and str(existing.get(WORKSPACE_ID_KEY) or "").strip():
         slug = str(existing[WORKSPACE_ID_KEY]).strip()
         label = str(existing.get(WORKSPACE_LABEL_KEY) or label)
-    else:
-        reg = _read_registry()
-        by_owner = dict(reg.get("by_owner") or {})
-        now = _utc_now_iso()
-        by_owner[owner_user_id] = {
-            OWNER_USER_ID_KEY: owner_user_id,
-            OWNER_EXTERNAL_ID_KEY: ctx["owner_external_id"],
-            WORKSPACE_ID_KEY: slug,
-            WORKSPACE_LABEL_KEY: label,
-            CREATED_AT_KEY: now,
-            UPDATED_AT_KEY: now,
-        }
-        reg["by_owner"] = by_owner
-        _write_registry(reg)
-        from suite_workspace import workspace_dir
-
-        workspace_dir(slug).mkdir(parents=True, exist_ok=True)
+    # Cache identity on the session BEFORE any disk I/O so callers always get a
+    # non-empty owned slug even if the registry/workspace dir is read-only
+    # (Streamlit Cloud ephemeral disk). A silent empty here previously let the
+    # ownership clamp no-op and leak the shared "daniel" workspace.
     session_state[SESSION_OWNED_WORKSPACE_KEY] = slug
     session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = label
+    if not (existing and str(existing.get(WORKSPACE_ID_KEY) or "").strip()):
+        try:
+            reg = _read_registry()
+            by_owner = dict(reg.get("by_owner") or {})
+            now = _utc_now_iso()
+            by_owner[owner_user_id] = {
+                OWNER_USER_ID_KEY: owner_user_id,
+                OWNER_EXTERNAL_ID_KEY: ctx["owner_external_id"],
+                WORKSPACE_ID_KEY: slug,
+                WORKSPACE_LABEL_KEY: label,
+                CREATED_AT_KEY: now,
+                UPDATED_AT_KEY: now,
+            }
+            reg["by_owner"] = by_owner
+            _write_registry(reg)
+            from suite_workspace import workspace_dir
+
+            workspace_dir(slug).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
     return {
         OWNER_USER_ID_KEY: owner_user_id,
         OWNER_EXTERNAL_ID_KEY: ctx["owner_external_id"],
