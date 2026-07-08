@@ -312,6 +312,13 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         st.caption(f"Cloud write/readback error: `{probe['cloud_write_error']}`")
     if probe.get("last_save_reason") and probe.get("last_save_reason") != "—":
         st.caption(f"Last save reason: `{probe['last_save_reason']}`")
+    if probe.get("empty_startup_write_blocked") and probe.get("empty_startup_write_blocked") != "—":
+        st.caption(f"Empty startup write blocked/preserved: `{probe['empty_startup_write_blocked']}`")
+    if probe.get("workflow_hydrated_from_cloud"):
+        st.caption(
+            f"Workflow hydrated this run from `{probe.get('workflow_hydrate_source') or 'cloud'}` "
+            "before autosave could overwrite drafts."
+        )
     if probe.get("local_state_path") and probe.get("local_state_path") != "—":
         st.caption(f"Disk path: `{probe['local_state_path']}`")
 

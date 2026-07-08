@@ -1156,6 +1156,12 @@ def prepare_baseball_workspace(st: Any) -> bool:
         except ImportError:
             pass
     try:
+        from workflow_persist_guard import ensure_session_workflow_hydrated
+
+        ensure_session_workflow_hydrated(st, APP_ID)
+    except ImportError:
+        pass
+    try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
 
         force_mirror = bool(

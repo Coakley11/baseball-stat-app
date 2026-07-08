@@ -13932,10 +13932,26 @@ st.session_state.pop("_suite_page_enforce_rerun", None)
 _prev_persisted_page = st.session_state.get("_suite_last_persisted_page")
 _user_nav = bool(st.session_state.get("_suite_page_user_nav"))
 _page_changed = active_page != _prev_persisted_page
+_skip_page_change_save = False
+if _page_changed and not _user_nav:
+    try:
+        from workflow_persist_guard import count_draft_archives, probe_cloud_workflow_for_workspace
+        from suite_workspace import get_active_workspace_id
+
+        _local_drafts = count_draft_archives(st.session_state.get("draft_archive_teams"))
+        if _local_drafts == 0 and not st.session_state.get("_suite_workflow_hydrated_this_run"):
+            _probe = probe_cloud_workflow_for_workspace(str(get_active_workspace_id(st)))
+            if int(_probe.get("draft_archive_count") or 0) > 0:
+                _skip_page_change_save = True
+                st.session_state["_suite_empty_startup_write_blocked"] = (
+                    "page_change_deferred_pending_cloud_hydration"
+                )
+    except Exception:
+        pass
 if _page_changed or _user_nav:
     st.session_state["_global_settings_force_mirror"] = True
     _did_save = False
-    if _user_nav or _page_changed:
+    if (_user_nav or _page_changed) and not _skip_page_change_save:
         try:
             if str(_prev_persisted_page or "") == "Live Draft Room":
                 from live_draft_setup_persist import flush_live_draft_setup_persist

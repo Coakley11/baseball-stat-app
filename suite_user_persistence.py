@@ -317,7 +317,7 @@ def _cloud_autosave_blocked_reason(
     save_reason: str = "",
 ) -> str | None:
     if save_reason in _FORCE_SAVE_CLOUD_REASONS:
-        if save_reason in ("page_change", "live_draft_pick"):
+        if save_reason == "live_draft_pick":
             return None
         if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
             return None
@@ -447,6 +447,33 @@ def _preserve_cloud_widget_fields_on_page_change(
                     pf = {}
                     out["page_filter_state"] = pf
                 pf["Trend Value"] = copy.deepcopy(trend_block)
+    try:
+        from workflow_persist_guard import (
+            ACTIVE_DRAFT_ARCHIVE_KEY,
+            DRAFT_ARCHIVE_KEY,
+            LEAGUE_CONTEXT_STATE_KEY,
+            count_draft_archives,
+            count_league_contexts,
+            protected_workflow_nonempty,
+        )
+    except ImportError:
+        return out
+    local_drafts = count_draft_archives(out.get(DRAFT_ARCHIVE_KEY))
+    cloud_drafts = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
+    if local_drafts == 0 and cloud_drafts > 0 and protected_workflow_nonempty(
+        DRAFT_ARCHIVE_KEY, cloud_state.get(DRAFT_ARCHIVE_KEY)
+    ):
+        out[DRAFT_ARCHIVE_KEY] = copy.deepcopy(cloud_state.get(DRAFT_ARCHIVE_KEY))
+    local_contexts = count_league_contexts(out.get(LEAGUE_CONTEXT_STATE_KEY))
+    cloud_contexts = count_league_contexts(cloud_state.get(LEAGUE_CONTEXT_STATE_KEY))
+    if local_contexts == 0 and cloud_contexts > 0 and protected_workflow_nonempty(
+        LEAGUE_CONTEXT_STATE_KEY, cloud_state.get(LEAGUE_CONTEXT_STATE_KEY)
+    ):
+        out[LEAGUE_CONTEXT_STATE_KEY] = copy.deepcopy(cloud_state.get(LEAGUE_CONTEXT_STATE_KEY))
+    local_active = str(out.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    cloud_active = str(cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if not local_active and cloud_active:
+        out[ACTIVE_DRAFT_ARCHIVE_KEY] = cloud_active
     return out
 
 
@@ -1040,6 +1067,12 @@ def sync_workspace_protocol(
             picked_source=picked.source, picked_reason=picked.reason,
             should_apply=False, apply_reason=apply_reason, skip_reason=skip_reason,
         )
+        try:
+            from workflow_persist_guard import ensure_session_workflow_hydrated
+
+            ensure_session_workflow_hydrated(st, app_id, cloud_state=cloud_state)
+        except ImportError:
+            pass
         return False
 
     try:
@@ -1594,7 +1627,6 @@ def force_autosave(
             "projections_edit",
             "leaderboards_edit",
             "fantasy_edit",
-            "page_change",
             "insight_persist",
             "insight_hydrate",
             "applied_math_send",

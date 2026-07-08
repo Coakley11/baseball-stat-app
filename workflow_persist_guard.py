@@ -484,6 +484,85 @@ def merge_protected_workflow_on_restore(
     return session
 
 
+_DEFAULT_STARTUP_PAGES = frozenset({"Historical Explorer"})
+
+
+def _maybe_restore_page_from_cloud_blob(session: dict[str, Any], cloud_state: dict[str, Any]) -> str:
+    """When sync was skipped, restore a non-default cloud page instead of Historical Explorer."""
+    current = str(session.get("active_page") or session.get("main_sidebar_page") or "").strip()
+    if current and current not in _DEFAULT_STARTUP_PAGES:
+        return ""
+    cloud_page = str(cloud_state.get("active_page") or "").strip()
+    if not cloud_page or cloud_page in _DEFAULT_STARTUP_PAGES:
+        return ""
+    session["active_page"] = cloud_page
+    session["main_sidebar_page"] = cloud_page
+    session["_suite_last_persisted_page"] = cloud_page
+    session["_suite_page_overwrite_source"] = "cloud_workflow_hydration"
+    return cloud_page
+
+
+def ensure_session_workflow_hydrated(
+    st: Any,
+    app_id: str = "baseball",
+    *,
+    cloud_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Hydrate saved drafts from cloud/disk when session is empty but durable storage has data.
+
+  Runs after workspace sync (including skipped paths) so a reboot or refresh cannot leave
+  an empty session that later autosaves over a non-empty cloud ``draft_archive_teams``.
+    """
+    session = st.session_state
+    before = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    out: dict[str, Any] = {
+        "hydrated": False,
+        "source": "",
+        "session_before": before,
+        "session_after": before,
+        "restored_page": "",
+        "empty_startup_write_would_erase": False,
+    }
+    if before > 0:
+        return out
+
+    if cloud_state is None:
+        cloud_state = _load_cloud_workflow_snapshot(app_id, st)
+    if not isinstance(cloud_state, dict):
+        cloud_state = {}
+
+    cloud_count = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
+    disk_state = _load_disk_workflow_snapshot(app_id)
+    disk_count = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+
+    if cloud_count == 0 and disk_count == 0:
+        return out
+
+    out["empty_startup_write_would_erase"] = True
+    merge_protected_workflow_on_restore(session, cloud_state, app_id=app_id, st=st)
+    after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    out["session_after"] = after
+    if after > before:
+        out["hydrated"] = True
+        if cloud_count >= disk_count and cloud_count > 0:
+            out["source"] = "cloud"
+        elif disk_count > 0:
+            out["source"] = "disk"
+        else:
+            out["source"] = "union"
+        session["_suite_workflow_hydrated_this_run"] = True
+        session["_suite_workflow_hydrate_source"] = out["source"]
+        session["_suite_empty_startup_write_blocked"] = (
+            "hydrated_from_cloud_before_autosave"
+            if out["source"] == "cloud"
+            else "hydrated_from_disk_before_autosave"
+        )
+        restored_page = _maybe_restore_page_from_cloud_blob(session, cloud_state)
+        if restored_page:
+            out["restored_page"] = restored_page
+    return out
+
+
 def workflow_counts_from_session(session: dict[str, Any]) -> dict[str, int]:
     draft_archive_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     league_context_count = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
@@ -1126,6 +1205,9 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     )
     session_has_archive_key = DRAFT_ARCHIVE_KEY in session
     session_archive_len = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    empty_startup_write_blocked = str(session.get("_suite_empty_startup_write_blocked") or "").strip()
+    workflow_hydrated = bool(session.get("_suite_workflow_hydrated_this_run"))
+    workflow_hydrate_source = str(session.get("_suite_workflow_hydrate_source") or "").strip()
 
     return {
         "signed_in": bool(diag.get("authenticated")),
@@ -1157,6 +1239,9 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "persist_canonical_session_key": DRAFT_ARCHIVE_KEY,
         "session_has_draft_archive_teams": session_has_archive_key,
         "session_draft_archive_teams_len": session_archive_len,
+        "empty_startup_write_blocked": empty_startup_write_blocked or "—",
+        "workflow_hydrated_from_cloud": workflow_hydrated,
+        "workflow_hydrate_source": workflow_hydrate_source or "—",
         "last_save_reason": last_save_reason or "—",
         "local_state_path": local_state_path or "—",
         "diagnosis": {

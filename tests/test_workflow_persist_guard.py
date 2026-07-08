@@ -409,6 +409,64 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
         self.assertEqual(len(blob.get(DRAFT_ARCHIVE_KEY) or []), 1)
 
+    def test_page_change_blocked_when_empty_session_cloud_has_drafts(self) -> None:
+        from suite_user_persistence import _cloud_autosave_blocked_reason
+
+        state = {DRAFT_ARCHIVE_KEY: [], "comparison_state": {"players": []}}
+        st = MagicMock()
+        st.session_state = {}
+        with patch("suite_workspace.get_active_workspace_id", return_value="daniel"):
+            with patch(
+                "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                return_value={"draft_archive_count": 1, "row_found": True},
+            ):
+                reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="page_change")
+        self.assertEqual(reason, "blank_draft_archive_would_erase_cloud")
+
+    def test_preserve_cloud_drafts_on_page_change(self) -> None:
+        from suite_user_persistence import _preserve_cloud_widget_fields_on_page_change
+
+        cloud_state = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "keep01", "draft_name": "Keep"}],
+            "fantasy_league_context_state": {
+                "active_league_context_id": "ctx1",
+                "contexts": {"ctx1": {"league_context_id": "ctx1", "my_team_name": "Daniel"}},
+            },
+            "active_draft_archive_id": "keep01",
+        }
+        state = {DRAFT_ARCHIVE_KEY: [], "active_page": "Historical Explorer"}
+        with patch("suite_cloud_state.load_cloud_full_session", return_value=(cloud_state, "ts")):
+            out = _preserve_cloud_widget_fields_on_page_change("baseball", state)
+        self.assertEqual(len(out.get(DRAFT_ARCHIVE_KEY) or []), 1)
+        self.assertEqual(out.get("active_draft_archive_id"), "keep01")
+
+    def test_ensure_session_workflow_hydrated_from_cloud(self) -> None:
+        from workflow_persist_guard import ensure_session_workflow_hydrated
+
+        st = MagicMock()
+        st.session_state = {"active_page": "Historical Explorer"}
+        cloud_state = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "keep01", "draft_name": "Keep"}],
+            "active_page": "Saved Draft Library",
+        }
+        with patch(
+            "workflow_persist_guard._load_cloud_workflow_snapshot",
+            return_value=cloud_state,
+        ):
+            with patch(
+                "workflow_persist_guard._load_disk_workflow_snapshot",
+                return_value={},
+            ):
+                result = ensure_session_workflow_hydrated(st, "baseball", cloud_state=cloud_state)
+        self.assertTrue(result.get("hydrated"))
+        self.assertEqual(result.get("source"), "cloud")
+        self.assertEqual(len(st.session_state.get(DRAFT_ARCHIVE_KEY) or []), 1)
+        self.assertEqual(st.session_state.get("active_page"), "Saved Draft Library")
+        self.assertEqual(
+            st.session_state.get("_suite_empty_startup_write_blocked"),
+            "hydrated_from_cloud_before_autosave",
+        )
+
 
 class WorkflowPersistGuardDiskRoundtripTests(unittest.TestCase):
     def test_save_after_partial_session_preserves_disk_archives(self) -> None:
