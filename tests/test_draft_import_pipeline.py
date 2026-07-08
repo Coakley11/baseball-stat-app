@@ -102,6 +102,34 @@ class TestDraftImportPipeline(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertEqual(len(df), 1)
 
+    def test_new_upload_clears_stale_cached_review(self) -> None:
+        from draft_import_pipeline import compute_upload_file_signature
+
+        session: dict = {}
+        old_csv = b"Team,Player,Pick\n" + b"\n".join(
+            f"Team {i},Player {i},{i}".encode() for i in range(1, 10)
+        ) + b"\n"
+        old_upload = MagicMock()
+        old_upload.getvalue.return_value = old_csv
+        old_upload.name = "old.csv"
+        old_df, _ = parse_uploaded_draft_file(old_upload, read_table_fn=_read_csv_table)
+        old_review = build_import_review(old_df, self.pool)
+        old_review["file_sig"] = compute_upload_file_signature(old_csv)
+        session["_draft_import_review"] = old_review
+        session["_draft_import_active_file_sig"] = old_review["file_sig"]
+
+        new_csv = b"Team,Player,Pick\nDaniel,Aaron Judge,1\nTeam 2,Juan Soto,2\n"
+        new_upload = MagicMock()
+        new_upload.getvalue.return_value = new_csv
+        new_upload.name = "new.csv"
+        session["draft_room_import_uploader"] = new_upload
+        stage_draft_import_upload(session, widget_key="draft_room_import_uploader")
+
+        self.assertNotIn("_draft_import_review", session)
+        df, err = parse_uploaded_draft_file(new_upload, read_table_fn=_read_csv_table)
+        self.assertEqual(err, "")
+        self.assertEqual(len(df), 2)
+
     def test_debug_status_reports_pipeline_fields(self) -> None:
         session: dict = {}
         upload = MagicMock()
@@ -125,6 +153,8 @@ class TestDraftImportPipeline(unittest.TestCase):
         )
         self.assertTrue(status["uploaded_file_present"])
         self.assertEqual(status["uploaded_filename"], "office.csv")
+        self.assertEqual(status["parsed_row_count"], 1)
+        self.assertEqual(status["parsed_player_names"], ["Aaron Judge"])
         self.assertTrue(status["validation_review_created"])
         self.assertEqual(status["session_key_used_for_review"], "_draft_import_review")
         self.assertTrue(status["render_uploaded_draft_import_section_called"])
@@ -334,7 +364,7 @@ class TestDraftImportPipeline(unittest.TestCase):
         self.assertIn("render_draft_room_import_block", source)
         self.assertIn("pool_fn=", source)
         self.assertNotIn("League setup & import", source)
-        self.assertIn("ENTRY_STANDINGS", source)
+        self.assertNotIn("standings_draft_import_uploader", source)
         self.assertNotIn("def normalize_imported_draft_columns", source)
         self.assertNotIn("def _render_validated_draft_import", source)
 

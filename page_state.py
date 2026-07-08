@@ -226,6 +226,8 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "draft_room_import_pending_clear_token",
     "_draft_import_staged_bytes",
     "_draft_import_staged_filename",
+    "_draft_import_staged_bytes_len",
+    "_draft_import_active_file_sig",
     "_draft_import_debug_status",
     "_draft_import_team_name_diag",
     "_draft_import_review",

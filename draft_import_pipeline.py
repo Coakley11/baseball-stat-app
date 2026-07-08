@@ -25,6 +25,8 @@ REQUIRED_IMPORT_COLUMNS = ("Round", "Pick", "Team", "Player")
 
 _STAGED_BYTES_KEY = "_draft_import_staged_bytes"
 _STAGED_FILENAME_KEY = "_draft_import_staged_filename"
+_STAGED_BYTES_LEN_KEY = "_draft_import_staged_bytes_len"
+_ACTIVE_FILE_SIG_KEY = "_draft_import_active_file_sig"
 _DEBUG_STATUS_KEY = "_draft_import_debug_status"
 
 _ENTRY_CONFIG: dict[str, dict[str, str]] = {
@@ -54,17 +56,42 @@ class StagedUploadFile:
         return self.data
 
 
+def compute_upload_file_signature(file_bytes: bytes | bytearray) -> str:
+    """Stable signature for uploaded bytes — used to invalidate stale import reviews."""
+    import hashlib
+
+    payload = bytes(file_bytes)
+    return hashlib.md5(payload).hexdigest()[:12]
+
+
+def _clear_import_reviews_for_new_upload(session: dict[str, Any], *, file_sig: str) -> None:
+    """Drop cached validation reviews when upload bytes change."""
+    prior_sig = str(session.get(_ACTIVE_FILE_SIG_KEY) or "").strip()
+    if prior_sig and prior_sig == file_sig:
+        return
+    session[_ACTIVE_FILE_SIG_KEY] = file_sig
+    for cfg in _ENTRY_CONFIG.values():
+        session.pop(str(cfg.get("session_key") or ""), None)
+    session.pop("_draft_import_file_id", None)
+    session.pop(_DEBUG_STATUS_KEY, None)
+
+
 def stage_draft_import_upload(session: dict[str, Any], *, widget_key: str) -> None:
     """Persist latest uploader payload so reruns can still parse after widget clears."""
     uploaded = session.get(widget_key)
     if uploaded is None:
         return
     try:
-        session[_STAGED_BYTES_KEY] = uploaded.getvalue()
+        payload = uploaded.getvalue()
     except Exception:
         session.pop(_STAGED_BYTES_KEY, None)
+        session.pop(_STAGED_BYTES_LEN_KEY, None)
         return
+    file_sig = compute_upload_file_signature(payload)
+    _clear_import_reviews_for_new_upload(session, file_sig=file_sig)
+    session[_STAGED_BYTES_KEY] = payload
     session[_STAGED_FILENAME_KEY] = str(getattr(uploaded, "name", "") or "")
+    session[_STAGED_BYTES_LEN_KEY] = len(payload)
     session.pop(_DEBUG_STATUS_KEY, None)
 
 
@@ -339,6 +366,43 @@ def render_import_team_name_diagnostics_panel(
     return diag
 
 
+def _draft_room_table_player_count(session: dict[str, Any]) -> int:
+    """Filled player cells on draft_room_table — separate from uploaded-file parse."""
+    try:
+        from draft_room_state import coerce_board_table, table_pick_count
+
+        table = coerce_board_table(session.get("draft_room_table"))
+        return int(table_pick_count(table))
+    except ImportError:
+        table = session.get("draft_room_table")
+        if not isinstance(table, pd.DataFrame) or table.empty or "Player" not in table.columns:
+            return 0
+        return int(table["Player"].astype(str).str.strip().ne("").sum())
+
+
+def _parsed_player_names(parsed_df: pd.DataFrame | None, *, limit: int = 10) -> list[str]:
+    if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty or "Player" not in parsed_df.columns:
+        return []
+    names: list[str] = []
+    for raw in parsed_df["Player"].astype(str).tolist():
+        name = str(raw).strip()
+        if name:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
+def _review_matches_active_upload(session: dict[str, Any], review: dict[str, Any] | None) -> bool:
+    if not isinstance(review, dict):
+        return False
+    active_sig = str(session.get(_ACTIVE_FILE_SIG_KEY) or "").strip()
+    review_sig = str(review.get("file_sig") or "").strip()
+    if not active_sig or not review_sig:
+        return False
+    return active_sig == review_sig
+
+
 def _unresolved_player_count(review: dict[str, Any] | None) -> int:
     if not isinstance(review, dict):
         return 0
@@ -377,6 +441,17 @@ def build_draft_import_debug_status(
     raw_columns: list[str] = []
     if isinstance(raw_df, pd.DataFrame):
         raw_columns = [str(c) for c in raw_df.columns.tolist()]
+    widget_filename = str(getattr(uploaded_file, "name", None) or "")
+    staged_filename = str(session.get(_STAGED_FILENAME_KEY) or "")
+    staged_len = int(session.get(_STAGED_BYTES_LEN_KEY) or 0)
+    if not staged_len:
+        staged_payload = session.get(_STAGED_BYTES_KEY)
+        if isinstance(staged_payload, (bytes, bytearray)):
+            staged_len = len(staged_payload)
+    parsed_names = _parsed_player_names(parsed_df)
+    board_player_count = _draft_room_table_player_count(session)
+    review_row_count = len((review or {}).get("rows") or [])
+    parsed_row_count = int(len(parsed_df)) if isinstance(parsed_df, pd.DataFrame) else 0
     status = {
         "entry_point": entry_point,
         "layout_label": layout_label,
@@ -387,17 +462,29 @@ def build_draft_import_debug_status(
         "staged_bytes_present": bool(session.get(_STAGED_BYTES_KEY)),
         "uploaded_filename": str(
             getattr(resolved, "name", None)
-            or session.get(_STAGED_FILENAME_KEY)
+            or staged_filename
             or session.get("draft_room_import_uploaded_filename")
             or ""
         ),
+        "widget_uploaded_filename": widget_filename,
+        "staged_upload_filename": staged_filename,
+        "staged_byte_length": staged_len,
+        "active_file_sig": str(session.get(_ACTIVE_FILE_SIG_KEY) or ""),
+        "review_file_sig": str((review or {}).get("file_sig") or ""),
+        "review_matches_active_upload": _review_matches_active_upload(session, review),
         "detected_columns": raw_columns,
-        "parsed_row_count": int(len(parsed_df)) if isinstance(parsed_df, pd.DataFrame) else 0,
+        "raw_row_count": int(len(raw_df)) if isinstance(raw_df, pd.DataFrame) else 0,
+        "parsed_row_count": parsed_row_count,
+        "parsed_player_names": parsed_names,
+        "draft_room_table_player_count": board_player_count,
         "parse_error": str(parse_error or ""),
         "validation_review_created": bool(isinstance(review, dict) and review.get("rows")),
         "unresolved_player_count": _unresolved_player_count(review),
         "session_key_used_for_review": session_key,
-        "review_row_count": len((review or {}).get("rows") or []),
+        "review_row_count": review_row_count,
+        "parsed_review_row_mismatch": bool(
+            review_row_count and parsed_row_count and review_row_count != parsed_row_count
+        ),
         "pool_size": int(pool_size or 0),
         "session_has_review": bool(isinstance(session.get(session_key), dict) and session.get(session_key, {}).get("rows")),
     }
@@ -412,17 +499,35 @@ def render_draft_import_debug_panel(st: Any, status: dict[str, Any]) -> None:
             f"**Placement:** {status.get('layout_label') or IMPORT_BLOCK_PLACEMENT_LABEL}"
         )
         st.markdown(f"1. **uploaded_file is present:** {'yes' if status.get('uploaded_file_present') else 'no'}")
-        st.markdown(f"2. **uploaded filename:** `{status.get('uploaded_filename') or '—'}`")
-        cols = status.get("detected_columns") or []
-        st.markdown(f"3. **detected columns:** `{', '.join(cols) if cols else '—'}`")
-        st.markdown(f"4. **parsed row count:** {int(status.get('parsed_row_count') or 0)}")
+        st.markdown(f"2. **uploaded filename (resolved):** `{status.get('uploaded_filename') or '—'}`")
         st.markdown(
-            f"5. **validation review created:** {'yes' if status.get('validation_review_created') else 'no'}"
+            f"3. **widget filename:** `{status.get('widget_uploaded_filename') or '—'}` · "
+            f"**staged filename:** `{status.get('staged_upload_filename') or '—'}`"
         )
-        st.markdown(f"6. **unresolved player count:** {int(status.get('unresolved_player_count') or 0)}")
-        st.markdown(f"7. **session key used for review:** `{status.get('session_key_used_for_review') or '—'}`")
+        st.markdown(f"4. **staged byte length:** {int(status.get('staged_byte_length') or 0)}")
+        cols = status.get("detected_columns") or []
+        st.markdown(f"5. **detected columns:** `{', '.join(cols) if cols else '—'}`")
         st.markdown(
-            "8. **render_uploaded_draft_import_section called:** "
+            f"6. **raw row count (file only):** {int(status.get('raw_row_count') or 0)} · "
+            f"**parsed row count (file only):** {int(status.get('parsed_row_count') or 0)}"
+        )
+        parsed_names = status.get("parsed_player_names") or []
+        st.markdown(
+            "7. **first parsed player names (uploaded file only):** "
+            + (", ".join(f"`{name}`" for name in parsed_names) if parsed_names else "—")
+        )
+        st.markdown(
+            f"8. **draft_room_table player count (board only):** "
+            f"{int(status.get('draft_room_table_player_count') or 0)}"
+        )
+        st.markdown(
+            f"9. **validation review created:** {'yes' if status.get('validation_review_created') else 'no'} · "
+            f"**review rows:** {int(status.get('review_row_count') or 0)}"
+        )
+        st.markdown(f"10. **unresolved player count:** {int(status.get('unresolved_player_count') or 0)}")
+        st.markdown(f"11. **session key used for review:** `{status.get('session_key_used_for_review') or '—'}`")
+        st.markdown(
+            "12. **render_uploaded_draft_import_section called:** "
             f"{'yes' if status.get('render_uploaded_draft_import_section_called') else 'no'}"
         )
         st.caption(
@@ -431,8 +536,20 @@ def render_draft_import_debug_panel(st: Any, status: dict[str, Any]) -> None:
             "Staged bytes present: "
             f"{'yes' if status.get('staged_bytes_present') else 'no'} · "
             f"Pool size: {int(status.get('pool_size') or 0)} · "
-            f"Session review cached: {'yes' if status.get('session_has_review') else 'no'}"
+            f"Session review cached: {'yes' if status.get('session_has_review') else 'no'} · "
+            f"Active file sig: `{status.get('active_file_sig') or '—'}` · "
+            f"Review file sig: `{status.get('review_file_sig') or '—'}`"
         )
+        if status.get("parsed_review_row_mismatch"):
+            st.error(
+                "Parsed row count does not match validation review row count — "
+                "a stale session review may be mixed in. Re-upload the CSV to refresh."
+            )
+        elif status.get("session_has_review") and not status.get("review_matches_active_upload"):
+            st.warning(
+                "Cached validation review does not match the current uploaded file signature. "
+                "Parser output below is from uploaded bytes only; re-upload if counts look wrong."
+            )
         parse_error = str(status.get("parse_error") or "").strip()
         if parse_error:
             st.warning(parse_error)
@@ -595,6 +712,8 @@ def apply_validated_import_to_board(
     session.pop("_draft_import_file_id", None)
     session.pop(_STAGED_BYTES_KEY, None)
     session.pop(_STAGED_FILENAME_KEY, None)
+    session.pop(_STAGED_BYTES_LEN_KEY, None)
+    session.pop(_ACTIVE_FILE_SIG_KEY, None)
     if rerun:
         st.rerun()
 
@@ -865,6 +984,7 @@ def render_uploaded_draft_import_section(
         show_league_readiness=show_league_readiness,
         remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
         render_preview_table_fn=render_preview_table_fn,
+        file_sig=file_sig,
     )
     review = session.get(session_key)
     status = build_draft_import_debug_status(
@@ -1028,7 +1148,7 @@ __all__ = [
     "build_import_review",
     "format_team_name_list",
     "build_validated_import_dataframe",
-    "classify_draft_player_import_name",
+    "compute_upload_file_signature",
     "get_entry_config",
     "import_columns_valid",
     "import_review_ready",
