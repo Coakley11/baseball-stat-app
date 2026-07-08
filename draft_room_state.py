@@ -47,6 +47,9 @@ DRAFT_ROOM_SETTINGS_KEYS = (
 
 # One canonical draft board: runtime draft_room_table + blob draft_room_state.
 CANONICAL_DRAFT_META_KEY = "canonical_draft_meta"
+DRAFT_ROOM_ACTION_TRACE_KEY = "_draft_room_action_trace"
+DRAFT_ROOM_BOARD_AUTHORITY_KEY = "_draft_room_board_authority"
+DRAFT_ROOM_LAST_PREPARE_SOURCE_KEY = "_draft_room_last_prepare_source"
 ACTIVE_DRAFT_MODE_LIVE = "live_draft_room"
 ACTIVE_DRAFT_MODE_MANUAL = "draft_room_simulator"
 ACTIVE_DRAFT_SOURCE_LIVE = "live"
@@ -66,6 +69,82 @@ def is_live_draft_runtime_active(session: dict[str, Any]) -> bool:
         return isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused")
     except Exception:
         return False
+
+
+def mark_draft_room_board_authority(session: dict[str, Any], *, pick_count: int, reason: str) -> None:
+    """Pin simulator board pick count so prepare/restore cannot rehydrate a richer blob."""
+    session[DRAFT_ROOM_BOARD_AUTHORITY_KEY] = {
+        "at": _utc_now_iso(),
+        "reason": str(reason or "").strip(),
+        "pick_count": int(pick_count),
+    }
+    mark_draft_room_local_edit(session)
+
+
+def draft_room_board_authority_active(session: dict[str, Any]) -> dict[str, Any] | None:
+    auth = session.get(DRAFT_ROOM_BOARD_AUTHORITY_KEY)
+    return dict(auth) if isinstance(auth, dict) else None
+
+
+def draft_room_authority_blocks_richest_restore(session: dict[str, Any]) -> bool:
+    auth = draft_room_board_authority_active(session)
+    if not auth:
+        return False
+    auth_picks = int(auth.get("pick_count") if auth.get("pick_count") is not None else -1)
+    runtime = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    return table_pick_count(runtime) == auth_picks
+
+
+def record_draft_room_button_trace(
+    session: dict[str, Any],
+    *,
+    action: str,
+    picks_before: int,
+    picks_after: int,
+    ok: bool = True,
+    message: str = "",
+) -> dict[str, Any]:
+    trace: dict[str, Any] = {
+        "action": action,
+        "clicked_at": _utc_now_iso(),
+        "picks_before": int(picks_before),
+        "picks_after": int(picks_after),
+        "ok": bool(ok),
+        "message": str(message or ""),
+        "rerun_requested": bool(ok),
+    }
+    session[DRAFT_ROOM_ACTION_TRACE_KEY] = trace
+    if ok:
+        mark_draft_room_board_authority(session, pick_count=picks_after, reason=action)
+    return trace
+
+
+def refresh_draft_room_action_trace_after_prepare(session: dict[str, Any]) -> None:
+    trace = session.get(DRAFT_ROOM_ACTION_TRACE_KEY)
+    if not isinstance(trace, dict):
+        return
+    trace = dict(trace)
+    trace["picks_after_prepare"] = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+    trace["restore_source_after_prepare"] = str(session.get(DRAFT_ROOM_LAST_PREPARE_SOURCE_KEY) or "")
+    trace["effective_pick_count_after_prepare"] = effective_board_pick_count(session)
+    try:
+        from fantasy_context_source import resolve_fantasy_context_source
+
+        src = resolve_fantasy_context_source(session)
+        trace["context_source_after_prepare"] = src.kind
+        trace["context_source_label_after_prepare"] = src.badge_text
+    except Exception:
+        trace["context_source_after_prepare"] = "unknown"
+    trace["board_authority"] = copy.deepcopy(session.get(DRAFT_ROOM_BOARD_AUTHORITY_KEY))
+    session[DRAFT_ROOM_ACTION_TRACE_KEY] = trace
+
+
+def render_draft_room_action_trace_panel(st: Any, session: dict[str, Any]) -> None:
+    trace = session.get(DRAFT_ROOM_ACTION_TRACE_KEY)
+    if not isinstance(trace, dict):
+        return
+    with st.expander("Draft board action trace (last reset/undo)", expanded=True):
+        st.json(trace)
 
 
 LIVE_HANDOFF_SYNC_DIAG_KEY = "_draft_live_handoff_sync_diag"
@@ -105,6 +184,16 @@ def ensure_live_draft_synced_to_canonical_board(
         "last_sync_reason": session.get("_canonical_draft_last_sync_reason"),
         "last_sync_error": None,
     }
+    auth = draft_room_board_authority_active(session)
+    if isinstance(auth, dict):
+        auth_picks = int(auth.get("pick_count") if auth.get("pick_count") is not None else -1)
+        canonical_before = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        if canonical_before == auth_picks:
+            diag["skipped"] = True
+            diag["skip_reason"] = "simulator_board_authority"
+            diag["canonical_pick_count_after"] = canonical_before
+            session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+            return diag
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_runtime_room, prepare_live_draft_state
 
@@ -729,6 +818,13 @@ def apply_programmatic_board_update(
     if bump_widget:
         bump_editor_version(session)
     session["_draft_room_last_programmatic_pick_reason"] = reason
+    if reason not in (
+        "simulator_reset_only",
+        "undo_last_pick",
+        "reset_canonical_board",
+        "board_authority",
+    ):
+        session.pop(DRAFT_ROOM_BOARD_AUTHORITY_KEY, None)
     return normalized
 
 
@@ -939,6 +1035,7 @@ def undo_last_simulator_pick(session: dict[str, Any]) -> dict[str, Any]:
             "message": f"Undid pick {pick_n}: removed {player} from {team or 'the board'}.",
         }
     )
+    mark_draft_room_board_authority(session, pick_count=pick_count, reason="undo_last_pick")
     return result
 
 
@@ -1385,7 +1482,15 @@ def ensure_simulator_board_for_settings(session: dict[str, Any]) -> pd.DataFrame
     League-setup edits mark the room locally dirty; an empty persisted blob must
     still be rebuilt to team_count * rounds rows (otherwise UI shows 'Board is full').
     """
-    if effective_board_pick_count(session) > 0:
+    if draft_room_authority_blocks_richest_restore(session):
+        auth = draft_room_board_authority_active(session) or {}
+        auth_picks = int(auth.get("pick_count") if auth.get("pick_count") is not None else -1)
+        table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+        if table_pick_count(table) == auth_picks:
+            session[DRAFT_ROOM_LAST_PREPARE_SOURCE_KEY] = "authority_skip_ensure"
+            if auth_picks > 0:
+                return table
+    if effective_board_pick_count(session) > 0 and not draft_room_board_authority_active(session):
         return ensure_runtime_draft_board(session)
     teams = _simulator_team_names(session)
     rounds = int(session.get("room_rounds") or 20)
@@ -1440,6 +1545,7 @@ def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
         _clear_ami_draft_cache(session)
     except ImportError:
         pass
+    mark_draft_room_board_authority(session, pick_count=0, reason="simulator_reset_only")
     return out
 
 
@@ -2519,6 +2625,8 @@ def clear_draft_room_local_edit(session: dict[str, Any]) -> None:
 
 def effective_board_pick_count(session: dict[str, Any]) -> int:
     """Best-effort filled-pick count across runtime, cache, blob, and last submit trace."""
+    if draft_room_board_authority_active(session):
+        return table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
     counts = [
         table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY)),
         table_pick_count(session.get(DRAFT_ROOM_EDITOR_CACHE_KEY)),
@@ -2625,12 +2733,24 @@ def prepare_draft_room_state(session: dict[str, Any]) -> pd.DataFrame:
         from live_draft_perf import PHASE_SETUP_PREPARE_DRAFT_ROOM, live_draft_perf_action
 
         with live_draft_perf_action(session, "prepare_draft_room", phase=PHASE_SETUP_PREPARE_DRAFT_ROOM):
-            return _prepare_draft_room_state_body(session)
+            table = _prepare_draft_room_state_body(session)
     except ImportError:
-        return _prepare_draft_room_state_body(session)
+        table = _prepare_draft_room_state_body(session)
+    refresh_draft_room_action_trace_after_prepare(session)
+    return table
 
 
 def _prepare_draft_room_state_body(session: dict[str, Any]) -> pd.DataFrame:
+    if draft_room_authority_blocks_richest_restore(session):
+        table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+        session[DRAFT_ROOM_LAST_PREPARE_SOURCE_KEY] = "board_authority"
+        return sync_board_to_session_keys(
+            session,
+            table,
+            local_edit=True,
+            reason="board_authority",
+        )
+
     richest, rich_count, rich_source = _resolve_richest_draft_board(session)
     submit = session.get(_BOARD_ASSIGN_SUBMIT_TRACE_KEY)
     submit_after = (
@@ -2647,9 +2767,12 @@ def _prepare_draft_room_state_body(session: dict[str, Any]) -> pd.DataFrame:
     cache_picks = table_pick_count(cache) if is_runtime_table(cache) else 0
 
     prefer_richest = (
-        is_draft_room_locally_dirty(session)
-        or submit_after > runtime_picks
-        or rich_count > runtime_picks
+        not draft_room_board_authority_active(session)
+        and (
+            is_draft_room_locally_dirty(session)
+            or submit_after > runtime_picks
+            or rich_count > runtime_picks
+        )
     )
     if prefer_richest and rich_count > 0 and richest is not None:
         blob = _draft_room_from_blob(session)
@@ -2664,6 +2787,7 @@ def _prepare_draft_room_state_body(session: dict[str, Any]) -> pd.DataFrame:
                 for key in DRAFT_ROOM_SETTINGS_KEYS:
                     if key in blob:
                         session[key] = blob[key]
+        session[DRAFT_ROOM_LAST_PREPARE_SOURCE_KEY] = f"prepare_richest:{rich_source}"
         return sync_board_to_session_keys(
             session,
             richest,
@@ -2713,6 +2837,7 @@ def _prepare_draft_room_state_body(session: dict[str, Any]) -> pd.DataFrame:
             saved_meta = blob.get("canonical_draft_meta")
             if isinstance(saved_meta, dict):
                 session[CANONICAL_DRAFT_META_KEY] = copy.deepcopy(saved_meta)
+            session[DRAFT_ROOM_LAST_PREPARE_SOURCE_KEY] = "blob_restore"
             return apply_restored_board_to_session(session, restored, blob=blob, bump_widget=True)
     if is_runtime_table(table):
         write_canonical_draft_room_state(session, table, reason="session_hydrate", local_edit=False)
@@ -2775,6 +2900,18 @@ def sync_draft_room_session_before_save(session: dict[str, Any]) -> None:
 
 
 def _sync_draft_room_session_before_save_body(session: dict[str, Any]) -> None:
+    if draft_room_authority_blocks_richest_restore(session):
+        table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+        session[DRAFT_ROOM_TABLE_KEY] = table.copy()
+        session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()
+        session["_draft_room_pre_save_sync_source"] = "board_authority"
+        write_canonical_draft_room_state(
+            session,
+            table,
+            reason="pre_save_authority",
+            local_edit=True,
+        )
+        return
     table, pick_count, source = _resolve_richest_draft_board(session)
     session[DRAFT_ROOM_TABLE_KEY] = table.copy()
     session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()
@@ -2796,18 +2933,25 @@ def enrich_save_payload_with_draft_room(
         "cloud_payload_pick_count": 0,
         "enrich_source": "",
     }
-    sync_draft_room_session_before_save(session)
-    table, pick_count, source = _resolve_richest_draft_board(session)
-    blob: dict[str, Any] | None = None
-    if pick_count > 0 and table is not None:
+    if draft_room_authority_blocks_richest_restore(session):
+        table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+        auth = draft_room_board_authority_active(session) or {}
+        pick_count = table_pick_count(table)
         blob = table_to_persist_dict(table, settings=_room_settings_from_session(session))
-        diag["enrich_source"] = source
-    if not blob or table_pick_count(blob) <= 0:
-        blob = _draft_room_from_blob(session) or _draft_room_from_blob(state)
-        if blob:
-            diag["enrich_source"] = diag.get("enrich_source") or "session_blob"
-    if not blob or table_pick_count(blob) <= 0:
-        return state, diag
+        diag["enrich_source"] = f"board_authority:{auth.get('reason') or ''}"
+    else:
+        sync_draft_room_session_before_save(session)
+        table, pick_count, source = _resolve_richest_draft_board(session)
+        blob: dict[str, Any] | None = None
+        if pick_count > 0 and table is not None:
+            blob = table_to_persist_dict(table, settings=_room_settings_from_session(session))
+            diag["enrich_source"] = source
+        if not blob or table_pick_count(blob) <= 0:
+            blob = _draft_room_from_blob(session) or _draft_room_from_blob(state)
+            if blob:
+                diag["enrich_source"] = diag.get("enrich_source") or "session_blob"
+        if not blob or table_pick_count(blob) <= 0:
+            return state, diag
 
     safe_blob = copy.deepcopy(blob)
     out = copy.deepcopy(state)

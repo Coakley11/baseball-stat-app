@@ -19494,11 +19494,13 @@ if active_page == "Draft Room Simulator":
             ensure_simulator_board_for_settings,
             is_draft_room_locally_dirty,
             prepare_draft_room_state,
+            render_draft_room_action_trace_panel,
         )
 
         prepare_draft_room_state(st.session_state)
         ensure_simulator_board_for_settings(st.session_state)
         _canonical_pick_count = draft_room_restore_stats(st.session_state).get("pick_count", 0)
+        render_draft_room_action_trace_panel(st, st.session_state)
     except Exception:
         _canonical_pick_count = 0
         effective_board_pick_count = None  # type: ignore[assignment,misc]
@@ -19539,14 +19541,27 @@ if active_page == "Draft Room Simulator":
         reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
         with undo_col:
             try:
-                from draft_room_state import undo_last_simulator_pick
+                from draft_room_state import (
+                    record_draft_room_button_trace,
+                    undo_last_simulator_pick,
+                )
 
                 if st.button(
                     "Undo Last Pick",
                     key="draft_room_undo_last_pick_btn",
                     help="Remove the most recent simulator pick and restore the previous on-clock team.",
                 ):
+                    picks_before = effective_board_pick_count(st.session_state)
                     result = undo_last_simulator_pick(st.session_state)
+                    picks_after = effective_board_pick_count(st.session_state)
+                    record_draft_room_button_trace(
+                        st.session_state,
+                        action="undo_last_pick",
+                        picks_before=picks_before,
+                        picks_after=picks_after,
+                        ok=bool(result.get("ok")),
+                        message=str(result.get("message") or ""),
+                    )
                     if result.get("ok"):
                         from draft_room_state import persist_draft_board_to_storage
 
@@ -19574,9 +19589,23 @@ if active_page == "Draft Room Simulator":
                 key="draft_room_reset_simulator_btn",
                 help="Clear the practice/canonical board only. Use for a fresh mock draft.",
             ):
-                from draft_room_state import persist_draft_board_to_storage, reset_simulator_board_only
+                from draft_room_state import (
+                    persist_draft_board_to_storage,
+                    record_draft_room_button_trace,
+                    reset_simulator_board_only,
+                )
 
+                picks_before = effective_board_pick_count(st.session_state)
                 reset_simulator_board_only(st.session_state)
+                picks_after = effective_board_pick_count(st.session_state)
+                record_draft_room_button_trace(
+                    st.session_state,
+                    action="reset_simulator",
+                    picks_before=picks_before,
+                    picks_after=picks_after,
+                    ok=True,
+                    message="Simulator board cleared.",
+                )
                 persist_draft_board_to_storage(
                     st,
                     st.session_state,

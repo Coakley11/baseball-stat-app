@@ -805,6 +805,35 @@ class TestDeleteActiveDraft(unittest.TestCase):
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 0)
         self.assertIsNotNone(session.get("live_draft_room"))
 
+    def test_reset_then_prepare_keeps_empty_when_blob_had_picks(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=3),
+        }
+        write_canonical_draft_room_state(session, session[DRAFT_ROOM_TABLE_KEY], reason="setup")
+        reset_simulator_board_only(session)
+        prepare_draft_room_state(session)
+        self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 0)
+
+    def test_enrich_save_respects_board_authority_empty(self) -> None:
+        session: dict = {
+            DRAFT_ROOM_EDITOR_VERSION_KEY: 0,
+            DRAFT_ROOM_TABLE_KEY: _sample_table(picks=0),
+            "room_rounds": 2,
+            "room_team_count": 5,
+        }
+        old_blob = table_to_persist_dict(_sample_table(picks=5), settings={})
+        state = {DRAFT_ROOM_STATE_KEY: old_blob, DRAFT_ROOM_TABLE_KEY: old_blob}
+        from draft_room_state import mark_draft_room_board_authority
+
+        mark_draft_room_board_authority(session, pick_count=0, reason="simulator_reset_only")
+        out, diag = enrich_save_payload_with_draft_room(session, state)
+        self.assertEqual(diag.get("cloud_payload_pick_count"), 0)
+        self.assertIn("board_authority", str(diag.get("enrich_source") or ""))
+        restored = out.get(DRAFT_ROOM_STATE_KEY)
+        self.assertIsInstance(restored, dict)
+        self.assertEqual(table_pick_count(restored), 0)
+
 
 class TestBoardPickAssignment(unittest.TestCase):
     def test_open_pick_row_options_lists_empty_slots(self) -> None:
