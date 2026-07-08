@@ -19437,7 +19437,26 @@ if active_page == "Draft Room Simulator":
     market_df = load_fantasypros_market_data()
     render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_room")
 
-    dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup & import"])
+    try:
+        from draft_import_pipeline import render_draft_room_import_block, render_import_pending_banner
+
+        render_import_pending_banner(st, st.session_state)
+        pool_for_import = _draft_room_pool_for_import_validation()
+        render_draft_room_import_block(
+            st,
+            st.session_state,
+            read_table_fn=read_uploaded_table_cached,
+            pool_df=pool_for_import,
+            remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
+            render_preview_table_fn=lambda df, **kw: render_output_table(
+                clean_ui_columns(df),
+                **kw,
+            ),
+        )
+    except Exception as _import_block_exc:
+        st.error(f"Draft import section failed to load: {_import_block_exc}")
+
+    dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup"])
 
     with dr_tab_setup:
         def _draft_room_settings_changed():
@@ -19559,37 +19578,9 @@ if active_page == "Draft Room Simulator":
                 on_change=_draft_room_settings_changed,
             )
 
-        st.subheader("Import existing draft")
         st.caption(
-            "CSV or Excel with Team/Owner and Player columns. Every name is validated against "
-            "the player pool before the draft board is updated."
+            "Upload and validate draft files in the **Import existing draft** section above the tabs."
         )
-        imported_draft_file = st.file_uploader(
-            "Upload existing draft board CSV or Excel",
-            type=["csv", "xlsx", "xls"],
-            key="draft_room_import_uploader",
-        )
-        if imported_draft_file is not None:
-            try:
-                from draft_import_pipeline import ENTRY_DRAFT_ROOM, render_uploaded_draft_import_section
-
-                pool_for_import = _draft_room_pool_for_import_validation()
-                render_uploaded_draft_import_section(
-                    st,
-                    st.session_state,
-                    imported_draft_file,
-                    pool_for_import,
-                    entry_point=ENTRY_DRAFT_ROOM,
-                    read_table_fn=read_uploaded_table_cached,
-                    remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
-                    render_preview_table_fn=lambda df, **kw: render_output_table(
-                        clean_ui_columns(df),
-                        **kw,
-                    ),
-                    uploaded_filename_session_key="draft_room_import_uploaded_filename",
-                )
-            except Exception as e:
-                st.error(f"Could not read uploaded draft file: {e}")
 
     room_team_count = int(st.session_state.get("room_team_count", 2))
     room_rounds = int(st.session_state.get("room_rounds", 20))
@@ -22886,14 +22877,19 @@ if active_page == "Fantasy Standings Tracker":
             pitcher_stats = pd.DataFrame()
 
     draft_import_for_standings = None
-    with st.expander("Optional: import draft board (if Draft Room is empty)", expanded=False):
+    _standings_import_review = st.session_state.get("_standings_draft_import_review")
+    with st.expander(
+        "Optional: import draft board (if Draft Room is empty)",
+        expanded=bool(isinstance(_standings_import_review, dict) and _standings_import_review.get("rows")),
+    ):
         st.caption(
-            "Upload a draft board CSV/Excel. Player names are validated before loading onto "
-            "the Draft Room Simulator board."
+            "Upload a draft board CSV/Excel with Team/Owner and Player columns. "
+            "Validation appears immediately — League setup settings do not need to match first."
         )
         draft_import_for_standings = st.file_uploader(
             "Upload draft board CSV/Excel",
             type=["csv", "xlsx", "xls"],
+            key="standings_draft_import_uploader",
         )
         if draft_import_for_standings is not None:
             try:

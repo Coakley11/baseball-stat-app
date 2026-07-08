@@ -150,6 +150,7 @@ PAGE_STATE_REGISTRY = {
 
 _FILE_UPLOADER_WIDGET_KEYS = frozenset({
     "draft_room_import_uploader",
+    "standings_draft_import_uploader",
 })
 
 
@@ -187,8 +188,6 @@ def _is_ephemeral_widget_key(key: str) -> bool:
     ):
         return True
     if k.startswith("plr_act_") or k.startswith("ctx_go_"):
-        return True
-    if k.startswith("_fcs_") and k.endswith("_toggle_widget"):
         return True
     if "compare_selected_action_" in k or k.startswith("sig_a_action_") or k.startswith("sig_b_action_"):
         return True

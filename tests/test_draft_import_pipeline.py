@@ -68,15 +68,22 @@ class TestDraftImportPipeline(unittest.TestCase):
         self.assertTrue(import_columns_valid(df))
         self.assertEqual(len(df), 2)
 
-    def test_parse_uploaded_draft_file_empty_rows(self) -> None:
-        csv = b"Team,Player\n"
+    def test_parse_uploaded_draft_file_empty_rows_shows_columns(self) -> None:
+        csv = b"Foo,Bar\n1,2\n"
         upload = MagicMock()
         upload.getvalue.return_value = csv
         upload.name = "draft.csv"
 
         df, err = parse_uploaded_draft_file(upload, read_table_fn=_read_csv_table)
         self.assertTrue(df.empty)
-        self.assertIn("No usable Team/Player rows", err)
+        self.assertIn("Detected columns", err)
+        self.assertIn("Foo", err)
+
+    def test_import_pending_banner_helpers_exist(self) -> None:
+        from draft_import_pipeline import render_draft_room_import_block, render_import_pending_banner
+
+        self.assertTrue(callable(render_import_pending_banner))
+        self.assertTrue(callable(render_draft_room_import_block))
 
     def test_unresolved_player_blocks_league_ready(self) -> None:
         import_df = pd.DataFrame(
@@ -185,8 +192,9 @@ class TestDraftImportPipeline(unittest.TestCase):
         """Regression: both import UIs must route through draft_import_pipeline."""
         app_path = Path(__file__).resolve().parents[1] / "streamlit_app.py"
         source = app_path.read_text(encoding="utf-8")
-        self.assertIn("render_uploaded_draft_import_section", source)
-        self.assertIn("ENTRY_DRAFT_ROOM", source)
+        self.assertIn("render_draft_room_import_block", source)
+        self.assertIn("render_import_pending_banner", source)
+        self.assertNotIn("League setup & import", source)
         self.assertIn("ENTRY_STANDINGS", source)
         self.assertNotIn("def normalize_imported_draft_columns", source)
         self.assertNotIn("def _render_validated_draft_import", source)

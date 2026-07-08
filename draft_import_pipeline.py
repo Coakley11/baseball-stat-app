@@ -101,13 +101,20 @@ def parse_uploaded_draft_file(
     read_table_fn: Callable[[bytes, str], pd.DataFrame],
 ) -> tuple[pd.DataFrame, str]:
     """Parse and normalize an upload. Returns (dataframe, error_message)."""
+    raw_columns: list[str] = []
     try:
         raw = read_imported_draft_file(uploaded_file, read_table_fn=read_table_fn)
+        raw_columns = [str(c) for c in raw.columns.tolist()]
     except Exception as exc:
         return pd.DataFrame(columns=list(REQUIRED_IMPORT_COLUMNS)), str(exc)
     normalized = normalize_imported_draft_columns(raw)
     if normalized.empty:
-        return normalized, "No usable Team/Player rows were found in the uploaded draft."
+        cols = ", ".join(raw_columns[:12]) if raw_columns else "(none detected)"
+        return (
+            normalized,
+            "No usable Team/Player rows were found in the uploaded draft. "
+            f"Detected columns: {cols}. Expected at least Team/Owner and Player/Name columns.",
+        )
     if not import_columns_valid(normalized):
         return normalized, "Uploaded draft is missing required columns."
     return normalized, ""
@@ -357,6 +364,61 @@ def render_uploaded_draft_import_section(
     )
 
 
+def render_import_pending_banner(st: Any, session: dict[str, Any]) -> None:
+    """Surface in-progress import review above tabbed layouts (Streamlit resets to tab 1 on rerun)."""
+    review = session.get("_draft_import_review") or session.get("_standings_draft_import_review")
+    if not isinstance(review, dict) or not review.get("rows"):
+        return
+    summary = review.get("summary") or {}
+    exact = int(summary.get("exact") or 0)
+    needs = int(summary.get("close") or 0) + int(summary.get("ambiguous") or 0) + int(summary.get("invalid") or 0)
+    st.info(
+        f"**Draft import ready for review** — {exact} exact match(es), {needs} row(s) need confirmation. "
+        "Use the **Import existing draft** section below to validate names, apply to the board, "
+        "or create a shared league."
+    )
+
+
+def render_draft_room_import_block(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    read_table_fn: Callable[[bytes, str], pd.DataFrame],
+    pool_df: pd.DataFrame,
+    remove_drafted_from_queue_fn: Callable[[], None] | None = None,
+    render_preview_table_fn: Callable[..., None] | None = None,
+) -> None:
+    """Always-visible Draft Room import entry (must not be hidden inside a inactive tab)."""
+    st.subheader("Import existing draft")
+    st.caption(
+        "Upload CSV or Excel with **Team/Owner** and **Player** columns (optional Pick/Round). "
+        "Validation appears here immediately after upload — you do **not** need to match team count or "
+        "rounds in League setup first; the file defines teams and picks. Scoring format only affects "
+        "which player pool is used for name matching."
+    )
+    imported_draft_file = st.file_uploader(
+        "Upload existing draft board CSV or Excel",
+        type=["csv", "xlsx", "xls"],
+        key="draft_room_import_uploader",
+    )
+    if imported_draft_file is None:
+        return
+    try:
+        render_uploaded_draft_import_section(
+            st,
+            session,
+            imported_draft_file,
+            pool_df,
+            entry_point=ENTRY_DRAFT_ROOM,
+            read_table_fn=read_table_fn,
+            remove_drafted_from_queue_fn=remove_drafted_from_queue_fn,
+            render_preview_table_fn=render_preview_table_fn,
+            uploaded_filename_session_key="draft_room_import_uploaded_filename",
+        )
+    except Exception as exc:
+        st.error(f"Could not read uploaded draft file: {exc}")
+
+
 __all__ = [
     "ENTRY_DRAFT_ROOM",
     "ENTRY_STANDINGS",
@@ -373,6 +435,8 @@ __all__ = [
     "parse_uploaded_draft_file",
     "read_imported_draft_file",
     "render_draft_import_validation_ui",
+    "render_draft_room_import_block",
+    "render_import_pending_banner",
     "render_shared_league_creation_panel",
     "render_uploaded_draft_import_section",
     "render_validated_draft_import",
