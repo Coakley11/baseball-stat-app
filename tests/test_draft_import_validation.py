@@ -9,6 +9,7 @@ import pandas as pd
 from draft_import_validation import (
     build_validated_import_dataframe,
     import_review_ready,
+    import_review_ready_for_league,
     validate_imported_draft_df,
 )
 from draft_player_names import classify_draft_player_import_name, build_draft_player_name_index
@@ -94,6 +95,23 @@ class TestDraftImportValidation(unittest.TestCase):
         self.assertFalse(import_review_ready(review))
         review["rows"][0]["resolved_canonical"] = "Francisco Lindor"
         self.assertTrue(import_review_ready(review))
+
+    def test_league_ready_requires_all_resolved_no_skip(self) -> None:
+        import_df = pd.DataFrame(
+            {
+                "Round": [1, 1],
+                "Pick": [1, 2],
+                "Team": ["A", "B"],
+                "Player": ["Aaron Judge", "Mike Piazza"],
+            }
+        )
+        review = validate_imported_draft_df(import_df, self.pool)
+        self.assertFalse(import_review_ready_for_league(review, self.pool))
+        review["rows"][1]["skip"] = True
+        self.assertFalse(import_review_ready_for_league(review, self.pool))
+        review["rows"][1]["skip"] = False
+        review["rows"][1]["resolved_canonical"] = "Juan Soto"
+        self.assertTrue(import_review_ready_for_league(review, self.pool))
 
 
 if __name__ == "__main__":

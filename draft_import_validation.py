@@ -69,6 +69,43 @@ def import_review_ready(review: dict[str, Any]) -> bool:
     return True
 
 
+def _resolved_canonical_for_row(row: dict[str, Any]) -> str:
+    canonical = str(row.get("resolved_canonical") or "").strip()
+    if canonical:
+        return canonical
+    if row.get("status") == "exact":
+        return str(row.get("canonical") or "").strip()
+    return ""
+
+
+def import_review_ready_for_league(review: dict[str, Any], pool_df: pd.DataFrame) -> bool:
+    """True when every imported player resolves to a canonical draft-pool name (no skips/blanks)."""
+    if not review or not review.get("rows"):
+        return False
+    import_df = review.get("import_df")
+    if not isinstance(import_df, pd.DataFrame) or import_df.empty:
+        return False
+    index = build_draft_player_name_index(pool_df)
+    pool_set = set(index.values())
+    if not pool_set:
+        return False
+
+    saw_player = False
+    for row in review.get("rows") or []:
+        if row.get("status") == "empty":
+            continue
+        raw = str(row.get("input") or "").strip()
+        if not raw:
+            continue
+        saw_player = True
+        if row.get("skip"):
+            return False
+        canonical = _resolved_canonical_for_row(row)
+        if not canonical or canonical not in pool_set:
+            return False
+    return saw_player
+
+
 def build_validated_import_dataframe(review: dict[str, Any]) -> pd.DataFrame:
     """Apply resolutions — unresolved/skipped rows get blank Player cells."""
     base = review.get("import_df")
@@ -99,6 +136,8 @@ def render_draft_import_validation_ui(
     session_key: str = "_draft_import_review",
     apply_label: str = "Apply validated import to draft board",
     on_apply: Callable[[pd.DataFrame], None] | None = None,
+    strict: bool = False,
+    show_league_readiness: bool = True,
 ) -> bool:
     """Show validation summary and row-level fixes. Returns True if import applied."""
     if not review or not review.get("rows"):
@@ -140,10 +179,16 @@ def render_draft_import_validation_ui(
             elif status == "ambiguous":
                 st.markdown(f"**Pick {pick_label}** · {team} · `{raw}` matches several players — choose one:")
             else:
-                st.warning(
-                    f"**Pick {pick_label}** · {team} · `{raw}` is not in the current player pool. "
-                    "Select a replacement player or leave unresolved."
-                )
+                if strict:
+                    st.warning(
+                        f"**Pick {pick_label}** · {team} · `{raw}` is not in the current player pool. "
+                        "Select a replacement player to continue."
+                    )
+                else:
+                    st.warning(
+                        f"**Pick {pick_label}** · {team} · `{raw}` is not in the current player pool. "
+                        "Select a replacement player or leave unresolved."
+                    )
                 search_q = st.text_input(
                     "Search pool for replacement",
                     key=f"{session_key}_{key_base}_search",
@@ -161,18 +206,32 @@ def render_draft_import_validation_ui(
                 key=f"{session_key}_{key_base}_choice",
                 label_visibility="collapsed",
             )
-            skip = st.checkbox(
-                "Leave unresolved (blank on board)",
-                key=f"{session_key}_{key_base}_skip",
-            )
-            if skip:
-                row["skip"] = True
-                row["resolved_canonical"] = None
-            elif choice and choice != "— Select player —":
+            if strict:
                 row["skip"] = False
-                row["resolved_canonical"] = choice
+                if choice and choice != "— Select player —":
+                    row["resolved_canonical"] = choice
+                else:
+                    row["resolved_canonical"] = None
+            else:
+                skip = st.checkbox(
+                    "Leave unresolved (blank on board)",
+                    key=f"{session_key}_{key_base}_skip",
+                )
+                if skip:
+                    row["skip"] = True
+                    row["resolved_canonical"] = None
+                elif choice and choice != "— Select player —":
+                    row["skip"] = False
+                    row["resolved_canonical"] = choice
 
-    ready = import_review_ready(review)
+    league_ready = import_review_ready_for_league(review, pool_df)
+    if show_league_readiness:
+        if league_ready:
+            st.success("All imported players resolved — ready for shared league creation.")
+        else:
+            st.info("Resolve every imported player before this draft can become a shared league.")
+
+    ready = import_review_ready_for_league(review, pool_df) if strict else import_review_ready(review)
     applied = False
     if st.button(apply_label, disabled=not ready, key=f"{session_key}_apply"):
         validated = build_validated_import_dataframe(review)
@@ -183,7 +242,14 @@ def render_draft_import_validation_ui(
             for p in validated["Player"].astype(str).tolist()
             if str(p).strip() and str(p).strip() not in pool_set
         ]
-        if bad:
+        blank_players = [
+            i
+            for i, p in enumerate(validated["Player"].astype(str).tolist())
+            if str(p).strip() == ""
+        ]
+        if strict and blank_players:
+            st.error("Cannot apply — strict import requires every player to be resolved.")
+        elif bad:
             st.error(f"Cannot apply — non-pool names remain: {', '.join(bad[:5])}")
         else:
             if on_apply:
@@ -192,5 +258,8 @@ def render_draft_import_validation_ui(
             st.session_state.pop(session_key, None)
 
     if not ready:
-        st.info("Confirm every close/ambiguous match and resolve or skip every player not in the pool.")
+        if strict:
+            st.info("Resolve every imported player to a canonical pool name before continuing.")
+        else:
+            st.info("Confirm every close/ambiguous match and resolve or skip every player not in the pool.")
     return applied

@@ -7906,46 +7906,6 @@ def suggest_trade_targets(my_team, target_team, all_rosters, standings):
 
 
 
-def normalize_imported_draft_columns(df):
-    """Normalize uploaded draft board columns into Round/Pick/Team/Player."""
-    out = df.copy()
-    rename_map = {}
-    for c in out.columns:
-        lc = str(c).strip().lower()
-        if lc in ["team", "owner", "fantasy team", "fantasy_team", "manager"]:
-            rename_map[c] = "Team"
-        elif lc in ["player", "name", "player name", "player_name", "full name", "fullname"]:
-            rename_map[c] = "Player"
-        elif lc in ["round", "rd"]:
-            rename_map[c] = "Round"
-        elif lc in ["pick", "pick number", "pick_number", "overall pick", "overall_pick"]:
-            rename_map[c] = "Pick"
-    out = out.rename(columns=rename_map)
-    if "Team" not in out.columns:
-        out["Team"] = ""
-    if "Player" not in out.columns:
-        out["Player"] = ""
-    out["Team"] = out["Team"].astype(str).str.strip()
-    out["Player"] = out["Player"].astype(str).str.strip()
-    out = out[(out["Team"] != "") & (out["Player"] != "")].copy()
-    if "Pick" not in out.columns:
-        out["Pick"] = range(1, len(out) + 1)
-    out["Pick"] = pd.to_numeric(out["Pick"], errors="coerce")
-    out = out.sort_values("Pick", na_position="last").reset_index(drop=True)
-    out["Pick"] = range(1, len(out) + 1)
-    if "Round" not in out.columns:
-        team_count = max(1, out["Team"].nunique())
-        out["Round"] = ((out["Pick"] - 1) // team_count) + 1
-    out["Round"] = pd.to_numeric(out["Round"], errors="coerce").fillna(1).astype(int)
-    return out[["Round", "Pick", "Team", "Player"]]
-
-
-def read_imported_draft_file(uploaded_file):
-    """Read uploaded draft CSV or Excel."""
-    name = str(getattr(uploaded_file, "name", "")).lower()
-    return read_uploaded_table_cached(uploaded_file.getvalue(), name)
-
-
 def _draft_room_pool_for_import_validation():
     """Player pool for import name validation (matches Draft Room scoring pool)."""
     market = load_fantasypros_market_data()
@@ -7971,68 +7931,6 @@ def _draft_room_pool_for_import_validation():
         use_ml_blend=bool(kw["use_ml_blend"]),
         ml_blend_weight=float(kw["ml_blend_weight"]),
         ml_min_games_for_signal=int(kw["ml_min_games_for_signal"]),
-    )
-
-
-def _apply_validated_draft_to_room(validated_df, *, flash_prefix="Loaded"):
-    from draft_room_state import (
-        ACTIVE_DRAFT_MODE_MANUAL,
-        persist_draft_board_to_storage,
-        set_canonical_draft_meta,
-        table_pick_count,
-    )
-
-    st.session_state["draft_room_table"] = validated_df.copy()
-    _auto_remove_drafted_from_queue()
-    set_canonical_draft_meta(
-        st.session_state,
-        mode=ACTIVE_DRAFT_MODE_MANUAL,
-        source="validated_import",
-        pick_count=table_pick_count(validated_df),
-    )
-    persist_draft_board_to_storage(
-        st,
-        st.session_state,
-        validated_df,
-        reason="validated_import",
-    )
-    filled = int(validated_df["Player"].astype(str).str.strip().ne("").sum())
-    st.session_state["workflow_sidebar_flash"] = (
-        f"{flash_prefix} {filled} validated pick(s) into the Draft Room."
-    )
-    st.session_state.pop("_draft_import_review", None)
-    st.session_state.pop("_draft_import_file_id", None)
-    st.rerun()
-
-
-def _render_validated_draft_import(
-    imported_df,
-    pool_df,
-    *,
-    session_key: str = "_draft_import_review",
-    apply_label: str = "Apply validated import to draft board",
-    flash_prefix: str = "Loaded",
-):
-    from draft_import_validation import render_draft_import_validation_ui, validate_imported_draft_df
-
-    review = validate_imported_draft_df(imported_df, pool_df)
-    st.session_state[session_key] = review
-    render_draft_import_validation_ui(
-        st,
-        review=review,
-        pool_df=pool_df,
-        session_key=session_key,
-        apply_label=apply_label,
-        on_apply=lambda validated: _apply_validated_draft_to_room(
-            validated, flash_prefix=flash_prefix
-        ),
-    )
-    st.caption("Uploaded draft preview (raw import — not saved until validated):")
-    render_output_table(
-        clean_ui_columns(imported_df.head(50)),
-        key=f"{session_key}_preview",
-        file_name="uploaded_draft_preview.csv",
-        display_rows=50,
     )
 
 
@@ -19673,23 +19571,23 @@ if active_page == "Draft Room Simulator":
         )
         if imported_draft_file is not None:
             try:
-                st.session_state["draft_room_import_uploaded_filename"] = str(
-                    getattr(imported_draft_file, "name", "") or ""
+                from draft_import_pipeline import ENTRY_DRAFT_ROOM, render_uploaded_draft_import_section
+
+                pool_for_import = _draft_room_pool_for_import_validation()
+                render_uploaded_draft_import_section(
+                    st,
+                    st.session_state,
+                    imported_draft_file,
+                    pool_for_import,
+                    entry_point=ENTRY_DRAFT_ROOM,
+                    read_table_fn=read_uploaded_table_cached,
+                    remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
+                    render_preview_table_fn=lambda df, **kw: render_output_table(
+                        clean_ui_columns(df),
+                        **kw,
+                    ),
+                    uploaded_filename_session_key="draft_room_import_uploaded_filename",
                 )
-                imported_raw = read_imported_draft_file(imported_draft_file)
-                imported_draft = normalize_imported_draft_columns(imported_raw)
-                if imported_draft.empty:
-                    st.warning("No usable Team/Player rows were found in the uploaded draft.")
-                else:
-                    file_sig = hashlib.md5(imported_draft_file.getvalue()).hexdigest()[:12]
-                    if st.session_state.get("draft_room_import_last_processed_hash") != file_sig:
-                        st.session_state["draft_room_import_last_processed_hash"] = file_sig
-                        st.session_state.pop("_draft_import_review", None)
-                    pool_for_import = _draft_room_pool_for_import_validation()
-                    if pool_for_import.empty:
-                        st.error("Player pool is empty — cannot validate import names.")
-                    else:
-                        _render_validated_draft_import(imported_draft, pool_for_import)
             except Exception as e:
                 st.error(f"Could not read uploaded draft file: {e}")
 
@@ -22999,22 +22897,22 @@ if active_page == "Fantasy Standings Tracker":
         )
         if draft_import_for_standings is not None:
             try:
-                draft_import_raw = read_imported_draft_file(draft_import_for_standings)
-                draft_import_norm = normalize_imported_draft_columns(draft_import_raw)
-                if draft_import_norm.empty:
-                    st.warning("No usable Team/Player rows were found in the uploaded draft.")
-                else:
-                    pool_for_import = _draft_room_pool_for_import_validation()
-                    if pool_for_import.empty:
-                        st.error("Player pool is empty — cannot validate import names.")
-                    else:
-                        _render_validated_draft_import(
-                            draft_import_norm,
-                            pool_for_import,
-                            session_key="_standings_draft_import_review",
-                            apply_label="Apply validated import to Draft Room Simulator board",
-                            flash_prefix="Standings: loaded",
-                        )
+                from draft_import_pipeline import ENTRY_STANDINGS, render_uploaded_draft_import_section
+
+                pool_for_import = _draft_room_pool_for_import_validation()
+                render_uploaded_draft_import_section(
+                    st,
+                    st.session_state,
+                    draft_import_for_standings,
+                    pool_for_import,
+                    entry_point=ENTRY_STANDINGS,
+                    read_table_fn=read_uploaded_table_cached,
+                    remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
+                    render_preview_table_fn=lambda df, **kw: render_output_table(
+                        clean_ui_columns(df),
+                        **kw,
+                    ),
+                )
             except Exception as e:
                 st.error(f"Could not read draft board upload: {e}")
 
