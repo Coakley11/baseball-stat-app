@@ -1,2 +1,3 @@
-553fd8d  # auto-generated; Streamlit Cloud reads this at runtime
+553fd8d  # auto-generated; Streamlit Cloud reads this at runtime; force rebuild 2026-07-08T15:07
+
 branch: dev
