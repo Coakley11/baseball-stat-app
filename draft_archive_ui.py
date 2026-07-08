@@ -248,6 +248,20 @@ def _on_simulator_save_click(team_name: str = "", key_prefix: str = "") -> None:
     )
 
 
+def _on_click_save_probe_test_draft() -> None:
+    import streamlit as st
+
+    try:
+        from workflow_persist_guard import save_probe_test_draft
+
+        save_probe_test_draft(st, st.session_state)
+    except Exception as exc:
+        st.session_state["_probe_test_draft_trace"] = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     """Always-visible post-reboot probe: account, workspace, counts, restore verdict."""
     try:
@@ -281,6 +295,26 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         st.markdown(f"**Restore source:** `{probe.get('restore_source') or '—'}`")
         st.markdown(f"**Persistence verdict:** {probe.get('persistence_verdict_label') or '—'}")
 
+    st.caption(
+        f"Canonical key: `{probe.get('persist_canonical_session_key') or 'draft_archive_teams'}` · "
+        f"Path: {probe.get('persistence_key_path') or '—'}"
+    )
+    st.markdown(
+        f"**Cloud restore attempted:** {probe.get('cloud_restore_attempted_label') or '—'} · "
+        f"**error:** `{probe.get('cloud_restore_error') or '—'}`"
+    )
+    st.markdown(
+        f"**Cloud write attempted:** {probe.get('cloud_write_attempted_label') or '—'} · "
+        f"**readback count:** {int(probe.get('cloud_write_readback_count') or 0)} · "
+        f"**readback ok:** {probe.get('cloud_write_readback_ok')}"
+    )
+    if probe.get("cloud_write_error") and probe.get("cloud_write_error") != "—":
+        st.caption(f"Cloud write/readback error: `{probe['cloud_write_error']}`")
+    if probe.get("last_save_reason") and probe.get("last_save_reason") != "—":
+        st.caption(f"Last save reason: `{probe['last_save_reason']}`")
+    if probe.get("local_state_path") and probe.get("local_state_path") != "—":
+        st.caption(f"Disk path: `{probe['local_state_path']}`")
+
     owned_n = int(probe.get("cloud_draft_count_owned") or 0)
     legacy_n = int(probe.get("cloud_draft_count_legacy") or 0)
     if owned_n or legacy_n:
@@ -292,6 +326,29 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     diagnosis = probe.get("diagnosis") or {}
     for question, answer in diagnosis.items():
         st.markdown(f"- **{question}** {answer}")
+
+    st.button(
+        "Save Probe Test Draft",
+        key="library_probe_save_test_draft_btn",
+        help="Creates one known minimal draft, saves to disk+cloud, and runs immediate readback.",
+        on_click=_on_click_save_probe_test_draft,
+    )
+    probe_trace = session.get("_probe_test_draft_trace")
+    if isinstance(probe_trace, dict) and probe_trace:
+        if probe_trace.get("ok"):
+            st.success(
+                f"Probe save OK — session **{int(probe_trace.get('session_draft_count_after') or 0)}** · "
+                f"disk **{int(probe_trace.get('disk_draft_count') or 0)}** · "
+                f"cloud readback **{int(probe_trace.get('cloud_readback_count') or 0)}** "
+                f"(draft `{probe_trace.get('draft_id') or '—'}`)"
+            )
+        else:
+            st.error(
+                f"Probe save failed — session **{int(probe_trace.get('session_draft_count_after') or 0)}** · "
+                f"disk **{int(probe_trace.get('disk_draft_count') or 0)}** · "
+                f"cloud readback **{int(probe_trace.get('cloud_readback_count') or 0)}** · "
+                f"error: `{probe_trace.get('cloud_readback_error') or probe_trace.get('cloud_write_error') or probe_trace.get('error') or '—'}`"
+            )
 
 
 def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bool:
@@ -969,6 +1026,16 @@ def _record_save_diag(
     }
 
 
+def _cloud_persist_reason(reason: str) -> str:
+    """Route explicit Save Draft actions through the compact draft-library cloud writer."""
+    base = str(reason or "").strip()
+    if base.endswith("_retry"):
+        base = base[:-6]
+    if base in ("simulator_league_context_saved", "live_draft_league_context_saved"):
+        return "draft_archive_saved"
+    return reason
+
+
 def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: dict[str, Any] | None = None) -> bool:
     before = _workflow_counts(session)
     try:
@@ -1001,7 +1068,8 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     try:
         from baseball_persistent_state import force_save_baseball_state
 
-        ok = bool(force_save_baseball_state(st, reason=reason))
+        persist_reason = _cloud_persist_reason(reason)
+        ok = bool(force_save_baseball_state(st, reason=persist_reason))
     except Exception as exc:
         session["_draft_archive_persist_error"] = f"{type(exc).__name__}: {exc}"
         ok = False
@@ -1038,9 +1106,42 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     if session_has_entry and not ok:
         try:
             session.pop("_suite_autosave_fp::baseball", None)
-            ok = bool(force_save_baseball_state(st, reason=f"{reason}_retry"))
+            retry_reason = f"{_cloud_persist_reason(reason)}_retry"
+            ok = bool(force_save_baseball_state(st, reason=retry_reason))
             persist_ok = persist_ok or bool(ok and get_draft_archive(session, entry_id))
         except Exception:
+            pass
+    if persist_ok and entry_id:
+        try:
+            from workflow_persist_guard import record_draft_library_readback, verify_cloud_draft_library_readback
+            from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
+
+            ws = str(get_active_workspace_id(st=st))
+            app_key = scoped_cloud_app_id("baseball", ws)
+            readback = verify_cloud_draft_library_readback(
+                "baseball",
+                min_drafts=1,
+                expected_draft_id=entry_id,
+                workspace_id=ws,
+                cloud_app_key=app_key,
+                expected_draft_count=int(after.get("draft_archive_count") or 0),
+                session=session,
+            )
+            record_draft_library_readback(session, readback)
+            session["_suite_last_draft_save_readback"] = {
+                "cloud_app_key": app_key,
+                "workspace_id": ws,
+                "scope_user_id": readback.get("scope_user_id"),
+                "selected_row_user_id": readback.get("selected_row_user_id"),
+                "draft_count": readback.get("draft_count"),
+                "draft_ids": list(readback.get("draft_ids") or []),
+                "expected_draft_count": int(after.get("draft_archive_count") or 0),
+                "expected_draft_id": entry_id,
+                "save_reason": reason,
+            }
+            if not readback.get("ok"):
+                persist_ok = False
+        except ImportError:
             pass
     _record_save_diag(
         session,

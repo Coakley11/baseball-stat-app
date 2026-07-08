@@ -21,6 +21,8 @@ from workflow_persist_guard import (
     infer_restore_persistence_verdict,
     merge_protected_workflow_into_save,
     merge_protected_workflow_on_restore,
+    inject_session_draft_library_into_save_state,
+    is_draft_library_mutation_save_reason,
     probe_cloud_workflow_for_workspace,
     record_startup_restore_snapshot,
     should_keep_session_workflow_over_blob,
@@ -226,6 +228,30 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(probe["persistence_verdict"], "B_restore_failed")
         self.assertIn("≠ owned", probe["diagnosis"]["Did the reboot load a different workspace?"])
         self.assertIn("storage has drafts", probe["diagnosis"]["Were my drafts ever successfully persisted?"])
+
+    def test_inject_session_draft_library_into_save_state(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "inj1", "draft_name": "Injected"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "inj1",
+        }
+        state = {"active_page": "Saved Draft Library"}
+        out = inject_session_draft_library_into_save_state(state, session)
+        self.assertEqual(len(out[DRAFT_ARCHIVE_KEY]), 1)
+        self.assertEqual(out[ACTIVE_DRAFT_ARCHIVE_KEY], "inj1")
+
+    def test_is_draft_library_mutation_save_reason(self) -> None:
+        self.assertTrue(is_draft_library_mutation_save_reason("simulator_league_context_saved"))
+        self.assertTrue(is_draft_library_mutation_save_reason("draft_archive_saved"))
+        self.assertFalse(is_draft_library_mutation_save_reason("page_change"))
+
+    def test_merge_protected_workflow_authoritative_injects_session_archives(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "auth1"}],
+            WORKFLOW_PERSIST_ALLOW_CLEAR_KEY: True,
+        }
+        state = {"active_page": "Saved Draft Library"}
+        out = merge_protected_workflow_into_save(state, session, save_reason="simulator_league_context_saved")
+        self.assertEqual(len(out[DRAFT_ARCHIVE_KEY]), 1)
 
     def test_diagnostics_durable_when_cloud_has_verified_drafts(self) -> None:
         session = {

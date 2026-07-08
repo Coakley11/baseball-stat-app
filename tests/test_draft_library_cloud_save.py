@@ -16,9 +16,11 @@ class DraftLibraryCloudSaveTests(unittest.TestCase):
     def test_is_draft_library_cloud_save_reason(self) -> None:
         self.assertTrue(is_draft_library_cloud_save_reason("draft_archive_saved"))
         self.assertTrue(is_draft_library_cloud_save_reason("draft_archive_saved_retry"))
+        self.assertTrue(is_draft_library_cloud_save_reason("simulator_league_context_saved"))
+        self.assertTrue(is_draft_library_cloud_save_reason("live_draft_league_context_saved"))
         self.assertFalse(is_draft_library_cloud_save_reason("page_change"))
 
-    def test_draft_library_slice_omits_league_context(self) -> None:
+    def test_draft_library_slice_includes_league_context(self) -> None:
         state = {
             "draft_archive_teams": [{"draft_id": "d1", "draft_name": "Test"}],
             "active_draft_archive_id": "d1",
@@ -29,7 +31,7 @@ class DraftLibraryCloudSaveTests(unittest.TestCase):
         slim = _draft_library_slice_from_state(state)
         self.assertIn("draft_archive_teams", slim)
         self.assertEqual(slim.get("active_draft_archive_id"), "d1")
-        self.assertNotIn("fantasy_league_context_state", slim)
+        self.assertIn("fantasy_league_context_state", slim)
         self.assertNotIn("draft_room_state", slim)
 
     @patch("suite_storage_config.cloud_storage_enabled", return_value=True)
@@ -119,6 +121,34 @@ class DraftLibraryCloudSaveTests(unittest.TestCase):
                 "active_draft_archive_id": "d1",
             },
             reason="draft_archive_saved",
+        )
+        self.assertTrue(ok)
+        mock_draft.assert_called_once()
+        mock_full.assert_not_called()
+
+    @patch("suite_user_persistence.save_user_state", return_value=True)
+    @patch("suite_cloud_state.session_page_summary", return_value=("Saved Draft Library", "Saved Draft Library"))
+    @patch("suite_cloud_state.save_cloud_draft_library_with_details", return_value=(True, "", "baseball"))
+    @patch("suite_cloud_state.save_cloud_full_session_with_details", return_value=(False, "should_not_call", "baseball"))
+    def test_force_autosave_routes_simulator_save_to_compact_cloud(
+        self,
+        mock_full: MagicMock,
+        mock_draft: MagicMock,
+        _summary: MagicMock,
+        _disk: MagicMock,
+    ) -> None:
+        from suite_user_persistence import force_autosave
+
+        st = MagicMock()
+        st.session_state = {}
+        ok = force_autosave(
+            st,
+            "baseball",
+            build_state=lambda _st: {
+                "draft_archive_teams": [{"draft_id": "d1"}],
+                "active_draft_archive_id": "d1",
+            },
+            reason="simulator_league_context_saved",
         )
         self.assertTrue(ok)
         mock_draft.assert_called_once()

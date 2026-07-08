@@ -434,6 +434,13 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
                 state[key] = ss[key]
     save_reason = str(ss.get("_suite_pending_save_reason") or "autosave")
     try:
+        from workflow_persist_guard import inject_session_draft_library_into_save_state, is_draft_library_mutation_save_reason
+
+        if is_draft_library_mutation_save_reason(save_reason):
+            state = inject_session_draft_library_into_save_state(state, ss)
+    except ImportError:
+        pass
+    try:
         from fantasy_in_season_state import sync_fantasy_in_season_state
 
         sync_fantasy_in_season_state(ss, reason=save_reason)

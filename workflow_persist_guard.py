@@ -46,6 +46,44 @@ def mark_workflow_persist_authoritative(session: dict[str, Any]) -> None:
     session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
 
 
+def is_draft_library_mutation_save_reason(reason: str) -> bool:
+    """True when a save should carry draft_archive_teams / league contexts to disk+cloud."""
+    raw = str(reason or "").strip()
+    if not raw:
+        return False
+    base = raw[:-6] if raw.endswith("_retry") else raw
+    return base in {
+        "draft_archive_saved",
+        "draft_archive_renamed",
+        "draft_archive_duplicated",
+        "draft_archive_deleted",
+        "draft_archive_cleared",
+        "simulator_league_context_saved",
+        "live_draft_league_context_saved",
+        "manual_save_library_sync",
+        "league_context_activated",
+        "probe_test_draft_saved",
+    }
+
+
+def inject_session_draft_library_into_save_state(
+    state: dict[str, Any],
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    """Copy live session draft library keys into the outbound save blob."""
+    out = dict(state or {})
+    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        session_val = session.get(key)
+        if protected_workflow_nonempty(key, session_val):
+            try:
+                out[key] = copy.deepcopy(session_val)
+            except Exception:
+                out[key] = session_val
+        elif key not in out and protected_workflow_nonempty(key, out.get(key)):
+            continue
+    return out
+
+
 def _draft_archive_nonempty(val: Any) -> bool:
     return isinstance(val, list) and len(val) > 0
 
@@ -256,7 +294,9 @@ def merge_protected_workflow_into_save(
     reason = str(save_reason or session.get("_suite_pending_save_reason") or "autosave")
     if _session_allows_workflow_clear(session, reason):
         session.pop(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY, None)
-        return state
+        return inject_session_draft_library_into_save_state(state, session)
+    if is_draft_library_mutation_save_reason(reason):
+        state = inject_session_draft_library_into_save_state(state, session)
 
     disk_state = _load_disk_workflow_snapshot(app_id)
     cloud_state = _load_cloud_workflow_snapshot(app_id, st) if st is not None else {}
@@ -781,9 +821,11 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     except Exception:
         workspace_id = str(session.get("_suite_active_workspace_id") or session.get("_suite_owned_workspace_id") or "")
     try:
-        from suite_workspace_registry import get_owned_workspace_id
+        from suite_workspace_registry import get_owned_workspace_id, resolve_owned_workspace_id
 
         owned_workspace_id = str(get_owned_workspace_id(session) or "")
+        if not owned_workspace_id:
+            owned_workspace_id = str(resolve_owned_workspace_id(session) or "")
     except ImportError:
         owned_workspace_id = str(session.get("_suite_owned_workspace_id") or "")
 
@@ -971,6 +1013,13 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
 
     workspace_id = str(diag.get("workspace_id") or "").strip()
     owned_workspace_id = str(diag.get("owned_workspace_id") or "").strip()
+    if not owned_workspace_id and bool(diag.get("authenticated")):
+        try:
+            from suite_workspace_registry import resolve_owned_workspace_id
+
+            owned_workspace_id = str(resolve_owned_workspace_id(session) or "").strip()
+        except ImportError:
+            pass
     restored_workspace_id = str(startup.get("restored_workspace_id") or workspace_id).strip()
 
     restore_pick_source = str(
@@ -1014,10 +1063,48 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     disk_zero = startup_disk_drafts <= 0
 
     readback_ok = bool(session.get("_suite_draft_library_readback_ok"))
+    readback_count = int(session.get("_suite_draft_library_readback_count") or 0)
+    readback_error = str(session.get("_suite_draft_library_readback_error") or "").strip()
     save_readback = session.get("_suite_last_draft_save_readback")
-    save_readback_count = 0
+    save_readback_count = readback_count
+    save_readback_key = ""
     if isinstance(save_readback, dict):
-        save_readback_count = int(save_readback.get("draft_archive_count") or 0)
+        save_readback_count = int(
+            save_readback.get("draft_count")
+            or save_readback.get("draft_archive_count")
+            or readback_count
+        )
+        save_readback_key = str(save_readback.get("cloud_app_key") or "").strip()
+
+    # Cloud restore telemetry (recorded during startup workspace sync).
+    cloud_restore_attempted = bool(session.get("_suite_cloud_fetch_attempted"))
+    cloud_restore_success = bool(session.get("_suite_cloud_fetch_success"))
+    cloud_restore_row_found = bool(session.get("_suite_cloud_fetch_row_found"))
+    cloud_restore_error = str(session.get("_suite_cloud_fetch_error") or "").strip()
+    cloud_fetch_app_key = str(session.get("_suite_cloud_fetch_app_key") or "").strip()
+
+    # Cloud write telemetry (recorded during force save / library save).
+    last_save_reason = str(session.get("_suite_persist_last_save_reason") or "").strip()
+    cloud_write_attempted = bool(
+        session.get("_suite_persist_last_save_at")
+        or session.get("_suite_last_cloud_app_key")
+        or isinstance(save_readback, dict)
+    )
+    cloud_write_ok = bool(session.get("_suite_persist_last_save_cloud"))
+    cloud_write_error = str(
+        session.get("_suite_persist_last_cloud_error")
+        or session.get("_suite_autosave_cloud_blocked_reason")
+        or readback_error
+        or ""
+    ).strip()
+    cloud_write_app_key = str(
+        session.get("_suite_last_cloud_app_key")
+        or save_readback_key
+        or cloud_fetch_app_key
+        or diag.get("cloud_app_key")
+        or ""
+    ).strip()
+    local_state_path = str(diag.get("local_state_path") or "").strip()
 
     if cloud_any_count > 0 or disk_draft_count > 0:
         ever_persisted = (
@@ -1033,6 +1120,12 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
 
     account_email = str(diag.get("account_email") or diag.get("account_external_id") or "—")
     account_user_id = str(diag.get("account_user_id") or "—")
+    persistence_key_path = (
+        f"session[{DRAFT_ARCHIVE_KEY}] → disk[{DRAFT_ARCHIVE_KEY}] → "
+        f"cloud metrics.full_session.{DRAFT_ARCHIVE_KEY}"
+    )
+    session_has_archive_key = DRAFT_ARCHIVE_KEY in session
+    session_archive_len = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
 
     return {
         "signed_in": bool(diag.get("authenticated")),
@@ -1041,7 +1134,7 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "user_id": account_user_id,
         "workspace_id": workspace_id or "—",
         "owned_workspace_id": owned_workspace_id or "—",
-        "cloud_app_key": str(diag.get("cloud_app_key") or "—"),
+        "cloud_app_key": str(diag.get("cloud_app_key") or cloud_write_app_key or "—"),
         "session_draft_count": session_draft_count,
         "cloud_draft_count": cloud_draft_count,
         "disk_draft_count": disk_draft_count,
@@ -1050,6 +1143,22 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "restore_source": restore_pick_source or "none",
         "persistence_verdict": verdict,
         "persistence_verdict_label": verdict_label,
+        "cloud_restore_attempted": cloud_restore_attempted,
+        "cloud_restore_attempted_label": "yes" if cloud_restore_attempted else "no",
+        "cloud_restore_error": cloud_restore_error or "—",
+        "cloud_write_attempted": cloud_write_attempted,
+        "cloud_write_attempted_label": "yes" if cloud_write_attempted else "no",
+        "cloud_write_ok": cloud_write_ok,
+        "cloud_write_error": cloud_write_error or "—",
+        "cloud_write_readback_count": readback_count,
+        "cloud_write_readback_ok": readback_ok,
+        "cloud_write_readback_error": readback_error or "—",
+        "persistence_key_path": persistence_key_path,
+        "persist_canonical_session_key": DRAFT_ARCHIVE_KEY,
+        "session_has_draft_archive_teams": session_has_archive_key,
+        "session_draft_archive_teams_len": session_archive_len,
+        "last_save_reason": last_save_reason or "—",
+        "local_state_path": local_state_path or "—",
         "diagnosis": {
             "Did the reboot load a different workspace?": different_workspace,
             "Did cloud restore run?": cloud_restore_ran,
@@ -1062,6 +1171,114 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "restore_skip_reason": restore_skip or None,
         "restore_applied": restore_applied,
     }
+
+
+def save_probe_test_draft(st: Any, session: dict[str, Any]) -> dict[str, Any]:
+    """Create one known minimal draft, persist, and read back cloud/disk counts."""
+    trace: dict[str, Any] = {
+        "ok": False,
+        "draft_id": "",
+        "draft_name": "Probe Test Draft",
+        "session_draft_count_before": count_draft_archives(session.get(DRAFT_ARCHIVE_KEY)),
+        "session_draft_count_after": 0,
+        "disk_draft_count": 0,
+        "cloud_readback_count": 0,
+        "cloud_readback_ok": False,
+        "cloud_readback_error": "",
+        "persist_ok": False,
+        "cloud_app_key": "",
+        "persistence_key_path": (
+            f"session[{DRAFT_ARCHIVE_KEY}] → disk[{DRAFT_ARCHIVE_KEY}] → "
+            f"cloud metrics.full_session.{DRAFT_ARCHIVE_KEY}"
+        ),
+    }
+    try:
+        from draft_archive_state import save_draft_archive
+
+        entry = save_draft_archive(
+            session,
+            draft_type="simulator",
+            draft_name="Probe Test Draft",
+            team_name="Probe Team",
+            roster_rows=[{"Player": "Aaron Judge", "Position": "OF", "Team": "NYY"}],
+        )
+        trace["draft_id"] = str(entry.get("draft_id") or "")
+    except Exception as exc:
+        trace["error"] = f"{type(exc).__name__}: {exc}"
+        return trace
+
+    try:
+        from suite_user_persistence import clear_workspace_autosave_block
+
+        clear_workspace_autosave_block(st, "baseball")
+    except ImportError:
+        session.pop("_suite_autosave_fp::baseball", None)
+        session.pop("_suite_restored_fp::baseball", None)
+    session.pop("_suite_autosave_fp::baseball", None)
+    session.pop("_suite_restored_fp::baseball", None)
+
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        trace["persist_ok"] = bool(force_save_baseball_state(st, reason="probe_test_draft_saved"))
+    except Exception as exc:
+        trace["persist_error"] = f"{type(exc).__name__}: {exc}"
+        trace["persist_ok"] = False
+
+    trace["session_draft_count_after"] = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    trace["cloud_app_key"] = str(session.get("_suite_last_cloud_app_key") or "")
+    trace["cloud_write_ok"] = bool(session.get("_suite_persist_last_save_cloud"))
+    trace["cloud_write_error"] = str(session.get("_suite_persist_last_cloud_error") or "")
+
+    try:
+        disk_state = _load_disk_workflow_snapshot("baseball")
+        trace["disk_draft_count"] = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+    except Exception:
+        pass
+
+    readback: dict[str, Any] = {}
+    try:
+        from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
+
+        ws = str(get_active_workspace_id(st=st))
+        app_key = scoped_cloud_app_id("baseball", ws)
+        readback = verify_cloud_draft_library_readback(
+            "baseball",
+            min_drafts=1,
+            expected_draft_id=trace["draft_id"],
+            workspace_id=ws,
+            cloud_app_key=app_key,
+            expected_draft_count=int(trace["session_draft_count_after"] or 0),
+            session=session,
+        )
+        record_draft_library_readback(session, readback)
+        session["_suite_last_draft_save_readback"] = {
+            "cloud_app_key": app_key,
+            "workspace_id": ws,
+            "scope_user_id": readback.get("scope_user_id"),
+            "selected_row_user_id": readback.get("selected_row_user_id"),
+            "draft_count": readback.get("draft_count"),
+            "draft_ids": list(readback.get("draft_ids") or []),
+            "expected_draft_count": trace["session_draft_count_after"],
+            "expected_draft_id": trace["draft_id"],
+            "probe_test_draft": True,
+        }
+    except Exception as exc:
+        readback = {"ok": False, "error": str(exc), "draft_count": 0}
+        record_draft_library_readback(session, readback)
+
+    trace["cloud_readback_count"] = int(readback.get("draft_count") or 0)
+    trace["cloud_readback_ok"] = bool(readback.get("ok"))
+    trace["cloud_readback_error"] = str(readback.get("error") or "")
+    trace["readback"] = readback
+    trace["ok"] = bool(
+        trace.get("draft_id")
+        and int(trace.get("session_draft_count_after") or 0) > int(trace.get("session_draft_count_before") or 0)
+        and trace.get("persist_ok")
+        and trace.get("cloud_readback_ok")
+    )
+    session["_probe_test_draft_trace"] = trace
+    return trace
 
 
 def tracked_player_count_from_blob(blob: dict[str, Any] | None) -> int:

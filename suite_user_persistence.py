@@ -282,6 +282,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "global_settings_changed",
     "historical_chart_save",
     "career_chart_save",
+    "probe_test_draft_saved",
 })
 
 
@@ -745,6 +746,8 @@ def _record_startup_restore_diagnostics(
     st.session_state["_suite_cloud_fetch_success"] = bool(cloud_state) or bool(
         diag.get("cloud_has_full_session")
     )
+    st.session_state["_suite_cloud_fetch_error"] = str(diag.get("cloud_load_error") or "") or None
+    st.session_state["_suite_cloud_fetch_row_found"] = bool(diag.get("cloud_row_found"))
     st.session_state["_suite_cloud_fetch_user_id"] = (cloud_uid or "")[:32] or None
     st.session_state["_suite_cloud_fetch_app_key"] = cloud_app_key or None
     st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts or diag.get("cloud_updated_at")

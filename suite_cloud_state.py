@@ -22,6 +22,10 @@ DRAFT_LIBRARY_CLOUD_SAVE_REASONS = frozenset({
     "draft_archive_duplicated",
     "draft_archive_deleted",
     "draft_archive_cleared",
+    "simulator_league_context_saved",
+    "live_draft_league_context_saved",
+    "league_context_activated",
+    "probe_test_draft_saved",
 })
 
 DRAFT_LIBRARY_WRITE_TIMEOUT_SEC = 25.0
@@ -734,11 +738,18 @@ def is_draft_library_cloud_save_reason(reason: str) -> bool:
 
 
 def _draft_library_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
-    """Compact durable blob: saved drafts + active draft only (no 28MB app state)."""
+    """Compact durable blob: saved drafts + league contexts (no 28MB app state)."""
     try:
         from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
     except ImportError:
         from workflow_persist_guard import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+    try:
+        from workflow_persist_guard import LEAGUE_CONTEXT_STATE_KEY, _league_context_store_nonempty
+    except ImportError:
+        LEAGUE_CONTEXT_STATE_KEY = "fantasy_league_context_state"
+
+        def _league_context_store_nonempty(val: Any) -> bool:
+            return isinstance(val, dict) and isinstance(val.get("contexts"), dict) and bool(val.get("contexts"))
 
     slice_out: dict[str, Any] = {}
     archives = state.get(DRAFT_ARCHIVE_KEY)
@@ -747,6 +758,9 @@ def _draft_library_slice_from_state(state: dict[str, Any]) -> dict[str, Any]:
     active_id = str(state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
     if active_id:
         slice_out[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
+    flc = state.get(LEAGUE_CONTEXT_STATE_KEY)
+    if _league_context_store_nonempty(flc):
+        slice_out[LEAGUE_CONTEXT_STATE_KEY] = copy.deepcopy(flc)
     page = str(state.get("active_page") or "").strip()
     if page:
         slice_out["active_page"] = page
@@ -855,6 +869,14 @@ def save_cloud_draft_library_with_details(
     try:
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
+        ss = _streamlit_session()
+        if ss is not None:
+            try:
+                from workflow_persist_guard import inject_session_draft_library_into_save_state
+
+                state = inject_session_draft_library_into_save_state(state, ss)
+            except ImportError:
+                pass
         draft_slice = _draft_library_slice_from_state(state)
         try:
             from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY

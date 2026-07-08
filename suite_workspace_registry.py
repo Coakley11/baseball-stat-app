@@ -250,6 +250,43 @@ def get_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
     return str(record.get(WORKSPACE_ID_KEY) or "").strip()
 
 
+def resolve_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
+    """
+    Best-effort owned workspace slug for a signed-in session.
+
+    Unlike ``get_owned_workspace_id``, this never returns empty for an authenticated
+    account: if the registry lookup/write fails (e.g. ephemeral cloud disk), it
+    derives the slug directly from account identity so persistence diagnostics and
+    canonical cloud keys stay consistent across reboots.
+    """
+    if not isinstance(session_state, dict):
+        return ""
+    resolved = get_owned_workspace_id(session_state)
+    if resolved:
+        return resolved
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        if not is_auth_enabled() or not is_authenticated(session_state):
+            return ""
+    except ImportError:
+        return ""
+    ctx = _account_context(session_state)
+    slug = derive_workspace_slug(
+        external_id=ctx["owner_external_id"],
+        email=ctx["email"],
+        display_name=ctx["display_name"],
+    )
+    slug = str(slug or "").strip()
+    if slug:
+        session_state[SESSION_OWNED_WORKSPACE_KEY] = slug
+        if not str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip():
+            session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
+                slug=slug, email=ctx["email"], display_name=ctx["display_name"]
+            )
+    return slug
+
+
 def active_workspace_persist_path(*, owner_user_id: str = "") -> Path:
     """Per-account active workspace file; global fallback when no owner id."""
     if owner_user_id:
