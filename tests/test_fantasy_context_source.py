@@ -263,6 +263,24 @@ class FantasyContextSourceTests(unittest.TestCase):
         ]
         self.assertEqual(_active_draft_label(session, ctx), "Yahoo Fantasy — Team Daniel")
 
+    def test_fantasy_context_using_html_active_and_temporary_cards(self) -> None:
+        from fantasy_context_source import fantasy_context_using_html
+
+        session = _saved_context_session()
+        active_html = fantasy_context_using_html(session)
+        self.assertIn("fantasy-source-card-active", active_html)
+        self.assertIn("Active Draft", active_html)
+        self.assertIn("Practice Draft", active_html)
+        self.assertIn("Daniel", active_html)
+        self.assertNotIn("Temporary Practice Board", active_html)
+
+        session.update(_simulator_board_session())
+        temp_html = fantasy_context_using_html(session)
+        self.assertIn("fantasy-source-card-temporary", temp_html)
+        self.assertIn("Temporary Practice Board", temp_html)
+        self.assertIn("Draft Room Simulator", temp_html)
+        self.assertNotIn("fantasy-source-card-active", temp_html)
+
     def test_checkbox_on_change_syncs_persisted_key(self) -> None:
         from fantasy_context_ui import (
             USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,

@@ -10,7 +10,7 @@ from fantasy_context_source import (
     SOURCE_GENERIC,
     fantasy_context_source_badge_text,
     fantasy_context_using_caption,
-    fantasy_context_using_display,
+    fantasy_context_using_html,
     fantasy_context_using_markdown,
     live_draft_context_available,
     live_draft_sync_enabled,
@@ -344,15 +344,8 @@ def render_fantasy_context_badge(st: Any, session: dict[str, Any]) -> None:
 
 
 def render_fantasy_using_caption(st: Any, session: dict[str, Any]) -> None:
-    """Prominent banner naming the single effective fantasy source for this page."""
-    display = fantasy_context_using_display(session)
-    markdown = fantasy_context_using_markdown(session)
-    if display.get("kind") == "active_draft":
-        st.info(markdown)
-    elif display.get("kind") in ("temporary_live", "temporary_simulator"):
-        st.warning(markdown)
-    else:
-        st.info(markdown)
+    """Polished league-card header naming the effective fantasy source."""
+    st.markdown(fantasy_context_using_html(session), unsafe_allow_html=True)
 
 
 def render_fantasy_workflow_page_header(

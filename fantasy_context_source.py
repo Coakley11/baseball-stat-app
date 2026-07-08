@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 from typing import Any
 
@@ -410,15 +411,66 @@ def fantasy_context_using_display(session: dict[str, Any]) -> dict[str, str]:
     if source.kind == SOURCE_ACTIVE_DRAFT:
         saved = _get_saved_active_league_context(session)
         name = _active_draft_label(session, saved or {})
-        return {"kind": "active_draft", "draft_name": name, "team": team}
+        return {"kind": "active_draft", "draft_name": name, "board_label": "", "team": team}
 
     if source.kind == SOURCE_LIVE_DRAFT:
-        return {"kind": "temporary_live", "draft_name": "", "team": team}
+        return {
+            "kind": "temporary_live",
+            "draft_name": "",
+            "board_label": "Live Draft Room — unsaved",
+            "team": team,
+        }
 
     if source.kind == SOURCE_SIMULATOR_BOARD:
-        return {"kind": "temporary_simulator", "draft_name": "", "team": team}
+        return {
+            "kind": "temporary_simulator",
+            "draft_name": "",
+            "board_label": "Draft Room Simulator — unsaved",
+            "team": team,
+        }
 
-    return {"kind": "generic", "draft_name": "", "team": team}
+    return {"kind": "generic", "draft_name": "", "board_label": "", "team": team}
+
+
+def _html_esc(text: str) -> str:
+    return html.escape(str(text or "").strip(), quote=True)
+
+
+def fantasy_context_using_html(session: dict[str, Any]) -> str:
+    """Polished league-card banner for fantasy management pages."""
+    display = fantasy_context_using_display(session)
+    kind = display.get("kind") or "generic"
+    team = _html_esc(display.get("team") or "")
+    team_row = (
+        f'<div class="fantasy-source-team">My team: <strong>{team}</strong></div>'
+        if team
+        else ""
+    )
+
+    if kind == "active_draft":
+        name = _html_esc(display.get("draft_name") or "Active Draft")
+        return f"""
+<div class="fantasy-source-card fantasy-source-card-active">
+  <div class="fantasy-source-kicker">Active Draft</div>
+  <div class="fantasy-source-name">{name}</div>
+  {team_row}
+</div>"""
+
+    if kind in ("temporary_live", "temporary_simulator"):
+        board = _html_esc(display.get("board_label") or "Unsaved board")
+        return f"""
+<div class="fantasy-source-card fantasy-source-card-temporary">
+  <div class="fantasy-source-kicker">Temporary Practice Board</div>
+  <div class="fantasy-source-sub">{board}</div>
+  {team_row}
+</div>"""
+
+    return f"""
+<div class="fantasy-source-card fantasy-source-card-generic">
+  <div class="fantasy-source-kicker">No draft context</div>
+  <div class="fantasy-source-sub">General MLB — choose an Active Draft in Saved Draft Library</div>
+  {team_row}
+</div>"""
 
 
 def fantasy_context_using_markdown(session: dict[str, Any]) -> str:

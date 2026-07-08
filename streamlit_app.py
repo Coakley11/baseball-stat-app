@@ -535,6 +535,35 @@ st.markdown("""
 .page-guide-body {color: #2c3e50; font-size: 14px; line-height: 1.45;}
 .page-guide-item {margin: 0 0 6px 0;}
 .page-guide strong {color: #12324a;}
+.fantasy-source-card {border-radius: 14px; padding: 16px 18px; margin: 0 0 14px 0; line-height: 1.35;}
+.fantasy-source-kicker {font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px;}
+.fantasy-source-name {font-size: 22px; font-weight: 800; margin-bottom: 8px;}
+.fantasy-source-sub {font-size: 15px; font-weight: 600; margin-bottom: 8px;}
+.fantasy-source-team {font-size: 14px; margin-top: 2px;}
+.fantasy-source-card-active {
+  background: linear-gradient(135deg, #eef6ff 0%, #f8fbff 55%, #ffffff 100%);
+  border: 1px solid #9ec5fe;
+  border-left: 5px solid #1f6feb;
+  box-shadow: 0 2px 10px rgba(31, 111, 235, 0.10);
+}
+.fantasy-source-card-active .fantasy-source-kicker {color: #0b3d6e;}
+.fantasy-source-card-active .fantasy-source-name {color: #12324a;}
+.fantasy-source-card-active .fantasy-source-team {color: #4f6475;}
+.fantasy-source-card-temporary {
+  background: linear-gradient(135deg, #fff8ed 0%, #fffdf8 100%);
+  border: 1px dashed #d4a574;
+  border-left: 5px dashed #c47d2a;
+}
+.fantasy-source-card-temporary .fantasy-source-kicker {color: #8a4b08;}
+.fantasy-source-card-temporary .fantasy-source-sub {color: #6b4a2d;}
+.fantasy-source-card-temporary .fantasy-source-team {color: #6b4a2d;}
+.fantasy-source-card-generic {
+  background: #f7f9fc;
+  border: 1px solid #d9e2ec;
+  border-left: 5px solid #94a3b8;
+}
+.fantasy-source-card-generic .fantasy-source-kicker {color: #475569;}
+.fantasy-source-card-generic .fantasy-source-sub {color: #64748b;}
 .ctx-transfer-row {margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d5dde5;}
 .ctx-transfer-row [data-testid="stSelectbox"] label p {font-size: 12px; color: #5a6f82; font-weight: 600;}
 </style>
