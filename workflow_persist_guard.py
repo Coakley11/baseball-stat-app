@@ -1453,6 +1453,15 @@ _PERSISTENCE_VERDICT_LABELS = {
 }
 
 
+def _resolve_probe_deploy_commit() -> str:
+    try:
+        from suite_deploy_marker import resolve_git_commit_short
+
+        return str(resolve_git_commit_short() or "unknown")
+    except ImportError:
+        return "unknown"
+
+
 def _resolve_probe_auth_labels(session: dict[str, Any], diag: dict[str, Any]) -> dict[str, str]:
     """Align signed-in display with the cloud identity actually used for restore."""
     auth_enabled = bool(diag.get("auth_enabled"))
@@ -1791,9 +1800,19 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
             "Did cloud restore return zero drafts?": "Yes" if cloud_zero else f"No ({startup_cloud_drafts} in cloud blob)",
             "Did disk restore return zero drafts?": "Yes" if disk_zero else f"No ({startup_disk_drafts} on disk)",
             "Were my drafts ever successfully persisted?": ever_persisted,
+            "Migration scan (all cloud user_ids + disk paths)": (
+                f"Found **{migration_recoverable}** recoverable draft(s) across {len(migration_sources)} source(s)"
+                if migration_recoverable > 0
+                else f"No recoverable drafts in migration scan ({len(migration_sources)} source(s) checked)"
+            ),
         },
         "cloud_draft_count_owned": cloud_owned_count,
         "cloud_draft_count_legacy": cloud_legacy_count,
+        "migration_recoverable_draft_count": migration_recoverable,
+        "migration_best_source": migration_best if isinstance(migration_best, dict) else None,
+        "migration_sources": migration_sources,
+        "historical_suite_users": list(diag.get("historical_suite_users") or []),
+        "deploy_commit": _resolve_probe_deploy_commit(),
         "restore_skip_reason": restore_skip or None,
         "restore_applied": restore_applied,
     }

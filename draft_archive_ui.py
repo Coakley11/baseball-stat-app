@@ -283,6 +283,9 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     else:
         st.info("**Saved Draft Persistence Probe** — use after reboot to confirm account, workspace, and restore.")
 
+    deploy_commit = str(probe.get("deploy_commit") or "unknown")
+    st.caption(f"Deploy commit: `{deploy_commit}` (expect `51b46cc` or newer for migration scan)")
+
     if probe.get("auth_signed_out_warning"):
         st.warning(str(probe["auth_signed_out_warning"]))
 
@@ -345,23 +348,29 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
 
     migration_n = int(probe.get("migration_recoverable_draft_count") or 0)
     migration_sources = probe.get("migration_sources") or []
-    if migration_n > 0 or migration_sources:
-        st.markdown(f"**Migration scan:** {migration_n} recoverable draft(s) across {len(migration_sources)} source(s)")
-        best = probe.get("migration_best_source")
-        if isinstance(best, dict) and int(best.get("draft_count") or 0) > 0:
-            st.caption(
-                f"Best source: **{best.get('source_type')}** · "
-                f"key `{best.get('cloud_app_key') or best.get('path') or '—'}` · "
-                f"user_id `{best.get('user_id') or '—'}` · "
-                f"drafts **{int(best.get('draft_count') or 0)}**"
-            )
-        rich_sources = [
-            s for s in migration_sources
-            if isinstance(s, dict) and int(s.get("draft_count") or 0) > 0
-        ]
-        if rich_sources:
-            with st.expander("Migration sources with drafts", expanded=migration_n > 0 and int(probe.get("session_draft_count") or 0) == 0):
-                st.json(rich_sources)
+    st.markdown(
+        f"**Migration scan:** {migration_n} recoverable draft(s) across {len(migration_sources)} source(s)"
+    )
+    best = probe.get("migration_best_source")
+    if isinstance(best, dict) and int(best.get("draft_count") or 0) > 0:
+        st.caption(
+            f"Best source: **{best.get('source_type')}** · "
+            f"key `{best.get('cloud_app_key') or best.get('path') or '—'}` · "
+            f"user_id `{best.get('user_id') or '—'}` · "
+            f"drafts **{int(best.get('draft_count') or 0)}**"
+        )
+    elif migration_n <= 0:
+        st.caption("No recoverable drafts found across scanned cloud user_ids and disk paths.")
+    rich_sources = [
+        s for s in migration_sources
+        if isinstance(s, dict) and int(s.get("draft_count") or 0) > 0
+    ]
+    if rich_sources:
+        with st.expander("Migration sources with drafts", expanded=migration_n > 0 and int(probe.get("session_draft_count") or 0) == 0):
+            st.json(rich_sources)
+    elif migration_sources:
+        with st.expander("Migration scan sources (all checked)", expanded=migration_n <= 0):
+            st.json(migration_sources)
     historical_users = probe.get("historical_suite_users") or []
     if historical_users:
         with st.expander("Historical suite_users rows (diagnostic)", expanded=False):

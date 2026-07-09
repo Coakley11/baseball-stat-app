@@ -236,6 +236,51 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertIn("yes", probe["cloud_restore_attempted_label"])
         self.assertIn("Yes", probe["diagnosis"]["Did cloud restore run?"])
 
+    def test_build_persistence_probe_panel_includes_migration_fields(self) -> None:
+        session = {
+            "_suite_auth_session": True,
+            "_suite_auth_user_id": "uid-daniel",
+            "_suite_auth_external_id": "daniel",
+        }
+        with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+            mock_diag.return_value = {
+                "auth_enabled": True,
+                "authenticated": True,
+                "account_email": "daniel@example.com",
+                "account_user_id": "uid-daniel",
+                "workspace_id": "daniel",
+                "owned_workspace_id": "daniel",
+                "cloud_app_key": "baseball",
+                "draft_archive_count": 0,
+                "cloud_saved_draft_count_active": 0,
+                "disk_saved_draft_count": 0,
+                "cloud_enabled": True,
+                "migration_recoverable_draft_count": 2,
+                "migration_sources": [
+                    {
+                        "source_type": "cloud",
+                        "cloud_app_key": "baseball",
+                        "user_id": None,
+                        "draft_count": 2,
+                        "draft_names": ["Uploaded trial League", "Second draft"],
+                    }
+                ],
+                "migration_best_source": {
+                    "source_type": "cloud",
+                    "cloud_app_key": "baseball",
+                    "user_id": None,
+                    "draft_count": 2,
+                },
+                "historical_suite_users": [{"id": "old-uuid", "external_id": "daniel"}],
+            }
+            with patch("workflow_persist_guard._resolve_probe_deploy_commit", return_value="51b46cc"):
+                probe = build_persistence_probe_panel(session)
+        self.assertEqual(probe["migration_recoverable_draft_count"], 2)
+        self.assertEqual(len(probe["migration_sources"]), 1)
+        self.assertEqual(probe["deploy_commit"], "51b46cc")
+        self.assertIn("Migration scan (all cloud user_ids + disk paths)", probe["diagnosis"])
+        self.assertIn("2", probe["diagnosis"]["Migration scan (all cloud user_ids + disk paths)"])
+
     def test_build_persistence_probe_panel_restore_failure(self) -> None:
         session = {
             "_suite_startup_restore_snapshot": {
