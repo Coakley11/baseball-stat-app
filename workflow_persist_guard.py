@@ -226,6 +226,264 @@ def _authenticated_cloud_migration_eligible(session: dict[str, Any]) -> bool:
         return False
 
 
+def _cloud_app_keys_to_scan_for_migration(app_id: str, session: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return (workspace_id, cloud_app_key) pairs to scan for draft migration."""
+    from suite_workspace import DEFAULT_WORKSPACE_ID, get_active_workspace_id, normalize_workspace_id, scoped_cloud_app_id
+
+    keys: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(ws: str) -> None:
+        ws_norm = normalize_workspace_id(str(ws or "").strip())
+        if not ws_norm:
+            return
+        cloud_key = scoped_cloud_app_id(app_id, ws_norm)
+        if cloud_key in seen:
+            return
+        seen.add(cloud_key)
+        keys.append((ws_norm, cloud_key))
+
+    try:
+        st_stub = type("_St", (), {"session_state": session})()
+        add(get_active_workspace_id(st=st_stub))
+    except Exception:
+        add(str(session.get("_suite_active_workspace_id") or "daniel"))
+    add(DEFAULT_WORKSPACE_ID)
+    for fb_ws in _cloud_workflow_fallback_workspace_ids(session):
+        add(fb_ws)
+    try:
+        from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(session):
+            for ws in allowed_workspaces_for_session(session):
+                add(ws)
+    except ImportError:
+        pass
+    for alias in ("daniel_cohen11",):
+        add(alias)
+    return keys
+
+
+def _disk_migration_candidate_workspace_ids(session: dict[str, Any]) -> list[str]:
+    """Workspace disk profiles that may hold pre-migration saved drafts."""
+    from suite_workspace import DEFAULT_WORKSPACE_ID, get_active_workspace_id, normalize_workspace_id
+
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(ws: str) -> None:
+        ws_norm = normalize_workspace_id(str(ws or "").strip())
+        if ws_norm and ws_norm not in seen:
+            seen.add(ws_norm)
+            ids.append(ws_norm)
+
+    try:
+        st_stub = type("_St", (), {"session_state": session})()
+        add(get_active_workspace_id(st=st_stub))
+    except Exception:
+        add(str(session.get("_suite_active_workspace_id") or "daniel"))
+    add(DEFAULT_WORKSPACE_ID)
+    add("daniel_cohen11")
+    for fb_ws in _cloud_workflow_fallback_workspace_ids(session):
+        add(fb_ws)
+    try:
+        from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(session):
+            for ws in allowed_workspaces_for_session(session):
+                add(ws)
+    except ImportError:
+        pass
+    return ids
+
+
+def _load_disk_workflow_at_workspace(app_id: str, workspace_id: str) -> dict[str, Any]:
+    try:
+        from suite_user_persistence import _load_raw
+
+        state, _, _ = _load_raw(app_id, workspace_id)
+        if isinstance(state, dict) and state:
+            return state
+    except Exception:
+        pass
+    return {}
+
+
+def _draft_names_from_workflow_blob(blob: dict[str, Any] | None) -> list[str]:
+    if not isinstance(blob, dict):
+        return []
+    archives = blob.get(DRAFT_ARCHIVE_KEY)
+    if not isinstance(archives, list):
+        return []
+    names: list[str] = []
+    for row in archives:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("draft_name") or row.get("draft_id") or "").strip()
+        if label:
+            names.append(label)
+    return names
+
+
+def _load_authenticated_migration_cloud_blobs(app_id: str, session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every full_session blob on migration cloud keys — all user_ids, not only the signed-in row."""
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        if not cloud_storage_enabled():
+            return []
+    except ImportError:
+        return []
+    try:
+        import suite_storage_supabase as storage
+    except ImportError:
+        return []
+
+    blobs: list[dict[str, Any]] = []
+    seen_sigs: set[tuple[str, str, int]] = set()
+    for _ws, cloud_key in _cloud_app_keys_to_scan_for_migration(app_id, session):
+        try:
+            candidates = storage.load_all_full_session_migration_candidates(cloud_key)
+        except Exception:
+            continue
+        for cand in candidates:
+            if not isinstance(cand, dict):
+                continue
+            blob = cand.get("blob")
+            if not isinstance(blob, dict) or not blob:
+                continue
+            sig = (
+                cloud_key,
+                str(cand.get("user_id") or "null"),
+                int(cand.get("draft_count") or 0),
+            )
+            if sig in seen_sigs:
+                continue
+            seen_sigs.add(sig)
+            blobs.append(blob)
+    return blobs
+
+
+def discover_workflow_migration_sources(
+    session: dict[str, Any],
+    app_id: str = "baseball",
+) -> dict[str, Any]:
+    """
+    Read-only scan: where saved drafts may live (cloud rows by user_id, disk paths).
+
+    Used by the persistence probe and ``scripts/probe_daniel_draft_archive_sources.py``.
+    """
+    current_uid = str(session.get("_suite_auth_user_id") or "").strip()
+    sources: list[dict[str, Any]] = []
+    cloud_enabled = False
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        cloud_enabled = cloud_storage_enabled()
+    except ImportError:
+        pass
+
+    if cloud_enabled:
+        try:
+            import suite_storage_supabase as storage
+
+            for ws, cloud_key in _cloud_app_keys_to_scan_for_migration(app_id, session):
+                for cand in storage.load_all_full_session_migration_candidates(cloud_key):
+                    if not isinstance(cand, dict):
+                        continue
+                    blob = cand.get("blob") if isinstance(cand.get("blob"), dict) else {}
+                    sources.append(
+                        {
+                            "source_type": "cloud",
+                            "workspace_id": ws,
+                            "cloud_app_key": cloud_key,
+                            "user_id": cand.get("user_id"),
+                            "updated_at": cand.get("updated_at"),
+                            "draft_count": int(cand.get("draft_count") or 0),
+                            "draft_ids": list(cand.get("draft_ids") or []),
+                            "draft_names": list(cand.get("draft_names") or _draft_names_from_workflow_blob(blob)),
+                        }
+                    )
+        except Exception as exc:
+            sources.append({"source_type": "cloud", "error": str(exc)})
+
+    try:
+        from suite_user_persistence import legacy_state_file_path, state_file_path
+    except ImportError:
+        legacy_state_file_path = None  # type: ignore[assignment]
+        state_file_path = None  # type: ignore[assignment]
+
+    for ws in _disk_migration_candidate_workspace_ids(session):
+        disk_state = _load_disk_workflow_at_workspace(app_id, ws)
+        summary = summarize_cloud_workflow_blob(disk_state if isinstance(disk_state, dict) else None)
+        path_str = ""
+        if state_file_path is not None:
+            try:
+                path_str = str(state_file_path(app_id, ws))
+            except Exception:
+                path_str = ""
+        sources.append(
+            {
+                "source_type": "disk",
+                "workspace_id": ws,
+                "path": path_str,
+                "draft_count": int(summary.get("draft_archive_count") or 0),
+                "draft_ids": list(summary.get("draft_ids") or []),
+                "draft_names": _draft_names_from_workflow_blob(disk_state),
+            }
+        )
+
+    if legacy_state_file_path is not None:
+        try:
+            leg_path = legacy_state_file_path(app_id)
+            if leg_path.is_file():
+                from suite_user_persistence import _read_json
+
+                raw = _read_json(leg_path)
+                leg_state = raw.get("state") if isinstance(raw, dict) and isinstance(raw.get("state"), dict) else {}
+                summary = summarize_cloud_workflow_blob(leg_state if isinstance(leg_state, dict) else None)
+                sources.append(
+                    {
+                        "source_type": "disk_legacy_flat",
+                        "workspace_id": "legacy",
+                        "path": str(leg_path),
+                        "draft_count": int(summary.get("draft_archive_count") or 0),
+                        "draft_ids": list(summary.get("draft_ids") or []),
+                        "draft_names": _draft_names_from_workflow_blob(leg_state),
+                    }
+                )
+        except Exception:
+            pass
+
+    historical_suite_users: list[dict[str, Any]] = []
+    try:
+        import suite_storage_supabase as storage
+        from suite_auth import is_authenticated, resolve_auth_external_id
+
+        ext_ids = ["daniel", "daniel_cohen11", "daniel.cohen11"]
+        if is_authenticated(session):
+            ext = str(resolve_auth_external_id(session) or "").strip()
+            if ext and ext not in ext_ids:
+                ext_ids.append(ext)
+        historical_suite_users = storage.list_suite_users_by_external_ids(*ext_ids)
+    except Exception:
+        pass
+
+    recoverable = max((int(s.get("draft_count") or 0) for s in sources), default=0)
+    best_source = None
+    if sources:
+        best_source = max(sources, key=lambda s: int(s.get("draft_count") or 0))
+
+    return {
+        "current_auth_user_id": current_uid or None,
+        "cloud_enabled": cloud_enabled,
+        "sources": sources,
+        "recoverable_draft_count": recoverable,
+        "best_source": best_source,
+        "historical_suite_users": historical_suite_users,
+    }
+
+
 def _load_legacy_null_migration_blob(app_id: str) -> dict[str, Any]:
     """Legacy pre-auth cloud drafts on unscoped Daniel baseball key (user_id IS NULL)."""
     try:
@@ -322,11 +580,25 @@ def _load_cloud_workflow_snapshot(app_id: str, st: Any | None) -> dict[str, Any]
 
         if st is None:
             return {}
+        session = st.session_state if hasattr(st, "session_state") else {}
+
+        if _authenticated_cloud_migration_eligible(session):
+            blobs: list[dict[str, Any]] = []
+            primary, _ = load_cloud_full_session(app_id)
+            if isinstance(primary, dict) and primary:
+                blobs.append(primary)
+            for blob in _load_authenticated_migration_cloud_blobs(app_id, session):
+                blobs.append(blob)
+            for ws in _disk_migration_candidate_workspace_ids(session):
+                disk_blob = _load_disk_workflow_at_workspace(app_id, ws)
+                if disk_blob:
+                    blobs.append(disk_blob)
+            return _merge_cloud_workflow_blobs(*blobs)
+
         primary, _ = load_cloud_full_session(app_id)
         blobs: list[dict[str, Any]] = []
         if isinstance(primary, dict) and primary:
             blobs.append(primary)
-        session = st.session_state if hasattr(st, "session_state") else {}
         active_ws = normalize_workspace_id(
             get_active_workspace_id(st=type("_St", (), {"session_state": session})())
         )
@@ -338,10 +610,6 @@ def _load_cloud_workflow_snapshot(app_id: str, st: Any | None) -> dict[str, Any]
             fb_blob = _full_session_blob_from_storage_app_key(fb_key)
             if fb_blob:
                 blobs.append(fb_blob)
-        if _authenticated_cloud_migration_eligible(session):
-            legacy_blob = _load_legacy_null_migration_blob(app_id)
-            if legacy_blob:
-                blobs.append(legacy_blob)
         return _merge_cloud_workflow_blobs(*blobs)
     except Exception:
         pass
@@ -358,11 +626,6 @@ def enrich_cloud_restore_state(
     enriched = _load_cloud_workflow_snapshot(app_id, st)
     if enriched:
         out = _merge_richer_workflow_into_state(out, enriched)
-    session = st.session_state if hasattr(st, "session_state") else {}
-    if _authenticated_cloud_migration_eligible(session):
-        legacy_blob = _load_legacy_null_migration_blob(app_id)
-        if legacy_blob:
-            out = _merge_richer_workflow_into_state(out, legacy_blob)
     return out
 
 
@@ -1116,6 +1379,8 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         except Exception:
             pass
 
+    migration_discovery = discover_workflow_migration_sources(session, app_id="baseball")
+
     return {
         "account_email": account_email,
         "account_external_id": account_external_id,
@@ -1136,6 +1401,11 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "cloud_probe_legacy": cloud_probe_legacy,
         "cloud_row_inspection": cloud_row_inspection,
         "cloud_row_inspection_legacy": cloud_row_inspection_legacy,
+        "migration_discovery": migration_discovery,
+        "migration_recoverable_draft_count": int(migration_discovery.get("recoverable_draft_count") or 0),
+        "migration_best_source": migration_discovery.get("best_source"),
+        "migration_sources": list(migration_discovery.get("sources") or []),
+        "historical_suite_users": list(migration_discovery.get("historical_suite_users") or []),
         "ownership_filter_note": (
             "Saved Draft Library does not filter individual drafts by owner_user_id; "
             "account scoping applies to the Supabase row (user_id) and active workspace only."
@@ -1297,6 +1567,7 @@ def _resolve_persistence_verdict(session: dict[str, Any], startup: dict[str, Any
         int(diag.get("cloud_saved_draft_count_active") or 0),
         int(diag.get("cloud_saved_draft_count_owned") or 0),
         int(diag.get("cloud_saved_draft_count_legacy") or 0),
+        int(diag.get("migration_recoverable_draft_count") or 0),
     )
     disk_count = max(
         int(startup.get("disk_saved_draft_count") or 0),
@@ -1340,7 +1611,8 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     disk_draft_count = int(diag.get("disk_saved_draft_count") or 0)
     cloud_owned_count = int(diag.get("cloud_saved_draft_count_owned") or 0)
     cloud_legacy_count = int(diag.get("cloud_saved_draft_count_legacy") or 0)
-    cloud_any_count = max(cloud_draft_count, cloud_owned_count, cloud_legacy_count)
+    migration_recoverable = int(diag.get("migration_recoverable_draft_count") or 0)
+    cloud_any_count = max(cloud_draft_count, cloud_owned_count, cloud_legacy_count, migration_recoverable)
 
     verdict = _resolve_persistence_verdict(session, startup, diag)
     verdict_label = _PERSISTENCE_VERDICT_LABELS.get(verdict, verdict or "—")
@@ -1437,11 +1709,15 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         or ""
     ).strip()
     local_state_path = str(diag.get("local_state_path") or "").strip()
+    migration_recoverable = int(diag.get("migration_recoverable_draft_count") or 0)
+    migration_best = diag.get("migration_best_source")
+    migration_sources = list(diag.get("migration_sources") or [])
 
     if cloud_any_count > 0 or disk_draft_count > 0:
         ever_persisted = (
             f"Yes — storage has drafts (cloud active {cloud_draft_count}, "
-            f"owned {cloud_owned_count}, legacy {cloud_legacy_count}, disk {disk_draft_count})"
+            f"owned {cloud_owned_count}, legacy {cloud_legacy_count}, "
+            f"migration scan {migration_recoverable}, disk {disk_draft_count})"
         )
     elif readback_ok or save_readback_count > 0:
         ever_persisted = "Yes — save readback confirmed drafts this session"

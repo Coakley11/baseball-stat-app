@@ -219,6 +219,93 @@ def load_legacy_null_full_session_for_app(app: str) -> dict[str, Any]:
     return copy.deepcopy(blob) if isinstance(blob, dict) else {}
 
 
+def fetch_all_cloud_state_rows_for_storage_app(
+    storage_app: str,
+    *,
+    limit: str = "50",
+) -> list[dict[str, Any]]:
+    """
+    Fetch every ``suite_app_current_state`` row for one cloud app key (all user_ids).
+
+    Used for authenticated draft migration when the active user row is empty but an
+    older user_id or legacy null row still holds saved drafts.
+    """
+    params: dict[str, str] = {
+        "select": "app,user_id,page,summary,metrics,updated_at",
+        "app": f"eq.{storage_app}",
+        "order": "updated_at.desc",
+        "limit": limit,
+    }
+    with _egress("fetch_all_cloud_state_rows_for_storage_app"):
+        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+    return [dict(r) for r in rows if isinstance(r, dict)]
+
+
+def _full_session_blob_from_state_row(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    blob = metrics.get(_FULL_SESSION_KEY)
+    return copy.deepcopy(blob) if isinstance(blob, dict) else {}
+
+
+def load_all_full_session_migration_candidates(
+    storage_app: str,
+    *,
+    limit: str = "50",
+) -> list[dict[str, Any]]:
+    """Migration candidates for one cloud app key — every user_id + draft metadata."""
+    out: list[dict[str, Any]] = []
+    for row in fetch_all_cloud_state_rows_for_storage_app(storage_app, limit=limit):
+        blob = _full_session_blob_from_state_row(row)
+        draft_count = _draft_count_from_row(row)
+        if not blob and draft_count <= 0:
+            continue
+        try:
+            from workflow_persist_guard import summarize_cloud_workflow_blob
+
+            wf = summarize_cloud_workflow_blob(blob if isinstance(blob, dict) else None)
+            draft_ids = list(wf.get("draft_ids") or [])
+            draft_names = list(wf.get("draft_names") or [])
+        except ImportError:
+            draft_ids = []
+            draft_names = []
+        out.append(
+            {
+                "cloud_app_key": storage_app,
+                "user_id": row.get("user_id"),
+                "updated_at": str(row.get("updated_at") or "")[:19],
+                "draft_count": draft_count,
+                "draft_ids": draft_ids,
+                "draft_names": draft_names,
+                "blob": blob,
+            }
+        )
+    return out
+
+
+def list_suite_users_by_external_ids(*external_ids: str) -> list[dict[str, Any]]:
+    """Resolve historical suite_users rows for migration diagnostics."""
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for raw in external_ids:
+        ext = str(raw or "").strip()
+        if not ext or ext in seen:
+            continue
+        seen.add(ext)
+        found = _request(
+            "GET",
+            _TABLE_USERS,
+            params={
+                "select": "id,external_id,email,display_name",
+                "external_id": f"eq.{ext}",
+                "limit": "5",
+            },
+            prefer="return=representation",
+        )
+        if isinstance(found, list):
+            rows.extend(dict(r) for r in found if isinstance(r, dict))
+    return rows
+
+
 def load_current_states_summary() -> dict[str, dict[str, Any]]:
     """All workspace apps — page/summary/updated_at only (no metrics blobs)."""
     from suite_workspace import logical_storage_app_key, workspace_storage_app_keys

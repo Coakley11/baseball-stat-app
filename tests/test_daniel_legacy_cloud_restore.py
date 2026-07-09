@@ -1,11 +1,15 @@
-"""Daniel admin identity + legacy null cloud draft migration on authenticated restore."""
+"""Daniel admin identity + legacy / alternate-user cloud draft migration on restore."""
 
 from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
 
-from workflow_persist_guard import DRAFT_ARCHIVE_KEY, enrich_cloud_restore_state
+from workflow_persist_guard import (
+    DRAFT_ARCHIVE_KEY,
+    _load_cloud_workflow_snapshot,
+    enrich_cloud_restore_state,
+)
 
 
 def _auth_session(*, user_id: str, email: str, external_id: str) -> dict:
@@ -23,14 +27,14 @@ class _FakeSt:
 
 
 class TestDanielLegacyCloudRestore(unittest.TestCase):
-    def test_enrich_restore_merges_legacy_null_blob_when_signed_in(self) -> None:
+    def test_enrich_restore_merges_migration_blob_when_signed_in(self) -> None:
         session = _auth_session(
             user_id="uuid-daniel",
             email="daniel.cohen11@example.com",
             external_id="daniel",
         )
         st = _FakeSt(session)
-        legacy_blob = {
+        migration_blob = {
             DRAFT_ARCHIVE_KEY: [
                 {"draft_id": "draft_uploaded_trial", "draft_name": "Uploaded trial League"},
                 {"draft_id": "draft_two", "draft_name": "Second draft"},
@@ -40,14 +44,49 @@ class TestDanielLegacyCloudRestore(unittest.TestCase):
         with patch("suite_auth.is_auth_enabled", return_value=True), patch(
             "suite_auth.is_authenticated", return_value=True
         ), patch(
-            "workflow_persist_guard._load_cloud_workflow_snapshot", return_value={}
-        ), patch(
-            "workflow_persist_guard._load_legacy_null_migration_blob", return_value=legacy_blob
+            "workflow_persist_guard._load_cloud_workflow_snapshot", return_value=migration_blob
         ):
             out = enrich_cloud_restore_state("baseball", st, {})
             archives = out.get(DRAFT_ARCHIVE_KEY) or []
             self.assertEqual(len(archives), 2)
             self.assertEqual(out.get("active_page"), "Saved Draft Library")
+
+    def test_authenticated_snapshot_merges_alternate_user_id_cloud_rows(self) -> None:
+        session = _auth_session(
+            user_id="f66b85aa-1192-4f93-a669-d238bcd6858b",
+            email="daniel.cohen11@yahoo.com",
+            external_id="daniel",
+        )
+        st = _FakeSt(session)
+        current_blob = {DRAFT_ARCHIVE_KEY: []}
+        legacy_blob = {
+            DRAFT_ARCHIVE_KEY: [
+                {"draft_id": "draft_uploaded_trial", "draft_name": "Uploaded trial League"},
+            ],
+        }
+        old_user_blob = {
+            DRAFT_ARCHIVE_KEY: [
+                {"draft_id": "draft_two", "draft_name": "Second draft"},
+            ],
+        }
+
+        def _fake_migration_blobs(_app_id: str, _session: dict) -> list[dict]:
+            return [legacy_blob, old_user_blob]
+
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch("suite_cloud_state.load_cloud_full_session", return_value=(current_blob, {})), patch(
+            "workflow_persist_guard._load_authenticated_migration_cloud_blobs",
+            side_effect=_fake_migration_blobs,
+        ), patch(
+            "workflow_persist_guard._load_disk_workflow_at_workspace", return_value={}
+        ):
+            out = _load_cloud_workflow_snapshot("baseball", st)
+            archives = out.get(DRAFT_ARCHIVE_KEY) or []
+            self.assertEqual(len(archives), 2)
+            names = {str(a.get("draft_name")) for a in archives if isinstance(a, dict)}
+            self.assertIn("Uploaded trial League", names)
+            self.assertIn("Second draft", names)
 
 
 if __name__ == "__main__":
