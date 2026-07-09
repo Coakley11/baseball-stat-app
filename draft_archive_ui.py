@@ -354,6 +354,14 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         st.markdown(f"**Disk draft count:** {int(probe.get('disk_draft_count') or 0)}")
         st.markdown(f"**Active draft ID:** `{probe.get('active_draft_id') or '—'}`")
         st.markdown(f"**Active draft name:** {probe.get('active_draft_name') or '—'}")
+        st.markdown(
+            f"**Active restore source:** `{probe.get('active_restore_source') or '—'}` · "
+            f"**reason:** `{probe.get('active_restore_reason') or '—'}`"
+        )
+        st.caption(
+            f"Cloud active id: `{probe.get('cloud_active_draft_id') or '—'}` · "
+            f"Disk active id: `{probe.get('disk_active_draft_id') or '—'}`"
+        )
         st.markdown(f"**Restore source:** `{probe.get('restore_source') or '—'}`")
         st.markdown(f"**Persistence verdict:** {probe.get('persistence_verdict_label') or '—'}")
 
@@ -769,6 +777,11 @@ def render_saved_active_draft_summary(st: Any, session: dict[str, Any]) -> None:
     if get_active_league_context is not None:
         active_context = get_active_league_context(session, respect_source_priority=False)
     st.markdown("##### Saved Active Draft")
+    if session.get("_suite_active_draft_restore_prompt"):
+        st.warning(
+            "Saved drafts were restored after sign-in/reboot, but no Active Draft was persisted. "
+            "Choose a library card below and click **Set Active**."
+        )
     if not active:
         try:
             from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives

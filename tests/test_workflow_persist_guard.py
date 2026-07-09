@@ -25,6 +25,7 @@ from workflow_persist_guard import (
     is_draft_library_mutation_save_reason,
     probe_cloud_workflow_for_workspace,
     record_startup_restore_snapshot,
+    restore_active_draft_archive_selection,
     should_keep_session_workflow_over_blob,
     should_skip_empty_blob_workflow_over_persisted,
     enrich_cloud_restore_state,
@@ -599,6 +600,54 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertTrue(effective)
         self.assertIn("yes", label)
         self.assertIn("cloud", detail.lower())
+
+    def test_restore_active_from_cloud_after_merge(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01", "draft_name": "Upload Test Demo"}],
+        }
+        cloud = {ACTIVE_DRAFT_ARCHIVE_KEY: "cloud01"}
+        trace = restore_active_draft_archive_selection(
+            session,
+            cloud_state=cloud,
+            disk_state={},
+            phase="test",
+        )
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), "cloud01")
+        self.assertEqual(trace.get("active_source"), "cloud")
+        self.assertEqual(trace.get("restore_reason"), "matched_cloud_active_to_visible_archive")
+
+    def test_restore_active_auto_sets_single_visible_draft(self) -> None:
+        session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "only01", "draft_name": "Only"}]}
+        trace = restore_active_draft_archive_selection(session, cloud_state={}, disk_state={}, phase="test")
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), "only01")
+        self.assertEqual(trace.get("restore_reason"), "single_visible_draft_auto_active")
+
+    def test_restore_active_prompt_when_multiple_drafts_no_active(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [
+                {"draft_id": "a1", "draft_name": "A"},
+                {"draft_id": "a2", "draft_name": "B"},
+            ]
+        }
+        trace = restore_active_draft_archive_selection(session, cloud_state={}, disk_state={}, phase="test")
+        self.assertNotIn(ACTIVE_DRAFT_ARCHIVE_KEY, session)
+        self.assertTrue(session.get("_suite_active_draft_restore_prompt"))
+        self.assertEqual(trace.get("restore_reason"), "multiple_visible_drafts_no_persisted_active")
+
+    def test_merge_protected_workflow_on_restore_sets_active_from_cloud(self) -> None:
+        session: dict = {}
+        incoming = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01", "draft_name": "League"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "cloud01",
+        }
+        with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value={}):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=incoming):
+                with patch(
+                    "draft_archive_visibility.sanitize_workflow_library_for_account",
+                    side_effect=lambda s, **_: None,
+                ):
+                    merge_protected_workflow_on_restore(session, incoming)
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), "cloud01")
 
 
 class WorkflowPersistGuardDiskRoundtripTests(unittest.TestCase):

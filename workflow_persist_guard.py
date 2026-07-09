@@ -40,6 +40,7 @@ AUTH_MIGRATION_WRITEBACK_TRACE_KEY = "_suite_auth_migration_writeback_trace"
 AUTH_MIGRATION_WRITEBACK_FORCE_KEY = "_suite_auth_migration_writeback_force"
 AUTH_RESTORE_CYCLE_COMPLETE_KEY = "_suite_auth_restore_cycle_complete"
 WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_draft_archive_prewrite_backup"
+ACTIVE_DRAFT_RESTORE_TRACE_KEY = "_suite_active_draft_restore_trace"
 WORKFLOW_CLOUD_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_cloud_draft_archive_prewrite_backup"
 WORKFLOW_DRAFT_ARCHIVE_HISTORY_KEY = "_suite_draft_archive_version_history"
 DRAFT_ARCHIVE_HISTORY_MAX = 8
@@ -1119,6 +1120,20 @@ def merge_protected_workflow_into_save(
         session["_suite_workflow_persist_merge_sources"] = merge_sources
         session["_suite_workflow_persist_merge_reason"] = reason
     maybe_backup_draft_archive_prewrite(session, state, app_id=app_id, st=st, save_reason=reason)
+    archives = state.get(DRAFT_ARCHIVE_KEY)
+    if _draft_archive_nonempty(archives):
+        active_id = _resolve_active_draft_archive_id(
+            session_val=session.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+            incoming_val=state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+            disk_val=disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+            cloud_val=cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) if isinstance(cloud_state, dict) else "",
+            merged_archives=archives if isinstance(archives, list) else [],
+        )
+        if not active_id and isinstance(archives, list) and len(archives) == 1:
+            active_id = str(archives[0].get("draft_id") or "").strip()
+        if active_id:
+            state[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
+            session[ACTIVE_DRAFT_ARCHIVE_KEY] = active_id
     return state
 
 
@@ -1249,6 +1264,122 @@ def _resolve_active_draft_archive_id(
     return ""
 
 
+def restore_active_draft_archive_selection(
+    session: dict[str, Any],
+    *,
+    incoming_state: dict[str, Any] | None = None,
+    cloud_state: dict[str, Any] | None = None,
+    disk_state: dict[str, Any] | None = None,
+    app_id: str = "baseball",
+    st: Any | None = None,
+    phase: str = "restore",
+) -> dict[str, Any]:
+    """Reconcile active_draft_archive_id after restore/hydration/sanitize."""
+    incoming_state = incoming_state if isinstance(incoming_state, dict) else {}
+    if cloud_state is None and st is not None:
+        cloud_state = _load_cloud_workflow_snapshot(app_id, st)
+    if not isinstance(cloud_state, dict):
+        cloud_state = {}
+    if disk_state is None:
+        disk_state = _load_disk_workflow_snapshot(app_id)
+    if not isinstance(disk_state, dict):
+        disk_state = {}
+
+    trace: dict[str, Any] = {
+        "phase": str(phase or "restore"),
+        "restore_reason": "",
+        "active_source": "",
+        "session_active_before": str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
+        "cloud_active": str(cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
+        "disk_active": str(disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
+        "incoming_active": str(incoming_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
+        "visible_draft_count": 0,
+        "needs_set_active_prompt": False,
+    }
+
+    try:
+        from draft_archive_visibility import list_visible_draft_archives
+
+        visible = list_visible_draft_archives(session)
+    except ImportError:
+        try:
+            from draft_archive_state import list_draft_archives
+
+            visible = list_draft_archives(session)
+        except ImportError:
+            visible = []
+
+    visible_ids = [
+        str(entry.get("draft_id") or "").strip()
+        for entry in visible
+        if isinstance(entry, dict) and str(entry.get("draft_id") or "").strip()
+    ]
+    trace["visible_draft_count"] = len(visible_ids)
+
+    merged_archives = session.get(DRAFT_ARCHIVE_KEY)
+    if not isinstance(merged_archives, list):
+        merged_archives = []
+
+    for source_name, candidate in (
+        ("cloud", cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
+        ("disk", disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
+        ("incoming", incoming_state.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
+        ("session", session.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
+    ):
+        cid = str(candidate or "").strip()
+        if cid and cid in visible_ids:
+            session[ACTIVE_DRAFT_ARCHIVE_KEY] = cid
+            trace["active_source"] = source_name
+            trace["restore_reason"] = f"matched_{source_name}_active_to_visible_archive"
+            trace["session_active_after"] = cid
+            session.pop("_suite_active_draft_restore_prompt", None)
+            session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+            return trace
+
+    resolved = _resolve_active_draft_archive_id(
+        session_val=session.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        incoming_val=incoming_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        disk_val=disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        cloud_val=cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+        merged_archives=merged_archives,
+    )
+    if resolved and resolved in visible_ids:
+        session[ACTIVE_DRAFT_ARCHIVE_KEY] = resolved
+        trace["active_source"] = "resolved_union"
+        trace["restore_reason"] = "resolved_active_matches_visible_archive"
+        trace["session_active_after"] = resolved
+        session.pop("_suite_active_draft_restore_prompt", None)
+        session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+        return trace
+
+    current = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if current and current not in visible_ids:
+        session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
+        trace["restore_reason"] = "cleared_stale_active_not_visible"
+
+    if len(visible_ids) == 1:
+        only_id = visible_ids[0]
+        session[ACTIVE_DRAFT_ARCHIVE_KEY] = only_id
+        trace["active_source"] = "auto_single_visible"
+        trace["restore_reason"] = "single_visible_draft_auto_active"
+        trace["session_active_after"] = only_id
+        session.pop("_suite_active_draft_restore_prompt", None)
+        session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+        return trace
+
+    if len(visible_ids) > 1:
+        session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
+        session["_suite_active_draft_restore_prompt"] = True
+        trace["needs_set_active_prompt"] = True
+        trace["restore_reason"] = "multiple_visible_drafts_no_persisted_active"
+    elif not trace.get("restore_reason"):
+        trace["restore_reason"] = "no_visible_saved_drafts"
+
+    trace["session_active_after"] = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "")
+    session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+    return trace
+
+
 def merge_protected_workflow_on_restore(
     session: dict[str, Any],
     incoming_state: dict[str, Any] | None = None,
@@ -1327,6 +1458,15 @@ def merge_protected_workflow_on_restore(
         sanitize_workflow_library_for_account(session, st=st, persist_cleanup=True)
     except ImportError:
         pass
+    restore_active_draft_archive_selection(
+        session,
+        incoming_state=incoming_state,
+        cloud_state=cloud_state,
+        disk_state=disk_state,
+        app_id=app_id,
+        st=st,
+        phase="merge_protected_workflow_on_restore",
+    )
     return session
 
 
@@ -1416,6 +1556,18 @@ def ensure_session_workflow_hydrated(
         restored_page = _maybe_restore_page_from_cloud_blob(session, cloud_state)
         if restored_page:
             out["restored_page"] = restored_page
+        restore_active_draft_archive_selection(
+            session,
+            cloud_state=cloud_state,
+            disk_state=disk_state,
+            app_id=app_id,
+            st=st,
+            phase="ensure_session_workflow_hydrated",
+        )
+        active_trace = session.get(ACTIVE_DRAFT_RESTORE_TRACE_KEY)
+        if isinstance(active_trace, dict):
+            out["active_restore_reason"] = active_trace.get("restore_reason")
+            out["active_restore_source"] = active_trace.get("active_source")
     return out
 
 
@@ -2279,6 +2431,8 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
     session_has_archive_key = DRAFT_ARCHIVE_KEY in session
     session_archive_len = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     empty_startup_write_blocked = str(session.get("_suite_empty_startup_write_blocked") or "").strip()
+    active_trace_raw = session.get(ACTIVE_DRAFT_RESTORE_TRACE_KEY)
+    active_trace = active_trace_raw if isinstance(active_trace_raw, dict) else {}
 
     return {
         "signed_in": bool(diag.get("authenticated")),
@@ -2299,6 +2453,19 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
         "disk_draft_count": disk_draft_count,
         "active_draft_id": active_draft_id or "—",
         "active_draft_name": active_draft_name or "—",
+        "active_restore_source": str(
+            active_trace.get("active_source") or startup.get("active_restore_source") or ""
+        ) or "—",
+        "active_restore_reason": str(
+            active_trace.get("restore_reason") or startup.get("active_restore_reason") or ""
+        ) or "—",
+        "active_restore_needs_prompt": bool(
+            session.get("_suite_active_draft_restore_prompt")
+            or active_trace.get("needs_set_active_prompt")
+            or startup.get("active_restore_needs_prompt")
+        ),
+        "cloud_active_draft_id": str(startup.get("cloud_active_draft_id") or diag.get("cloud_active_draft_id") or "—"),
+        "disk_active_draft_id": str(startup.get("disk_active_draft_id") or diag.get("disk_active_draft_id") or "—"),
         "restore_source": restore_pick_source or "none",
         "persistence_verdict": verdict,
         "persistence_verdict_label": verdict_label,
@@ -2794,6 +2961,9 @@ def build_startup_restore_snapshot(
         restore_applied=restore_applied,
         restore_skip_reason=restore_skip,
     )
+    active_trace = session.get(ACTIVE_DRAFT_RESTORE_TRACE_KEY)
+    if not isinstance(active_trace, dict):
+        active_trace = {}
 
     return {
         "phase": phase,
@@ -2811,6 +2981,9 @@ def build_startup_restore_snapshot(
         "disk_active_draft_id": str(disk_summary.get("active_draft_archive_id") or ""),
         "disk_active_page": str(disk_summary.get("active_page") or ""),
         "disk_tracked_player_count": int(disk_summary.get("tracked_player_count") or 0),
+        "active_restore_source": str(active_trace.get("active_source") or ""),
+        "active_restore_reason": str(active_trace.get("restore_reason") or ""),
+        "active_restore_needs_prompt": bool(active_trace.get("needs_set_active_prompt")),
         "restore_decision": session.get("_suite_restore_decision"),
         "restore_pick_source": session.get("_suite_restore_pick_source")
         or session.get("_suite_persist_last_restore_source"),
@@ -2874,7 +3047,12 @@ def hydrate_session_workflow_from_disk(
 
     disk_active = str(disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
     session_active = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
-    if not session_active and disk_active:
+    archive_ids = {
+        str(entry.get("draft_id") or "").strip()
+        for entry in (session.get(DRAFT_ARCHIVE_KEY) or [])
+        if isinstance(entry, dict) and str(entry.get("draft_id") or "").strip()
+    }
+    if not session_active and disk_active and disk_active in archive_ids:
         session[ACTIVE_DRAFT_ARCHIVE_KEY] = disk_active
         merged.append(ACTIVE_DRAFT_ARCHIVE_KEY)
 
