@@ -13539,12 +13539,6 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
 def _render_baseball_sidebar_chrome(st_obj) -> None:
     """Render Command Center link + Saved session once per script run."""
     try:
-        from baseball_account_sidebar import render_baseball_account_sidebar
-
-        render_baseball_account_sidebar(st_obj)
-    except Exception:
-        pass
-    try:
         from suite_command_center_link import render_command_center_sidebar_link
 
         render_command_center_sidebar_link(st_obj)
@@ -13798,6 +13792,13 @@ _render_baseball_sidebar_chrome(st)
 
 pp.render_sidebar_toggle(st)
 render_developer_mode_sidebar_toggle()
+
+try:
+    from baseball_account_sidebar import render_baseball_account_sidebar
+
+    render_baseball_account_sidebar(st)
+except Exception:
+    pass
 
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,

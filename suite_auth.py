@@ -1922,7 +1922,13 @@ def request_password_reset(email: str, *, redirect_to: str | None = None) -> tup
         return False, str(exc)
 
 
-def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status: bool = True) -> None:
+def render_auth_panel(
+    st: Any,
+    *,
+    expanded: bool = False,
+    show_signed_in_status: bool = True,
+    flat_sidebar: bool = False,
+) -> None:
     """Login / sign-up panel when Real Accounts are enabled."""
     if not is_auth_enabled():
         return
@@ -1940,8 +1946,8 @@ def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status:
             logout(session, st=st)
             st.rerun()
         return
-    title = "Sign in"
-    with st.expander(title, expanded=expanded):
+
+    def _render_login_tabs() -> None:
         tab_login, tab_signup, tab_reset = st.tabs(["Log in", "Create account", "Reset password"])
         with tab_login:
             with st.form("suite_auth_login_form", clear_on_submit=False):
@@ -1972,6 +1978,14 @@ def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status:
                     st.success(msg)
                 else:
                     st.error(msg)
+
+    if flat_sidebar:
+        _render_login_tabs()
+        return
+
+    title = "Sign in"
+    with st.expander(title, expanded=expanded):
+        _render_login_tabs()
 
 
 def render_auth_gate(st: Any) -> bool:

@@ -190,51 +190,45 @@ def request_account_sign_in_panel(session: dict[str, Any]) -> None:
     session[ACCOUNT_EXPANDER_FLAG] = True
 
 
-def render_baseball_account_sidebar(st: Any) -> None:
-    """Compact sidebar account status + sign-in controls."""
+def account_sidebar_should_render(session: dict[str, Any] | None = None) -> bool:
+    """True when the Account & sign-in sidebar block must always be shown."""
     try:
-        from suite_sidebar_run import GUARD_ACCOUNT, claim_sidebar_render
+        from suite_auth import is_auth_enabled
 
-        if not claim_sidebar_render(st.session_state, GUARD_ACCOUNT):
-            return
+        return bool(is_auth_enabled())
     except ImportError:
-        pass
+        return False
+
+
+def render_baseball_account_sidebar(st: Any) -> None:
+    """Compact sidebar account status + sign-in controls — always when auth is enabled."""
+    if not account_sidebar_should_render(st.session_state):
+        return
     session = st.session_state
     prepare_baseball_auth_session(st)
     status = real_account_status(session)
 
-    try:
-        from suite_auth import is_auth_enabled
-
-        if not is_auth_enabled():
-            return
-    except ImportError:
-        return
-
-    expanded = bool(session.pop(ACCOUNT_EXPANDER_FLAG, False))
+    st.sidebar.markdown("**Account & sign-in**")
     if status["signed_in"]:
-        st.sidebar.caption(f"Account: **{status['email'] or 'signed in'}**")
+        st.sidebar.caption(f"Signed in as **{status['email'] or 'account'}**")
     else:
-        st.sidebar.caption("Account: **not signed in** (shared drafts need Real Accounts)")
+        st.sidebar.caption("Not signed in — shared drafts require Real Accounts")
 
-    with st.sidebar.expander("Account & sign-in", expanded=expanded):
-        if not status["signed_in"]:
-            st.warning(
-                "**Not signed in** — shared draft rooms require Real Account sign-in. "
-                "Workspace and cloud sync alone are not enough."
-            )
-        if _dev_auth_details_visible(session) and status.get("auth_user_id"):
-            st.caption(f"Supabase auth user id: `{status['auth_user_id']}`")
-        elif _dev_auth_details_visible(session):
-            st.caption("Supabase auth user id: —")
+    if not status["signed_in"]:
+        st.sidebar.warning(
+            "Sign in with your Real Account to unlock authenticated cloud saves and shared draft rooms."
+        )
+    if status.get("auth_user_id"):
+        st.sidebar.caption(f"Supabase auth user id: `{status['auth_user_id']}`")
 
-        try:
-            from suite_auth import render_auth_panel
+    try:
+        from suite_auth import render_auth_panel
 
-            render_auth_panel(
-                st,
-                expanded=not status["signed_in"],
-                show_signed_in_status=False,
-            )
-        except ImportError:
-            st.caption("Sign-in controls unavailable.")
+        render_auth_panel(
+            st,
+            expanded=True,
+            show_signed_in_status=False,
+            flat_sidebar=True,
+        )
+    except ImportError:
+        st.sidebar.caption("Sign-in controls unavailable.")

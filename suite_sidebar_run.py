@@ -49,14 +49,14 @@ def _sync_execution_claims() -> None:
 def reset_sidebar_run_guards(session_state: dict[str, Any]) -> None:
     """Call once near app startup — clears per-run claims and session flags."""
     global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN, _DEV_MODE_CHECKBOX_MATERIALIZED
+    for key in ALL_GUARDS:
+        session_state[key] = False
     token = _execution_token()
     if token == _EXECUTION_TOKEN and (_CLAIMED_THIS_EXECUTION or _DEV_MODE_CHECKBOX_MATERIALIZED):
         return
     _EXECUTION_TOKEN = token
     _CLAIMED_THIS_EXECUTION = set()
     _DEV_MODE_CHECKBOX_MATERIALIZED = False
-    for key in ALL_GUARDS:
-        session_state[key] = False
 
 
 def dev_mode_checkbox_materialized() -> bool:
