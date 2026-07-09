@@ -210,6 +210,60 @@ def get_commissioner_user_id(context: dict[str, Any] | None) -> str:
     return str(meta.get("commissioner_user_id") or "").strip()
 
 
+def _joined_via_invite(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict):
+        return False
+    meta = context.get("metadata") or {}
+    return bool(meta.get("joined_via_invite"))
+
+
+def is_upload_commissioner_candidate(context: dict[str, Any] | None, user_id: str = "") -> bool:
+    """True when the account uploaded the league and owns ``my_team_name`` (not invite join)."""
+    if not isinstance(context, dict):
+        return False
+    if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        return False
+    if _joined_via_invite(context):
+        return False
+    uid = str(user_id or _resolve_user_id()).strip()
+    if not uid:
+        return False
+    my_team = str(context.get("my_team_name") or "").strip()
+    if not my_team:
+        return False
+    record = get_team_ownership(context).get(my_team) or {}
+    return str(record.get("user_id") or "").strip() == uid
+
+
+def repair_commissioner_identity(
+    context: dict[str, Any],
+    session: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Backfill commissioner_user_id when upload owner id drifted after account fixes."""
+    if not isinstance(context, dict):
+        return context, False
+    uid = _resolve_user_id()
+    if not is_upload_commissioner_candidate(context, uid):
+        return context, False
+    commissioner = get_commissioner_user_id(context)
+    if commissioner == uid:
+        return context, False
+    meta = dict(context.get("metadata") or {})
+    meta["commissioner_user_id"] = uid
+    context["metadata"] = meta
+    if isinstance(session, dict):
+        from fantasy_league_context import upsert_league_context
+
+        context = upsert_league_context(session, context)
+        try:
+            from workflow_persist_guard import mark_workflow_persist_authoritative
+
+            mark_workflow_persist_authoritative(session)
+        except ImportError:
+            pass
+    return context, True
+
+
 def is_league_commissioner(context: dict[str, Any] | None, user_id: str = "") -> bool:
     if not isinstance(context, dict):
         return False
@@ -219,8 +273,12 @@ def is_league_commissioner(context: dict[str, Any] | None, user_id: str = "") ->
     if not uid:
         return False
     commissioner = get_commissioner_user_id(context)
-    if commissioner:
-        return commissioner == uid
+    if commissioner and commissioner == uid:
+        return True
+    if is_upload_commissioner_candidate(context, uid):
+        return True
+    if commissioner or _joined_via_invite(context):
+        return False
     ownership = get_team_ownership(context)
     if not ownership:
         return False
@@ -666,6 +724,63 @@ def unclaimed_teams_for_invite(shared: dict[str, Any]) -> list[str]:
     return teams
 
 
+def commissioner_invite_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Explain why commissioner invite UI may be hidden."""
+    from fantasy_league_context import get_league_context_for_archive, list_league_contexts
+
+    uid = _resolve_user_id()
+    contexts = [
+        ctx
+        for ctx in list_league_contexts(session)
+        if str(ctx.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE
+    ]
+    rows: list[dict[str, Any]] = []
+    for ctx in contexts:
+        league_context_id = str(ctx.get("league_context_id") or "").strip()
+        rows.append(
+            {
+                "league_context_id": league_context_id,
+                "league_name": str(ctx.get("league_name") or ctx.get("display_name") or ""),
+                "my_team_name": str(ctx.get("my_team_name") or ""),
+                "commissioner_user_id": get_commissioner_user_id(ctx),
+                "joined_via_invite": _joined_via_invite(ctx),
+                "upload_owner_candidate": is_upload_commissioner_candidate(ctx, uid),
+                "is_commissioner": is_league_commissioner(ctx, uid),
+            }
+        )
+    try:
+        from draft_archive_visibility import list_visible_draft_archives
+
+        for entry in list_visible_draft_archives(session):
+            ctx = get_league_context_for_archive(session, entry)
+            if not isinstance(ctx, dict):
+                continue
+            if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+                continue
+            league_context_id = str(ctx.get("league_context_id") or "").strip()
+            if any(str(row.get("league_context_id") or "") == league_context_id for row in rows):
+                continue
+            rows.append(
+                {
+                    "league_context_id": league_context_id,
+                    "league_name": str(ctx.get("league_name") or ctx.get("display_name") or ""),
+                    "my_team_name": str(ctx.get("my_team_name") or ""),
+                    "commissioner_user_id": get_commissioner_user_id(ctx),
+                    "joined_via_invite": _joined_via_invite(ctx),
+                    "upload_owner_candidate": is_upload_commissioner_candidate(ctx, uid),
+                    "is_commissioner": is_league_commissioner(ctx, uid),
+                }
+            )
+    except ImportError:
+        pass
+    return {
+        "account_user_id": uid,
+        "real_league_context_count": len(contexts),
+        "commissioner_context_found": bool(commissioner_invite_context(session)),
+        "contexts": rows,
+    }
+
+
 def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | None:
     """Best league context the current user can invite from."""
     from fantasy_league_context import get_active_league_context, get_league_context, list_league_contexts
@@ -679,9 +794,24 @@ def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | Non
             continue
         if ctx not in candidates:
             candidates.append(ctx)
+    try:
+        from draft_archive_visibility import list_visible_draft_archives
+        from fantasy_league_context import get_league_context_for_archive
+
+        for entry in list_visible_draft_archives(session):
+            ctx = get_league_context_for_archive(session, entry)
+            if isinstance(ctx, dict) and str(ctx.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
+                if ctx not in candidates:
+                    candidates.append(ctx)
+    except ImportError:
+        pass
+    uid = _resolve_user_id()
     for raw in candidates:
         league_context_id = str(raw.get("league_context_id") or "").strip()
         context = get_league_context(session, league_context_id) if league_context_id else raw
-        if isinstance(context, dict) and is_league_commissioner(context):
+        if not isinstance(context, dict):
+            continue
+        context, _ = repair_commissioner_identity(context, session)
+        if is_league_commissioner(context, uid):
             return context
     return None

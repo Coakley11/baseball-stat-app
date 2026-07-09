@@ -2316,8 +2316,10 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
 
         render_pending_league_invites(st, session)
         render_commissioner_invite_panel(st, session)
-    except ImportError:
-        pass
+    except ImportError as exc:
+        if not session.get("_league_invite_ui_import_error"):
+            session["_league_invite_ui_import_error"] = str(exc)
+            st.warning(f"Shared league invite UI could not load: {exc}")
 
     return_page = str(session.get(SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY) or "").strip()
     if return_page and return_page != SAVED_DRAFT_LIBRARY_PAGE:

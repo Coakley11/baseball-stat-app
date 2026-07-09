@@ -6,6 +6,7 @@ from typing import Any
 
 from fantasy_league_invites import (
     commissioner_invite_context,
+    commissioner_invite_diagnostics,
     create_league_invite,
     decline_league_invite,
     is_league_commissioner,
@@ -85,13 +86,37 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
     return True
 
 
-def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> None:
+def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     """Let the league commissioner invite another workspace/account."""
     context = commissioner_invite_context(session)
     if not context:
-        return
-    if not is_league_commissioner(context):
-        return
+        diag = commissioner_invite_diagnostics(session)
+        if int(diag.get("real_league_context_count") or 0) > 0:
+            rows = diag.get("contexts") or []
+            blocked = [
+                row
+                for row in rows
+                if isinstance(row, dict) and not row.get("is_commissioner")
+            ]
+            if blocked:
+                first = blocked[0]
+                st.warning(
+                    "Shared league invite controls are hidden because this account is not recognized as "
+                    f"league commissioner for **{first.get('league_name') or 'your uploaded league'}**. "
+                    f"Stored commissioner id: `{first.get('commissioner_user_id') or '—'}` · "
+                    f"your account id: `{diag.get('account_user_id') or '—'}`. "
+                    "Claim your upload team in this library, then refresh."
+                )
+        return False
+    uid = ""
+    try:
+        from fantasy_league_invites import _resolve_user_id
+
+        uid = str(_resolve_user_id() or "").strip()
+    except ImportError:
+        pass
+    if not is_league_commissioner(context, uid):
+        return False
 
     league_name = str(context.get("league_name") or context.get("display_name") or "Shared league").strip()
     with st.expander("Invite managers to this shared league", expanded=False):
@@ -114,3 +139,4 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> None:
                 ws = str(invite.get("invitee_workspace_id") or target).strip()
                 st.success(f"Invite sent to **{ws}** for **{league_name}**.")
                 st.rerun()
+    return True

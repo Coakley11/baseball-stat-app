@@ -18,7 +18,9 @@ from fantasy_league_invites import (
     INVITE_STATUS_ACCEPTED,
     INVITE_STATUS_PENDING,
     append_invite_to_inbox,
+    commissioner_invite_context,
     create_league_invite,
+    is_league_commissioner,
     join_shared_league_from_invite,
     list_pending_invites_for_session,
 )
@@ -231,6 +233,49 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         self.assertEqual(err1, "")
         self.assertIn("already exists", err2.lower())
         assert first is not None
+
+    def test_stale_commissioner_id_allows_upload_owner(self) -> None:
+        session: dict = {}
+        context = _seed_imported_league(session, user_id="user:daniel")
+        league_context_id = str(context.get("league_context_id") or "")
+        loaded = get_league_context(session, league_context_id) or context
+        meta = dict(loaded.get("metadata") or {})
+        meta["commissioner_user_id"] = "961df5e9-cdde-48d7-80dd-95a8ba3f46e5"
+        loaded["metadata"] = meta
+        upsert_league_context(session, loaded)
+
+        with _as_user("user:daniel"):
+            self.assertTrue(is_league_commissioner(get_league_context(session, league_context_id), "user:daniel"))
+            invite_ctx = commissioner_invite_context(session)
+        self.assertIsNotNone(invite_ctx)
+        assert invite_ctx is not None
+        self.assertEqual(
+            str((invite_ctx.get("metadata") or {}).get("commissioner_user_id") or ""),
+            "user:daniel",
+        )
+
+    def test_invite_joiner_is_not_commissioner(self) -> None:
+        session: dict = {}
+        context = _seed_imported_league(session, user_id="user:donny")
+        league_context_id = str(context.get("league_context_id") or "")
+        loaded = get_league_context(session, league_context_id) or context
+        loaded = assign_team_owner_to_context(
+            loaded,
+            "Team 2",
+            user_id="user:seal11",
+            email="seal11@test",
+            display_name="Seal11",
+        )
+        loaded["my_team_name"] = "Team 2"
+        meta = dict(loaded.get("metadata") or {})
+        meta["joined_via_invite"] = True
+        meta["commissioner_user_id"] = "user:donny"
+        loaded["metadata"] = meta
+        upsert_league_context(session, loaded)
+
+        with _as_user("user:seal11"):
+            self.assertFalse(is_league_commissioner(get_league_context(session, league_context_id), "user:seal11"))
+            self.assertIsNone(commissioner_invite_context(session))
 
 
 if __name__ == "__main__":
