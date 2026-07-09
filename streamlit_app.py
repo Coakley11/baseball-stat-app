@@ -13649,6 +13649,13 @@ else:
         consumed_target=_consumed_nav_target,
     )
 try:
+    from suite_auth import is_auth_enabled, process_pending_auth_login
+
+    if is_auth_enabled():
+        process_pending_auth_login(st)
+except Exception:
+    pass
+try:
     from baseball_persistent_state import prepare_baseball_workspace
 
     prepare_baseball_workspace(st)

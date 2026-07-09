@@ -297,7 +297,7 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     except ImportError:
         return
 
-    probe = build_persistence_probe_panel(session)
+    probe = build_persistence_probe_panel(session, st=st)
     verdict = str(probe.get("persistence_verdict") or "")
     if verdict == "B_restore_failed":
         st.error("**Saved Draft Persistence Probe** — restore failed; storage may still have your drafts.")
@@ -313,10 +313,10 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         st.warning(str(probe["auth_signed_out_warning"]))
 
     if probe.get("auth_last_login_error"):
-        st.caption(f"Last login error: `{probe['auth_last_login_error']}`")
+        st.warning(f"**Last login error:** `{probe['auth_last_login_error']}`")
     if probe.get("auth_last_restore_error"):
-        st.caption(f"Last auth restore error: `{probe['auth_last_restore_error']}`")
-    if probe.get("auth_enabled_but_signed_out") or probe.get("auth_session_flag"):
+        st.warning(f"**Last auth restore error:** `{probe['auth_last_restore_error']}`")
+    if probe.get("auth_enabled"):
         auth_bits = [
             f"session flag: {'yes' if probe.get('auth_session_flag') else 'no'}",
             f"complete: {'yes' if probe.get('auth_session_complete') else 'no'}",
@@ -327,7 +327,7 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
             auth_bits.append(
                 f"browser sid: {'yes' if browser.get('session_id_present') else 'no'}"
             )
-        st.caption("Auth session: " + " · ".join(auth_bits))
+        st.markdown("**Auth session:** " + " · ".join(auth_bits))
 
     col_a, col_b = st.columns(2)
     with col_a:

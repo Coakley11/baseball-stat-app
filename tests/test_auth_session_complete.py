@@ -7,12 +7,14 @@ from unittest.mock import MagicMock, patch
 
 from baseball_persistent_state import apply_baseball_disk_state
 from suite_auth import (
+    AUTH_PENDING_LOGIN_KEY,
     AUTH_SESSION_KEY,
     AUTH_TOKENS_KEY,
     AUTH_USER_EMAIL_KEY,
     AUTH_USER_ID_KEY,
     auth_session_complete,
     login_with_email,
+    process_pending_auth_login,
     restore_auth_session,
     snapshot_auth_session,
 )
@@ -91,6 +93,41 @@ class AuthSessionCompleteTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("email and password", msg.lower())
             auth_api.assert_not_called()
+
+    def test_process_pending_auth_login_before_workspace(self) -> None:
+        session: dict = {}
+        st = MagicMock()
+        st.session_state = session
+        session[AUTH_PENDING_LOGIN_KEY] = {
+            "email": "daniel.cohen11@yahoo.com",
+            "password": "secret",
+        }
+        user = MagicMock()
+        user.id = "uuid-daniel"
+        user.email = "daniel.cohen11@yahoo.com"
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth._auth_api"
+        ) as auth_api, patch(
+            "suite_auth._user_from_auth_response", return_value=user
+        ), patch(
+            "suite_auth._tokens_from_auth_response",
+            return_value={"access_token": "a", "refresh_token": "r"},
+        ), patch(
+            "suite_auth._sync_auth_account_identity", return_value="uuid-daniel"
+        ), patch(
+            "suite_workspace_registry.ensure_owned_workspace_for_session"
+        ), patch(
+            "suite_auth.enforce_workspace_ownership"
+        ), patch(
+            "suite_user_persistence.preserve_page_through_auth"
+        ), patch(
+            "draft_archive_visibility.sanitize_workflow_library_for_account"
+        ):
+            auth_api.return_value.sign_in_with_password.return_value = object()
+            ok = process_pending_auth_login(st)
+        self.assertTrue(ok)
+        self.assertTrue(auth_session_complete(session))
+        self.assertNotIn(AUTH_PENDING_LOGIN_KEY, session)
 
     def test_snapshot_auth_session_copies_tokens(self) -> None:
         session = {

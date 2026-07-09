@@ -44,6 +44,7 @@ AUTH_LAST_LOGIN_ERROR_KEY = "_suite_auth_last_login_error"
 AUTH_LAST_LOGIN_OK_KEY = "_suite_auth_last_login_ok"
 AUTH_LAST_RESTORE_ERROR_KEY = "_suite_auth_last_restore_error"
 AUTH_JUST_LOGGED_IN_KEY = "_suite_auth_just_logged_in"
+AUTH_PENDING_LOGIN_KEY = "_suite_pending_login"
 
 AUTH_PROTECTED_SESSION_KEYS = (
     AUTH_SESSION_KEY,
@@ -53,6 +54,10 @@ AUTH_PROTECTED_SESSION_KEYS = (
     AUTH_TOKENS_KEY,
     AUTH_PROFILE_KEY,
     "_suite_cloud_user_id",
+    AUTH_JUST_LOGGED_IN_KEY,
+    AUTH_LAST_LOGIN_ERROR_KEY,
+    AUTH_LAST_RESTORE_ERROR_KEY,
+    AUTH_LAST_LOGIN_OK_KEY,
 )
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
@@ -1802,6 +1807,24 @@ def signup_with_email(session_state: dict[str, Any], *, email: str, password: st
         return False, str(exc)
 
 
+def process_pending_auth_login(st: Any) -> bool:
+    """
+    Complete a sidebar login before workspace sync.
+
+    Sidebar form submit stores credentials in session and reruns; this runs on the
+    next script pass before cloud/disk restore so auth keys survive force-sync.
+    """
+    session = st.session_state
+    pending = session.pop(AUTH_PENDING_LOGIN_KEY, None)
+    if not isinstance(pending, dict):
+        return False
+    email = str(pending.get("email") or "").strip()
+    password = str(pending.get("password") or "")
+    session["_baseball_account_expander_open"] = True
+    ok, _msg = login_with_email(session, email=email, password=password, st=st)
+    return ok
+
+
 def login_with_email(
     session_state: dict[str, Any],
     *,
@@ -1926,11 +1949,12 @@ def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status:
                 password = st.text_input("Password", type="password", key="suite_auth_login_password")
                 submitted = st.form_submit_button("Log in", use_container_width=True)
             if submitted:
-                ok, msg = login_with_email(session, email=email, password=password, st=st)
-                if ok:
-                    st.rerun()
-                else:
-                    st.error(msg)
+                session[AUTH_PENDING_LOGIN_KEY] = {
+                    "email": email,
+                    "password": password,
+                }
+                session["_baseball_account_expander_open"] = True
+                st.rerun()
         with tab_signup:
             su_email = st.text_input("Email", key="suite_auth_signup_email")
             su_password = st.text_input("Password", type="password", key="suite_auth_signup_password")

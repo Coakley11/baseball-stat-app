@@ -1700,7 +1700,7 @@ def _resolve_persistence_verdict(session: dict[str, Any], startup: dict[str, Any
     )
 
 
-def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
+def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
     """Single read-only probe for post-reboot saved-draft persistence diagnosis."""
     diag = build_saved_draft_library_diagnostics(session)
     startup = session.get("_suite_startup_restore_snapshot")
@@ -1851,6 +1851,25 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     except ImportError:
         pass
     auth_labels = _resolve_probe_auth_labels(session, diag)
+    if st is not None:
+        try:
+            from suite_auth import build_auth_session_diagnostics
+
+            auth_diag = build_auth_session_diagnostics(session, st=st)
+            diag = dict(diag)
+            diag["auth_session_flag"] = bool(auth_diag.get("session_flag"))
+            diag["auth_session_complete"] = bool(auth_diag.get("session_complete"))
+            diag["auth_tokens_present"] = bool(auth_diag.get("tokens_present"))
+            diag["auth_last_login_error"] = str(auth_diag.get("last_login_error") or "")
+            diag["auth_last_restore_error"] = str(auth_diag.get("last_restore_error") or "")
+            diag["auth_browser_storage"] = (
+                auth_diag.get("browser_storage")
+                if isinstance(auth_diag.get("browser_storage"), dict)
+                else {}
+            )
+            auth_labels = _resolve_probe_auth_labels(session, diag)
+        except ImportError:
+            pass
     persistence_key_path = (
         f"session[{DRAFT_ARCHIVE_KEY}] → disk[{DRAFT_ARCHIVE_KEY}] → "
         f"cloud metrics.full_session.{DRAFT_ARCHIVE_KEY}"
@@ -1901,6 +1920,8 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "last_save_reason": last_save_reason or "—",
         "local_state_path": local_state_path or "—",
         "auth_signed_out_warning": str(diag.get("restore_cloud_vs_demo_note") or ""),
+        "auth_enabled": bool(diag.get("auth_enabled")),
+        "auth_enabled_but_signed_out": bool(diag.get("auth_enabled_but_signed_out")),
         "auth_session_flag": bool(diag.get("auth_session_flag")),
         "auth_session_complete": bool(diag.get("auth_session_complete")),
         "auth_tokens_present": bool(diag.get("auth_tokens_present")),
