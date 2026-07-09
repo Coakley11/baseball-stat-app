@@ -60,6 +60,10 @@ def account_user_ids_match(stored_id: str, current_id: str = "") -> bool:
             return True
         if stored in local_keys and current in local_keys:
             return True
+        if stored.startswith("user:") and stored[5:].lower() == ext and current == canonical:
+            return True
+        if current.startswith("user:") and current[5:].lower() == ext and stored == canonical:
+            return True
     except ImportError:
         pass
     return False

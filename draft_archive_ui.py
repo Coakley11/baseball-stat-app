@@ -2281,8 +2281,12 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
 
     prune_invisible_shared_league_state(session)
     try:
-        from fantasy_league_context import repair_missing_draft_archives_from_contexts
+        from fantasy_league_context import (
+            migrate_legacy_archives_to_contexts,
+            repair_missing_draft_archives_from_contexts,
+        )
 
+        migrate_legacy_archives_to_contexts(session)
         if repair_missing_draft_archives_from_contexts(session):
             prune_invisible_shared_league_state(session)
     except ImportError:

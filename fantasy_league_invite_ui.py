@@ -91,6 +91,18 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     context = commissioner_invite_context(session)
     if not context:
         diag = commissioner_invite_diagnostics(session)
+        visible_imported = 0
+        try:
+            from draft_archive_state import DRAFT_TYPE_IMPORTED
+            from draft_archive_visibility import list_visible_draft_archives
+
+            visible_imported = sum(
+                1
+                for entry in list_visible_draft_archives(session)
+                if str(entry.get("draft_type") or "") == DRAFT_TYPE_IMPORTED
+            )
+        except ImportError:
+            pass
         if int(diag.get("real_league_context_count") or 0) > 0:
             rows = diag.get("contexts") or []
             blocked = [
@@ -107,12 +119,19 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
                     f"your account id: `{diag.get('account_user_id') or '—'}`. "
                     "Claim your upload team in this library, then refresh."
                 )
+        elif visible_imported > 0:
+            st.warning(
+                "Shared league invite controls are hidden because league context metadata is missing "
+                f"for **{visible_imported}** uploaded league card(s). "
+                f"Your account id: `{diag.get('account_user_id') or '—'}`. "
+                "Refresh the page — the library should rebuild context from your saved upload."
+            )
         return False
     uid = ""
     try:
         from fantasy_league_invites import _resolve_user_id
 
-        uid = str(_resolve_user_id() or "").strip()
+        uid = str(_resolve_user_id(session) or "").strip()
     except ImportError:
         pass
     if not is_league_commissioner(context, uid):

@@ -46,13 +46,32 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _resolve_user_id() -> str:
+def _resolve_user_id(session: dict[str, Any] | None = None) -> str:
+    uid = ""
     try:
         from suite_user import get_account_user_id
 
-        return str(get_account_user_id() or "").strip()
+        uid = str(get_account_user_id() or "").strip()
     except ImportError:
-        return ""
+        pass
+    if uid:
+        return uid
+    if isinstance(session, dict):
+        for key in ("_suite_cloud_user_id", "_suite_auth_user_id"):
+            val = str(session.get(key) or "").strip()
+            if val:
+                return val
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        ss = st.session_state
+        for key in ("_suite_cloud_user_id", "_suite_auth_user_id"):
+            val = str(ss.get(key) or "").strip()
+            if val:
+                return val
+    except Exception:
+        pass
+    return ""
 
 
 def _resolve_external_id() -> str:
@@ -233,7 +252,15 @@ def is_upload_commissioner_candidate(context: dict[str, Any] | None, user_id: st
     if not my_team:
         return False
     record = get_team_ownership(context).get(my_team) or {}
-    return account_user_ids_match(str(record.get("user_id") or "").strip(), uid)
+    stored_uid = str(record.get("user_id") or "").strip()
+    if stored_uid and account_user_ids_match(stored_uid, uid):
+        return True
+    meta = context.get("metadata") or {}
+    if str(meta.get("source") or "") == SOURCE_IMPORTED_DRAFT and not stored_uid:
+        rosters = context.get("league_rosters") or {}
+        if isinstance(rosters, dict) and my_team in rosters:
+            return True
+    return False
 
 
 def repair_commissioner_identity(
@@ -243,10 +270,29 @@ def repair_commissioner_identity(
     """Backfill commissioner_user_id when upload owner id drifted after account fixes."""
     if not isinstance(context, dict):
         return context, False
-    uid = _resolve_user_id()
-    if not is_upload_commissioner_candidate(context, uid):
+    uid = _resolve_user_id(session)
+    if not uid:
         return context, False
     changed = False
+    my_team = str(context.get("my_team_name") or "").strip()
+    meta = dict(context.get("metadata") or {})
+    if (
+        str(context.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE
+        and not _joined_via_invite(context)
+        and str(meta.get("source") or "") == SOURCE_IMPORTED_DRAFT
+        and my_team
+    ):
+        ownership = get_team_ownership(context)
+        record = ownership.get(my_team) or {}
+        if not str(record.get("user_id") or "").strip():
+            context = assign_team_owner_to_context(context, my_team)
+            changed = True
+            if isinstance(session, dict):
+                from fantasy_league_context import upsert_league_context
+
+                context = upsert_league_context(session, context)
+    if not is_upload_commissioner_candidate(context, uid):
+        return context, changed
     try:
         from fantasy_league_team_ownership import repair_upload_team_ownership_identity
 
@@ -342,7 +388,7 @@ def create_league_invite(
         return None, "League context is required."
     if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
         return None, "Only uploaded/imported leagues support invites."
-    uid = _resolve_user_id()
+    uid = _resolve_user_id(session)
     if not uid:
         return None, "Sign in to invite other managers."
     if not is_league_commissioner(context, uid):
@@ -738,7 +784,7 @@ def commissioner_invite_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     """Explain why commissioner invite UI may be hidden."""
     from fantasy_league_context import get_league_context_for_archive, list_league_contexts
 
-    uid = _resolve_user_id()
+    uid = _resolve_user_id(session)
     contexts = [
         ctx
         for ctx in list_league_contexts(session)
@@ -815,7 +861,7 @@ def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | Non
                     candidates.append(ctx)
     except ImportError:
         pass
-    uid = _resolve_user_id()
+    uid = _resolve_user_id(session)
     for raw in candidates:
         league_context_id = str(raw.get("league_context_id") or "").strip()
         context = get_league_context(session, league_context_id) if league_context_id else raw

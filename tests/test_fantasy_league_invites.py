@@ -26,7 +26,12 @@ from fantasy_league_invites import (
 )
 from fantasy_league_team_ownership import assign_team_owner_to_context, trades_enabled
 from fantasy_shared_league_store import LocalFileSharedLeagueStore, load_shared_league, set_shared_league_store
-from tests.test_fantasy_trade_proposals import _as_user, _league_board
+from tests.test_fantasy_trade_proposals import _as_user
+from tests.test_imported_shared_league import _sample_board
+
+
+def _four_team_board() -> pd.DataFrame:
+    return _sample_board()
 
 _SHARED_DRAFT_CFG = {
     "fantasy_format": "5x5 Roto",
@@ -42,7 +47,7 @@ def _seed_imported_league(session: dict, *, user_id: str, team: str = "Donny", w
     with _as_user(user_id):
         _, context = save_imported_league_context(
             session,
-            _league_board(),
+            _four_team_board(),
             my_team_name=team,
             draft_name="Invite Test League",
             league_name="Invite Test League",
@@ -253,6 +258,33 @@ class TestFantasyLeagueInvites(unittest.TestCase):
             str((invite_ctx.get("metadata") or {}).get("commissioner_user_id") or ""),
             "user:daniel",
         )
+
+    def test_archive_only_imported_league_gains_invite_context_after_migration(self) -> None:
+        session: dict = {"_suite_cloud_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b"}
+        with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
+            entry, _context = save_imported_league_context(
+                session,
+                _four_team_board(),
+                my_team_name="Daniel",
+                draft_name="Office League 2026",
+                save_only=True,
+                assign_team=True,
+            )
+        store = dict(session.get("fantasy_league_context_state") or {})
+        store["contexts"] = {}
+        session["fantasy_league_context_state"] = store
+
+        with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
+            from fantasy_league_context import migrate_legacy_archives_to_contexts
+
+            created = migrate_legacy_archives_to_contexts(session)
+            self.assertGreaterEqual(created, 1)
+            invite_ctx = commissioner_invite_context(session)
+        self.assertIsNotNone(invite_ctx)
+        assert invite_ctx is not None
+        self.assertEqual(str(invite_ctx.get("context_type") or ""), "real_league")
+        self.assertTrue(is_league_commissioner(invite_ctx, "f66b85aa-1192-4f93-a669-d238bcd6858b"))
+        self.assertEqual(str(entry.get("draft_id") or ""), str((invite_ctx.get("metadata") or {}).get("source_draft_id") or ""))
 
     def test_invite_joiner_is_not_commissioner(self) -> None:
         session: dict = {}
