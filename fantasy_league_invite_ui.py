@@ -6,6 +6,7 @@ from typing import Any
 
 from fantasy_league_invites import (
     build_commissioner_invite_panel_trace,
+    build_invite_flow_diagnostics,
     commissioner_invite_context,
     commissioner_invite_diagnostics,
     create_league_invite,
@@ -84,6 +85,42 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                     st.success("Invite declined.")
                     st.rerun()
         st.divider()
+    return True
+
+
+def render_invite_flow_diagnostics_panel(st: Any, session: dict[str, Any]) -> bool:
+    """Invite status, league_id, team claims, and cloud_app_key for commissioner/invitee."""
+    with st.expander("Invite flow diagnostic", expanded=False):
+        try:
+            diag = build_invite_flow_diagnostics(session)
+        except Exception as exc:
+            st.error(f"Invite flow diagnostic failed: {exc}")
+            return True
+        st.markdown(
+            f"**current_user_id:** `{diag.get('current_user_id') or '—'}`  \n"
+            f"**owner_user_id (commissioner):** `{diag.get('owner_user_id') or '—'}`  \n"
+            f"**workspace_id:** `{diag.get('workspace_id') or '—'}`  \n"
+            f"**cloud_app_key:** `{diag.get('cloud_app_key') or '—'}`  \n"
+            f"**league_id:** `{diag.get('league_id') or '—'}`  \n"
+            f"**is_commissioner:** {diag.get('is_commissioner_for_active_context')}"
+        )
+        pending = diag.get("pending_invites_for_session") or []
+        st.markdown(f"**pending_invites:** {len(pending)}")
+        if pending:
+            st.json(pending)
+        last_sent = diag.get("last_commissioner_invite_sent")
+        if isinstance(last_sent, dict):
+            st.markdown(
+                f"**last_invite_sent:** `{last_sent.get('invite_id') or '—'}` · "
+                f"status **{last_sent.get('status') or '—'}** · "
+                f"to **{last_sent.get('invitee_workspace_id') or '—'}**"
+            )
+        team_claims = diag.get("team_claims")
+        if team_claims:
+            st.json({"team_claims": team_claims})
+        invites = diag.get("league_invites")
+        if invites:
+            st.json({"league_invites": invites})
     return True
 
 
@@ -177,6 +214,14 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
         return False
 
     league_name = str(context.get("league_name") or context.get("display_name") or "Shared league").strip()
+    last_sent = session.get("_last_commissioner_invite_sent")
+    if isinstance(last_sent, dict) and str(last_sent.get("status") or "") == "pending":
+        st.success(
+            f"Invite sent to **{last_sent.get('invitee_workspace_id') or '—'}** for "
+            f"**{last_sent.get('league_name') or league_name}** · "
+            f"status **{last_sent.get('status') or 'pending'}** · "
+            f"id `{last_sent.get('invite_id') or '—'}`"
+        )
     with st.expander("Invite managers to this shared league", expanded=False):
         st.caption(
             f"Invite another account to join **{league_name}**. "
@@ -194,7 +239,18 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
             if err:
                 st.error(err)
             elif invite:
+                session["_last_commissioner_invite_sent"] = dict(invite)
                 ws = str(invite.get("invitee_workspace_id") or target).strip()
-                st.success(f"Invite sent to **{ws}** for **{league_name}**.")
+                st.success(
+                    f"Invite sent to **{ws}** for **{league_name}** · "
+                    f"status **{invite.get('status') or 'pending'}** · "
+                    f"id `{invite.get('invite_id') or '—'}`"
+                )
+                try:
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    force_save_baseball_state(st, reason="league_invite_sent")
+                except Exception:
+                    pass
                 st.rerun()
     return True

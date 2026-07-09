@@ -217,10 +217,34 @@ class TestDraftArchiveVisibility(unittest.TestCase):
             email="coakley11@aol.com",
             display_name="Coakley",
         )
+        meta = dict(loaded.get("metadata") or {})
+        meta["joined_via_invite"] = True
+        loaded["metadata"] = meta
         upsert_league_context(coakley, loaded)
 
         with _as_user("user:coakley"):
             self.assertEqual(len(list_visible_draft_archives(coakley)), 1)
+
+    def test_team_claim_without_invite_stays_hidden(self) -> None:
+        session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
+        context = _seed_daniel_shared_league(session)
+        league_context_id = str(context.get("league_context_id") or "")
+
+        coakley = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
+        coakley["draft_archive_teams"] = list(session.get("draft_archive_teams") or [])
+        coakley["fantasy_league_context_state"] = dict(session.get("fantasy_league_context_state") or {})
+        loaded = get_league_context(coakley, league_context_id) or context
+        loaded = assign_team_owner_to_context(
+            loaded,
+            "Team 2",
+            user_id="user:coakley",
+            email="coakley11@aol.com",
+            display_name="Coakley",
+        )
+        upsert_league_context(coakley, loaded)
+
+        with _as_user("user:coakley"):
+            self.assertEqual(len(list_visible_draft_archives(coakley)), 0)
 
     def test_coakley11_has_no_daniel_workspace_fallback(self) -> None:
         session = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")

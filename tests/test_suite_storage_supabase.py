@@ -371,6 +371,20 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         self.assertEqual(out["selected_draft_count"], 1)
         self.assertEqual(out["row_count"], 1)
 
+    def test_scoped_workspace_app_key_is_active_for_writes(self) -> None:
+        with patch("suite_storage_supabase._cloud_user_id", return_value="user-coakley"):
+            with patch("suite_storage_supabase._merge_state_metrics", return_value={"full_session": {}}):
+                with patch("suite_storage_supabase._request") as mock_request:
+                    out = save_current_state_with_result(
+                        "baseball__coakley11",
+                        page="Saved Draft Library",
+                        metrics={"full_session": {"draft_archive_teams": [{"draft_id": "d1"}]}},
+                        direct_upsert=True,
+                    )
+        self.assertTrue(out.get("ok"))
+        self.assertNotEqual(out.get("error"), "inactive_app")
+        mock_request.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

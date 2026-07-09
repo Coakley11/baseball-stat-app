@@ -715,6 +715,16 @@ def normalize_app_key(app: str) -> str:
     return cleaned
 
 
+def _logical_app_family(app: str) -> str:
+    """Map scoped storage keys (e.g. baseball__coakley11) to ACTIVE_APP_KEYS family."""
+    try:
+        from suite_workspace import logical_storage_app_key
+
+        return logical_storage_app_key(_scoped_storage_app(app))
+    except Exception:
+        return normalize_app_key(app)
+
+
 def _scoped_storage_app(app: str) -> str:
     """Workspace-scoped cloud key (Daniel keeps legacy unscoped)."""
     app_key = normalize_app_key(app)
@@ -985,7 +995,7 @@ def save_current_state(
     summary: str = "",
     metrics: dict[str, Any] | None = None,
 ) -> None:
-    logical_app = normalize_app_key(app)
+    logical_app = _logical_app_family(app)
     app_key = _scoped_storage_app(app)
     if logical_app not in ACTIVE_APP_KEYS:
         return
@@ -1019,7 +1029,7 @@ def save_current_state_with_result(
     write_attempts: int | None = None,
 ) -> dict[str, Any]:
     """Persist app state and report write mode (PATCH when a row already exists)."""
-    logical_app = normalize_app_key(app)
+    logical_app = _logical_app_family(app)
     app_key = _scoped_storage_app(app)
     if logical_app not in ACTIVE_APP_KEYS:
         return {"ok": False, "write_mode": "skipped", "error": "inactive_app"}
@@ -1124,7 +1134,7 @@ def upsert_resume_item(
     subtitle: str = "",
     action_url: str = "",
 ) -> None:
-    logical_app = normalize_app_key(app)
+    logical_app = _logical_app_family(app)
     app_key = _scoped_storage_app(app)
     key = str(item_key or "").strip()
     title_clean = str(title or "").strip()

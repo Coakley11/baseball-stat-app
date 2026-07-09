@@ -35,6 +35,17 @@ def render_team_claim_panel(
     if str(context.get("context_type") or "") != "real_league":
         return False
 
+    try:
+        from fantasy_league_invites import can_claim_team_for_context
+
+        allowed, block_reason = can_claim_team_for_context(session, context)
+        if not allowed:
+            if block_reason:
+                st.info(block_reason)
+            return False
+    except ImportError:
+        pass
+
     teams = _team_options(context)
     if not teams:
         return False

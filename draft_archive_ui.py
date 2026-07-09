@@ -2377,6 +2377,7 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         from fantasy_league_invite_ui import (
             render_commissioner_invite_diagnostics_panel,
             render_commissioner_invite_panel,
+            render_invite_flow_diagnostics_panel,
             render_pending_league_invites,
         )
     except ImportError as exc:
@@ -2386,6 +2387,7 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     else:
         try:
             render_pending_league_invites(st, session)
+            render_invite_flow_diagnostics_panel(st, session)
             render_commissioner_invite_diagnostics_panel(st, session)
             render_commissioner_invite_panel(st, session)
         except Exception as exc:
@@ -2411,7 +2413,20 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     try:
         from fantasy_league_team_claim_ui import render_active_league_team_claim
 
-        render_active_league_team_claim(st, session, key_prefix="library_team_claim")
+        def _persist_team_claim(_session: dict, _st: Any, *, reason: str = "") -> None:
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(_st, reason=reason or "team_claimed")
+            except Exception:
+                pass
+
+        render_active_league_team_claim(
+            st,
+            session,
+            key_prefix="library_team_claim",
+            persist_fn=_persist_team_claim,
+        )
     except ImportError:
         pass
     st.divider()

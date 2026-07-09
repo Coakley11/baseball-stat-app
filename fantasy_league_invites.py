@@ -457,7 +457,78 @@ def create_league_invite(
         league_id=league_id,
         league_name=str(invite.get("league_name") or ""),
     )
+    session["_last_commissioner_invite_sent"] = copy.deepcopy(invite)
+    try:
+        from workflow_persist_guard import mark_workflow_persist_authoritative
+
+        mark_workflow_persist_authoritative(session)
+    except ImportError:
+        pass
     return invite, ""
+
+
+def can_claim_team_for_context(session: dict[str, Any], context: dict[str, Any] | None) -> tuple[bool, str]:
+    """Invitee may claim only after accepting invite; commissioner may claim upload team."""
+    if not isinstance(context, dict):
+        return False, "League context is required."
+    if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        return False, "Only shared uploaded leagues support team claims."
+    uid = _resolve_user_id(session)
+    if not uid:
+        return False, "Sign in to claim a team."
+    if is_league_commissioner(context, uid):
+        return True, ""
+    if _joined_via_invite(context):
+        return True, ""
+    league_id = resolve_canonical_league_id(context)
+    for pending in list_pending_invites_for_session(session):
+        if league_id and str(pending.get("league_id") or "").strip() == league_id:
+            return True, ""
+    return False, "Accept your shared league invite before claiming a team."
+
+
+def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Saved Draft Library invite/claim diagnostics for commissioner and invitee."""
+    uid = _resolve_user_id(session)
+    ext = _resolve_external_id()
+    ws = _resolve_workspace_id(session)
+    cloud_app_key = ""
+    try:
+        from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
+
+        st_stub = type("_St", (), {"session_state": session})()
+        cloud_app_key = scoped_cloud_app_id("baseball", str(get_active_workspace_id(st=st_stub)))
+    except Exception:
+        pass
+    context = commissioner_invite_context(session)
+    league_id = ""
+    owner_user_id = ""
+    team_claims: dict[str, Any] = {}
+    invite_rows: list[dict[str, Any]] = []
+    if isinstance(context, dict):
+        league_id = str(resolve_canonical_league_id(context) or "").strip()
+        owner_user_id = str(get_commissioner_user_id(context) or "").strip()
+        team_claims = dict(get_team_ownership(context) or {})
+        invite_rows = list(get_league_invites(context) or [])
+    pending = list_pending_invites_for_session(session)
+    last_sent = session.get("_last_commissioner_invite_sent")
+    return {
+        "current_user_id": uid or None,
+        "external_id": ext or None,
+        "workspace_id": ws or None,
+        "cloud_app_key": cloud_app_key or None,
+        "league_id": league_id or None,
+        "owner_user_id": owner_user_id or None,
+        "team_claims": team_claims,
+        "league_invites": invite_rows,
+        "pending_invites_for_session": pending,
+        "last_commissioner_invite_sent": (
+            last_sent if isinstance(last_sent, dict) else None
+        ),
+        "is_commissioner_for_active_context": bool(
+            isinstance(context, dict) and uid and is_league_commissioner(context, uid)
+        ),
+    }
 
 
 def _enrich_pending_invite(invite_ref: dict[str, Any], *, user_id: str, external_id: str, workspace_id: str) -> dict[str, Any] | None:
@@ -496,9 +567,31 @@ def list_pending_invites_for_session(session: dict[str, Any]) -> list[dict[str, 
     if not ws and not uid:
         return []
     inbox = _read_inbox(ws) if ws else []
+    refs: list[dict[str, Any]] = [dict(x) for x in inbox if isinstance(x, dict)]
+    try:
+        from fantasy_league_context import list_league_contexts
+
+        for ctx in list_league_contexts(session):
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            for invite in get_league_invites(ctx):
+                if not isinstance(invite, dict):
+                    continue
+                if not _invite_matches_user(invite, user_id=uid, external_id=ext, workspace_id=ws):
+                    continue
+                if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
+                    continue
+                refs.append(
+                    {
+                        "invite_id": str(invite.get("invite_id") or "").strip(),
+                        "league_id": league_id or str(invite.get("league_id") or "").strip(),
+                        "league_name": str(invite.get("league_name") or "").strip(),
+                    }
+                )
+    except ImportError:
+        pass
     pending: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for ref in inbox:
+    for ref in refs:
         enriched = _enrich_pending_invite(ref, user_id=uid, external_id=ext, workspace_id=ws)
         if not enriched:
             continue

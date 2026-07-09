@@ -100,7 +100,11 @@ def _has_shared_league_membership(
         return False
     if is_league_commissioner(context, user_id):
         return True
-    if owned_team_for_user(context, user_id):
+    try:
+        from fantasy_league_invites import _joined_via_invite
+    except ImportError:
+        _joined_via_invite = lambda _ctx: False  # type: ignore[assignment,misc]
+    if _joined_via_invite(context) and owned_team_for_user(context, user_id):
         return True
     return False
 

@@ -310,6 +310,8 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "probe_test_draft_saved",
     "workflow_library_sanitized",
     "authenticated_migration_writeback",
+    "team_claimed",
+    "league_invite_sent",
 })
 
 
