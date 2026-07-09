@@ -25,6 +25,7 @@ class DeveloperModeSidebarToggleTests(unittest.TestCase):
     def test_render_function_claims_guard_before_checkbox(self) -> None:
         source = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
         self.assertIn("claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE)", source)
+        self.assertIn("dev_mode_checkbox_materialized()", source)
         self.assertIn("st.sidebar.checkbox(\n        \"Developer Mode\"", source)
         claim_idx = source.index("claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE)")
         checkbox_idx = source.index("st.sidebar.checkbox(\n        \"Developer Mode\"")

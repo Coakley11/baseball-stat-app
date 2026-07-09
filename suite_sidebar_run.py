@@ -19,6 +19,7 @@ ALL_GUARDS: tuple[str, ...] = (
 # Module-level claims survive session_state restore mid-run (persistence sync).
 _CLAIMED_THIS_EXECUTION: set[str] = set()
 _EXECUTION_TOKEN: object | None = object()
+_DEV_MODE_CHECKBOX_MATERIALIZED: bool = False
 
 
 def _execution_token() -> object | None:
@@ -47,11 +48,26 @@ def _sync_execution_claims() -> None:
 
 def reset_sidebar_run_guards(session_state: dict[str, Any]) -> None:
     """Call once near app startup — clears per-run claims and session flags."""
-    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN
-    _EXECUTION_TOKEN = _execution_token()
+    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN, _DEV_MODE_CHECKBOX_MATERIALIZED
+    token = _execution_token()
+    if token == _EXECUTION_TOKEN and (_CLAIMED_THIS_EXECUTION or _DEV_MODE_CHECKBOX_MATERIALIZED):
+        return
+    _EXECUTION_TOKEN = token
     _CLAIMED_THIS_EXECUTION = set()
+    _DEV_MODE_CHECKBOX_MATERIALIZED = False
     for key in ALL_GUARDS:
         session_state[key] = False
+
+
+def dev_mode_checkbox_materialized() -> bool:
+    """True after the Developer Mode sidebar checkbox was created this run."""
+    return _DEV_MODE_CHECKBOX_MATERIALIZED
+
+
+def mark_dev_mode_checkbox_materialized() -> None:
+    """Record that the Developer Mode checkbox widget was created."""
+    global _DEV_MODE_CHECKBOX_MATERIALIZED
+    _DEV_MODE_CHECKBOX_MATERIALIZED = True
 
 
 def claim_sidebar_render(session_state: dict[str, Any], guard: str) -> bool:
@@ -68,6 +84,7 @@ def claim_sidebar_render(session_state: dict[str, Any], guard: str) -> bool:
 
 def reset_sidebar_run_guards_for_tests() -> None:
     """Test helper — clear module-level execution claims."""
-    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN
+    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN, _DEV_MODE_CHECKBOX_MATERIALIZED
     _CLAIMED_THIS_EXECUTION = set()
     _EXECUTION_TOKEN = object()
+    _DEV_MODE_CHECKBOX_MATERIALIZED = False

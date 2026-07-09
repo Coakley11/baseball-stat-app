@@ -191,6 +191,7 @@ def _resolve_from_simulator(
     session: dict[str, Any],
     *,
     pool_df: pd.DataFrame | None,
+    exclusions_only: bool = False,
 ) -> ActiveTeamContext | None:
     try:
         from draft_context import resolve_draft_context, scoring_position_needs
@@ -199,6 +200,18 @@ def _resolve_from_simulator(
     ctx = resolve_draft_context(session, pool_df=pool_df)
     if not getattr(ctx, "active", False):
         return None
+    if exclusions_only:
+        return ActiveTeamContext(
+            source=SOURCE_SIMULATOR,
+            active_team=ctx.active_team,
+            fantasy_format=ctx.fantasy_format,
+            drafted_names=list(ctx.drafted_names),
+            drafted_keys=ctx.drafted_keys,
+            my_roster_df=pd.DataFrame(),
+            position_needs=[],
+            category_needs=[],
+            draft_complete=False,
+        )
     my_roster = getattr(ctx, "_active_roster_df", None)
     if my_roster is None or getattr(my_roster, "empty", True):
         my_roster = _simulator_my_roster_df(session, ctx.active_team)
@@ -290,7 +303,12 @@ def resolve_active_team_context(
             if isinstance(context, dict) and str(context.get("my_team_name") or "").strip():
                 return _resolve_from_league(context, pool_df=pool_df)
         elif source.kind in (SOURCE_LIVE_DRAFT, SOURCE_SIMULATOR_BOARD):
-            sim = _resolve_from_simulator(session, pool_df=pool_df)
+            exclusions_only = source.kind == SOURCE_SIMULATOR_BOARD
+            sim = _resolve_from_simulator(
+                session,
+                pool_df=pool_df,
+                exclusions_only=exclusions_only,
+            )
             if sim is not None:
                 sim_source = SOURCE_LIVE_DRAFT if source.kind == SOURCE_LIVE_DRAFT else SOURCE_SIMULATOR
                 return ActiveTeamContext(

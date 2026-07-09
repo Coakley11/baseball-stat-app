@@ -43,12 +43,22 @@ class SidebarRunGuardTests(unittest.TestCase):
         self.assertTrue(claim_sidebar_render(ss, GUARD_ACCOUNT))
         self.assertFalse(claim_sidebar_render(ss, GUARD_ACCOUNT))
 
-    def test_reset_allows_next_run(self) -> None:
+    def test_reset_skips_second_call_same_execution(self) -> None:
         ss: dict = {}
         reset_sidebar_run_guards(ss)
-        self.assertTrue(claim_sidebar_render(ss, GUARD_COMMAND_CENTER))
+        self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
         reset_sidebar_run_guards(ss)
-        self.assertTrue(claim_sidebar_render(ss, GUARD_COMMAND_CENTER))
+        self.assertFalse(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
+
+    def test_dev_checkbox_materialized_blocks_second_claim(self) -> None:
+        from suite_sidebar_run import mark_dev_mode_checkbox_materialized
+
+        ss: dict = {}
+        reset_sidebar_run_guards(ss)
+        self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
+        mark_dev_mode_checkbox_materialized()
+        reset_sidebar_run_guards(ss)
+        self.assertFalse(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
 
 
 if __name__ == "__main__":

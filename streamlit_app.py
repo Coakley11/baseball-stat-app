@@ -493,12 +493,13 @@ try:
 except Exception:
     pass
 
-try:
-    from suite_sidebar_run import reset_sidebar_run_guards
+if __name__ == "__main__":
+    try:
+        from suite_sidebar_run import reset_sidebar_run_guards
 
-    reset_sidebar_run_guards(st.session_state)
-except Exception:
-    pass
+        reset_sidebar_run_guards(st.session_state)
+    except Exception:
+        pass
 
 try:
     from suite_egress_trace import reset_run_egress_summary
@@ -12417,6 +12418,21 @@ def _page_perf_end(page: str) -> None:
 def render_developer_mode_sidebar_toggle():
     """Single sidebar switch for all developer-only tools (default OFF)."""
     try:
+        from suite_sidebar_run import (
+            GUARD_DEV_TOGGLE,
+            claim_sidebar_render,
+            dev_mode_checkbox_materialized,
+            mark_dev_mode_checkbox_materialized,
+        )
+
+        if dev_mode_checkbox_materialized():
+            return
+        if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
+            return
+    except ImportError:
+        return
+
+    try:
         from suite_workspace import (
             DEVELOPER_MODE_DIAG_KEY,
             developer_tools_workspace_eligible,
@@ -12426,14 +12442,6 @@ def render_developer_mode_sidebar_toggle():
 
         sync_developer_mode_widget(st.session_state, source="pre_toggle_render")
         if not developer_tools_workspace_eligible(st=st):
-            return
-    except ImportError:
-        pass
-
-    try:
-        from suite_sidebar_run import GUARD_DEV_TOGGLE, claim_sidebar_render
-
-        if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
             return
     except ImportError:
         pass
@@ -12459,6 +12467,12 @@ def render_developer_mode_sidebar_toggle():
         on_change=_on_developer_mode_change,
         help="Show saved filter state, performance timing, scoring validation, and draft score breakdowns.",
     )
+    try:
+        from suite_sidebar_run import mark_dev_mode_checkbox_materialized
+
+        mark_dev_mode_checkbox_materialized()
+    except ImportError:
+        pass
     try:
         from suite_workspace import record_developer_mode_diagnostics
 
@@ -18253,8 +18267,9 @@ if active_page == "Draft Assistant Simulator":
     )
     pp.instructional_caption(
         st,
-        "During an in-progress Live Draft, drafted players are excluded automatically. "
-        "For Saved Active Draft or Simulator practice boards, turn on Research Mode Sync.",
+        "During an in-progress Live Draft, drafted players are excluded with full team-needs scoring. "
+        "The Draft Room Simulator board always excludes drafted players here (exclusions only). "
+        "For Saved Active Draft boards, turn on Research Mode Sync.",
     )
 
     market_df = load_fantasypros_market_data()
@@ -18461,6 +18476,22 @@ if active_page == "Draft Assistant Simulator":
                     st.info(
                         "Research Mode Sync is on, but no drafted players were found in the active fantasy context."
                     )
+            elif _da_context_mode == "simulator_board":
+                if not board_has_players:
+                    st.info(
+                        "No Draft Room Simulator picks on the board yet. Add picks in Draft Room Simulator, "
+                        "then return here to exclude drafted players."
+                    )
+                else:
+                    assistant_team_names = sorted(
+                        draft_room_table_for_assistant["Team"].dropna().astype(str).unique().tolist()
+                    )
+                    if not assistant_team_names:
+                        assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+                    st.caption(
+                        "Excluding drafted players from the Draft Room Simulator board. "
+                        "Team-needs and roster-fit scoring are off for simulator practice."
+                    )
             else:
                 if board_has_players:
                     st.info(
@@ -18503,15 +18534,31 @@ if active_page == "Draft Assistant Simulator":
                         draft_room_table_for_assistant["Team"].astype(str) != str(assistant_my_team_name)
                     ]["Player"].dropna().astype(str).tolist()
                 )
+            elif _da_context_mode == "simulator_board" and board_has_players:
+                my_roster = (
+                    draft_room_table_for_assistant[
+                        draft_room_table_for_assistant["Team"].astype(str) == str(assistant_my_team_name)
+                    ]["Player"].dropna().astype(str).tolist()
+                )
+                drafted_players = (
+                    draft_room_table_for_assistant["Player"]
+                    .dropna()
+                    .astype(str)
+                    .map(str.strip)
+                    .tolist()
+                )
 
             my_roster = sorted(list(dict.fromkeys([p for p in my_roster if str(p).strip()])))
             drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
             drafted_or_owned_players = (
                 set(drafted_players).union(set(my_roster))
-                if _da_context_mode in ("live_board", "research_context")
+                if _da_context_mode in ("live_board", "research_context", "simulator_board")
                 else set()
             )
-            board_has_players_for_summary = board_has_players and _da_context_mode == "live_board"
+            board_has_players_for_summary = board_has_players and _da_context_mode in (
+                "live_board",
+                "simulator_board",
+            )
 
             if developer_mode_enabled():
                 with st.expander("Live draft handoff diagnostics", expanded=False):
@@ -18575,7 +18622,7 @@ if active_page == "Draft Assistant Simulator":
 
             _slot_cfg = resolve_draft_slot_config_from_session(st.session_state)
             _draft_ctx = resolve_draft_context(st.session_state)
-            if _da_context_mode == "none":
+            if _da_context_mode in ("none", "simulator_board"):
                 _draft_ctx = type(_draft_ctx)(
                     active=False,
                     fantasy_format=getattr(_draft_ctx, "fantasy_format", "5x5 Roto"),
@@ -18617,6 +18664,9 @@ if active_page == "Draft Assistant Simulator":
                 config=_slot_cfg,
                 draft_complete=bool(_draft_ctx.draft_complete),
             )
+            if _da_context_mode == "simulator_board":
+                auto_needed_positions = []
+                auto_category_needs = []
         except ImportError:
             _slot_cfg = {}
             _draft_ctx = None
@@ -18657,68 +18707,76 @@ if active_page == "Draft Assistant Simulator":
             cat_defs_auto = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
 
         with st.expander("Position & category priorities (auto-filled; override if needed)", expanded=False):
-            st.markdown("#### Auto-detected team needs")
-            st.caption(
-                "Derived from your roster and host-configured draft slots."
-                if _slot_cfg.get("slots")
-                else "Derived from your Draft Room roster. Change only if you want a different build."
-            )
-            r1, r2 = st.columns(2)
-            with r1:
-                _pos_options = position_options
+            if _da_context_mode == "simulator_board":
+                st.caption(
+                    "Team-needs scoring is disabled while the Draft Room Simulator board is active. "
+                    "Drafted players are still excluded from recommendations."
+                )
+                needed_positions = []
+                category_needs = []
+            else:
+                st.markdown("#### Auto-detected team needs")
+                st.caption(
+                    "Derived from your roster and host-configured draft slots."
+                    if _slot_cfg.get("slots")
+                    else "Derived from your Draft Room roster. Change only if you want a different build."
+                )
+                r1, r2 = st.columns(2)
+                with r1:
+                    _pos_options = position_options
+                    try:
+                        from fantasy_position_sync import (
+                            DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                            on_draft_assistant_position_needs_changed,
+                            prepare_draft_assistant_position_needs,
+                        )
+
+                        prepare_draft_assistant_position_needs(
+                            st.session_state,
+                            auto_needed_positions,
+                            position_options=_pos_options,
+                            widget_key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                        )
+
+                        def _draft_assistant_position_needs_changed(*_args, **_kwargs):
+                            on_draft_assistant_position_needs_changed(st.session_state)
+                            _draft_assistant_settings_changed()
+
+                        needed_positions = st.multiselect(
+                            "Positions to prioritize",
+                            _pos_options,
+                            key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                            help="Auto-filled from host draft slots and your roster. Override temporarily during a live draft.",
+                            on_change=_draft_assistant_position_needs_changed,
+                        )
+                    except ImportError:
+                        _pos_default = [p for p in auto_needed_positions if p in _pos_options]
+                        needed_positions = st.multiselect(
+                            "Positions to prioritize",
+                            _pos_options,
+                            default=_pos_default,
+                            key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(_pos_default)}",
+                            help="Auto-filled from host draft slots and your roster.",
+                        )
+                with r2:
+                    category_options_auto = list(cat_defs_auto.keys())
+                    category_needs = st.multiselect(
+                        "Categories / skills to strengthen",
+                        category_options_auto,
+                        default=[c for c in auto_category_needs if c in category_options_auto],
+                        key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
+                        help="Auto-filled vs draft pool averages."
+                    )
                 try:
-                    from fantasy_position_sync import (
-                        DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
-                        on_draft_assistant_position_needs_changed,
-                        prepare_draft_assistant_position_needs,
-                    )
+                    from fantasy_position_sync import update_draft_assistant_position_needs
 
-                    prepare_draft_assistant_position_needs(
+                    update_draft_assistant_position_needs(
                         st.session_state,
-                        auto_needed_positions,
-                        position_options=_pos_options,
-                        widget_key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
-                    )
-
-                    def _draft_assistant_position_needs_changed(*_args, **_kwargs):
-                        on_draft_assistant_position_needs_changed(st.session_state)
-                        _draft_assistant_settings_changed()
-
-                    needed_positions = st.multiselect(
-                        "Positions to prioritize",
-                        _pos_options,
-                        key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
-                        help="Auto-filled from host draft slots and your roster. Override temporarily during a live draft.",
-                        on_change=_draft_assistant_position_needs_changed,
+                        needed_positions,
+                        source_page="Draft Assistant Simulator",
                     )
                 except ImportError:
-                    _pos_default = [p for p in auto_needed_positions if p in _pos_options]
-                    needed_positions = st.multiselect(
-                        "Positions to prioritize",
-                        _pos_options,
-                        default=_pos_default,
-                        key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(_pos_default)}",
-                        help="Auto-filled from host draft slots and your roster.",
-                    )
-            with r2:
-                category_options_auto = list(cat_defs_auto.keys())
-                category_needs = st.multiselect(
-                    "Categories / skills to strengthen",
-                    category_options_auto,
-                    default=[c for c in auto_category_needs if c in category_options_auto],
-                    key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
-                    help="Auto-filled vs draft pool averages."
-                )
-            try:
-                from fantasy_position_sync import update_draft_assistant_position_needs
-
-                update_draft_assistant_position_needs(
-                    st.session_state,
-                    needed_positions,
-                    source_page="Draft Assistant Simulator",
-                )
-            except ImportError:
-                pass
+                    pass
 
         init_state_once("sync_draft_assistant_position_needs", False)
 
@@ -18773,9 +18831,14 @@ if active_page == "Draft Assistant Simulator":
         _live_draft_room = st.session_state.get("live_draft_room")
         _score_room = (
             {"config": _slot_cfg, **(_live_draft_room if isinstance(_live_draft_room, dict) else {})}
-            if _slot_cfg.get("slots")
-            else (_live_draft_room if isinstance(_live_draft_room, dict) else None)
+            if _slot_cfg.get("slots") and _da_context_mode == "live_board"
+            else (_live_draft_room if isinstance(_live_draft_room, dict) and _da_context_mode == "live_board" else None)
         )
+        _da_rec_mode = "draft_fit" if _da_context_mode in ("live_board", "research_context") else "decision"
+        if _da_context_mode == "simulator_board":
+            needed_positions = []
+            category_needs = []
+            target_position_counts = {}
         _da_scored = None
         try:
             from live_draft_ui_cache import DA_SCORING_CACHE_KEY, draft_assistant_scoring_cache_key
@@ -18840,7 +18903,7 @@ if active_page == "Draft Assistant Simulator":
                         use_ml_blend=use_ml_in_draft,
                         ml_blend_weight=ml_blend_weight,
                         return_position_summary=True,
-                        recommendation_mode="draft_fit",
+                        recommendation_mode=_da_rec_mode,
                         room=_score_room,
                     )
             except ImportError:
@@ -18855,7 +18918,7 @@ if active_page == "Draft Assistant Simulator":
                     use_ml_blend=use_ml_in_draft,
                     ml_blend_weight=ml_blend_weight,
                     return_position_summary=True,
-                    recommendation_mode="draft_fit",
+                    recommendation_mode=_da_rec_mode,
                     room=_score_room,
                 )
 

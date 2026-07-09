@@ -21,6 +21,7 @@ from fantasy_context_source import (
     is_live_draft_in_progress,
     live_draft_feeds_draft_assistant,
     resolve_fantasy_context_source,
+    simulator_feeds_draft_assistant,
 )
 from fantasy_context_ui import FANTASY_RESEARCH_SYNC_KEY
 from fantasy_league_context import (
@@ -344,8 +345,32 @@ class FantasyContextRoutingTests(unittest.TestCase):
         session[FANTASY_RESEARCH_SYNC_KEY] = False
         self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_SIMULATOR_BOARD)
         self.assertTrue(fantasy_context_applies_to_page(session, "Trades"))
-        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
         self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Rankings"))
+        self.assertEqual(draft_assistant_context_mode(session), "simulator_board")
+        self.assertTrue(simulator_feeds_draft_assistant(session))
+
+    def test_natural_simulator_feeds_das_without_research_sync(self) -> None:
+        session = _simulator_board_session()
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        session.pop("fantasy_league_context_state", None)
+        session.pop("draft_archive_teams", None)
+        session[FANTASY_RESEARCH_SYNC_KEY] = False
+        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_SIMULATOR_BOARD)
+        self.assertTrue(simulator_feeds_draft_assistant(session))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
+        self.assertEqual(draft_assistant_context_mode(session), "simulator_board")
+
+    def test_natural_simulator_feeds_research_pages_with_research_sync(self) -> None:
+        session = _simulator_board_session()
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session.pop("fantasy_league_context_state", None)
+        session[FANTASY_RESEARCH_SYNC_KEY] = True
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
+        self.assertEqual(draft_assistant_context_mode(session), "simulator_board")
 
     def test_simulator_override_feeds_research_with_research_sync(self) -> None:
         session = _saved_context_session()

@@ -59,6 +59,18 @@ WAIVER_POSITION_FILTER_OPTIONS: tuple[str, ...] = (
 )
 
 
+def _import_streamlit_main_attr(attr_name: str):
+    """Prefer helpers from the running Streamlit __main__ app to avoid re-importing streamlit_app."""
+    import sys
+
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and hasattr(main_mod, attr_name):
+        return getattr(main_mod, attr_name)
+    from streamlit_app import __dict__ as _app_exports  # noqa: WPS433
+
+    return _app_exports[attr_name]
+
+
 def _apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -> pd.DataFrame:
     choice = str(position_filter or "").strip()
     if not choice or choice == "All positions":
@@ -531,17 +543,11 @@ def render_waiver_wire_page(
 ) -> None:
     context = get_active_league_context(session)
     if not context:
-        try:
-            from fantasy_context_terminology import no_active_context_message
-            from fantasy_context_ui import render_fantasy_context_activation_prompt
-
-            if not render_fantasy_context_activation_prompt(st, session, key_prefix="waiver_activate", page_label_fn=page_label_fn):
-                return
-        except ImportError:
-            st.warning(
-                "No fantasy context available. Set an **Active League** or **Active Draft** in Saved Draft Library."
-            )
-            return
+        st.warning(
+            "No fantasy context available. Set a **Saved Active Draft** in Saved Draft Library, "
+            "or enable a **temporary / unsaved** simulator or live board override there."
+        )
+        return
 
     purge_waiver_action_widget_keys(session)
 

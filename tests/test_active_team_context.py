@@ -127,6 +127,8 @@ class ActiveTeamContextTests(unittest.TestCase):
         ctx = resolve_active_team_context(session, pool_df=_pool())
         self.assertEqual(ctx.source, SOURCE_SIMULATOR)
         self.assertEqual(ctx.active_team, "Sim Team")
+        self.assertEqual(ctx.position_needs, [])
+        self.assertEqual(ctx.category_needs, [])
 
     def test_no_context_returns_empty_and_leaves_pool_untouched(self) -> None:
         ctx = resolve_active_team_context({}, pool_df=_pool())

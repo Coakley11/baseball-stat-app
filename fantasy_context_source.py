@@ -314,14 +314,24 @@ def live_draft_feeds_draft_assistant(session: dict[str, Any]) -> bool:
     return is_live_draft_in_progress(session)
 
 
+def simulator_feeds_draft_assistant(session: dict[str, Any]) -> bool:
+    """Draft Room Simulator feeds DAS with drafted-player exclusions only (no Research Mode)."""
+    if live_draft_feeds_draft_assistant(session):
+        return False
+    if not simulator_board_context_available(session, ignore_live_override=True):
+        return False
+    return resolve_fantasy_context_source(session).kind == SOURCE_SIMULATOR_BOARD
+
+
 def fantasy_drafted_pool_filter_applies(session: dict[str, Any], page_name: str) -> bool:
     """Whether drafted/rostered players should be removed from this page's player pool.
 
     Routing matrix:
     - Core management pages: never via this filter (they use league context directly).
-    - Saved Active Draft / Simulator override: broader research + DAS only when Research Mode Sync ON.
-    - Live Draft override (in progress): DAS always; broader research only when Research Mode Sync ON.
-    - Completed / non-live drafts: same as saved/simulator (Research Mode Sync required for DAS).
+    - Draft Assistant: in-progress Live Draft always; Simulator board always (exclusions only);
+      Saved Active Draft when Research Mode Sync ON.
+    - Broader research pages: when Research Mode Sync ON and a filterable source exists
+      (saved draft, simulator board, or live draft board).
     """
     page = str(page_name or "").strip()
     research_on = _research_sync_enabled(session)
@@ -330,9 +340,11 @@ def fantasy_drafted_pool_filter_applies(session: dict[str, Any], page_name: str)
         return False
 
     if page == DRAFT_ASSISTANT_PAGE:
-        if research_on and _has_filterable_fantasy_source(session):
+        if live_draft_feeds_draft_assistant(session):
             return True
-        return live_draft_feeds_draft_assistant(session)
+        if simulator_feeds_draft_assistant(session):
+            return True
+        return research_on and _has_filterable_fantasy_source(session)
 
     if page in BROADER_RESEARCH_FANTASY_PAGES:
         return research_on and _has_filterable_fantasy_source(session)
@@ -345,11 +357,14 @@ def draft_assistant_context_mode(session: dict[str, Any]) -> str:
 
     Returns one of:
     - ``live_board`` — sync picks and needs from the in-progress live draft board.
+    - ``simulator_board`` — exclude simulator-board picks only (no team-needs scoring).
     - ``research_context`` — filter via unified active-team / league context (Research Mode).
     - ``none`` — no fantasy-context filtering on Draft Assistant.
     """
     if live_draft_feeds_draft_assistant(session):
         return "live_board"
+    if simulator_feeds_draft_assistant(session):
+        return "simulator_board"
     if fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE):
         return "research_context"
     return "none"

@@ -91,6 +91,25 @@ class FantasyContextSyncTests(unittest.TestCase):
         )
         self.assertEqual(filtered["fullName"].tolist(), ["Mike Trout"])
 
+    def test_simulator_board_filters_das_without_research_sync(self) -> None:
+        session = {
+            FANTASY_RESEARCH_SYNC_KEY: False,
+            "draft_room_table": pd.DataFrame(
+                {
+                    "Round": [1, 1],
+                    "Pick": [1, 2],
+                    "Team": ["Daniel", "Rivals"],
+                    "Player": ["Aaron Judge", "Juan Soto"],
+                }
+            ),
+            "room_your_team": "Daniel",
+        }
+        players = pd.DataFrame({"fullName": ["Aaron Judge", "Juan Soto", "Mike Trout"]})
+        filtered = filter_unrostered_players(
+            session, players, name_col="fullName", page_name=DRAFT_ASSISTANT_PAGE
+        )
+        self.assertEqual(filtered["fullName"].tolist(), ["Mike Trout"])
+
     def test_active_league_badge_independent_of_sync(self) -> None:
         session = {
             FANTASY_RESEARCH_SYNC_KEY: False,
