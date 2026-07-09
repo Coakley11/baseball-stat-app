@@ -41,6 +41,7 @@ def real_account_status(session: dict[str, Any]) -> dict[str, Any]:
     try:
         from suite_auth import (
             AUTH_USER_ID_KEY,
+            auth_session_complete,
             current_auth_email,
             is_auth_enabled,
             is_authenticated,
@@ -50,11 +51,10 @@ def real_account_status(session: dict[str, Any]) -> dict[str, Any]:
         if not out["auth_enabled"]:
             out["message"] = "Real Accounts disabled on this deploy."
             return out
-        out["signed_in"] = bool(is_authenticated(session))
+        out["signed_in"] = bool(auth_session_complete(session))
         out["email"] = str(current_auth_email(session) or "").strip()
         out["auth_user_id"] = str(session.get(AUTH_USER_ID_KEY) or "").strip()
-        if out["signed_in"] and not out["auth_user_id"]:
-            out["signed_in"] = False
+        if is_authenticated(session) and not out["signed_in"]:
             out["message"] = "Session incomplete — sign in again."
         elif out["signed_in"]:
             out["message"] = f"Signed in as {out['email'] or 'account'}"

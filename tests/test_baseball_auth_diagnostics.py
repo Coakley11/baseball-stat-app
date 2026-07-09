@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from baseball_account_sidebar import build_baseball_auth_status
-from suite_auth import AUTH_SESSION_KEY, AUTH_USER_EMAIL_KEY, AUTH_USER_ID_KEY
+from suite_auth import AUTH_SESSION_KEY, AUTH_TOKENS_KEY, AUTH_USER_EMAIL_KEY, AUTH_USER_ID_KEY
 
 
 class BaseballAuthDiagnosticsTests(unittest.TestCase):
@@ -43,6 +43,7 @@ class BaseballAuthDiagnosticsTests(unittest.TestCase):
             AUTH_SESSION_KEY: True,
             AUTH_USER_ID_KEY: "uuid-daniel-11",
             AUTH_USER_EMAIL_KEY: "daniel.cohen11@example.com",
+            AUTH_TOKENS_KEY: {"access_token": "a", "refresh_token": "r"},
         }
         status = build_baseball_auth_status(session)
         self.assertTrue(status["authenticated"])

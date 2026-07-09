@@ -370,7 +370,9 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
         # Force the token-restore path to be treated as "already authenticated"
         # after apply, then blow up inside the clamp.
         with patch("suite_auth.is_auth_enabled", return_value=True), patch(
-            "suite_auth.is_authenticated", side_effect=[False, True]
+            "suite_auth.is_authenticated", return_value=False
+        ), patch(
+            "suite_auth.auth_session_complete", return_value=True
         ), patch(
             "suite_auth._auth_api"
         ) as auth_api, patch(
@@ -380,6 +382,8 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
             "suite_auth._tokens_from_auth_response", return_value={}
         ), patch(
             "suite_auth.enforce_workspace_ownership", side_effect=OSError("disk")
+        ), patch(
+            "draft_archive_visibility.sanitize_workflow_library_for_account"
         ):
             session["_suite_auth_tokens"] = {"access_token": "a", "refresh_token": "r"}
             auth_api.return_value.set_session.return_value = object()

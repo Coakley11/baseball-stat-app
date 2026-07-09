@@ -312,6 +312,23 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     if probe.get("auth_signed_out_warning"):
         st.warning(str(probe["auth_signed_out_warning"]))
 
+    if probe.get("auth_last_login_error"):
+        st.caption(f"Last login error: `{probe['auth_last_login_error']}`")
+    if probe.get("auth_last_restore_error"):
+        st.caption(f"Last auth restore error: `{probe['auth_last_restore_error']}`")
+    if probe.get("auth_enabled_but_signed_out") or probe.get("auth_session_flag"):
+        auth_bits = [
+            f"session flag: {'yes' if probe.get('auth_session_flag') else 'no'}",
+            f"complete: {'yes' if probe.get('auth_session_complete') else 'no'}",
+            f"tokens: {'yes' if probe.get('auth_tokens_present') else 'no'}",
+        ]
+        browser = probe.get("auth_browser_storage") if isinstance(probe.get("auth_browser_storage"), dict) else {}
+        if browser:
+            auth_bits.append(
+                f"browser sid: {'yes' if browser.get('session_id_present') else 'no'}"
+            )
+        st.caption("Auth session: " + " · ".join(auth_bits))
+
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown(f"**Signed in?** {probe.get('signed_in_label') or '—'}")

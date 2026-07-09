@@ -1320,6 +1320,7 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
     authenticated = False
     try:
         from suite_auth import (
+            auth_session_complete,
             current_auth_email,
             is_auth_enabled,
             is_authenticated,
@@ -1327,9 +1328,9 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         )
 
         auth_enabled = is_auth_enabled()
-        authenticated = is_authenticated(session)
-        account_email = current_auth_email(session) if authenticated else ""
-        account_external_id = resolve_auth_external_id(session) if authenticated else ""
+        authenticated = bool(auth_session_complete(session))
+        account_email = current_auth_email(session) if is_authenticated(session) else ""
+        account_external_id = resolve_auth_external_id(session) if is_authenticated(session) else ""
     except ImportError:
         pass
     try:
@@ -1347,6 +1348,13 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         account_user_id = str(session.get("_suite_auth_user_id") or "")
     auth_jwt_user_id = str(session.get("_suite_auth_user_id") or "").strip()
     cloud_suite_user_id = str(session.get("_suite_cloud_user_id") or account_user_id or "").strip()
+    auth_diag: dict[str, Any] = {}
+    try:
+        from suite_auth import build_auth_session_diagnostics
+
+        auth_diag = build_auth_session_diagnostics(session)
+    except ImportError:
+        pass
     expected_cloud_user_id = ""
     if authenticated:
         try:
@@ -1499,6 +1507,12 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "durability_label": str(durability.get("durability_label") or ""),
         "durability_warning": str(durability.get("durability_warning") or ""),
         "auth_enabled_but_signed_out": bool(auth_enabled and not authenticated),
+        "auth_session_flag": bool(auth_diag.get("session_flag")),
+        "auth_session_complete": bool(auth_diag.get("session_complete")),
+        "auth_tokens_present": bool(auth_diag.get("tokens_present")),
+        "auth_last_login_error": str(auth_diag.get("last_login_error") or ""),
+        "auth_last_restore_error": str(auth_diag.get("last_restore_error") or ""),
+        "auth_browser_storage": auth_diag.get("browser_storage") if isinstance(auth_diag.get("browser_storage"), dict) else {},
         "restore_cloud_vs_demo_note": (
             "Sign in with your Real Account to restore authenticated cloud drafts. "
             "Unsigned sessions use the legacy demo profile and may show 0 saved drafts "
@@ -1541,6 +1555,8 @@ def _resolve_probe_auth_labels(session: dict[str, Any], diag: dict[str, Any]) ->
     """Align signed-in display with the cloud identity actually used for restore."""
     auth_enabled = bool(diag.get("auth_enabled"))
     authenticated = bool(diag.get("authenticated"))
+    session_flag = bool(diag.get("auth_session_flag"))
+    session_complete = bool(diag.get("auth_session_complete"))
     account_email = str(diag.get("account_email") or diag.get("account_external_id") or "").strip()
     account_user_id = str(diag.get("account_user_id") or "").strip()
     cloud_app_key = str(diag.get("cloud_app_key") or "").strip()
@@ -1576,6 +1592,14 @@ def _resolve_probe_auth_labels(session: dict[str, Any], diag: dict[str, Any]) ->
     else:
         scope = f"Not signed in · local/demo workspace `{workspace_id}`"
         email_display = account_email or "—"
+
+    if session_flag and not session_complete:
+        scope = (
+            f"Incomplete auth session (flag set but tokens/user id missing) · workspace `{workspace_id}`"
+        )
+        last_err = str(diag.get("auth_last_login_error") or diag.get("auth_last_restore_error") or "").strip()
+        if last_err:
+            scope = f"{scope} · last error: {last_err[:120]}"
 
     return {
         "signed_in_label": "no",
@@ -1820,9 +1844,9 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
     account_external_id = str(diag.get("account_external_id") or "—")
     allowed_workspaces: tuple[str, ...] = ()
     try:
-        from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
+        from suite_auth import allowed_workspaces_for_session, auth_session_complete, is_auth_enabled
 
-        if is_auth_enabled() and is_authenticated(session):
+        if is_auth_enabled() and auth_session_complete(session):
             allowed_workspaces = tuple(allowed_workspaces_for_session(session))
     except ImportError:
         pass
@@ -1877,6 +1901,12 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "last_save_reason": last_save_reason or "—",
         "local_state_path": local_state_path or "—",
         "auth_signed_out_warning": str(diag.get("restore_cloud_vs_demo_note") or ""),
+        "auth_session_flag": bool(diag.get("auth_session_flag")),
+        "auth_session_complete": bool(diag.get("auth_session_complete")),
+        "auth_tokens_present": bool(diag.get("auth_tokens_present")),
+        "auth_last_login_error": str(diag.get("auth_last_login_error") or ""),
+        "auth_last_restore_error": str(diag.get("auth_last_restore_error") or ""),
+        "auth_browser_storage": diag.get("auth_browser_storage") if isinstance(diag.get("auth_browser_storage"), dict) else {},
         "diagnosis": {
             "Did the reboot load a different workspace?": different_workspace,
             "Did cloud restore run?": cloud_restore_ran,

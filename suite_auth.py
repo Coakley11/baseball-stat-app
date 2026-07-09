@@ -40,6 +40,20 @@ AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY = "_suite_auth_recovery_verify_attempted"
 AUTH_RECOVERY_QUERY_PROMOTED_PARAM = "suite_auth_recovery_promoted"
 AUTH_BROWSER_QUERY_KEYS_PARAM = "suite_auth_browser_keys"
 AUTH_RESET_EXPECTED_HREF_PREFIX_KEY = "_suite_auth_reset_expected_href_prefix"
+AUTH_LAST_LOGIN_ERROR_KEY = "_suite_auth_last_login_error"
+AUTH_LAST_LOGIN_OK_KEY = "_suite_auth_last_login_ok"
+AUTH_LAST_RESTORE_ERROR_KEY = "_suite_auth_last_restore_error"
+AUTH_JUST_LOGGED_IN_KEY = "_suite_auth_just_logged_in"
+
+AUTH_PROTECTED_SESSION_KEYS = (
+    AUTH_SESSION_KEY,
+    AUTH_USER_EMAIL_KEY,
+    AUTH_USER_ID_KEY,
+    AUTH_EXTERNAL_ID_KEY,
+    AUTH_TOKENS_KEY,
+    AUTH_PROFILE_KEY,
+    "_suite_cloud_user_id",
+)
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -96,6 +110,71 @@ def is_authenticated(session_state: dict[str, Any]) -> bool:
     if not is_auth_enabled():
         return True
     return bool(session_state.get(AUTH_SESSION_KEY))
+
+
+def auth_session_complete(session_state: dict[str, Any]) -> bool:
+    """True when Supabase auth session flag, user id, and refreshable tokens are all present."""
+    if not is_auth_enabled():
+        return True
+    if not session_state.get(AUTH_SESSION_KEY):
+        return False
+    if not str(session_state.get(AUTH_USER_ID_KEY) or "").strip():
+        return False
+    tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
+    return bool(tokens.get("access_token") and tokens.get("refresh_token"))
+
+
+def snapshot_auth_session(session_state: dict[str, Any]) -> dict[str, Any]:
+    """Capture auth keys before workspace blob apply so restore cannot clobber login."""
+    snap: dict[str, Any] = {}
+    for key in AUTH_PROTECTED_SESSION_KEYS:
+        if key not in session_state:
+            continue
+        val = session_state[key]
+        if isinstance(val, dict):
+            snap[key] = dict(val)
+        else:
+            snap[key] = val
+    return snap
+
+
+def restore_auth_session_snapshot(session_state: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    """Re-apply auth keys saved before workspace blob apply."""
+    if not snapshot:
+        return
+    for key, val in snapshot.items():
+        if isinstance(val, dict):
+            session_state[key] = dict(val)
+        else:
+            session_state[key] = val
+
+
+def build_auth_session_diagnostics(session_state: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
+    """Read-only auth session probe fields — no secret token values."""
+    tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
+    out: dict[str, Any] = {
+        "auth_enabled": bool(is_auth_enabled()),
+        "session_flag": bool(session_state.get(AUTH_SESSION_KEY)),
+        "session_complete": bool(auth_session_complete(session_state)),
+        "auth_user_id": str(session_state.get(AUTH_USER_ID_KEY) or "").strip(),
+        "auth_email": str(session_state.get(AUTH_USER_EMAIL_KEY) or "").strip(),
+        "external_id": str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip(),
+        "cloud_user_id": str(session_state.get("_suite_cloud_user_id") or "").strip(),
+        "tokens_present": bool(tokens.get("access_token") and tokens.get("refresh_token")),
+        "just_logged_in": bool(session_state.get(AUTH_JUST_LOGGED_IN_KEY)),
+        "last_login_ok": bool(session_state.get(AUTH_LAST_LOGIN_OK_KEY)),
+        "last_login_error": str(session_state.get(AUTH_LAST_LOGIN_ERROR_KEY) or "").strip(),
+        "last_restore_error": str(session_state.get(AUTH_LAST_RESTORE_ERROR_KEY) or "").strip(),
+        "browser_storage": {},
+    }
+    if st is not None:
+        try:
+            from suite_auth_browser import browser_auth_storage_status
+
+            out["browser_storage"] = browser_auth_storage_status(st)
+        except ImportError:
+            pass
+    return out
 
 
 def current_auth_email(session_state: dict[str, Any]) -> str:
@@ -371,6 +450,8 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
         AUTH_EXTERNAL_ID_KEY,
         AUTH_TOKENS_KEY,
         AUTH_CLIENT_KEY,
+        AUTH_JUST_LOGGED_IN_KEY,
+        AUTH_LAST_LOGIN_OK_KEY,
     ):
         session_state.pop(key, None)
     if st is not None:
@@ -401,17 +482,19 @@ def _sync_auth_account_identity(session_state: dict[str, Any], *, st: Any | None
             session_state["_suite_cloud_user_id"] = suite_user_id
     except Exception:
         pass
-    if st is not None and session_state.get(AUTH_TOKENS_KEY) and suite_user_id:
-        try:
-            from suite_auth_browser import save_browser_auth_tokens
+    if st is not None and session_state.get(AUTH_TOKENS_KEY):
+        browser_uid = suite_user_id or str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+        if browser_uid:
+            try:
+                from suite_auth_browser import save_browser_auth_tokens
 
-            save_browser_auth_tokens(
-                st,
-                dict(session_state.get(AUTH_TOKENS_KEY) or {}),
-                auth_user_id=suite_user_id,
-            )
-        except ImportError:
-            pass
+                save_browser_auth_tokens(
+                    st,
+                    dict(session_state.get(AUTH_TOKENS_KEY) or {}),
+                    auth_user_id=browser_uid,
+                )
+            except ImportError:
+                pass
     return suite_user_id
 
 
@@ -428,6 +511,10 @@ def _persist_auth_session(
     old_cloud = str(session_state.get("_suite_cloud_user_id") or "").strip()
     _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback)
     new_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+    session_state[AUTH_JUST_LOGGED_IN_KEY] = True
+    session_state[AUTH_LAST_LOGIN_OK_KEY] = True
+    session_state.pop(AUTH_LAST_LOGIN_ERROR_KEY, None)
+    session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
     suite_user_id = ""
     try:
         suite_user_id = _sync_auth_account_identity(session_state, st=st)
@@ -492,21 +579,26 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     if not is_auth_enabled():
         return True
     if is_authenticated(session_state):
-        try:
-            _sync_auth_account_identity(session_state, st=st)
-        except Exception:
-            pass
-        try:
-            enforce_workspace_ownership(session_state)
-        except Exception:
-            pass
-        try:
-            from draft_archive_visibility import sanitize_workflow_library_for_account
+        if auth_session_complete(session_state):
+            try:
+                _sync_auth_account_identity(session_state, st=st)
+            except Exception:
+                pass
+            try:
+                enforce_workspace_ownership(session_state)
+            except Exception:
+                pass
+            try:
+                from draft_archive_visibility import sanitize_workflow_library_for_account
 
-            sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
-        except ImportError:
-            pass
-        return True
+                sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
+            except ImportError:
+                pass
+            session_state.pop(AUTH_JUST_LOGGED_IN_KEY, None)
+            session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
+            return True
+        # Stale/partial session flag without tokens — fall through to token restore.
+        session_state.pop(AUTH_SESSION_KEY, None)
 
     tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
     if not tokens.get("access_token") and st is not None:
@@ -541,7 +633,11 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             _sync_auth_account_identity(session_state, st=st)
         except Exception:
             pass
-    except Exception:
+    except Exception as exc:
+        session_state[AUTH_LAST_RESTORE_ERROR_KEY] = str(exc)
+        if session_state.get(AUTH_JUST_LOGGED_IN_KEY):
+            # Workspace sync must not undo a login that just succeeded this session.
+            return bool(auth_session_complete(session_state))
         _clear_auth_session(session_state, st=st)
         return False
     # Clamp workspace outside the session-clearing try: a workspace resolution
@@ -1706,32 +1802,63 @@ def signup_with_email(session_state: dict[str, Any], *, email: str, password: st
         return False, str(exc)
 
 
-def login_with_email(session_state: dict[str, Any], *, email: str, password: str) -> tuple[bool, str]:
+def login_with_email(
+    session_state: dict[str, Any],
+    *,
+    email: str,
+    password: str,
+    st: Any | None = None,
+) -> tuple[bool, str]:
+    email_clean = str(email or "").strip()
+    password_clean = str(password or "")
+    if not email_clean or not password_clean:
+        msg = "Enter both email and password."
+        session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
+        session_state[AUTH_LAST_LOGIN_OK_KEY] = False
+        return False, msg
+    if st is None:
+        try:
+            import streamlit as st_mod  # noqa: WPS433
+
+            st = st_mod
+        except Exception:
+            pass
     try:
         auth = _auth_api(session_state)
     except Exception:
         return False, _auth_not_configured_message()
-    st = None
     try:
-        import streamlit as st_mod  # noqa: WPS433
-
-        st = st_mod
-    except Exception:
-        pass
-    try:
-        resp = auth.sign_in_with_password({"email": email.strip(), "password": password})
+        resp = auth.sign_in_with_password({"email": email_clean, "password": password_clean})
         user = _user_from_auth_response(resp)
         if user is None:
-            return False, "Invalid email or password."
+            msg = "Invalid email or password."
+            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
+            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
+            return False, msg
         tokens = _tokens_from_auth_response(resp)
         if not tokens:
-            return False, "Login succeeded but no session tokens returned."
-        _persist_auth_session(session_state, user=user, tokens=tokens, email_fallback=email.strip(), st=st)
+            msg = "Login succeeded but no session tokens returned."
+            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
+            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
+            return False, msg
+        _persist_auth_session(session_state, user=user, tokens=tokens, email_fallback=email_clean, st=st)
         enforce_workspace_ownership(session_state)
+        if not auth_session_complete(session_state):
+            msg = "Login incomplete — missing user id or session tokens. Try again."
+            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
+            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
+            _clear_auth_session(session_state, st=st)
+            return False, msg
         session_state[AUTH_NOTICE_KEY] = "Signed in."
+        session_state[AUTH_LAST_LOGIN_OK_KEY] = True
+        session_state.pop(AUTH_LAST_LOGIN_ERROR_KEY, None)
+        session_state["_baseball_account_expander_open"] = True
         return True, "Signed in."
     except Exception as exc:
-        return False, str(exc)
+        msg = str(exc)
+        session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
+        session_state[AUTH_LAST_LOGIN_OK_KEY] = False
+        return False, msg
 
 
 def request_password_reset(email: str, *, redirect_to: str | None = None) -> tuple[bool, str]:
@@ -1780,7 +1907,10 @@ def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status:
     notice = session.pop(AUTH_NOTICE_KEY, None)
     if notice:
         st.info(str(notice))
-    if is_authenticated(session):
+    last_login_error = str(session.get(AUTH_LAST_LOGIN_ERROR_KEY) or "").strip()
+    if last_login_error and not auth_session_complete(session):
+        st.error(last_login_error)
+    if auth_session_complete(session):
         if show_signed_in_status:
             st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
         if st.button("Log out", key="suite_auth_logout_btn", use_container_width=True):
@@ -1791,10 +1921,12 @@ def render_auth_panel(st: Any, *, expanded: bool = False, show_signed_in_status:
     with st.expander(title, expanded=expanded):
         tab_login, tab_signup, tab_reset = st.tabs(["Log in", "Create account", "Reset password"])
         with tab_login:
-            email = st.text_input("Email", key="suite_auth_login_email")
-            password = st.text_input("Password", type="password", key="suite_auth_login_password")
-            if st.button("Log in", key="suite_auth_login_btn", use_container_width=True):
-                ok, msg = login_with_email(session, email=email, password=password)
+            with st.form("suite_auth_login_form", clear_on_submit=False):
+                email = st.text_input("Email", key="suite_auth_login_email")
+                password = st.text_input("Password", type="password", key="suite_auth_login_password")
+                submitted = st.form_submit_button("Log in", use_container_width=True)
+            if submitted:
+                ok, msg = login_with_email(session, email=email, password=password, st=st)
                 if ok:
                     st.rerun()
                 else:

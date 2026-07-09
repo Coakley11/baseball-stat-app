@@ -518,6 +518,13 @@ def _comparison_players_from_workspace_blob(state: dict[str, Any]) -> list[str] 
 def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     """Apply one authoritative workspace blob atomically (page + all page_filter_state)."""
     ss = st.session_state
+    auth_snapshot: dict[str, Any] = {}
+    try:
+        from suite_auth import restore_auth_session_snapshot, snapshot_auth_session
+
+        auth_snapshot = snapshot_auth_session(ss)
+    except ImportError:
+        pass
     pre_restore_session_page = str(ss.get("active_page") or "").strip()
     pre_restore_user_nav = bool(ss.get("_suite_page_user_nav"))
     skip_draft_room = False
@@ -1096,6 +1103,14 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
+    if auth_snapshot:
+        try:
+            from suite_auth import restore_auth_session_snapshot
+
+            restore_auth_session_snapshot(ss, auth_snapshot)
+        except ImportError:
+            pass
+
     ss["_suite_cloud_workspace_applied"] = True
 
 
@@ -1177,6 +1192,13 @@ def prepare_baseball_workspace(st: Any) -> bool:
         )
         prepare_global_fantasy_settings(ss, force_mirror=force_mirror)
     except Exception:
+        pass
+    try:
+        from suite_auth import is_auth_enabled, restore_auth_session
+
+        if is_auth_enabled():
+            restore_auth_session(ss, st=st)
+    except ImportError:
         pass
     return result
 
