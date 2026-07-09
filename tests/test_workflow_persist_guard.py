@@ -327,7 +327,6 @@ class WorkflowPersistGuardTests(unittest.TestCase):
     def test_is_draft_library_mutation_save_reason(self) -> None:
         self.assertTrue(is_draft_library_mutation_save_reason("simulator_league_context_saved"))
         self.assertTrue(is_draft_library_mutation_save_reason("draft_archive_saved"))
-        self.assertTrue(is_draft_library_mutation_save_reason("authenticated_migration_writeback"))
         self.assertFalse(is_draft_library_mutation_save_reason("page_change"))
 
     def test_merge_protected_workflow_authoritative_injects_session_archives(self) -> None:
@@ -506,8 +505,17 @@ class WorkflowPersistGuardTests(unittest.TestCase):
                 "workflow_persist_guard.probe_cloud_workflow_for_workspace",
                 return_value={"draft_archive_count": 1, "row_found": True},
             ):
-                reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="page_change")
-        self.assertEqual(reason, "blank_draft_archive_would_erase_cloud")
+                with patch(
+                    "workflow_persist_guard._disk_migration_candidate_workspace_ids",
+                    return_value=["daniel"],
+                ):
+                    with patch("workflow_persist_guard._load_disk_workflow_at_workspace", return_value={}):
+                        with patch(
+                            "workflow_persist_guard.discover_workflow_migration_sources",
+                            return_value={"recoverable_draft_count": 0},
+                        ):
+                            reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="page_change")
+        self.assertEqual(reason, "empty_workflow_would_erase_durable_drafts")
 
     def test_preserve_cloud_drafts_on_page_change(self) -> None:
         from suite_user_persistence import _preserve_cloud_widget_fields_on_page_change

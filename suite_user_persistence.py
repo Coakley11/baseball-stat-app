@@ -126,9 +126,33 @@ def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
     return state, warning
 
 
+def _maybe_backup_disk_state_before_draft_erase(
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    workspace_id: str | None = None,
+) -> None:
+    """Write a sibling .draft_archive_backup.json before shrinking draft_archive_teams on disk."""
+    path = state_file_path(app_id, workspace_id)
+    raw = _read_json(path)
+    if not isinstance(raw, dict):
+        return
+    old_state = raw.get("state") if isinstance(raw.get("state"), dict) else {}
+    try:
+        from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives
+    except ImportError:
+        return
+    old_n = count_draft_archives(old_state.get(DRAFT_ARCHIVE_KEY))
+    new_n = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
+    if old_n > 0 and new_n < old_n:
+        backup_path = path.with_name(f"{path.stem}.draft_archive_backup.json")
+        _write_json(backup_path, raw)
+
+
 def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | None = None) -> bool:
     if not isinstance(state, dict):
         return False
+    _maybe_backup_disk_state_before_draft_erase(app_id, state, workspace_id=workspace_id)
     payload = {
         "version": STATE_VERSION,
         "app": app_id,
@@ -331,9 +355,19 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
+    try:
+        from workflow_persist_guard import workflow_empty_save_blocked_reason
+
+        gated = workflow_empty_save_blocked_reason(
+            st, app_id, state, save_reason=save_reason, scope="cloud"
+        )
+        if gated:
+            return gated
+    except ImportError:
+        pass
     if _is_force_save_cloud_reason(save_reason):
         return None
-    elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
+    if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
     if app_id != "baseball":
         return None
@@ -1648,6 +1682,18 @@ def force_autosave(
         state = build_state(st)
         if reason == "page_change":
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
+        try:
+            from workflow_persist_guard import workflow_empty_save_blocked_reason
+
+            empty_block = workflow_empty_save_blocked_reason(
+                st, app_id, state, save_reason=reason or "", scope="all"
+            )
+            if empty_block:
+                st.session_state["_suite_empty_startup_write_blocked"] = empty_block
+                st.session_state["_suite_persist_last_save_reason"] = reason or "force_autosave"
+                return False
+        except ImportError:
+            pass
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         fp_key = f"_suite_autosave_fp::{app_id}"

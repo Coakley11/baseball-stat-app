@@ -13893,16 +13893,15 @@ _page_changed = active_page != _prev_persisted_page
 _skip_page_change_save = False
 if _page_changed and not _user_nav:
     try:
-        from workflow_persist_guard import count_draft_archives, probe_cloud_workflow_for_workspace
-        from suite_workspace import get_active_workspace_id
+        from workflow_persist_guard import count_draft_archives, summarize_durable_draft_sources
 
         _local_drafts = count_draft_archives(st.session_state.get("draft_archive_teams"))
         if _local_drafts == 0 and not st.session_state.get("_suite_workflow_hydrated_this_run"):
-            _probe = probe_cloud_workflow_for_workspace(str(get_active_workspace_id(st)))
-            if int(_probe.get("draft_archive_count") or 0) > 0:
+            _durable = summarize_durable_draft_sources(st.session_state, "baseball", st=st)
+            if int(_durable.get("max_draft_count") or 0) > 0:
                 _skip_page_change_save = True
                 st.session_state["_suite_empty_startup_write_blocked"] = (
-                    "page_change_deferred_pending_cloud_hydration"
+                    "page_change_deferred_pending_workflow_hydration"
                 )
     except Exception:
         pass

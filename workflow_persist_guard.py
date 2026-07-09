@@ -37,6 +37,8 @@ AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY = "_suite_auth_migration_writeback_attemp
 AUTH_MIGRATION_WRITEBACK_OK_KEY = "_suite_auth_migration_writeback_ok"
 AUTH_MIGRATION_WRITEBACK_TRACE_KEY = "_suite_auth_migration_writeback_trace"
 AUTH_MIGRATION_WRITEBACK_FORCE_KEY = "_suite_auth_migration_writeback_force"
+AUTH_RESTORE_CYCLE_COMPLETE_KEY = "_suite_auth_restore_cycle_complete"
+WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_draft_archive_prewrite_backup"
 
 _EXPLICIT_WORKFLOW_CLEAR_REASONS = frozenset(
     {
@@ -197,7 +199,14 @@ def _session_workflow_authoritative(session: dict[str, Any], key: str) -> bool:
     return True
 
 
-def _load_disk_workflow_snapshot(app_id: str) -> dict[str, Any]:
+def _load_disk_workflow_snapshot(
+    app_id: str,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if isinstance(session, dict):
+        durable = _load_durable_workflow_snapshot(session, app_id, st=None)
+        if durable:
+            return durable
     try:
         from suite_user_persistence import _load_raw
 
@@ -207,6 +216,146 @@ def _load_disk_workflow_snapshot(app_id: str) -> dict[str, Any]:
     except Exception:
         pass
     return {}
+
+
+def _load_durable_workflow_snapshot(
+    session: dict[str, Any],
+    app_id: str = "baseball",
+    *,
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """Union workflow keys from all migration disk paths and cloud fallback rows."""
+    blobs: list[dict[str, Any]] = []
+    for ws in _disk_migration_candidate_workspace_ids(session):
+        disk = _load_disk_workflow_at_workspace(app_id, ws)
+        if disk:
+            blobs.append(disk)
+    if st is not None:
+        cloud = _load_cloud_workflow_snapshot(app_id, st)
+        if cloud:
+            blobs.append(cloud)
+    if not blobs:
+        return {}
+    return _merge_cloud_workflow_blobs(*blobs)
+
+
+def summarize_durable_draft_sources(
+    session: dict[str, Any],
+    app_id: str = "baseball",
+    *,
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """Read-only: max recoverable draft counts across session, disk paths, cloud, migration scan."""
+    session_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    disk_counts: dict[str, int] = {}
+    best_disk = 0
+    for ws in _disk_migration_candidate_workspace_ids(session):
+        disk_state = _load_disk_workflow_at_workspace(app_id, ws)
+        n = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+        disk_counts[ws] = n
+        best_disk = max(best_disk, n)
+    cloud_count = 0
+    if st is not None:
+        try:
+            from suite_workspace import get_active_workspace_id
+
+            probe = probe_cloud_workflow_for_workspace(str(get_active_workspace_id(st=st)))
+            cloud_count = int(probe.get("draft_archive_count") or 0)
+        except Exception:
+            cloud_state = _load_cloud_workflow_snapshot(app_id, st)
+            cloud_count = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
+    migration_recoverable = 0
+    try:
+        discovery = discover_workflow_migration_sources(session, app_id=app_id)
+        migration_recoverable = int(discovery.get("recoverable_draft_count") or 0)
+    except Exception:
+        pass
+    max_count = max(session_count, best_disk, cloud_count, migration_recoverable)
+    return {
+        "session_count": session_count,
+        "disk_max": best_disk,
+        "disk_by_workspace": disk_counts,
+        "cloud_count": cloud_count,
+        "migration_recoverable": migration_recoverable,
+        "max_draft_count": max_count,
+    }
+
+
+def maybe_backup_draft_archive_prewrite(
+    session: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    app_id: str = "baseball",
+    st: Any | None = None,
+    save_reason: str = "",
+) -> None:
+    """Retain last non-empty draft_archive_teams before an outbound empty write."""
+    outbound = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
+    if outbound > 0:
+        return
+    if _session_allows_workflow_clear(session, save_reason):
+        return
+    durable = summarize_durable_draft_sources(session, app_id, st=st)
+    if int(durable.get("max_draft_count") or 0) <= 0:
+        return
+    durable_blob = _load_durable_workflow_snapshot(session, app_id, st=st)
+    archives = durable_blob.get(DRAFT_ARCHIVE_KEY)
+    if not _draft_archive_nonempty(archives):
+        return
+    try:
+        session[WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY] = copy.deepcopy(archives)
+    except Exception:
+        session[WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY] = list(archives)
+    session["_suite_draft_archive_backup_at"] = _utc_now_iso()
+    session["_suite_draft_archive_backup_reason"] = str(save_reason or "save")
+
+
+def workflow_empty_save_blocked_reason(
+    st: Any,
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    save_reason: str = "",
+    scope: str = "all",
+) -> str | None:
+    """Block saves that would persist zero drafts over richer durable storage."""
+    if app_id != "baseball":
+        return None
+    reason = str(save_reason or "").strip()
+    session = st.session_state
+    if _session_allows_workflow_clear(session, reason):
+        return None
+    if _is_force_save_cloud_reason(reason) and reason not in ("page_change", "autosave"):
+        return None
+    local_count = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
+    if local_count > 0:
+        return None
+    durable = summarize_durable_draft_sources(session, app_id, st=st)
+    if int(durable.get("max_draft_count") or 0) <= 0:
+        return None
+    try:
+        from suite_auth import auth_session_complete, is_auth_enabled
+
+        auth_enabled = is_auth_enabled()
+        signed_in = auth_session_complete(session) if auth_enabled else True
+    except ImportError:
+        auth_enabled = False
+        signed_in = True
+    if reason == "page_change" and auth_enabled and not signed_in:
+        return "signed_out_page_change_would_erase_durable_drafts"
+    if scope == "cloud" and reason == "page_change" and auth_enabled:
+        if not session.get(AUTH_RESTORE_CYCLE_COMPLETE_KEY):
+            return "auth_restore_incomplete_page_change_cloud_blocked"
+    return "empty_workflow_would_erase_durable_drafts"
+
+
+def _is_force_save_cloud_reason(reason: str) -> bool:
+    try:
+        from suite_user_persistence import _is_force_save_cloud_reason as _impl
+
+        return _impl(reason)
+    except ImportError:
+        return False
 
 
 def _full_session_blob_from_storage_app_key(storage_app_key: str) -> dict[str, Any]:
@@ -697,8 +846,9 @@ def merge_protected_workflow_into_save(
     if is_draft_library_mutation_save_reason(reason):
         state = inject_session_draft_library_into_save_state(state, session)
 
-    disk_state = _load_disk_workflow_snapshot(app_id)
-    cloud_state = _load_cloud_workflow_snapshot(app_id, st) if st is not None else {}
+    durable_state = _load_durable_workflow_snapshot(session, app_id, st=st)
+    disk_state = durable_state
+    cloud_state: dict[str, Any] = {}
     merged_keys: list[str] = []
     merge_sources: dict[str, str] = {}
 
@@ -718,12 +868,13 @@ def merge_protected_workflow_into_save(
         state[key] = restored
         session[key] = copy.deepcopy(restored)
         merged_keys.append(key)
-        merge_sources[key] = source
+        merge_sources[key] = source or "durable"
 
     if merged_keys:
         session["_suite_workflow_persist_merged_keys"] = merged_keys
         session["_suite_workflow_persist_merge_sources"] = merge_sources
         session["_suite_workflow_persist_merge_reason"] = reason
+    maybe_backup_draft_archive_prewrite(session, state, app_id=app_id, st=st, save_reason=reason)
     return state
 
 
