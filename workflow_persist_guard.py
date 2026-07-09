@@ -2116,6 +2116,12 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
             if isinstance(session.get(AUTH_MIGRATION_WRITEBACK_TRACE_KEY), dict)
             else None
         ),
+        "stranded_disk_reconcile": (
+            session.get("_suite_stranded_disk_reconcile")
+            if isinstance(session.get("_suite_stranded_disk_reconcile"), dict)
+            else None
+        ),
+        "pending_league_invites": list(session.get("_suite_pending_league_invites") or []),
     }
 
 
@@ -2150,12 +2156,21 @@ def _authenticated_migration_writeback_eligible(
         return False, "already_attempted"
 
     session_drafts = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
-    disk_state = _load_disk_workflow_snapshot(app_id)
+    disk_state = _load_disk_workflow_snapshot(app_id, session)
     disk_drafts = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+    visible_disk_drafts = disk_drafts
+    try:
+        from draft_archive_visibility import count_visible_draft_archives_in_blob
+
+        visible_disk_drafts = count_visible_draft_archives_in_blob(session, disk_state)
+    except ImportError:
+        pass
     discovery = discover_workflow_migration_sources(session, app_id=app_id)
     migration_recoverable = int(discovery.get("recoverable_draft_count") or 0)
-    local_drafts = max(session_drafts, disk_drafts, migration_recoverable)
+    local_drafts = max(session_drafts, visible_disk_drafts, migration_recoverable)
     if local_drafts <= 0:
+        if disk_drafts > 0 and visible_disk_drafts <= 0:
+            return False, "foreign_shared_league_on_disk_not_member"
         return False, "no_local_drafts"
 
     if st is None:
@@ -2219,7 +2234,24 @@ def maybe_authenticated_workflow_cloud_writeback(
     draft_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     trace["session_draft_count_before"] = draft_count
     if draft_count <= 0:
-        trace["skipped"] = "no_drafts_in_session_after_merge"
+        disk_raw = int(trace.get("disk_draft_count") or 0)
+        try:
+            from draft_archive_visibility import count_visible_draft_archives_in_blob
+
+            disk_state = _load_disk_workflow_snapshot(app_id, session)
+            visible_disk = count_visible_draft_archives_in_blob(session, disk_state)
+        except ImportError:
+            visible_disk = disk_raw
+        if disk_raw > 0 and visible_disk <= 0:
+            trace["skipped"] = "foreign_shared_league_not_member"
+            try:
+                from fantasy_league_invites import reconcile_stranded_foreign_disk_drafts
+
+                trace["stranded_reconcile"] = reconcile_stranded_foreign_disk_drafts(st, app_id)
+            except Exception as exc:
+                trace["stranded_reconcile_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            trace["skipped"] = "no_drafts_in_session_after_merge"
         session[AUTH_MIGRATION_WRITEBACK_TRACE_KEY] = trace
         return trace
 

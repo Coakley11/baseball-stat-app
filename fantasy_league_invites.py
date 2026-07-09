@@ -28,6 +28,7 @@ from fantasy_league_team_ownership import (
 )
 from fantasy_shared_league_store import (
     load_shared_league,
+    list_shared_league_documents,
     push_league_context_to_shared,
     sync_context_with_shared_store,
 )
@@ -199,11 +200,30 @@ def resolve_invitee_target(target: str) -> dict[str, str]:
                 "invitee_workspace_id": ws or slug,
                 "invitee_user_id": str(row.get("owner_user_id") or "").strip(),
                 "invitee_external_id": ext or slug,
+                "resolve_source": "ownership_registry",
             }
+    try:
+        import suite_storage_supabase as storage
+
+        for row in storage.list_suite_users_by_external_ids(slug):
+            if not isinstance(row, dict):
+                continue
+            ext = str(row.get("external_id") or slug).strip().lower()
+            if ext != slug and slug != normalize_workspace_id(ext):
+                continue
+            return {
+                "invitee_workspace_id": slug,
+                "invitee_user_id": str(row.get("id") or "").strip(),
+                "invitee_external_id": ext or slug,
+                "resolve_source": "suite_users",
+            }
+    except Exception:
+        pass
     return {
         "invitee_workspace_id": slug,
         "invitee_user_id": "",
         "invitee_external_id": slug,
+        "resolve_source": "slug_fallback",
     }
 
 
@@ -356,9 +376,9 @@ def _invite_matches_user(invite: dict[str, Any], *, user_id: str, external_id: s
     invite_uid = str(invite.get("invitee_user_id") or "").strip()
     invite_ext = str(invite.get("invitee_external_id") or "").strip().lower()
     invite_ws = str(invite.get("invitee_workspace_id") or "").strip()
-    if invite_uid and user_id and invite_uid == user_id:
+    if invite_uid and user_id and account_user_ids_match(invite_uid, user_id):
         return True
-    if invite_ext and external_id and invite_ext == external_id:
+    if invite_ext and external_id and invite_ext == str(external_id or "").strip().lower():
         return True
     if invite_ws and workspace_id and invite_ws == workspace_id:
         return True
@@ -448,9 +468,14 @@ def create_league_invite(
         if refreshed:
             saved = refreshed
     try:
-        push_league_context_to_shared(session, saved)
-    except (ImportError, RuntimeError, OSError):
-        pass
+        saved_shared = push_league_context_to_shared(session, saved)
+        if isinstance(saved_shared, dict):
+            session["_last_invite_shared_push_ok"] = True
+            session["_last_invite_shared_league_id"] = str(saved_shared.get("league_id") or league_id)
+    except (ImportError, RuntimeError, OSError, ValueError) as exc:
+        session["_last_invite_shared_push_ok"] = False
+        session["_last_invite_shared_push_error"] = str(exc)
+        invite["shared_push_error"] = str(exc)
     append_invite_to_inbox(
         invite_ws,
         invite_id=str(invite["invite_id"]),
@@ -512,6 +537,8 @@ def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         invite_rows = list(get_league_invites(context) or [])
     pending = list_pending_invites_for_session(session)
     last_sent = session.get("_last_commissioner_invite_sent")
+    lookup_trace = build_invite_lookup_trace(session)
+    stranded = session.get("_suite_stranded_foreign_disk_draft")
     return {
         "current_user_id": uid or None,
         "external_id": ext or None,
@@ -522,6 +549,9 @@ def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "team_claims": team_claims,
         "league_invites": invite_rows,
         "pending_invites_for_session": pending,
+        "pending_invite_count": len(pending),
+        "lookup_trace": lookup_trace,
+        "stranded_foreign_disk_draft": bool(stranded),
         "last_commissioner_invite_sent": (
             last_sent if isinstance(last_sent, dict) else None
         ),
@@ -556,6 +586,215 @@ def _enrich_pending_invite(invite_ref: dict[str, Any], *, user_id: str, external
         or shared.get("league_name")
         or league_id
     ).strip()
+    return out
+
+
+def scan_pending_invites_from_disk_workflow_hints(
+    session: dict[str, Any],
+    *,
+    app_id: str = "baseball",
+) -> list[dict[str, Any]]:
+    """When disk retains a leaked shared-league blob, load invites by its league_id."""
+    uid = _resolve_user_id(session)
+    ext = _resolve_external_id()
+    ws = _resolve_workspace_id(session)
+    if not uid and not ext and not ws:
+        return []
+    try:
+        from workflow_persist_guard import DRAFT_ARCHIVE_KEY, _load_disk_workflow_snapshot, count_draft_archives
+    except ImportError:
+        return []
+    disk = _load_disk_workflow_snapshot(app_id, session)
+    if count_draft_archives(disk.get(DRAFT_ARCHIVE_KEY)) <= 0:
+        return []
+    league_ids: set[str] = set()
+    store = disk.get("fantasy_league_context_state")
+    if isinstance(store, dict):
+        contexts = store.get("contexts")
+        if isinstance(contexts, dict):
+            for ctx in contexts.values():
+                if isinstance(ctx, dict):
+                    lid = str(resolve_canonical_league_id(ctx) or "").strip()
+                    if lid:
+                        league_ids.add(lid)
+    for entry in disk.get(DRAFT_ARCHIVE_KEY) or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            from fantasy_league_context import get_league_context_for_archive
+
+            ctx = get_league_context_for_archive(session, entry)
+            if isinstance(ctx, dict):
+                lid = str(resolve_canonical_league_id(ctx) or "").strip()
+                if lid:
+                    league_ids.add(lid)
+        except ImportError:
+            pass
+        meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+        lid = str(meta.get("league_id") or entry.get("league_id") or "").strip()
+        if lid:
+            league_ids.add(lid)
+    pending: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for league_id in sorted(league_ids):
+        shared = load_shared_league(league_id)
+        if not isinstance(shared, dict):
+            continue
+        invites = shared.get("league_invites") or []
+        if not isinstance(invites, list):
+            continue
+        for raw in invites:
+            if not isinstance(raw, dict):
+                continue
+            invite = dict(raw)
+            if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
+                continue
+            if not _invite_matches_user(invite, user_id=uid, external_id=ext, workspace_id=ws):
+                continue
+            invite_id = str(invite.get("invite_id") or "").strip()
+            key = f"{league_id}::{invite_id}"
+            if not invite_id or key in seen:
+                continue
+            seen.add(key)
+            invite["league_id"] = league_id
+            invite["league_name"] = str(
+                invite.get("league_name") or shared.get("league_name") or league_id
+            ).strip()
+            invite["lookup_source"] = "disk_workflow_league_id"
+            pending.append(invite)
+    return pending
+
+
+def build_invite_lookup_trace(session: dict[str, Any]) -> dict[str, Any]:
+    """Explain each invite lookup path for commissioner/invitee diagnostics."""
+    uid = _resolve_user_id(session)
+    ext = _resolve_external_id()
+    ws = _resolve_workspace_id(session)
+    inbox = _read_inbox(ws) if ws else []
+    shared_docs = list_shared_league_documents()
+    shared_scan = scan_pending_invites_from_shared_leagues(session)
+    disk_scan = scan_pending_invites_from_disk_workflow_hints(session)
+    disk_raw = 0
+    disk_visible = 0
+    try:
+        from workflow_persist_guard import DRAFT_ARCHIVE_KEY, _load_disk_workflow_snapshot, count_draft_archives
+        from draft_archive_visibility import count_visible_draft_archives_in_blob
+
+        disk_state = _load_disk_workflow_snapshot("baseball", session)
+        disk_raw = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+        disk_visible = count_visible_draft_archives_in_blob(session, disk_state)
+    except ImportError:
+        pass
+    return {
+        "lookup_user_id": uid or None,
+        "lookup_external_id": ext or None,
+        "lookup_workspace_id": ws or None,
+        "inbox_path": str(_inbox_path(ws)) if ws else None,
+        "inbox_ref_count": len(inbox),
+        "shared_league_document_count": len(shared_docs),
+        "pending_from_shared_scan": len(shared_scan),
+        "pending_from_disk_league_ids": len(disk_scan),
+        "disk_draft_raw_count": disk_raw,
+        "disk_draft_visible_count": disk_visible,
+        "disk_pollution_not_invite": bool(disk_raw > 0 and disk_visible == 0),
+        "last_invite_shared_push_ok": session.get("_last_invite_shared_push_ok"),
+        "last_invite_shared_push_error": session.get("_last_invite_shared_push_error"),
+        "last_invite_shared_league_id": session.get("_last_invite_shared_league_id"),
+        "stranded_disk_reconcile": session.get("_suite_stranded_disk_reconcile"),
+        "migration_writeback_trace": session.get("_suite_auth_migration_writeback_trace"),
+    }
+
+
+def scan_pending_invites_from_shared_leagues(
+    session: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Find pending invites in canonical shared-league docs (not session/disk inbox only)."""
+    uid = _resolve_user_id()
+    ext = _resolve_external_id()
+    ws = _resolve_workspace_id(session)
+    if not uid and not ext and not ws:
+        return []
+    pending: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for doc in list_shared_league_documents():
+        if not isinstance(doc, dict):
+            continue
+        league_id = str(doc.get("league_id") or "").strip()
+        invites = doc.get("league_invites") or []
+        if not isinstance(invites, list):
+            continue
+        for raw in invites:
+            if not isinstance(raw, dict):
+                continue
+            invite = dict(raw)
+            if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
+                continue
+            if not _invite_matches_user(invite, user_id=uid, external_id=ext, workspace_id=ws):
+                continue
+            invite_id = str(invite.get("invite_id") or "").strip()
+            key = f"{league_id}::{invite_id}"
+            if not league_id or not invite_id or key in seen:
+                continue
+            seen.add(key)
+            invite["league_id"] = league_id
+            invite["league_name"] = str(
+                invite.get("league_name") or doc.get("league_name") or league_id
+            ).strip()
+            invite["invited_by_display"] = str(
+                invite.get("invited_by_display") or doc.get("commissioner_user_id") or "League commissioner"
+            ).strip()
+            invite["lookup_source"] = "shared_league_scan"
+            pending.append(invite)
+    pending.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    return pending
+
+
+def reconcile_stranded_foreign_disk_drafts(
+    st: Any,
+    app_id: str = "baseball",
+) -> dict[str, Any]:
+    """
+    Disk may retain a foreign shared-league draft while session/cloud are empty after prune.
+
+    Sanitize disk and surface pending invites from shared-league documents.
+    """
+    session = st.session_state
+    out: dict[str, Any] = {
+        "stranded": False,
+        "disk_raw_count": 0,
+        "disk_visible_count": 0,
+        "session_count": 0,
+        "disk_sanitized": False,
+        "pending_invites": 0,
+    }
+    try:
+        from workflow_persist_guard import DRAFT_ARCHIVE_KEY, _load_disk_workflow_snapshot, count_draft_archives
+        from draft_archive_visibility import (
+            count_visible_draft_archives_in_blob,
+            force_persist_sanitized_workflow_disk,
+        )
+    except ImportError:
+        return out
+
+    disk_state = _load_disk_workflow_snapshot(app_id, session)
+    out["disk_raw_count"] = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+    out["disk_visible_count"] = count_visible_draft_archives_in_blob(session, disk_state)
+    out["session_count"] = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    if out["disk_raw_count"] <= 0:
+        return out
+    if out["session_count"] > 0 or out["disk_visible_count"] > 0:
+        return out
+
+    out["stranded"] = True
+    session["_suite_stranded_foreign_disk_draft"] = True
+    pending = list_pending_invites_for_session(session)
+    out["pending_invites"] = len(pending)
+    session["_suite_pending_league_invites"] = pending
+    try:
+        out["disk_sanitized"] = bool(force_persist_sanitized_workflow_disk(session, app_id=app_id))
+    except Exception:
+        out["disk_sanitized"] = False
+    session["_suite_stranded_disk_reconcile"] = out
     return out
 
 
@@ -600,7 +839,24 @@ def list_pending_invites_for_session(session: dict[str, Any]) -> list[dict[str, 
             continue
         seen.add(key)
         pending.append(enriched)
+    for invite in scan_pending_invites_from_shared_leagues(session):
+        if not isinstance(invite, dict):
+            continue
+        key = f"{invite.get('league_id')}::{invite.get('invite_id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        pending.append(invite)
+    for invite in scan_pending_invites_from_disk_workflow_hints(session):
+        if not isinstance(invite, dict):
+            continue
+        key = f"{invite.get('league_id')}::{invite.get('invite_id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        pending.append(invite)
     pending.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    session["_suite_pending_league_invites"] = pending
     return pending
 
 

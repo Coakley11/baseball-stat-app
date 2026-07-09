@@ -143,6 +143,30 @@ def list_visible_draft_archives(session: dict[str, Any]) -> list[dict[str, Any]]
     ]
 
 
+def count_visible_draft_archives_in_blob(
+    session: dict[str, Any],
+    blob: dict[str, Any] | None,
+) -> int:
+    """How many draft_archive_teams entries this account may keep (membership-aware)."""
+    if not isinstance(blob, dict):
+        return 0
+    archives = blob.get("draft_archive_teams")
+    if not isinstance(archives, list) or not archives:
+        return 0
+    try:
+        from fantasy_league_context import get_league_context_for_archive
+    except ImportError:
+        return len(archives)
+    visible = 0
+    for entry in archives:
+        if not isinstance(entry, dict):
+            continue
+        ctx = get_league_context_for_archive(session, entry)
+        if is_saved_draft_visible_to_session(session, entry, context=ctx):
+            visible += 1
+    return visible
+
+
 def _record_removed_draft_tombstones(session: dict[str, Any], removed_entries: list[dict[str, Any]]) -> None:
     from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
 

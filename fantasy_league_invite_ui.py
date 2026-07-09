@@ -23,6 +23,13 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
     """Surface pending shared-league invites at the top of Saved Draft Library."""
     pending = list_pending_invites_for_session(session)
     if not pending:
+        stranded = session.get("_suite_stranded_foreign_disk_draft")
+        if stranded:
+            st.info(
+                "A foreign shared-league draft was removed from this account's library. "
+                "If you were invited, check **Invite flow diagnostic** for pending invites "
+                "from the canonical shared league document."
+            )
         return False
 
     st.markdown("##### Shared league invites")
@@ -102,8 +109,31 @@ def render_invite_flow_diagnostics_panel(st: Any, session: dict[str, Any]) -> bo
             f"**workspace_id:** `{diag.get('workspace_id') or '—'}`  \n"
             f"**cloud_app_key:** `{diag.get('cloud_app_key') or '—'}`  \n"
             f"**league_id:** `{diag.get('league_id') or '—'}`  \n"
+            f"**pending_invites:** {int(diag.get('pending_invite_count') or 0)}  \n"
             f"**is_commissioner:** {diag.get('is_commissioner_for_active_context')}"
         )
+        trace = diag.get("lookup_trace")
+        if isinstance(trace, dict):
+            st.caption(
+                f"Lookup: inbox refs **{int(trace.get('inbox_ref_count') or 0)}** · "
+                f"shared docs **{int(trace.get('shared_league_document_count') or 0)}** · "
+                f"pending from shared scan **{int(trace.get('pending_from_shared_scan') or 0)}** · "
+                f"pending from disk league_id **{int(trace.get('pending_from_disk_league_ids') or 0)}** · "
+                f"disk drafts raw/visible **{int(trace.get('disk_draft_raw_count') or 0)}**/"
+                f"**{int(trace.get('disk_draft_visible_count') or 0)}**"
+            )
+            if trace.get("disk_pollution_not_invite"):
+                st.warning(
+                    "Disk has a foreign shared-league draft (pollution), not an invite record. "
+                    "Pending invites must exist in `baseball_shared_leagues.league_invites`."
+                )
+            if trace.get("last_invite_shared_push_error"):
+                st.caption(
+                    f"Last shared-league push error (commissioner session): "
+                    f"`{trace['last_invite_shared_push_error']}`"
+                )
+            with st.expander("Invite lookup trace", expanded=int(diag.get("pending_invite_count") or 0) == 0):
+                st.json(trace)
         pending = diag.get("pending_invites_for_session") or []
         st.markdown(f"**pending_invites:** {len(pending)}")
         if pending:

@@ -72,6 +72,8 @@ class SharedLeagueStore(Protocol):
         expected_revision: int | None,
     ) -> tuple[bool, dict[str, Any] | None]: ...
 
+    def list_documents(self) -> list[dict[str, Any]]: ...
+
 
 class LocalFileSharedLeagueStore:
     """Dev/test backend — one JSON file per canonical league_id."""
@@ -121,6 +123,19 @@ class LocalFileSharedLeagueStore:
         saved = self.save(document)
         return True, saved
 
+    def list_documents(self) -> list[dict[str, Any]]:
+        if not self.root.is_dir():
+            return []
+        docs: list[dict[str, Any]] = []
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(raw, dict):
+                docs.append(raw)
+        return docs
+
 
 _SHARED_STORE: SharedLeagueStore | None = None
 
@@ -148,6 +163,14 @@ def set_shared_league_store(store: SharedLeagueStore | None) -> None:
 def load_shared_league(league_id: str, *, store: SharedLeagueStore | None = None) -> dict[str, Any] | None:
     backend = store or get_shared_league_store()
     return backend.load(str(league_id or "").strip())
+
+
+def list_shared_league_documents(*, store: SharedLeagueStore | None = None) -> list[dict[str, Any]]:
+    backend = store or get_shared_league_store()
+    try:
+        return list(backend.list_documents())
+    except Exception:
+        return []
 
 
 def save_shared_league(document: dict[str, Any], *, store: SharedLeagueStore | None = None) -> dict[str, Any]:

@@ -1207,6 +1207,14 @@ def prepare_baseball_workspace(st: Any) -> bool:
     except ImportError:
         pass
     try:
+        from fantasy_league_invites import reconcile_stranded_foreign_disk_drafts
+
+        reconcile_stranded_foreign_disk_drafts(st, APP_ID)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    try:
         from workflow_persist_guard import maybe_authenticated_workflow_cloud_writeback
 
         maybe_authenticated_workflow_cloud_writeback(st, APP_ID)

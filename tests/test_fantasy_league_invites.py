@@ -17,16 +17,21 @@ from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_league_invites import (
     INVITE_STATUS_ACCEPTED,
     INVITE_STATUS_PENDING,
+    _invite_matches_user,
     append_invite_to_inbox,
     build_commissioner_invite_panel_trace,
+    build_invite_lookup_trace,
     commissioner_invite_context,
     create_league_invite,
     is_league_commissioner,
     join_shared_league_from_invite,
     list_pending_invites_for_session,
+    resolve_invitee_target,
+    scan_pending_invites_from_disk_workflow_hints,
+    scan_pending_invites_from_shared_leagues,
 )
 from fantasy_league_team_ownership import assign_team_owner_to_context, trades_enabled
-from fantasy_shared_league_store import LocalFileSharedLeagueStore, load_shared_league, set_shared_league_store
+from fantasy_shared_league_store import LocalFileSharedLeagueStore, load_shared_league, save_shared_league, set_shared_league_store
 from tests.test_fantasy_trade_proposals import _as_user
 from tests.test_imported_shared_league import _sample_board
 
@@ -397,6 +402,129 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         with _as_user("user:seal11"):
             self.assertFalse(is_league_commissioner(get_league_context(session, league_context_id), "user:seal11"))
             self.assertIsNone(commissioner_invite_context(session))
+
+    def test_invite_matches_user_with_uuid_and_local_alias(self) -> None:
+        invite = {
+            "status": INVITE_STATUS_PENDING,
+            "invitee_user_id": "961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+            "invitee_external_id": "coakley11",
+            "invitee_workspace_id": "coakley11",
+        }
+        with patch("suite_user.get_external_user_id", return_value="coakley11"), patch(
+            "suite_user.get_account_user_id",
+            return_value="961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+        ):
+            self.assertTrue(
+                _invite_matches_user(
+                    invite,
+                    user_id="local:coakley11",
+                    external_id="coakley11",
+                    workspace_id="coakley11",
+                )
+            )
+
+    def test_shared_league_scan_finds_pending_without_inbox(self) -> None:
+        league_id = "league_upload_test_demo"
+        save_shared_league(
+            {
+                "league_id": league_id,
+                "league_name": "Upload Test Demo",
+                "league_invites": [
+                    {
+                        "invite_id": "inv_test123",
+                        "status": INVITE_STATUS_PENDING,
+                        "invitee_workspace_id": "coakley11",
+                        "invitee_external_id": "coakley11",
+                        "invitee_user_id": "961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+                        "created_at": "2026-07-09T12:00:00Z",
+                    }
+                ],
+            }
+        )
+        session: dict = {"_suite_owned_workspace_id": "coakley11"}
+        with _as_user("961df5e9-cdde-48d7-80dd-95a8ba3f46e5"), self._workspace("coakley11"), patch(
+            "fantasy_league_invites._read_inbox", return_value=[]
+        ):
+            pending = scan_pending_invites_from_shared_leagues(session)
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["league_id"], league_id)
+            self.assertEqual(pending[0]["lookup_source"], "shared_league_scan")
+
+    def test_disk_workflow_hint_scan_loads_invite_by_league_id(self) -> None:
+        league_id = "league_disk_hint"
+        save_shared_league(
+            {
+                "league_id": league_id,
+                "league_name": "Upload Test Demo",
+                "league_invites": [
+                    {
+                        "invite_id": "inv_disk_hint",
+                        "status": INVITE_STATUS_PENDING,
+                        "invitee_workspace_id": "coakley11",
+                        "invitee_external_id": "coakley11",
+                        "invitee_user_id": "961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+                    }
+                ],
+            }
+        )
+        session: dict = {"_suite_owned_workspace_id": "coakley11"}
+        disk_blob = {
+            "draft_archive_teams": [
+                {
+                    "draft_id": "draft_foreign",
+                    "draft_name": "Upload Test Demo",
+                    "metadata": {"league_id": league_id},
+                }
+            ],
+            "fantasy_league_context_state": {
+                "contexts": {
+                    "ctx1": {
+                        "league_context_id": "ctx1",
+                        "context_type": "real_league",
+                        "league_name": "Upload Test Demo",
+                        "metadata": {"league_id": league_id},
+                    }
+                }
+            },
+        }
+        with _as_user("961df5e9-cdde-48d7-80dd-95a8ba3f46e5"), self._workspace("coakley11"), patch(
+            "workflow_persist_guard._load_disk_workflow_snapshot", return_value=disk_blob
+        ), patch("fantasy_league_invites._read_inbox", return_value=[]):
+            pending = scan_pending_invites_from_disk_workflow_hints(session)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["invite_id"], "inv_disk_hint")
+        self.assertEqual(pending[0]["lookup_source"], "disk_workflow_league_id")
+
+    def test_resolve_invitee_target_uses_suite_users_when_registry_missing(self) -> None:
+        with patch("suite_workspace_registry._read_registry", return_value={"by_owner": {}}), patch(
+            "suite_storage_supabase.list_suite_users_by_external_ids"
+        ) as list_users:
+            list_users.return_value = [
+                {
+                    "id": "961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+                    "external_id": "coakley11",
+                }
+            ]
+            target = resolve_invitee_target("coakley11")
+        self.assertEqual(target["invitee_workspace_id"], "coakley11")
+        self.assertEqual(target["invitee_user_id"], "961df5e9-cdde-48d7-80dd-95a8ba3f46e5")
+        self.assertEqual(target["resolve_source"], "suite_users")
+
+    def test_invite_lookup_trace_flags_disk_pollution(self) -> None:
+        session: dict = {"_suite_owned_workspace_id": "coakley11"}
+        disk_blob = {
+            "draft_archive_teams": [{"draft_id": "draft_foreign", "draft_name": "Upload Test Demo"}],
+            "fantasy_league_context_state": {"contexts": {}},
+        }
+        with _as_user("961df5e9-cdde-48d7-80dd-95a8ba3f46e5"), self._workspace("coakley11"), patch(
+            "workflow_persist_guard._load_disk_workflow_snapshot", return_value=disk_blob
+        ), patch("draft_archive_visibility.count_visible_draft_archives_in_blob", return_value=0), patch(
+            "fantasy_league_invites._read_inbox", return_value=[]
+        ), patch("fantasy_league_invites.list_shared_league_documents", return_value=[]):
+            trace = build_invite_lookup_trace(session)
+        self.assertEqual(trace["disk_draft_raw_count"], 1)
+        self.assertEqual(trace["disk_draft_visible_count"], 0)
+        self.assertTrue(trace["disk_pollution_not_invite"])
 
 
 if __name__ == "__main__":

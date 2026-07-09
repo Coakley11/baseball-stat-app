@@ -132,6 +132,25 @@ class SupabaseSharedLeagueStore:
         saved = self.save(document)
         return True, saved
 
+    def list_documents(self) -> list[dict[str, Any]]:
+        try:
+            rows = _request(
+                "GET",
+                _TABLE,
+                params={"select": "shared_league_json", "limit": "200"},
+                prefer="return=representation",
+            )
+        except RuntimeError:
+            return []
+        docs: list[dict[str, Any]] = []
+        if not isinstance(rows, list):
+            return docs
+        for row in rows:
+            doc = row_to_document(row if isinstance(row, dict) else None)
+            if isinstance(doc, dict):
+                docs.append(doc)
+        return docs
+
 
 _SUPABASE_STORE: SupabaseSharedLeagueStore | None = None
 
