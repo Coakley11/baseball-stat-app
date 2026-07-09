@@ -50,6 +50,28 @@ def mark_workflow_persist_authoritative(session: dict[str, Any]) -> None:
     session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
 
 
+def persist_draft_library_after_mutation(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    reason: str,
+    entry: dict[str, Any] | None = None,
+) -> bool:
+    """Persist session draft library to disk + cloud with readback verification."""
+    try:
+        from draft_archive_ui import _persist_archive
+
+        return bool(_persist_archive(session, st, reason=reason, entry=entry))
+    except ImportError:
+        mark_workflow_persist_authoritative(session)
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            return bool(force_save_baseball_state(st, reason=reason))
+        except ImportError:
+            return False
+
+
 def is_draft_library_mutation_save_reason(reason: str) -> bool:
     """True when a save should carry draft_archive_teams / league contexts to disk+cloud."""
     raw = str(reason or "").strip()
@@ -64,6 +86,7 @@ def is_draft_library_mutation_save_reason(reason: str) -> bool:
         "draft_archive_cleared",
         "simulator_league_context_saved",
         "live_draft_league_context_saved",
+        "imported_league_context_saved",
         "manual_save_library_sync",
         "league_context_activated",
         "probe_test_draft_saved",

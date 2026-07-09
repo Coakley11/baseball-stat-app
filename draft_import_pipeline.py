@@ -925,13 +925,55 @@ def render_shared_league_creation_panel(
                     save_only=True,
                     assign_team=True,
                 )
+                persist_ok = False
+                try:
+                    from workflow_persist_guard import (
+                        mark_workflow_persist_authoritative,
+                        record_draft_library_readback,
+                        verify_cloud_draft_library_readback,
+                    )
+
+                    mark_workflow_persist_authoritative(session)
+                    from baseball_persistent_state import force_save_baseball_state
+
+                    persist_ok = bool(
+                        force_save_baseball_state(st, reason="imported_league_context_saved")
+                    )
+                    entry_id = str(entry.get("draft_id") or "").strip()
+                    if persist_ok and entry_id:
+                        from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
+
+                        ws = str(get_active_workspace_id(st=st))
+                        app_key = scoped_cloud_app_id("baseball", ws)
+                        readback = verify_cloud_draft_library_readback(
+                            "baseball",
+                            min_drafts=1,
+                            expected_draft_id=entry_id,
+                            workspace_id=ws,
+                            cloud_app_key=app_key,
+                            session=session,
+                        )
+                        record_draft_library_readback(session, readback)
+                        persist_ok = bool(readback.get("ok"))
+                except ImportError:
+                    pass
                 league_id = str((context.get("metadata") or {}).get("league_id") or "").strip()
-                session["workflow_sidebar_flash"] = (
-                    f"Saved **{league_name}** to Saved Drafts (not active). "
-                    f"Claimed **{my_team}** on the saved league."
-                    + (f" League ID: `{league_id}`." if league_id else "")
-                    + " Use **Set Active** in Saved Draft Library when ready."
-                )
+                if persist_ok:
+                    session["workflow_sidebar_flash"] = (
+                        f"Saved **{league_name}** to Saved Drafts (not active). "
+                        f"Claimed **{my_team}** on the saved league."
+                        + (f" League ID: `{league_id}`." if league_id else "")
+                        + " Use **Set Active** in Saved Draft Library when ready."
+                    )
+                else:
+                    session["workflow_sidebar_flash"] = (
+                        f"Saved **{league_name}** in this session, but disk/cloud persist did not verify. "
+                        "Open **Saved Draft Library** → Persistence probe before invite/trade testing."
+                    )
+                    st.warning(
+                        "Imported league is in session only — cloud/disk save did not verify. "
+                        "Check the Persistence probe (cloud readback count should be > 0)."
+                    )
                 session["_draft_library_last_saved_id"] = str(entry.get("draft_id") or "")
                 st.rerun()
             except Exception as exc:

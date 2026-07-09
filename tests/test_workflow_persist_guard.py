@@ -326,6 +326,7 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
     def test_is_draft_library_mutation_save_reason(self) -> None:
         self.assertTrue(is_draft_library_mutation_save_reason("simulator_league_context_saved"))
+        self.assertTrue(is_draft_library_mutation_save_reason("imported_league_context_saved"))
         self.assertTrue(is_draft_library_mutation_save_reason("draft_archive_saved"))
         self.assertFalse(is_draft_library_mutation_save_reason("page_change"))
 

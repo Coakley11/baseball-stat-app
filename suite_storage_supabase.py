@@ -1094,12 +1094,16 @@ def save_current_state_with_result(
                 scoped = [r for r in rows if isinstance(r, dict) and str(r.get("user_id") or "") == uid]
                 if scoped:
                     patch_params["user_id"] = f"eq.{uid}"
+                    _write_patch(patch_params)
+                    write_mode = "patch"
                 else:
-                    patch_params["user_id"] = "is.null"
+                    # Signed-in user has no scoped row yet — create one instead of PATCHing legacy null.
+                    _write_post()
+                    write_mode = "post_new_user_row"
             else:
                 patch_params["user_id"] = "is.null"
-            _write_patch(patch_params)
-            write_mode = "patch"
+                _write_patch(patch_params)
+                write_mode = "patch"
         else:
             _write_post()
         return {"ok": True, "write_mode": write_mode, "payload_bytes": payload_bytes}

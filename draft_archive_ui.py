@@ -1097,7 +1097,11 @@ def _cloud_persist_reason(reason: str) -> str:
     base = str(reason or "").strip()
     if base.endswith("_retry"):
         base = base[:-6]
-    if base in ("simulator_league_context_saved", "live_draft_league_context_saved"):
+    if base in (
+        "simulator_league_context_saved",
+        "live_draft_league_context_saved",
+        "imported_league_context_saved",
+    ):
         return "draft_archive_saved"
     return reason
 

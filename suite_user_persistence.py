@@ -267,6 +267,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "nba_settings_change",
     "simulator_league_context_saved",
     "live_draft_league_context_saved",
+    "imported_league_context_saved",
     "manual_save_library_sync",
     "league_context_activated",
     "draft_archive_saved",

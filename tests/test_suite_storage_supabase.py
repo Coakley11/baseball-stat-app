@@ -269,6 +269,40 @@ class TestSuiteStorageSupabase(unittest.TestCase):
         patch_calls = [c for c in mock_req.call_args_list if c.args and c.args[0] == "PATCH"]
         self.assertEqual(len(patch_calls), 1)
 
+    def test_save_posts_new_user_row_when_signed_in_without_scoped_row(self) -> None:
+        legacy_only = [
+            {
+                "app": "baseball",
+                "user_id": None,
+                "updated_at": "2026-06-13T02:22:32",
+                "metrics": {"full_session": _full_session(1)},
+            }
+        ]
+        with patch("suite_storage_supabase._cloud_user_id", return_value="user-daniel"):
+            with patch(
+                "suite_storage_supabase._merge_state_metrics",
+                side_effect=lambda _app, metrics: dict(metrics or {}),
+            ):
+                with patch(
+                    "suite_storage_supabase._request",
+                    side_effect=[
+                        legacy_only,
+                        None,
+                    ],
+                ) as mock_req:
+                    result = save_current_state_with_result(
+                        "baseball",
+                        page="Saved Draft Library",
+                        summary="imported league",
+                        metrics={"full_session": _full_session(1)},
+                    )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("write_mode"), "post_new_user_row")
+        post_calls = [c for c in mock_req.call_args_list if c.args and c.args[0] == "POST"]
+        self.assertEqual(len(post_calls), 1)
+        patch_calls = [c for c in mock_req.call_args_list if c.args and c.args[0] == "PATCH"]
+        self.assertEqual(len(patch_calls), 0)
+
     def test_merge_state_metrics_keeps_richer_full_session(self) -> None:
         existing = {
             "metrics": {
