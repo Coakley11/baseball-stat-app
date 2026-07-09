@@ -192,13 +192,23 @@ def save_draft_archive(
             break
     if not replaced and draft_fingerprint:
         for i, existing in enumerate(entries):
-            if str(existing.get("draft_fingerprint") or "").strip() == draft_fingerprint:
-                entry["draft_id"] = str(existing.get("draft_id") or entry_id)
-                entry_id = entry["draft_id"]
-                entry["created_at"] = existing.get("created_at") or now
-                entries[i] = entry
-                replaced = True
-                break
+            if str(existing.get("draft_fingerprint") or "").strip() != draft_fingerprint:
+                continue
+            existing_type = str(existing.get("draft_type") or "").strip()
+            incoming_type = str(draft_type or "").strip()
+            if existing_type == DRAFT_TYPE_IMPORTED and incoming_type == DRAFT_TYPE_SIMULATOR:
+                entry["draft_type"] = DRAFT_TYPE_IMPORTED
+            entry["draft_id"] = str(existing.get("draft_id") or entry_id)
+            entry_id = entry["draft_id"]
+            entry["created_at"] = existing.get("created_at") or now
+            linked = str(existing.get("league_context_id") or "").strip()
+            if linked.startswith("__ephemeral_"):
+                linked = ""
+            if linked and not str(entry.get("league_context_id") or "").strip():
+                entry["league_context_id"] = linked
+            entries[i] = entry
+            replaced = True
+            break
     if not replaced:
         entries.append(entry)
     _set_archive_list(session, entries)

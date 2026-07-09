@@ -15,6 +15,7 @@ from draft_archive_state import (
     list_draft_archives,
     rename_draft_archive,
 )
+from draft_import_pipeline import board_should_save_as_imported_league
 from draft_archive_visibility import (
     is_saved_draft_visible_to_session,
     list_visible_draft_archives,
@@ -173,30 +174,47 @@ def _execute_simulator_league_context_save(
         return
 
     try:
-        entry, context = save_simulator_league_context(
-            session,
-            board_df,
-            my_team_name=team_name,
-            draft_name=draft_name,
-            config=dict(session.get("draft_shared_settings") or {}),
-            defer_activation=True,
-            reuse_session_draft_id=False,
-            save_only=save_only,
-        )
+        if board_should_save_as_imported_league(session, board_df):
+            from fantasy_league_context import save_imported_league_context
+
+            entry, context = save_imported_league_context(
+                session,
+                board_df,
+                my_team_name=team_name,
+                draft_name=draft_name,
+                league_name=draft_name,
+                config=dict(session.get("draft_shared_settings") or {}),
+                defer_activation=not save_only,
+                save_only=save_only,
+                assign_team=True,
+            )
+            save_reason = "imported_league_context_saved"
+        else:
+            entry, context = save_simulator_league_context(
+                session,
+                board_df,
+                my_team_name=team_name,
+                draft_name=draft_name,
+                config=dict(session.get("draft_shared_settings") or {}),
+                defer_activation=True,
+                reuse_session_draft_id=False,
+                save_only=save_only,
+            )
+            save_reason = "simulator_league_context_saved"
         counts_after_save = _workflow_counts(session)
         if not list_draft_archives(session):
             try:
                 if record_save_failure_trace is not None:
                     record_save_failure_trace(
                         session,
-                        reason="simulator_league_context_saved",
-                        error="Session library empty after save_simulator_league_context",
+                        reason=save_reason,
+                        error="Session library empty after league context save",
                         before=counts_before,
                     )
                 if finalize_save_trace is not None:
                     finalize_save_trace(
                         session,
-                        reason="simulator_league_context_saved",
+                        reason=save_reason,
                         before=counts_before,
                         after=counts_after_save,
                         persist_ok=False,
@@ -213,7 +231,7 @@ def _execute_simulator_league_context_save(
             return
 
         _clear_fantasy_caches_on_archive_change(session)
-        persist_ok = _persist_archive(session, st, reason="simulator_league_context_saved", entry=entry)
+        persist_ok = _persist_archive(session, st, reason=save_reason, entry=entry)
         if isinstance(session.get("_draft_library_save_diag"), dict):
             session["_draft_library_save_diag"]["counts_before_explicit"] = counts_before
         if not persist_ok:
@@ -238,7 +256,7 @@ def _execute_simulator_league_context_save(
             if record_save_failure_trace is not None:
                 record_save_failure_trace(
                     session,
-                    reason="simulator_league_context_saved",
+                    reason=locals().get("save_reason", "simulator_league_context_saved"),
                     error=f"{type(exc).__name__}: {exc}",
                 )
         except Exception:
@@ -2284,9 +2302,12 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         from fantasy_league_context import (
             migrate_legacy_archives_to_contexts,
             repair_missing_draft_archives_from_contexts,
+            repair_misclassified_imported_league_archives,
         )
 
         migrate_legacy_archives_to_contexts(session)
+        if repair_misclassified_imported_league_archives(session):
+            prune_invisible_shared_league_state(session)
         if repair_missing_draft_archives_from_contexts(session):
             prune_invisible_shared_league_state(session)
     except ImportError:

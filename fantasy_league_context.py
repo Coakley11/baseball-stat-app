@@ -28,6 +28,13 @@ CONTEXT_TYPE_REAL_LEAGUE = "real_league"
 CONTEXT_TYPE_LIVE_DRAFT_RESULT = "live_draft_result"
 CONTEXT_TYPE_MOCK_DRAFT_SIMULATION = "mock_draft_simulation"
 
+EPHEMERAL_CONTEXT_PREFIX = "__ephemeral_"
+
+
+def is_ephemeral_league_context_id(league_context_id: str) -> bool:
+    """True for temporary workspace board ids that must never link saved library rows."""
+    return str(league_context_id or "").strip().startswith(EPHEMERAL_CONTEXT_PREFIX)
+
 MIGRATION_STATUS_FULL_LEAGUE = "full_league"
 MIGRATION_STATUS_SINGLE_TEAM_LEGACY = "single_team_legacy"
 
@@ -791,6 +798,9 @@ def find_league_context_by_draft_fingerprint(
     for ctx in contexts.values():
         if not isinstance(ctx, dict):
             continue
+        ctx_id = str(ctx.get("league_context_id") or "").strip()
+        if is_ephemeral_league_context_id(ctx_id):
+            continue
         meta = ctx.get("metadata") or {}
         stored = str(meta.get("draft_fingerprint") or "").strip()
         if stored and stored == fingerprint:
@@ -831,12 +841,14 @@ def resolve_canonical_save_ids(
     existing_archive = find_archive_by_draft_fingerprint(session, fingerprint)
     if existing_archive:
         draft_id = str(existing_archive.get("draft_id") or draft_id or "").strip() or None
-        league_context_id = (
-            str(existing_archive.get("league_context_id") or league_context_id or "").strip() or None
-        )
+        linked = str(existing_archive.get("league_context_id") or league_context_id or "").strip()
+        if linked and not is_ephemeral_league_context_id(linked):
+            league_context_id = linked or None
     existing_context = find_league_context_by_draft_fingerprint(session, fingerprint)
     if existing_context and not league_context_id:
-        league_context_id = str(existing_context.get("league_context_id") or "").strip() or None
+        candidate = str(existing_context.get("league_context_id") or "").strip()
+        if candidate and not is_ephemeral_league_context_id(candidate):
+            league_context_id = candidate or None
     if draft_id and not league_context_id:
         league_context_id = context_id_for_archive(str(draft_id))
     return draft_id, league_context_id, fingerprint
@@ -1132,6 +1144,7 @@ def create_league_context_from_live_room(
     display_name: str = "",
     league_context_id: str | None = None,
     source_draft_id: str = "",
+    persist: bool = True,
 ) -> dict[str, Any]:
     cfg = dict(room.get("config") or {})
     my_team = str(my_team_name or "").strip()
@@ -1161,7 +1174,9 @@ def create_league_context_from_live_room(
         source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
-    return upsert_league_context(session, context)
+    if persist:
+        return upsert_league_context(session, context)
+    return context
 
 
 def create_league_context_from_simulator_board(
@@ -1174,6 +1189,7 @@ def create_league_context_from_simulator_board(
     display_name: str = "",
     league_context_id: str | None = None,
     source_draft_id: str = "",
+    persist: bool = True,
 ) -> dict[str, Any]:
     cfg = dict(config or session.get("draft_shared_settings") or {})
     my_team = str(my_team_name or "").strip()
@@ -1203,7 +1219,9 @@ def create_league_context_from_simulator_board(
         source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
-    return upsert_league_context(session, context)
+    if persist:
+        return upsert_league_context(session, context)
+    return context
 
 
 def create_league_context_from_imported_board(
@@ -1362,7 +1380,7 @@ def get_league_context_for_archive(session: dict[str, Any], archive_entry: dict[
     if not draft_id:
         return None
     linked_id = str(archive_entry.get("league_context_id") or "").strip()
-    if linked_id:
+    if linked_id and not is_ephemeral_league_context_id(linked_id):
         context = get_league_context(session, linked_id)
         if context:
             return context
@@ -1740,6 +1758,114 @@ def migrate_legacy_archives_to_contexts(session: dict[str, Any]) -> int:
         _sync_legacy_archive_aliases(session, contexts[active_context_id])
 
     return created
+
+
+def _archive_team_count_for_repair(archive: dict[str, Any]) -> int:
+    snap = archive.get("snapshot")
+    if isinstance(snap, dict) and snap.get("team_count") is not None:
+        return int(snap.get("team_count") or 0)
+    rosters = archive.get("league_rosters") or {}
+    if isinstance(rosters, dict) and rosters:
+        return len([name for name in rosters.keys() if str(name).strip()])
+    return 0
+
+
+def _board_source_is_validated_import(session: dict[str, Any]) -> bool:
+    try:
+        from draft_room_state import get_canonical_draft_meta
+
+        meta = get_canonical_draft_meta(session)
+        return str(meta.get("source") or "").strip() == "validated_import"
+    except ImportError:
+        return False
+
+
+def purge_ephemeral_league_contexts(session: dict[str, Any]) -> int:
+    """Remove persisted temporary workspace contexts from the league context store."""
+    store = ensure_fantasy_league_context_state(session)
+    contexts = store.get("contexts") or {}
+    if not isinstance(contexts, dict):
+        return 0
+    removed = 0
+    for ctx_id in list(contexts.keys()):
+        if is_ephemeral_league_context_id(str(ctx_id)):
+            contexts.pop(ctx_id, None)
+            removed += 1
+    active_id = str(store.get("active_league_context_id") or "").strip()
+    if is_ephemeral_league_context_id(active_id):
+        store["active_league_context_id"] = ""
+    return removed
+
+
+def repair_misclassified_imported_league_archives(session: dict[str, Any]) -> int:
+    """Upgrade uploaded/shared leagues that were saved as simulator + ephemeral context."""
+    from draft_archive_state import _archive_list, _set_archive_list
+
+    purge_ephemeral_league_contexts(session)
+    store = ensure_fantasy_league_context_state(session)
+    contexts = store.setdefault("contexts", {})
+    if not isinstance(contexts, dict):
+        contexts = {}
+        store["contexts"] = contexts
+
+    repaired = 0
+    entries = _archive_list(session)
+    changed = False
+    validated_import_board = _board_source_is_validated_import(session)
+    for i, raw in enumerate(entries):
+        archive = copy.deepcopy(raw)
+        draft_id = str(archive.get("draft_id") or "").strip()
+        if not draft_id:
+            continue
+        team_count = _archive_team_count_for_repair(archive)
+        if team_count < 2:
+            continue
+        linked_id = str(archive.get("league_context_id") or "").strip()
+        draft_type = str(archive.get("draft_type") or "").strip()
+        ctx = get_league_context(session, linked_id) if linked_id else None
+        if not ctx and not is_ephemeral_league_context_id(linked_id):
+            ctx = get_league_context(session, context_id_for_archive(draft_id))
+        ctx_type = str((ctx or {}).get("context_type") or "").strip()
+        meta = (ctx or {}).get("metadata") or {}
+        meta_source = str(meta.get("source") or "").strip()
+        needs_repair = is_ephemeral_league_context_id(linked_id)
+        if not needs_repair and draft_type == DRAFT_TYPE_SIMULATOR:
+            needs_repair = validated_import_board or (
+                ctx_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION
+                and meta_source == SOURCE_DRAFT_SIMULATOR
+            )
+        if not needs_repair:
+            continue
+
+        archive["draft_type"] = DRAFT_TYPE_IMPORTED
+        archive["league_context_id"] = context_id_for_archive(draft_id)
+        entries[i] = archive
+        changed = True
+        context = migrate_archive_to_league_context(archive)
+        context["context_type"] = CONTEXT_TYPE_REAL_LEAGUE
+        context_meta = dict(context.get("metadata") or {})
+        context_meta["source"] = SOURCE_IMPORTED_DRAFT
+        context["metadata"] = context_meta
+        my_team = str(context.get("my_team_name") or archive.get("team_name") or "").strip()
+        try:
+            from fantasy_league_team_ownership import assign_team_owner_to_context
+
+            if my_team:
+                context = assign_team_owner_to_context(context, my_team)
+        except ImportError:
+            pass
+        context = upsert_league_context(session, context)
+        try:
+            from fantasy_league_invites import repair_commissioner_identity
+
+            context, _ = repair_commissioner_identity(context, session)
+        except ImportError:
+            pass
+        repaired += 1
+
+    if changed:
+        _set_archive_list(session, entries)
+    return repaired
 
 
 def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any] | None:

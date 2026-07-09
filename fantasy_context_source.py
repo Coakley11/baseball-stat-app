@@ -611,6 +611,7 @@ def get_effective_fantasy_context(
             display_name=f"{label} (temporary / unsaved)",
             league_name=label,
             league_context_id="__ephemeral_live__",
+            persist=False,
         )
     if source.kind == SOURCE_SIMULATOR_BOARD:
         board = _resolve_simulator_board(session)
@@ -622,6 +623,7 @@ def get_effective_fantasy_context(
             my_team_name=my_team,
             display_name="Draft Room Simulator Board (temporary / unsaved)",
             league_context_id="__ephemeral_simulator__",
+            persist=False,
         )
     return None
 

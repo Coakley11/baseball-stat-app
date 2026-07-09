@@ -774,6 +774,15 @@ def build_import_review(import_df: pd.DataFrame, pool_df: pd.DataFrame) -> dict[
     return validate_imported_draft_df(import_df, pool_df)
 
 
+def board_should_save_as_imported_league(session: dict[str, Any], board_df: Any = None) -> bool:
+    """True when the simulator board came from a validated uploaded-draft import."""
+    try:
+        from draft_room_state import get_canonical_draft_meta
+    except ImportError:
+        return False
+    return str(get_canonical_draft_meta(session).get("source") or "").strip() == "validated_import"
+
+
 def apply_validated_import_to_board(
     st: Any,
     session: dict[str, Any],
@@ -1353,6 +1362,7 @@ __all__ = [
     "ENTRY_STANDINGS",
     "REQUIRED_IMPORT_COLUMNS",
     "apply_validated_import_to_board",
+    "board_should_save_as_imported_league",
     "build_draft_import_debug_status",
     "build_import_board_state_diagnostics",
     "build_import_team_name_diagnostics",
