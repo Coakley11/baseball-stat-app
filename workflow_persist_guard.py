@@ -41,6 +41,7 @@ _EXPLICIT_WORKFLOW_CLEAR_REASONS = frozenset(
         "suite_reset",
         "reset_user_state",
         "user_reset",
+        "workflow_library_sanitized",
     }
 )
 
@@ -68,6 +69,7 @@ def is_draft_library_mutation_save_reason(reason: str) -> bool:
         "manual_save_library_sync",
         "league_context_activated",
         "probe_test_draft_saved",
+        "workflow_library_sanitized",
     }
 
 
@@ -857,6 +859,16 @@ def merge_protected_workflow_on_restore(
     incoming_state = incoming_state if isinstance(incoming_state, dict) else {}
     disk_state = _load_disk_workflow_snapshot(app_id)
     cloud_state = _load_cloud_workflow_snapshot(app_id, st) if st is not None else {}
+    try:
+        from draft_archive_visibility import sanitize_workflow_blob_for_account
+
+        disk_state = sanitize_workflow_blob_for_account(session, disk_state)
+        if isinstance(incoming_state, dict) and incoming_state:
+            incoming_state = sanitize_workflow_blob_for_account(session, incoming_state)
+        if isinstance(cloud_state, dict) and cloud_state:
+            cloud_state = sanitize_workflow_blob_for_account(session, cloud_state)
+    except ImportError:
+        pass
     merged_keys: list[str] = []
     merge_sources: dict[str, str] = {}
 

@@ -5,7 +5,14 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-LIBRARY_SANITIZE_VERSION = 1
+LIBRARY_SANITIZE_VERSION = 2
+
+_WORKFLOW_DISK_KEYS = (
+    "draft_archive_teams",
+    "active_draft_archive_id",
+    "fantasy_league_context_state",
+    "_deleted_draft_archive_ids",
+)
 
 
 def _resolve_session_user_id(session: dict[str, Any]) -> str:
@@ -36,13 +43,23 @@ def _auth_session_scope_active(session: dict[str, Any]) -> bool:
     )
 
 
+def _team_roster_count(entry: dict[str, Any], context: dict[str, Any] | None) -> int:
+    rosters = entry.get("league_rosters") or {}
+    if not isinstance(rosters, dict) or not rosters:
+        if isinstance(context, dict):
+            rosters = context.get("league_rosters") or {}
+    if not isinstance(rosters, dict):
+        return 0
+    return len([name for name in rosters.keys() if str(name).strip()])
+
+
 def _requires_membership_visibility(
     entry: dict[str, Any],
     context: dict[str, Any] | None,
 ) -> bool:
     """Uploaded/shared leagues require commissioner or claimed-team membership."""
     try:
-        from draft_archive_state import DRAFT_TYPE_IMPORTED
+        from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_SIMULATOR
         from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, SOURCE_IMPORTED_DRAFT
     except ImportError:
         return False
@@ -50,11 +67,15 @@ def _requires_membership_visibility(
     draft_type = str(entry.get("draft_type") or "").strip()
     if draft_type == DRAFT_TYPE_IMPORTED:
         return True
-    if not isinstance(context, dict):
+    if draft_type == DRAFT_TYPE_SIMULATOR:
         return False
-    if str(context.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
-        return True
-    if str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
+    if isinstance(context, dict):
+        if str(context.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
+            return True
+        if str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
+            return True
+    # Legacy polluted blobs may omit draft_type/context but still carry multi-team rosters.
+    if _team_roster_count(entry, context) >= 2 and draft_type != DRAFT_TYPE_SIMULATOR:
         return True
     return False
 
@@ -116,6 +137,40 @@ def list_visible_draft_archives(session: dict[str, Any]) -> list[dict[str, Any]]
     ]
 
 
+def _record_removed_draft_tombstones(session: dict[str, Any], removed_entries: list[dict[str, Any]]) -> None:
+    from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+
+    if not removed_entries:
+        return
+    deleted = {
+        str(item).strip()
+        for item in (session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])
+        if str(item).strip()
+    }
+    for entry in removed_entries:
+        draft_id = str(entry.get("draft_id") or "").strip()
+        if draft_id:
+            deleted.add(draft_id)
+    session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = sorted(deleted)
+
+
+def _record_removed_context_tombstones(session: dict[str, Any], removed_context_ids: list[str]) -> None:
+    if not removed_context_ids:
+        return
+    try:
+        from fantasy_league_context import ensure_fantasy_league_context_state
+    except ImportError:
+        return
+    store = ensure_fantasy_league_context_state(session)
+    deleted = {
+        str(item).strip()
+        for item in (store.get("deleted_context_ids") or [])
+        if str(item).strip()
+    }
+    deleted.update(str(item).strip() for item in removed_context_ids if str(item).strip())
+    store["deleted_context_ids"] = sorted(deleted)
+
+
 def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, int]:
     """Remove shared real_league archives/contexts the account should not see."""
     from draft_archive_state import (
@@ -137,6 +192,8 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
 
     archives_removed = 0
     contexts_removed = 0
+    removed_entries: list[dict[str, Any]] = []
+    removed_context_ids: list[str] = []
     kept_archives: list[dict[str, Any]] = []
     for entry in list_draft_archives(session):
         ctx = get_league_context_for_archive(session, entry)
@@ -144,9 +201,11 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
             kept_archives.append(entry)
         else:
             archives_removed += 1
+            removed_entries.append(entry)
 
     if archives_removed:
         session[DRAFT_ARCHIVE_KEY] = kept_archives
+        _record_removed_draft_tombstones(session, removed_entries)
         active_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
         if active_id and not get_draft_archive(session, active_id):
             session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
@@ -171,11 +230,13 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
                 kept_ctx[context_id] = ctx
             else:
                 contexts_removed += 1
+                removed_context_ids.append(context_id)
         if contexts_removed:
             store["contexts"] = kept_ctx
             active_ctx_id = str(store.get("active_league_context_id") or "").strip()
             if active_ctx_id and active_ctx_id not in kept_ctx:
                 store.pop("active_league_context_id", None)
+            _record_removed_context_tombstones(session, removed_context_ids)
             session[FANTASY_LEAGUE_CONTEXT_STATE_KEY] = store
 
     if archives_removed or contexts_removed:
@@ -186,29 +247,119 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
     return {"archives_removed": archives_removed, "contexts_removed": contexts_removed}
 
 
+def _workflow_patch_from_session(session: dict[str, Any]) -> dict[str, Any]:
+    patch: dict[str, Any] = {}
+    for key in _WORKFLOW_DISK_KEYS:
+        if key in session:
+            patch[key] = copy.deepcopy(session[key])
+    if "active_draft_archive_id" not in patch:
+        patch.pop("active_draft_archive_id", None)
+    if "draft_archive_teams" not in patch:
+        patch["draft_archive_teams"] = []
+    return patch
+
+
+def sanitize_workflow_blob_for_account(session: dict[str, Any], blob: dict[str, Any]) -> dict[str, Any]:
+    """Return a disk/cloud workflow blob with foreign shared leagues removed for this account."""
+    if not isinstance(blob, dict) or not blob:
+        return {}
+    scratch = dict(session)
+    for key in _WORKFLOW_DISK_KEYS:
+        if key in blob:
+            scratch[key] = copy.deepcopy(blob[key])
+    prune_invisible_shared_league_state(scratch)
+    out = copy.deepcopy(blob)
+    patch = _workflow_patch_from_session(scratch)
+    for key in _WORKFLOW_DISK_KEYS:
+        if key in patch:
+            out[key] = copy.deepcopy(patch[key])
+        elif key == "active_draft_archive_id":
+            out.pop(key, None)
+        elif key == "draft_archive_teams":
+            out[key] = []
+    return out
+
+
+def force_persist_sanitized_workflow_disk(
+    session: dict[str, Any],
+    *,
+    app_id: str = "baseball",
+) -> bool:
+    """Rewrite the workspace disk file with sanitized draft library workflow keys."""
+    try:
+        from suite_user_persistence import _load_raw, save_user_state
+        from workflow_persist_guard import WORKFLOW_PERSIST_ALLOW_CLEAR_KEY, mark_workflow_persist_authoritative
+    except ImportError:
+        return False
+
+    prune_invisible_shared_league_state(session)
+    mark_workflow_persist_authoritative(session)
+    session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
+
+    disk_state, _, _ = _load_raw(app_id)
+    if not isinstance(disk_state, dict):
+        disk_state = {}
+    disk_state = sanitize_workflow_blob_for_account(session, disk_state)
+    patch = _workflow_patch_from_session(session)
+    for key, val in patch.items():
+        disk_state[key] = copy.deepcopy(val)
+    if not str(disk_state.get("active_draft_archive_id") or "").strip():
+        disk_state.pop("active_draft_archive_id", None)
+    return bool(save_user_state(app_id, disk_state))
+
+
 def sanitize_workflow_library_for_account(
     session: dict[str, Any],
     *,
     st: Any | None = None,
     persist_cleanup: bool = False,
+    app_id: str = "baseball",
 ) -> dict[str, Any]:
     """
     Drop foreign shared leagues from session and optionally rewrite cloud/disk rows.
 
-    Runs after restore merge so polluted coakley11 blobs are cleaned once and saved back.
+    Tombstones removed draft ids so disk union-merge cannot reintroduce leaked leagues.
     """
+    before_archives = 0
+    try:
+        from draft_archive_state import list_draft_archives
+
+        before_archives = len(list_draft_archives(session))
+    except ImportError:
+        pass
+
     removed = prune_invisible_shared_league_state(session)
     total = int(removed.get("archives_removed") or 0) + int(removed.get("contexts_removed") or 0)
     out = dict(removed)
     out["total_removed"] = total
+    out["disk_persisted"] = False
     out["persisted"] = False
-    if total <= 0:
-        return out
 
-    session["_suite_workflow_library_sanitized"] = dict(out)
-    session["_suite_workflow_library_sanitize_version"] = LIBRARY_SANITIZE_VERSION
-    if persist_cleanup and st is not None:
+    try:
+        from draft_archive_state import list_draft_archives
+
+        after_archives = len(list_draft_archives(session))
+    except ImportError:
+        after_archives = 0
+
+    needs_disk_rewrite = bool(
+        persist_cleanup
+        and _auth_session_scope_active(session)
+        and (total > 0 or before_archives != after_archives or after_archives == 0)
+    )
+    if needs_disk_rewrite or (persist_cleanup and _auth_session_scope_active(session)):
+        out["disk_persisted"] = force_persist_sanitized_workflow_disk(session, app_id=app_id)
+
+    if total > 0 or out.get("disk_persisted"):
+        session["_suite_workflow_library_sanitized"] = dict(out)
+        session["_suite_workflow_library_sanitize_version"] = LIBRARY_SANITIZE_VERSION
+
+    if persist_cleanup and st is not None and (total > 0 or out.get("disk_persisted")):
         try:
+            from workflow_persist_guard import WORKFLOW_PERSIST_ALLOW_CLEAR_KEY, mark_workflow_persist_authoritative
+
+            mark_workflow_persist_authoritative(session)
+            session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
             from baseball_persistent_state import force_save_baseball_state
 
             out["persisted"] = bool(force_save_baseball_state(st, reason="workflow_library_sanitized"))
