@@ -38,6 +38,64 @@ def _resolve_user_id() -> str:
         return ""
 
 
+def account_user_ids_match(stored_id: str, current_id: str = "") -> bool:
+    """True when two persisted account ids refer to the same signed-in user."""
+    stored = str(stored_id or "").strip()
+    current = str(current_id or _resolve_user_id()).strip()
+    if not stored or not current:
+        return False
+    if stored == current:
+        return True
+    try:
+        from suite_user import get_account_user_id, get_external_user_id
+
+        ext = str(get_external_user_id() or "").strip().lower()
+        if not ext:
+            return False
+        canonical = str(get_account_user_id() or "").strip()
+        local_keys = {f"local:{ext}", f"local:{ext.lower()}"}
+        if stored in local_keys and current == canonical:
+            return True
+        if current in local_keys and stored == canonical:
+            return True
+        if stored in local_keys and current in local_keys:
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def repair_upload_team_ownership_identity(
+    context: dict[str, Any],
+    session: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Normalize upload-owner team_ownership user_id to the canonical cloud account id."""
+    if not isinstance(context, dict):
+        return context, False
+    uid = _resolve_user_id()
+    if not uid:
+        return context, False
+    my_team = str(context.get("my_team_name") or "").strip()
+    if not my_team:
+        return context, False
+    ownership = get_team_ownership(context)
+    record = ownership.get(my_team) or {}
+    stored = str(record.get("user_id") or "").strip()
+    if not stored or stored == uid or not account_user_ids_match(stored, uid):
+        return context, False
+    ownership[my_team] = {**record, "user_id": uid}
+    _set_team_ownership(context, ownership)
+    if isinstance(session, dict):
+        context = upsert_league_context(session, context)
+        try:
+            from workflow_persist_guard import mark_workflow_persist_authoritative
+
+            mark_workflow_persist_authoritative(session)
+        except ImportError:
+            pass
+    return context, True
+
+
 def _resolve_user_email() -> str:
     try:
         from suite_user import get_user_email
@@ -137,11 +195,11 @@ def assign_my_team(
     ownership = get_team_ownership(context)
     uid = str(user_id or _resolve_user_id()).strip()
     for owned_team, record in ownership.items():
-        if str(record.get("user_id") or "").strip() == uid and owned_team != team:
+        other_uid = str(record.get("user_id") or "").strip()
+        if account_user_ids_match(other_uid, uid) and owned_team != team:
             return None, f"Your account is already assigned to {owned_team}."
         if owned_team == team:
-            other_uid = str(record.get("user_id") or "").strip()
-            if other_uid and other_uid != uid:
+            if other_uid and not account_user_ids_match(other_uid, uid):
                 return None, f"{team} is already owned by another account."
     context = assign_team_owner_to_context(
         context,
@@ -182,11 +240,11 @@ def claim_team_in_league_context(
     ownership = get_team_ownership(context)
     uid = str(user_id or _resolve_user_id()).strip()
     for owned_team, record in ownership.items():
-        if str(record.get("user_id") or "").strip() == uid and owned_team != team:
+        other_uid = str(record.get("user_id") or "").strip()
+        if account_user_ids_match(other_uid, uid) and owned_team != team:
             return None, f"Your account is already assigned to {owned_team}."
         if owned_team == team:
-            other_uid = str(record.get("user_id") or "").strip()
-            if other_uid and other_uid != uid:
+            if other_uid and not account_user_ids_match(other_uid, uid):
                 return None, f"{team} is already owned by another account."
     context = assign_team_owner_to_context(
         context,
@@ -211,7 +269,7 @@ def owned_team_for_user(context: dict[str, Any] | None, user_id: str = "") -> st
     if not uid:
         return ""
     for team, record in get_team_ownership(context).items():
-        if str(record.get("user_id") or "").strip() == uid:
+        if account_user_ids_match(str(record.get("user_id") or "").strip(), uid):
             return team
     return ""
 

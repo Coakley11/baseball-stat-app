@@ -975,6 +975,16 @@ def render_shared_league_creation_panel(
                         "Check the Persistence probe (cloud readback count should be > 0)."
                     )
                 session["_draft_library_last_saved_id"] = str(entry.get("draft_id") or "")
+                try:
+                    from suite_user_persistence import claim_user_page_ownership
+
+                    library_page = "Saved Draft Library"
+                    session["active_page"] = library_page
+                    session["main_sidebar_page"] = library_page
+                    session["_suite_last_persisted_page"] = library_page
+                    claim_user_page_ownership(st, "baseball", library_page)
+                except Exception:
+                    pass
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not save imported league: {exc}")

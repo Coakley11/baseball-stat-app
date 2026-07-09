@@ -21,6 +21,7 @@ from fantasy_league_identity import (
     resolve_canonical_league_id,
 )
 from fantasy_league_team_ownership import (
+    account_user_ids_match,
     assign_team_owner_to_context,
     get_team_ownership,
     owned_team_for_user,
@@ -232,7 +233,7 @@ def is_upload_commissioner_candidate(context: dict[str, Any] | None, user_id: st
     if not my_team:
         return False
     record = get_team_ownership(context).get(my_team) or {}
-    return str(record.get("user_id") or "").strip() == uid
+    return account_user_ids_match(str(record.get("user_id") or "").strip(), uid)
 
 
 def repair_commissioner_identity(
@@ -245,12 +246,21 @@ def repair_commissioner_identity(
     uid = _resolve_user_id()
     if not is_upload_commissioner_candidate(context, uid):
         return context, False
+    changed = False
+    try:
+        from fantasy_league_team_ownership import repair_upload_team_ownership_identity
+
+        context, ownership_changed = repair_upload_team_ownership_identity(context, session)
+        changed = changed or ownership_changed
+    except ImportError:
+        pass
     commissioner = get_commissioner_user_id(context)
-    if commissioner == uid:
-        return context, False
+    if commissioner and account_user_ids_match(commissioner, uid):
+        return context, changed
     meta = dict(context.get("metadata") or {})
     meta["commissioner_user_id"] = uid
     context["metadata"] = meta
+    changed = True
     if isinstance(session, dict):
         from fantasy_league_context import upsert_league_context
 
@@ -261,7 +271,7 @@ def repair_commissioner_identity(
             mark_workflow_persist_authoritative(session)
         except ImportError:
             pass
-    return context, True
+    return context, changed
 
 
 def is_league_commissioner(context: dict[str, Any] | None, user_id: str = "") -> bool:
@@ -273,7 +283,7 @@ def is_league_commissioner(context: dict[str, Any] | None, user_id: str = "") ->
     if not uid:
         return False
     commissioner = get_commissioner_user_id(context)
-    if commissioner and commissioner == uid:
+    if commissioner and account_user_ids_match(commissioner, uid):
         return True
     if is_upload_commissioner_candidate(context, uid):
         return True
@@ -285,7 +295,7 @@ def is_league_commissioner(context: dict[str, Any] | None, user_id: str = "") ->
     earliest_team = ""
     earliest_ts = ""
     for team, record in ownership.items():
-        if str(record.get("user_id") or "").strip() != uid:
+        if not account_user_ids_match(str(record.get("user_id") or "").strip(), uid):
             continue
         ts = str(record.get("assigned_at") or "")
         if not earliest_ts or ts < earliest_ts:

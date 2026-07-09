@@ -16,15 +16,17 @@ _WORKFLOW_DISK_KEYS = (
 
 
 def _resolve_session_user_id(session: dict[str, Any]) -> str:
-    cloud = str(session.get("_suite_cloud_user_id") or "").strip()
-    if cloud:
-        return cloud
     try:
         from fantasy_league_team_ownership import _resolve_user_id
 
-        return str(_resolve_user_id() or "").strip()
+        uid = str(_resolve_user_id() or "").strip()
+        if uid:
+            return uid
     except ImportError:
         pass
+    cloud = str(session.get("_suite_cloud_user_id") or "").strip()
+    if cloud:
+        return cloud
     return str(session.get("_suite_auth_user_id") or "").strip()
 
 
@@ -171,6 +173,19 @@ def _record_removed_context_tombstones(session: dict[str, Any], removed_context_
     store["deleted_context_ids"] = sorted(deleted)
 
 
+def _repair_league_context_identities(session: dict[str, Any]) -> None:
+    """Backfill commissioner/ownership ids before visibility prune (local vs cloud uuid drift)."""
+    try:
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, list_league_contexts
+        from fantasy_league_invites import repair_commissioner_identity
+    except ImportError:
+        return
+    for ctx in list_league_contexts(session):
+        if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+            continue
+        repair_commissioner_identity(ctx, session)
+
+
 def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, int]:
     """Remove shared real_league archives/contexts the account should not see."""
     from draft_archive_state import (
@@ -189,6 +204,8 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
         from workflow_persist_guard import mark_workflow_persist_authoritative
     except ImportError:
         return {"archives_removed": 0, "contexts_removed": 0}
+
+    _repair_league_context_identities(session)
 
     archives_removed = 0
     contexts_removed = 0
@@ -343,11 +360,9 @@ def sanitize_workflow_library_for_account(
         after_archives = 0
 
     needs_disk_rewrite = bool(
-        persist_cleanup
-        and _auth_session_scope_active(session)
-        and (total > 0 or before_archives != after_archives or after_archives == 0)
+        persist_cleanup and _auth_session_scope_active(session) and total > 0
     )
-    if needs_disk_rewrite or (persist_cleanup and _auth_session_scope_active(session)):
+    if needs_disk_rewrite:
         out["disk_persisted"] = force_persist_sanitized_workflow_disk(session, app_id=app_id)
 
     if total > 0 or out.get("disk_persisted"):

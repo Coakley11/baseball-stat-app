@@ -1,8 +1,37 @@
 # Saved Draft Library — E2E verification runbook
 
-**Last updated:** 2026-07-05
+**Last updated:** 2026-07-09
 
 Use **Developer Mode** on deployed `dev`. After each save, open **Saved Draft Library → Persistence diagnostics** and confirm the checklist.
+
+## Uploaded 4-team shared league (Daniel acceptance)
+
+1. Sign in as **Daniel** (Real Account).
+2. **Draft Room Simulator** → upload fresh **4-team** league CSV → validate → **Save to Saved Drafts**.
+3. Confirm redirect to **Saved Draft Library** (not Historical Explorer).
+4. Library card: **4 teams** · note `draft_id`.
+5. **Hard refresh** browser (F5).
+6. Still on **Saved Draft Library**; same `draft_id`; card still **4 teams**.
+7. **Set Active** → Active Draft caption still **4 teams**.
+8. **Persistence probe** (library panel): session/disk/cloud draft counts all **≥ 1**; no `workflow_library_sanitized` wipe.
+
+Automated regression:
+
+```bash
+python -m pytest tests/test_uploaded_league_refresh_persistence.py -q
+```
+
+### Where drafts are lost (diagnostic order)
+
+| Stage | Symptom | Check in Developer Mode |
+|-------|---------|-------------------------|
+| Immediately after save | Flash warns persist did not verify | Save diagnostics → cloud readback |
+| Cloud write | `cloud_write_ok` false | `cloud_blocked_reason`, workspace `cloud_app_key` |
+| Startup restore | Session 0, cloud > 0 before hydrate | `_suite_startup_restore_snapshot`, hydrate source |
+| Visibility sanitize | `workflow_library_sanitized`, tombstones | Commissioner/ownership ids vs `_suite_cloud_user_id` |
+| Page restore | Lands on Historical Explorer | `active_page` in cloud blob; `_suite_page_overwrite_source` |
+
+Common root cause (2026-07-09 fix): upload saved with `local:daniel` ownership while refresh resolves cloud UUID — visibility prune treated league as foreign. Repair now maps local ↔ cloud ids before prune.
 
 ## Automated local check
 
