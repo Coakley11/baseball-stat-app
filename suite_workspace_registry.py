@@ -201,6 +201,19 @@ def ensure_owned_workspace_for_session(session_state: dict[str, Any]) -> dict[st
         display_name=ctx["display_name"],
     )
     label = derive_workspace_label(slug=slug, email=ctx["email"], display_name=ctx["display_name"])
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+        from suite_workspace import DEFAULT_WORKSPACE_ID, workspace_label
+
+        if (
+            is_auth_enabled()
+            and is_authenticated(session_state)
+            and is_admin_account(session_state=session_state)
+        ):
+            slug = DEFAULT_WORKSPACE_ID
+            label = workspace_label(slug)
+    except ImportError:
+        pass
     existing = get_registry_record(owner_user_id)
     if existing and str(existing.get(WORKSPACE_ID_KEY) or "").strip():
         slug = str(existing[WORKSPACE_ID_KEY]).strip()

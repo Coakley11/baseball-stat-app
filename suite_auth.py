@@ -50,6 +50,19 @@ _DEFAULT_ALLOWED_WORKSPACES: dict[str, tuple[str, ...]] = {
     "guest": ("guest",),
     "test_user": ("test_user",),
 }
+# Admin login aliases — map real account emails/local-parts to the shared Daniel admin profile.
+_ADMIN_EXTERNAL_ALIASES: dict[str, str] = {
+    "daniel.cohen11": "daniel",
+    "daniel_cohen11": "daniel",
+}
+
+
+def normalize_account_external_id(external_id: str) -> str:
+    """Map known admin aliases (e.g. daniel.cohen11) to canonical profile ids."""
+    key = str(external_id or "").strip().lower()
+    if not key:
+        return ""
+    return _ADMIN_EXTERNAL_ALIASES.get(key, key)
 
 
 def is_auth_enabled() -> bool:
@@ -91,7 +104,7 @@ def current_auth_email(session_state: dict[str, Any]) -> str:
 
 def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
     """Owned workspace(s) allowed for this account — one workspace unless admin demo."""
-    key = str(external_user_id or "").strip().lower()
+    key = normalize_account_external_id(str(external_user_id or "").strip().lower())
     if key in _DEFAULT_ALLOWED_WORKSPACES:
         if key == "daniel":
             return _DEFAULT_ALLOWED_WORKSPACES[key]
@@ -105,10 +118,10 @@ def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
 
 def resolve_auth_external_id(session_state: dict[str, Any]) -> str:
     """Best-effort suite profile id for the signed-in account."""
-    ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip().lower()
+    ext = normalize_account_external_id(str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip().lower())
     if ext:
         return ext
-    inferred = _infer_external_id_from_email(current_auth_email(session_state))
+    inferred = normalize_account_external_id(_infer_external_id_from_email(current_auth_email(session_state)))
     if inferred:
         return inferred
     return "daniel"
@@ -340,7 +353,7 @@ def _apply_authenticated_user(
     session_state[AUTH_SESSION_KEY] = True
     email = str(getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None) or email_fallback).strip()
     session_state[AUTH_USER_EMAIL_KEY] = email
-    session_state[AUTH_EXTERNAL_ID_KEY] = _infer_external_id_from_email(email)
+    session_state[AUTH_EXTERNAL_ID_KEY] = normalize_account_external_id(_infer_external_id_from_email(email))
     uid = str(getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None) or "").strip()
     if uid:
         session_state[AUTH_USER_ID_KEY] = uid
@@ -392,7 +405,8 @@ def _persist_auth_session(
         from suite_storage_supabase import ensure_user_row
 
         suite_user_id = ensure_user_row(
-            external_id=session_state.get(AUTH_USER_EMAIL_KEY) or session_state.get(AUTH_USER_ID_KEY) or ""
+            resolve_auth_external_id(session_state),
+            email=str(session_state.get(AUTH_USER_EMAIL_KEY) or ""),
         )
         try:
             from suite_user import reset_account_cache
@@ -520,6 +534,16 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
     except Exception:
         pass
     _clear_auth_session(session_state, st=st)
+    try:
+        from suite_user import reset_account_cache
+
+        reset_account_cache()
+    except ImportError:
+        pass
+    for key in list(session_state.keys()):
+        sk = str(key)
+        if sk.startswith("_suite_workspace_synced::") or sk.startswith("_suite_disk_state_restored::"):
+            session_state.pop(key, None)
 
 
 def _read_profile_settings(email: str) -> dict[str, Any]:

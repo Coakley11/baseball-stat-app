@@ -217,6 +217,53 @@ def _full_session_blob_from_storage_app_key(storage_app_key: str) -> dict[str, A
         return {}
 
 
+def _authenticated_cloud_migration_eligible(session: dict[str, Any]) -> bool:
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        return bool(is_auth_enabled() and is_authenticated(session))
+    except ImportError:
+        return False
+
+
+def _load_legacy_null_migration_blob(app_id: str) -> dict[str, Any]:
+    """Legacy pre-auth cloud drafts on unscoped Daniel baseball key (user_id IS NULL)."""
+    try:
+        import suite_storage_supabase as storage
+
+        return storage.load_legacy_null_full_session_for_app(app_id)
+    except Exception:
+        return {}
+
+
+def _merge_richer_workflow_into_state(
+    out: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    allow_page_restore: bool = True,
+) -> dict[str, Any]:
+    """Union-merge protected workflow keys when incoming is richer than out."""
+    if not isinstance(incoming, dict) or not incoming:
+        return out
+    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
+        primary_score = workflow_richness(key, out.get(key))
+        incoming_score = workflow_richness(key, incoming.get(key))
+        if incoming_score > primary_score:
+            out[key] = copy.deepcopy(incoming[key])
+    if allow_page_restore:
+        primary_page = str(out.get("active_page") or "").strip()
+        incoming_page = str(incoming.get("active_page") or "").strip()
+        if (
+            (not primary_page or primary_page in _DEFAULT_STARTUP_PAGES)
+            and incoming_page
+            and incoming_page not in _DEFAULT_STARTUP_PAGES
+            and workflow_richness(DRAFT_ARCHIVE_KEY, out.get(DRAFT_ARCHIVE_KEY)) > 0
+        ):
+            out["active_page"] = incoming_page
+            out.setdefault("main_sidebar_page", incoming_page)
+    return out
+
+
 def _cloud_workflow_fallback_workspace_ids(session: dict[str, Any]) -> list[str]:
     """Extra workspace profiles to scan when the active workspace cloud row is empty."""
     try:
@@ -291,6 +338,10 @@ def _load_cloud_workflow_snapshot(app_id: str, st: Any | None) -> dict[str, Any]
             fb_blob = _full_session_blob_from_storage_app_key(fb_key)
             if fb_blob:
                 blobs.append(fb_blob)
+        if _authenticated_cloud_migration_eligible(session):
+            legacy_blob = _load_legacy_null_migration_blob(app_id)
+            if legacy_blob:
+                blobs.append(legacy_blob)
         return _merge_cloud_workflow_blobs(*blobs)
     except Exception:
         pass
@@ -305,26 +356,13 @@ def enrich_cloud_restore_state(
     """Merge workflow keys from fallback cloud rows into the primary restore blob."""
     out = copy.deepcopy(primary_state) if isinstance(primary_state, dict) else {}
     enriched = _load_cloud_workflow_snapshot(app_id, st)
-    if not enriched:
-        return out
-
-    for key in PROTECTED_WORKFLOW_PERSIST_KEYS:
-        primary_score = workflow_richness(key, out.get(key))
-        enriched_score = workflow_richness(key, enriched.get(key))
-        if enriched_score > primary_score:
-            out[key] = copy.deepcopy(enriched[key])
-
-    primary_page = str(out.get("active_page") or "").strip()
-    enriched_page = str(enriched.get("active_page") or "").strip()
-    if (
-        (not primary_page or primary_page in _DEFAULT_STARTUP_PAGES)
-        and enriched_page
-        and enriched_page not in _DEFAULT_STARTUP_PAGES
-        and workflow_richness(DRAFT_ARCHIVE_KEY, out.get(DRAFT_ARCHIVE_KEY)) > 0
-    ):
-        out["active_page"] = enriched_page
-        out.setdefault("main_sidebar_page", enriched_page)
-
+    if enriched:
+        out = _merge_richer_workflow_into_state(out, enriched)
+    session = st.session_state if hasattr(st, "session_state") else {}
+    if _authenticated_cloud_migration_eligible(session):
+        legacy_blob = _load_legacy_null_migration_blob(app_id)
+        if legacy_blob:
+            out = _merge_richer_workflow_into_state(out, legacy_blob)
     return out
 
 
@@ -975,14 +1013,17 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
 
         auth_enabled = is_auth_enabled()
         authenticated = is_authenticated(session)
-        account_email = current_auth_email(session)
-        account_external_id = resolve_auth_external_id(session)
+        account_email = current_auth_email(session) if authenticated else ""
+        account_external_id = resolve_auth_external_id(session) if authenticated else ""
     except ImportError:
         pass
     try:
-        from suite_user import get_account_user_id
+        if authenticated:
+            from suite_user import get_account_user_id
 
-        account_user_id = get_account_user_id()
+            account_user_id = get_account_user_id()
+        else:
+            account_user_id = str(session.get("_suite_auth_user_id") or "")
     except ImportError:
         account_user_id = str(session.get("_suite_auth_user_id") or "")
 
@@ -1114,10 +1155,16 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "durability_warning": str(durability.get("durability_warning") or ""),
         "auth_enabled_but_signed_out": bool(auth_enabled and not authenticated),
         "restore_cloud_vs_demo_note": (
+            "Sign in with your Real Account to restore authenticated cloud drafts. "
+            "Unsigned sessions use the legacy demo profile and may show 0 saved drafts "
+            "even when your signed-in cloud row still has data."
+            if auth_enabled and not authenticated
+            else (
             "Restore source is cloud, but you are in local/demo mode — empty cloud can overwrite "
             "disk saves unless workflow protection is active."
             if restore_source == "cloud" and not authenticated
             else ""
+            )
         ),
         "workflow_merge_keys": merged_keys,
         "workflow_merge_sources": merge_sources,
@@ -1461,6 +1508,7 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "workflow_hydrate_source": workflow_hydrate_source or "—",
         "last_save_reason": last_save_reason or "—",
         "local_state_path": local_state_path or "—",
+        "auth_signed_out_warning": str(diag.get("restore_cloud_vs_demo_note") or ""),
         "diagnosis": {
             "Did the reboot load a different workspace?": different_workspace,
             "Did cloud restore run?": cloud_restore_ran,

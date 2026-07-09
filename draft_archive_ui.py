@@ -283,6 +283,9 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
     else:
         st.info("**Saved Draft Persistence Probe** — use after reboot to confirm account, workspace, and restore.")
 
+    if probe.get("auth_signed_out_warning"):
+        st.warning(str(probe["auth_signed_out_warning"]))
+
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown(f"**Signed in?** {probe.get('signed_in_label') or '—'}")

@@ -487,6 +487,13 @@ except Exception:
     pass
 
 try:
+    from baseball_account_sidebar import prepare_baseball_auth_session
+
+    prepare_baseball_auth_session(st)
+except Exception:
+    pass
+
+try:
     from suite_sidebar_run import reset_sidebar_run_guards
 
     reset_sidebar_run_guards(st.session_state)

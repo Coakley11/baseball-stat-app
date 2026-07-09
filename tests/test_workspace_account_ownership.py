@@ -327,6 +327,37 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
             ws = init_suite_workspace(st)
             self.assertEqual(ws, "coakley11")
 
+    def test_daniel_cohen11_alias_maps_to_admin_daniel(self) -> None:
+        from suite_auth import (
+            allowed_workspaces_for_user,
+            normalize_account_external_id,
+            resolve_auth_external_id,
+        )
+
+        self.assertEqual(normalize_account_external_id("daniel.cohen11"), "daniel")
+        session = _auth_session(
+            user_id="uuid-daniel",
+            email="daniel.cohen11@example.com",
+            external_id="daniel.cohen11",
+        )
+        self.assertEqual(resolve_auth_external_id(session), "daniel")
+        allowed = allowed_workspaces_for_user("daniel.cohen11")
+        self.assertIn("daniel", allowed)
+        self.assertIn("ariel", allowed)
+
+    def test_admin_owned_workspace_is_daniel(self) -> None:
+        session = _auth_session(
+            user_id="uuid-daniel",
+            email="daniel.cohen11@example.com",
+            external_id="daniel",
+        )
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ):
+            record = ensure_owned_workspace_for_session(session)
+            self.assertEqual(record["workspace_id"], "daniel")
+            self.assertEqual(session.get("_suite_owned_workspace_id"), "daniel")
+
     def test_clamp_failure_does_not_clear_auth_session(self) -> None:
         """restore_auth_session must keep a valid session even if the clamp raises."""
         from suite_auth import AUTH_SESSION_KEY, restore_auth_session

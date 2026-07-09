@@ -4,6 +4,7 @@ Supabase PostgREST backend for cross-deployment suite activity.
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from activity_time import normalize_timestamp_iso, utc_now_iso
@@ -183,6 +184,39 @@ def load_current_state_for_app(app: str) -> dict[str, Any]:
     if not isinstance(best, dict):
         return {}
     return _row_to_state_dict(best, logical=logical)
+
+
+def load_legacy_null_full_session_for_app(app: str) -> dict[str, Any]:
+    """
+    Pre-auth cloud blob (``user_id IS NULL``) for authenticated migration.
+
+    Before Real Accounts, saved drafts often lived on legacy null-user rows for the
+    unscoped Daniel ``baseball`` cloud key. Signed-in restore merges these when richer.
+    """
+    from suite_workspace import DEFAULT_WORKSPACE_ID, logical_storage_app_key, scoped_cloud_app_id
+
+    storage_app = scoped_cloud_app_id(normalize_app_key(app), DEFAULT_WORKSPACE_ID)
+    logical = logical_storage_app_key(storage_app)
+    if logical not in ACTIVE_APP_KEYS:
+        return {}
+    rows = _fetch_state_rows_for_storage_app(
+        storage_app,
+        select="app,page,summary,metrics,updated_at,user_id",
+        egress_label="load_legacy_null_full_session_for_app",
+        limit="20",
+        include_legacy_null=True,
+    )
+    null_rows = [
+        r
+        for r in rows
+        if isinstance(r, dict) and not str(r.get("user_id") or "").strip()
+    ]
+    best = _pick_best_state_row(null_rows)
+    if not isinstance(best, dict):
+        return {}
+    metrics = best.get("metrics") if isinstance(best.get("metrics"), dict) else {}
+    blob = metrics.get(_FULL_SESSION_KEY)
+    return copy.deepcopy(blob) if isinstance(blob, dict) else {}
 
 
 def load_current_states_summary() -> dict[str, dict[str, Any]]:
