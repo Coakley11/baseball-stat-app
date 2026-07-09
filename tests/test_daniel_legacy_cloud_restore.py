@@ -75,7 +75,9 @@ class TestDanielLegacyCloudRestore(unittest.TestCase):
 
         with patch("suite_auth.is_auth_enabled", return_value=True), patch(
             "suite_auth.is_authenticated", return_value=True
-        ), patch("suite_cloud_state.load_cloud_full_session", return_value=(current_blob, {})), patch(
+        ), patch("suite_workspace_registry.is_admin_account", return_value=True), patch(
+            "suite_cloud_state.load_cloud_full_session", return_value=(current_blob, {})
+        ), patch(
             "workflow_persist_guard._load_authenticated_migration_cloud_blobs",
             side_effect=_fake_migration_blobs,
         ), patch(
@@ -87,6 +89,34 @@ class TestDanielLegacyCloudRestore(unittest.TestCase):
             names = {str(a.get("draft_name")) for a in archives if isinstance(a, dict)}
             self.assertIn("Uploaded trial League", names)
             self.assertIn("Second draft", names)
+
+
+class TestMigrationAdminOnly(unittest.TestCase):
+    def test_coakley11_not_eligible_for_cross_user_migration(self) -> None:
+        from workflow_persist_guard import _authenticated_cloud_migration_eligible
+
+        session = _auth_session(
+            user_id="961df5e0-cdde-48d7-80dd-95a8ba3f46e5",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch("suite_workspace_registry.is_admin_account", return_value=False):
+            self.assertFalse(_authenticated_cloud_migration_eligible(session))
+
+    def test_daniel_eligible_for_cross_user_migration(self) -> None:
+        from workflow_persist_guard import _authenticated_cloud_migration_eligible
+
+        session = _auth_session(
+            user_id="f66b85aa-1192-4f93-a669-d238bcd6858b",
+            email="daniel.cohen11@yahoo.com",
+            external_id="daniel",
+        )
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch("suite_workspace_registry.is_admin_account", return_value=True):
+            self.assertTrue(_authenticated_cloud_migration_eligible(session))
 
 
 if __name__ == "__main__":

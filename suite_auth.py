@@ -382,6 +382,39 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
             pass
 
 
+def _sync_auth_account_identity(session_state: dict[str, Any], *, st: Any | None = None) -> str:
+    """Resolve suite_users cloud row for the signed-in account; refresh account cache."""
+    suite_user_id = ""
+    try:
+        from suite_user import get_account_user_id, reset_account_cache
+
+        reset_account_cache()
+        from suite_storage_supabase import ensure_user_row
+
+        suite_user_id = ensure_user_row(
+            resolve_auth_external_id(session_state),
+            email=str(session_state.get(AUTH_USER_EMAIL_KEY) or ""),
+        )
+        reset_account_cache()
+        suite_user_id = str(get_account_user_id() or suite_user_id or "").strip()
+        if suite_user_id:
+            session_state["_suite_cloud_user_id"] = suite_user_id
+    except Exception:
+        pass
+    if st is not None and session_state.get(AUTH_TOKENS_KEY) and suite_user_id:
+        try:
+            from suite_auth_browser import save_browser_auth_tokens
+
+            save_browser_auth_tokens(
+                st,
+                dict(session_state.get(AUTH_TOKENS_KEY) or {}),
+                auth_user_id=suite_user_id,
+            )
+        except ImportError:
+            pass
+    return suite_user_id
+
+
 def _persist_auth_session(
     session_state: dict[str, Any],
     *,
@@ -402,18 +435,7 @@ def _persist_auth_session(
             pass
     suite_user_id = ""
     try:
-        from suite_storage_supabase import ensure_user_row
-
-        suite_user_id = ensure_user_row(
-            resolve_auth_external_id(session_state),
-            email=str(session_state.get(AUTH_USER_EMAIL_KEY) or ""),
-        )
-        try:
-            from suite_user import reset_account_cache
-
-            reset_account_cache()
-        except ImportError:
-            pass
+        suite_user_id = _sync_auth_account_identity(session_state, st=st)
     except Exception:
         pass
     try:
@@ -436,13 +458,6 @@ def _persist_auth_session(
         preserve_page_through_auth(session_state, app_id="baseball")
     except ImportError:
         pass
-    if st is not None and tokens and suite_user_id:
-        try:
-            from suite_auth_browser import save_browser_auth_tokens
-
-            save_browser_auth_tokens(st, tokens, auth_user_id=suite_user_id)
-        except ImportError:
-            pass
 
 
 def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> bool:
@@ -454,6 +469,10 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     if not is_auth_enabled():
         return True
     if is_authenticated(session_state):
+        try:
+            _sync_auth_account_identity(session_state, st=st)
+        except Exception:
+            pass
         try:
             enforce_workspace_ownership(session_state)
         except Exception:
@@ -489,18 +508,10 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         if refreshed:
             tokens = refreshed
         _apply_authenticated_user(session_state, user, tokens=tokens)
-        if st is not None and session_state.get(AUTH_USER_EMAIL_KEY):
-            try:
-                from suite_auth_browser import save_browser_auth_tokens
-                from suite_user import get_account_user_id
-
-                save_browser_auth_tokens(
-                    st,
-                    tokens,
-                    auth_user_id=get_account_user_id(),
-                )
-            except ImportError:
-                pass
+        try:
+            _sync_auth_account_identity(session_state, st=st)
+        except Exception:
+            pass
     except Exception:
         _clear_auth_session(session_state, st=st)
         return False

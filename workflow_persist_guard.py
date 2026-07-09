@@ -50,28 +50,6 @@ def mark_workflow_persist_authoritative(session: dict[str, Any]) -> None:
     session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
 
 
-def persist_draft_library_after_mutation(
-    st: Any,
-    session: dict[str, Any],
-    *,
-    reason: str,
-    entry: dict[str, Any] | None = None,
-) -> bool:
-    """Persist session draft library to disk + cloud with readback verification."""
-    try:
-        from draft_archive_ui import _persist_archive
-
-        return bool(_persist_archive(session, st, reason=reason, entry=entry))
-    except ImportError:
-        mark_workflow_persist_authoritative(session)
-        try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            return bool(force_save_baseball_state(st, reason=reason))
-        except ImportError:
-            return False
-
-
 def is_draft_library_mutation_save_reason(reason: str) -> bool:
     """True when a save should carry draft_archive_teams / league contexts to disk+cloud."""
     raw = str(reason or "").strip()
@@ -241,10 +219,16 @@ def _full_session_blob_from_storage_app_key(storage_app_key: str) -> dict[str, A
 
 
 def _authenticated_cloud_migration_eligible(session: dict[str, Any]) -> bool:
+    """Admin-only cross-user cloud migration (Daniel recovery). Never for child accounts."""
     try:
         from suite_auth import is_auth_enabled, is_authenticated
+        from suite_workspace_registry import is_admin_account
 
-        return bool(is_auth_enabled() and is_authenticated(session))
+        return bool(
+            is_auth_enabled()
+            and is_authenticated(session)
+            and is_admin_account(session_state=session)
+        )
     except ImportError:
         return False
 
@@ -1308,10 +1292,22 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
             from suite_user import get_account_user_id
 
             account_user_id = get_account_user_id()
+            auth_jwt_user_id = str(session.get("_suite_auth_user_id") or "").strip()
+            cloud_suite_user_id = str(session.get("_suite_cloud_user_id") or account_user_id or "").strip()
+            if auth_jwt_user_id and cloud_suite_user_id and auth_jwt_user_id != cloud_suite_user_id:
+                account_user_id = cloud_suite_user_id
         else:
             account_user_id = str(session.get("_suite_auth_user_id") or "")
     except ImportError:
         account_user_id = str(session.get("_suite_auth_user_id") or "")
+    auth_jwt_user_id = str(session.get("_suite_auth_user_id") or "").strip()
+    cloud_suite_user_id = str(session.get("_suite_cloud_user_id") or account_user_id or "").strip()
+    cloud_identity_mismatch = bool(
+        authenticated
+        and auth_jwt_user_id
+        and cloud_suite_user_id
+        and auth_jwt_user_id != cloud_suite_user_id
+    )
 
     workspace_id = ""
     workspace_label = ""
@@ -1408,6 +1404,9 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         "account_email": account_email,
         "account_external_id": account_external_id,
         "account_user_id": account_user_id,
+        "auth_jwt_user_id": auth_jwt_user_id,
+        "cloud_suite_user_id": cloud_suite_user_id,
+        "cloud_identity_mismatch": cloud_identity_mismatch,
         "auth_enabled": auth_enabled,
         "authenticated": authenticated,
         "workspace_id": workspace_id,
@@ -1503,11 +1502,16 @@ def _resolve_probe_auth_labels(session: dict[str, Any], diag: dict[str, Any]) ->
         }
 
     if authenticated:
+        auth_jwt = str(diag.get("auth_jwt_user_id") or "").strip()
+        cloud_uid = str(diag.get("cloud_suite_user_id") or account_user_id or "").strip()
+        user_display = cloud_uid or account_user_id or "—"
+        if auth_jwt and cloud_uid and auth_jwt != cloud_uid:
+            user_display = f"{cloud_uid} (auth jwt `{auth_jwt}`)"
         return {
             "signed_in_label": "yes",
             "auth_scope_label": f"Signed in · cloud key `{cloud_app_key or '—'}`",
             "account_email_display": account_email or "—",
-            "user_id_display": account_user_id or "—",
+            "user_id_display": user_display,
         }
 
     if account_user_id and not account_user_id.startswith("local:"):
@@ -1788,6 +1792,9 @@ def build_persistence_probe_panel(session: dict[str, Any]) -> dict[str, Any]:
         "owned_workspace_id": owned_workspace_id or "—",
         "account_external_id": account_external_id or "—",
         "allowed_workspaces": allowed_workspaces,
+        "cloud_identity_mismatch": bool(diag.get("cloud_identity_mismatch")),
+        "auth_jwt_user_id": str(diag.get("auth_jwt_user_id") or ""),
+        "cloud_suite_user_id": str(diag.get("cloud_suite_user_id") or ""),
         "cloud_app_key": str(diag.get("cloud_app_key") or cloud_write_app_key or "—"),
         "session_draft_count": session_draft_count,
         "cloud_draft_count": cloud_draft_count,

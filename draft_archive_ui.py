@@ -296,6 +296,11 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
             st.caption(probe["auth_scope_label"])
         st.markdown(f"**Account email:** {probe.get('account_email') or '—'}")
         st.markdown(f"**Cloud user ID:** `{probe.get('user_id') or '—'}`")
+        if probe.get("cloud_identity_mismatch"):
+            st.error(
+                "Cloud identity mismatch — session auth user id differs from the cloud row id used for restore/save. "
+                "Sign out, hard refresh, and sign in again before invite/trade testing."
+            )
         st.markdown(f"**Workspace ID:** `{probe.get('workspace_id') or '—'}`")
         st.markdown(f"**Owned workspace ID:** `{probe.get('owned_workspace_id') or '—'}`")
         st.markdown(f"**Account scope (external id):** `{probe.get('account_external_id') or '—'}`")
