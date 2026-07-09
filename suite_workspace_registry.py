@@ -291,6 +291,19 @@ def resolve_owned_workspace_id(session_state: dict[str, Any] | None = None) -> s
             session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
                 slug=slug, email=ctx["email"], display_name=ctx["display_name"]
             )
+    if not slug:
+        try:
+            from suite_auth import account_scoped_workspace_target
+
+            slug = str(account_scoped_workspace_target(session_state) or "").strip()
+            if slug:
+                session_state[SESSION_OWNED_WORKSPACE_KEY] = slug
+                if not str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip():
+                    session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
+                        slug=slug, email=ctx["email"], display_name=ctx["display_name"]
+                    )
+        except ImportError:
+            pass
     return slug
 
 

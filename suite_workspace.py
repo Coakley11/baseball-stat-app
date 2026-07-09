@@ -130,22 +130,65 @@ def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) 
     if explicit not in (None, ""):
         return normalize_workspace_id(explicit)
     ss: dict[str, Any] | None = None
+    ws = ""
     if st is not None:
         ss = st.session_state
         raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
-            return normalize_workspace_id(str(raw))
-    try:
-        import streamlit as st_module  # noqa: WPS433
+            ws = normalize_workspace_id(str(raw))
+    if not ws:
+        try:
+            import streamlit as st_module  # noqa: WPS433
 
-        if ss is None:
-            ss = st_module.session_state
-        raw = ss.get(SESSION_KEY)
-        if raw not in (None, ""):
-            return normalize_workspace_id(str(raw))
-    except Exception:
-        ss = None
-    return load_persisted_workspace_id(session_state=ss)
+            if ss is None:
+                ss = st_module.session_state
+            raw = ss.get(SESSION_KEY)
+            if raw not in (None, ""):
+                ws = normalize_workspace_id(str(raw))
+        except Exception:
+            ss = None
+    if not ws:
+        ws = load_persisted_workspace_id(session_state=ss)
+    if ss is not None:
+        ws = _sync_account_scoped_workspace(ws, session_state=ss, st=st)
+    return ws
+
+
+def _sync_account_scoped_workspace(
+    workspace_id: str,
+    *,
+    session_state: dict[str, Any],
+    st: Any | None = None,
+) -> str:
+    """
+    Hard-clamp resolved workspace to the signed-in account's single allowed workspace.
+
+    Runs on every resolve so a stale daniel SESSION_KEY cannot survive after auth
+    scope resolves to coakley11, even when owned-workspace registry is empty.
+    """
+    try:
+        from suite_auth import account_scoped_workspace_target, _seed_owned_workspace_cache
+
+        target = account_scoped_workspace_target(session_state)
+        if not target:
+            return normalize_workspace_id(workspace_id)
+        ws = normalize_workspace_id(workspace_id)
+        if ws == target:
+            _seed_owned_workspace_cache(session_state, target)
+            return ws
+        if st is not None:
+            set_active_workspace_id(st, target)
+        else:
+            session_state[SESSION_KEY] = target
+            persist_active_workspace_id(target, session_state=session_state)
+        try:
+            session_state[SESSION_KEY] = target
+        except Exception:
+            pass
+        _seed_owned_workspace_cache(session_state, target)
+        return target
+    except ImportError:
+        return normalize_workspace_id(workspace_id)
 
 
 def get_active_workspace_id(st: Any | None = None) -> str:
@@ -445,6 +488,13 @@ def init_suite_workspace(st: Any) -> str:
                 pass
 
     if st.session_state.get(_INITIALIZED_KEY):
+        try:
+            from suite_auth import enforce_workspace_ownership, is_auth_enabled, is_authenticated
+
+            if is_auth_enabled() and is_authenticated(st.session_state):
+                enforce_workspace_ownership(st.session_state)
+        except ImportError:
+            pass
         return get_active_workspace_id(st)
 
     if SESSION_KEY not in st.session_state:

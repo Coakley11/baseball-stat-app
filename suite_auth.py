@@ -140,6 +140,51 @@ def _infer_external_id_from_email(email: str) -> str:
     return local or "daniel"
 
 
+def account_scoped_workspace_target(session_state: dict[str, Any]) -> str:
+    """
+    Single allowed workspace for a signed-in non-admin account.
+
+    Used to hard-clamp active workspace even when owned-workspace registry
+    resolution is empty (e.g. ephemeral/read-only cloud disk).
+    """
+    if not is_auth_enabled() or not is_authenticated(session_state):
+        return ""
+    try:
+        from suite_workspace import normalize_workspace_id
+        from suite_workspace_registry import is_admin_account
+
+        if is_admin_account(session_state=session_state):
+            return ""
+        allowed = allowed_workspaces_for_session(session_state)
+        if len(allowed) == 1:
+            return normalize_workspace_id(allowed[0])
+    except ImportError:
+        pass
+    return ""
+
+
+def _seed_owned_workspace_cache(session_state: dict[str, Any], workspace_id: str) -> None:
+    """Ensure owned-workspace session keys are set for diagnostics and cloud scoping."""
+    ws = str(workspace_id or "").strip()
+    if not ws:
+        return
+    try:
+        from suite_workspace_registry import (
+            SESSION_OWNED_WORKSPACE_KEY,
+            SESSION_OWNED_WORKSPACE_LABEL_KEY,
+            derive_workspace_label,
+        )
+
+        session_state[SESSION_OWNED_WORKSPACE_KEY] = ws
+        if not str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip():
+            session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
+                slug=ws,
+                email=current_auth_email(session_state),
+            )
+    except ImportError:
+        session_state["_suite_owned_workspace_id"] = ws
+
+
 def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
     """Clamp active workspace to the signed-in account's owned workspace."""
     if not is_auth_enabled() or not is_authenticated(session_state):
@@ -157,11 +202,6 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
 
         st = SimpleNamespace(session_state=session_state)
         ensure_owned_workspace_for_session(session_state)
-        # Use resolve_owned_workspace_id (derives from email/external id even when
-        # the registry/session cache is empty). We are already past the
-        # authenticated guard above, so this is non-empty for real accounts —
-        # preventing the clamp from silently no-oping into shared "daniel".
-        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state))
         allowed = tuple(
             normalize_workspace_id(w)
             for w in allowed_workspaces_for_session(session_state)
@@ -169,13 +209,18 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         active = normalize_workspace_id(get_active_workspace_id(st))
         admin = is_admin_account(session_state=session_state)
 
-        # Non-admin accounts are hard-clamped to their single owned workspace.
-        # A stale ?suite_workspace=daniel, persisted file, or session key can
-        # never override the signed-in account's owned workspace.
-        if owned and not admin:
-            if active != owned:
-                set_active_workspace_id(st, owned)
+        # Non-admin: hard-clamp to the single allowed workspace even when owned
+        # registry resolution is empty (production: scope=coakley11 but active=daniel).
+        scoped_target = account_scoped_workspace_target(session_state)
+        if scoped_target and not admin:
+            _seed_owned_workspace_cache(session_state, scoped_target)
+            if active != scoped_target:
+                set_active_workspace_id(st, scoped_target)
             return
+
+        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state))
+        if owned:
+            _seed_owned_workspace_cache(session_state, owned)
 
         # Admin (daniel) retains multi-workspace switching, but cannot remain on
         # a workspace outside the allowed set.
@@ -395,6 +440,10 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     if not is_auth_enabled():
         return True
     if is_authenticated(session_state):
+        try:
+            enforce_workspace_ownership(session_state)
+        except Exception:
+            pass
         return True
 
     tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})

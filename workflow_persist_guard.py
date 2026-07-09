@@ -1007,6 +1007,13 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         owned_workspace_id = str(get_owned_workspace_id(session) or "")
         if not owned_workspace_id:
             owned_workspace_id = str(resolve_owned_workspace_id(session) or "")
+        if not owned_workspace_id:
+            try:
+                from suite_auth import account_scoped_workspace_target
+
+                owned_workspace_id = str(account_scoped_workspace_target(session) or "")
+            except ImportError:
+                pass
     except ImportError:
         owned_workspace_id = str(session.get("_suite_owned_workspace_id") or "")
 

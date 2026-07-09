@@ -295,6 +295,38 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
             enforce_workspace_ownership(session)
             self.assertEqual(session["_suite_active_workspace_id"], "coakley11")
 
+    def test_resolve_clamps_stale_daniel_when_owned_empty(self) -> None:
+        """Production regression: scope/allowed=coakley11 but SESSION_KEY stuck on daniel."""
+        session = _auth_session(
+            user_id="961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        session["_suite_active_workspace_id"] = "daniel"
+        st = _FakeSt(session)
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch("suite_workspace.persist_active_workspace_id", return_value=True):
+            ws = get_active_workspace_id(st)
+            self.assertEqual(ws, "coakley11")
+            self.assertEqual(st.session_state["_suite_active_workspace_id"], "coakley11")
+            self.assertEqual(st.session_state.get("_suite_owned_workspace_id"), "coakley11")
+
+    def test_init_reclamps_when_already_initialized(self) -> None:
+        session = _auth_session(
+            user_id="961df5e9-cdde-48d7-80dd-95a8ba3f46e5",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        session["_suite_active_workspace_id"] = "daniel"
+        session["_suite_workspace_initialized"] = True
+        st = _FakeSt(session)
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch("suite_workspace.persist_active_workspace_id", return_value=True):
+            ws = init_suite_workspace(st)
+            self.assertEqual(ws, "coakley11")
+
     def test_clamp_failure_does_not_clear_auth_session(self) -> None:
         """restore_auth_session must keep a valid session even if the clamp raises."""
         from suite_auth import AUTH_SESSION_KEY, restore_auth_session
