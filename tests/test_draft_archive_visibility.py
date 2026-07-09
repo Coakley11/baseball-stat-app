@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -12,6 +12,7 @@ from draft_archive_visibility import (
     is_saved_draft_visible_to_session,
     list_visible_draft_archives,
     prune_invisible_shared_league_state,
+    sanitize_workflow_library_for_account,
 )
 from fantasy_league_context import (
     CONTEXT_TYPE_REAL_LEAGUE,
@@ -83,6 +84,20 @@ class TestDraftArchiveVisibility(unittest.TestCase):
             context = get_league_context(coakley, str(entry.get("league_context_id") or ""))
             self.assertFalse(is_saved_draft_visible_to_session(coakley, entry, context=context))
 
+    def test_imported_archive_without_context_is_hidden_for_non_member(self) -> None:
+        coakley = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
+        entry = {
+            "draft_id": "import:orphan01",
+            "draft_type": DRAFT_TYPE_IMPORTED,
+            "draft_name": "Shared Upload league",
+            "team_name": "Donny",
+            "league_rosters": {"Donny": {"players": []}},
+        }
+        coakley["draft_archive_teams"] = [entry]
+        with _as_user("user:coakley"):
+            self.assertFalse(is_saved_draft_visible_to_session(coakley, entry, context=None))
+            self.assertEqual(len(list_visible_draft_archives(coakley)), 0)
+
     def test_prune_removes_leaked_shared_league(self) -> None:
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
         _seed_daniel_shared_league(session)
@@ -96,6 +111,27 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         self.assertGreaterEqual(removed["archives_removed"], 1)
         self.assertGreaterEqual(removed["contexts_removed"], 1)
         self.assertEqual(len(list_draft_archives(coakley)), 0)
+
+    def test_sanitize_persists_cleaned_library(self) -> None:
+        session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
+        _seed_daniel_shared_league(session)
+
+        coakley = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
+        coakley["draft_archive_teams"] = list(session.get("draft_archive_teams") or [])
+        coakley["fantasy_league_context_state"] = dict(session.get("fantasy_league_context_state") or {})
+        st = MagicMock()
+        st.session_state = coakley
+
+        with _as_user("user:coakley"), patch(
+            "baseball_persistent_state.force_save_baseball_state",
+            return_value=True,
+        ) as save_mock:
+            out = sanitize_workflow_library_for_account(coakley, st=st, persist_cleanup=True)
+
+        self.assertGreaterEqual(out["total_removed"], 1)
+        self.assertTrue(out["persisted"])
+        save_mock.assert_called_once()
+        self.assertEqual(save_mock.call_args.kwargs.get("reason"), "workflow_library_sanitized")
 
     def test_invited_member_sees_league_after_team_claim(self) -> None:
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")

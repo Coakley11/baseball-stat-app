@@ -474,6 +474,13 @@ def _persist_auth_session(
         preserve_page_through_auth(session_state, app_id="baseball")
     except ImportError:
         pass
+    if is_authenticated(session_state):
+        try:
+            from draft_archive_visibility import sanitize_workflow_library_for_account
+
+            sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
+        except ImportError:
+            pass
 
 
 def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> bool:
@@ -492,6 +499,12 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         try:
             enforce_workspace_ownership(session_state)
         except Exception:
+            pass
+        try:
+            from draft_archive_visibility import sanitize_workflow_library_for_account
+
+            sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
+        except ImportError:
             pass
         return True
 
@@ -536,6 +549,12 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     try:
         enforce_workspace_ownership(session_state)
     except Exception:
+        pass
+    try:
+        from draft_archive_visibility import sanitize_workflow_library_for_account
+
+        sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
+    except ImportError:
         pass
     return True
 

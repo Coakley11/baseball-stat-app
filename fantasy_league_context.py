@@ -1813,8 +1813,8 @@ def apply_fantasy_league_context_disk_state(session: dict[str, Any], state: dict
     except Exception:
         pass
     try:
-        from draft_archive_visibility import prune_invisible_shared_league_state
+        from draft_archive_visibility import sanitize_workflow_library_for_account
 
-        prune_invisible_shared_league_state(session)
+        sanitize_workflow_library_for_account(session, persist_cleanup=False)
     except ImportError:
         pass

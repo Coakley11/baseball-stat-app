@@ -284,6 +284,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "historical_chart_save",
     "career_chart_save",
     "probe_test_draft_saved",
+    "workflow_library_sanitized",
 })
 
 

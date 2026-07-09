@@ -5,19 +5,20 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+LIBRARY_SANITIZE_VERSION = 1
+
 
 def _resolve_session_user_id(session: dict[str, Any]) -> str:
+    cloud = str(session.get("_suite_cloud_user_id") or "").strip()
+    if cloud:
+        return cloud
     try:
         from fantasy_league_team_ownership import _resolve_user_id
 
         return str(_resolve_user_id() or "").strip()
     except ImportError:
         pass
-    return str(
-        session.get("_suite_cloud_user_id")
-        or session.get("_suite_auth_user_id")
-        or ""
-    ).strip()
+    return str(session.get("_suite_auth_user_id") or "").strip()
 
 
 def _auth_session_scope_active(session: dict[str, Any]) -> bool:
@@ -35,6 +36,52 @@ def _auth_session_scope_active(session: dict[str, Any]) -> bool:
     )
 
 
+def _requires_membership_visibility(
+    entry: dict[str, Any],
+    context: dict[str, Any] | None,
+) -> bool:
+    """Uploaded/shared leagues require commissioner or claimed-team membership."""
+    try:
+        from draft_archive_state import DRAFT_TYPE_IMPORTED
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, SOURCE_IMPORTED_DRAFT
+    except ImportError:
+        return False
+
+    draft_type = str(entry.get("draft_type") or "").strip()
+    if draft_type == DRAFT_TYPE_IMPORTED:
+        return True
+    if not isinstance(context, dict):
+        return False
+    if str(context.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
+        return True
+    if str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
+        return True
+    return False
+
+
+def _has_shared_league_membership(
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    context: dict[str, Any] | None,
+    user_id: str,
+) -> bool:
+    if not user_id:
+        return False
+    if not isinstance(context, dict):
+        return False
+    try:
+        from fantasy_league_invites import is_league_commissioner
+        from fantasy_league_team_ownership import owned_team_for_user
+    except ImportError:
+        return False
+    if is_league_commissioner(context, user_id):
+        return True
+    if owned_team_for_user(context, user_id):
+        return True
+    return False
+
+
 def is_saved_draft_visible_to_session(
     session: dict[str, Any],
     entry: dict[str, Any],
@@ -45,28 +92,18 @@ def is_saved_draft_visible_to_session(
     if not isinstance(entry, dict):
         return False
     try:
-        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, get_league_context_for_archive
-        from fantasy_league_invites import is_league_commissioner
-        from fantasy_league_team_ownership import owned_team_for_user
+        from fantasy_league_context import get_league_context_for_archive
     except ImportError:
         return True
 
     ctx = context if context is not None else get_league_context_for_archive(session, entry)
-    if not isinstance(ctx, dict):
-        return True
-    if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+    if not _requires_membership_visibility(entry, ctx):
         return True
     if not _auth_session_scope_active(session):
         return True
 
     uid = _resolve_session_user_id(session)
-    if not uid:
-        return False
-    if is_league_commissioner(ctx, uid):
-        return True
-    if owned_team_for_user(ctx, uid):
-        return True
-    return False
+    return _has_shared_league_membership(session, entry, context=ctx, user_id=uid)
 
 
 def list_visible_draft_archives(session: dict[str, Any]) -> list[dict[str, Any]]:
@@ -90,13 +127,10 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
 
     try:
         from fantasy_league_context import (
-            CONTEXT_TYPE_REAL_LEAGUE,
             FANTASY_LEAGUE_CONTEXT_STATE_KEY,
             ensure_fantasy_league_context_state,
             get_league_context_for_archive,
         )
-        from fantasy_league_invites import is_league_commissioner
-        from fantasy_league_team_ownership import owned_team_for_user
         from workflow_persist_guard import mark_workflow_persist_authoritative
     except ImportError:
         return {"archives_removed": 0, "contexts_removed": 0}
@@ -120,27 +154,28 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
     store = ensure_fantasy_league_context_state(session)
     contexts = store.get("contexts") or {}
     if isinstance(contexts, dict):
-        uid = _resolve_session_user_id(session)
         auth_scope = _auth_session_scope_active(session)
+        uid = _resolve_session_user_id(session)
         kept_ctx: dict[str, Any] = {}
         for context_id, ctx in contexts.items():
             if not isinstance(ctx, dict):
                 continue
-            if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+            stub = {"draft_id": str(ctx.get("source_draft_id") or ""), "league_context_id": context_id}
+            if not _requires_membership_visibility(stub, ctx):
                 kept_ctx[context_id] = ctx
                 continue
             if not auth_scope:
                 kept_ctx[context_id] = ctx
                 continue
-            if not uid:
-                contexts_removed += 1
-                continue
-            if is_league_commissioner(ctx, uid) or owned_team_for_user(ctx, uid):
+            if _has_shared_league_membership(session, stub, context=ctx, user_id=uid):
                 kept_ctx[context_id] = ctx
             else:
                 contexts_removed += 1
         if contexts_removed:
             store["contexts"] = kept_ctx
+            active_ctx_id = str(store.get("active_league_context_id") or "").strip()
+            if active_ctx_id and active_ctx_id not in kept_ctx:
+                store.pop("active_league_context_id", None)
             session[FANTASY_LEAGUE_CONTEXT_STATE_KEY] = store
 
     if archives_removed or contexts_removed:
@@ -149,3 +184,34 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
         except Exception:
             pass
     return {"archives_removed": archives_removed, "contexts_removed": contexts_removed}
+
+
+def sanitize_workflow_library_for_account(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    persist_cleanup: bool = False,
+) -> dict[str, Any]:
+    """
+    Drop foreign shared leagues from session and optionally rewrite cloud/disk rows.
+
+    Runs after restore merge so polluted coakley11 blobs are cleaned once and saved back.
+    """
+    removed = prune_invisible_shared_league_state(session)
+    total = int(removed.get("archives_removed") or 0) + int(removed.get("contexts_removed") or 0)
+    out = dict(removed)
+    out["total_removed"] = total
+    out["persisted"] = False
+    if total <= 0:
+        return out
+
+    session["_suite_workflow_library_sanitized"] = dict(out)
+    session["_suite_workflow_library_sanitize_version"] = LIBRARY_SANITIZE_VERSION
+    if persist_cleanup and st is not None:
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            out["persisted"] = bool(force_save_baseball_state(st, reason="workflow_library_sanitized"))
+        except Exception:
+            out["persisted"] = False
+    return out

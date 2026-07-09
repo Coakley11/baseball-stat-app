@@ -908,6 +908,12 @@ def merge_protected_workflow_on_restore(
     if merged_keys:
         session["_suite_workflow_restore_merged_keys"] = merged_keys
         session["_suite_workflow_restore_merge_sources"] = merge_sources
+    try:
+        from draft_archive_visibility import sanitize_workflow_library_for_account
+
+        sanitize_workflow_library_for_account(session, st=st, persist_cleanup=True)
+    except ImportError:
+        pass
     return session
 
 
@@ -974,9 +980,9 @@ def ensure_session_workflow_hydrated(
     if after > before:
         out["hydrated"] = True
         try:
-            from draft_archive_visibility import prune_invisible_shared_league_state
+            from draft_archive_visibility import sanitize_workflow_library_for_account
 
-            prune_invisible_shared_league_state(session)
+            sanitize_workflow_library_for_account(session, st=st, persist_cleanup=True)
             after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
             out["session_after"] = after
         except ImportError:
@@ -1329,11 +1335,19 @@ def build_saved_draft_library_diagnostics(session: dict[str, Any]) -> dict[str, 
         account_user_id = str(session.get("_suite_auth_user_id") or "")
     auth_jwt_user_id = str(session.get("_suite_auth_user_id") or "").strip()
     cloud_suite_user_id = str(session.get("_suite_cloud_user_id") or account_user_id or "").strip()
+    expected_cloud_user_id = ""
+    if authenticated:
+        try:
+            from suite_user import get_account_user_id
+
+            expected_cloud_user_id = str(get_account_user_id() or "").strip()
+        except ImportError:
+            expected_cloud_user_id = cloud_suite_user_id
     cloud_identity_mismatch = bool(
         authenticated
-        and auth_jwt_user_id
+        and expected_cloud_user_id
         and cloud_suite_user_id
-        and auth_jwt_user_id != cloud_suite_user_id
+        and expected_cloud_user_id != cloud_suite_user_id
     )
 
     workspace_id = ""

@@ -15,7 +15,11 @@ from draft_archive_state import (
     list_draft_archives,
     rename_draft_archive,
 )
-from draft_archive_visibility import list_visible_draft_archives, prune_invisible_shared_league_state
+from draft_archive_visibility import (
+    is_saved_draft_visible_to_session,
+    list_visible_draft_archives,
+    prune_invisible_shared_league_state,
+)
 from fantasy_league_context import (
     activate_archive_league_context,
     archive_my_team_player_count,
@@ -299,8 +303,8 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         st.markdown(f"**Cloud user ID:** `{probe.get('user_id') or '—'}`")
         if probe.get("cloud_identity_mismatch"):
             st.error(
-                "Cloud identity mismatch — session auth user id differs from the cloud row id used for restore/save. "
-                "Sign out, hard refresh, and sign in again before invite/trade testing."
+                "Cloud identity mismatch — the session cloud row id does not match this account's "
+                "suite_users row. Sign out, hard refresh, and sign in again before invite/trade testing."
             )
         st.markdown(f"**Workspace ID:** `{probe.get('workspace_id') or '—'}`")
         st.markdown(f"**Owned workspace ID:** `{probe.get('owned_workspace_id') or '—'}`")
@@ -2286,6 +2290,15 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
 
     archives = list_visible_draft_archives(session)
     active = get_active_draft_archive(session)
+    if active and not is_saved_draft_visible_to_session(session, active):
+        clear_active_draft_archive(session)
+        try:
+            from fantasy_league_context import clear_active_league_context
+
+            clear_active_league_context(session)
+        except ImportError:
+            pass
+        active = None
     active_context = get_active_league_context(session)
     active_id = str((active or {}).get("draft_id") or "")
     active_context_id = str((active_context or {}).get("league_context_id") or "")
