@@ -359,6 +359,21 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         self.assertGreaterEqual(int(trace.get("uploaded_league_session_count") or 0), 1)
         row = next(item for item in (trace.get("uploaded_leagues") or []) if str(item.get("draft_id")) == str(entry.get("draft_id")))
         self.assertEqual(int(row.get("team_count_hint") or 0), 4)
+        self.assertTrue(row.get("looks_like_uploaded_league"))
+
+    def test_invite_diagnostic_panel_always_renders_on_library(self) -> None:
+        from unittest.mock import MagicMock
+
+        from fantasy_league_invite_ui import render_commissioner_invite_diagnostics_panel
+
+        st = MagicMock()
+        st.expander.return_value.__enter__ = MagicMock(return_value=None)
+        st.expander.return_value.__exit__ = MagicMock(return_value=False)
+        session: dict = {"draft_archive_teams": []}
+        self.assertTrue(render_commissioner_invite_diagnostics_panel(st, session))
+        st.expander.assert_called_once()
+        expander_title = str(st.expander.call_args[0][0])
+        self.assertIn("Invite panel diagnostic", expander_title)
 
     def test_invite_joiner_is_not_commissioner(self) -> None:
         session: dict = {}

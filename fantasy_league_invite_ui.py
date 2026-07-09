@@ -88,38 +88,52 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
 
 
 def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any]) -> bool:
-    """Always show invite-panel trace for uploaded/shared league archives in session."""
-    trace = build_commissioner_invite_panel_trace(session)
-    session_count = int(trace.get("uploaded_league_session_count") or 0)
-    if session_count <= 0:
-        return False
-
-    with st.expander("Invite panel diagnostic (uploaded leagues)", expanded=True):
+    """Always show invite-panel trace on Saved Draft Library (not dev-gated)."""
+    with st.expander("Invite panel diagnostic (Saved Draft Library)", expanded=True):
         st.caption(
-            "Shows why **Invite managers to this shared league** is visible or hidden. "
-            "Appears whenever the session has an uploaded/shared multi-team league archive."
+            "Always shown on **Saved Draft Library** (not Developer Mode). "
+            "Explains why **Invite managers to this shared league** is visible or hidden."
         )
+        try:
+            trace = build_commissioner_invite_panel_trace(session)
+        except Exception as exc:
+            st.error(f"Invite diagnostic trace failed: {exc}")
+            return True
+
         st.markdown(
             f"**commissioner_invite_context:** "
             f"{'found' if trace.get('commissioner_invite_context_found') else 'None'}  \n"
             f"**Reason:** {trace.get('commissioner_invite_context_reason') or '—'}  \n"
-            f"**uploaded leagues in session:** {session_count}  \n"
-            f"**visible on library cards:** {int(trace.get('uploaded_league_card_count') or 0)}  \n"
+            f"**session draft archives:** {int(trace.get('session_draft_archive_count') or 0)}  \n"
+            f"**visible library cards:** {int(trace.get('visible_library_card_count') or 0)}  \n"
+            f"**uploaded leagues in session:** {int(trace.get('uploaded_league_session_count') or 0)}  \n"
+            f"**uploaded leagues on cards:** {int(trace.get('uploaded_league_card_count') or 0)}  \n"
             f"**current_user_id:** `{trace.get('current_user_id') or '—'}`  \n"
             f"**session_cloud_user_id:** `{trace.get('session_cloud_user_id') or '—'}`  \n"
             f"**session_auth_user_id:** `{trace.get('session_auth_user_id') or '—'}`  \n"
             f"**session_external_id:** `{trace.get('session_external_id') or '—'}`"
         )
-        for row in trace.get("uploaded_leagues") or []:
+
+        rows = trace.get("uploaded_leagues") or []
+        if not rows:
+            st.warning(
+                "No library cards were traced. If you see a card below, report "
+                "`session_draft_archive_count` vs `visible_library_card_count` from this panel."
+            )
+            return True
+
+        for row in rows:
             if not isinstance(row, dict):
                 continue
-            title = str(row.get("draft_name") or row.get("draft_id") or "Uploaded league").strip()
+            title = str(row.get("draft_name") or row.get("draft_id") or "Library card").strip()
             st.markdown(f"##### {title}")
             st.markdown(
                 f"- **draft_id:** `{row.get('draft_id') or '—'}`  \n"
                 f"- **draft_type:** `{row.get('draft_type') or '—'}`  \n"
                 f"- **league_context_id:** `{row.get('league_context_id') or '—'}`  \n"
                 f"- **visible_on_library_card:** {row.get('visible_on_library_card')}  \n"
+                f"- **looks_like_uploaded_league:** {row.get('looks_like_uploaded_league')}  \n"
+                f"- **upload_detection_reason:** {row.get('upload_detection_reason') or '—'}  \n"
                 f"- **team_count_hint:** {row.get('team_count_hint') or 0}  \n"
                 f"- **context_exists:** {row.get('context_exists')}  \n"
                 f"- **context_type:** `{row.get('context_type') or '—'}`  \n"

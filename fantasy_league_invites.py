@@ -798,29 +798,42 @@ def _archive_team_count_hint(
     return 0
 
 
+def explain_upload_league_detection(
+    entry: dict[str, Any],
+    context: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Whether this archive counts as uploaded/shared for invite diagnostics."""
+    try:
+        from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_SIMULATOR
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, SOURCE_IMPORTED_DRAFT
+    except ImportError as exc:
+        return False, f"import failed: {exc}"
+
+    draft_type = str(entry.get("draft_type") or "").strip()
+    team_count = _archive_team_count_hint(entry, context)
+    if draft_type == DRAFT_TYPE_IMPORTED:
+        return True, "draft_type=imported_draft"
+    if isinstance(context, dict):
+        context_type = str(context.get("context_type") or "").strip()
+        if context_type == CONTEXT_TYPE_REAL_LEAGUE:
+            return True, "linked context_type=real_league"
+        meta = context.get("metadata") or {}
+        if str(meta.get("source") or context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
+            return True, "metadata.source=imported_draft"
+    if draft_type == DRAFT_TYPE_SIMULATOR:
+        return False, f"draft_type=simulator (team_count={team_count})"
+    if team_count >= 2:
+        return True, f"multi-team archive (team_count={team_count})"
+    return False, f"not uploaded (draft_type={draft_type or '—'}, team_count={team_count})"
+
+
 def _archive_looks_like_uploaded_league(
     entry: dict[str, Any],
     context: dict[str, Any] | None = None,
 ) -> bool:
     """True when a Saved Draft Library entry is an uploaded/shared multi-team league."""
-    try:
-        from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_SIMULATOR
-        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, SOURCE_IMPORTED_DRAFT
-    except ImportError:
-        return False
-
-    draft_type = str(entry.get("draft_type") or "").strip()
-    if draft_type == DRAFT_TYPE_IMPORTED:
-        return True
-    if isinstance(context, dict):
-        if str(context.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
-            return True
-        meta = context.get("metadata") or {}
-        if str(meta.get("source") or context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
-            return True
-    if draft_type != DRAFT_TYPE_SIMULATOR and _archive_team_count_hint(entry, context) >= 2:
-        return True
-    return False
+    looks, _reason = explain_upload_league_detection(entry, context)
+    return looks
 
 
 def _uploaded_league_archive_candidates(session: dict[str, Any]) -> list[dict[str, Any]]:
@@ -916,53 +929,110 @@ def explain_commissioner_invite_block(
     return "unknown block — check team_ownership and commissioner_user_id"
 
 
-def build_commissioner_invite_panel_trace(session: dict[str, Any]) -> dict[str, Any]:
-    """Full invite-panel diagnostic for visible uploaded/shared league cards."""
+def _invite_trace_row_for_archive(
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    uid: str,
+    visible_on_library_card: bool,
+) -> dict[str, Any]:
     from fantasy_league_context import get_league_context_for_archive
+
+    ctx = get_league_context_for_archive(session, entry)
+    looks_uploaded, upload_detection_reason = explain_upload_league_detection(entry, ctx)
+    repaired = ctx
+    if isinstance(ctx, dict):
+        repaired, _ = repair_commissioner_identity(copy.deepcopy(ctx), session=None)
+    block_reason = explain_commissioner_invite_block(ctx, uid=uid, entry=entry)
+    ownership = get_team_ownership(ctx) if isinstance(ctx, dict) else {}
+    meta = (ctx or {}).get("metadata") or {}
+    return {
+        "draft_id": str(entry.get("draft_id") or "").strip(),
+        "draft_name": str(entry.get("draft_name") or "").strip(),
+        "draft_type": str(entry.get("draft_type") or "").strip(),
+        "archive_team_name": str(entry.get("team_name") or "").strip(),
+        "league_context_id": str(entry.get("league_context_id") or "").strip(),
+        "visible_on_library_card": visible_on_library_card,
+        "looks_like_uploaded_league": looks_uploaded,
+        "upload_detection_reason": upload_detection_reason,
+        "team_count_hint": _archive_team_count_hint(entry, ctx),
+        "context_exists": isinstance(ctx, dict),
+        "context_type": str((ctx or {}).get("context_type") or "").strip(),
+        "my_team_name": str((ctx or {}).get("my_team_name") or entry.get("team_name") or "").strip(),
+        "metadata_source": str(meta.get("source") or "").strip(),
+        "commissioner_user_id": get_commissioner_user_id(ctx) if isinstance(ctx, dict) else "",
+        "team_ownership": ownership,
+        "upload_owner_candidate": (
+            is_upload_commissioner_candidate(ctx, uid) if isinstance(ctx, dict) else False
+        ),
+        "is_commissioner": is_league_commissioner(ctx, uid) if isinstance(ctx, dict) else False,
+        "block_reason": block_reason,
+        "would_select_for_invite": isinstance(repaired, dict) and is_league_commissioner(repaired, uid),
+    }
+
+
+def build_commissioner_invite_panel_trace(session: dict[str, Any]) -> dict[str, Any]:
+    """Full invite-panel diagnostic for Saved Draft Library cards."""
+    from draft_archive_state import list_draft_archives
+    from draft_archive_visibility import is_saved_draft_visible_to_session, list_visible_draft_archives
 
     ids = _current_user_id_snapshot(session)
     uid = str(ids.get("current_user_id") or "").strip()
+    visible_entries = list_visible_draft_archives(session)
+    session_archive_count = len(list_draft_archives(session))
     uploaded_candidates = _uploaded_league_archive_candidates(session)
     uploaded_entries = _visible_uploaded_league_archives(session)
     invite_context = commissioner_invite_context(session)
+
+    seen_draft_ids: set[str] = set()
     league_rows: list[dict[str, Any]] = []
 
-    for entry in uploaded_candidates:
-        ctx = get_league_context_for_archive(session, entry)
-        repaired = ctx
-        if isinstance(ctx, dict):
-            repaired, _ = repair_commissioner_identity(copy.deepcopy(ctx), session=None)
-        block_reason = explain_commissioner_invite_block(ctx, uid=uid, entry=entry)
-        ownership = get_team_ownership(ctx) if isinstance(ctx, dict) else {}
-        meta = (ctx or {}).get("metadata") or {}
+    for entry in visible_entries:
+        if not isinstance(entry, dict):
+            continue
+        draft_id = str(entry.get("draft_id") or "").strip()
+        if not draft_id or draft_id in seen_draft_ids:
+            continue
+        seen_draft_ids.add(draft_id)
         league_rows.append(
-            {
-                "draft_id": str(entry.get("draft_id") or "").strip(),
-                "draft_name": str(entry.get("draft_name") or "").strip(),
-                "draft_type": str(entry.get("draft_type") or "").strip(),
-                "archive_team_name": str(entry.get("team_name") or "").strip(),
-                "league_context_id": str(entry.get("league_context_id") or "").strip(),
-                "visible_on_library_card": bool(entry.get("_invite_diag_visible_on_library_card")),
-                "team_count_hint": int(entry.get("_invite_diag_team_count_hint") or 0),
-                "context_exists": isinstance(ctx, dict),
-                "context_type": str((ctx or {}).get("context_type") or "").strip(),
-                "my_team_name": str((ctx or {}).get("my_team_name") or entry.get("team_name") or "").strip(),
-                "metadata_source": str(meta.get("source") or "").strip(),
-                "commissioner_user_id": get_commissioner_user_id(ctx) if isinstance(ctx, dict) else "",
-                "team_ownership": ownership,
-                "upload_owner_candidate": (
-                    is_upload_commissioner_candidate(ctx, uid) if isinstance(ctx, dict) else False
-                ),
-                "is_commissioner": is_league_commissioner(ctx, uid) if isinstance(ctx, dict) else False,
-                "block_reason": block_reason,
-                "would_select_for_invite": isinstance(repaired, dict) and is_league_commissioner(repaired, uid),
-            }
+            _invite_trace_row_for_archive(
+                session,
+                entry,
+                uid=uid,
+                visible_on_library_card=True,
+            )
+        )
+
+    for entry in uploaded_candidates:
+        draft_id = str(entry.get("draft_id") or "").strip()
+        if not draft_id or draft_id in seen_draft_ids:
+            continue
+        seen_draft_ids.add(draft_id)
+        league_rows.append(
+            _invite_trace_row_for_archive(
+                session,
+                entry,
+                uid=uid,
+                visible_on_library_card=bool(entry.get("_invite_diag_visible_on_library_card")),
+            )
         )
 
     if invite_context:
         invite_reason = "commissioner_invite_context matched a real_league context"
+    elif not league_rows:
+        invite_reason = (
+            "commissioner_invite_context returned None — no Saved Draft Library cards in session "
+            f"(session_draft_archive_count={session_archive_count})"
+        )
     elif not uploaded_candidates:
-        invite_reason = "no uploaded/shared league archives found in session"
+        visible_types = ", ".join(
+            f"{row.get('draft_type') or '—'}({row.get('team_count_hint') or 0} teams)"
+            for row in league_rows
+        )
+        invite_reason = (
+            "commissioner_invite_context returned None — visible library cards did not match "
+            f"uploaded/shared detection ({visible_types or 'no cards'})"
+        )
     elif not uploaded_entries:
         invite_reason = (
             "commissioner_invite_context returned None — uploaded league exists in session "
@@ -977,6 +1047,8 @@ def build_commissioner_invite_panel_trace(session: dict[str, Any]) -> dict[str, 
 
     return {
         **ids,
+        "session_draft_archive_count": session_archive_count,
+        "visible_library_card_count": len(visible_entries),
         "uploaded_league_session_count": len(uploaded_candidates),
         "uploaded_league_card_count": len(uploaded_entries),
         "commissioner_invite_context_found": bool(invite_context),
