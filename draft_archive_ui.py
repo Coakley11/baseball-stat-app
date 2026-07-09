@@ -2316,9 +2316,14 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     render_persistence_probe_panel(st, session)
 
     try:
-        from fantasy_league_invite_ui import render_commissioner_invite_panel, render_pending_league_invites
+        from fantasy_league_invite_ui import (
+            render_commissioner_invite_diagnostics_panel,
+            render_commissioner_invite_panel,
+            render_pending_league_invites,
+        )
 
         render_pending_league_invites(st, session)
+        render_commissioner_invite_diagnostics_panel(st, session)
         render_commissioner_invite_panel(st, session)
     except ImportError as exc:
         if not session.get("_league_invite_ui_import_error"):

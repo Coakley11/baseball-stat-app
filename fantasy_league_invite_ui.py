@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fantasy_league_invites import (
+    build_commissioner_invite_panel_trace,
     commissioner_invite_context,
     commissioner_invite_diagnostics,
     create_league_invite,
@@ -86,46 +87,66 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
     return True
 
 
+def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any]) -> bool:
+    """Always show invite-panel trace for uploaded/shared league archives in session."""
+    trace = build_commissioner_invite_panel_trace(session)
+    session_count = int(trace.get("uploaded_league_session_count") or 0)
+    if session_count <= 0:
+        return False
+
+    with st.expander("Invite panel diagnostic (uploaded leagues)", expanded=True):
+        st.caption(
+            "Shows why **Invite managers to this shared league** is visible or hidden. "
+            "Appears whenever the session has an uploaded/shared multi-team league archive."
+        )
+        st.markdown(
+            f"**commissioner_invite_context:** "
+            f"{'found' if trace.get('commissioner_invite_context_found') else 'None'}  \n"
+            f"**Reason:** {trace.get('commissioner_invite_context_reason') or '—'}  \n"
+            f"**uploaded leagues in session:** {session_count}  \n"
+            f"**visible on library cards:** {int(trace.get('uploaded_league_card_count') or 0)}  \n"
+            f"**current_user_id:** `{trace.get('current_user_id') or '—'}`  \n"
+            f"**session_cloud_user_id:** `{trace.get('session_cloud_user_id') or '—'}`  \n"
+            f"**session_auth_user_id:** `{trace.get('session_auth_user_id') or '—'}`  \n"
+            f"**session_external_id:** `{trace.get('session_external_id') or '—'}`"
+        )
+        for row in trace.get("uploaded_leagues") or []:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("draft_name") or row.get("draft_id") or "Uploaded league").strip()
+            st.markdown(f"##### {title}")
+            st.markdown(
+                f"- **draft_id:** `{row.get('draft_id') or '—'}`  \n"
+                f"- **draft_type:** `{row.get('draft_type') or '—'}`  \n"
+                f"- **league_context_id:** `{row.get('league_context_id') or '—'}`  \n"
+                f"- **visible_on_library_card:** {row.get('visible_on_library_card')}  \n"
+                f"- **team_count_hint:** {row.get('team_count_hint') or 0}  \n"
+                f"- **context_exists:** {row.get('context_exists')}  \n"
+                f"- **context_type:** `{row.get('context_type') or '—'}`  \n"
+                f"- **my_team_name:** `{row.get('my_team_name') or '—'}`  \n"
+                f"- **archive_team_name:** `{row.get('archive_team_name') or '—'}`  \n"
+                f"- **metadata_source:** `{row.get('metadata_source') or '—'}`  \n"
+                f"- **commissioner_user_id:** `{row.get('commissioner_user_id') or '—'}`  \n"
+                f"- **upload_owner_candidate:** {row.get('upload_owner_candidate')}  \n"
+                f"- **is_commissioner:** {row.get('is_commissioner')}  \n"
+                f"- **would_select_for_invite:** {row.get('would_select_for_invite')}  \n"
+                f"- **block_reason:** {row.get('block_reason') or '—'}"
+            )
+            ownership = row.get("team_ownership")
+            if ownership:
+                try:
+                    st.json({"team_ownership": ownership})
+                except Exception:
+                    st.code(str(ownership))
+            else:
+                st.caption("team_ownership: —")
+    return True
+
+
 def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     """Let the league commissioner invite another workspace/account."""
     context = commissioner_invite_context(session)
     if not context:
-        diag = commissioner_invite_diagnostics(session)
-        visible_imported = 0
-        try:
-            from draft_archive_state import DRAFT_TYPE_IMPORTED
-            from draft_archive_visibility import list_visible_draft_archives
-
-            visible_imported = sum(
-                1
-                for entry in list_visible_draft_archives(session)
-                if str(entry.get("draft_type") or "") == DRAFT_TYPE_IMPORTED
-            )
-        except ImportError:
-            pass
-        if int(diag.get("real_league_context_count") or 0) > 0:
-            rows = diag.get("contexts") or []
-            blocked = [
-                row
-                for row in rows
-                if isinstance(row, dict) and not row.get("is_commissioner")
-            ]
-            if blocked:
-                first = blocked[0]
-                st.warning(
-                    "Shared league invite controls are hidden because this account is not recognized as "
-                    f"league commissioner for **{first.get('league_name') or 'your uploaded league'}**. "
-                    f"Stored commissioner id: `{first.get('commissioner_user_id') or '—'}` · "
-                    f"your account id: `{diag.get('account_user_id') or '—'}`. "
-                    "Claim your upload team in this library, then refresh."
-                )
-        elif visible_imported > 0:
-            st.warning(
-                "Shared league invite controls are hidden because league context metadata is missing "
-                f"for **{visible_imported}** uploaded league card(s). "
-                f"Your account id: `{diag.get('account_user_id') or '—'}`. "
-                "Refresh the page — the library should rebuild context from your saved upload."
-            )
         return False
     uid = ""
     try:
@@ -135,6 +156,10 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     if not is_league_commissioner(context, uid):
+        st.warning(
+            "Invite controls are hidden because `is_league_commissioner` failed after "
+            "`commissioner_invite_context` returned a context. See **Invite panel diagnostic** above."
+        )
         return False
 
     league_name = str(context.get("league_name") or context.get("display_name") or "Shared league").strip()

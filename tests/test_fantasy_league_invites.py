@@ -11,13 +11,14 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from draft_archive_state import DRAFT_TYPE_IMPORTED, get_draft_archive, list_draft_archives
+from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_IMPORTED, get_draft_archive, list_draft_archives
 from fantasy_league_context import get_league_context, save_imported_league_context, upsert_league_context
 from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_league_invites import (
     INVITE_STATUS_ACCEPTED,
     INVITE_STATUS_PENDING,
     append_invite_to_inbox,
+    build_commissioner_invite_panel_trace,
     commissioner_invite_context,
     create_league_invite,
     is_league_commissioner,
@@ -285,6 +286,79 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         self.assertEqual(str(invite_ctx.get("context_type") or ""), "real_league")
         self.assertTrue(is_league_commissioner(invite_ctx, "f66b85aa-1192-4f93-a669-d238bcd6858b"))
         self.assertEqual(str(entry.get("draft_id") or ""), str((invite_ctx.get("metadata") or {}).get("source_draft_id") or ""))
+
+    def test_invite_panel_trace_reports_commissioner_mismatch(self) -> None:
+        session: dict = {
+            "_suite_auth_session": True,
+            "_suite_cloud_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b",
+            "_suite_auth_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b",
+            "_suite_auth_external_id": "daniel",
+        }
+        with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
+            entry, context = save_imported_league_context(
+                session,
+                _four_team_board(),
+                my_team_name="Daniel",
+                draft_name="Office League 2026",
+                save_only=True,
+                assign_team=True,
+            )
+        meta = dict(context.get("metadata") or {})
+        meta["commissioner_user_id"] = "00000000-0000-0000-0000-000000000099"
+        context["metadata"] = meta
+        ownership = dict(context.get("team_ownership") or {})
+        ownership["Daniel"] = {"user_id": "00000000-0000-0000-0000-000000000088"}
+        context["team_ownership"] = ownership
+        store = dict(session.get("fantasy_league_context_state") or {})
+        contexts = dict(store.get("contexts") or {})
+        league_context_id = str(context.get("league_context_id") or "").strip()
+        contexts[league_context_id] = context
+        store["contexts"] = contexts
+        session["fantasy_league_context_state"] = store
+
+        with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
+            trace = build_commissioner_invite_panel_trace(session)
+        self.assertGreaterEqual(int(trace.get("uploaded_league_session_count") or 0), 1)
+        self.assertFalse(trace.get("commissioner_invite_context_found"))
+        leagues = trace.get("uploaded_leagues") or []
+        self.assertGreaterEqual(len(leagues), 1)
+        row = next(item for item in leagues if str(item.get("draft_id")) == str(entry.get("draft_id")))
+        self.assertTrue(row.get("context_exists"))
+        self.assertIn("does not match", str(row.get("block_reason") or "").lower())
+        self.assertIn("None", str(trace.get("commissioner_invite_context_reason") or ""))
+
+    def test_invite_panel_trace_detects_snapshot_only_team_count(self) -> None:
+        session: dict = {
+            "_suite_auth_session": True,
+            "_suite_cloud_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b",
+            "_suite_auth_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b",
+            "_suite_auth_external_id": "daniel",
+        }
+        with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
+            entry, _context = save_imported_league_context(
+                session,
+                _four_team_board(),
+                my_team_name="Daniel",
+                draft_name="Snapshot League",
+                save_only=True,
+                assign_team=True,
+            )
+        entry = dict(entry)
+        entry["league_rosters"] = {}
+        entry["snapshot"] = {"team_count": 4, "my_team_player_count": 3}
+        archives = [
+            {**row, "league_rosters": {}, "snapshot": entry["snapshot"]}
+            if str(row.get("draft_id")) == str(entry.get("draft_id"))
+            else row
+            for row in list_draft_archives(session)
+        ]
+        session[DRAFT_ARCHIVE_KEY] = archives
+
+        with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
+            trace = build_commissioner_invite_panel_trace(session)
+        self.assertGreaterEqual(int(trace.get("uploaded_league_session_count") or 0), 1)
+        row = next(item for item in (trace.get("uploaded_leagues") or []) if str(item.get("draft_id")) == str(entry.get("draft_id")))
+        self.assertEqual(int(row.get("team_count_hint") or 0), 4)
 
     def test_invite_joiner_is_not_commissioner(self) -> None:
         session: dict = {}
