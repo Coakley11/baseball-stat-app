@@ -12,6 +12,7 @@ from baseball_persistent_state import apply_baseball_disk_state, build_baseball_
 from draft_archive_state import (
     ACTIVE_DRAFT_ARCHIVE_KEY,
     DRAFT_ARCHIVE_KEY,
+    DRAFT_TYPE_IMPORTED,
     activate_draft_archive,
     get_active_draft_archive,
     get_draft_archive,
@@ -22,9 +23,11 @@ from draft_archive_state import (
 from fantasy_league_context import (
     CONTEXT_TYPE_LIVE_DRAFT_RESULT,
     CONTEXT_TYPE_MOCK_DRAFT_SIMULATION,
+    CONTEXT_TYPE_REAL_LEAGUE,
     FANTASY_LEAGUE_CONTEXT_STATE_KEY,
     MIGRATION_STATUS_FULL_LEAGUE,
     MIGRATION_STATUS_SINGLE_TEAM_LEGACY,
+    SOURCE_IMPORTED_DRAFT,
     SOURCE_LIVE_DRAFT_ROOM,
     activate_league_context,
     build_league_rosters_from_live_room,
@@ -169,6 +172,75 @@ class FantasyLeagueContextMigrationTests(unittest.TestCase):
         self.assertEqual(context["metadata"]["source_draft_id"], "abc123")
         self.assertIn("Daniel", context["league_rosters"])
         self.assertEqual(context["ownership_map"]["aaron judge"]["owner_team"], "Daniel")
+
+    def test_migrate_imported_archive_preserves_full_league_rosters(self) -> None:
+        teams = ["Daniel", "Team B", "Team C", "Team D"]
+        league_rosters = {
+            team: {
+                "team_name": team,
+                "is_user_team": team == "Daniel",
+                "players": [
+                    {"player_name": f"{team} Player {i}", "player_key": f"{team.lower()} player {i}"}
+                    for i in range(1, 4)
+                ],
+            }
+            for team in teams
+        }
+        archive = {
+            "draft_id": "f768a17fef32",
+            "draft_type": DRAFT_TYPE_IMPORTED,
+            "draft_name": "Shared Upload league",
+            "team_name": "Daniel",
+            "fantasy_format": "5x5 Roto",
+            "roster_slots": {"OF": 3},
+            "slot_instances": [],
+            "projection_settings": {"scoring_type": "5x5 Roto"},
+            "players": league_rosters["Daniel"]["players"],
+            "league_rosters": league_rosters,
+            "created_at": "2026-07-01T12:00:00+00:00",
+            "updated_at": "2026-07-02T12:00:00+00:00",
+        }
+        context = migrate_archive_to_league_context(archive)
+        self.assertEqual(context["context_type"], CONTEXT_TYPE_REAL_LEAGUE)
+        self.assertEqual(context["metadata"]["migration_status"], MIGRATION_STATUS_FULL_LEAGUE)
+        self.assertEqual(context["metadata"]["source"], SOURCE_IMPORTED_DRAFT)
+        self.assertEqual(len(context["league_rosters"]), 4)
+        for team in teams:
+            self.assertIn(team, context["league_rosters"])
+            self.assertEqual(len(context["league_rosters"][team]["players"]), 3)
+
+    def test_migrate_legacy_imported_archive_without_existing_context(self) -> None:
+        session: dict = {
+            DRAFT_ARCHIVE_KEY: [
+                {
+                    "draft_id": "import001",
+                    "draft_type": DRAFT_TYPE_IMPORTED,
+                    "draft_name": "Shared Upload league",
+                    "team_name": "Daniel",
+                    "players": [{"player_name": "Daniel Player 1", "player_key": "daniel player 1"}],
+                    "league_rosters": {
+                        "Daniel": {
+                            "team_name": "Daniel",
+                            "is_user_team": True,
+                            "players": [{"player_name": "Daniel Player 1", "player_key": "daniel player 1"}],
+                        },
+                        "Rivals": {
+                            "team_name": "Rivals",
+                            "is_user_team": False,
+                            "players": [{"player_name": "Rivals Player 1", "player_key": "rivals player 1"}],
+                        },
+                    },
+                    "created_at": "2026-07-01T12:00:00+00:00",
+                    "updated_at": "2026-07-02T12:00:00+00:00",
+                }
+            ]
+        }
+        created = migrate_legacy_archives_to_contexts(session)
+        self.assertEqual(created, 1)
+        context = get_league_context(session, context_id_for_archive("import001"))
+        assert context is not None
+        self.assertEqual(len(context["league_rosters"]), 2)
+        self.assertEqual(context["context_type"], CONTEXT_TYPE_REAL_LEAGUE)
 
     def test_migrate_legacy_archives_bulk_preserves_archives(self) -> None:
         session: dict = {}

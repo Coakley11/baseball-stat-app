@@ -13,6 +13,7 @@ import pandas as pd
 from draft_archive_state import (
     ACTIVE_DRAFT_ARCHIVE_KEY,
     DRAFT_ARCHIVE_KEY,
+    DRAFT_TYPE_IMPORTED,
     DRAFT_TYPE_LIVE,
     DRAFT_TYPE_SIMULATOR,
     get_draft_archive,
@@ -301,6 +302,8 @@ def has_full_league_rosters(context: dict[str, Any] | None) -> bool:
 def _context_type_from_archive_draft_type(draft_type: str) -> str:
     if str(draft_type or "") == DRAFT_TYPE_LIVE:
         return CONTEXT_TYPE_LIVE_DRAFT_RESULT
+    if str(draft_type or "") == DRAFT_TYPE_IMPORTED:
+        return CONTEXT_TYPE_REAL_LEAGUE
     return CONTEXT_TYPE_MOCK_DRAFT_SIMULATION
 
 
@@ -308,6 +311,41 @@ def _players_from_archive_entry(archive_entry: dict[str, Any]) -> list[dict[str,
     team_name = str(archive_entry.get("team_name") or "").strip()
     rows = [dict(r) for r in (archive_entry.get("players") or []) if isinstance(r, dict)]
     return [_normalize_player_entry(row, team_name=team_name) for row in rows if _player_name_from_row(row)]
+
+
+def _league_rosters_from_archive_entry(
+    archive_entry: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], str, str]:
+    """Build league_rosters plus migration_status and metadata source from a saved archive."""
+    team_name = str(archive_entry.get("team_name") or "").strip()
+    draft_type = str(archive_entry.get("draft_type") or "").strip()
+    raw_rosters = archive_entry.get("league_rosters")
+    if isinstance(raw_rosters, dict) and raw_rosters:
+        league_rosters: dict[str, dict[str, Any]] = {}
+        for roster_team, team_entry in raw_rosters.items():
+            if not isinstance(team_entry, dict):
+                continue
+            team = str(roster_team or team_entry.get("team_name") or "").strip()
+            if not team:
+                continue
+            players = [
+                _normalize_player_entry(dict(row), team_name=team)
+                for row in (team_entry.get("players") or [])
+                if isinstance(row, dict) and _player_name_from_row(row)
+            ]
+            is_user_team = bool(team_entry.get("is_user_team")) or (team == team_name)
+            league_rosters[team] = _team_roster_entry(team, players, is_user_team=is_user_team)
+        if league_rosters:
+            if len(league_rosters) >= 2 or draft_type == DRAFT_TYPE_IMPORTED:
+                source = SOURCE_IMPORTED_DRAFT if draft_type == DRAFT_TYPE_IMPORTED else SOURCE_LEGACY_MIGRATION
+                return league_rosters, MIGRATION_STATUS_FULL_LEAGUE, source
+            return league_rosters, MIGRATION_STATUS_SINGLE_TEAM_LEGACY, SOURCE_LEGACY_MIGRATION
+
+    players = _players_from_archive_entry(archive_entry)
+    league_rosters = {
+        team_name: _team_roster_entry(team_name, players, is_user_team=True),
+    } if team_name else {}
+    return league_rosters, MIGRATION_STATUS_SINGLE_TEAM_LEGACY, SOURCE_LEGACY_MIGRATION
 
 
 def migrate_archive_to_league_context(archive_entry: dict[str, Any]) -> dict[str, Any]:
@@ -318,10 +356,7 @@ def migrate_archive_to_league_context(archive_entry: dict[str, Any]) -> dict[str
     now = _utc_now_iso()
     created = str(archive_entry.get("created_at") or now)
     league_context_id = context_id_for_archive(draft_id)
-    players = _players_from_archive_entry(archive_entry)
-    league_rosters = {
-        team_name: _team_roster_entry(team_name, players, is_user_team=True),
-    } if team_name else {}
+    league_rosters, migration_status, source = _league_rosters_from_archive_entry(archive_entry)
     context: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "league_context_id": league_context_id,
@@ -348,8 +383,8 @@ def migrate_archive_to_league_context(archive_entry: dict[str, Any]) -> dict[str
             "updated_at": str(archive_entry.get("updated_at") or now),
             "source_draft_id": draft_id,
             "source_workspace": "",
-            "source": SOURCE_LEGACY_MIGRATION,
-            "migration_status": MIGRATION_STATUS_SINGLE_TEAM_LEGACY,
+            "source": source,
+            "migration_status": migration_status,
         },
     }
     context["ownership_map"] = build_ownership_map(context)
