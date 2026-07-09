@@ -21,11 +21,13 @@ from fantasy_league_invites import (
     append_invite_to_inbox,
     build_commissioner_invite_panel_trace,
     build_invite_lookup_trace,
+    build_invite_submit_trace_snapshot,
     commissioner_invite_context,
     create_league_invite,
     is_league_commissioner,
     join_shared_league_from_invite,
     list_pending_invites_for_session,
+    record_invite_submit_trace,
     resolve_invitee_target,
     scan_pending_invites_from_disk_workflow_hints,
     scan_pending_invites_from_shared_leagues,
@@ -525,6 +527,28 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         self.assertEqual(trace["disk_draft_raw_count"], 1)
         self.assertEqual(trace["disk_draft_visible_count"], 0)
         self.assertTrue(trace["disk_pollution_not_invite"])
+
+    def test_invite_submit_trace_records_button_and_create_result(self) -> None:
+        session: dict = {}
+        record_invite_submit_trace(
+            session,
+            button_clicked=True,
+            target_trimmed="coakley11",
+            create_league_invite_called=True,
+            invite_id="inv_test_submit",
+            last_invite_shared_push_ok=True,
+            league_invite_sent_reason_set=True,
+            persist_last_save_reason="league_invite_sent",
+        )
+        snap = build_invite_submit_trace_snapshot(session)
+        self.assertTrue(snap.get("button_clicked"))
+        self.assertTrue(snap.get("create_league_invite_called"))
+        self.assertEqual(snap.get("invite_id"), "inv_test_submit")
+        self.assertTrue(snap.get("last_invite_shared_push_ok"))
+        self.assertTrue(snap.get("league_invite_sent_reason_set"))
+        panel = build_commissioner_invite_panel_trace(session)
+        self.assertIn("invite_submit_trace", panel)
+        self.assertEqual(panel["invite_submit_trace"].get("invite_id"), "inv_test_submit")
 
 
 if __name__ == "__main__":

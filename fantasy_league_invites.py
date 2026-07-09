@@ -472,6 +472,11 @@ def create_league_invite(
         if isinstance(saved_shared, dict):
             session["_last_invite_shared_push_ok"] = True
             session["_last_invite_shared_league_id"] = str(saved_shared.get("league_id") or league_id)
+            session.pop("_last_invite_shared_push_error", None)
+        else:
+            session["_last_invite_shared_push_ok"] = False
+            session["_last_invite_shared_push_error"] = "push_league_context_to_shared returned None"
+            invite["shared_push_error"] = session["_last_invite_shared_push_error"]
     except (ImportError, RuntimeError, OSError, ValueError) as exc:
         session["_last_invite_shared_push_ok"] = False
         session["_last_invite_shared_push_error"] = str(exc)
@@ -510,6 +515,49 @@ def can_claim_team_for_context(session: dict[str, Any], context: dict[str, Any] 
         if league_id and str(pending.get("league_id") or "").strip() == league_id:
             return True, ""
     return False, "Accept your shared league invite before claiming a team."
+
+
+def record_invite_submit_trace(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Persist commissioner invite form submit diagnostics across reruns."""
+    trace = dict(session.get("_suite_last_invite_submit_trace") or {})
+    trace.update({k: v for k, v in fields.items() if v is not None or k.endswith("_error")})
+    trace["updated_at"] = _utc_now_iso()
+    session["_suite_last_invite_submit_trace"] = trace
+    return trace
+
+
+def build_invite_submit_trace_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    """Latest commissioner invite button/form trace for diagnostic panels."""
+    trace = dict(session.get("_suite_last_invite_submit_trace") or {})
+    last_sent = session.get("_last_commissioner_invite_sent")
+    return {
+        "button_clicked": bool(trace.get("button_clicked")),
+        "create_league_invite_called": bool(trace.get("create_league_invite_called")),
+        "target_raw": trace.get("target_raw"),
+        "target_trimmed": trace.get("target_trimmed"),
+        "resolved_target": trace.get("resolved_target"),
+        "invite_id": trace.get("invite_id") or (
+            str(last_sent.get("invite_id") or "") if isinstance(last_sent, dict) else None
+        ),
+        "create_error": trace.get("create_error"),
+        "last_invite_shared_push_ok": trace.get("last_invite_shared_push_ok", session.get("_last_invite_shared_push_ok")),
+        "last_invite_shared_push_error": trace.get(
+            "last_invite_shared_push_error", session.get("_last_invite_shared_push_error")
+        ),
+        "last_invite_shared_league_id": trace.get(
+            "last_invite_shared_league_id", session.get("_last_invite_shared_league_id")
+        ),
+        "league_invite_sent_reason_set": trace.get("league_invite_sent_reason_set"),
+        "force_save_attempted": bool(trace.get("force_save_attempted")),
+        "force_save_ok": trace.get("force_save_ok"),
+        "persist_last_save_reason": trace.get("persist_last_save_reason")
+        or session.get("_suite_persist_last_save_reason"),
+        "context_league_id": trace.get("context_league_id"),
+        "updated_at": trace.get("updated_at"),
+        "last_commissioner_invite_sent": (
+            last_sent if isinstance(last_sent, dict) else None
+        ),
+    }
 
 
 def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
@@ -555,6 +603,7 @@ def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "last_commissioner_invite_sent": (
             last_sent if isinstance(last_sent, dict) else None
         ),
+        "invite_submit_trace": build_invite_submit_trace_snapshot(session),
         "is_commissioner_for_active_context": bool(
             isinstance(context, dict) and uid and is_league_commissioner(context, uid)
         ),
@@ -1404,6 +1453,7 @@ def build_commissioner_invite_panel_trace(session: dict[str, Any]) -> dict[str, 
         "commissioner_invite_context_reason": invite_reason,
         "selected_league_context_id": str((invite_context or {}).get("league_context_id") or "").strip(),
         "uploaded_leagues": league_rows,
+        "invite_submit_trace": build_invite_submit_trace_snapshot(session),
     }
 
 
