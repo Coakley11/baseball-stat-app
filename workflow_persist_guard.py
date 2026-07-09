@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 
@@ -39,6 +40,9 @@ AUTH_MIGRATION_WRITEBACK_TRACE_KEY = "_suite_auth_migration_writeback_trace"
 AUTH_MIGRATION_WRITEBACK_FORCE_KEY = "_suite_auth_migration_writeback_force"
 AUTH_RESTORE_CYCLE_COMPLETE_KEY = "_suite_auth_restore_cycle_complete"
 WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_draft_archive_prewrite_backup"
+WORKFLOW_CLOUD_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_cloud_draft_archive_prewrite_backup"
+WORKFLOW_DRAFT_ARCHIVE_HISTORY_KEY = "_suite_draft_archive_version_history"
+DRAFT_ARCHIVE_HISTORY_MAX = 8
 
 _EXPLICIT_WORKFLOW_CLEAR_REASONS = frozenset(
     {
@@ -258,14 +262,17 @@ def summarize_durable_draft_sources(
         best_disk = max(best_disk, n)
     cloud_count = 0
     if st is not None:
-        try:
-            from suite_workspace import get_active_workspace_id
+        live_probe = read_live_cloud_draft_probe(st, app_id)
+        cloud_count = int(live_probe.get("draft_archive_count") or 0)
+        if cloud_count <= 0:
+            try:
+                from suite_workspace import get_active_workspace_id
 
-            probe = probe_cloud_workflow_for_workspace(str(get_active_workspace_id(st=st)))
-            cloud_count = int(probe.get("draft_archive_count") or 0)
-        except Exception:
-            cloud_state = _load_cloud_workflow_snapshot(app_id, st)
-            cloud_count = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
+                probe = probe_cloud_workflow_for_workspace(str(get_active_workspace_id(st=st)))
+                cloud_count = int(probe.get("draft_archive_count") or 0)
+            except Exception:
+                cloud_state = _load_cloud_workflow_snapshot(app_id, st)
+                cloud_count = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
     migration_recoverable = 0
     try:
         discovery = discover_workflow_migration_sources(session, app_id=app_id)
@@ -283,6 +290,241 @@ def summarize_durable_draft_sources(
     }
 
 
+def read_live_cloud_draft_probe(st: Any | None, app_id: str = "baseball") -> dict[str, Any]:
+    """Fresh Supabase read of draft_archive_teams for the active workspace (not session cache)."""
+    out: dict[str, Any] = {
+        "cloud_app_key": "",
+        "workspace_id": "",
+        "draft_archive_count": 0,
+        "row_found": False,
+        "updated_at": None,
+        "error": None,
+    }
+    if st is None or app_id != "baseball":
+        return out
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        ws = str(get_active_workspace_id(st=st))
+        out["workspace_id"] = ws
+        probe = probe_cloud_workflow_for_workspace(ws, max_attempts=2)
+        if isinstance(probe, dict):
+            out.update(probe)
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out
+
+
+def _persist_draft_archive_backup_file(
+    session: dict[str, Any],
+    archives: list[dict[str, Any]],
+    *,
+    kind: str,
+    save_reason: str,
+) -> str | None:
+    """Write workspace-local backup JSON before shrinking draft archives."""
+    if not archives:
+        return None
+    try:
+        from suite_workspace import get_active_workspace_id, workspace_dir
+
+        st_stub = type("_St", (), {"session_state": session})()
+        ws = str(get_active_workspace_id(st=st_stub))
+        path = workspace_dir(ws) / f"draft_archive_{kind}_backup.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": _utc_now_iso(),
+            "reason": str(save_reason or "save"),
+            "workspace_id": ws,
+            "draft_count": count_draft_archives(archives),
+            "draft_archive_teams": copy.deepcopy(archives),
+        }
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        return str(path)
+    except Exception:
+        return None
+
+
+def append_draft_archive_version_history(
+    session: dict[str, Any],
+    archives: list[dict[str, Any]],
+    *,
+    source: str,
+    save_reason: str,
+    cloud_app_key: str = "",
+) -> None:
+    """Keep a short in-session version history before destructive draft writes."""
+    if not archives:
+        return
+    entry = {
+        "at": _utc_now_iso(),
+        "source": str(source or "unknown"),
+        "reason": str(save_reason or "save"),
+        "cloud_app_key": str(cloud_app_key or "").strip() or None,
+        "draft_count": count_draft_archives(archives),
+        "draft_ids": [
+            str(row.get("draft_id") or "").strip()
+            for row in archives
+            if isinstance(row, dict) and str(row.get("draft_id") or "").strip()
+        ],
+    }
+    history = session.get(WORKFLOW_DRAFT_ARCHIVE_HISTORY_KEY)
+    if not isinstance(history, list):
+        history = []
+    history = [dict(x) for x in history if isinstance(x, dict)]
+    history.append(entry)
+    session[WORKFLOW_DRAFT_ARCHIVE_HISTORY_KEY] = history[-DRAFT_ARCHIVE_HISTORY_MAX:]
+
+
+def maybe_backup_draft_archive_before_shrink(
+    session: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    app_id: str = "baseball",
+    st: Any | None = None,
+    save_reason: str = "",
+) -> dict[str, Any]:
+    """
+    Snapshot durable draft archives before an outbound empty write.
+
+    Returns backup metadata for diagnostics.
+    """
+    meta: dict[str, Any] = {
+        "backed_up": False,
+        "session_backup_count": 0,
+        "cloud_backup_count": 0,
+        "disk_backup_count": 0,
+        "history_appended": False,
+        "backup_paths": [],
+    }
+    outbound = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
+    if outbound > 0:
+        return meta
+    if _session_allows_workflow_clear(session, save_reason):
+        return meta
+
+    live_probe = read_live_cloud_draft_probe(st, app_id) if st is not None else {}
+    live_cloud_count = int(live_probe.get("draft_archive_count") or 0)
+    durable = summarize_durable_draft_sources(session, app_id, st=st)
+    disk_max = int(durable.get("disk_max") or 0)
+    max_durable = max(int(durable.get("max_draft_count") or 0), live_cloud_count, disk_max)
+    if max_durable <= 0:
+        return meta
+
+    durable_blob = _load_durable_workflow_snapshot(session, app_id, st=st)
+    archives = durable_blob.get(DRAFT_ARCHIVE_KEY)
+    if not _draft_archive_nonempty(archives):
+        if live_cloud_count > 0 and st is not None:
+            cloud_blob = _load_cloud_workflow_snapshot(app_id, st)
+            archives = cloud_blob.get(DRAFT_ARCHIVE_KEY)
+    if not _draft_archive_nonempty(archives):
+        return meta
+
+    archive_list = [dict(x) for x in archives if isinstance(x, dict)]
+    try:
+        session[WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY] = copy.deepcopy(archive_list)
+    except Exception:
+        session[WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY] = list(archive_list)
+    session["_suite_draft_archive_backup_at"] = _utc_now_iso()
+    session["_suite_draft_archive_backup_reason"] = str(save_reason or "save")
+    meta["session_backup_count"] = len(archive_list)
+    meta["backed_up"] = True
+
+    cloud_app_key = str(live_probe.get("cloud_app_key") or "").strip()
+    if live_cloud_count > 0:
+        try:
+            session[WORKFLOW_CLOUD_DRAFT_ARCHIVE_BACKUP_KEY] = copy.deepcopy(archive_list)
+            meta["cloud_backup_count"] = len(archive_list)
+        except Exception:
+            pass
+        cloud_path = _persist_draft_archive_backup_file(
+            session, archive_list, kind="cloud_prewrite", save_reason=save_reason
+        )
+        if cloud_path:
+            meta["backup_paths"].append(cloud_path)
+        append_draft_archive_version_history(
+            session,
+            archive_list,
+            source="cloud",
+            save_reason=save_reason,
+            cloud_app_key=cloud_app_key,
+        )
+        meta["history_appended"] = True
+
+    if disk_max > 0:
+        disk_blob = _load_durable_workflow_snapshot(session, app_id, st=None)
+        disk_archives = disk_blob.get(DRAFT_ARCHIVE_KEY)
+        if _draft_archive_nonempty(disk_archives):
+            disk_list = [dict(x) for x in disk_archives if isinstance(x, dict)]
+            disk_path = _persist_draft_archive_backup_file(
+                session, disk_list, kind="disk_prewrite", save_reason=save_reason
+            )
+            if disk_path:
+                meta["backup_paths"].append(disk_path)
+            meta["disk_backup_count"] = len(disk_list)
+            append_draft_archive_version_history(
+                session,
+                disk_list,
+                source="disk",
+                save_reason=save_reason,
+            )
+    return meta
+
+
+def draft_archive_shrink_blocked_reason(
+    st: Any,
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    save_reason: str = "",
+    scope: str = "all",
+) -> str | None:
+    """Block saves that would persist zero drafts over richer live cloud/disk storage."""
+    if app_id != "baseball":
+        return None
+    reason = str(save_reason or "").strip()
+    session = st.session_state
+    if _session_allows_workflow_clear(session, reason):
+        return None
+    outbound = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
+    if outbound > 0:
+        return None
+
+    live_probe = read_live_cloud_draft_probe(st, app_id)
+    live_cloud_count = int(live_probe.get("draft_archive_count") or 0)
+    durable = summarize_durable_draft_sources(session, app_id, st=st)
+    disk_max = int(durable.get("disk_max") or 0)
+    max_durable = max(int(durable.get("max_draft_count") or 0), live_cloud_count, disk_max)
+
+    if max_durable <= 0:
+        return None
+
+    backup_meta = maybe_backup_draft_archive_before_shrink(
+        session, state, app_id=app_id, st=st, save_reason=reason
+    )
+    session["_suite_draft_archive_wipe_guard"] = {
+        "blocked": True,
+        "save_reason": reason,
+        "scope": scope,
+        "outbound_draft_count": outbound,
+        "live_cloud_draft_count": live_cloud_count,
+        "disk_draft_max": disk_max,
+        "max_durable_draft_count": max_durable,
+        "backup": backup_meta,
+        "at": _utc_now_iso(),
+    }
+
+    if reason == "page_change":
+        if live_cloud_count > 0:
+            return "page_change_empty_draft_archive_live_cloud_blocked"
+        if disk_max > 0:
+            return "page_change_empty_draft_archive_disk_blocked"
+        return "page_change_empty_draft_archive_blocked"
+    if live_cloud_count > 0 and outbound == 0:
+        return "empty_outgoing_would_erase_live_cloud_drafts"
+    return "empty_workflow_would_erase_durable_drafts"
+
+
 def maybe_backup_draft_archive_prewrite(
     session: dict[str, Any],
     state: dict[str, Any],
@@ -292,24 +534,9 @@ def maybe_backup_draft_archive_prewrite(
     save_reason: str = "",
 ) -> None:
     """Retain last non-empty draft_archive_teams before an outbound empty write."""
-    outbound = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
-    if outbound > 0:
-        return
-    if _session_allows_workflow_clear(session, save_reason):
-        return
-    durable = summarize_durable_draft_sources(session, app_id, st=st)
-    if int(durable.get("max_draft_count") or 0) <= 0:
-        return
-    durable_blob = _load_durable_workflow_snapshot(session, app_id, st=st)
-    archives = durable_blob.get(DRAFT_ARCHIVE_KEY)
-    if not _draft_archive_nonempty(archives):
-        return
-    try:
-        session[WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY] = copy.deepcopy(archives)
-    except Exception:
-        session[WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY] = list(archives)
-    session["_suite_draft_archive_backup_at"] = _utc_now_iso()
-    session["_suite_draft_archive_backup_reason"] = str(save_reason or "save")
+    maybe_backup_draft_archive_before_shrink(
+        session, state, app_id=app_id, st=st, save_reason=save_reason
+    )
 
 
 def workflow_empty_save_blocked_reason(
@@ -329,12 +556,7 @@ def workflow_empty_save_blocked_reason(
         return None
     if _is_force_save_cloud_reason(reason) and reason not in ("page_change", "autosave"):
         return None
-    local_count = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
-    if local_count > 0:
-        return None
-    durable = summarize_durable_draft_sources(session, app_id, st=st)
-    if int(durable.get("max_draft_count") or 0) <= 0:
-        return None
+
     try:
         from suite_auth import auth_session_complete, is_auth_enabled
 
@@ -343,12 +565,26 @@ def workflow_empty_save_blocked_reason(
     except ImportError:
         auth_enabled = False
         signed_in = True
-    if reason == "page_change" and auth_enabled and not signed_in:
-        return "signed_out_page_change_would_erase_durable_drafts"
     if scope == "cloud" and reason == "page_change" and auth_enabled:
         if not session.get(AUTH_RESTORE_CYCLE_COMPLETE_KEY):
             return "auth_restore_incomplete_page_change_cloud_blocked"
-    return "empty_workflow_would_erase_durable_drafts"
+    if reason == "page_change" and auth_enabled and not signed_in:
+        outbound = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
+        if outbound <= 0:
+            durable = summarize_durable_draft_sources(session, app_id, st=st)
+            if int(durable.get("max_draft_count") or 0) > 0:
+                maybe_backup_draft_archive_before_shrink(
+                    session, state, app_id=app_id, st=st, save_reason=reason
+                )
+                return "signed_out_page_change_would_erase_durable_drafts"
+
+    shrink_block = draft_archive_shrink_blocked_reason(
+        st, app_id, state, save_reason=reason, scope=scope
+    )
+    if shrink_block:
+        return shrink_block
+
+    return None
 
 
 def _is_force_save_cloud_reason(reason: str) -> bool:
@@ -788,6 +1024,12 @@ def _load_cloud_workflow_snapshot(app_id: str, st: Any | None) -> dict[str, Any]
             get_active_workspace_id(st=type("_St", (), {"session_state": session})())
         )
         active_key = scoped_cloud_app_id(app_id, active_ws)
+        if not count_draft_archives((primary or {}).get(DRAFT_ARCHIVE_KEY)):
+            live_probe = probe_cloud_workflow_for_workspace(active_ws, max_attempts=2)
+            if int(live_probe.get("draft_archive_count") or 0) > 0:
+                live_blob = _full_session_blob_from_storage_app_key(active_key)
+                if live_blob:
+                    blobs.append(live_blob)
         for fb_ws in _cloud_workflow_fallback_workspace_ids(session):
             fb_key = scoped_cloud_app_id(app_id, fb_ws)
             if fb_key == active_key:

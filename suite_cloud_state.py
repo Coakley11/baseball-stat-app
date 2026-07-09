@@ -1031,6 +1031,24 @@ def save_cloud_full_session_with_details(
         ss = _streamlit_session()
         if ss is not None:
             try:
+                from workflow_persist_guard import count_draft_archives, draft_archive_shrink_blocked_reason
+
+                outbound = count_draft_archives(state.get("draft_archive_teams"))
+                if outbound <= 0:
+                    block = draft_archive_shrink_blocked_reason(
+                        type("_St", (), {"session_state": ss})(),
+                        app_id,
+                        state,
+                        save_reason=str(ss.get("_suite_pending_save_reason") or "cloud_full_session"),
+                        scope="cloud",
+                    )
+                    if block:
+                        ss["_suite_empty_startup_write_blocked"] = block
+                        ss["_suite_persist_last_cloud_error"] = block
+                        return False, block, app_key
+            except Exception:
+                pass
+            try:
                 from workflow_persist_guard import merge_protected_workflow_into_save
 
                 state = merge_protected_workflow_into_save(

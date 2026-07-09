@@ -357,6 +357,26 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
+    if app_id == "baseball":
+        try:
+            from workflow_persist_guard import (
+                WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
+                count_draft_archives,
+                draft_archive_shrink_blocked_reason,
+                read_live_cloud_draft_probe,
+            )
+
+            local_draft_count = count_draft_archives(state.get("draft_archive_teams"))
+            if local_draft_count <= 0 and not st.session_state.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
+                live_probe = read_live_cloud_draft_probe(st, app_id)
+                if int(live_probe.get("draft_archive_count") or 0) > 0:
+                    shrink = draft_archive_shrink_blocked_reason(
+                        st, app_id, state, save_reason=save_reason, scope="cloud"
+                    )
+                    if shrink:
+                        return shrink
+        except ImportError:
+            pass
     try:
         from workflow_persist_guard import workflow_empty_save_blocked_reason
 
@@ -398,7 +418,7 @@ def _cloud_autosave_blocked_reason(
                     ws = str(get_active_workspace_id(st))
                     probe = probe_cloud_workflow_for_workspace(ws)
                 cloud_draft_count = int(probe.get("draft_archive_count") or 0)
-                if cloud_draft_count > 0 and not _is_force_save_cloud_reason(save_reason):
+                if cloud_draft_count > 0:
                     return "post_draft_save_empty_session_would_erase_cloud"
         except ImportError:
             pass
@@ -427,17 +447,21 @@ def _cloud_autosave_blocked_reason(
                     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
                     count_draft_archives,
                     probe_cloud_workflow_for_workspace,
+                    read_live_cloud_draft_probe,
                 )
 
                 cloud_draft_count = 0
-                try:
-                    from suite_workspace import get_active_workspace_id
+                live_probe = read_live_cloud_draft_probe(st, app_id)
+                cloud_draft_count = int(live_probe.get("draft_archive_count") or 0)
+                if cloud_draft_count <= 0:
+                    try:
+                        from suite_workspace import get_active_workspace_id
 
-                    ws = str(get_active_workspace_id(st))
-                    probe = probe_cloud_workflow_for_workspace(ws)
-                    cloud_draft_count = int(probe.get("draft_archive_count") or 0)
-                except Exception:
-                    cloud_draft_count = count_draft_archives(cloud_state.get("draft_archive_teams"))
+                        ws = str(get_active_workspace_id(st))
+                        probe = probe_cloud_workflow_for_workspace(ws)
+                        cloud_draft_count = int(probe.get("draft_archive_count") or 0)
+                    except Exception:
+                        cloud_draft_count = count_draft_archives(cloud_state.get("draft_archive_teams"))
                 if cloud_draft_count and not st.session_state.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
                     return "blank_draft_archive_would_erase_cloud"
             except ImportError:
@@ -459,7 +483,28 @@ def _preserve_cloud_widget_fields_on_page_change(
     except ImportError:
         return state
     cloud_state, _ = load_cloud_full_session(app_id)
-    if not isinstance(cloud_state, dict) or not cloud_state:
+    if not isinstance(cloud_state, dict):
+        cloud_state = {}
+    if not cloud_state:
+        try:
+            from workflow_persist_guard import _full_session_blob_from_storage_app_key, probe_cloud_workflow_for_workspace
+            from suite_workspace import DEFAULT_WORKSPACE_ID, normalize_workspace_id, scoped_cloud_app_id
+
+            ws = normalize_workspace_id(
+                str(
+                    state.get("_suite_owned_workspace_id")
+                    or state.get("_suite_active_workspace_id")
+                    or DEFAULT_WORKSPACE_ID
+                )
+            )
+            probe = probe_cloud_workflow_for_workspace(ws, max_attempts=2)
+            if int(probe.get("draft_archive_count") or 0) > 0:
+                live_blob = _full_session_blob_from_storage_app_key(scoped_cloud_app_id(app_id, ws))
+                if isinstance(live_blob, dict) and live_blob:
+                    cloud_state = live_blob
+        except Exception:
+            pass
+    if not cloud_state:
         return state
     out = copy.deepcopy(state)
     if not _workspace_comparison_players(out) and _workspace_comparison_players(cloud_state):

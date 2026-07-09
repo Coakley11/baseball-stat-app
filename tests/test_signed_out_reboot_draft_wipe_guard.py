@@ -66,13 +66,14 @@ class SignedOutRebootDraftWipeGuardTests(unittest.TestCase):
                     )
         self.assertEqual(reason, "auth_restore_incomplete_page_change_cloud_blocked")
         session[AUTH_RESTORE_CYCLE_COMPLETE_KEY] = True
-        with patch("workflow_persist_guard.summarize_durable_draft_sources", return_value={"max_draft_count": 1}):
-            with patch("suite_auth.is_auth_enabled", return_value=True):
-                with patch("suite_auth.auth_session_complete", return_value=True):
-                    reason = workflow_empty_save_blocked_reason(
-                        st, "baseball", state, save_reason="page_change", scope="cloud"
-                    )
-        self.assertEqual(reason, "empty_workflow_would_erase_durable_drafts")
+        with patch("workflow_persist_guard.summarize_durable_draft_sources", return_value={"max_draft_count": 1, "disk_max": 0}):
+            with patch("workflow_persist_guard.read_live_cloud_draft_probe", return_value={"draft_archive_count": 0}):
+                with patch("suite_auth.is_auth_enabled", return_value=True):
+                    with patch("suite_auth.auth_session_complete", return_value=True):
+                        reason = workflow_empty_save_blocked_reason(
+                            st, "baseball", state, save_reason="page_change", scope="cloud"
+                        )
+        self.assertEqual(reason, "page_change_empty_draft_archive_blocked")
 
     def test_force_autosave_skips_disk_when_would_erase(self) -> None:
         from suite_user_persistence import force_autosave
@@ -149,6 +150,41 @@ class SignedOutRebootDraftWipeGuardTests(unittest.TestCase):
                     session, state, app_id="baseball", st=st, save_reason="page_change"
                 )
         self.assertEqual(len(session.get(WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY) or []), 1)
+
+    def test_page_change_blocked_when_live_cloud_has_drafts_signed_in(self) -> None:
+        session: dict = {AUTH_RESTORE_CYCLE_COMPLETE_KEY: True}
+        state = {DRAFT_ARCHIVE_KEY: []}
+        st = _st(session)
+        with patch("workflow_persist_guard.read_live_cloud_draft_probe", return_value={"draft_archive_count": 1, "cloud_app_key": "baseball__daniel"}):
+            with patch("workflow_persist_guard.summarize_durable_draft_sources", return_value={"max_draft_count": 1, "disk_max": 0}):
+                with patch("workflow_persist_guard._load_durable_workflow_snapshot", return_value={DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01"}]}):
+                    with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value={DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01"}]}):
+                        with patch("suite_auth.is_auth_enabled", return_value=True):
+                            with patch("suite_auth.auth_session_complete", return_value=True):
+                                reason = workflow_empty_save_blocked_reason(
+                                    st, "baseball", state, save_reason="page_change", scope="all"
+                                )
+        self.assertEqual(reason, "page_change_empty_draft_archive_live_cloud_blocked")
+        self.assertTrue(session.get("_suite_draft_archive_wipe_guard"))
+
+    def test_version_history_recorded_before_block(self) -> None:
+        from workflow_persist_guard import WORKFLOW_DRAFT_ARCHIVE_HISTORY_KEY, draft_archive_shrink_blocked_reason
+
+        session: dict = {}
+        state = {DRAFT_ARCHIVE_KEY: []}
+        st = _st(session)
+        archives = [{"draft_id": "hist01", "draft_name": "History"}]
+        with patch("workflow_persist_guard.read_live_cloud_draft_probe", return_value={"draft_archive_count": 1}):
+            with patch("workflow_persist_guard.summarize_durable_draft_sources", return_value={"max_draft_count": 1, "disk_max": 0}):
+                with patch("workflow_persist_guard._load_durable_workflow_snapshot", return_value={DRAFT_ARCHIVE_KEY: archives}):
+                    with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value={DRAFT_ARCHIVE_KEY: archives}):
+                        reason = draft_archive_shrink_blocked_reason(
+                            st, "baseball", state, save_reason="page_change", scope="all"
+                        )
+        self.assertEqual(reason, "page_change_empty_draft_archive_live_cloud_blocked")
+        history = session.get(WORKFLOW_DRAFT_ARCHIVE_HISTORY_KEY) or []
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].get("draft_ids"), ["hist01"])
 
 
 if __name__ == "__main__":

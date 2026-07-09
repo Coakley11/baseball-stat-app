@@ -502,20 +502,28 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         st.session_state = {}
         with patch("suite_workspace.get_active_workspace_id", return_value="daniel"):
             with patch(
-                "workflow_persist_guard.probe_cloud_workflow_for_workspace",
-                return_value={"draft_archive_count": 1, "row_found": True},
+                "workflow_persist_guard.read_live_cloud_draft_probe",
+                return_value={"draft_archive_count": 1, "cloud_app_key": "baseball__daniel"},
             ):
                 with patch(
-                    "workflow_persist_guard._disk_migration_candidate_workspace_ids",
-                    return_value=["daniel"],
+                    "workflow_persist_guard.probe_cloud_workflow_for_workspace",
+                    return_value={"draft_archive_count": 1, "row_found": True},
                 ):
-                    with patch("workflow_persist_guard._load_disk_workflow_at_workspace", return_value={}):
-                        with patch(
-                            "workflow_persist_guard.discover_workflow_migration_sources",
-                            return_value={"recoverable_draft_count": 0},
-                        ):
-                            reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="page_change")
-        self.assertEqual(reason, "empty_workflow_would_erase_durable_drafts")
+                    with patch(
+                        "workflow_persist_guard._disk_migration_candidate_workspace_ids",
+                        return_value=["daniel"],
+                    ):
+                        with patch("workflow_persist_guard._load_disk_workflow_at_workspace", return_value={}):
+                            with patch(
+                                "workflow_persist_guard._load_durable_workflow_snapshot",
+                                return_value={DRAFT_ARCHIVE_KEY: [{"draft_id": "keep01"}]},
+                            ):
+                                with patch(
+                                    "workflow_persist_guard.discover_workflow_migration_sources",
+                                    return_value={"recoverable_draft_count": 0},
+                                ):
+                                    reason = _cloud_autosave_blocked_reason(st, "baseball", state, save_reason="page_change")
+        self.assertEqual(reason, "page_change_empty_draft_archive_live_cloud_blocked")
 
     def test_preserve_cloud_drafts_on_page_change(self) -> None:
         from suite_user_persistence import _preserve_cloud_widget_fields_on_page_change
